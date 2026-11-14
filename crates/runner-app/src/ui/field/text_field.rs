@@ -29,6 +29,7 @@ pub enum FieldValidation {
     #[default]
     Valid,
     Error(crate::i18n::Text),
+    Warning(crate::i18n::Text),
 }
 
 impl FieldValidation {
@@ -36,15 +37,23 @@ impl FieldValidation {
         Self::Error(message.into())
     }
 
+    pub fn warning(message: impl Into<crate::i18n::Text>) -> Self {
+        Self::Warning(message.into())
+    }
+
     pub fn message(&self) -> Option<SharedString> {
         match self {
             Self::Valid => None,
-            Self::Error(message) => Some(message.resolve()),
+            Self::Error(message) | Self::Warning(message) => Some(message.resolve()),
         }
     }
 
     pub fn is_error(&self) -> bool {
         matches!(self, Self::Error(_))
+    }
+
+    pub fn is_warning(&self) -> bool {
+        matches!(self, Self::Warning(_))
     }
 }
 
@@ -247,6 +256,10 @@ impl TextField {
             self.disabled = disabled;
             cx.notify();
         }
+    }
+
+    pub fn validation(&self) -> &FieldValidation {
+        &self.validation
     }
 
     pub fn set_validation(&mut self, validation: FieldValidation, cx: &mut Context<Self>) {

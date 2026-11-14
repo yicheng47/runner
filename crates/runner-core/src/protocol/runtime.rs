@@ -2,12 +2,14 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RuntimeLaunchOptions {
     pub bypass: bool,
     pub remote_plugin_catalog: bool,
     pub status_hooks: bool,
+    #[serde(default)]
+    pub custom_flags: String,
 }
 
 impl Default for RuntimeLaunchOptions {
@@ -16,6 +18,7 @@ impl Default for RuntimeLaunchOptions {
             bypass: false,
             remote_plugin_catalog: true,
             status_hooks: true,
+            custom_flags: String::new(),
         }
     }
 }
@@ -51,7 +54,7 @@ impl RuntimeLaunchOption {
 }
 
 impl RuntimeLaunchOptions {
-    pub fn get(self, option: RuntimeLaunchOption) -> bool {
+    pub fn get(&self, option: RuntimeLaunchOption) -> bool {
         match option {
             RuntimeLaunchOption::Bypass => self.bypass,
             RuntimeLaunchOption::RemotePluginCatalog => self.remote_plugin_catalog,
@@ -83,6 +86,7 @@ pub enum RuntimeCommandNote {
     ClaudeBypass,
     AntigravityBypass,
     CatalogOff,
+    CustomFlags,
     StatusHooks,
     HooksBypass,
     IdentityBypass,
@@ -102,6 +106,8 @@ pub struct RuntimeCommandLine {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RuntimeCommandPreview {
     pub lines: Vec<RuntimeCommandLine>,
+    #[serde(default)]
+    pub custom_flags_warning: Option<String>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -177,6 +183,27 @@ impl std::fmt::Display for OverrideValidationError {
 }
 
 impl std::error::Error for OverrideValidationError {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeCustomFlagsResponse {
+    pub status: RuntimeStatusResponse,
+    #[serde(default)]
+    pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomFlagsValidationError {
+    pub code: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for CustomFlagsValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CustomFlagsValidationError {}
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeCapabilities {
     pub usage: bool,

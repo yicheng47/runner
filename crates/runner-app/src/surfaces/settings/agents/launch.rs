@@ -64,6 +64,11 @@ impl AgentsPane {
     }
 
     pub(super) fn refresh_launch_previews(&mut self, runtime: Runtime, cx: &mut Context<Self>) {
+        let epoch = {
+            let entry = self.launch_preview_epoch.entry(runtime).or_default();
+            *entry = entry.wrapping_add(1);
+            *entry
+        };
         let core = self.app_store.read(cx).client.clone();
         let task = cx.background_spawn(async move {
             Ok::<_, String>((
@@ -76,11 +81,23 @@ impl AgentsPane {
         cx.spawn(async move |weak, cx| {
             let result = task.await;
             let _ = weak.update(cx, |this, cx| {
+                if this.custom_flags_saving.contains(&runtime)
+                    || this
+                        .launch_preview_epoch
+                        .get(&runtime)
+                        .copied()
+                        .unwrap_or_default()
+                        != epoch
+                {
+                    return;
+                }
                 match result {
                     Ok((chat, mission)) => {
+                        let warning = chat.custom_flags_warning.clone();
                         this.launch_preview_errors.remove(&runtime);
                         this.launch_previews.insert((runtime, false), chat);
                         this.launch_previews.insert((runtime, true), mission);
+                        this.sync_custom_flags_warning(runtime, warning, cx);
                     }
                     Err(error) => {
                         this.launch_previews.remove(&(runtime, false));
@@ -213,6 +230,7 @@ impl AgentsPane {
                     .into_any_element(),
             );
         }
+        rows.push(self.render_custom_flags_row(runtime, cx));
         let preview = self.launch_previews.get(&(name, self.mission_preview));
         self.launch_copy.update(cx, |copy, copy_cx| {
             copy.set_value(preview.map(preview_clipboard_text), copy_cx);
@@ -299,6 +317,100 @@ impl AgentsPane {
             )))
             .into_any_element()
     }
+
+    fn render_custom_flags_row(
+        &self,
+        runtime: &RuntimeExecutableStatus,
+        _cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let name = runtime.name;
+        let validation_row = self
+            .custom_flags_validation
+            .get(&name)
+            .and_then(|validation| {
+                let message = validation.message()?;
+                let (icon, color) = if validation.is_error() {
+                    ("circle-alert.svg", theme::danger())
+                } else {
+                    ("triangle-alert.svg", theme::warning())
+                };
+                Some(
+                    div()
+                        .debug_selector(|| format!("AGENT_CUSTOM_FLAGS_MESSAGE_{name}"))
+                        .flex()
+                        .items_center()
+                        .gap(rems(5. / 16.))
+                        .child(
+                            svg()
+                                .path(icon)
+                                .size(rems(13. / 16.))
+                                .flex_none()
+                                .text_color(color),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .whitespace_normal()
+                                .text_size(theme::text_meta())
+                                .text_color(color)
+                                .child(message),
+                        ),
+                )
+            });
+        div()
+            .debug_selector(|| format!("AGENT_CUSTOM_FLAGS_ROW_{name}"))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .px_5()
+            .py(rems(14. / 16.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_size(theme::text_body())
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(crate::i18n::text("ui.launch_custom_flags")),
+                            )
+                            .child(Badge::new(
+                                crate::i18n::text("ui.launch_chats_and_missions"),
+                                Tone::Muted,
+                            )),
+                    )
+                    .child(
+                        div()
+                            .text_size(theme::text_ui())
+                            .text_color(theme::muted())
+                            .child(custom_flags_description(&runtime.display_name)),
+                    ),
+            )
+            .child(
+                div()
+                    .debug_selector(|| format!("AGENT_CUSTOM_FLAGS_{name}"))
+                    .min_w_0()
+                    .w_full()
+                    .children(self.custom_flags.get(&name).cloned()),
+            )
+            .children(validation_row)
+            .into_any_element()
+    }
+}
+
+pub(super) fn custom_flags_description(agent: &str) -> String {
+    crate::i18n::tf(
+        "format.launch_custom_flags_description",
+        &[("agent", agent.to_owned())],
+    )
 }
 
 fn preview_clipboard_text(preview: &RuntimeCommandPreview) -> String {
@@ -342,11 +454,15 @@ fn render_command(preview: Option<&RuntimeCommandPreview>) -> Div {
                             div()
                                 .flex_none()
                                 .text_size(theme::text_meta())
-                                .text_color(if line.option.is_some() {
-                                    theme::accent()
-                                } else {
-                                    theme::faint()
-                                })
+                                .text_color(
+                                    if line.option.is_some()
+                                        || line.note == RuntimeCommandNote::CustomFlags
+                                    {
+                                        theme::accent()
+                                    } else {
+                                        theme::faint()
+                                    },
+                                )
                                 .child(preview_note(&line.note)),
                         )
                 }),
@@ -378,6 +494,7 @@ pub(super) fn preview_note(note: &RuntimeCommandNote) -> SharedString {
         Note::ClaudeBypass => "ui.launch_claude_bypass",
         Note::AntigravityBypass => "ui.launch_antigravity_bypass",
         Note::CatalogOff => "ui.launch_catalog_off",
+        Note::CustomFlags => "ui.launch_custom_flags_note",
         Note::StatusHooks => "ui.launch_status_hooks_chats",
         Note::HooksBypass => "ui.launch_hooks_bypass",
         Note::IdentityBypass => "ui.launch_identity_bypass",

@@ -1233,6 +1233,7 @@ fn launch_card_switches_follow_the_runtime_table() {
                         note: runner_core::protocol::runtime::RuntimeCommandNote::None,
                         option: None,
                     }],
+                    custom_flags_warning: None,
                 },
             );
             cx.notify();
@@ -1320,6 +1321,7 @@ fn launch_copy_shows_feedback_and_ignores_unavailable_previews() {
                         option: None,
                     },
                 ],
+                custom_flags_warning: None,
             },
         );
         pane.launch_previews.insert(
@@ -1330,6 +1332,7 @@ fn launch_copy_shows_feedback_and_ignores_unavailable_previews() {
                     note: RuntimeCommandNote::AlwaysInMissions,
                     option: None,
                 }],
+                custom_flags_warning: None,
             },
         );
         cx.notify();
@@ -1465,6 +1468,7 @@ fn antigravity_launch_card_renders_bypass_switch_and_preview_note() {
                         option: Some(RuntimeLaunchOption::Bypass),
                     },
                 ],
+                custom_flags_warning: None,
             },
         );
         pane.launch_previews.insert(
@@ -1482,6 +1486,7 @@ fn antigravity_launch_card_renders_bypass_switch_and_preview_note() {
                         option: None,
                     },
                 ],
+                custom_flags_warning: None,
             },
         );
         cx.notify();
@@ -1505,4 +1510,553 @@ fn antigravity_launch_card_renders_bypass_switch_and_preview_note() {
         );
     })
     .unwrap();
+}
+
+#[test]
+fn custom_flags_renders_for_agents_with_and_without_switches_and_matches_copy() {
+    use runner_core::protocol::runtime::{
+        RuntimeCommandLine, RuntimeCommandNote, RuntimeCommandPreview,
+    };
+
+    for runtime_name in [Runtime::Codex, Runtime::Cursor, Runtime::Trae] {
+        let mut cx = gpui::TestAppContext::single();
+        let mut row = runtime(RuntimeRowState::Detected);
+        row.name = runtime_name;
+        let (_temp, pane) = test_pane(vec![row], false, &mut cx);
+        pane.update(&mut cx, |pane, _, cx| {
+            pane.selected_runtime = Some(runtime_name);
+            pane.launch_previews.insert(
+                (runtime_name, false),
+                RuntimeCommandPreview {
+                    lines: vec![
+                        RuntimeCommandLine {
+                            command: runtime_name.key().into(),
+                            note: RuntimeCommandNote::None,
+                            option: None,
+                        },
+                        RuntimeCommandLine {
+                            command: "  --search".into(),
+                            note: RuntimeCommandNote::CustomFlags,
+                            option: None,
+                        },
+                    ],
+                    custom_flags_warning: None,
+                },
+            );
+            pane.sync_launch_copy(false, cx);
+            cx.notify();
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+        let row_bounds = window
+            .debug_bounds(Box::leak(
+                format!("AGENT_CUSTOM_FLAGS_ROW_{runtime_name}").into_boxed_str(),
+            ))
+            .expect("custom flags row should render");
+        assert!(window
+            .debug_bounds(Box::leak(
+                format!("AGENT_CUSTOM_FLAGS_{runtime_name}").into_boxed_str(),
+            ))
+            .is_some());
+        assert!(window
+            .debug_bounds(Box::leak(
+                format!("AGENT_CUSTOM_FLAGS_MESSAGE_{runtime_name}").into_boxed_str(),
+            ))
+            .is_none());
+        if runtime_name == Runtime::Codex {
+            let switch_bounds = window
+                .debug_bounds("AGENT_LAUNCH_SWITCH_codex_StatusHooks")
+                .unwrap();
+            assert!(
+                row_bounds.top() > switch_bounds.bottom(),
+                "custom flags should sit below the switches"
+            );
+        }
+        let preview_bounds = window
+            .debug_bounds(Box::leak(
+                format!("AGENT_LAUNCH_COMMAND_{runtime_name}").into_boxed_str(),
+            ))
+            .unwrap();
+        assert!(
+            row_bounds.bottom() <= preview_bounds.top() + px(1.),
+            "custom flags should sit above Command preview"
+        );
+        pane.read_with(&window, |pane, cx| {
+            assert_eq!(
+                pane.launch_copy.read(cx).value(),
+                Some(format!("{}\n  --search", runtime_name.key()).as_str())
+            );
+        })
+        .unwrap();
+    }
+
+    for (locale, expected_note, expected_caption, expected_description) in [
+        (
+            crate::i18n::Locale::English,
+            "Custom flags",
+            "Missions always start in Bypass. A role's own arguments come after custom flags. Changes take effect when a session next starts.",
+            "Added to every Claude Code launch, including role sessions, resumes and forks. Quote a value that contains spaces, as in a shell.",
+        ),
+        (
+            crate::i18n::Locale::SimplifiedChinese,
+            "自定义参数",
+            "任务始终以 Bypass 模式启动。角色自身的参数位于自定义参数之后。更改在会话下次启动时生效。",
+            "添加到每次启动 Claude Code 的命令中，包括角色会话、恢复和分叉。包含空格的参数值请像在 shell 中一样加引号。",
+        ),
+    ] {
+        crate::i18n::testing::with_locale(locale, || {
+            assert_eq!(
+                super::launch::preview_note(&RuntimeCommandNote::CustomFlags).as_ref(),
+                expected_note
+            );
+            assert_eq!(crate::i18n::text("ui.launch_caption"), expected_caption);
+            let description = super::launch::custom_flags_description("Claude Code");
+            assert!(!description.contains("{agent}"), "{description}");
+            assert_eq!(description, expected_description);
+        });
+    }
+}
+
+#[test]
+fn custom_flags_placeholders_are_accepted_for_every_agent() {
+    let mut cx = gpui::TestAppContext::single();
+    let temp = tempfile::tempdir().unwrap();
+    let store = test_store(temp.path(), &mut cx);
+    let client = store.read_with(&cx, |store, _| store.client.clone());
+    for entry in runner_core::protocol::runtime_metadata::runtime_list() {
+        let placeholder = custom_flags_placeholder(entry.name);
+        let result = client
+            .runtime_set_custom_flags(entry.name, placeholder)
+            .unwrap();
+        assert!(
+            result.is_ok(),
+            "placeholder for {} was refused: {result:?}",
+            entry.name
+        );
+    }
+}
+
+#[test]
+fn custom_flags_enter_blur_refusal_and_escape_flow() {
+    use gpui::Focusable as _;
+    crate::i18n::testing::with_locale(crate::i18n::Locale::English, || {
+        let mut cx = gpui::TestAppContext::single();
+        let (_temp, pane) = test_pane(vec![runtime(RuntimeRowState::Detected)], false, &mut cx);
+        let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+        window.update(|win, _| win.activate_window());
+        open_test_page(pane, Runtime::Codex, &mut window);
+        window.run_until_parked();
+
+        // Save valid custom flags on Enter and verify preview + Copy update.
+        pane.update(&mut window, |pane, win, cx| {
+            let field = pane.custom_flags[&Runtime::Codex].clone();
+            field.update(cx, |field, field_cx| {
+                field.focus_handle().focus(win, field_cx);
+                field.reset("--search", field_cx);
+            });
+        })
+        .unwrap();
+        window.simulate_keystrokes("enter");
+        window.run_until_parked();
+        pane.read_with(&window, |pane, cx| {
+            assert_eq!(pane.saved_custom_flags(Runtime::Codex), "--search");
+            assert_eq!(
+                pane.custom_flags[&Runtime::Codex].read(cx).text(),
+                "--search"
+            );
+            assert!(!pane.custom_flags_validation.contains_key(&Runtime::Codex));
+            let preview = pane
+                .launch_previews
+                .get(&(Runtime::Codex, false))
+                .expect("chat preview should refresh");
+            assert!(preview.lines.iter().any(|line| {
+                line.command == "  --search"
+                    && line.note == runner_core::protocol::runtime::RuntimeCommandNote::CustomFlags
+            }));
+            assert!(pane
+                .launch_copy
+                .read(cx)
+                .value()
+                .is_some_and(|text| text.contains("  --search")));
+        })
+        .unwrap();
+
+        // Refused input on blur keeps draft + red error, leaving saved flags & preview intact.
+        pane.update(&mut window, |pane, win, cx| {
+            let field = pane.custom_flags[&Runtime::Codex].clone();
+            field.update(cx, |field, field_cx| {
+                field.focus_handle().focus(win, field_cx);
+                field.reset("--model gpt-5", field_cx);
+            });
+        })
+        .unwrap();
+        window.run_until_parked();
+        pane.update(&mut window, |pane, win, cx| {
+            pane.launch_copy.read(cx).focus_handle(cx).focus(win, cx);
+        })
+        .unwrap();
+        window.run_until_parked();
+        pane.read_with(&window, |pane, cx| {
+            assert_eq!(pane.saved_custom_flags(Runtime::Codex), "--search");
+            assert_eq!(
+                pane.custom_flags[&Runtime::Codex].read(cx).text(),
+                "--model gpt-5"
+            );
+            let validation = pane
+                .custom_flags_validation
+                .get(&Runtime::Codex)
+                .expect("error validation should be set");
+            assert!(validation.is_error());
+            assert_eq!(
+                validation.message().as_deref(),
+                Some("Runner already sets --model.")
+            );
+            let preview = &pane.launch_previews[&(Runtime::Codex, false)];
+            assert!(preview
+                .lines
+                .iter()
+                .any(|line| line.command == "  --search"));
+            assert!(!preview
+                .lines
+                .iter()
+                .any(|line| line.command.contains("gpt-5")));
+        })
+        .unwrap();
+        assert!(window
+            .debug_bounds("AGENT_CUSTOM_FLAGS_MESSAGE_codex")
+            .is_some());
+
+        // Escape restores saved flags and clears the refused draft & error.
+        pane.update(&mut window, |pane, win, cx| {
+            let field = pane.custom_flags[&Runtime::Codex].clone();
+            field.update(cx, |field, field_cx| {
+                field.focus_handle().focus(win, field_cx);
+            });
+        })
+        .unwrap();
+        window.simulate_keystrokes("escape");
+        window.run_until_parked();
+        pane.read_with(&window, |pane, cx| {
+            assert_eq!(
+                pane.custom_flags[&Runtime::Codex].read(cx).text(),
+                "--search"
+            );
+            assert!(!pane.custom_flags_validation.contains_key(&Runtime::Codex));
+        })
+        .unwrap();
+    });
+}
+
+#[test]
+fn custom_flags_reopen_discards_refused_draft_while_staying_keeps_it() {
+    crate::i18n::testing::with_locale(crate::i18n::Locale::English, || {
+        let mut cx = gpui::TestAppContext::single();
+        let codex = runtime(RuntimeRowState::Detected);
+        let mut claude = runtime(RuntimeRowState::Detected);
+        claude.name = Runtime::ClaudeCode;
+        claude.display_name = "Claude Code".into();
+        let (_temp, pane) = test_pane(vec![codex, claude], false, &mut cx);
+        let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+        window.update(|win, _| win.activate_window());
+        open_test_page(pane, Runtime::Codex, &mut window);
+        window.run_until_parked();
+
+        // Save `--search`.
+        pane.update(&mut window, |pane, win, cx| {
+            let field = pane.custom_flags[&Runtime::Codex].clone();
+            field.update(cx, |field, field_cx| {
+                field.focus_handle().focus(win, field_cx);
+                field.reset("--search", field_cx);
+            });
+        })
+        .unwrap();
+        window.simulate_keystrokes("enter");
+        window.run_until_parked();
+
+        // Submit refused `--model gpt-x`; staying on the page + background refresh keeps draft & error.
+        pane.update(&mut window, |pane, win, cx| {
+            let field = pane.custom_flags[&Runtime::Codex].clone();
+            field.update(cx, |field, field_cx| {
+                field.focus_handle().focus(win, field_cx);
+                field.reset("--model gpt-x", field_cx);
+            });
+        })
+        .unwrap();
+        window.simulate_keystrokes("enter");
+        window.run_until_parked();
+        pane.update(&mut window, |pane, _, cx| {
+            pane.refresh(cx);
+        })
+        .unwrap();
+        window.run_until_parked();
+        pane.read_with(&window, |pane, cx| {
+            assert_eq!(pane.saved_custom_flags(Runtime::Codex), "--search");
+            assert_eq!(
+                pane.custom_flags[&Runtime::Codex].read(cx).text(),
+                "--model gpt-x"
+            );
+            assert!(pane
+                .custom_flags_validation
+                .get(&Runtime::Codex)
+                .is_some_and(|v| v.is_error()));
+        })
+        .unwrap();
+
+        // Navigating back to the agent list and reopening Codex restores saved `--search` with no error.
+        pane.update(&mut window, |pane, _, cx| {
+            pane.show_list(cx);
+        })
+        .unwrap();
+        window.run_until_parked();
+        open_test_page(pane, Runtime::Codex, &mut window);
+        window.run_until_parked();
+        pane.read_with(&window, |pane, cx| {
+            assert_eq!(
+                pane.custom_flags[&Runtime::Codex].read(cx).text(),
+                "--search"
+            );
+            assert!(!pane.custom_flags_validation.contains_key(&Runtime::Codex));
+        })
+        .unwrap();
+
+        // Refusing again and switching directly to another agent then back also restores saved flags.
+        pane.update(&mut window, |pane, win, cx| {
+            let field = pane.custom_flags[&Runtime::Codex].clone();
+            field.update(cx, |field, field_cx| {
+                field.focus_handle().focus(win, field_cx);
+                field.reset("--model gpt-x", field_cx);
+            });
+        })
+        .unwrap();
+        window.simulate_keystrokes("enter");
+        window.run_until_parked();
+        pane.update(&mut window, |pane, _, cx| {
+            pane.open_runtime(Runtime::ClaudeCode, cx);
+        })
+        .unwrap();
+        window.run_until_parked();
+        pane.update(&mut window, |pane, _, cx| {
+            pane.open_runtime(Runtime::Codex, cx);
+        })
+        .unwrap();
+        window.run_until_parked();
+        pane.read_with(&window, |pane, cx| {
+            assert_eq!(
+                pane.custom_flags[&Runtime::Codex].read(cx).text(),
+                "--search"
+            );
+            assert!(!pane.custom_flags_validation.contains_key(&Runtime::Codex));
+        })
+        .unwrap();
+    });
+}
+
+#[test]
+fn custom_flags_breadcrumb_click_saves_focused_valid_edit() {
+    use gpui::Focusable as _;
+    use runner_core::protocol::runtime::RuntimeCommandNote;
+
+    crate::i18n::testing::with_locale(crate::i18n::Locale::English, || {
+        let mut cx = gpui::TestAppContext::single();
+        let codex = runtime(RuntimeRowState::Detected);
+        let (_temp, pane) = test_pane(vec![codex], false, &mut cx);
+        let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+        window.update(|win, _| win.activate_window());
+        open_test_page(pane, Runtime::Codex, &mut window);
+        window.run_until_parked();
+
+        // Save initial `--search`.
+        pane.update(&mut window, |pane, win, cx| {
+            let field = pane.custom_flags[&Runtime::Codex].clone();
+            field.update(cx, |field, field_cx| {
+                field.focus_handle().focus(win, field_cx);
+                field.reset("--search", field_cx);
+            });
+        })
+        .unwrap();
+        window.simulate_keystrokes("enter");
+        window.run_until_parked();
+        pane.update(&mut window, |pane, win, cx| {
+            pane.launch_copy.read(cx).focus_handle(cx).focus(win, cx);
+        })
+        .unwrap();
+        window.run_until_parked();
+
+        // Focus and enter a valid dirty edit without pressing Enter or blurring first.
+        let edited = r#"--add-dir "/tmp/extra dir""#;
+        pane.update(&mut window, |pane, win, cx| {
+            let field = pane.custom_flags[&Runtime::Codex].clone();
+            field.update(cx, |field, field_cx| {
+                field.focus_handle().focus(win, field_cx);
+                field.reset(edited, field_cx);
+            });
+        })
+        .unwrap();
+        window.run_until_parked();
+        pane.read_with(&window, |pane, _| {
+            assert!(pane.custom_flags_focused.contains(&Runtime::Codex));
+        })
+        .unwrap();
+
+        // Real click on the Agents breadcrumb leaves the page and commits the valid edit.
+        let breadcrumb = window
+            .debug_bounds("AGENTS_BREADCRUMB")
+            .expect("breadcrumb should render");
+        window.simulate_click(breadcrumb.center(), gpui::Modifiers::default());
+        window.run_until_parked();
+        pane.read_with(&window, |pane, _| {
+            assert_eq!(pane.selected_runtime, None);
+            assert_eq!(pane.saved_custom_flags(Runtime::Codex), edited);
+        })
+        .unwrap();
+
+        // Reopen Codex and confirm both saved value and command preview reflect the committed edit.
+        open_test_page(pane, Runtime::Codex, &mut window);
+        window.run_until_parked();
+        pane.read_with(&window, |pane, cx| {
+            assert_eq!(pane.custom_flags[&Runtime::Codex].read(cx).text(), edited);
+            assert!(!pane.custom_flags_validation.contains_key(&Runtime::Codex));
+            let preview = pane
+                .launch_previews
+                .get(&(Runtime::Codex, false))
+                .expect("chat preview should be loaded");
+            assert!(preview.lines.iter().any(|line| {
+                line.note == RuntimeCommandNote::CustomFlags
+                    && line.command.contains("--add-dir")
+                    && line.command.contains("/tmp/extra dir")
+            }));
+            assert!(pane
+                .launch_copy
+                .read(cx)
+                .value()
+                .is_some_and(|text| text.contains("--add-dir")));
+        })
+        .unwrap();
+
+        // Unsubmitted invalid edit on breadcrumb click is refused and discarded on reopen.
+        pane.update(&mut window, |pane, win, cx| {
+            let field = pane.custom_flags[&Runtime::Codex].clone();
+            field.update(cx, |field, field_cx| {
+                field.focus_handle().focus(win, field_cx);
+                field.reset("--model gpt-x", field_cx);
+            });
+        })
+        .unwrap();
+        window.run_until_parked();
+        let breadcrumb = window
+            .debug_bounds("AGENTS_BREADCRUMB")
+            .expect("breadcrumb should render");
+        window.simulate_click(breadcrumb.center(), gpui::Modifiers::default());
+        window.run_until_parked();
+        open_test_page(pane, Runtime::Codex, &mut window);
+        window.run_until_parked();
+        pane.read_with(&window, |pane, cx| {
+            assert_eq!(pane.saved_custom_flags(Runtime::Codex), edited);
+            assert_eq!(pane.custom_flags[&Runtime::Codex].read(cx).text(), edited);
+            assert!(!pane.custom_flags_validation.contains_key(&Runtime::Codex));
+        })
+        .unwrap();
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn custom_flags_warning_saves_keeps_normal_border_and_recomputes_on_reload() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    crate::i18n::testing::with_locale(crate::i18n::Locale::English, || {
+        let mut cx = gpui::TestAppContext::single();
+        let (temp, pane) = test_pane(vec![runtime(RuntimeRowState::Detected)], false, &mut cx);
+        let script = temp.path().join("fake-codex.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"codex-cli 0.50.0\"; exit 0; fi\necho \"Usage: codex [OPTIONS]\"\necho \"  --search  Enable search\"\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let client = pane
+            .read_with(&cx, |pane, cx| pane.app_store.read(cx).client.clone())
+            .unwrap();
+        let status = client
+            .runtime_set_override(Runtime::Codex, &script.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        pane.update(&mut cx, |pane, _, cx| {
+            pane.apply_status(status, cx);
+        })
+        .unwrap();
+
+        let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+        window.update(|win, _| win.activate_window());
+        open_test_page(pane, Runtime::Codex, &mut window);
+        window.run_until_parked();
+
+        pane.update(&mut window, |pane, win, cx| {
+            let field = pane.custom_flags[&Runtime::Codex].clone();
+            field.update(cx, |field, field_cx| {
+                field.focus_handle().focus(win, field_cx);
+                field.reset("--bogus", field_cx);
+            });
+        })
+        .unwrap();
+        window.simulate_keystrokes("enter");
+        window.run_until_parked();
+
+        pane.read_with(&window, |pane, cx| {
+            assert_eq!(pane.saved_custom_flags(Runtime::Codex), "--bogus");
+            let validation = pane
+                .custom_flags_validation
+                .get(&Runtime::Codex)
+                .expect("amber warning should show");
+            assert!(validation.is_warning());
+            assert!(!validation.is_error());
+            assert_eq!(
+                validation.message().as_deref(),
+                Some("codex --help doesn't list --bogus.")
+            );
+            assert!(!pane.custom_flags[&Runtime::Codex]
+                .read(cx)
+                .validation()
+                .is_error());
+            assert!(pane.launch_previews[&(Runtime::Codex, false)]
+                .lines
+                .iter()
+                .any(|line| line.command == "  --bogus"));
+        })
+        .unwrap();
+        assert!(window
+            .debug_bounds("AGENT_CUSTOM_FLAGS_MESSAGE_codex")
+            .is_some());
+
+        // Reloading after the agent's `--help` gains `--bogus` recomputes and clears the warning.
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"codex-cli 0.51.0\"; exit 0; fi\necho \"Usage: codex [OPTIONS]\"\necho \"  --search  Enable search\"\necho \"  --bogus   Newly added flag\"\n",
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+
+        let _ = client
+            .runtime_set_override(Runtime::Codex, &script.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        pane.update(&mut window, |pane, _, cx| {
+            pane.refresh(cx);
+        })
+        .unwrap();
+        window.run_until_parked();
+
+        pane.read_with(&window, |pane, _| {
+            assert_eq!(pane.saved_custom_flags(Runtime::Codex), "--bogus");
+            assert!(!pane.custom_flags_validation.contains_key(&Runtime::Codex));
+        })
+        .unwrap();
+    });
 }

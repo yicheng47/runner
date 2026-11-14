@@ -120,7 +120,7 @@ pub fn status_list(
             RuntimeExecutableStatus {
                 launch_options: launch_options
                     .get(runtime.name.key())
-                    .copied()
+                    .cloned()
                     .unwrap_or_default(),
                 name: runtime.name,
                 display_name: runtime.display_name.to_string(),
@@ -377,6 +377,7 @@ pub fn refresh_background_discovery(
             return Ok(false);
         }
         state.checking = true;
+        state.versions.clear_help_flags(None);
     }
     events.emit("runtime/changed", &());
     start_background_discovery(events, pool, shell_env, discovery, true, model_runtimes);

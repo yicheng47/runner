@@ -153,11 +153,10 @@ pub fn runtime_launch_options(
         .unwrap_or_default())
 }
 
-pub fn set_runtime_launch_option(
+fn update_runtime_launch_options(
     pool: &DbPool,
     runtime: Runtime,
-    option: runner_core::protocol::runtime::RuntimeLaunchOption,
-    enabled: bool,
+    mutate: impl FnOnce(&mut runner_core::protocol::runtime::RuntimeLaunchOptions),
 ) -> Result<()> {
     let mut conn = pool.get()?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -166,10 +165,8 @@ pub fn set_runtime_launch_option(
             .map(|value| serde_json::from_str(&value))
             .transpose()?
             .unwrap_or_default();
-    options
-        .entry(runtime.key().into())
-        .or_default()
-        .set(option, enabled);
+    let entry = options.entry(runtime.key().into()).or_default();
+    mutate(entry);
     app_state_set(
         &tx,
         RUNTIME_LAUNCH_OPTIONS_KEY,
@@ -177,6 +174,21 @@ pub fn set_runtime_launch_option(
     )?;
     tx.commit()?;
     Ok(())
+}
+
+pub fn set_runtime_launch_option(
+    pool: &DbPool,
+    runtime: Runtime,
+    option: runner_core::protocol::runtime::RuntimeLaunchOption,
+    enabled: bool,
+) -> Result<()> {
+    update_runtime_launch_options(pool, runtime, |entry| entry.set(option, enabled))
+}
+
+pub fn set_runtime_custom_flags(pool: &DbPool, runtime: Runtime, custom_flags: &str) -> Result<()> {
+    update_runtime_launch_options(pool, runtime, |entry| {
+        entry.custom_flags = custom_flags.to_owned();
+    })
 }
 
 pub fn set_runtime_override(pool: &DbPool, runtime: &str, path: Option<&str>) -> Result<()> {

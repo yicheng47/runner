@@ -22,6 +22,7 @@ runner-terminal = { path = "../runner-terminal" }
 runner-core = { path = "../runner-core", features = ["schemars"] }
 log = "0.4"
 md-5 = "0.10"
+shlex = "2"
 sha2 = "0.10"
 futures-util = { version = "0.3", features = ["sink"] }
 rand = "0.8"

@@ -433,6 +433,7 @@ record!(NodeTabUpsertInput {
 });
 variant!(NodeType => Self::Project);
 variant!(ObservationSource => Self::Hook);
+record!(CustomFlagsValidationError { code, message });
 record!(OverrideValidationError { code, message });
 variant!(PermissionMode => Self::Default);
 variant!(Recipients => Self::new(vec!["coder".into(), "qa".into()]));
@@ -1139,12 +1140,19 @@ fn changes_variants_cross_json() {
 
 impl Sample for RuntimeLaunchOptions {
     fn sample() -> Self {
-        Self::default()
+        Self {
+            custom_flags: "--search".into(),
+            ..Self::default()
+        }
     }
 }
 
 variant!(RuntimeLaunchOption => Self::Bypass);
-record!(RuntimeCommandPreview { lines });
+record!(RuntimeCustomFlagsResponse { status, warning });
+record!(RuntimeCommandPreview {
+    lines,
+    custom_flags_warning
+});
 record!(RuntimeCommandLine {
     command,
     note,
@@ -1165,6 +1173,23 @@ fn optional_catalog_account_preserves_older_requests() {
         Request::skill_catalogs { account_id: None }
     ));
     round_trip(Request::usage_set_interval { seconds: 1800 });
+    let old_options: RuntimeLaunchOptions = serde_json::from_value(serde_json::json!({
+        "bypass": true,
+        "remote_plugin_catalog": false,
+        "status_hooks": true
+    }))
+    .unwrap();
+    assert_eq!(old_options.custom_flags, "");
+    assert!(old_options.bypass);
+    assert!(!old_options.remote_plugin_catalog);
+    let old_preview: RuntimeCommandPreview =
+        serde_json::from_value(serde_json::json!({"lines": []})).unwrap();
+    assert_eq!(old_preview.custom_flags_warning, None);
+    let old_response: RuntimeCustomFlagsResponse = serde_json::from_value(serde_json::json!({
+        "status": serde_json::to_value(RuntimeStatusResponse::sample()).unwrap()
+    }))
+    .unwrap();
+    assert_eq!(old_response.warning, None);
 }
 variant!(RuntimeUpdateState => Self::Running);
 record!(RuntimeUpdateTask {

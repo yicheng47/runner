@@ -4,6 +4,7 @@ pub(crate) mod claude_code;
 pub(crate) mod codex;
 pub(crate) mod copilot;
 pub(crate) mod cursor_agent;
+pub(crate) mod custom_flags;
 pub(crate) mod grok;
 mod helpers;
 pub(crate) mod opencode;
@@ -52,7 +53,7 @@ pub(crate) fn status_hooks_enabled(env: &std::collections::BTreeMap<String, Stri
 pub(crate) fn apply_launch_options(
     role: &crate::model::Role,
     mission: bool,
-    options: runner_core::protocol::runtime::RuntimeLaunchOptions,
+    options: &runner_core::protocol::runtime::RuntimeLaunchOptions,
 ) -> crate::model::Role {
     let mut role = role.clone();
     let permissions = for_key(&role.runtime).permissions();

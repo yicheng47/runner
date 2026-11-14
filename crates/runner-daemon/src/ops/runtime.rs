@@ -59,7 +59,7 @@ pub fn runtime_command_preview(
         .ok_or_else(|| Error::msg(format!("unknown runtime: {runtime}")))?;
     let options = crate::db::runtime_launch_options(&state.db)?
         .get(runtime.key())
-        .copied()
+        .cloned()
         .unwrap_or_default();
     let env = state
         .runtime_shell_env
@@ -71,10 +71,21 @@ pub fn runtime_command_preview(
         runtime,
         &command,
         mission,
-        options,
+        &options,
         &state.app_data_dir,
         env,
     );
+    let words = crate::runtimes::custom_flags::parse_lossy(&options.custom_flags);
+    if !words.is_empty() {
+        let listed = crate::runtime_status::versions::probe_help_flags(
+            runtime,
+            &state.db,
+            &state.runtime_shell_env,
+            &state.runtime_discovery,
+        );
+        preview.custom_flags_warning =
+            crate::runtimes::custom_flags::help_flag_warning(runtime, &words, listed.as_ref());
+    }
     if runtime == Runtime::ClaudeCode {
         let accounts = crate::claude_accounts::load(&state.db)?;
         if let Some(account) = accounts.accounts.iter().find(|account| {
@@ -107,6 +118,12 @@ pub fn runtime_set_override(
             message: format!("Unknown runtime: {runtime}."),
         });
     }
+    let previous = crate::runtime_status::versions::installed_command(
+        runtime,
+        &state.db,
+        &state.runtime_shell_env,
+        &state.runtime_discovery,
+    );
     if path.is_empty() {
         crate::db::set_runtime_override(&state.db, runtime.key(), None)
             .map_err(persistence_error)?;
@@ -116,20 +133,91 @@ pub fn runtime_set_override(
             .map_err(persistence_error)?;
         log::info!("runtime override saved: runtime={runtime} path={path}");
     }
+    invalidate_override_help_flags(state, runtime, previous.as_deref());
     state.events.emit("runtime/changed", &());
     request_version_probe(state, runtime);
     runtime_status_list(state).map_err(persistence_error)
+}
+
+pub fn runtime_set_custom_flags(
+    state: &AppCore,
+    runtime: Runtime,
+    raw_flags: &str,
+) -> std::result::Result<
+    runner_core::protocol::runtime::RuntimeCustomFlagsResponse,
+    runner_core::protocol::runtime::CustomFlagsValidationError,
+> {
+    use runner_core::protocol::runtime::{CustomFlagsValidationError, RuntimeCustomFlagsResponse};
+    if crate::runtimes::adapter(runtime).catalog().is_none() {
+        return Err(CustomFlagsValidationError {
+            code: "unknown_runtime".into(),
+            message: format!("Unknown runtime: {runtime}."),
+        });
+    }
+    let (words, warning) =
+        crate::runtimes::custom_flags::validate_save(runtime, raw_flags, || {
+            crate::runtime_status::versions::probe_help_flags(
+                runtime,
+                &state.db,
+                &state.runtime_shell_env,
+                &state.runtime_discovery,
+            )
+        })?;
+    let to_save = if words.is_empty() { "" } else { raw_flags };
+    crate::db::set_runtime_custom_flags(&state.db, runtime, to_save).map_err(|error| {
+        CustomFlagsValidationError {
+            code: "persistence_failed".into(),
+            message: error.to_string(),
+        }
+    })?;
+    log::info!(
+        "runtime custom flags updated: runtime={runtime} empty={} warning={}",
+        to_save.is_empty(),
+        warning.is_some()
+    );
+    state.events.emit("runtime/changed", &());
+    let status = runtime_status_list(state).map_err(|error| CustomFlagsValidationError {
+        code: "persistence_failed".into(),
+        message: error.to_string(),
+    })?;
+    Ok(RuntimeCustomFlagsResponse { status, warning })
 }
 
 pub fn runtime_clear_override(state: &AppCore, runtime: Runtime) -> Result<RuntimeStatusResponse> {
     if crate::runtimes::adapter(runtime).catalog().is_none() {
         return Err(Error::msg(format!("unknown runtime: {runtime}")));
     }
+    let previous = crate::runtime_status::versions::installed_command(
+        runtime,
+        &state.db,
+        &state.runtime_shell_env,
+        &state.runtime_discovery,
+    );
     crate::db::set_runtime_override(&state.db, runtime.key(), None)?;
+    invalidate_override_help_flags(state, runtime, previous.as_deref());
     log::info!("runtime override cleared: runtime={runtime}");
     state.events.emit("runtime/changed", &());
     request_version_probe(state, runtime);
     runtime_status_list(state)
+}
+
+fn invalidate_override_help_flags(state: &AppCore, runtime: Runtime, previous: Option<&str>) {
+    if let Some(command) = previous {
+        crate::runtime_status::versions::clear_help_flags(&state.runtime_discovery, Some(command));
+    }
+    if let Some(current) = crate::runtime_status::versions::installed_command(
+        runtime,
+        &state.db,
+        &state.runtime_shell_env,
+        &state.runtime_discovery,
+    ) {
+        if previous != Some(current.as_str()) {
+            crate::runtime_status::versions::clear_help_flags(
+                &state.runtime_discovery,
+                Some(&current),
+            );
+        }
+    }
 }
 
 fn request_version_probe(state: &AppCore, runtime: Runtime) {
@@ -691,5 +779,103 @@ mod tests {
             .lines
             .iter()
             .any(|line| line.command.starts_with("CLAUDE_CONFIG_DIR=")));
+    }
+
+    #[test]
+    fn custom_flags_validation_save_refusal_warning_and_clear() {
+        let state = crate::test_support::test_core();
+        {
+            let mut discovery = state.runtime_discovery.write().unwrap();
+            discovery.versions.set_help_flags(
+                Runtime::Codex,
+                Some(
+                    ["-c", "--config", "--search", "--add-dir"]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                ),
+            );
+        }
+
+        // Save valid flags -> persisted verbatim, no warning.
+        let initial = r#"--search --add-dir "/tmp/a b""#;
+        let saved = runtime_set_custom_flags(&state, Runtime::Codex, initial).unwrap();
+        assert_eq!(saved.warning, None);
+        let codex = saved
+            .status
+            .runtimes
+            .iter()
+            .find(|r| r.name == Runtime::Codex)
+            .unwrap();
+        assert_eq!(codex.launch_options.custom_flags, initial);
+
+        // Refusal (unclosed quote and reserved flag) keeps previously saved flags untouched.
+        for bad in [
+            "--search \"unclosed",
+            "--model gpt-5",
+            "-c features.remote_plugin=true",
+        ] {
+            assert!(
+                runtime_set_custom_flags(&state, Runtime::Codex, bad).is_err(),
+                "{bad}"
+            );
+            let current = crate::db::runtime_launch_options(&state.db).unwrap();
+            assert_eq!(current["codex"].custom_flags, initial);
+        }
+
+        // Warning still saves and returns warning; preview recomputes it too.
+        let warned = runtime_set_custom_flags(&state, Runtime::Codex, "--serch").unwrap();
+        assert_eq!(
+            warned.warning.as_deref(),
+            Some("codex --help doesn't list --serch.")
+        );
+        let current = crate::db::runtime_launch_options(&state.db).unwrap();
+        assert_eq!(current["codex"].custom_flags, "--serch");
+        let preview = runtime_command_preview(&state, Runtime::Codex, false).unwrap();
+        assert_eq!(
+            preview.custom_flags_warning.as_deref(),
+            Some("codex --help doesn't list --serch.")
+        );
+
+        // Clearing (whitespace/empty) removes the stored flags and warning.
+        let cleared = runtime_set_custom_flags(&state, Runtime::Codex, "   ").unwrap();
+        assert_eq!(cleared.warning, None);
+        let codex = cleared
+            .status
+            .runtimes
+            .iter()
+            .find(|r| r.name == Runtime::Codex)
+            .unwrap();
+        assert_eq!(codex.launch_options.custom_flags, "");
+        let preview = runtime_command_preview(&state, Runtime::Codex, false).unwrap();
+        assert_eq!(preview.custom_flags_warning, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_flags_reads_stderr_from_help_probe_like_agy() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bin = tempfile::tempdir().unwrap();
+        let agy = bin.path().join("agy");
+        std::fs::write(
+            &agy,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"1.0.0\"; exit 0; fi\necho \"  --known-flag  help\" >&2\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&agy, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let state = crate::test_support::test_core();
+        state.runtime_shell_env.write().unwrap().path = Some(bin.path().display().to_string());
+        runtime_set_override(&state, Runtime::Antigravity, agy.to_str().unwrap()).unwrap();
+
+        let ok = runtime_set_custom_flags(&state, Runtime::Antigravity, "--known-flag").unwrap();
+        assert_eq!(ok.warning, None);
+
+        let warned = runtime_set_custom_flags(&state, Runtime::Antigravity, "--unknown").unwrap();
+        assert_eq!(
+            warned.warning.as_deref(),
+            Some("agy --help doesn't list --unknown.")
+        );
     }
 }

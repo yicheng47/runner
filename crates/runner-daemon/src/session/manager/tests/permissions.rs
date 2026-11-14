@@ -909,7 +909,7 @@ fn launch_switches_cover_chat_resume_mission_and_role_permissions() {
             let effective = crate::runtimes::apply_launch_options(
                 &role,
                 false,
-                runner_core::protocol::runtime::RuntimeLaunchOptions {
+                &runner_core::protocol::runtime::RuntimeLaunchOptions {
                     bypass: true,
                     ..Default::default()
                 },
