@@ -752,7 +752,7 @@ fn antigravity_summary_title_updates_attached_terminal_metadata_and_preferred_ti
 }
 
 #[test]
-fn antigravity_daemon_startup_removes_legacy_hooks_folder() {
+fn antigravity_daemon_startup_removes_legacy_hook_files_and_keeps_the_folder() {
     let pool = pool_with_schema();
     let app_data = tempfile::tempdir().unwrap();
     let hooks_root = app_data.path().join("antigravity-hooks");
@@ -765,7 +765,23 @@ fn antigravity_daemon_startup_removes_legacy_hooks_folder() {
     mgr.start_runtime_watchers(app_data.path(), pool, capture())
         .unwrap();
 
-    assert!(!hooks_root.exists());
+    assert!(hooks_root.is_dir());
+    assert!(!agents_dir.exists());
+    assert!(!hooks_root.join("report.sh").exists());
+}
+
+#[test]
+fn antigravity_daemon_startup_restores_a_deleted_legacy_hooks_folder() {
+    let pool = pool_with_schema();
+    let app_data = tempfile::tempdir().unwrap();
+    let hooks_root = app_data.path().join("antigravity-hooks");
+
+    let mgr = mgr_with_fake(None, fake_runtime());
+    mgr.start_runtime_watchers(app_data.path(), pool, capture())
+        .unwrap();
+
+    assert!(hooks_root.is_dir());
+    assert_eq!(std::fs::read_dir(&hooks_root).unwrap().count(), 0);
 }
 
 #[cfg(unix)]
