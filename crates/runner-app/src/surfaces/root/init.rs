@@ -20,7 +20,7 @@ impl NativeRoot {
         let (chat_event_tx, mut chat_event_rx) =
             futures::channel::mpsc::unbounded::<runner_core::protocol::ClientEvent>();
         let mut chat_events = core.subscribe();
-        cx.background_spawn(async move {
+        let chat_events_task = cx.background_spawn(async move {
             loop {
                 match chat_events.recv().await {
                     Ok(event)
@@ -44,9 +44,8 @@ impl NativeRoot {
                     Err(runner_core::protocol::EventError::Closed) => break,
                 }
             }
-        })
-        .detach();
-        cx.spawn_in(window, async move |weak, cx| {
+        });
+        let chat_event_task = cx.spawn_in(window, async move |weak, cx| {
             while let Some(event) = chat_event_rx.next().await {
                 if weak
                     .update_in(cx, |this, window, cx| {
@@ -64,14 +63,13 @@ impl NativeRoot {
                     break;
                 }
             }
-        })
-        .detach();
+        });
 
         let (runtime_event_tx, mut runtime_event_rx) =
             futures::channel::mpsc::unbounded::<runner_core::protocol::ClientEvent>();
         let mut app_events = core.subscribe();
         let runtime_client = core.clone();
-        cx.background_spawn(async move {
+        let runtime_events_task = cx.background_spawn(async move {
             loop {
                 match app_events.recv().await {
                     Ok(event)
@@ -102,9 +100,8 @@ impl NativeRoot {
                     Err(runner_core::protocol::EventError::Closed) => break,
                 }
             }
-        })
-        .detach();
-        cx.spawn_in(window, async move |weak, cx| {
+        });
+        let runtime_event_task = cx.spawn_in(window, async move |weak, cx| {
             while let Some(event) = runtime_event_rx.next().await {
                 let mut events = vec![event];
                 while let Ok(pending) = runtime_event_rx.try_recv() {
@@ -168,8 +165,7 @@ impl NativeRoot {
                     break;
                 }
             }
-        })
-        .detach();
+        });
 
         window.set_rem_size(px(16. * settings.app_zoom));
         let mut tabs = TabSet::from_rows(&nodes);
@@ -430,6 +426,12 @@ impl NativeRoot {
                 this.leave_other_computers_when_signed_out(window, cx);
                 this.handle_app_store_update(cx);
             }),
+            _event_tasks: [
+                chat_events_task,
+                chat_event_task,
+                runtime_events_task,
+                runtime_event_task,
+            ],
         };
         root._appearance_subscription = Some(cx.observe_window_appearance(window, |_, _, cx| {
             cx.notify();

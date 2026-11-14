@@ -1064,7 +1064,10 @@ fn selecting_feed_forgets_the_remembered_session_so_reopening_restores_feed() {
             cx,
         );
     });
-    let visual = cx.add_empty_window();
+    let host = cx.add_window(|_, _| gpui::Empty);
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.run_until_parked();
+    let visual = &mut visual;
     let workspace = visual.update(|window, cx| {
         cx.new(|cx| {
             let mut workspace = MissionWorkspace::new(
@@ -4639,7 +4642,10 @@ fn osc52_visibility_follows_the_mission_terminals_a_window_draws() {
     let mission = store.read_with(&cx, |store, _| {
         runner_daemon::ops::mission::mission_get(&store.test_core, "test-mission").unwrap()
     });
-    let visual = cx.add_empty_window();
+    let host = cx.add_window(|_, _| gpui::Empty);
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.run_until_parked();
+    let visual = &mut visual;
     let workspace = visual.update(|window, cx| {
         cx.new(|cx| {
             let mut workspace = MissionWorkspace::new(
