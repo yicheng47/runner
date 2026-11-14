@@ -31,18 +31,27 @@
 //! 1. Read `agy`'s saved sign-in strictly read-only from Windows Credential
 //!    Manager (`CredReadW` on generic target `"gemini:antigravity"`), falling
 //!    back to `agy`'s disk token files under `.gemini/antigravity-cli` and
-//!    `.gemini` when the keyring entry is absent or marked unavailable.
+//!    `.gemini` (or `ANTIGRAVITY_GEMINI_DIR`) when the keyring entry is absent
+//!    or a `cache/antigravity-keyring-unavailable` marker is fresher than 1 hour.
 //! 2. Reuse the stored `access_token` while unexpired; otherwise refresh it in
 //!    memory against `oauth2.googleapis.com/token` using `agy`'s installed-app
-//!    OAuth client (`gcp` vs `consumer`). Refreshed tokens are kept in memory
-//!    only and are never written back or logged.
+//!    OAuth client (`gcp` vs `consumer`) with `User-Agent: Runner/<version>`.
+//!    Refreshed tokens are kept in memory only and are never written back or
+//!    logged.
 //! 3. POST `v1internal:loadCodeAssist` (to resolve `cloudaicompanionProject`)
-//!    and `v1internal:retrieveUserQuotaSummary` on Cloud Code, mapping groups
-//!    and buckets into `UsageReading` windows.
-//! 4. Missing credentials and OAuth/auth rejections (`4xx != 429` on refresh,
+//!    and `v1internal:retrieveUserQuotaSummary` on Cloud Code with
+//!    `User-Agent: Runner/<version> (antigravity/cli/1.5.9)` (Cloud Code omits
+//!    `cloudaicompanionProject` and rejects quota queries with `403` without the
+//!    `antigravity/cli/...` product token, and omits `Gemini Models` without
+//!    `/cli/`), mapping groups and buckets into `UsageReading` windows.
+//! 4. HTTP clients disable redirects (`Policy::none()`) so bearer or refresh
+//!    secrets are never forwarded, and preserve inherited proxy environment
+//!    variables (`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`) as well as
+//!    Windows system proxy settings.
+//! 5. Missing credentials and OAuth/auth rejections (`4xx != 429` on refresh,
 //!    `401`/`403` after optional in-memory retry) return `UnavailableReason::SignIn`;
-//!    network failures, timeouts, `429`, `5xx`, and unparseable responses
-//!    return `UnavailableReason::AntigravityNoAnswer`.
+//!    network failures, timeouts, `429`, `5xx`, redirects, and unparseable
+//!    responses return `UnavailableReason::AntigravityNoAnswer`.
 
 use crate::shell_path::LoginShellEnv;
 use crate::usage::{parse_timestamp, UnavailableReason, UsageReading, UsageWindow};
@@ -429,6 +438,7 @@ mod cli_probe {
     }
 }
 
+#[cfg(any(not(windows), test))]
 fn looks_like_sign_in(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.contains("not authenticated")
@@ -441,6 +451,7 @@ fn looks_like_sign_in(text: &str) -> bool {
         || lower.contains("authentication required")
 }
 
+#[cfg(any(not(windows), test))]
 pub(crate) fn parse_antigravity_output(
     stdout: &[u8],
 ) -> Result<Vec<UsageWindow>, UnavailableReason> {
@@ -462,6 +473,7 @@ pub(crate) fn parse_antigravity_output(
     Err(UnavailableReason::InvalidResponse)
 }
 
+#[cfg(any(not(windows), test))]
 pub(crate) fn parse_antigravity(value: &Value) -> Result<Vec<UsageWindow>, UnavailableReason> {
     if value.pointer("/command/name").and_then(Value::as_str) != Some("usage") {
         return Err(UnavailableReason::InvalidResponse);
@@ -501,8 +513,8 @@ pub(crate) fn parse_antigravity(value: &Value) -> Result<Vec<UsageWindow>, Unava
         collect_group_windows(
             group_name,
             buckets,
-            ("remaining_fraction", "remainingFraction"),
-            ("reset_time", "resetTime"),
+            &["remaining_fraction"],
+            &["reset_time"],
             false,
             UnavailableReason::InvalidResponse,
             &mut windows,
@@ -518,8 +530,8 @@ pub(crate) fn parse_antigravity(value: &Value) -> Result<Vec<UsageWindow>, Unava
 fn collect_group_windows(
     group_name: &str,
     buckets: &[Value],
-    fraction_keys: (&str, &str),
-    reset_keys: (&str, &str),
+    fraction_keys: &[&str],
+    reset_keys: &[&str],
     skip_disabled: bool,
     invalid_reason: UnavailableReason,
     windows: &mut Vec<UsageWindow>,
@@ -534,9 +546,9 @@ fn collect_group_windows(
         let Some(window_type) = bucket.get("window").and_then(Value::as_str) else {
             continue;
         };
-        let Some(remaining) = bucket
-            .get(fraction_keys.0)
-            .or_else(|| bucket.get(fraction_keys.1))
+        let Some(remaining) = fraction_keys
+            .iter()
+            .find_map(|key| bucket.get(*key))
             .and_then(Value::as_f64)
         else {
             continue;
@@ -545,11 +557,7 @@ fn collect_group_windows(
             return Err(invalid_reason);
         }
         let used_percent = ((1.0 - remaining) * 100.0).clamp(0.0, 100.0);
-        let resets_at = parse_timestamp(
-            bucket
-                .get(reset_keys.0)
-                .or_else(|| bucket.get(reset_keys.1)),
-        );
+        let resets_at = parse_timestamp(reset_keys.iter().find_map(|key| bucket.get(*key)));
         match window_type {
             "5h" => {
                 five_hour = Some(UsageWindow {
@@ -578,18 +586,28 @@ mod direct_quota {
     use super::{
         collect_group_windows, LoginShellEnv, UnavailableReason, UsageReading, UsageWindow,
     };
-    use crate::usage::http_client;
     use base64::Engine as _;
     use chrono::{DateTime, Duration as ChronoDuration, Utc};
-    use reqwest::StatusCode;
+    use reqwest::{Proxy, StatusCode};
     use serde::Deserialize;
     use serde_json::{json, Value};
     use std::path::{Path, PathBuf};
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant, SystemTime};
 
     #[cfg(windows)]
     const WINDOWS_CREDENTIAL_TARGET: &str = "gemini:antigravity";
     const KEYRING_UNAVAILABLE_MARKER: &str = "antigravity-keyring-unavailable";
+    const KEYRING_UNAVAILABLE_TTL: Duration = Duration::from_secs(3600);
+    const RUNNER_USER_AGENT: &str = concat!("Runner/", env!("CARGO_PKG_VERSION"));
+    // Measured against Cloud Code on 2026-11-15: plain `Runner/...` omits
+    // `cloudaicompanionProject` and returns `403 PERMISSION_DENIED` on
+    // `retrieveUserQuotaSummary`, while `(antigravity/<ver>)` without `/cli/`
+    // returns only Claude/GPT and omits `Gemini Models`.
+    const CLOUD_CODE_USER_AGENT: &str = concat!(
+        "Runner/",
+        env!("CARGO_PKG_VERSION"),
+        " (antigravity/cli/1.5.9)"
+    );
     const OAUTH_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
     // Antigravity's installed-app OAuth clients, shipped in every `agy` binary.
     // Per Google's installed-app OAuth guidance, such a client secret is not
@@ -641,20 +659,43 @@ mod direct_quota {
         auth_timeout: Duration,
         usage_timeout: Duration,
     ) -> Result<UsageReading, UnavailableReason> {
-        fetch_with_options(
+        fetch_with_options_with_proxy(
             env,
             auth_timeout,
             usage_timeout,
             None,
+            &|name| std::env::var(name).ok(),
+            true,
             read_windows_default_credential,
         )
     }
 
+    #[cfg(test)]
     pub(super) fn fetch_with_options(
         env: &LoginShellEnv,
         auth_timeout: Duration,
         usage_timeout: Duration,
         override_endpoints: Option<EndpointConfig<'_>>,
+        read_keyring: impl FnOnce() -> Result<Option<String>, ()>,
+    ) -> Result<UsageReading, UnavailableReason> {
+        fetch_with_options_with_proxy(
+            env,
+            auth_timeout,
+            usage_timeout,
+            override_endpoints,
+            &|_| None,
+            false,
+            read_keyring,
+        )
+    }
+
+    pub(super) fn fetch_with_options_with_proxy(
+        env: &LoginShellEnv,
+        auth_timeout: Duration,
+        usage_timeout: Duration,
+        override_endpoints: Option<EndpointConfig<'_>>,
+        process_var: &dyn Fn(&str) -> Option<String>,
+        allow_system_proxy: bool,
         read_keyring: impl FnOnce() -> Result<Option<String>, ()>,
     ) -> Result<UsageReading, UnavailableReason> {
         let mut cred = load_stored_credential(env, read_keyring)?;
@@ -663,7 +704,8 @@ mod direct_quota {
             Some(ov) => (ov.oauth_token_url, ov.cloud_code_url.trim_end_matches('/')),
             None => (OAUTH_TOKEN_URL, oauth.default_cloud_code_url),
         };
-        let client = http_client(env).map_err(|_| UnavailableReason::AntigravityNoAnswer)?;
+        let client = build_http_client_with(env, process_var, allow_system_proxy)
+            .map_err(|_| UnavailableReason::AntigravityNoAnswer)?;
 
         let mut refreshed = false;
         if is_expired_or_missing_access_token(&cred, Utc::now()) {
@@ -740,6 +782,61 @@ mod direct_quota {
             .filter(|s| !s.is_empty())
     }
 
+    fn effective_env_value(
+        env: &LoginShellEnv,
+        process_var: &dyn Fn(&str) -> Option<String>,
+        names: &[&str],
+    ) -> Option<String> {
+        for name in names {
+            if let Some(raw) = env.vars.get(*name) {
+                let trimmed = raw.trim();
+                return (!trimmed.is_empty()).then(|| trimmed.to_owned());
+            }
+        }
+        for name in names {
+            if let Some(raw) = process_var(name) {
+                let trimmed = raw.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_owned());
+                }
+            }
+        }
+        None
+    }
+
+    fn build_http_client_with(
+        env: &LoginShellEnv,
+        process_var: &dyn Fn(&str) -> Option<String>,
+        allow_system_proxy: bool,
+    ) -> Result<reqwest::blocking::Client, reqwest::Error> {
+        let mut builder = reqwest::blocking::Client::builder()
+            .user_agent(RUNNER_USER_AGENT)
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(crate::usage::FETCH_TIMEOUT);
+
+        let all_proxy = effective_env_value(env, process_var, &["ALL_PROXY", "all_proxy"]);
+        let http_url = effective_env_value(env, process_var, &["HTTP_PROXY", "http_proxy"])
+            .or_else(|| all_proxy.clone());
+        let https_url =
+            effective_env_value(env, process_var, &["HTTPS_PROXY", "https_proxy"]).or(all_proxy);
+
+        if http_url.is_some() || https_url.is_some() {
+            builder = builder.no_proxy();
+            let no_proxy = effective_env_value(env, process_var, &["NO_PROXY", "no_proxy"])
+                .and_then(|value| reqwest::NoProxy::from_string(&value));
+            if let Some(url) = http_url {
+                builder = builder.proxy(Proxy::http(url)?.no_proxy(no_proxy.clone()));
+            }
+            if let Some(url) = https_url {
+                builder = builder.proxy(Proxy::https(url)?.no_proxy(no_proxy));
+            }
+        } else if !allow_system_proxy {
+            builder = builder.no_proxy();
+        }
+
+        builder.build()
+    }
+
     pub(super) fn token_storage_paths(env: &LoginShellEnv) -> (Vec<PathBuf>, Vec<PathBuf>) {
         #[cfg(windows)]
         let overridden_home =
@@ -764,18 +861,12 @@ mod direct_quota {
             .map(PathBuf::from)
             .or_else(runner_core::app_paths::home_dir);
 
-        let (cli_dir, gemini_dir) = match (home, cli_override) {
-            (Some(home), cli) => {
-                let gemini_dir = home.join(".gemini");
-                let cli_dir = cli.unwrap_or_else(|| gemini_dir.join("antigravity-cli"));
-                (cli_dir, gemini_dir)
-            }
-            (None, Some(cli_dir)) => {
-                let gemini_dir = cli_dir.parent().unwrap_or(&cli_dir).to_path_buf();
-                (cli_dir, gemini_dir)
-            }
+        let gemini_dir = match (cli_override, home) {
+            (Some(override_dir), _) => override_dir,
+            (None, Some(home)) => home.join(".gemini"),
             (None, None) => return (Vec::new(), Vec::new()),
         };
+        let cli_dir = gemini_dir.join("antigravity-cli");
 
         let markers = vec![
             cli_dir.join("cache").join(KEYRING_UNAVAILABLE_MARKER),
@@ -789,12 +880,25 @@ mod direct_quota {
         (markers, token_files)
     }
 
+    fn marker_is_recent(path: &Path) -> bool {
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return false;
+        };
+        let Ok(modified) = metadata.modified() else {
+            return true;
+        };
+        match SystemTime::now().duration_since(modified) {
+            Ok(age) => age < KEYRING_UNAVAILABLE_TTL,
+            Err(_) => true,
+        }
+    }
+
     pub(super) fn load_stored_credential(
         env: &LoginShellEnv,
         read_keyring: impl FnOnce() -> Result<Option<String>, ()>,
     ) -> Result<StoredCredential, UnavailableReason> {
         let (markers, token_files) = token_storage_paths(env);
-        let keyring_disabled = markers.iter().any(|path| path.exists());
+        let keyring_disabled = markers.iter().any(|path| marker_is_recent(path));
 
         if !keyring_disabled {
             if let Ok(Some(raw)) = read_keyring() {
@@ -1008,6 +1112,7 @@ mod direct_quota {
             let response = client
                 .post(url)
                 .timeout(remaining)
+                .header(reqwest::header::USER_AGENT, CLOUD_CODE_USER_AGENT)
                 .bearer_auth(&cred.access_token)
                 .json(body)
                 .send()
@@ -1092,8 +1197,8 @@ mod direct_quota {
             collect_group_windows(
                 group_name,
                 buckets,
-                ("remainingFraction", "remaining_fraction"),
-                ("resetTime", "reset_time"),
+                &["remainingFraction", "remaining_fraction"],
+                &["resetTime", "reset_time"],
                 true,
                 UnavailableReason::AntigravityNoAnswer,
                 &mut windows,
@@ -1248,6 +1353,15 @@ mod tests {
         );
         assert_eq!(
             parse_antigravity_output(b"not json at all"),
+            Err(UnavailableReason::InvalidResponse)
+        );
+        // Unix CLI output strictly uses snake_case fields (`remaining_fraction` / `reset_time`),
+        // never Cloud Code ProtoJSON camelCase aliases (`remainingFraction` / `resetTime`).
+        assert_eq!(
+            parse_antigravity(&serde_json::json!({
+                "command": {"name": "usage", "data": {"groups": [{"name": "Gemini Models", "buckets": [{"window": "5h", "remainingFraction": 0.5, "resetTime": "2026-11-18T00:00:00Z"}]}]}},
+                "status": "SUCCESS"
+            })),
             Err(UnavailableReason::InvalidResponse)
         );
     }
@@ -1706,13 +1820,14 @@ exit 99
     #[test]
     fn windows_probe_spawns_no_child_process() {
         let dir = tempfile::tempdir().unwrap();
+        let bin_dir = dir.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
         let sentinel = dir.path().join("spawned.txt");
         let fake_agy = dir.path().join("fake-agy.cmd");
-        std::fs::write(
-            &fake_agy,
-            format!("@echo spawned>\"{}\"\r\n", sentinel.display()),
-        )
-        .unwrap();
+        let path_agy = bin_dir.join("agy.cmd");
+        let batch = format!("@echo spawned>\"{}\"\r\n", sentinel.display());
+        std::fs::write(&fake_agy, &batch).unwrap();
+        std::fs::write(&path_agy, &batch).unwrap();
 
         let marker = dir
             .path()
@@ -1730,6 +1845,8 @@ exit 99
         );
         env.vars
             .insert("HOME".into(), dir.path().to_string_lossy().into_owned());
+        env.vars
+            .insert("PATH".into(), bin_dir.to_string_lossy().into_owned());
 
         let result = fetch_antigravity_with_timeouts(
             fake_agy.to_str().unwrap(),
@@ -1740,7 +1857,112 @@ exit 99
         assert_eq!(result, Err(UnavailableReason::SignIn));
         assert!(
             !sentinel.exists(),
-            "Windows usage probe must never spawn agy or any child process"
+            "Windows signed-out probe must never spawn agy or any child process"
+        );
+
+        // Unexpired credential path on disk must also spawn zero processes.
+        let cli_dir = dir.path().join(".gemini").join("antigravity-cli");
+        let token_path = cli_dir.join("antigravity-oauth-token");
+        std::fs::write(
+            &token_path,
+            serde_json::json!({
+                "token": {
+                    "access_token": "unexpired-win-tok",
+                    "refresh_token": "win-refresh",
+                    "expiry": "2099-01-01T00:00:00Z"
+                },
+                "auth_method": "consumer"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (base_url, _rx, server) = spawn_fake_http_server(2, |_, req| {
+            match req.path.as_str() {
+            "/v1internal:loadCodeAssist" => (
+                200,
+                "OK",
+                r#"{"cloudaicompanionProject":"projects/win-p"}"#.into(),
+            ),
+            "/v1internal:retrieveUserQuotaSummary" => (
+                200,
+                "OK",
+                r#"{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"5h","remainingFraction":0.75}]}]}"#.into(),
+            ),
+            other => panic!("unexpected path: {other}"),
+        }
+        });
+        let reading = direct_quota::fetch_with_options_with_proxy(
+            &env,
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+            Some(direct_quota::EndpointConfig {
+                oauth_token_url: &format!("{base_url}/oauth2/token"),
+                cloud_code_url: &base_url,
+            }),
+            &|_| None,
+            false,
+            || Ok(None),
+        )
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(reading.windows.len(), 1);
+        assert!(
+            !sentinel.exists(),
+            "Windows quota fetch must never spawn agy"
+        );
+
+        // Expired token refresh path must also spawn zero processes.
+        std::fs::write(
+            &token_path,
+            serde_json::json!({
+                "token": {
+                    "access_token": "stale-win-tok",
+                    "refresh_token": "win-refresh",
+                    "expiry": "2020-01-01T00:00:00Z"
+                },
+                "auth_method": "consumer"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (base_url, _rx, server) = spawn_fake_http_server(3, |_, req| {
+            match req.path.as_str() {
+            "/oauth2/token" => (
+                200,
+                "OK",
+                r#"{"access_token":"refreshed-win-tok","expires_in":3600}"#.into(),
+            ),
+            "/v1internal:loadCodeAssist" => (
+                200,
+                "OK",
+                r#"{"cloudaicompanionProject":"projects/win-p"}"#.into(),
+            ),
+            "/v1internal:retrieveUserQuotaSummary" => (
+                200,
+                "OK",
+                r#"{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"5h","remainingFraction":0.5}]}]}"#.into(),
+            ),
+            other => panic!("unexpected path: {other}"),
+        }
+        });
+        let reading = direct_quota::fetch_with_options_with_proxy(
+            &env,
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+            Some(direct_quota::EndpointConfig {
+                oauth_token_url: &format!("{base_url}/oauth2/token"),
+                cloud_code_url: &base_url,
+            }),
+            &|_| None,
+            false,
+            || Ok(None),
+        )
+        .unwrap();
+        server.join().unwrap();
+        assert!((reading.windows[0].used_percent - 50.0).abs() < 1e-6);
+        assert!(
+            !sentinel.exists(),
+            "Windows refresh path must never spawn agy"
         );
     }
 
@@ -1763,7 +1985,7 @@ exit 99
 
         // Always use a test-only target name; never touch `"gemini:antigravity"`.
         let target = format!("runner-test:antigravity-usage-{}", std::process::id());
-        let mut wide_target: Vec<u16> = std::ffi::OsStr::new(&target)
+        let wide_target: Vec<u16> = std::ffi::OsStr::new(&target)
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
@@ -1781,10 +2003,11 @@ exit 99
         .to_string();
 
         let write_blob = |bytes: &[u8]| {
+            let mut target_buf = wide_target.clone();
             let mut blob = bytes.to_vec();
             let mut cred: CREDENTIALW = unsafe { std::mem::zeroed() };
             cred.Type = CRED_TYPE_GENERIC;
-            cred.TargetName = wide_target.as_mut_ptr();
+            cred.TargetName = target_buf.as_mut_ptr();
             cred.CredentialBlobSize = blob.len() as u32;
             cred.CredentialBlob = blob.as_mut_ptr();
             cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
@@ -2064,14 +2287,11 @@ exit 99
         let cred = direct_quota::load_stored_credential(&env, || Ok(None)).unwrap();
         assert_eq!(cred.access_token, "disk-cli");
 
-        // Marker skips keyring even if keyring would return a value.
-        std::fs::write(
-            cli_dir
-                .join("cache")
-                .join("antigravity-keyring-unavailable"),
-            "1",
-        )
-        .unwrap();
+        // Recent marker (< 1h) skips keyring even if keyring would return a value.
+        let marker_path = cli_dir
+            .join("cache")
+            .join("antigravity-keyring-unavailable");
+        std::fs::write(&marker_path, "1").unwrap();
         let cred = direct_quota::load_stored_credential(&env, || {
             Ok(Some(
                 r#"{"token":{"access_token":"keyring-tok","refresh_token":"ref-key"}}"#.into(),
@@ -2079,6 +2299,22 @@ exit 99
         })
         .unwrap();
         assert_eq!(cred.access_token, "disk-cli");
+
+        // Stale marker (>= 1h) does not suppress keyring read, and Runner never deletes it.
+        std::fs::File::options()
+            .write(true)
+            .open(&marker_path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(7200))
+            .unwrap();
+        let cred = direct_quota::load_stored_credential(&env, || {
+            Ok(Some(
+                r#"{"token":{"access_token":"keyring-tok","refresh_token":"ref-key"}}"#.into(),
+            ))
+        })
+        .unwrap();
+        assert_eq!(cred.access_token, "keyring-tok");
+        assert!(marker_path.exists());
 
         // Removing primary disk file falls back to legacy standalone token file.
         std::fs::remove_file(&disk_cli).unwrap();
@@ -2172,10 +2408,22 @@ exit 99
             reqs[0].headers.get("authorization").map(String::as_str),
             Some("Bearer unexpired-secret")
         );
-        assert!(reqs[0]
-            .headers
-            .get("user-agent")
-            .is_some_and(|ua| ua.starts_with("Runner/")));
+        assert_eq!(
+            reqs[0].headers.get("user-agent").map(String::as_str),
+            Some(concat!(
+                "Runner/",
+                env!("CARGO_PKG_VERSION"),
+                " (antigravity/cli/1.5.9)"
+            ))
+        );
+        assert_eq!(
+            reqs[1].headers.get("user-agent").map(String::as_str),
+            Some(concat!(
+                "Runner/",
+                env!("CARGO_PKG_VERSION"),
+                " (antigravity/cli/1.5.9)"
+            ))
+        );
         assert_eq!(
             serde_json::from_str::<Value>(&reqs[0].body).unwrap(),
             serde_json::json!({"metadata": {"ideType": "ANTIGRAVITY"}})
@@ -2285,9 +2533,21 @@ exit 99
         let reqs: Vec<_> = rx.try_iter().collect();
         assert_eq!(reqs.len(), 3);
         assert_eq!(reqs[0].path, "/oauth2/token");
+        assert_eq!(
+            reqs[0].headers.get("user-agent").map(String::as_str),
+            Some(concat!("Runner/", env!("CARGO_PKG_VERSION")))
+        );
         assert!(reqs[0].body.contains("grant_type=refresh_token"));
         assert!(reqs[0].body.contains("refresh_token=refresh-secret"));
         assert!(reqs[0].body.contains("client_id=884354919052"));
+        assert_eq!(
+            reqs[1].headers.get("user-agent").map(String::as_str),
+            Some(concat!(
+                "Runner/",
+                env!("CARGO_PKG_VERSION"),
+                " (antigravity/cli/1.5.9)"
+            ))
+        );
         assert_eq!(
             reqs[1].headers.get("authorization").map(String::as_str),
             Some("Bearer fresh-in-memory-token")
@@ -2552,12 +2812,14 @@ exit 99
     fn direct_quota_respects_antigravity_gemini_dir_override() {
         let dir = tempfile::tempdir().unwrap();
         let home_dir = dir.path().join("home");
-        let custom_dir = dir.path().join("custom-cli");
-        std::fs::create_dir_all(&home_dir).unwrap();
+        let real_cli_dir = home_dir.join(".gemini").join("antigravity-cli");
+        let custom_dir = dir.path().join("custom-gemini");
+        std::fs::create_dir_all(&real_cli_dir).unwrap();
         std::fs::create_dir_all(&custom_dir).unwrap();
+        // Real HOME credential must NOT leak when ANTIGRAVITY_GEMINI_DIR is overridden.
         std::fs::write(
-            custom_dir.join("antigravity-oauth-token"),
-            r#"{"access_token":"custom-tok","refresh_token":"custom-ref"}"#,
+            real_cli_dir.join("antigravity-oauth-token"),
+            r#"{"access_token":"real-home-leak","refresh_token":"real-home-ref"}"#,
         )
         .unwrap();
 
@@ -2569,8 +2831,269 @@ exit 99
             custom_dir.to_string_lossy().into_owned(),
         );
 
+        assert_eq!(
+            direct_quota::load_stored_credential(&env, || Ok(None)),
+            Err(UnavailableReason::SignIn)
+        );
+
+        // Supports `<ANTIGRAVITY_GEMINI_DIR>/antigravity-oauth-token`.
+        let flat_tok = custom_dir.join("antigravity-oauth-token");
+        std::fs::write(
+            &flat_tok,
+            r#"{"access_token":"custom-flat","refresh_token":"custom-ref"}"#,
+        )
+        .unwrap();
         let cred = direct_quota::load_stored_credential(&env, || Ok(None)).unwrap();
-        assert_eq!(cred.access_token, "custom-tok");
-        assert_eq!(cred.refresh_token, "custom-ref");
+        assert_eq!(cred.access_token, "custom-flat");
+
+        // Prefers `<ANTIGRAVITY_GEMINI_DIR>/antigravity-cli/antigravity-oauth-token` (agy AppDataDir).
+        let nested_dir = custom_dir.join("antigravity-cli");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        std::fs::write(
+            nested_dir.join("antigravity-oauth-token"),
+            r#"{"access_token":"custom-cli","refresh_token":"custom-ref"}"#,
+        )
+        .unwrap();
+        let cred = direct_quota::load_stored_credential(&env, || Ok(None)).unwrap();
+        assert_eq!(cred.access_token, "custom-cli");
+    }
+
+    #[test]
+    fn direct_quota_does_not_follow_redirects_with_secrets() {
+        use std::io::{ErrorKind, Read, Write};
+        use std::net::TcpListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut env = LoginShellEnv::default();
+        env.vars
+            .insert("HOME".into(), dir.path().to_string_lossy().into_owned());
+
+        let sink_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        sink_listener.set_nonblocking(true).unwrap();
+        let sink_addr = sink_listener.local_addr().unwrap();
+
+        let spawn_redirect_once = |target_location: String| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let handle = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let reply = format!(
+                    "HTTP/1.1 308 Permanent Redirect\r\nLocation: {target_location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(reply.as_bytes());
+                let _ = stream.flush();
+            });
+            (format!("http://{addr}"), handle)
+        };
+
+        // Case 1: /oauth2/token redirect must not forward refresh_token/client_secret.
+        let (redir_oauth, server1) = spawn_redirect_once(format!("http://{sink_addr}/steal-oauth"));
+        assert_eq!(
+            direct_quota::fetch_with_options(
+                &env,
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+                Some(direct_quota::EndpointConfig {
+                    oauth_token_url: &format!("{redir_oauth}/oauth2/token"),
+                    cloud_code_url: &redir_oauth,
+                }),
+                || Ok(Some(
+                    r#"{"access_token":"","refresh_token":"secret-refresh"}"#.into(),
+                )),
+            ),
+            Err(UnavailableReason::AntigravityNoAnswer)
+        );
+        server1.join().unwrap();
+        assert_eq!(
+            sink_listener.accept().unwrap_err().kind(),
+            ErrorKind::WouldBlock
+        );
+
+        // Case 2: Cloud Code redirect must not forward Bearer access_token.
+        let (redir_cloud, server2) =
+            spawn_redirect_once(format!("http://{sink_addr}/steal-bearer"));
+        assert_eq!(
+            direct_quota::fetch_with_options(
+                &env,
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+                Some(direct_quota::EndpointConfig {
+                    oauth_token_url: &format!("{redir_cloud}/oauth2/token"),
+                    cloud_code_url: &redir_cloud,
+                }),
+                || Ok(Some(
+                    r#"{"access_token":"secret-bearer","expiry":"2099-01-01T00:00:00Z"}"#.into(),
+                )),
+            ),
+            Err(UnavailableReason::AntigravityNoAnswer)
+        );
+        server2.join().unwrap();
+        assert_eq!(
+            sink_listener.accept().unwrap_err().kind(),
+            ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn direct_quota_preserves_inherited_proxy_and_no_proxy() {
+        use std::io::{ErrorKind, Read, Write};
+        use std::net::TcpListener;
+
+        let dir = tempfile::tempdir().unwrap();
+        let creds = || {
+            Ok(Some(
+                r#"{"access_token":"proxy-tok","expiry":"2099-01-01T00:00:00Z"}"#.to_owned(),
+            ))
+        };
+        let quota_reply = |path: &str| {
+            if path.ends_with("/v1internal:loadCodeAssist") {
+                (
+                    200,
+                    "OK",
+                    r#"{"cloudaicompanionProject":"projects/p"}"#.into(),
+                )
+            } else {
+                (
+                    200,
+                    "OK",
+                    r#"{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"5h","remainingFraction":0.6}]}]}"#.into(),
+                )
+            }
+        };
+
+        // Case 1: Empty LoginShellEnv still honors inherited HTTP_PROXY.
+        let empty_env = LoginShellEnv::default();
+        let unused_origin = TcpListener::bind("127.0.0.1:0").unwrap();
+        unused_origin.set_nonblocking(true).unwrap();
+        let origin_addr = unused_origin.local_addr().unwrap();
+        let (proxy_url, proxy_rx, proxy_server) =
+            spawn_fake_http_server(2, move |_, req| quota_reply(&req.path));
+        let reading = direct_quota::fetch_with_options_with_proxy(
+            &empty_env,
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+            Some(direct_quota::EndpointConfig {
+                oauth_token_url: &format!("http://{origin_addr}/oauth2/token"),
+                cloud_code_url: &format!("http://{origin_addr}"),
+            }),
+            &|key| (key == "HTTP_PROXY").then(|| proxy_url.clone()),
+            false,
+            creds,
+        )
+        .unwrap();
+        proxy_server.join().unwrap();
+        assert!((reading.windows[0].used_percent - 40.0).abs() < 1e-6);
+        let proxy_reqs: Vec<_> = proxy_rx.try_iter().collect();
+        assert_eq!(proxy_reqs.len(), 2);
+        assert_eq!(
+            proxy_reqs[0].path,
+            format!("http://{origin_addr}/v1internal:loadCodeAssist")
+        );
+        assert_eq!(
+            unused_origin.accept().unwrap_err().kind(),
+            ErrorKind::WouldBlock
+        );
+
+        // Case 2: Inherited NO_PROXY bypasses inherited HTTP_PROXY.
+        let unused_proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+        unused_proxy.set_nonblocking(true).unwrap();
+        let unused_proxy_url = format!("http://{}", unused_proxy.local_addr().unwrap());
+        let (origin_url, origin_rx, origin_server) =
+            spawn_fake_http_server(2, move |_, req| quota_reply(&req.path));
+        let reading = direct_quota::fetch_with_options_with_proxy(
+            &empty_env,
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+            Some(direct_quota::EndpointConfig {
+                oauth_token_url: &format!("{origin_url}/oauth2/token"),
+                cloud_code_url: &origin_url,
+            }),
+            &|key| match key {
+                "HTTP_PROXY" => Some(unused_proxy_url.clone()),
+                "NO_PROXY" => Some("127.0.0.1".into()),
+                _ => None,
+            },
+            false,
+            creds,
+        )
+        .unwrap();
+        origin_server.join().unwrap();
+        assert!((reading.windows[0].used_percent - 40.0).abs() < 1e-6);
+        assert_eq!(origin_rx.try_iter().count(), 2);
+        assert_eq!(
+            unused_proxy.accept().unwrap_err().kind(),
+            ErrorKind::WouldBlock
+        );
+
+        // Case 3: env.vars (including lowercase `http_proxy`) overrides inherited `HTTP_PROXY`.
+        let (override_proxy_url, override_rx, override_server) =
+            spawn_fake_http_server(2, move |_, req| quota_reply(&req.path));
+        let mut env_override = LoginShellEnv::default();
+        env_override
+            .vars
+            .insert("HOME".into(), dir.path().to_string_lossy().into_owned());
+        env_override
+            .vars
+            .insert("http_proxy".into(), override_proxy_url);
+        let reading = direct_quota::fetch_with_options_with_proxy(
+            &env_override,
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+            Some(direct_quota::EndpointConfig {
+                oauth_token_url: &format!("http://{origin_addr}/oauth2/token"),
+                cloud_code_url: &format!("http://{origin_addr}"),
+            }),
+            &|key| (key == "HTTP_PROXY").then(|| "http://127.0.0.1:1".into()),
+            false,
+            creds,
+        )
+        .unwrap();
+        override_server.join().unwrap();
+        assert!((reading.windows[0].used_percent - 40.0).abs() < 1e-6);
+        assert_eq!(override_rx.try_iter().count(), 2);
+
+        // Case 4: Inherited HTTPS_PROXY and ALL_PROXY tunnel HTTPS targets via CONNECT.
+        for var_name in ["HTTPS_PROXY", "ALL_PROXY"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let proxy_addr = listener.local_addr().unwrap();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 1024];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req_line = String::from_utf8_lossy(&buf[..n])
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned();
+                let _ = tx.send(req_line);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+                let _ = stream.flush();
+            });
+
+            let result = direct_quota::fetch_with_options_with_proxy(
+                &empty_env,
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+                Some(direct_quota::EndpointConfig {
+                    oauth_token_url: "https://oauth.example.invalid/token",
+                    cloud_code_url: "https://cloudcode.example.invalid",
+                }),
+                &|key| (key == var_name).then(|| format!("http://{proxy_addr}")),
+                false,
+                creds,
+            );
+            assert_eq!(result, Err(UnavailableReason::AntigravityNoAnswer));
+            server.join().unwrap();
+            let connect_line = rx.recv().unwrap();
+            assert!(
+                connect_line.starts_with("CONNECT cloudcode.example.invalid:443 "),
+                "{var_name} expected CONNECT request, got: {connect_line}"
+            );
+        }
     }
 }
