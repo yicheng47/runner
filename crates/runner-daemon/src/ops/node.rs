@@ -614,7 +614,6 @@ pub fn mark_direct_sessions_viewed(state: &AppCore, session_ids: &[String]) -> R
             }
         }
     }
-    state.sessions.mark_status_viewed(session_ids);
     let now = Utc::now();
     for session_id in session_ids {
         repo::session_attention::mark_viewed(&tx, session_id, &now.to_rfc3339())?;
@@ -626,6 +625,7 @@ pub fn mark_direct_sessions_viewed(state: &AppCore, session_ids: &[String]) -> R
             }
         }
     }
+    state.sessions.mark_status_viewed(session_ids);
     tx.commit()?;
     state.events.emit(
         ATTENTION_CHANGED_EVENT,

@@ -226,7 +226,23 @@ impl Core for DaemonCore {
         let core = self.terminal(session)?;
         core.sessions
             .browser_input(session, channel, bytes)
-            .map_err(failed)
+            .map_err(failed)?;
+        if !bytes.is_empty() {
+            let status = core.sessions.agent_status(session);
+            let needs_viewed = status.unread_since.is_some()
+                || status.error_since.is_some()
+                || ((bytes.contains(&b'\r') || bytes.contains(&b'\n'))
+                    && crate::repo::session_attention::any_unread(
+                        &*core.db.get().map_err(failed)?,
+                        std::slice::from_ref(&session.to_owned()),
+                    )
+                    .map_err(failed)?);
+            if needs_viewed {
+                crate::ops::node::mark_direct_sessions_viewed(&core, &[session.to_owned()])
+                    .map_err(failed)?;
+            }
+        }
+        Ok(())
     }
     fn detach(&self, session: &str, subscriber: u64, channel: u64, release: bool) {
         if let Ok(core) = self.core() {
@@ -1055,5 +1071,105 @@ mod tests {
         assert_eq!(stored_node.position, 4);
         assert_eq!(stored_node.pinned_position, Some(0));
         assert!(overview.tabs.is_empty());
+    }
+
+    #[test]
+    fn input_and_mark_viewed_clear_running_codex_unread_and_subsequent_completion_sets_it_again() {
+        use runner_core::companion::ActionRequest;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let temp = tempfile::tempdir().unwrap();
+        let core = Arc::new(crate::test_support::test_core_in(temp.path().into()));
+        let session_ids = ["s1".to_owned()];
+        {
+            let conn = core.db.get().unwrap();
+            conn.execute(
+                "INSERT INTO sessions(id, status, agent_runtime, agent_command) VALUES ('s1', 'running', 'codex', 'codex')",
+                [],
+            )
+            .unwrap();
+            let layout = serde_json::json!({"preset": "single", "slots": ["s1"], "sizes": {}});
+            repo::node::create_tab(&conn, None, "chat", 0, &layout.to_string()).unwrap();
+        }
+        let events_iface: Arc<dyn crate::session::manager::SessionEvents> =
+            Arc::new(core.session_events());
+        core.sessions
+            .prepare_unlisted_terminal("s1", (80, 24), &core.db, &events_iface)
+            .unwrap();
+        core.sessions
+            .browser_resize("s1", 1, "Runner", 80, 24, true, false, &core.db)
+            .unwrap();
+        core.sessions.test_attach_live("s1", "");
+        let input_rx = core.sessions.record_terminal_input("s1");
+
+        let events = core.session_events();
+        core.sessions.publish_direct_activity(
+            "s1",
+            crate::session::manager::SessionActivityState::Busy,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
+        core.sessions.arm_completion("s1");
+        core.sessions.publish_direct_activity(
+            "s1",
+            crate::session::manager::SessionActivityState::Idle,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
+        assert!(core.sessions.agent_status("s1").unread_since.is_some());
+        assert!(
+            repo::session_attention::any_unread(&core.db.get().unwrap(), &session_ids).unwrap()
+        );
+
+        let backend = DaemonCore(Arc::downgrade(&core));
+        assert!(backend.statuses().unwrap()["s1"].unread);
+        assert!(overview(&core).unwrap().sessions["s1"].status.unread);
+
+        backend.input("s1", 1, b"follow up prompt\r").unwrap();
+        assert_eq!(
+            input_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            b"follow up prompt\r"
+        );
+        assert!(core.sessions.agent_status("s1").unread_since.is_none());
+        assert!(
+            !repo::session_attention::any_unread(&core.db.get().unwrap(), &session_ids).unwrap()
+        );
+        assert!(!backend.statuses().unwrap()["s1"].unread);
+        assert!(!overview(&core).unwrap().sessions["s1"].status.unread);
+
+        core.sessions.publish_direct_activity(
+            "s1",
+            crate::session::manager::SessionActivityState::Busy,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
+        core.sessions.arm_completion("s1");
+        core.sessions.publish_direct_activity(
+            "s1",
+            crate::session::manager::SessionActivityState::Idle,
+            crate::session::state::StatusSource::Test,
+            &events,
+        );
+        assert!(core.sessions.agent_status("s1").unread_since.is_some());
+        assert!(
+            repo::session_attention::any_unread(&core.db.get().unwrap(), &session_ids).unwrap()
+        );
+        assert!(backend.statuses().unwrap()["s1"].unread);
+
+        backend
+            .action(ActionRequest::MarkViewed {
+                id: 1,
+                session: "s1".into(),
+            })
+            .unwrap();
+        assert!(core.sessions.agent_status("s1").unread_since.is_none());
+        assert!(
+            !repo::session_attention::any_unread(&core.db.get().unwrap(), &session_ids).unwrap()
+        );
+        assert!(!backend.statuses().unwrap()["s1"].unread);
+        assert!(!overview(&core).unwrap().sessions["s1"].status.unread);
+
+        core.sessions.drain_terminal_workers();
     }
 }

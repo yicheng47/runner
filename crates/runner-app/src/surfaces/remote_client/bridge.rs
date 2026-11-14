@@ -94,6 +94,19 @@ impl NativeRoot {
         }
         self.remote_client
             .refresh_remote_palette(&self.command_palette, cx);
+        if self.window_active && self.remote_unobstructed() {
+            self.remote_client.mark_remote_sessions_viewed_on_sync(cx);
+        }
+    }
+
+    fn remote_unobstructed(&self) -> bool {
+        !self.remote_client.ui.picker_open && self.start_chat_modal.is_none()
+    }
+
+    pub(crate) fn mark_remote_sessions_viewed_if_unobstructed(&mut self, cx: &mut Context<Self>) {
+        if self.remote_unobstructed() {
+            self.remote_client.mark_remote_sessions_viewed(cx);
+        }
     }
 
     pub(crate) fn select_remote_item(&mut self, item: RemoteItem, cx: &mut Context<Self>) {
@@ -101,7 +114,7 @@ impl NativeRoot {
             self.start_chat_modal = None;
         }
         self.sync_remote_state(cx);
-        self.remote_client.mark_remote_stopped_sessions_viewed(cx);
+        self.remote_client.mark_remote_sessions_viewed(cx);
         cx.notify();
     }
 

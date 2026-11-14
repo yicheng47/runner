@@ -11,6 +11,8 @@ pub struct Fake {
     pub snapshots: AtomicU64,
     overview_calls: AtomicU64,
     overview_gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    status_gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    status_started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     overview_started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     capture_overview_before_gate: AtomicBool,
     fail_overview: AtomicBool,
@@ -48,6 +50,8 @@ impl Default for Fake {
             snapshots: AtomicU64::new(0),
             overview_calls: AtomicU64::new(0),
             overview_gate: Default::default(),
+            status_gate: Default::default(),
+            status_started: Default::default(),
             overview_started: Default::default(),
             capture_overview_before_gate: Default::default(),
             fail_overview: Default::default(),
@@ -178,14 +182,22 @@ impl Core for Fake {
         })
     }
     fn statuses(&self) -> core::Result<BTreeMap<String, SessionStatus>> {
-        Ok(self
+        let snapshot = self
             .overview
             .lock()
             .unwrap()
             .sessions
             .iter()
             .map(|(id, session)| (id.clone(), session.status.clone()))
-            .collect())
+            .collect();
+        let gate = self.status_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            if let Some(started) = self.status_started.lock().unwrap().take() {
+                let _ = started.send(());
+            }
+            gate.recv().unwrap();
+        }
+        Ok(snapshot)
     }
     fn overview(&self) -> core::Result<Overview> {
         self.overview_calls.fetch_add(1, Ordering::Relaxed);
@@ -2701,4 +2713,165 @@ async fn delivery_pacing_keeps_a_quiet_stream_responsive_beside_a_slow_link_floo
         median + Duration::from_millis(200) < baseline,
         "paced {median:?}, unpaced {baseline:?}"
     );
+}
+
+#[tokio::test]
+async fn stale_status_worker_before_attention_changed_cannot_push_stale_unread() {
+    let fake = Arc::new(Fake::default());
+    let id = fake
+        .overview
+        .lock()
+        .unwrap()
+        .sessions
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+    adapter
+        .request(request(serde_json::json!({"type": "overview", "id": 1})))
+        .await
+        .unwrap();
+    assert_eq!(next(&mut adapter).await["type"], "result");
+
+    // Start from `unread = false` so an accepted stale `unread: true` snapshot would
+    // differ from `adapter.statuses` and emit a stale `status` push.
+    fake.overview
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut(&id)
+        .unwrap()
+        .status
+        .unread = true;
+    let (release, gate) = std::sync::mpsc::channel();
+    let (started, ready) = tokio::sync::oneshot::channel();
+    *fake.status_gate.lock().unwrap() = Some(gate);
+    *fake.status_started.lock().unwrap() = Some(started);
+    fake.events.emit("chat/tab-attention-changed", &());
+    adapter.changed().await.unwrap();
+    ready.await.unwrap();
+
+    // Let the status worker finish with its pre-clear `unread: true` snapshot before
+    // draining the queued attention-clear event, then force `finish_status_work` to run
+    // directly as if `tokio::select!` chose the worker arm before `events.recv()`.
+    release.send(()).unwrap();
+    let result = adapter.status_work.as_mut().unwrap().await;
+    fake.overview
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut(&id)
+        .unwrap()
+        .status
+        .unread = false;
+    fake.events.emit("chat/tab-attention-changed", &());
+    adapter.finish_status_work(result).unwrap();
+
+    while adapter.status_work.is_some() {
+        adapter.changed().await.unwrap();
+    }
+    assert!(adapter.next(false).await.unwrap().is_none());
+
+    adapter
+        .request(request(serde_json::json!({"type": "overview", "id": 2})))
+        .await
+        .unwrap();
+    let msg = next(&mut adapter).await;
+    assert_eq!(msg["type"], "result");
+    let overview: runner_core::companion::Overview =
+        serde_json::from_value(msg["result"].clone()).unwrap();
+    assert!(!overview.sessions[&id].status.unread);
+}
+
+#[tokio::test]
+async fn overview_waits_for_newer_status_revision_before_publishing_clean_status() {
+    let fake = Arc::new(Fake::default());
+    let id = fake
+        .overview
+        .lock()
+        .unwrap()
+        .sessions
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    fake.overview
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut(&id)
+        .unwrap()
+        .status
+        .unread = true;
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+    adapter
+        .request(request(serde_json::json!({"type": "overview", "id": 1})))
+        .await
+        .unwrap();
+    assert_eq!(next(&mut adapter).await["type"], "result");
+
+    fake.capture_overview_before_gate
+        .store(true, Ordering::Relaxed);
+    let (release_ov, ov_gate) = std::sync::mpsc::channel();
+    let (ov_started, ov_ready) = tokio::sync::oneshot::channel();
+    *fake.overview_gate.lock().unwrap() = Some(ov_gate);
+    *fake.overview_started.lock().unwrap() = Some(ov_started);
+    adapter
+        .request(request(serde_json::json!({"type": "overview", "id": 2})))
+        .await
+        .unwrap();
+    ov_ready.await.unwrap();
+
+    // Host clears unread while `overview_work` already captured `unread: true`,
+    // and the newer status worker is still in flight.
+    fake.overview
+        .lock()
+        .unwrap()
+        .sessions
+        .get_mut(&id)
+        .unwrap()
+        .status
+        .unread = false;
+    let (release_st, st_gate) = std::sync::mpsc::channel();
+    let (st_started, st_ready) = tokio::sync::oneshot::channel();
+    *fake.status_gate.lock().unwrap() = Some(st_gate);
+    *fake.status_started.lock().unwrap() = Some(st_started);
+    fake.events.emit("chat/tab-attention-changed", &());
+    adapter.changed().await.unwrap();
+    st_ready.await.unwrap();
+
+    release_ov.send(()).unwrap();
+    while adapter.overview_work.is_some() {
+        adapter.changed().await.unwrap();
+    }
+    assert!(adapter.next(true).await.unwrap().is_none());
+    assert!(adapter.pending_overview.is_some());
+    assert!(adapter.status_work.is_some());
+
+    release_st.send(()).unwrap();
+    let mut seen_status_false = false;
+    let mut seen_overview_false = false;
+    for _ in 0..2 {
+        let msg = next(&mut adapter).await;
+        match msg["type"].as_str().unwrap() {
+            "status" => {
+                let status: runner_core::companion::StatusPush =
+                    serde_json::from_value(msg).unwrap();
+                assert_eq!(status.session, id);
+                assert!(!status.status.unread);
+                seen_status_false = true;
+            }
+            "result" => {
+                assert_eq!(msg["id"], 2);
+                let overview: runner_core::companion::Overview =
+                    serde_json::from_value(msg["result"].clone()).unwrap();
+                assert!(!overview.sessions[&id].status.unread);
+                seen_overview_false = true;
+            }
+            other => panic!("unexpected companion message {other}: {msg}"),
+        }
+    }
+    assert!(seen_status_false && seen_overview_false);
+    assert!(adapter.next(false).await.unwrap().is_none());
 }
