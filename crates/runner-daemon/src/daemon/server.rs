@@ -714,6 +714,22 @@ impl ConnectionWindows {
         });
         self.core.broadcast_focus_map();
     }
+
+    fn delivers_event(&self, event: &crate::events::AppEvent) -> bool {
+        if event.name != runner_core::protocol::changes::CHANGES_VIEWED_EVENT {
+            return true;
+        }
+        let Some(checkout_top) = event
+            .payload
+            .get("checkout_top")
+            .and_then(|value| value.as_str())
+        else {
+            return false;
+        };
+        self.core
+            .files
+            .is_client_watching_checkout(self.id, std::path::Path::new(checkout_top))
+    }
 }
 
 async fn read_frame(read: &mut (impl tokio::io::AsyncRead + Unpin)) -> std::io::Result<Frame> {
@@ -953,7 +969,12 @@ async fn connection(
                 Some(frame) = controls.recv() => write_frame(&mut write, frame).await?,
                 event = events.recv() => {
                     let event = match event {
-                        Ok(event) => wire::Event { event: Some(runner_core::protocol::ClientEvent { name: event.name.into(), payload: event.payload }), lagged: None },
+                        Ok(event) => {
+                            if !windows.delivers_event(&event) {
+                                continue;
+                            }
+                            wire::Event { event: Some(runner_core::protocol::ClientEvent { name: event.name.into(), payload: event.payload }), lagged: None }
+                        }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => wire::Event { event: None, lagged: Some(count) },
                         Err(_) => break,
                     };
@@ -1974,5 +1995,254 @@ mod tests {
             .unwrap();
         assert!(matches!(response, Response::node_mark_viewed(Err(_))));
         assert!(core.windows.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn changes_viewed_events_reach_only_clients_watching_that_checkout() {
+        use runner_core::protocol::changes::{ChangesTarget, ChangesViewed, CHANGES_VIEWED_EVENT};
+        use runner_core::protocol::{ClientEvent, EventSubscription, Transport};
+        use std::process::Command;
+
+        fn run_git(dir: &std::path::Path, args: &[&str]) {
+            let out = Command::new("git")
+                .current_dir(dir)
+                .args([
+                    "-c",
+                    "user.name=Runner",
+                    "-c",
+                    "user.email=runner@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        async fn collect_until_barrier(
+            sub: &mut dyn EventSubscription,
+            barrier_value: u64,
+        ) -> Vec<ClientEvent> {
+            let mut viewed = Vec::new();
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let event = sub.recv().await.unwrap();
+                    if event.name == "test/barrier"
+                        && event.payload == serde_json::json!(barrier_value)
+                    {
+                        break;
+                    }
+                    if event.name == CHANGES_VIEWED_EVENT {
+                        viewed.push(event);
+                    }
+                }
+            })
+            .await
+            .expect("barrier event did not arrive in time");
+            viewed
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let repo_a = root.path().join("repo_a");
+        let repo_a_sub = repo_a.join("src");
+        let repo_b = root.path().join("repo_b");
+        std::fs::create_dir_all(&repo_a_sub).unwrap();
+        std::fs::create_dir_all(&repo_b).unwrap();
+
+        run_git(&repo_a, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo_a_sub.join("lib.rs"), "pub fn a() {}\n").unwrap();
+        run_git(&repo_a, &["add", "-A"]);
+        run_git(&repo_a, &["commit", "-q", "-m", "init a"]);
+        std::fs::write(repo_a_sub.join("lib.rs"), "pub fn a() { 1 }\n").unwrap();
+
+        run_git(&repo_b, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo_b.join("b.txt"), "b1\n").unwrap();
+        run_git(&repo_b, &["add", "-A"]);
+        run_git(&repo_b, &["commit", "-q", "-m", "init b"]);
+        std::fs::write(repo_b.join("b.txt"), "b2\n").unwrap();
+
+        let core = crate::test_support::test_core_in(root.path().to_owned());
+        #[cfg(unix)]
+        let endpoint = IpcEndpoint(root.path().join("runnerd.sock"));
+        #[cfg(windows)]
+        let endpoint = IpcEndpoint(std::path::PathBuf::from(format!(
+            r"\\.\pipe\runner-changes-test-{}",
+            root.path().file_name().unwrap().to_string_lossy()
+        )));
+        #[cfg(unix)]
+        let mcp_endpoint = IpcEndpoint(root.path().join("mcp.sock"));
+        #[cfg(windows)]
+        let mcp_endpoint = IpcEndpoint(std::path::PathBuf::from(format!(
+            r"\\.\pipe\runner-changes-mcp-test-{}",
+            root.path().file_name().unwrap().to_string_lossy()
+        )));
+        let config = Config {
+            paths: NativePaths::new(root.path().to_owned(), root.path().join("logs")),
+            endpoint: endpoint.clone(),
+            mcp_endpoint,
+            isolated: true,
+        };
+        let server = tokio::spawn(serve_with_listener(
+            config,
+            core.clone(),
+            "hash".into(),
+            Settings {
+                resume_on_launch: false,
+                ..Settings::default()
+            },
+            IpcListener::bind(&endpoint).unwrap(),
+            #[cfg(windows)]
+            Err(std::io::Error::other("no shutdown window in tests")),
+        ));
+
+        let connect = |ep: IpcEndpoint| {
+            tokio::task::spawn_blocking(move || {
+                runner_core::protocol::socket::SocketTransport::connect(
+                    &ep,
+                    wire::Hello {
+                        exe_sha256: "hash".into(),
+                        client: "test".into(),
+                    },
+                )
+                .unwrap()
+            })
+        };
+        let watcher_top = connect(endpoint.clone()).await.unwrap();
+        let watcher_sub = connect(endpoint.clone()).await.unwrap();
+        let watcher_b = connect(endpoint.clone()).await.unwrap();
+        let unwatched = connect(endpoint).await.unwrap();
+
+        let mut sub_top = watcher_top.subscribe();
+        let mut sub_sub = watcher_sub.subscribe();
+        let mut sub_b = watcher_b.subscribe();
+        let mut sub_unwatched = unwatched.subscribe();
+
+        {
+            let client = watcher_top.client();
+            let path = repo_a.clone();
+            tokio::task::spawn_blocking(move || client.files_watch(&path).unwrap())
+                .await
+                .unwrap();
+        }
+        {
+            let client = watcher_sub.client();
+            let path = repo_a_sub.clone();
+            tokio::task::spawn_blocking(move || client.files_watch(&path).unwrap())
+                .await
+                .unwrap();
+        }
+        {
+            let client = watcher_b.client();
+            let path = repo_b.clone();
+            tokio::task::spawn_blocking(move || client.files_watch(&path).unwrap())
+                .await
+                .unwrap();
+        }
+
+        // Phase 1: marking in repo_a reaches top watcher and subtree watcher only.
+        {
+            let client = unwatched.client();
+            let path = repo_a.clone();
+            tokio::task::spawn_blocking(move || {
+                client
+                    .changes_set_viewed(
+                        &path,
+                        &ChangesTarget::Uncommitted,
+                        "src/lib.rs",
+                        None,
+                        None,
+                        true,
+                    )
+                    .unwrap();
+            })
+            .await
+            .unwrap();
+        }
+        core.events.emit("test/barrier", &1u64);
+
+        let top_events = collect_until_barrier(&mut *sub_top, 1).await;
+        let sub_events = collect_until_barrier(&mut *sub_sub, 1).await;
+        let b_events = collect_until_barrier(&mut *sub_b, 1).await;
+        let unwatched_events = collect_until_barrier(&mut *sub_unwatched, 1).await;
+
+        assert_eq!(top_events.len(), 1);
+        assert_eq!(sub_events.len(), 1);
+        assert!(b_events.is_empty());
+        assert!(unwatched_events.is_empty());
+        let decoded: ChangesViewed = serde_json::from_value(sub_events[0].payload.clone()).unwrap();
+        assert_eq!(decoded.path, "src/lib.rs");
+        assert!(decoded.viewed);
+
+        // Phase 2: after top unwatches, only watcher_sub gets repo_a; watcher_b only gets repo_b.
+        {
+            let client = watcher_top.client();
+            let path = repo_a.clone();
+            tokio::task::spawn_blocking(move || client.files_unwatch(&path).unwrap())
+                .await
+                .unwrap();
+        }
+        {
+            let client = unwatched.client();
+            let path_a = repo_a.clone();
+            let path_b = repo_b.clone();
+            tokio::task::spawn_blocking(move || {
+                client
+                    .changes_set_viewed(
+                        &path_a,
+                        &ChangesTarget::Uncommitted,
+                        "src/lib.rs",
+                        None,
+                        None,
+                        false,
+                    )
+                    .unwrap();
+                client
+                    .changes_set_viewed(
+                        &path_b,
+                        &ChangesTarget::Uncommitted,
+                        "b.txt",
+                        None,
+                        None,
+                        true,
+                    )
+                    .unwrap();
+            })
+            .await
+            .unwrap();
+        }
+        core.events.emit("test/barrier", &2u64);
+
+        let top_events_2 = collect_until_barrier(&mut *sub_top, 2).await;
+        let sub_events_2 = collect_until_barrier(&mut *sub_sub, 2).await;
+        let b_events_2 = collect_until_barrier(&mut *sub_b, 2).await;
+        let unwatched_events_2 = collect_until_barrier(&mut *sub_unwatched, 2).await;
+
+        assert!(top_events_2.is_empty());
+        assert!(unwatched_events_2.is_empty());
+        assert_eq!(sub_events_2.len(), 1);
+        assert_eq!(b_events_2.len(), 1);
+        let sub_decoded: ChangesViewed =
+            serde_json::from_value(sub_events_2[0].payload.clone()).unwrap();
+        assert_eq!(sub_decoded.path, "src/lib.rs");
+        assert!(!sub_decoded.viewed);
+        let b_decoded: ChangesViewed =
+            serde_json::from_value(b_events_2[0].payload.clone()).unwrap();
+        assert_eq!(b_decoded.path, "b.txt");
+        assert!(b_decoded.viewed);
+
+        drop((sub_top, sub_sub, sub_b, sub_unwatched));
+        watcher_b.shutdown(true).unwrap();
+        tokio::time::timeout(SHUTDOWN_TIMEOUT * 2, server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        drop((watcher_top, watcher_sub, watcher_b, unwatched));
     }
 }

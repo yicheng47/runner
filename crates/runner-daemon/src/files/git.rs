@@ -70,7 +70,7 @@ impl Git {
         })
     }
 
-    fn command(&self, dir: &Path) -> Command {
+    pub(super) fn command(&self, dir: &Path) -> Command {
         let mut command = Command::new(&self.exe);
         command
             .current_dir(dir)
@@ -90,7 +90,7 @@ impl Git {
         command
     }
 
-    fn run(&self, dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    pub(super) fn run(&self, dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
         let output = self
             .command(dir)
             .args(args)

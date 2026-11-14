@@ -3,6 +3,7 @@
 //! client can later be served the same way. Every path a client sends is a
 //! root plus a path inside it, checked by [`fs::resolve`].
 
+pub mod changes;
 pub mod fs;
 pub mod git;
 pub mod root;
@@ -158,11 +159,13 @@ impl Drop for FinishRun<'_> {
 pub struct PreparedWatch {
     git: Option<Git>,
     root_canonical: PathBuf,
+    checkout_top: Option<PathBuf>,
 }
 
 struct Watched {
     /// Subscriptions per client connection; one client can watch a root twice.
     subscribers: HashMap<u64, usize>,
+    checkout_top: Option<PathBuf>,
     _watch: watch::RootWatch,
 }
 
@@ -173,6 +176,7 @@ pub struct FilesService {
     worktree_list_without_z: Arc<AtomicBool>,
     status_runs: Arc<StatusRuns>,
     watches: Mutex<HashMap<PathBuf, Watched>>,
+    pub(crate) changes_viewed: changes::ViewedMarks,
     /// Holds the next [`Self::prepare_watch`]: it reports on the first and
     /// waits on the second.
     #[cfg(test)]
@@ -196,6 +200,7 @@ impl FilesService {
             worktree_list_without_z: Default::default(),
             status_runs: Default::default(),
             watches: Default::default(),
+            changes_viewed: Default::default(),
             #[cfg(test)]
             watch_gate: Default::default(),
         }
@@ -275,9 +280,17 @@ impl FilesService {
             release.recv().unwrap();
         }
         fs::check_root(root)?;
+        let git = self.git();
+        let root_canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let checkout_top = git
+            .as_ref()
+            .and_then(|git| git.rev_parse(root))
+            .map(|repo| repo.top)
+            .or_else(|| git::checkout_top(&root_canonical).map(|(top, _)| top));
         Ok(PreparedWatch {
-            git: self.git(),
-            root_canonical: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
+            git,
+            root_canonical,
+            checkout_top,
         })
     }
 
@@ -290,6 +303,7 @@ impl FilesService {
             *watched.subscribers.entry(client).or_default() += 1;
             return Ok(());
         }
+        let checkout_top = prepared.checkout_top.clone();
         let watch = watch::RootWatch::spawn(
             root.clone(),
             prepared,
@@ -300,6 +314,7 @@ impl FilesService {
             root,
             Watched {
                 subscribers: HashMap::from([(client, 1)]),
+                checkout_top,
                 _watch: watch,
             },
         );
@@ -328,6 +343,14 @@ impl FilesService {
             watched.subscribers.remove(&client);
             !watched.subscribers.is_empty()
         });
+    }
+
+    /// Whether `client` holds an active watch on any folder inside `checkout_top`.
+    pub fn is_client_watching_checkout(&self, client: u64, checkout_top: &Path) -> bool {
+        self.watches.lock().unwrap().values().any(|watched| {
+            watched.subscribers.contains_key(&client)
+                && watched.checkout_top.as_deref() == Some(checkout_top)
+        })
     }
 
     /// Holds the next watch's preparation until the returned sender is used;
@@ -447,6 +470,8 @@ pub fn recent_folders(core: &crate::AppCore) -> Result<Vec<PathBuf>> {
 pub fn read(root: &Path, path: &str, want_bytes: bool) -> Result<FileContent> {
     fs::read(root, path, want_bytes)
 }
+
+pub use changes::{changes_commits, changes_diff, changes_files, changes_set_viewed};
 
 #[cfg(test)]
 pub(crate) mod fixture {
