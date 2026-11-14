@@ -472,6 +472,41 @@ record!(MissionWarningSnapshot {
     message,
     payload
 });
+variant!(MissionControlLane => Self::Backlog);
+variant!(MissionControlSourceKind => Self::Ticket);
+record!(MissionControlEvidence { kind, path });
+record!(MissionControlFieldProvenance { field, evidence });
+record!(MissionControlSourceHealth {
+    kind,
+    path,
+    warning
+});
+record!(MissionControlMission {
+    id,
+    title,
+    active_slots,
+    pending_question,
+    newest_handoff,
+    branch,
+    worktree
+});
+record!(MissionControlCard {
+    ticket_id,
+    summary,
+    severity,
+    blockers,
+    triage_state,
+    lane,
+    mission,
+    evidence,
+    provenance
+});
+record!(MissionControlSnapshot {
+    project_id,
+    project_path,
+    cards,
+    health
+});
 record!(MissionStart {
     crew_id,
     scope,

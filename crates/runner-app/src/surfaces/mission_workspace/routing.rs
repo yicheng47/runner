@@ -79,7 +79,8 @@ impl NativeRoot {
             | AppRoute::Crews
             | AppRoute::NewCrew
             | AppRoute::CrewEditor(_)
-            | AppRoute::Usage => Some(RuntimeLocation::Entity(self.route.clone())),
+            | AppRoute::Usage
+            | AppRoute::MissionControl => Some(RuntimeLocation::Entity(self.route.clone())),
             _ => None,
         };
         let Some(location) = location else {
@@ -174,6 +175,14 @@ impl NativeRoot {
             AppRoute::NewCrew => self.open_create_crew(window, cx),
             AppRoute::CrewEditor(id) => self.open_crew_editor(id, window, cx),
             AppRoute::Mission(id) => self.open_mission(id, window, cx),
+            AppRoute::MissionControl => {
+                self.set_route(AppRoute::MissionControl, cx);
+                if let Some(project_id) = self.active_project_id(cx) {
+                    self.refresh_mission_control(project_id, cx);
+                }
+                window.focus(&self.root_focus, cx);
+                cx.notify();
+            }
             route => {
                 self.set_route(route, cx);
                 window.focus(&self.root_focus, cx);

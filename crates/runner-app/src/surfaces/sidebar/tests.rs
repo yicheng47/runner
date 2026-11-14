@@ -833,12 +833,14 @@ fn workspace_new_tab_is_selected_on_the_launcher_page() {
             WorkspaceEntry::Role,
             WorkspaceEntry::Crew,
             WorkspaceEntry::Usage,
+            WorkspaceEntry::MissionControl,
         ]
     );
     assert!(WorkspaceEntry::NewTab.selected(&AppRoute::Launcher));
     assert!(!WorkspaceEntry::NewTab.selected(&AppRoute::Roles));
     assert!(!WorkspaceEntry::NewTab.selected(&AppRoute::Crews));
     assert!(!WorkspaceEntry::NewTab.selected(&AppRoute::Settings));
+    assert!(WorkspaceEntry::MissionControl.selected(&AppRoute::MissionControl));
 }
 
 #[test]

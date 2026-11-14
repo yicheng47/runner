@@ -138,12 +138,26 @@ pub(super) fn unavailable_line(
 }
 
 pub(super) fn weekly_usage_percent(runtime: Runtime, usage: Option<&AgentUsage>) -> Option<f64> {
+    if crate::runtime_ui::runtime_ui(runtime).usage_groups {
+        return usage?
+            .windows
+            .iter()
+            .filter(|window| is_weekly_pool_window(&window.name))
+            .map(|window| window.used_percent)
+            .reduce(f64::max);
+    }
     let name = crate::runtime_ui::runtime_ui(runtime).usage_week;
     usage?
         .windows
         .iter()
         .find(|window| window.name == name)
         .map(|window| window.used_percent)
+}
+
+fn is_weekly_pool_window(name: &str) -> bool {
+    let label = name.split_once(" · ").map_or(name, |(_, label)| label);
+    let label = label.strip_suffix(" used").unwrap_or(label);
+    label == "Week"
 }
 
 /// The runtimes the usage footer and popover show: usage-capable, installed and
