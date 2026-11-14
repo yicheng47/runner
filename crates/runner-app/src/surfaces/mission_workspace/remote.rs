@@ -2,7 +2,7 @@ use super::*;
 use crate::surfaces::front_page::model::{
     MissionMemberDisplay, MissionMemberSession, WorkspaceMission,
 };
-use crate::surfaces::front_page::FrontPageClient;
+use crate::surfaces::front_page::{FrontPageClient, FrontPageTarget};
 use crate::surfaces::remote_client::{feed::MissionFeed, model::ClientState};
 use runner_core::companion::{FeedContent, FeedEntry, MissionState, Overview};
 
@@ -11,8 +11,44 @@ struct SavedPresentation {
     layout: MissionLayout,
     active: MissionTab,
     open_handles: Vec<String>,
+    known_handles: Vec<String>,
     selected_handle: Option<String>,
     rail: crate::surfaces::side_panel::OpenSurfaces,
+}
+
+fn reconcile_handles(
+    open_handles: &mut Vec<String>,
+    known_handles: &mut Vec<String>,
+    members: &[&str],
+) {
+    open_handles.retain(|handle| members.iter().any(|member| *member == handle));
+    known_handles.retain(|handle| members.iter().any(|member| *member == handle));
+    for &handle in members {
+        if !known_handles.iter().any(|known| known == handle) {
+            known_handles.push(handle.to_owned());
+            if !open_handles.iter().any(|open| open == handle) {
+                open_handles.push(handle.to_owned());
+            }
+        }
+    }
+}
+
+fn same_host(left: &FrontPageTarget, right: &FrontPageTarget) -> bool {
+    match (left, right) {
+        (
+            FrontPageTarget::Remote {
+                computer: left_computer,
+                fingerprint: left_fingerprint,
+                ..
+            },
+            FrontPageTarget::Remote {
+                computer: right_computer,
+                fingerprint: right_fingerprint,
+                ..
+            },
+        ) => left_computer == right_computer && left_fingerprint == right_fingerprint,
+        _ => left == right,
+    }
 }
 
 pub(super) struct RemoteMission {
@@ -77,8 +113,13 @@ impl MissionWorkspace {
                     .map(|member| member.handle.clone())
             })
             .collect::<Vec<_>>();
+        let mut known_handles = previous
+            .iter()
+            .map(|member| member.handle.clone())
+            .collect::<Vec<_>>();
         let changed = self.mission_id != mission_id;
         let target_changed = self.client.target != client.target;
+        let host_changed = !same_host(&self.client.target, &client.target);
         if changed || target_changed {
             let had_dialog = self.rename_modal.is_some()
                 || self.stop_all_confirm
@@ -90,15 +131,19 @@ impl MissionWorkspace {
             self.remove_confirm = None;
             self.presentation.reset_dialog_focus(had_dialog);
         }
+        if host_changed {
+            self.presentation.clear_presentations();
+        }
         let mut restored = false;
         if changed {
             let saved = self.presentation.switch_mission(
-                self.mission_id.as_deref(),
+                self.mission_id.as_deref().filter(|_| !host_changed),
                 mission_id.as_deref(),
                 SavedPresentation {
                     layout: self.layout.clone(),
                     active: self.active_tab.clone(),
                     open_handles: open_handles.clone(),
+                    known_handles: known_handles.clone(),
                     selected_handle: None,
                     rail: self.rail_surfaces.open.clone(),
                 },
@@ -111,6 +156,7 @@ impl MissionWorkspace {
                     self.rail_surfaces.open = saved.rail;
                     self.presentation.set_selected_handle(saved.selected_handle);
                     open_handles = saved.open_handles;
+                    known_handles = saved.known_handles;
                     restored = true;
                 }
             } else {
@@ -142,7 +188,16 @@ impl MissionWorkspace {
                 .map(|member| member.session.id.clone())
                 .collect()
         } else {
-            let mut tabs = open_handles
+            let handles = members
+                .iter()
+                .map(|member| member.handle.as_str())
+                .collect::<Vec<_>>();
+            if self.remote_summary().is_some() {
+                reconcile_handles(&mut open_handles, &mut known_handles, &handles);
+            } else {
+                open_handles.clear();
+            }
+            open_handles
                 .iter()
                 .filter_map(|handle| {
                     members
@@ -150,16 +205,7 @@ impl MissionWorkspace {
                         .find(|member| &member.handle == handle)
                         .map(|member| member.session.id.clone())
                 })
-                .collect::<Vec<_>>();
-            if !changed {
-                tabs.extend(
-                    members
-                        .iter()
-                        .filter(|member| !previous.iter().any(|old| old.handle == member.handle))
-                        .map(|member| member.session.id.clone()),
-                );
-            }
-            tabs
+                .collect()
         };
         if let MissionTab::Session(id) = &self.active_tab {
             if !members.iter().any(|member| &member.session.id == id) {
@@ -784,13 +830,36 @@ impl MissionPresentation {
         self.remote_mut()
             .is_some_and(|remote| std::mem::take(&mut remote.dialog_focus_reset))
     }
-    fn update_overview(&mut self, overview: Option<Overview>, changed: bool) {
+    fn clear_presentations(&mut self) {
         if let Some(remote) = self.remote_mut() {
-            if changed {
-                remote.reset_actions();
-            }
-            remote.overview = overview;
+            remote.presentations.clear();
         }
+    }
+    fn update_overview(&mut self, overview: Option<Overview>, changed: bool) {
+        let Some(remote) = self.remote_mut() else {
+            return;
+        };
+        if changed {
+            remote.reset_actions();
+        }
+        if let Some(overview) = overview.as_ref() {
+            for (mission_id, saved) in &mut remote.presentations {
+                let Some(mission) = overview
+                    .missions
+                    .iter()
+                    .find(|mission| &mission.id == mission_id)
+                else {
+                    continue;
+                };
+                let handles = mission
+                    .members
+                    .iter()
+                    .map(|member| member.handle.as_str())
+                    .collect::<Vec<_>>();
+                reconcile_handles(&mut saved.open_handles, &mut saved.known_handles, &handles);
+            }
+        }
+        remote.overview = overview;
     }
     fn sync_drawer(&mut self, mission_id: Option<&str>, layout: &mut MissionLayout) {
         let Some(summary) = self.summary(mission_id).cloned() else {
