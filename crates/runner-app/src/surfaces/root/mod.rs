@@ -273,6 +273,7 @@ pub(crate) struct NativeRoot {
     pub(crate) window_label: String,
     pub(crate) log_dir: PathBuf,
     pub(crate) closing: bool,
+    pub(crate) window_active: bool,
     pub(crate) app_store: Entity<AppStore>,
     pub(crate) store_revisions: StoreRevisions,
     pub(crate) tabs: TabSet,

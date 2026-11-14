@@ -51,6 +51,7 @@ pub(crate) struct RemoteWindow {
     // Archive can push an empty pane before the collapsed tree arrives.
     pub(crate) closing_layouts: HashMap<String, PaneLayout>,
     pub(crate) actions_pending: HashSet<String>,
+    pub(crate) sync_viewed_epochs: HashMap<String, u64>,
     pub(crate) action_error: Option<String>,
     pub(crate) shell_placement: super::actions::ShellPlacement,
     pub(crate) catalog: Option<runner_core::companion::Catalog>,
@@ -385,6 +386,7 @@ impl RemoteClient {
             pane_bounds: HashMap::new(),
             layout_hints: HashMap::new(),
             actions_pending: HashSet::new(),
+            sync_viewed_epochs: HashMap::new(),
             closing_layouts: HashMap::new(),
             action_error: None,
             shell_placement: Arc::new(Mutex::new(None)),

@@ -347,6 +347,7 @@ impl RemoteClient {
         id: &str,
         cx: &mut Context<NativeRoot>,
     ) {
+        self.mark_remote_sessions_viewed(cx);
         let Some(remote) = self.workspace.as_mut() else {
             return;
         };

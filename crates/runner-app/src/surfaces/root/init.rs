@@ -307,6 +307,7 @@ impl NativeRoot {
             window_label: window_label.clone(),
             log_dir,
             closing: false,
+            window_active: window.is_window_active(),
             app_store: app_store.clone(),
             store_revisions,
             tabs,

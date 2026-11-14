@@ -360,6 +360,7 @@ impl NativeRoot {
             if let Some(layout) = self.front_page_layout_mut() {
                 layout.focus_pane(pane_id);
             }
+            self.remote_client.mark_remote_sessions_viewed(cx);
             cx.notify();
             return;
         }
