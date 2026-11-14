@@ -67,6 +67,8 @@ Linux development uses `make run` and the same Cargo commands. See [Linux develo
 
 Prefer the smallest check that covers the change. For native UI changes, run the `runner-app` tests plus workspace clippy; for core behavior, run the relevant crate tests.
 
+Local validation uses `cargo test` (`make test` or scoped `cargo test -p <crate>`); skip `cargo nextest` locally unless reproducing a CI-specific failure (Jason, 2026-11-14). When multiple missions or worktrees are active on the same machine, run workspace-wide or heavy test suites one at a time across them rather than concurrently so daemon-spawning tests do not contend or time out.
+
 ## Test Scope
 
 Feature validation covers the behavior changed by the diff and regressions directly affected by it. Before testing, list the changed behaviors and selected checks, with a concrete reason connecting each check to the change. Select relevant cases from the [live regression suite](docs/tests/regression/README.md) and add feature-specific checks; do not run the whole suite for an ordinary feature. Unchanged IME, agent runtimes, authentication, session lifecycle and other shared behavior are not automatic feature checks merely because the tested UI contains them. For a card-padding change, for example, verify terminal backgrounds and selection stay inside the card; add IME checks only if the change affects input or composition positioning.
