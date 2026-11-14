@@ -8,16 +8,16 @@ Use [Full smoke test procedure](../full-smoke-test.md) for authorization, candid
 
 | Area | File | Cases | Smoke | Additional full |
 | --- | --- | ---: | ---: | ---: |
-| Runtime lifecycle, conversation identity, status and hooks | [runtimes.md](runtimes.md) | 55 | 10 | 45 |
-| Native terminal rendering, input, resize, history, find, clipboard and settings | [terminal.md](terminal.md) | 47 | 5 | 42 |
-| Windows, tabs, panes, sidebar and its Active view, cwd, drawers and side panel files | [workspace.md](workspace.md) | 56 | 6 | 50 |
-| Crews, missions, membership, delivery, asks, feed, linked chats and reports | [missions.md](missions.md) | 50 | 5 | 45 |
+| Runtime lifecycle, conversation identity, status and hooks | [runtimes.md](runtimes.md) | 59 | 10 | 49 |
+| Native terminal rendering, input, resize, history, find, clipboard and settings | [terminal.md](terminal.md) | 48 | 5 | 43 |
+| Windows, tabs, panes, sidebar and its Active view, cwd, drawers and side panel files | [workspace.md](workspace.md) | 57 | 6 | 51 |
+| Crews, missions, membership, delivery, asks, feed, linked chats and reports | [missions.md](missions.md) | 53 | 5 | 48 |
 | Quit, daemon lifetime, reconnect and recovery | [daemon.md](daemon.md) | 22 | 4 | 18 |
-| Agents, Claude accounts, settings, list preferences, language, notifications, skills, MCP, side panel, installation and updates | [settings.md](settings.md) | 58 | 4 | 54 |
+| Agents, Claude accounts, settings, list preferences, language, notifications, skills, MCP, side panel, installation and updates | [settings.md](settings.md) | 66 | 4 | 62 |
 | Candidate CLI commands, output, feeds and connection | [cli.md](cli.md) | 14 | 4 | 10 |
-| Remote access: account, pairing, remote windows, terminals and missions | [remote.md](remote.md) | 47 | 6 | 41 |
+| Remote access: account, pairing, remote windows, terminals and missions | [remote.md](remote.md) | 52 | 6 | 46 |
 | Linux desktop, input, packages, updates, service and hosted remote acceptance | [linux.md](linux.md) | 7 | 0 | 7 |
-| **Total** | | **356** | **44** | **312** |
+| **Total** | | **378** | **44** | **334** |
 
 `regression/` holds this README and one table file per area, with feature sections. Historical feature records remain in `../archive/` and are never edited to turn their old result into a current result. New run results live separately under `docs/tests/runs/`: feature/bug QA runs use `<issue>-<slug>-<platform>.md`, and full smoke or release runs use `YYYY-MM-DD-<platform>.md`, where platform is `mac`, `win`, `linux` or `both`. Repeated runs on the same issue or smoke date append a separately identified candidate/attempt block to that file. Existing dated filenames remain stable. No run record is needed merely to edit this suite.
 
@@ -67,6 +67,8 @@ Follow the results table with findings (expected/actual, minimal repro, severity
 When a feature's test record is archived in a [release's docs sweep](../../../AGENTS.md#docs-sweep-at-release), add its lasting live checks here, or have the record state why none apply. Trace every promoted case to its record/spec/issue/code, reconcile its expectation with current code, set platform/needs/tier and retain the evidence requirements. Results, temporary investigation recipes and automated-only assertions stay with the run/archive or owning test. Change navigation/counts when adding or retiring rows, check all relative links with a script and review at least two cases per area against origin and current code.
 
 ## Not carried over
+
+The 0.19.9 sweep added 21 full-tier cases: `SET-CREDIT-01–03`, `SET-USAGE-05–07`, `SET-AGENT-05`, `SET-LAUNCH-01`, `RT-TITLE-01–02`, `RT-START-08`, `MIS-ARCH-01–03`, `REMOTE-LINK-01–03`, `REMOTE-MIS-06`, `REMOTE-FEED-01`, `TERM-LINK-02` and `WS-PANE-08`. They preserve the shipped usage/credit, Antigravity, archive, remote-link, file-link and focus checks from [feature QA runs](../runs/), including scenarios whose earlier native execution failed or was blocked. Existing #1295 status cases now cite its retained migration contract; the count also now includes the previously uncounted `RT-STATUS-19`. Expectations were reconciled with current code, including #1309's Gemini-only sidebar metric and #1316's legacy-folder recovery. This promotion establishes no new pass; native Windows/Linux gaps, the Codex empty-cache limit and historical retries remain in their run records.
 
 The 0.19.5 sweep added `WS-FILES-01` to `WS-FILES-05` from #634's [spec](../../features/archive/634-file-preview.md#verification) and guide, and `SET-PANEL-01` and `SET-PANEL-02` from #634 m6's [record](../archive/634-m6-side-panel-settings-live.md), reconciled with the settings that shipped: the highlighting and single-click preview switches m6 tested were removed before the landing, and #1210 removed Font size's Reset. #1211 retired `WS-CREATE-14`, `WS-CREATE-16` and `MIS-LIFE-03` for `WS-CREATE-17`, `WS-CREATE-18` and `MIS-LIFE-05`, added `WS-CREATE-19` and moved `WS-CREATE-11`'s row to Recents, traced to its checks in the [2026-11-07 run](../runs/2026-11-07-mac.md). #1204's pull request had already added `SET-UPDATE-06`, `SET-UPDATE-07` and `SET-LINUX-04`; its [record](../archive/1204-update-experience.md)'s skipped signed-install, Windows and Linux checks stay open there. #1079, #1127 and #1210 had no records of their own. None of the new cases is a smoke row, and promotion establishes no new test pass.
 

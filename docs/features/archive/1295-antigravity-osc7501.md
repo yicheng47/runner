@@ -11,7 +11,7 @@ Tracking issue: [#1295](https://github.com/yicheng47/runner/issues/1295).
 3. **False `Esc` cancellation**: Raw `Esc` bytes during `Working` inject `LocalCancel` even when `agy` only dismisses UI state or ignores `Esc`.
 4. **Hook & `--add-dir` overhead**: `agy` runs hooks synchronously on every turn and tool call, and `--add-dir antigravity-hooks` adds Runner's internal hooks folder as an extra workspace root, requiring the `#787` `PreInvocation` `ephemeralMessage` cwd workaround.
 
-Unlike Codex, Claude Code, pi, Cursor, OpenCode, Copilot, and Grok, Antigravity does **not** use hooks for conversation identity or `/clear` rekeying: `KeyCapture::LogTail` (`agy_capture.rs`) continuously tails `--log-file` for `Streaming conversation <uuid>`. Removing Antigravity status hooks eliminates all lifecycle/status hook shims, `.agents/hooks.json` generation, and `--add-dir antigravity-hooks` at once (leaving `#1292`'s `--settings` chat-title callback separate), aligns with [P0.8](../arch/runtime-integration.md#p08-honest-status-and-capability-boundaries), and works uniformly across macOS, Linux, and Windows.
+Unlike Codex, Claude Code, pi, Cursor, OpenCode, Copilot, and Grok, Antigravity does **not** use hooks for conversation identity or `/clear` rekeying: `KeyCapture::LogTail` (`agy_capture.rs`) continuously tails `--log-file` for `Streaming conversation <uuid>`. Removing Antigravity status hooks eliminates all lifecycle/status hook shims, `.agents/hooks.json` generation, and `--add-dir antigravity-hooks` at once (leaving `#1292`'s `--settings` chat-title callback separate), aligns with [P0.8](../../arch/runtime-integration.md#p08-honest-status-and-capability-boundaries), and works uniformly across macOS, Linux, and Windows.
 
 ## Scope
 
