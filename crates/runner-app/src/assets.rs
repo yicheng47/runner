@@ -341,6 +341,7 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("folder-x.svg", FOLDER_X),
     ("folder-search.svg", FOLDER_SEARCH),
     ("folder-tree.svg", FOLDER_TREE),
+    ("LICENSE.themes", crate::theme::SHIPPED_NOTICES.as_bytes()),
 ];
 
 #[cfg(all(test, target_os = "macos"))]
@@ -582,5 +583,11 @@ mod tests {
     fn terminal_drawer_icons_are_registered() {
         assert!(Assets.load("panel-bottom-hidden.svg").unwrap().is_some());
         assert!(Assets.load("panel-bottom-open.svg").unwrap().is_some());
+    }
+
+    #[test]
+    fn theme_notices_are_registered() {
+        let notices = Assets.load("LICENSE.themes").unwrap().unwrap();
+        assert_eq!(notices.as_ref(), crate::theme::SHIPPED_NOTICES.as_bytes());
     }
 }

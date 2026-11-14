@@ -8,7 +8,6 @@ pub(crate) mod notifications;
 pub(crate) mod page;
 pub(crate) mod remote;
 pub(crate) mod skills;
-pub(crate) mod theme_preview;
 pub(crate) mod updates;
 pub(crate) mod usage;
 

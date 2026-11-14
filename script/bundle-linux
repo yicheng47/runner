@@ -104,6 +104,7 @@ def main():
             ('packaging/linux/runner.desktop', 'share/applications/runner.desktop'),
             ('assets/icon.png', 'share/icons/hicolor/256x256/apps/runner.png'),
             ('assets/icon.png', 'lib/runner/icon.png'),
+            ('crates/runner-app/LICENSE.themes', 'lib/runner/LICENSE.themes'),
         ]:
             target = tree / dest
             target.parent.mkdir(parents=True, exist_ok=True)
