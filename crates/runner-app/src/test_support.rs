@@ -84,3 +84,49 @@ pub(crate) fn isolated_client(root: &std::path::Path) -> DaemonClient {
         discovery,
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use gpui::{TestAppContext, VisualTestContext};
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    #[test]
+    fn app_store_and_native_root_release_db_pool_on_test_teardown() {
+        let store_db = {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+            store.read_with(&cx, |store, _| Arc::downgrade(&store.test_core.db))
+        };
+        assert_eq!(store_db.strong_count(), 0);
+
+        let (root_app, root_db) = {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let app_weak = Rc::downgrade(&cx.app);
+            let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+            let db_weak = store.read_with(&cx, |store, _| Arc::downgrade(&store.test_core.db));
+            cx.update(|cx| {
+                cx.set_app_identity("com.wycstudios.runner-dev", "Runner");
+                crate::notifications::install(cx);
+            });
+            let host = cx.add_window(|window, cx| {
+                crate::surfaces::root::NativeRoot::new(
+                    "teardown-probe".into(),
+                    temp.path().join("logs"),
+                    None,
+                    None,
+                    store.clone(),
+                    window,
+                    cx,
+                )
+            });
+            let visual = VisualTestContext::from_window(host.into(), &cx);
+            visual.run_until_parked();
+            (app_weak, db_weak)
+        };
+        assert_eq!(root_app.strong_count(), 0);
+        assert_eq!(root_db.strong_count(), 0);
+    }
+}

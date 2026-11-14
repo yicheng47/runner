@@ -33,7 +33,7 @@ pub type DbPool = Pool<SqliteConnectionManager>;
 
 pub fn open_pool(db_path: &Path) -> Result<DbPool> {
     let manager = SqliteConnectionManager::file(db_path).with_init(init_connection);
-    build_pool(manager, 8, true)
+    build_pool(manager, 8, None, true)
 }
 
 /// Disposable fixtures need file-backed WAL visibility, not power-loss durability per commit.
@@ -43,7 +43,7 @@ pub fn open_fixture_pool(db_path: &Path) -> Result<DbPool> {
         init_connection(conn)?;
         conn.pragma_update(None, "synchronous", "NORMAL")
     });
-    build_pool(manager, 8, true)
+    build_pool(manager, 8, Some(0), true)
 }
 
 #[cfg(test)]
@@ -51,7 +51,7 @@ pub fn open_in_memory() -> Result<DbPool> {
     // Tests get schema only — the default-crew seed would pollute the
     // empty starting state most command tests assume.
     let manager = SqliteConnectionManager::memory().with_init(init_connection);
-    build_pool(manager, 1, false)
+    build_pool(manager, 1, None, false)
 }
 
 #[cfg(test)]
@@ -62,10 +62,18 @@ pub(crate) fn test_connection() -> Result<Connection> {
     Ok(conn)
 }
 
-fn build_pool(manager: SqliteConnectionManager, max_size: u32, seed: bool) -> Result<DbPool> {
+fn build_pool(
+    manager: SqliteConnectionManager,
+    max_size: u32,
+    min_idle: Option<u32>,
+    seed: bool,
+) -> Result<DbPool> {
     // r2d2 retries failed initial connections for 30 s, hiding permanent SQLite errors.
     drop(manager.connect()?);
-    let pool = Pool::builder().max_size(max_size).build(manager)?;
+    let pool = Pool::builder()
+        .max_size(max_size)
+        .min_idle(min_idle)
+        .build(manager)?;
     let mut conn = pool.get()?;
     run_migrations(&mut conn)?;
     ensure_app_state_table(&conn)?;

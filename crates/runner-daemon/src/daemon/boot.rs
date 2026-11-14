@@ -18,12 +18,36 @@ pub fn boot(
     model_runtimes: Vec<crate::model::Runtime>,
     background: bool,
 ) -> Result<AppCore> {
+    boot_inner(
+        paths,
+        model_runtimes,
+        background || cfg!(target_os = "linux"),
+        background,
+    )
+}
+
+/// Fixture boot helper that runs startup CLI installation and stale MCP cleanup
+/// without spawning long-lived discovery/report background workers.
+#[cfg(any(test, feature = "test-support"))]
+pub fn boot_with_cli_setup(
+    paths: &NativePaths,
+    model_runtimes: Vec<crate::model::Runtime>,
+) -> Result<AppCore> {
+    boot_inner(paths, model_runtimes, true, false)
+}
+
+fn boot_inner(
+    paths: &NativePaths,
+    model_runtimes: Vec<crate::model::Runtime>,
+    cli_setup: bool,
+    background: bool,
+) -> Result<AppCore> {
     std::fs::create_dir_all(&paths.app_data_dir)
         .with_context(|| format!("create {}", paths.app_data_dir.display()))?;
     // Mission shims exec `$APPDATA/bin/runner`, so the CLI must be in place
     // before any session spawns. Best-effort: a copy failure is reported and
     // the app keeps running (#480).
-    if background || cfg!(target_os = "linux") {
+    if cli_setup {
         if let Err(error) = runner_core::cli_install::install_runner_cli(&paths.app_data_dir) {
             eprintln!("Runner bundled agent CLI install failed: {error}");
         }
