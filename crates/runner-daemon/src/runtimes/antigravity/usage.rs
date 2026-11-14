@@ -2569,9 +2569,7 @@ exit 99
     #[test]
     fn direct_quota_retries_once_after_401_with_refresh() {
         let dir = tempfile::tempdir().unwrap();
-        let mut env = LoginShellEnv::default();
-        env.vars
-            .insert("HOME".into(), dir.path().to_string_lossy().into_owned());
+        let env = isolated_direct_quota_env(dir.path());
 
         let (base_url, rx, server) =
             spawn_fake_http_server(4, |_idx, req| match req.path.as_str() {
@@ -2630,9 +2628,7 @@ exit 99
     #[test]
     fn direct_quota_classifies_auth_rejections_as_sign_in() {
         let dir = tempfile::tempdir().unwrap();
-        let mut env = LoginShellEnv::default();
-        env.vars
-            .insert("HOME".into(), dir.path().to_string_lossy().into_owned());
+        let env = isolated_direct_quota_env(dir.path());
 
         // Missing credential -> SignIn
         assert_eq!(
@@ -2700,9 +2696,7 @@ exit 99
     #[test]
     fn direct_quota_classifies_transient_and_malformed_failures_as_no_answer() {
         let dir = tempfile::tempdir().unwrap();
-        let mut env = LoginShellEnv::default();
-        env.vars
-            .insert("HOME".into(), dir.path().to_string_lossy().into_owned());
+        let env = isolated_direct_quota_env(dir.path());
 
         for (status, reason, body) in [
             (429, "Too Many Requests", "{}"),
@@ -2858,15 +2852,22 @@ exit 99
         assert_eq!(cred.access_token, "custom-cli");
     }
 
+    fn isolated_direct_quota_env(dir: &std::path::Path) -> LoginShellEnv {
+        let dir_str = dir.to_string_lossy().into_owned();
+        let mut env = LoginShellEnv::default();
+        env.vars.insert("HOME".into(), dir_str.clone());
+        env.vars.insert("USERPROFILE".into(), dir_str.clone());
+        env.vars.insert("ANTIGRAVITY_GEMINI_DIR".into(), dir_str);
+        env
+    }
+
     #[test]
     fn direct_quota_does_not_follow_redirects_with_secrets() {
         use std::io::{ErrorKind, Read, Write};
         use std::net::TcpListener;
 
         let dir = tempfile::tempdir().unwrap();
-        let mut env = LoginShellEnv::default();
-        env.vars
-            .insert("HOME".into(), dir.path().to_string_lossy().into_owned());
+        let env = isolated_direct_quota_env(dir.path());
 
         let sink_listener = TcpListener::bind("127.0.0.1:0").unwrap();
         sink_listener.set_nonblocking(true).unwrap();
@@ -2963,15 +2964,16 @@ exit 99
             }
         };
 
-        // Case 1: Empty LoginShellEnv still honors inherited HTTP_PROXY.
-        let empty_env = LoginShellEnv::default();
+        // Case 1: Empty proxy vars in LoginShellEnv still honor inherited HTTP_PROXY.
+        // Pin HOME/USERPROFILE/ANTIGRAVITY_GEMINI_DIR to an empty tempdir so local host markers or tokens never leak into the test.
+        let base_env = isolated_direct_quota_env(dir.path());
         let unused_origin = TcpListener::bind("127.0.0.1:0").unwrap();
         unused_origin.set_nonblocking(true).unwrap();
         let origin_addr = unused_origin.local_addr().unwrap();
         let (proxy_url, proxy_rx, proxy_server) =
             spawn_fake_http_server(2, move |_, req| quota_reply(&req.path));
         let reading = direct_quota::fetch_with_options_with_proxy(
-            &empty_env,
+            &base_env,
             Duration::from_secs(2),
             Duration::from_secs(2),
             Some(direct_quota::EndpointConfig {
@@ -3003,7 +3005,7 @@ exit 99
         let (origin_url, origin_rx, origin_server) =
             spawn_fake_http_server(2, move |_, req| quota_reply(&req.path));
         let reading = direct_quota::fetch_with_options_with_proxy(
-            &empty_env,
+            &base_env,
             Duration::from_secs(2),
             Duration::from_secs(2),
             Some(direct_quota::EndpointConfig {
@@ -3030,10 +3032,7 @@ exit 99
         // Case 3: env.vars (including lowercase `http_proxy`) overrides inherited `HTTP_PROXY`.
         let (override_proxy_url, override_rx, override_server) =
             spawn_fake_http_server(2, move |_, req| quota_reply(&req.path));
-        let mut env_override = LoginShellEnv::default();
-        env_override
-            .vars
-            .insert("HOME".into(), dir.path().to_string_lossy().into_owned());
+        let mut env_override = base_env.clone();
         env_override
             .vars
             .insert("http_proxy".into(), override_proxy_url);
@@ -3076,7 +3075,7 @@ exit 99
             });
 
             let result = direct_quota::fetch_with_options_with_proxy(
-                &empty_env,
+                &base_env,
                 Duration::from_secs(2),
                 Duration::from_secs(2),
                 Some(direct_quota::EndpointConfig {
