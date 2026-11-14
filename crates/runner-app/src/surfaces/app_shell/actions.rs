@@ -183,6 +183,14 @@ impl NativeRoot {
             AppRoute::NewCrew => self.open_create_crew(window, cx),
             AppRoute::CrewEditor(crew_id) => self.open_crew_editor(crew_id, window, cx),
             AppRoute::Usage => self.open_usage(window, cx),
+            AppRoute::MissionControl => {
+                self.set_route(AppRoute::MissionControl, cx);
+                if let Some(project_id) = self.active_project_id(cx) {
+                    self.refresh_mission_control(project_id, cx);
+                }
+                window.focus(&self.root_focus, cx);
+                cx.notify();
+            }
             AppRoute::Mission(mission_id) => self.open_mission(mission_id, window, cx),
             AppRoute::ArchivedChat => {
                 self.set_route(AppRoute::ArchivedChat, cx);

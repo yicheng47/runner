@@ -362,6 +362,7 @@ pub struct UsageSettings {
     pub codex: bool,
     pub claude_code: bool,
     pub antigravity: bool,
+    pub muse: bool,
     pub five_hour: bool,
 }
 impl Default for UsageSettings {
@@ -371,6 +372,7 @@ impl Default for UsageSettings {
             codex: true,
             claude_code: true,
             antigravity: true,
+            muse: true,
             five_hour: true,
         }
     }
@@ -382,6 +384,7 @@ impl UsageSettings {
                 runner_core::Runtime::Codex => self.codex,
                 runner_core::Runtime::ClaudeCode => self.claude_code,
                 runner_core::Runtime::Antigravity => self.antigravity,
+                runner_core::Runtime::Muse => self.muse,
                 _ => false,
             }
     }
@@ -1652,15 +1655,7 @@ mod tests {
         let mut settings = AppSettings::default();
         let mut defaults = settings.usage_runtimes();
         defaults.sort_by_key(|runtime| runtime.key());
-        assert_eq!(
-            defaults,
-            [
-                Runtime::Antigravity,
-                Runtime::ClaudeCode,
-                Runtime::Codex,
-                Runtime::Muse
-            ]
-        );
+        assert_eq!(defaults, [Runtime::ClaudeCode, Runtime::Codex, Runtime::Muse]);
         assert!(
             !settings.model_runtimes().contains(&Runtime::Muse),
             "Muse reports usage without discovering models"
@@ -1668,6 +1663,14 @@ mod tests {
         settings.disabled_agents.insert(Runtime::Muse.key().into());
         assert!(!settings.usage_runtimes().contains(&Runtime::Muse));
         assert!(settings.usage_runtimes().contains(&Runtime::Codex));
+    }
+
+    #[test]
+    fn usage_badges_include_muse_by_default_and_allow_it_to_be_hidden() {
+        let mut settings = AppSettings::default();
+        assert!(settings.usage.badge(Runtime::Muse));
+        settings.usage.muse = false;
+        assert!(!settings.usage.badge(Runtime::Muse));
     }
 
     #[test]

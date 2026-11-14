@@ -228,6 +228,7 @@ impl NativeRoot {
             AppRoute::CrewEditor(crew_id) => Some(format!("/crews/{crew_id}")),
             AppRoute::Mission(mission_id) => Some(format!("/missions/{mission_id}")),
             AppRoute::Usage => Some("/usage".into()),
+            AppRoute::MissionControl => Some("/mission-control".into()),
             AppRoute::Settings => Some("/settings".into()),
             AppRoute::Launcher | AppRoute::ArchivedChat => None,
         }

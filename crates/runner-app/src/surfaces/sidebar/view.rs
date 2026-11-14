@@ -443,7 +443,7 @@ impl Sidebar {
                             self.front_page.supports(&["catalog"])
                         }
                         // Usage is read from the local daemon only.
-                        WorkspaceEntry::Usage => false,
+                        WorkspaceEntry::Usage | WorkspaceEntry::MissionControl => false,
                     }
             })
             .map(|entry| {
@@ -536,6 +536,23 @@ impl Sidebar {
                                 if let Some(shell) = shell.upgrade() {
                                     shell.update(cx, |shell, shell_cx| {
                                         shell.open_usage(window, shell_cx)
+                                    });
+                                }
+                            }
+                        },
+                    ),
+                    WorkspaceEntry::MissionControl => workspace_row(
+                        "workspace-mission-control",
+                        "users.svg",
+                        "Mission Control",
+                        active,
+                        true,
+                        {
+                            let shell = self.shell.clone();
+                            move |window, cx| {
+                                if let Some(shell) = shell.upgrade() {
+                                    shell.update(cx, |shell, shell_cx| {
+                                        shell.open_page_route(crate::AppRoute::MissionControl, window, shell_cx)
                                     });
                                 }
                             }

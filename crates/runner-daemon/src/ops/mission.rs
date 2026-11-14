@@ -1,4 +1,5 @@
 pub mod budget;
+pub mod control;
 pub mod feed;
 pub mod interrupt;
 pub mod link;

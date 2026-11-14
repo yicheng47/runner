@@ -2,6 +2,18 @@
 
 A project gives a working directory a name and groups its chats and missions in the sidebar. It saves you from choosing the same folder for every launch.
 
+## Mission Control
+
+**Mission Control** in the sidebar reads a project's local `issues/` tickets and
+`.crew/triage/` evidence alongside Runner's existing mission state. It is a
+compact, horizontally scrolling board: all seven derived lanes remain visible,
+including empty ones, and cards emphasize their lane, ticket details and any
+pending question before terse work and source evidence. It is read-only: cards
+link to their source evidence and to a linked mission's existing workspace, but
+it cannot create or edit tickets, triage, questions, branches or worktrees.
+Missing, malformed or stale local sources show scoped warnings while the
+remaining evidence stays available.
+
 The sidebar defaults to Projects. The list-filter button beside Search switches to Active, which gathers running chats and terminals, missions with live members, and work needing attention across projects; switching views preserves your project organization.
 
 Create a project from the sidebar and choose its directory. New chats and missions started in that project use its directory. You can still supply a different working directory when starting work.

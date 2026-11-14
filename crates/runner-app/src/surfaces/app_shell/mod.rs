@@ -61,6 +61,7 @@ pub(crate) enum AppRoute {
     CrewEditor(String),
     Mission(String),
     Usage,
+    MissionControl,
     ArchivedChat,
     Settings,
 }

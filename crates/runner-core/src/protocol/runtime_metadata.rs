@@ -725,6 +725,7 @@ pub mod muse {
         ];
         Some(RuntimeCatalog {
             name: Runtime::Muse,
+            min_version: None,
             display_name: Runtime::Muse.display_name(),
             command: Runtime::Muse.command().unwrap(),
             capabilities: capabilities(),

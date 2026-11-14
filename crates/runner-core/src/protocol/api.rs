@@ -33,6 +33,7 @@ macro_rules! daemon_api {
         app_version() -> String [true] => |core: &crate::AppCore| { Ok(core.app_version.clone()) };
         hook_report(report: HookReport => HookReport = { report }) -> () [true] => |_core: &crate::AppCore, _report: HookReport| { Err(crate::error::Error::msg("hook admission requires a reporter connection")) };
         mission_list(crew_id: Option<String> => Option<String> = { crew_id }) -> Vec<Mission> [false] => |core: &crate::AppCore, crew_id: Option<String>| { crate::ops::mission::mission_list(core, crew_id) };
+        mission_control_snapshot(project_id: &str => String = { project_id.to_owned() }) -> MissionControlSnapshot [false] => |core: &crate::AppCore, project_id: String| { crate::ops::mission::control::snapshot(core, &project_id) };
         mission_feed(args: MissionFeedArgs => MissionFeedArgs = { args }) -> MissionFeed [false] => |core: &crate::AppCore, args: MissionFeedArgs| { crate::ops::mission::feed::mission_feed(core, args) };
         mission_status(id: &str => String = { id.to_owned() }) -> MissionStatusSnapshot [false] => |core: &crate::AppCore, id: String| { crate::ops::mission::feed::mission_status(core, &id) };
         mission_read_cursor(mission_id: &str => String = { mission_id.to_owned() }, handle: &str => String = { handle.to_owned() }) -> Option<MissionReadCursor> [false] => |core: &crate::AppCore, mission_id: String, handle: String| { Ok(crate::ops::mission::mission_read_cursor(core, &mission_id, &handle)) };

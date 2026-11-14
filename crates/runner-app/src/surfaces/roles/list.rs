@@ -307,6 +307,7 @@ impl NativeRoot {
                 self.render_crew_surface(window, cx)
             }
             AppRoute::Usage => self.render_usage_page(window, cx),
+            AppRoute::MissionControl => self.render_mission_control_page(window, cx),
             AppRoute::Mission(_) => self.mission_workspace.clone().into_any_element(),
             AppRoute::ArchivedChat => self.render_archived_chat(window, cx),
             AppRoute::Settings => self.render_active_tab(window, cx),

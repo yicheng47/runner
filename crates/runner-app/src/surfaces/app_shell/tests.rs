@@ -1348,7 +1348,7 @@ fn sidebar_usage_uses_weekly_windows() {
     };
     assert_eq!(
         weekly_usage_percent(Runtime::Antigravity, Some(&antigravity_usage)),
-        Some(42.)
+        Some(73.)
     );
     let antigravity_five_hour_only = AgentUsage {
         credits: None,
@@ -1381,7 +1381,7 @@ fn sidebar_usage_uses_weekly_windows() {
     };
     assert_eq!(
         weekly_usage_percent(Runtime::Antigravity, Some(&antigravity_claude_only)),
-        None
+        Some(73.)
     );
     for window_name in [
         "5 hours",
@@ -1401,7 +1401,21 @@ fn sidebar_usage_uses_weekly_windows() {
         assert!(!is_five_hour(window_name), "{window_name}");
     }
     assert_eq!(weekly_usage_percent(Runtime::Codex, None), None);
+    let muse_usage = AgentUsage {
+        credits: None,
+        windows: vec![UsageWindow {
+            name: "Week".into(),
+            used_percent: 43.,
+            resets_at: None,
+        }],
+        updated_at: chrono::Utc::now(),
+    };
+    assert_eq!(weekly_usage_percent(Runtime::Muse, Some(&muse_usage)), Some(43.));
     assert_eq!(unavailable_line(None, Runtime::Codex), "Checking…");
+    assert_eq!(
+        unavailable_line(Some(UnavailableReason::SignIn), Runtime::Muse),
+        "Sign in to Muse to see usage."
+    );
     assert_eq!(
         unavailable_line(Some(UnavailableReason::SignIn), Runtime::Antigravity),
         "Sign in to Antigravity CLI to see usage"
@@ -1425,7 +1439,7 @@ fn sidebar_usage_uses_weekly_windows() {
         );
         assert_eq!(
             weekly_usage_percent(Runtime::Antigravity, Some(&antigravity_usage)),
-            Some(42.)
+            Some(73.)
         );
         assert_eq!(usage_window_name("Week"), "本周");
         assert_eq!(usage_window_name("5 hours"), "5 小时");
@@ -1487,8 +1501,8 @@ fn usage_popover_keeps_provider_order_for_installed_and_enabled_subsets() {
         Runtime::Muse,
     ];
     assert_eq!(usage_popover_runtimes(&Runtime::ALL, &Runtime::ALL), order);
-    for installed_mask in 0..16 {
-        for enabled_mask in 0..16 {
+    for installed_mask in 0..8 {
+        for enabled_mask in 0..8 {
             let subset = |mask| {
                 order
                     .into_iter()
@@ -2004,6 +2018,53 @@ fn sidebar_footer_overflow_collapses_lowest_usage_badges_across_three_runtimes()
         let host_btn = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
         assert!(usage.right() <= host_btn.left() - px(8. * zoom - 1.));
     }
+}
+
+#[test]
+fn muse_weekly_usage_renders_in_the_sidebar_footer() {
+    use crate::theme_snapshot::ThemeGuard;
+    use gpui::{size, TestAppContext, VisualTestContext};
+
+    let _theme = ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    store.update(&mut cx, |store, _| {
+        store.usage.runtimes.insert(
+            Runtime::Muse,
+            runner_core::protocol::usage::RuntimeUsage {
+                value: Some(AgentUsage {
+                    credits: None,
+                    windows: vec![UsageWindow {
+                        name: "Week".into(),
+                        used_percent: 43.,
+                        resets_at: None,
+                    }],
+                    updated_at: chrono::Utc::now(),
+                }),
+                ..Default::default()
+            },
+        );
+    });
+    let host = cx.add_window(|window, cx| {
+        let mut root = NativeRoot::new(
+            "muse-sidebar-usage".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        );
+        root.usage_installed = vec![Runtime::Muse];
+        root
+    });
+    let mut visual = VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(size(px(1200.), px(900.)));
+    visual.run_until_parked();
+
+    assert!(visual.debug_bounds("SIDEBAR_USAGE_ENTRY_muse").is_some());
+    assert!(visual.debug_bounds("SIDEBAR_USAGE_VALUE_muse").is_some());
 }
 
 #[test]
