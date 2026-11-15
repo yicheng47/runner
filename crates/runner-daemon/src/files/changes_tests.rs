@@ -1699,3 +1699,270 @@ fn in_memory_viewed_marks_cover_set_clear_sticky_uncommitted_carry_over_and_chan
     marks.clear(repo_a, "commit_only.rs", Some("c0"), Some("c1"));
     assert!(marks.by_checkout.lock().unwrap().is_empty());
 }
+
+#[test]
+fn branch_target_matches_git_diff_and_tracks_viewed_marks() {
+    let core = test_core();
+
+    // 1. Unborn HEAD and isolated branch with no base return empty for Branch.
+    let unborn_dir = tempfile::tempdir().unwrap();
+    git(unborn_dir.path(), &["init", "-q", "-b", "main"]);
+    git(unborn_dir.path(), &["config", "core.autocrlf", "false"]);
+    std::fs::write(unborn_dir.path().join("u.txt"), "unborn\n").unwrap();
+    assert!(
+        changes_files(&core, unborn_dir.path(), &ChangesTarget::Branch)
+            .unwrap()
+            .files
+            .is_empty()
+    );
+
+    let no_base_dir = tempfile::tempdir().unwrap();
+    git(no_base_dir.path(), &["init", "-q", "-b", "topic"]);
+    git(no_base_dir.path(), &["config", "core.autocrlf", "false"]);
+    std::fs::write(no_base_dir.path().join("t.txt"), "topic\n").unwrap();
+    commit_all(no_base_dir.path(), "only commit");
+    assert!(
+        changes_files(&core, no_base_dir.path(), &ChangesTarget::Branch)
+            .unwrap()
+            .files
+            .is_empty()
+    );
+
+    // 2. Repository with origin/main and a linked branch worktree two commits ahead.
+    let main_dir = tempfile::tempdir().unwrap();
+    let main_root = main_dir.path();
+    git(main_root, &["init", "-q", "-b", "main"]);
+    git(main_root, &["config", "core.autocrlf", "false"]);
+    std::fs::create_dir_all(main_root.join("sub")).unwrap();
+    std::fs::write(main_root.join("keep.txt"), "keep\n").unwrap();
+    std::fs::write(main_root.join("mod.txt"), "line1\nline2\n").unwrap();
+    std::fs::write(main_root.join("del.txt"), "gone1\ngone2\n").unwrap();
+    std::fs::write(
+        main_root.join("old_name.txt"),
+        "same1\nsame2\nsame3\nsame4\n",
+    )
+    .unwrap();
+    std::fs::write(main_root.join("sub/nested.txt"), "n1\n").unwrap();
+    let base_sha = commit_all(main_root, "initial main");
+    git(
+        main_root,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/repo.git",
+        ],
+    );
+    git(
+        main_root,
+        &["update-ref", "refs/remotes/origin/main", &base_sha],
+    );
+
+    // Main checkout level with origin/main has 0 commits since base and empty Branch files.
+    assert_eq!(changes_commits(&core, main_root).unwrap().total, 0);
+    assert!(changes_files(&core, main_root, &ChangesTarget::Branch)
+        .unwrap()
+        .files
+        .is_empty());
+
+    let wt_parent = tempfile::tempdir().unwrap();
+    let wt_raw = wt_parent.path().join("feat-wt");
+    git(
+        main_root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat/1141-m2",
+            wt_raw.to_str().unwrap(),
+            "origin/main",
+        ],
+    );
+    let wt = wt_raw.canonicalize().unwrap();
+
+    // Commit 1 on worktree: modify mod.txt, delete del.txt, add sub/added.txt.
+    std::fs::write(wt.join("mod.txt"), "line1\nline2-c1\n").unwrap();
+    git(&wt, &["rm", "-q", "del.txt"]);
+    std::fs::write(wt.join("sub/added.txt"), "a1\na2\n").unwrap();
+    commit_all(&wt, "feat commit 1");
+
+    // Commit 2 on worktree: rename old_name.txt -> new_name.txt, modify sub/nested.txt.
+    git(&wt, &["mv", "old_name.txt", "new_name.txt"]);
+    std::fs::write(wt.join("sub/nested.txt"), "n1\nn2\n").unwrap();
+    commit_all(&wt, "feat commit 2");
+
+    // Add uncommitted working-tree edits (staged + unstaged + untracked) that must stay out of Branch.
+    std::fs::write(wt.join("mod.txt"), "UNCOMMITTED OVERRIDE\n").unwrap();
+    std::fs::write(wt.join("staged_only.txt"), "staged\n").unwrap();
+    git(&wt, &["add", "staged_only.txt"]);
+    std::fs::write(wt.join("untracked_only.txt"), "untracked\n").unwrap();
+
+    let commits = changes_commits(&core, &wt).unwrap();
+    assert_eq!(commits.branch.as_deref(), Some("feat/1141-m2"));
+    assert_eq!(commits.base.as_deref(), Some("origin/main"));
+    assert_eq!(commits.total, 2);
+
+    let merge_base = git(&wt, &["merge-base", "HEAD", "origin/main"])
+        .trim()
+        .to_owned();
+    let expected_numstat = parse_numstat_z(
+        git(&wt, &["diff", "--numstat", "-M", "-z", &merge_base, "HEAD"]).as_bytes(),
+    )
+    .unwrap();
+
+    let branch_files = changes_files(&core, &wt, &ChangesTarget::Branch).unwrap();
+    assert_eq!(branch_files.files.len(), expected_numstat.len());
+    for exp in &expected_numstat {
+        let got = branch_files
+            .files
+            .iter()
+            .find(|f| f.path == exp.path)
+            .unwrap_or_else(|| panic!("missing {} in Branch target", exp.path));
+        assert_eq!(got.counts, exp.counts);
+        if let Some(old_path) = &exp.old_path {
+            assert_eq!(
+                got.status,
+                FileStatus::Renamed {
+                    from: old_path.clone()
+                }
+            );
+        }
+    }
+    assert!(
+        branch_files
+            .files
+            .iter()
+            .all(|f| f.path != "staged_only.txt" && f.path != "untracked_only.txt"),
+        "uncommitted files must stay out of Branch"
+    );
+
+    // Branch diff reads HEAD's committed bytes, ignoring uncommitted working-tree edits.
+    let mod_diff = changes_diff(&core, &wt, &ChangesTarget::Branch, "mod.txt").unwrap();
+    let mod_entry = branch_files
+        .files
+        .iter()
+        .find(|f| f.path == "mod.txt")
+        .unwrap();
+    assert_diff_consistent(Some(mod_entry), &mod_diff);
+    let DiffBody::Text { old, new, .. } = mod_diff.body else {
+        panic!("expected Text for mod.txt");
+    };
+    assert_eq!(old.0, b"line1\nline2\n");
+    assert_eq!(new.0, b"line1\nline2-c1\n");
+
+    // Subfolder root lists only paths under sub/.
+    let sub_branch = changes_files(&core, &wt.join("sub"), &ChangesTarget::Branch).unwrap();
+    let sub_paths: Vec<&str> = sub_branch.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(sub_paths, vec!["added.txt", "nested.txt"]);
+
+    // Clean up uncommitted working-tree scratch before viewed-mark commit/merge transitions.
+    git(&wt, &["reset", "-q", "--hard", "HEAD"]);
+    std::fs::remove_file(wt.join("untracked_only.txt")).unwrap();
+
+    // 3. Viewed marks on Branch: watch client gets `changes/viewed`, new commit turns it changed_since_viewed.
+    let mut rx_watch = core.events.subscribe();
+    core.files.watch(77, wt.clone()).unwrap();
+
+    let nested_entry = branch_files
+        .files
+        .iter()
+        .find(|f| f.path == "sub/nested.txt")
+        .unwrap();
+    changes_set_viewed(
+        &core,
+        &wt,
+        &ChangesTarget::Branch,
+        "mod.txt",
+        mod_entry.old_blob_id.as_deref(),
+        mod_entry.new_blob_id.as_deref(),
+        true,
+    )
+    .unwrap();
+    changes_set_viewed(
+        &core,
+        &wt,
+        &ChangesTarget::Branch,
+        "sub/nested.txt",
+        nested_entry.old_blob_id.as_deref(),
+        nested_entry.new_blob_id.as_deref(),
+        true,
+    )
+    .unwrap();
+
+    let mut viewed_events = Vec::new();
+    while let Ok(ev) = rx_watch.try_recv() {
+        if ev.name == CHANGES_VIEWED_EVENT {
+            viewed_events.push(serde_json::from_value::<ChangesViewed>(ev.payload).unwrap());
+        }
+    }
+    assert_eq!(viewed_events.len(), 2);
+    assert_eq!(viewed_events[0].path, "mod.txt");
+    assert!(viewed_events[0].viewed);
+    assert_eq!(viewed_events[1].path, "sub/nested.txt");
+    assert!(viewed_events[1].viewed);
+
+    let after_mark = changes_files(&core, &wt, &ChangesTarget::Branch).unwrap();
+    assert_eq!(after_mark.totals.viewed, 2);
+    let mod_marked = after_mark
+        .files
+        .iter()
+        .find(|f| f.path == "mod.txt")
+        .unwrap();
+    assert!(mod_marked.viewed);
+    assert!(!mod_marked.changed_since_viewed);
+
+    // Commit 3 touches mod.txt -> mod.txt clears `viewed` and turns `changed_since_viewed = true`.
+    std::fs::write(wt.join("mod.txt"), "line1\nline2-c3\n").unwrap();
+    commit_all(&wt, "feat commit 3");
+
+    let after_c3 = changes_files(&core, &wt, &ChangesTarget::Branch).unwrap();
+    let mod_c3 = after_c3.files.iter().find(|f| f.path == "mod.txt").unwrap();
+    assert!(!mod_c3.viewed);
+    assert!(mod_c3.changed_since_viewed);
+    let nested_c3 = after_c3
+        .files
+        .iter()
+        .find(|f| f.path == "sub/nested.txt")
+        .unwrap();
+    assert!(nested_c3.viewed, "untouched file keeps its Branch mark");
+
+    // 4. Merging advanced origin/main that touches sub/nested.txt moves the merge base,
+    // clearing sub/nested.txt's viewed mark and marking it changed_since_viewed.
+    std::fs::write(main_root.join("sub/nested.txt"), "n0-upstream\nn1\n").unwrap();
+    std::fs::write(main_root.join("upstream_only.txt"), "upstream\n").unwrap();
+    let main2 = commit_all(main_root, "upstream advance");
+    git(
+        main_root,
+        &["update-ref", "refs/remotes/origin/main", &main2],
+    );
+
+    git(&wt, &["merge", "-q", "--no-edit", "origin/main"]);
+    let merge_base_after = git(&wt, &["merge-base", "HEAD", "origin/main"])
+        .trim()
+        .to_owned();
+    assert_eq!(merge_base_after, main2);
+
+    let after_merge = changes_files(&core, &wt, &ChangesTarget::Branch).unwrap();
+    assert!(
+        after_merge
+            .files
+            .iter()
+            .all(|f| f.path != "upstream_only.txt"),
+        "base's own changes must not appear in Branch after merging base in"
+    );
+    let nested_after_merge = after_merge
+        .files
+        .iter()
+        .find(|f| f.path == "sub/nested.txt")
+        .unwrap();
+    assert!(!nested_after_merge.viewed);
+    assert!(nested_after_merge.changed_since_viewed);
+
+    // 5. Detached HEAD keeps the same Branch diff against merge base.
+    git(&wt, &["checkout", "-q", "--detach", "HEAD"]);
+    let detached_branch = changes_files(&core, &wt, &ChangesTarget::Branch).unwrap();
+    assert_eq!(detached_branch.files.len(), after_merge.files.len());
+
+    core.files.client_gone(77);
+}

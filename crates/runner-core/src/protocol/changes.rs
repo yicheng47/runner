@@ -24,6 +24,8 @@ pub const MAX_COMMITS: usize = 200;
 pub enum ChangesTarget {
     /// Working tree (staged, unstaged, and untracked files) against `HEAD`.
     Uncommitted,
+    /// Committed branch changes from the resolved merge base to `HEAD`.
+    Branch,
     /// A single commit against its first parent, or the empty tree for a root commit.
     Commit(String),
 }

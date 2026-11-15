@@ -1117,6 +1117,7 @@ impl Sample for changes::ChangesViewed {
 #[test]
 fn changes_variants_cross_json() {
     round_trip(changes::ChangesTarget::Uncommitted);
+    round_trip(changes::ChangesTarget::Branch);
     round_trip(changes::ChangesTarget::Commit("deadbeef".into()));
     round_trip(changes::DiffCounts::Binary);
     round_trip(changes::DiffBody::Binary {
