@@ -161,6 +161,12 @@ impl FilesView {
                 self.load(folders, cx);
                 self.reload_changed(None, cx);
             }
+            FilesEvent::Viewed(_) => {}
+            FilesEvent::RootChanged { subject, origin } => {
+                if &self.context.subject == subject && cx.entity_id() != *origin {
+                    self.resolve(cx);
+                }
+            }
         }
     }
 }

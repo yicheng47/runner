@@ -399,7 +399,7 @@ impl CodeView {
         self.scroll_by(delta, cx);
     }
 
-    fn font(cx: &App) -> (Font, Pixels) {
+    pub(crate) fn font(cx: &App) -> (Font, Pixels) {
         match super::settings(cx) {
             Some(settings) => (
                 settings.files_font(cx),
@@ -846,7 +846,7 @@ impl Element for CodeElement {
     }
 }
 
-fn word_at(line: &str, offset: usize) -> (usize, usize) {
+pub(crate) fn word_at(line: &str, offset: usize) -> (usize, usize) {
     let is_word = |character: char| character.is_alphanumeric() || character == '_';
     let start = line[..offset.min(line.len())]
         .char_indices()

@@ -40,9 +40,25 @@ impl MissionWorkspace {
         });
     }
 
-    /// The rail's width, widened while its Files view has a file open.
+    /// The rail's width, widened while its Files view has a file open or Changes shows.
     pub(super) fn rail_layout(&self, cx: &App) -> (f32, Option<side_panel::Widened>) {
         let settings = self.settings(cx);
+        if side_panel::shown(PanelSurface::Mission, settings, &self.rail_surfaces.open)
+            == Some(PanelViewId::Changes)
+        {
+            let subject = self
+                .mission_view()
+                .filter(|_| settings.changes_view)
+                .map(|mission| PanelSubject::Mission(mission.id));
+            return self.rail_files.changes_layout(
+                subject.as_ref(),
+                settings.mission_rail_width,
+                settings.file_viewer_width,
+                settings.file_tree_width,
+                6.,
+                cx,
+            );
+        }
         let subject = self
             .mission_view()
             .filter(|_| settings.files_view)
@@ -189,13 +205,25 @@ impl MissionWorkspace {
                         });
                     }),
             ));
-        let files = match (shown, self.mission_view()) {
-            (Some(PanelViewId::Files), Some(mission)) => Some(self.rail_files.show_with(
-                &self.rail_context(mission),
-                widened,
-                Some(cx.entity_id()),
-                cx,
-            )),
+        let surface_view = match (shown, self.mission_view()) {
+            (Some(PanelViewId::Files), Some(mission)) => {
+                self.rail_files.hide_changes(cx);
+                Some(self.rail_files.show_with(
+                    &self.rail_context(mission),
+                    widened,
+                    Some(cx.entity_id()),
+                    cx,
+                ))
+            }
+            (Some(PanelViewId::Changes), Some(mission)) => {
+                self.rail_files.hide_files(cx);
+                Some(self.rail_files.show_changes_with(
+                    &self.rail_context(mission),
+                    widened,
+                    Some(cx.entity_id()),
+                    cx,
+                ))
+            }
             _ => {
                 self.rail_files.hide(cx);
                 None
@@ -203,7 +231,9 @@ impl MissionWorkspace {
         };
         let body = match shown {
             Some(PanelViewId::Info) => self.render_mission_meta_panel(cx),
-            Some(PanelViewId::Files) => files.unwrap_or_else(|| div().into_any_element()),
+            Some(PanelViewId::Files | PanelViewId::Changes) => {
+                surface_view.unwrap_or_else(|| div().into_any_element())
+            }
             Some(PanelViewId::Sessions) | None => self.render_roles_rail(width, window, cx),
         };
         let rail = div()

@@ -13,7 +13,7 @@ fn subject(context: &PanelContext) -> FilesSubject {
 
 /// The last two parts of a missing path, so the message names the folder
 /// without the whole path: `…/.worktrees/fix-1116`.
-fn compact_missing_path(path: &Path) -> String {
+pub(crate) fn compact_missing_path(path: &Path) -> String {
     let parts = path
         .components()
         .map(|part| part.as_os_str().to_string_lossy().into_owned())
@@ -97,7 +97,18 @@ impl FilesView {
                     return;
                 }
                 match result {
-                    Ok(outcome) => this.apply_outcome(Ok(outcome), cx),
+                    Ok(outcome) => {
+                        let panel_subject = this.context.subject.clone();
+                        let origin = cx.entity_id();
+                        let client = this.client.clone();
+                        this.apply_outcome(Ok(outcome), cx);
+                        crate::surfaces::files::hub(&client, cx).update(cx, |_, cx| {
+                            cx.emit(FilesEvent::RootChanged {
+                                subject: panel_subject,
+                                origin,
+                            });
+                        });
+                    }
                     Err(error) => {
                         this.error = Some(error.to_string().into());
                         cx.notify();

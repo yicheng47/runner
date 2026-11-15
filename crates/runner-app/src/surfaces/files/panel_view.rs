@@ -4,6 +4,8 @@ mod roots;
 mod tree;
 mod watch;
 
+pub(crate) use roots::compact_missing_path;
+
 use std::cell::Cell;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -40,7 +42,7 @@ use crate::theme;
 
 /// A drag of the divider between an open file and the tree.
 #[derive(Clone)]
-struct FileTreeResizeDrag;
+pub(crate) struct FileTreeResizeDrag;
 
 impl Render for FileTreeResizeDrag {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

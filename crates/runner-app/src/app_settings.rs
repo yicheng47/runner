@@ -382,9 +382,11 @@ pub struct AppSettings {
     /// Settings → Side panel → Panel: off hides every tab's panel and its
     /// toggle, keeping the open state and the view switches below.
     pub show_side_panel: bool,
-    /// Whether the `+` menu offers Info and Files.
+    /// Whether the `+` menu offers Info, Files and Changes.
     pub info_view: bool,
     pub files_view: bool,
+    pub changes_view: bool,
+    pub changes_tree_view: bool,
     pub file_icons: crate::file_icons::IconSet,
     /// `None` follows the terminal's Font family.
     pub files_font_family: Option<TerminalFontFamily>,
@@ -455,6 +457,8 @@ impl Default for AppSettings {
             show_side_panel: true,
             info_view: true,
             files_view: true,
+            changes_view: true,
+            changes_tree_view: false,
             file_icons: Default::default(),
             files_font_family: None,
             files_font_size: None,

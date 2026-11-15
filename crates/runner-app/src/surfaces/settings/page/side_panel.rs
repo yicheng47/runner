@@ -265,6 +265,14 @@ impl NativeRoot {
             |settings| &mut settings.files_view,
             cx,
         );
+        let changes_row = surface_row(
+            "settings-changes-view",
+            view(panel::PanelViewId::Changes),
+            "side_panel.changes_description",
+            settings.changes_view,
+            |settings| &mut settings.changes_view,
+            cx,
+        );
         let surfaces_card = div()
             .flex()
             .flex_col()
@@ -275,7 +283,8 @@ impl NativeRoot {
             .bg(theme::panel())
             .map(|card| snapshot("SETTINGS_SIDE_PANEL_SURFACES", card))
             .child(info_row)
-            .child(files_row);
+            .child(files_row)
+            .child(changes_row);
 
         div()
             .flex()
@@ -537,6 +546,7 @@ mod tests {
                         "SETTINGS_SIDE_PANEL_SURFACES_HEADING",
                         "SETTINGS_INFO_VIEW_KEY",
                         "SETTINGS_FILES_VIEW_KEY",
+                        "SETTINGS_CHANGES_VIEW_KEY",
                     ] {
                         assert!(page.has(selector), "{selector}");
                     }
@@ -557,17 +567,25 @@ mod tests {
                     assert!(!page.settings().info_view);
                     page.click("SETTINGS_FILES_VIEW_TOGGLE");
                     assert!(!page.settings().files_view);
+                    page.click("SETTINGS_CHANGES_VIEW_TOGGLE");
+                    assert!(!page.settings().changes_view);
                     page.click("SETTINGS_INFO_VIEW_TOGGLE");
                     page.click("SETTINGS_FILES_VIEW_TOGGLE");
-                    assert!(page.settings().info_view && page.settings().files_view);
+                    page.click("SETTINGS_CHANGES_VIEW_TOGGLE");
+                    assert!(
+                        page.settings().info_view
+                            && page.settings().files_view
+                            && page.settings().changes_view
+                    );
 
                     // Off: the switches keep their values and stop answering.
                     page.click("SETTINGS_SHOW_SIDE_PANEL_TOGGLE");
                     assert!(!page.settings().show_side_panel);
                     page.click("SETTINGS_INFO_VIEW_TOGGLE");
                     page.click("SETTINGS_FILES_VIEW_TOGGLE");
+                    page.click("SETTINGS_CHANGES_VIEW_TOGGLE");
                     let settings = page.settings();
-                    assert!(settings.info_view && settings.files_view);
+                    assert!(settings.info_view && settings.files_view && settings.changes_view);
                     page.click("SETTINGS_SHOW_SIDE_PANEL_TOGGLE");
                     assert!(page.settings().show_side_panel);
                 }
