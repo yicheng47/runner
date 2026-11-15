@@ -61,9 +61,19 @@ pub enum TerminalFrame {
     Resync,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TerminalSnapshotActivity {
+    pub output_seq: u64,
+    pub tui_ready_seq: u64,
+    pub first_paint_seq: u64,
+    pub paint_seq: u64,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TerminalSnapshot {
     pub seq: u64,
+    #[serde(default)]
+    pub activity: Option<TerminalSnapshotActivity>,
     pub cols: u16,
     pub rows: u16,
     pub controller: TerminalController,

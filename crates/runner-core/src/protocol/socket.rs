@@ -507,6 +507,16 @@ impl SocketTransport {
                 let id = binary.u64()?;
                 let subscriber = binary.u64()?;
                 let seq = binary.u64()?;
+                let activity = match binary.take(1)?[0] {
+                    0 => None,
+                    1 => Some(crate::protocol::terminal::TerminalSnapshotActivity {
+                        output_seq: binary.u64()?,
+                        tui_ready_seq: binary.u64()?,
+                        first_paint_seq: binary.u64()?,
+                        paint_seq: binary.u64()?,
+                    }),
+                    _ => return Err(wire::invalid("invalid snapshot activity tag")),
+                };
                 let cols = binary.u16()?;
                 let rows = binary.u16()?;
                 let unfinished_len = binary.u64()? as usize;
@@ -516,6 +526,7 @@ impl SocketTransport {
                     pending.subscriber.store(subscriber, Ordering::Relaxed);
                     pending.snapshot = Some(TerminalSnapshot {
                         seq,
+                        activity,
                         cols,
                         rows,
                         bytes: Vec::new(),
@@ -1010,6 +1021,84 @@ mod tests {
             state.frames.pop_front(),
             Some(TerminalFrame::Resync)
         ));
+    }
+
+    #[test]
+    fn snapshot_header_round_trips_activity_provenance() {
+        for activity in [
+            Some(crate::protocol::terminal::TerminalSnapshotActivity {
+                output_seq: 52,
+                tui_ready_seq: 51,
+                first_paint_seq: 12,
+                paint_seq: 50,
+            }),
+            None,
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let endpoint = IpcEndpoint(root.path().join("runnerd.sock"));
+            let listener = std::os::unix::net::UnixListener::bind(&endpoint.0).unwrap();
+            let expected = TerminalSnapshot {
+                seq: 55,
+                cols: 100,
+                rows: 32,
+                bytes: b"hello".to_vec(),
+                unfinished_len: 0,
+                preceding_char: Some('o'),
+                activity,
+                controller: crate::protocol::terminal::TerminalController::Desktop,
+            };
+            let sent = expected.clone();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                assert_eq!(Frame::read(&mut stream).unwrap().kind, wire::HELLO);
+                Frame::json(
+                    wire::WELCOME,
+                    &wire::Welcome {
+                        exe_sha256: "hash".into(),
+                        pid: 1,
+                        started_at: "now".into(),
+                        app_clients: 0,
+                    },
+                )
+                .unwrap()
+                .write(&mut stream)
+                .unwrap();
+                let attach = Frame::read(&mut stream).unwrap();
+                assert_eq!(attach.kind, wire::ATTACH);
+                let mut binary = wire::Binary(&attach.payload);
+                let id = binary.u64().unwrap();
+                assert_eq!(binary.string().unwrap(), "session-1");
+                wire::snapshot_header(id, 9, &sent)
+                    .write(&mut stream)
+                    .unwrap();
+                let mut data = wire::numbered(wire::SNAPSHOT_DATA, id);
+                data.payload.push(1);
+                data.payload.extend_from_slice(&sent.bytes);
+                data.write(&mut stream).unwrap();
+                let _ = Frame::read(&mut stream);
+            });
+            let socket = SocketTransport::connect(
+                &endpoint,
+                wire::Hello {
+                    exe_sha256: "hash".into(),
+                    client: "test".into(),
+                },
+            )
+            .unwrap();
+            let attachment = socket.attach("session-1").unwrap();
+            assert_eq!(attachment.subscriber_id, 9);
+            assert_eq!(attachment.snapshot.seq, expected.seq);
+            assert_eq!(attachment.snapshot.cols, expected.cols);
+            assert_eq!(attachment.snapshot.rows, expected.rows);
+            assert_eq!(attachment.snapshot.bytes, expected.bytes);
+            assert_eq!(attachment.snapshot.unfinished_len, expected.unfinished_len);
+            assert_eq!(attachment.snapshot.preceding_char, expected.preceding_char);
+            assert_eq!(attachment.snapshot.activity, expected.activity);
+            assert_eq!(attachment.snapshot.controller, expected.controller);
+            drop(attachment);
+            drop(socket);
+            server.join().unwrap();
+        }
     }
 }
 

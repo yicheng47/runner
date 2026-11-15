@@ -116,6 +116,7 @@ mod tests {
                 subscriber_id: 1,
                 snapshot: TerminalSnapshot {
                     seq: 0,
+                    activity: None,
                     cols: 10,
                     rows: 2,
                     controller: TerminalController::Desktop,

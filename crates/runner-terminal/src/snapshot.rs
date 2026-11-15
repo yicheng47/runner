@@ -18,11 +18,17 @@ pub struct TrackedProcessor {
 }
 
 #[derive(Default)]
-struct PrecedingChar(Option<char>);
+struct PrecedingChar {
+    character: Option<char>,
+    wrote_visible: bool,
+}
 
 impl Handler for PrecedingChar {
     fn input(&mut self, character: char) {
-        self.0 = Some(character);
+        self.character = Some(character);
+        if !character.is_whitespace() && !character.is_control() {
+            self.wrote_visible = true;
+        }
     }
 }
 
@@ -34,6 +40,14 @@ impl TrackedProcessor {
     pub fn advance<H: Handler>(&mut self, handler: &mut H, bytes: &[u8]) {
         self.processor.advance(handler, bytes);
         self.capture.advance(&mut self.preceding, bytes);
+    }
+
+    pub fn begin_paint_tracking(&mut self) {
+        self.preceding.wrote_visible = false;
+    }
+
+    pub fn wrote_visible(&self) -> bool {
+        self.preceding.wrote_visible
     }
 
     pub fn stop_sync<H: Handler>(&mut self, handler: &mut H) {
@@ -50,7 +64,7 @@ impl TrackedProcessor {
     }
 
     pub fn preceding_char(&self) -> Option<char> {
-        self.preceding.0
+        self.preceding.character
     }
 
     pub fn restore_preceding_char(&mut self, preceding: Option<char>) {
@@ -61,6 +75,7 @@ impl TrackedProcessor {
             // Seed REP without painting over the restored terminal or mapping through its charset.
             self.processor.advance(&mut PrecedingChar::default(), bytes);
             self.capture.advance(&mut self.preceding, bytes);
+            self.preceding.wrote_visible = false;
         }
     }
 }

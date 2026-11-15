@@ -21,7 +21,7 @@ use anyhow::{Context as _, Result};
 use regex::Regex;
 use runner_core::protocol::terminal::{
     TerminalAttachment, TerminalController, TerminalFrame, TerminalMetadata, TerminalPalette,
-    TerminalSnapshot,
+    TerminalSnapshot, TerminalSnapshotActivity,
 };
 use runner_core::protocol::{ClientError, ClientEvent, DaemonClient};
 
@@ -429,9 +429,10 @@ impl BurstHold {
 #[derive(Default)]
 struct SequenceState {
     last: u64,
-    // No production reader after M6.11; kept as a cheaper mode-level signal should one appear.
+    last_output_seq: u64,
     tui_ready_seq: u64,
     first_paint_seq: u64,
+    last_paint_seq: u64,
     last_output_at: Option<Instant>,
 }
 
@@ -567,8 +568,10 @@ pub struct TerminalScrollState {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TerminalOutputActivity {
     pub last_seq: u64,
+    pub last_output_seq: u64,
     pub tui_ready_seq: u64,
     pub first_paint_seq: u64,
+    pub last_paint_seq: u64,
     pub last_output_at: Option<Instant>,
 }
 
@@ -778,6 +781,15 @@ impl TerminalMirror {
         let mut sequence = self.sequence.lock().unwrap();
         let mut parser = self.parser.lock().unwrap();
         let mut term = self.term.lock();
+        let was_tui_ready = sequence.last > 0
+            && attachment.snapshot.seq >= sequence.last
+            && term_indicates_tui_ready(&term, &parser);
+        let previous_output_seq = if attachment.snapshot.seq < sequence.last {
+            *sequence = SequenceState::default();
+            0
+        } else {
+            sequence.last_output_seq
+        };
         let (events, discarded) = mpsc::channel();
         drop(discarded);
         *term = Term::new(
@@ -807,12 +819,65 @@ impl TerminalMirror {
             .restore_preceding_char(attachment.snapshot.preceding_char);
         parse(&mut parser, &mut term, &attachment.snapshot.bytes[split..]);
         sequence.last = attachment.snapshot.seq;
-        mark_paint(
-            &mut sequence,
-            &mut term,
-            TermMode::empty(),
-            attachment.snapshot.seq,
-        );
+        match attachment.snapshot.activity {
+            Some(provenance) => {
+                sequence.last_output_seq = sequence.last_output_seq.max(provenance.output_seq);
+                if provenance.output_seq > 0
+                    && (provenance.output_seq > previous_output_seq
+                        || sequence.last_output_at.is_none())
+                {
+                    sequence.last_output_at = Some(Instant::now());
+                }
+                sequence.tui_ready_seq = sequence.tui_ready_seq.max(provenance.tui_ready_seq);
+                sequence.first_paint_seq =
+                    match (sequence.first_paint_seq, provenance.first_paint_seq) {
+                        (0, next) | (next, 0) => next,
+                        (existing, next) => existing.min(next),
+                    };
+                sequence.last_paint_seq = sequence.last_paint_seq.max(provenance.paint_seq);
+            }
+            None => {
+                let snapshot_painted = term_has_visible_paint(&term);
+                let snapshot_tui_ready = term_indicates_tui_ready(&term, &parser)
+                    || chunk_indicates_tui_ready(&attachment.snapshot.bytes[split..]);
+                let snapshot_active = !attachment.snapshot.bytes.is_empty()
+                    && (snapshot_tui_ready
+                        || snapshot_painted
+                        || term.grid().cursor.point != Point::default()
+                        || !attachment.snapshot.bytes[split..].is_empty());
+                if attachment.snapshot.seq > 0 && snapshot_active {
+                    sequence.last_output_seq =
+                        sequence.last_output_seq.max(attachment.snapshot.seq);
+                    if attachment.snapshot.seq > previous_output_seq
+                        || sequence.last_output_at.is_none()
+                    {
+                        sequence.last_output_at = Some(Instant::now());
+                    }
+                    update_tui_ready(
+                        &mut sequence,
+                        &term,
+                        &parser,
+                        was_tui_ready,
+                        attachment.snapshot.seq,
+                    );
+                    if (sequence.tui_ready_seq == 0 || !was_tui_ready)
+                        && chunk_indicates_tui_ready(&attachment.snapshot.bytes[split..])
+                    {
+                        sequence.tui_ready_seq =
+                            sequence.tui_ready_seq.max(attachment.snapshot.seq);
+                    }
+                }
+                mark_paint(
+                    &mut sequence,
+                    &mut term,
+                    TermMode::empty(),
+                    attachment.snapshot.seq,
+                );
+                if attachment.snapshot.seq > 0 && snapshot_painted {
+                    sequence.last_paint_seq = sequence.last_paint_seq.max(attachment.snapshot.seq);
+                }
+            }
+        }
         self.scroll_mark.lock().unwrap().rebuild();
         *self.size.lock().unwrap() = (attachment.snapshot.cols, attachment.snapshot.rows);
         self.apply_controller(attachment.snapshot.controller.clone());
@@ -878,10 +943,26 @@ impl TerminalMirror {
         let sequence = self.sequence.lock().unwrap();
         TerminalOutputActivity {
             last_seq: sequence.last,
+            last_output_seq: sequence.last_output_seq,
             tui_ready_seq: sequence.tui_ready_seq,
             first_paint_seq: sequence.first_paint_seq,
+            last_paint_seq: sequence.last_paint_seq,
             last_output_at: sequence.last_output_at,
         }
+    }
+    fn apply_output_chunk(
+        &self,
+        sequence: &mut SequenceState,
+        parser: &mut ParserState,
+        seq: u64,
+        bytes: &[u8],
+    ) {
+        let mut term = self.term.lock();
+        let previous = *term.mode();
+        let was_tui_ready = term_indicates_tui_ready(&term, parser);
+        parser.processor.begin_paint_tracking();
+        self.track_scroll(&mut term, |tracker| parse_with(parser, tracker, bytes));
+        finish_parsed_chunk(sequence, &mut term, parser, previous, was_tui_ready, seq);
     }
     /// Returns whether the bytes reached the terminal; a held burst has not.
     fn feed_output(&self, seq: u64, bytes: &[u8]) -> bool {
@@ -891,6 +972,7 @@ impl TerminalMirror {
         }
         let now = Instant::now();
         sequence.last = seq;
+        sequence.last_output_seq = seq;
         sequence.last_output_at = Some(now);
         if chunk_indicates_tui_ready(bytes) {
             sequence.tui_ready_seq = sequence.tui_ready_seq.max(seq);
@@ -915,10 +997,7 @@ impl TerminalMirror {
         } else {
             bytes
         };
-        let mut term = self.term.lock();
-        let previous = *term.mode();
-        self.track_scroll(&mut term, |tracker| parse_with(&mut parser, tracker, bytes));
-        mark_paint(&mut sequence, &mut term, previous, seq);
+        self.apply_output_chunk(&mut sequence, &mut parser, seq, bytes);
         if parser.processor.sync_timeout().sync_timeout().is_some()
             && !std::mem::replace(&mut parser.flush_scheduled, true)
         {
@@ -931,11 +1010,8 @@ impl TerminalMirror {
             return false;
         }
         let held = parser.burst.take();
-        let mut term = self.term.lock();
-        let previous = *term.mode();
-        self.track_scroll(&mut term, |tracker| parse_with(parser, tracker, &held));
-        let seq = sequence.last;
-        mark_paint(sequence, &mut term, previous, seq);
+        let seq = active_output_seq(sequence);
+        self.apply_output_chunk(sequence, parser, seq, &held);
         true
     }
     fn flush_held_output(&self) -> Option<Instant> {
@@ -955,10 +1031,19 @@ impl TerminalMirror {
         {
             let mut term = self.term.lock();
             let previous = *term.mode();
+            let was_tui_ready = term_indicates_tui_ready(&term, &parser);
+            parser.processor.begin_paint_tracking();
             self.track_scroll(&mut term, |tracker| parser.processor.stop_sync(tracker));
             parser.boundary.end_sync();
-            let seq = sequence.last;
-            mark_paint(&mut sequence, &mut term, previous, seq);
+            let seq = active_output_seq(&sequence);
+            finish_parsed_chunk(
+                &mut sequence,
+                &mut term,
+                &parser,
+                previous,
+                was_tui_ready,
+                seq,
+            );
             flushed = true;
         }
         let next = [
@@ -1405,12 +1490,39 @@ fn observe_parsed(
     sequence: &mut SequenceState,
     input_tracker: &mut InputTracker,
     term: &mut Term<EventProxy>,
-    previous_mode: TermMode,
+    parser: &ParserState,
+    prior: (TermMode, bool),
     seq: u64,
     now: Instant,
 ) -> Option<InputObservation> {
-    mark_paint(sequence, term, previous_mode, seq);
+    let (previous_mode, was_tui_ready) = prior;
+    finish_parsed_chunk(sequence, term, parser, previous_mode, was_tui_ready, seq);
     input_tracker.observe_output(now, term)
+}
+
+fn finish_parsed_chunk(
+    sequence: &mut SequenceState,
+    term: &mut Term<EventProxy>,
+    parser: &ParserState,
+    previous_mode: TermMode,
+    was_tui_ready: bool,
+    seq: u64,
+) {
+    update_tui_ready(sequence, term, parser, was_tui_ready, seq);
+    mark_paint(sequence, term, previous_mode, seq);
+    if seq > 0 && parser.processor.wrote_visible() && term_has_visible_paint(term) {
+        sequence.last_paint_seq = sequence.last_paint_seq.max(seq);
+    } else if sequence.first_paint_seq > 0 && sequence.last_paint_seq == 0 {
+        sequence.last_paint_seq = sequence.first_paint_seq;
+    }
+}
+
+fn active_output_seq(sequence: &SequenceState) -> u64 {
+    if sequence.last_output_seq > 0 {
+        sequence.last_output_seq
+    } else {
+        sequence.last
+    }
 }
 
 fn mark_paint(
@@ -1419,12 +1531,7 @@ fn mark_paint(
     previous_mode: TermMode,
     seq: u64,
 ) {
-    if sequence.first_paint_seq == 0
-        && term
-            .grid()
-            .display_iter()
-            .any(|cell| !cell.c.is_whitespace())
-    {
+    if sequence.first_paint_seq == 0 && term_has_visible_paint(term) {
         sequence.first_paint_seq = seq;
     }
     if !previous_mode.intersects(TermMode::MOUSE_MODE)
@@ -2044,10 +2151,53 @@ fn url_regex() -> &'static Regex {
     })
 }
 
+fn term_has_visible_paint(term: &Term<EventProxy>) -> bool {
+    term.grid()
+        .display_iter()
+        .any(|cell| !cell.c.is_whitespace() && !cell.c.is_control())
+}
+
+const TUI_READY_MODES: TermMode = TermMode::ALT_SCREEN
+    .union(TermMode::BRACKETED_PASTE)
+    .union(TermMode::MOUSE_MODE)
+    .union(TermMode::FOCUS_IN_OUT)
+    .union(TermMode::KITTY_KEYBOARD_PROTOCOL);
+
+fn term_indicates_tui_ready(term: &Term<EventProxy>, parser: &ParserState) -> bool {
+    let mode = *term.mode();
+    mode.intersects(TUI_READY_MODES)
+        || !mode.contains(TermMode::SHOW_CURSOR)
+        || parser.processor.sync_timeout().sync_timeout().is_some()
+}
+
+fn update_tui_ready(
+    sequence: &mut SequenceState,
+    term: &Term<EventProxy>,
+    parser: &ParserState,
+    was_tui_ready: bool,
+    seq: u64,
+) {
+    if seq > 0
+        && (sequence.tui_ready_seq == 0 || !was_tui_ready)
+        && term_indicates_tui_ready(term, parser)
+    {
+        sequence.tui_ready_seq = sequence.tui_ready_seq.max(seq);
+    }
+}
+
 fn chunk_indicates_tui_ready(bytes: &[u8]) -> bool {
-    [b"\x1b[?2004h".as_slice(), b"\x1b[?1049h", b"\x1b[?47h"]
-        .into_iter()
-        .any(|signal| bytes.windows(signal.len()).any(|window| window == signal))
+    [
+        b"\x1b[?2004h".as_slice(),
+        b"\x1b[?1049h",
+        b"\x1b[?1047h",
+        b"\x1b[?47h",
+        b"\x1b[?2026h",
+        b"\x1b[?2031h",
+        b"\x1b[?1004h",
+        b"\x1b[?25l",
+    ]
+    .into_iter()
+    .any(|signal| bytes.windows(signal.len()).any(|window| window == signal))
 }
 
 pub struct TerminalBridge {

@@ -387,6 +387,7 @@ impl Transport for Fake {
             subscriber_id: 17,
             snapshot: TerminalSnapshot {
                 seq: 1,
+                activity: None,
                 cols,
                 rows,
                 controller: self.controller.lock().unwrap().clone(),

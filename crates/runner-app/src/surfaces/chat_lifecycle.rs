@@ -79,13 +79,12 @@ pub(crate) fn ended_subtitle(
 }
 
 /// The pill drops on the first painted frame. The output-idle backstop covers
-/// processes that never paint, but not one that has taken the screen
-/// (`tui_ready_seen`) and is still booting behind it: claude-code's fullscreen
-/// renderer enters the alternate screen at process start and paints its first
-/// frame 1–2 s later, and dropping the pill on the silence between shows a
-/// blank pane.
+/// non-TUI processes that emit non-painting output and go quiet, while keeping
+/// the pill up across both cold-start silence before any PTY byte arrives and
+/// TUI startup silence after taking control of the terminal (`tui_ready_seen`)
+/// before painting the first frame.
 pub(crate) fn transition_should_settle(
-    kind: TransitionKind,
+    _kind: TransitionKind,
     elapsed: Duration,
     first_paint_seen: bool,
     tui_ready_seen: bool,
@@ -98,7 +97,36 @@ pub(crate) fn transition_should_settle(
             && !tui_ready_seen
             && elapsed >= TRANSITION_MIN_VISIBLE
             && output_idle_for.is_some_and(|idle| idle >= TRANSITION_IDLE))
-        || (kind == TransitionKind::Starting && !output_seen && elapsed >= TRANSITION_MIN_VISIBLE)
+}
+
+pub(crate) fn spawned_output_seq(payload: &serde_json::Value) -> Option<u64> {
+    payload
+        .get("output_seq")
+        .and_then(serde_json::Value::as_u64)
+}
+
+pub(crate) fn evaluate_transition_settle(
+    kind: TransitionKind,
+    baseline_seq: u64,
+    elapsed: Duration,
+    activity: Option<runner_terminal::terminal::TerminalOutputActivity>,
+    now: std::time::Instant,
+) -> bool {
+    let output_seen = activity.is_some_and(|activity| activity.last_output_seq > baseline_seq);
+    let first_paint_seen = activity.is_some_and(|activity| activity.last_paint_seq > baseline_seq);
+    let tui_ready_seen = activity.is_some_and(|activity| activity.tui_ready_seq > baseline_seq);
+    let output_idle_for = output_seen
+        .then(|| activity.and_then(|activity| activity.last_output_at))
+        .flatten()
+        .map(|at| now.saturating_duration_since(at));
+    transition_should_settle(
+        kind,
+        elapsed,
+        first_paint_seen,
+        tui_ready_seen,
+        output_seen,
+        output_idle_for,
+    )
 }
 
 #[cfg(test)]
@@ -209,46 +237,72 @@ mod tests {
 
     #[test]
     fn transition_settling_uses_first_paint_with_timeout_and_idle_backstops() {
-        assert!(transition_should_settle(
-            TransitionKind::Resuming,
-            Duration::from_millis(20),
-            true,
-            true,
-            true,
-            Some(Duration::ZERO),
-        ));
-        assert!(!transition_should_settle(
-            TransitionKind::Resuming,
-            Duration::from_secs(1),
-            false,
-            false,
-            false,
-            None,
-        ));
-        assert!(transition_should_settle(
-            TransitionKind::Starting,
-            Duration::from_secs(1),
-            false,
-            false,
-            false,
-            None,
-        ));
-        assert!(transition_should_settle(
-            TransitionKind::Resuming,
-            Duration::from_secs(1),
-            false,
-            false,
-            true,
-            Some(Duration::from_millis(400)),
-        ));
-        assert!(transition_should_settle(
-            TransitionKind::Resuming,
-            Duration::from_secs(10),
-            false,
-            false,
-            false,
-            None,
-        ));
+        for kind in [TransitionKind::Starting, TransitionKind::Resuming] {
+            assert!(transition_should_settle(
+                kind,
+                Duration::from_millis(20),
+                true,
+                true,
+                true,
+                Some(Duration::ZERO),
+            ));
+            assert!(!transition_should_settle(
+                kind,
+                Duration::from_secs(1),
+                false,
+                false,
+                false,
+                None,
+            ));
+            assert!(!transition_should_settle(
+                kind,
+                Duration::from_millis(2500),
+                false,
+                false,
+                false,
+                None,
+            ));
+            assert!(!transition_should_settle(
+                kind,
+                Duration::from_millis(900),
+                false,
+                false,
+                true,
+                Some(Duration::from_millis(500)),
+            ));
+            assert!(!transition_should_settle(
+                kind,
+                Duration::from_secs(1),
+                false,
+                false,
+                true,
+                Some(Duration::from_millis(250)),
+            ));
+            assert!(!transition_should_settle(
+                kind,
+                Duration::from_secs(1),
+                false,
+                false,
+                true,
+                None,
+            ));
+            assert!(transition_should_settle(
+                kind,
+                Duration::from_secs(1),
+                false,
+                false,
+                true,
+                Some(Duration::from_millis(400)),
+            ));
+            assert!(transition_should_settle(
+                kind,
+                TRANSITION_HARD_TIMEOUT,
+                false,
+                false,
+                false,
+                None,
+            ));
+        }
     }
 
     #[test]
@@ -281,5 +335,69 @@ mod tests {
                 Some(Duration::from_secs(9)),
             ));
         }
+    }
+
+    #[test]
+    fn evaluate_transition_settle_tracks_baseline_and_ignores_resize_or_mode_only_resume_activity()
+    {
+        let now = std::time::Instant::now();
+        let baseline = 50;
+
+        // Restored pre-stop paint/TUI at baseline must keep Resuming up even if idle > 400ms.
+        let restored = runner_terminal::terminal::TerminalOutputActivity {
+            last_seq: 51,
+            last_output_seq: 50,
+            tui_ready_seq: 50,
+            first_paint_seq: 50,
+            last_paint_seq: 50,
+            last_output_at: Some(now - Duration::from_secs(2)),
+        };
+        assert!(!evaluate_transition_settle(
+            TransitionKind::Resuming,
+            baseline,
+            Duration::from_secs(2),
+            Some(restored),
+            now,
+        ));
+
+        // Post-resume mode-only sequence leaves last_paint_seq at baseline and tui_ready_seq > baseline.
+        let mode_only = runner_terminal::terminal::TerminalOutputActivity {
+            last_seq: 52,
+            last_output_seq: 52,
+            tui_ready_seq: 52,
+            first_paint_seq: 50,
+            last_paint_seq: 50,
+            last_output_at: Some(now - Duration::from_secs(1)),
+        };
+        assert!(!evaluate_transition_settle(
+            TransitionKind::Resuming,
+            baseline,
+            Duration::from_secs(2),
+            Some(mode_only),
+            now,
+        ));
+
+        // Actual post-resume visible paint advances last_paint_seq past baseline and settles.
+        let repainted = runner_terminal::terminal::TerminalOutputActivity {
+            last_seq: 53,
+            last_output_seq: 53,
+            tui_ready_seq: 52,
+            first_paint_seq: 50,
+            last_paint_seq: 53,
+            last_output_at: Some(now),
+        };
+        assert!(evaluate_transition_settle(
+            TransitionKind::Resuming,
+            baseline,
+            Duration::from_secs(2),
+            Some(repainted),
+            now,
+        ));
+
+        assert_eq!(
+            spawned_output_seq(&serde_json::json!({ "output_seq": 7 })),
+            Some(7)
+        );
+        assert_eq!(spawned_output_seq(&serde_json::json!({})), None);
     }
 }

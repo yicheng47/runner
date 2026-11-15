@@ -87,6 +87,7 @@ impl Transport for RecordingHost {
             subscriber_id: 1,
             snapshot: TerminalSnapshot {
                 seq: 0,
+                activity: None,
                 cols: 80,
                 rows: 24,
                 controller: self.controller.lock().unwrap().clone(),

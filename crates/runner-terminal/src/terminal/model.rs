@@ -371,15 +371,22 @@ impl TerminalModel {
             }
         }
         sequence.last = seq;
+        sequence.last_output_seq = seq;
+        sequence.last_output_at = Some(now);
+        if chunk_indicates_tui_ready(bytes) {
+            sequence.tui_ready_seq = sequence.tui_ready_seq.max(seq);
+        }
         let mut parser = self.parser.lock().unwrap();
         let mut tracker = self.input_tracker.lock().unwrap();
         let mut term = self.term.lock();
         let previous_mode = *term.mode();
+        let was_tui_ready = term_indicates_tui_ready(&term, &parser);
+        parser.processor.begin_paint_tracking();
         let mut fed = 0;
-        for (end, sequence) in queries {
+        for (end, scheme) in queries {
             parse(&mut parser, &mut term, &bytes[fed..end]);
             fed = end;
-            match sequence {
+            match scheme {
                 Some(SchemeSequence::Subscribe) => {
                     self.scheme.subscribed.store(true, Ordering::Relaxed)
                 }
@@ -405,7 +412,8 @@ impl TerminalModel {
             &mut sequence,
             &mut tracker,
             &mut term,
-            previous_mode,
+            &parser,
+            (previous_mode, was_tui_ready),
             seq,
             now,
         );
@@ -472,16 +480,19 @@ impl TerminalModel {
         let mut tracker = self.input_tracker.lock().unwrap();
         let mut term = self.term.lock();
         let previous_mode = *term.mode();
+        let was_tui_ready = term_indicates_tui_ready(&term, &parser);
         let held = parser.processor.sync_bytes_count();
+        parser.processor.begin_paint_tracking();
         parser.processor.stop_sync(&mut *term);
         parser.boundary.end_sync();
         parser.flush_scheduled = false;
-        let seq = sequence.last;
+        let seq = active_output_seq(&sequence);
         let observation = observe_parsed(
             &mut sequence,
             &mut tracker,
             &mut term,
-            previous_mode,
+            &parser,
+            (previous_mode, was_tui_ready),
             seq,
             now,
         );
@@ -499,6 +510,7 @@ impl TerminalModel {
     }
 
     pub fn snapshot_with_history(&self, seq: u64, history: usize) -> TerminalSnapshot {
+        let sequence = self.sequence.lock().unwrap();
         let parser = self.parser.lock().unwrap();
         let term = self.term.lock();
         let unfinished = parser.boundary.unfinished();
@@ -509,6 +521,12 @@ impl TerminalModel {
             bytes: crate::snapshot::serialize_with_history(&*term, unfinished, history),
             unfinished_len: unfinished.len(),
             preceding_char: parser.processor.preceding_char(),
+            activity: Some(TerminalSnapshotActivity {
+                output_seq: sequence.last_output_seq,
+                tui_ready_seq: sequence.tui_ready_seq,
+                first_paint_seq: sequence.first_paint_seq,
+                paint_seq: sequence.last_paint_seq,
+            }),
             controller: Default::default(),
         }
     }
@@ -546,11 +564,25 @@ impl TerminalModel {
             let mut term = self.term.lock();
             let now = Instant::now();
             let previous_mode = *term.mode();
+            let was_tui_ready = term_indicates_tui_ready(&term, &parser);
             let held_sync = parser.processor.sync_timeout().sync_timeout().is_some();
-            if held_sync {
+            let observation = if held_sync {
+                parser.processor.begin_paint_tracking();
                 parser.processor.stop_sync(&mut *term);
                 parser.boundary.end_sync();
-            }
+                let seq = active_output_seq(&sequence);
+                observe_parsed(
+                    &mut sequence,
+                    &mut tracker,
+                    &mut term,
+                    &parser,
+                    (previous_mode, was_tui_ready),
+                    seq,
+                    now,
+                )
+            } else {
+                None
+            };
             parser.flush_scheduled = false;
             let preceding = parser.processor.preceding_char();
             parser.processor.restore_preceding_char(preceding);
@@ -563,19 +595,7 @@ impl TerminalModel {
                 initial_title,
                 apply: Box::new(apply),
             });
-            held_sync
-                .then(|| {
-                    let seq = sequence.last;
-                    observe_parsed(
-                        &mut sequence,
-                        &mut tracker,
-                        &mut term,
-                        previous_mode,
-                        seq,
-                        now,
-                    )
-                })
-                .flatten()
+            observation
         };
         if let Some(reports) = &self.cwd_reports {
             reports.lock().unwrap().carry.clear();

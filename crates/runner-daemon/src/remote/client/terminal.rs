@@ -271,6 +271,7 @@ impl Terminals {
                 if stream.assembling.is_none() {
                     stream.assembling = Some(TerminalSnapshot {
                         seq: chunk.seq,
+                        activity: None,
                         cols: chunk.cols,
                         rows: chunk.rows,
                         controller: TerminalController::None,

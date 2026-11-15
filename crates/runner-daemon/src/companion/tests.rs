@@ -234,6 +234,7 @@ impl Core for Fake {
             subscriber_id,
             snapshot: TerminalSnapshot {
                 seq: subscriber_id * 10,
+                activity: None,
                 cols: 80,
                 rows: 24,
                 controller: TerminalController::Desktop,
