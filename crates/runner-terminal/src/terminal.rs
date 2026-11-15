@@ -429,7 +429,6 @@ impl BurstHold {
 #[derive(Default)]
 struct SequenceState {
     last: u64,
-    // No production reader after M6.11; kept as a cheaper mode-level signal should one appear.
     tui_ready_seq: u64,
     first_paint_seq: u64,
     last_output_at: Option<Instant>,
@@ -778,6 +777,12 @@ impl TerminalMirror {
         let mut sequence = self.sequence.lock().unwrap();
         let mut parser = self.parser.lock().unwrap();
         let mut term = self.term.lock();
+        let was_tui_ready = sequence.last > 0
+            && attachment.snapshot.seq >= sequence.last
+            && term_indicates_tui_ready(&term, &parser);
+        if attachment.snapshot.seq < sequence.last {
+            *sequence = SequenceState::default();
+        }
         let (events, discarded) = mpsc::channel();
         drop(discarded);
         *term = Term::new(
@@ -807,6 +812,23 @@ impl TerminalMirror {
             .restore_preceding_char(attachment.snapshot.preceding_char);
         parse(&mut parser, &mut term, &attachment.snapshot.bytes[split..]);
         sequence.last = attachment.snapshot.seq;
+        if attachment.snapshot.seq > 0 && !attachment.snapshot.bytes.is_empty() {
+            if sequence.last_output_at.is_none() {
+                sequence.last_output_at = Some(Instant::now());
+            }
+            update_tui_ready(
+                &mut sequence,
+                &term,
+                &parser,
+                was_tui_ready,
+                attachment.snapshot.seq,
+            );
+            if (sequence.tui_ready_seq == 0 || !was_tui_ready)
+                && chunk_indicates_tui_ready(&attachment.snapshot.bytes[split..])
+            {
+                sequence.tui_ready_seq = sequence.tui_ready_seq.max(attachment.snapshot.seq);
+            }
+        }
         mark_paint(
             &mut sequence,
             &mut term,
@@ -917,7 +939,9 @@ impl TerminalMirror {
         };
         let mut term = self.term.lock();
         let previous = *term.mode();
+        let was_tui_ready = term_indicates_tui_ready(&term, &parser);
         self.track_scroll(&mut term, |tracker| parse_with(&mut parser, tracker, bytes));
+        update_tui_ready(&mut sequence, &term, &parser, was_tui_ready, seq);
         mark_paint(&mut sequence, &mut term, previous, seq);
         if parser.processor.sync_timeout().sync_timeout().is_some()
             && !std::mem::replace(&mut parser.flush_scheduled, true)
@@ -933,8 +957,10 @@ impl TerminalMirror {
         let held = parser.burst.take();
         let mut term = self.term.lock();
         let previous = *term.mode();
+        let was_tui_ready = term_indicates_tui_ready(&term, parser);
         self.track_scroll(&mut term, |tracker| parse_with(parser, tracker, &held));
         let seq = sequence.last;
+        update_tui_ready(sequence, &term, parser, was_tui_ready, seq);
         mark_paint(sequence, &mut term, previous, seq);
         true
     }
@@ -2044,10 +2070,47 @@ fn url_regex() -> &'static Regex {
     })
 }
 
+const TUI_READY_MODES: TermMode = TermMode::ALT_SCREEN
+    .union(TermMode::BRACKETED_PASTE)
+    .union(TermMode::MOUSE_MODE)
+    .union(TermMode::FOCUS_IN_OUT)
+    .union(TermMode::KITTY_KEYBOARD_PROTOCOL);
+
+fn term_indicates_tui_ready(term: &Term<EventProxy>, parser: &ParserState) -> bool {
+    let mode = *term.mode();
+    mode.intersects(TUI_READY_MODES)
+        || !mode.contains(TermMode::SHOW_CURSOR)
+        || parser.processor.sync_timeout().sync_timeout().is_some()
+}
+
+fn update_tui_ready(
+    sequence: &mut SequenceState,
+    term: &Term<EventProxy>,
+    parser: &ParserState,
+    was_tui_ready: bool,
+    seq: u64,
+) {
+    if seq > 0
+        && (sequence.tui_ready_seq == 0 || !was_tui_ready)
+        && term_indicates_tui_ready(term, parser)
+    {
+        sequence.tui_ready_seq = sequence.tui_ready_seq.max(seq);
+    }
+}
+
 fn chunk_indicates_tui_ready(bytes: &[u8]) -> bool {
-    [b"\x1b[?2004h".as_slice(), b"\x1b[?1049h", b"\x1b[?47h"]
-        .into_iter()
-        .any(|signal| bytes.windows(signal.len()).any(|window| window == signal))
+    [
+        b"\x1b[?2004h".as_slice(),
+        b"\x1b[?1049h",
+        b"\x1b[?1047h",
+        b"\x1b[?47h",
+        b"\x1b[?2026h",
+        b"\x1b[?2031h",
+        b"\x1b[?1004h",
+        b"\x1b[?25l",
+    ]
+    .into_iter()
+    .any(|signal| bytes.windows(signal.len()).any(|window| window == signal))
 }
 
 pub struct TerminalBridge {

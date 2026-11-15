@@ -79,13 +79,12 @@ pub(crate) fn ended_subtitle(
 }
 
 /// The pill drops on the first painted frame. The output-idle backstop covers
-/// processes that never paint, but not one that has taken the screen
-/// (`tui_ready_seen`) and is still booting behind it: claude-code's fullscreen
-/// renderer enters the alternate screen at process start and paints its first
-/// frame 1–2 s later, and dropping the pill on the silence between shows a
-/// blank pane.
+/// non-TUI processes that emit non-painting output and go quiet, while keeping
+/// the pill up across both cold-start silence before any PTY byte arrives and
+/// TUI startup silence after taking control of the terminal (`tui_ready_seen`)
+/// before painting the first frame.
 pub(crate) fn transition_should_settle(
-    kind: TransitionKind,
+    _kind: TransitionKind,
     elapsed: Duration,
     first_paint_seen: bool,
     tui_ready_seen: bool,
@@ -98,7 +97,6 @@ pub(crate) fn transition_should_settle(
             && !tui_ready_seen
             && elapsed >= TRANSITION_MIN_VISIBLE
             && output_idle_for.is_some_and(|idle| idle >= TRANSITION_IDLE))
-        || (kind == TransitionKind::Starting && !output_seen && elapsed >= TRANSITION_MIN_VISIBLE)
 }
 
 #[cfg(test)]
@@ -209,46 +207,72 @@ mod tests {
 
     #[test]
     fn transition_settling_uses_first_paint_with_timeout_and_idle_backstops() {
-        assert!(transition_should_settle(
-            TransitionKind::Resuming,
-            Duration::from_millis(20),
-            true,
-            true,
-            true,
-            Some(Duration::ZERO),
-        ));
-        assert!(!transition_should_settle(
-            TransitionKind::Resuming,
-            Duration::from_secs(1),
-            false,
-            false,
-            false,
-            None,
-        ));
-        assert!(transition_should_settle(
-            TransitionKind::Starting,
-            Duration::from_secs(1),
-            false,
-            false,
-            false,
-            None,
-        ));
-        assert!(transition_should_settle(
-            TransitionKind::Resuming,
-            Duration::from_secs(1),
-            false,
-            false,
-            true,
-            Some(Duration::from_millis(400)),
-        ));
-        assert!(transition_should_settle(
-            TransitionKind::Resuming,
-            Duration::from_secs(10),
-            false,
-            false,
-            false,
-            None,
-        ));
+        for kind in [TransitionKind::Starting, TransitionKind::Resuming] {
+            assert!(transition_should_settle(
+                kind,
+                Duration::from_millis(20),
+                true,
+                true,
+                true,
+                Some(Duration::ZERO),
+            ));
+            assert!(!transition_should_settle(
+                kind,
+                Duration::from_secs(1),
+                false,
+                false,
+                false,
+                None,
+            ));
+            assert!(!transition_should_settle(
+                kind,
+                Duration::from_millis(2500),
+                false,
+                false,
+                false,
+                None,
+            ));
+            assert!(!transition_should_settle(
+                kind,
+                Duration::from_millis(900),
+                false,
+                false,
+                true,
+                Some(Duration::from_millis(500)),
+            ));
+            assert!(!transition_should_settle(
+                kind,
+                Duration::from_secs(1),
+                false,
+                false,
+                true,
+                Some(Duration::from_millis(250)),
+            ));
+            assert!(!transition_should_settle(
+                kind,
+                Duration::from_secs(1),
+                false,
+                false,
+                true,
+                None,
+            ));
+            assert!(transition_should_settle(
+                kind,
+                Duration::from_secs(1),
+                false,
+                false,
+                true,
+                Some(Duration::from_millis(400)),
+            ));
+            assert!(transition_should_settle(
+                kind,
+                TRANSITION_HARD_TIMEOUT,
+                false,
+                false,
+                false,
+                None,
+            ));
+        }
     }
 
     #[test]

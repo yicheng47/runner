@@ -1519,3 +1519,163 @@ fn windows_drive_paths_and_file_uris_resolve_in_terminal() {
         }
     );
 }
+
+fn snapshot_mirror(seq: u64, chunks: &[&[u8]]) -> Arc<TerminalMirror> {
+    use runner_core::protocol::terminal::{
+        TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    struct ClosedFrames;
+    impl TerminalSubscription for ClosedFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("closed"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            Arc::new(|| {})
+        }
+    }
+
+    struct SnapshotHost {
+        snapshot: Mutex<Option<TerminalSnapshot>>,
+    }
+    impl Transport for SnapshotHost {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: self.snapshot.lock().unwrap().take().unwrap(),
+                frames: Box::new(ClosedFrames),
+            })
+        }
+    }
+
+    let mut term = Term::new(
+        term_config(),
+        &TermSize::new(80, 24),
+        alacritty_terminal::event::VoidListener,
+    );
+    let mut parser = ParserState::default();
+    for chunk in chunks {
+        parse_with(&mut parser, &mut term, chunk);
+    }
+    let unfinished = parser.boundary.unfinished();
+    let snapshot = TerminalSnapshot {
+        seq,
+        cols: 80,
+        rows: 24,
+        bytes: crate::snapshot::serialize(&term, unfinished),
+        unfinished_len: unfinished.len(),
+        preceding_char: parser.processor.preceding_char(),
+        controller: Default::default(),
+    };
+    let host = Arc::new(SnapshotHost {
+        snapshot: Mutex::new(Some(snapshot)),
+    });
+    TerminalMirror::attach(DaemonClient::new(host), "snapshot".into(), Arc::new(|| {})).unwrap()
+}
+
+#[test]
+fn restore_ignores_serializer_alt_screen_scaffolding_on_empty_and_plain_snapshots() {
+    let empty = snapshot_mirror(0, &[]);
+    let activity = empty.output_activity();
+    assert_eq!(activity.last_seq, 0);
+    assert_eq!(activity.tui_ready_seq, 0);
+    assert_eq!(activity.first_paint_seq, 0);
+    assert!(activity.last_output_at.is_none());
+
+    let plain_blank = snapshot_mirror(1, &[b"\r\n\x1b]7;file://localhost/tmp\x1b\\   "]);
+    let activity = plain_blank.output_activity();
+    assert_eq!(activity.last_seq, 1);
+    assert_eq!(activity.tui_ready_seq, 0);
+    assert_eq!(activity.first_paint_seq, 0);
+    assert!(activity.last_output_at.is_some());
+
+    let plain_prompt = snapshot_mirror(2, &[b"host% "]);
+    let activity = plain_prompt.output_activity();
+    assert_eq!(activity.last_seq, 2);
+    assert_eq!(activity.tui_ready_seq, 0);
+    assert_eq!(activity.first_paint_seq, 2);
+    assert!(activity.last_output_at.is_some());
+}
+
+#[test]
+fn restore_preserves_tui_ready_modes_and_open_sync_updates_from_snapshot() {
+    for chunks in [
+        &[b"\x1b[?1049h\x1b[2J\x1b[H".as_slice()][..],
+        &[b"\x1b[?2004h\x1b[?1004h".as_slice()][..],
+        &[b"\x1b[?25l".as_slice()][..],
+        &[b"\x1b[>5u".as_slice()][..],
+        &[b"\x1b[?2026h\x1b[2J\x1b[H".as_slice()][..],
+    ] {
+        let mirror = snapshot_mirror(3, chunks);
+        let activity = mirror.output_activity();
+        assert_eq!(activity.last_seq, 3);
+        assert_eq!(activity.tui_ready_seq, 3);
+        assert_eq!(activity.first_paint_seq, 0);
+        assert!(activity.last_output_at.is_some());
+    }
+}
+
+#[test]
+fn claude_code_startup_marks_tui_ready_before_first_paint_across_snapshot_splits() {
+    let pre_paint: &[&[u8]] = &[
+        b"\x1b7\x1b[r\x1b8\x1b[?25h",
+        b"\x1b[?25l",
+        b"\x1b[?2004h\x1b[?2031h\x1b[?1004h",
+        b"\x1b]11;?\x07\x1b[c",
+        b"\x1b[>0q",
+        b"\x1b[?u\x1b[c",
+        b"\x1b[<u\x1b[>5u\x1b[>4;2m",
+        b"\x1b[>4m\x1b[<u\x1b[?1004l\x1b[?2031l\x1b[?2004l",
+        b"\x1b]0;\xe2\x9c\xb3 Claude Code\x07\x1b[?2004h\x1b[?1049h\x1b[2J\x1b[H",
+    ];
+    let first_frame = b"\x1b[1;1HClaude Code v2.1";
+
+    for split in 0..=pre_paint.len() {
+        let mirror = snapshot_mirror(split as u64, &pre_paint[..split]);
+        if split >= 2 {
+            let restored = mirror.output_activity();
+            assert!(
+                restored.tui_ready_seq > 0,
+                "expected snapshot split {split} to restore tui_ready_seq"
+            );
+            assert_eq!(restored.first_paint_seq, 0, "split {split}");
+            assert!(restored.last_output_at.is_some(), "split {split}");
+        }
+        for (index, chunk) in pre_paint[split..].iter().enumerate() {
+            let seq = (split + index + 1) as u64;
+            mirror.test_feed(seq, chunk);
+            let activity = mirror.output_activity();
+            if seq >= 2 {
+                assert!(
+                    activity.tui_ready_seq > 0,
+                    "expected live seq {seq} after split {split} to have tui_ready_seq"
+                );
+            }
+            assert_eq!(activity.first_paint_seq, 0, "split {split} seq {seq}");
+        }
+        let paint_seq = (pre_paint.len() + 1) as u64;
+        mirror.test_feed(paint_seq, first_frame);
+        let painted = mirror.output_activity();
+        assert_eq!(painted.first_paint_seq, paint_seq, "split {split}");
+        assert!(painted.tui_ready_seq > 0, "split {split}");
+    }
+}
+
+#[test]
+fn split_mode_sequence_across_live_chunks_marks_tui_ready() {
+    let mirror = snapshot_mirror(0, &[]);
+    mirror.test_feed(1, b"\x1b[?10");
+    assert_eq!(mirror.output_activity().tui_ready_seq, 0);
+    assert_eq!(mirror.output_activity().first_paint_seq, 0);
+
+    mirror.test_feed(2, b"49h");
+    assert_eq!(mirror.output_activity().tui_ready_seq, 2);
+    assert_eq!(mirror.output_activity().first_paint_seq, 0);
+}
