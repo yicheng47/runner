@@ -169,6 +169,24 @@ pub fn snapshot_header(id: u64, subscriber: u64, snapshot: &TerminalSnapshot) ->
     let mut frame = numbered(SNAPSHOT, id);
     frame.payload.extend_from_slice(&subscriber.to_le_bytes());
     frame.payload.extend_from_slice(&snapshot.seq.to_le_bytes());
+    match snapshot.activity {
+        Some(activity) => {
+            frame.payload.push(1);
+            frame
+                .payload
+                .extend_from_slice(&activity.output_seq.to_le_bytes());
+            frame
+                .payload
+                .extend_from_slice(&activity.tui_ready_seq.to_le_bytes());
+            frame
+                .payload
+                .extend_from_slice(&activity.first_paint_seq.to_le_bytes());
+            frame
+                .payload
+                .extend_from_slice(&activity.paint_seq.to_le_bytes());
+        }
+        None => frame.payload.push(0),
+    }
     frame
         .payload
         .extend_from_slice(&snapshot.cols.to_le_bytes());

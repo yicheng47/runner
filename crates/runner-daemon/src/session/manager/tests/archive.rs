@@ -613,6 +613,76 @@ fn spawned_event_reports_preserved_output_seq_across_resize_stop_and_resume() {
     assert_eq!(resumed["output_seq"].as_u64(), Some(2));
 }
 
+#[test]
+fn resume_snapshot_preserves_paint_seq_across_pre_attach_resize_and_mode_output() {
+    use runner_core::protocol::terminal::TerminalSnapshotActivity;
+
+    let data = tempfile::tempdir().unwrap();
+    let fake = fake_runtime();
+    let core = core_with_fake(data.path(), fake);
+    let mut rx = core.events.subscribe();
+
+    let id = spawn(&core, "claude-code");
+    let _ = next_spawned_event(&mut rx, &id);
+
+    core.sessions.ingest_output_chunk(
+        &id,
+        None,
+        b"\x1b[?2004hClaude Code v2.0",
+        &core.session_events(),
+    );
+    assert_eq!(core.sessions.terminal_output_sequence(&id), 1);
+
+    session_stop(&core, &id).unwrap();
+    session_resume(&core, &id, None, None).unwrap();
+
+    let resumed = next_spawned_event(&mut rx, &id);
+    assert_eq!(resumed["output_seq"].as_u64(), Some(1));
+
+    // A resize before attach advances snapshot.seq to 2 while keeping activity output/paint at 1.
+    core.sessions.resize(&id, 100, 30, &core.db).unwrap();
+    let after_resize = core.sessions.attach_terminal(&id).unwrap();
+    assert_eq!(after_resize.snapshot.seq, 2);
+    assert_eq!(
+        after_resize.snapshot.activity,
+        Some(TerminalSnapshotActivity {
+            output_seq: 1,
+            tui_ready_seq: 1,
+            first_paint_seq: 1,
+            paint_seq: 1,
+        })
+    );
+
+    // Mode-only output before attach advances tui_ready_seq and output_seq to 3, keeping paint_seq at 1.
+    core.sessions
+        .ingest_output_chunk(&id, None, b"\x1b[?25l", &core.session_events());
+    let after_mode = core.sessions.attach_terminal(&id).unwrap();
+    assert_eq!(after_mode.snapshot.seq, 3);
+    assert_eq!(
+        after_mode.snapshot.activity,
+        Some(TerminalSnapshotActivity {
+            output_seq: 3,
+            tui_ready_seq: 3,
+            first_paint_seq: 1,
+            paint_seq: 1,
+        })
+    );
+
+    // Real post-resume visible paint advances paint_seq to 4.
+    core.sessions
+        .ingest_output_chunk(&id, None, b"\x1b[1;1HWelcome back", &core.session_events());
+    let after_paint = core.sessions.attach_terminal(&id).unwrap();
+    assert_eq!(
+        after_paint.snapshot.activity,
+        Some(TerminalSnapshotActivity {
+            output_seq: 4,
+            tui_ready_seq: 3,
+            first_paint_seq: 1,
+            paint_seq: 4,
+        })
+    );
+}
+
 fn next_spawned_event(
     rx: &mut tokio::sync::broadcast::Receiver<crate::events::AppEvent>,
     session_id: &str,

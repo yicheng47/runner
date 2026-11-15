@@ -319,6 +319,7 @@ fn reconnect_cancels_an_idle_subscription_replaced_by_resync() {
                     bytes: Vec::new(),
                     unfinished_len: 0,
                     preceding_char: None,
+                    activity: None,
                     controller: Default::default(),
                 },
                 frames: Box::new(Frames {
@@ -529,6 +530,7 @@ impl runner_core::protocol::Transport for ScriptedHost {
                 bytes: Vec::new(),
                 unfinished_len: 0,
                 preceding_char: None,
+                activity: None,
                 controller: Default::default(),
             },
             frames: Box::new(self.0.lock().unwrap().take().expect("one attachment")),
@@ -777,6 +779,7 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
                     bytes: Vec::new(),
                     unfinished_len: 0,
                     preceding_char: None,
+                    activity: None,
                     controller: Default::default(),
                 },
                 frames: Box::new(Frames(rx)),
@@ -1580,6 +1583,7 @@ fn snapshot_mirror(seq: u64, chunks: &[&[u8]]) -> Arc<TerminalMirror> {
         bytes: crate::snapshot::serialize(&term, unfinished),
         unfinished_len: unfinished.len(),
         preceding_char: parser.processor.preceding_char(),
+        activity: None,
         controller: Default::default(),
     };
     let host = Arc::new(SnapshotHost {
@@ -1731,4 +1735,243 @@ fn restore_empty_nonzero_snapshot_and_resume_repaint_track_output_and_last_paint
     assert_eq!(repainted.last_output_seq, 54);
     assert_eq!(repainted.first_paint_seq, 50);
     assert_eq!(repainted.last_paint_seq, 54);
+}
+
+#[test]
+fn sync_timeout_flush_updates_last_paint_seq_without_trailing_chunk() {
+    let (mirror, frames, _) = scripted_mirror(false);
+    send_output(&frames, 1, b"\x1b[?2026h\x1b[1;1HWelcome back");
+    assert!(wait_for(Duration::from_secs(2), || {
+        mirror.output_activity().last_output_seq == 1
+    }));
+    let before_timeout = mirror.output_activity();
+    assert!(before_timeout.tui_ready_seq == 1);
+    assert_eq!(before_timeout.first_paint_seq, 0);
+    assert_eq!(before_timeout.last_paint_seq, 0);
+    assert!(mirror.sync_state().0.is_some());
+
+    assert!(wait_for(Duration::from_secs(2), || {
+        mirror.sync_state().0.is_none() && mirror.output_activity().last_paint_seq == 1
+    }));
+    let after_timeout = mirror.output_activity();
+    assert_eq!(after_timeout.first_paint_seq, 1);
+    assert_eq!(after_timeout.last_paint_seq, 1);
+    assert!(screen_text(&mirror).contains("Welcome back"));
+
+    // Simulate an already-painted resumed baseline, then a sync-wrapped mode-only chunk
+    // that times out without painting anything new.
+    send_output(&frames, 50, b"\x1b[?2004hClaude Code v2.0");
+    assert!(wait_for(Duration::from_secs(2), || {
+        mirror.output_activity().last_paint_seq == 50
+    }));
+    send_output(&frames, 51, b"\x1b[?2026h\x1b[?25l");
+    assert!(wait_for(Duration::from_secs(2), || {
+        mirror.output_activity().last_output_seq == 51 && mirror.sync_state().0.is_none()
+    }));
+    let mode_only = mirror.output_activity();
+    assert_eq!(mode_only.tui_ready_seq, 51);
+    assert_eq!(mode_only.last_paint_seq, 50);
+
+    // Sync-wrapped visible paint without an end marker advances last_paint_seq on timeout
+    // even when no later chunk arrives.
+    send_output(&frames, 52, b"\x1b[?2026h\x1b[2;1HUpdated frame");
+    assert!(wait_for(Duration::from_secs(2), || {
+        mirror.sync_state().0.is_none() && mirror.output_activity().last_paint_seq == 52
+    }));
+    assert_eq!(mirror.output_activity().first_paint_seq, 1);
+    assert_eq!(mirror.output_activity().last_paint_seq, 52);
+    assert!(screen_text(&mirror).contains("Updated frame"));
+}
+
+#[test]
+fn snapshot_provenance_preserves_paint_and_output_seq_across_attach_and_resync_races() {
+    use runner_core::protocol::terminal::{
+        TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    struct ModelHost;
+    impl TerminalHost for ModelHost {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    struct DynamicFrames {
+        rx: mpsc::Receiver<std::result::Result<TerminalFrame, ClientError>>,
+        tx: mpsc::Sender<std::result::Result<TerminalFrame, ClientError>>,
+    }
+    impl TerminalSubscription for DynamicFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            self.rx.recv().map_err(|_| ClientError::msg("closed"))?
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            let tx = self.tx.clone();
+            Arc::new(move || {
+                let _ = tx.send(Err(ClientError::msg("cancelled")));
+            })
+        }
+    }
+
+    struct ProvenanceHost {
+        snapshots: Mutex<std::collections::VecDeque<TerminalSnapshot>>,
+        senders: Mutex<Vec<mpsc::Sender<std::result::Result<TerminalFrame, ClientError>>>>,
+    }
+    impl Transport for ProvenanceHost {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            let (tx, rx) = mpsc::channel();
+            let mut senders = self.senders.lock().unwrap();
+            let subscriber_id = senders.len() as u64 + 1;
+            senders.push(tx.clone());
+            Ok(TerminalAttachment {
+                subscriber_id,
+                snapshot: self.snapshots.lock().unwrap().pop_front().unwrap(),
+                frames: Box::new(DynamicFrames { rx, tx }),
+            })
+        }
+    }
+
+    let model = TerminalModel::new(
+        Arc::new(ModelHost),
+        "resume-provenance".into(),
+        80,
+        24,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    model.feed_output(1, b"\x1b[?2004hClaude Code v2.0");
+    let baseline = model.snapshot_with_history(1, usize::MAX);
+    assert_eq!(
+        baseline.activity,
+        Some(TerminalSnapshotActivity {
+            output_seq: 1,
+            tui_ready_seq: 1,
+            first_paint_seq: 1,
+            paint_seq: 1,
+        })
+    );
+
+    // Resize after resume before attach must not bump last_output_seq or last_paint_seq.
+    model.resize(100, 30);
+    let resized_snapshot = model.snapshot_with_history(2, usize::MAX);
+    assert_eq!(resized_snapshot.seq, 2);
+    assert_eq!(
+        resized_snapshot.activity,
+        Some(TerminalSnapshotActivity {
+            output_seq: 1,
+            tui_ready_seq: 1,
+            first_paint_seq: 1,
+            paint_seq: 1,
+        })
+    );
+
+    // Mode-only output after resume before attach / Resync must bump tui_ready_seq and
+    // output_seq while leaving paint_seq at pre-stop baseline 1.
+    model.feed_output(3, b"\x1b[?25l");
+    let mode_snapshot = model.snapshot_with_history(3, usize::MAX);
+    assert_eq!(
+        mode_snapshot.activity,
+        Some(TerminalSnapshotActivity {
+            output_seq: 3,
+            tui_ready_seq: 3,
+            first_paint_seq: 1,
+            paint_seq: 1,
+        })
+    );
+
+    let attach_host = Arc::new(ProvenanceHost {
+        snapshots: Mutex::new([resized_snapshot, mode_snapshot.clone()].into()),
+        senders: Mutex::default(),
+    });
+    let attached_after_resize = TerminalMirror::attach(
+        DaemonClient::new(attach_host.clone()),
+        "resume-provenance".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let resize_activity = attached_after_resize.output_activity();
+    assert_eq!(resize_activity.last_seq, 2);
+    assert_eq!(resize_activity.last_output_seq, 1);
+    assert_eq!(resize_activity.last_paint_seq, 1);
+
+    let attached_after_mode = TerminalMirror::attach(
+        DaemonClient::new(attach_host),
+        "resume-provenance".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let mode_activity = attached_after_mode.output_activity();
+    assert_eq!(mode_activity.last_seq, 3);
+    assert_eq!(mode_activity.last_output_seq, 3);
+    assert_eq!(mode_activity.tui_ready_seq, 3);
+    assert_eq!(mode_activity.first_paint_seq, 1);
+    assert_eq!(mode_activity.last_paint_seq, 1);
+
+    // Resync onto a reused TerminalMirror at baseline=1 must likewise keep last_paint_seq at 1
+    // until real visible output paints (even across sync-timeout flush on the model).
+    let resync_host = Arc::new(ProvenanceHost {
+        snapshots: Mutex::new([baseline, mode_snapshot].into()),
+        senders: Mutex::default(),
+    });
+    let resync_mirror = TerminalMirror::attach(
+        DaemonClient::new(resync_host.clone()),
+        "resume-provenance".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    resync_host.senders.lock().unwrap()[0]
+        .send(Ok(TerminalFrame::Resync))
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(2), || {
+        resync_mirror.output_activity().last_seq == 3
+    }));
+    let after_resync = resync_mirror.output_activity();
+    assert_eq!(after_resync.last_output_seq, 3);
+    assert_eq!(after_resync.tui_ready_seq, 3);
+    assert_eq!(after_resync.first_paint_seq, 1);
+    assert_eq!(after_resync.last_paint_seq, 1);
+
+    // Sync timeout on TerminalModel with real visible output advances snapshot.activity.paint_seq.
+    model.feed_output(4, b"\x1b[?2026h\x1b[2;1HWelcome back");
+    assert!(wait_for(Duration::from_secs(2), || {
+        model
+            .snapshot_with_history(4, usize::MAX)
+            .activity
+            .is_some_and(|activity| activity.paint_seq == 4)
+    }));
+    resync_host
+        .snapshots
+        .lock()
+        .unwrap()
+        .push_back(model.snapshot_with_history(4, usize::MAX));
+    resync_host.senders.lock().unwrap()[1]
+        .send(Ok(TerminalFrame::Resync))
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(2), || {
+        resync_mirror.output_activity().last_paint_seq == 4
+    }));
+
+    for worker in model.stop_workers() {
+        worker.join().unwrap();
+    }
 }
