@@ -57,7 +57,7 @@ impl Runtime {
             Self::Trae => "TRAE CLI",
             Self::Cursor => "Cursor",
             Self::Grok => "Grok",
-            Self::OpenCode => "OpenCode",
+            Self::OpenCode => "OpenCode v2",
             Self::Shell => "Shell",
         }
     }
@@ -133,5 +133,20 @@ mod tests {
         assert_eq!(roots.len(), crate::RUNNER_SKILL_ROOTS.len());
         assert_eq!(Runtime::parse("aider-future"), None);
         assert!(serde_json::from_str::<Runtime>("\"aider-future\"").is_err());
+    }
+
+    #[test]
+    fn opencode_v2_display_and_catalog_metadata_keep_wire_ids_intact() {
+        assert_eq!(Runtime::OpenCode.display_name(), "OpenCode v2");
+        assert_eq!(Runtime::OpenCode.key(), "opencode");
+        let catalog = crate::protocol::runtime_metadata::opencode::catalog().unwrap();
+        assert_eq!(catalog.display_name, "OpenCode v2");
+        assert_eq!(catalog.min_version, Some("2.0.0"));
+        assert_eq!(catalog.install_url, "https://opencode.ai/v2/docs");
+        assert!(catalog.update_args.is_empty());
+        let client = crate::protocol::McpClientId::OpenCode;
+        assert_eq!(client.key(), "opencode");
+        assert_eq!(client.label(), "OpenCode v2");
+        assert_eq!(serde_json::to_string(&client).unwrap(), "\"OpenCode\"");
     }
 }

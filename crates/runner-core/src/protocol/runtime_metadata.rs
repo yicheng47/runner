@@ -808,8 +808,8 @@ pub mod opencode {
     pub fn catalog() -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::OpenCode,
-            min_version: None,
-            display_name: "OpenCode",
+            min_version: Some("2.0.0"),
+            display_name: Runtime::OpenCode.display_name(),
             command: "opencode",
             capabilities: RuntimeCapabilities {
                 effort_needs_launch_model: true,
@@ -817,7 +817,7 @@ pub mod opencode {
             },
             native_fork: false,
             description: "OpenCode v2 CLI (native smoke pending)",
-            install_url: "https://opencode.ai",
+            install_url: "https://opencode.ai/v2/docs",
             default_enabled: true,
             models: vec![default_model_option()],
             efforts: vec![default_effort()],

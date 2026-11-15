@@ -142,6 +142,36 @@ pub(super) fn runtime_default_effort_value(value: Option<&str>) -> String {
         .to_string()
 }
 
+pub(super) fn detected_runtime_name(runtime: Runtime, display_name: &str) -> &str {
+    if runtime == Runtime::OpenCode {
+        "OpenCode"
+    } else {
+        display_name
+    }
+}
+
+pub(super) fn unsupported_detected_version(runtime: &RuntimeExecutableStatus) -> Option<String> {
+    if runtime.state != RuntimeRowState::NotFound || !runtime.below_minimum {
+        return None;
+    }
+    let installed = runtime.installed_version.as_deref()?;
+    let path = runtime.detected_path.as_deref()?;
+    let minimum = runtime.min_version.as_deref()?;
+    Some(crate::i18n::tf(
+        "format.unsupported_detected_version",
+        &[
+            (
+                "detected",
+                detected_runtime_name(runtime.name, &runtime.display_name).to_owned(),
+            ),
+            ("installed", installed.to_owned()),
+            ("path", path.to_owned()),
+            ("runtime", runtime.display_name.clone()),
+            ("minimum", minimum.to_owned()),
+        ],
+    ))
+}
+
 pub(super) fn runtime_presentation(
     runtime: &RuntimeExecutableStatus,
     probe_outcome: Option<DiscoveryOutcome>,
@@ -181,8 +211,14 @@ pub(super) fn runtime_presentation(
             }
         }
     };
+    let unsupported_detected = validation
+        .is_none()
+        .then(|| unsupported_detected_version(runtime))
+        .flatten();
     let caption = if let Some(validation) = validation {
         Some(validation.to_owned())
+    } else if unsupported_detected.is_some() {
+        unsupported_detected.clone()
     } else {
         match state {
             RuntimeRowState::Override => Some(runtime.detected_path.as_ref().map_or_else(
@@ -237,8 +273,7 @@ pub(super) fn runtime_presentation(
             _ => None,
         }
     };
-    let version = validation
-        .is_none()
+    let version = (validation.is_none() && unsupported_detected.is_none())
         .then(|| version_caption(runtime))
         .flatten();
     let caption = match (version, caption) {
@@ -257,6 +292,26 @@ pub(super) fn runtime_presentation(
     };
     let auto_path = if runtime.state == RuntimeRowState::Checking {
         crate::i18n::message("ui.auto_detecting")
+    } else if let (RuntimeRowState::NotFound, true, Some(installed), Some(path), Some(minimum)) = (
+        runtime.state,
+        runtime.below_minimum,
+        runtime.installed_version.as_deref(),
+        runtime.detected_path.as_deref(),
+        runtime.min_version.as_deref(),
+    ) {
+        crate::i18n::messagef(
+            "format.auto_unsupported_version",
+            &[
+                (
+                    "detected",
+                    detected_runtime_name(runtime.name, &runtime.display_name).to_owned(),
+                ),
+                ("installed", installed.to_owned()),
+                ("path", path.to_owned()),
+                ("runtime", runtime.display_name.clone()),
+                ("minimum", minimum.to_owned()),
+            ],
+        )
     } else if let Some(path) = &runtime.detected_path {
         crate::i18n::messagef("format.auto", &[("path", (path).to_string())])
     } else {

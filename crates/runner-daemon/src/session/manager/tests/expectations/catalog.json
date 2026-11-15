@@ -655,12 +655,13 @@
     ]
   },
   {
+    "min_version": "2.0.0",
     "name": "opencode",
-    "display_name": "OpenCode",
+    "display_name": "OpenCode v2",
     "command": "opencode",
     "native_fork": false,
     "description": "OpenCode v2 CLI (native smoke pending)",
-    "install_url": "https://opencode.ai",
+    "install_url": "https://opencode.ai/v2/docs",
     "default_enabled": true,
     "available": false,
     "default_model": null,

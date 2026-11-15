@@ -20,7 +20,7 @@ Claude Code 与 Codex 是主要集成，启动与提醒时序经过专门调整�
 | 跳过权限确认 | Claude Code | 关闭 | 所有账号的聊天 |
 | 跳过权限确认 | Antigravity CLI | 关闭 | 聊天 |
 | 远程插件目录 | Codex | 开启 | 聊天、恢复、任务和分叉 |
-| 状态钩子 | Codex、Claude Code、pi、Copilot CLI、OpenCode；macOS/Linux 上的 Grok | 开启 | 聊天 |
+| 状态钩子 | Codex、Claude Code、pi、Copilot CLI、OpenCode v2；macOS/Linux 上的 Grok | 开启 | 聊天 |
 | 自定义参数 | 所有智能体 | 空 | 聊天、角色、任务、恢复和分叉 |
 
 Bypass 让聊天无需权限确认即可运行；Codex 还会跳过沙盒。仅对信任的文件夹开启。Bypass 开关适用于所有 Codex、Claude Code 和 Antigravity CLI 聊天，包括使用角色的聊天。聊天启动、恢复和分叉都会去除角色已保存的权限参数；关闭 Bypass 时，由智能体自身配置决定审批行为。任务始终使用宽松权限和状态钩子，不受聊天开关影响。
@@ -46,7 +46,7 @@ Runner 在全平台都按 shell 词法拆分 **自定义参数**，且不展开 
 | GitHub Copilot CLI | `copilot` | [Copilot CLI 设置](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)；需要 Copilot 订阅 |
 | Cursor Agent CLI | `cursor` | [Cursor CLI 设置](https://cursor.com/docs/cli/installation)；需独立于编辑器安装 CLI |
 | Grok Build | `grok` | [Grok Build 设置](https://docs.x.ai/build/overview)；使用已有 grok.com 登录；自动更新 |
-| OpenCode v2 | `opencode` | [OpenCode](https://opencode.ai)；配置可用提供商与模型 |
+| OpenCode v2 | `opencode` | [OpenCode v2 文档](https://opencode.ai/v2/docs)；配置可用提供商与模型 |
 | TRAE CLI | `trae` | 需主动启用；安装配置 CLI 后在设置 → 智能体中开启 |
 
 除 TRAE 外，列出的运行时被检测到后默认启用。运行时名称是 Runner 标识，不一定等于可执行文件名称。例如 Claude Code 的运行时为 `claude-code`，可执行文件为 `claude`。
@@ -86,7 +86,7 @@ Runner 在全平台都按 shell 词法拆分 **自定义参数**，且不展开 
 
 - Runner 提供 macOS（Apple Silicon 与 Intel）与 Windows x64 构建。上文 Linux 引用描述的是运行时适配器行为，不表示 Runner 的 Linux 构建能力；Linux 测试版安装与验证范围见[安装 Runner](../getting-started/install.md)。
 - Windows 智能体原生运行，无需 WSL。Claude Code 和 pi 的 bash 工具需要 Git for Windows。npm 安装的智能体需要 Node.js；Copilot 的 npm 安装需要 Node.js 22。PowerShell 7 可选。
-- Antigravity CLI 与 pi 有 Windows 实现路径，但没有完成原生 Windows 冒烟检查。Cursor、Grok 和 OpenCode 也存在 Windows 验证缺口。
+- Antigravity CLI 与 pi 有 Windows 实现路径，但没有完成原生 Windows 冒烟检查。Cursor、Grok 和 OpenCode v2 也存在 Windows 验证缺口。
 - Grok 聊天、任务与停止/恢复已在 macOS 检查；完整应用重启持久化仍未验证。在已加载 Grok 仪表盘切换对话，会在下次提示时更新恢复标识，而非空闲时切换就更新。
 - 恢复标识用于识别运行时对话，运行时仍须保有该历史。工作中/空闲与需要输入标记依赖运行时报告，不能证明任务完成。
 
@@ -95,6 +95,8 @@ Runner 在全平台都按 shell 词法拆分 **自定义参数**，且不展开 
 ## 最低版本与智能体更新
 
 Codex 需要 **0.149.0 或更新版本**才能运行 Runner 的启动钩子。启动器只在旧版 Codex 的智能体行标记 **需要更新（Update needed）**；角色行不显示更新标签或操作。提示说明启动 Codex 或使用它的角色时，会先更新 Codex，窗格显示等待卡片；更新成功后聊天自动启动。恢复或分叉被拒绝时也提供同样的恢复方式。无法确定版本时，Runner 仍允许尝试启动。
+
+OpenCode v2 需要 **2.0.0 或更新版本**才能使用 Runner 的 `--standalone` 服务、模型发现和会话历史。当 `PATH` 中仅检测到旧版 `opencode`（`0.15.x` 或 `1.x`）时，Runner 会在 **设置 → 智能体** 中将 **OpenCode v2** 保留在 **未安装（Not installed）** 列表，说明检测到的版本并从启动器的已安装智能体中隐藏。低于 2.0.0 的显式可执行文件覆盖会被拒绝；由于 OpenCode v2 没有由 Runner 托管的更新命令，被拒绝的启动或恢复会提供 **打开设置（Open Settings）** 而非更新任务。
 
 在 macOS 和 Linux 上，Antigravity CLI 用量检查需要 **1.5.8 或更新版本**，以确保 Runner 在读取 `/usage` 前可通过非交互方式检查登录状态，避免触发浏览器登录；旧版或无法识别版本的 Antigravity CLI 仍可正常用于聊天与任务，但用量会跳过检查并保持不可用。在 Windows 上，Runner 会直接读取 Antigravity 已保存的登录凭据并通过 HTTPS 查询配额接口，不会启动 `agy`。
 

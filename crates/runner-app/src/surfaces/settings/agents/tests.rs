@@ -2060,3 +2060,47 @@ fn custom_flags_warning_saves_keeps_normal_border_and_recomputes_on_reload() {
         .unwrap();
     });
 }
+
+#[test]
+fn not_found_opencode_below_minimum_shows_detected_v1_in_presentation_and_not_installed_page() {
+    let mut row = runtime(RuntimeRowState::NotFound);
+    row.name = Runtime::OpenCode;
+    row.display_name = "OpenCode v2".into();
+    row.command = "opencode".into();
+    row.detected_path = Some("/tmp/bin/opencode".into());
+    row.installed_version = Some("1.19.5".into());
+    row.min_version = Some("2.0.0".into());
+    row.below_minimum = true;
+
+    let presentation = runtime_presentation(&row, Some(DiscoveryOutcome::Ok), None, false);
+    assert_eq!(
+        presentation.caption.as_deref(),
+        Some("OpenCode 1.19.5 was found at /tmp/bin/opencode. Runner only supports OpenCode v2 (2.0.0 or newer).")
+    );
+    assert_eq!(
+        presentation.auto_path.resolve().as_ref(),
+        "Auto — OpenCode 1.19.5 found at /tmp/bin/opencode; Runner only supports OpenCode v2 (2.0.0 or newer)"
+    );
+
+    let mut cx = gpui::TestAppContext::single();
+    let (_temp, pane) = test_pane(vec![row], false, &mut cx);
+    let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+    assert!(window.debug_bounds("AGENTS_NOT_INSTALLED_HEADER").is_some());
+    assert!(window.debug_bounds("AGENT_CARD_opencode").is_some());
+    open_test_page(pane, Runtime::OpenCode, &mut window);
+    assert!(window
+        .debug_bounds("AGENT_UNSUPPORTED_CAPTION_opencode")
+        .is_some());
+    pane.read_with(&window, |pane, cx| {
+        let placeholder = pane.overrides[&Runtime::OpenCode]
+            .read(cx)
+            .placeholder()
+            .to_string();
+        assert!(placeholder.contains("OpenCode 1.19.5"), "{placeholder}");
+        assert!(
+            placeholder.contains("OpenCode v2 (2.0.0 or newer)"),
+            "{placeholder}"
+        );
+    })
+    .unwrap();
+}

@@ -89,6 +89,7 @@ fn boot_inner(
     );
     let window_registry = Arc::new(windows::WindowRegistry::new());
     let event_channel = events::EventChannel::new();
+    sessions.set_runtime_events(event_channel.clone());
 
     let core = AppCore {
         remote: Default::default(),

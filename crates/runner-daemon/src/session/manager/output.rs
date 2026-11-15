@@ -525,21 +525,37 @@ impl SessionManager {
                 exit_code,
                 final_status == crate::model::SessionStatus::Crashed,
             );
+            let mut runtime_probe_cleared = false;
             if exit_code.is_some_and(|code| code != 0)
                 && !was_killed
                 && elapsed < Duration::from_secs(10)
                 && !turn_started
             {
                 let output = String::from_utf8_lossy(&startup_tail);
-                if let Some(error) =
-                    crate::runtimes::for_key(&role.runtime).classify_startup_error(&output)
-                {
+                let adapter = crate::runtimes::for_key(&role.runtime);
+                if let Some(error) = adapter.classify_startup_error(&output) {
+                    if adapter.catalog().is_some_and(|catalog| {
+                        crate::runtime_status::withholds_below_minimum(&catalog)
+                    }) {
+                        runtime_probe_cleared =
+                            manager_t
+                                .discovery_state
+                                .write()
+                                .is_ok_and(|mut discovery| {
+                                    discovery.versions.clear_runtime_probe(error.runtime)
+                                });
+                    }
                     if let Some(state) = manager_t.session_state(&session_id) {
                         state.lock().unwrap().model.apply(
                             SessionEvent::StartupError(error),
                             super::super::clock::state_now(),
                         );
                     }
+                }
+            }
+            if runtime_probe_cleared {
+                if let Some(events) = manager_t.runtime_events.read().unwrap().as_ref() {
+                    events.emit("runtime/changed", &());
                 }
             }
             events.exit(&ExitEvent {

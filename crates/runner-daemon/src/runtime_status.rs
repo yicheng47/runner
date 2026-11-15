@@ -37,11 +37,42 @@ pub use runner_core::protocol::runtime::RuntimeStatusResponse;
 
 pub use runner_core::protocol::runtime::OverrideValidationError;
 
+pub fn withholds_below_minimum(runtime: &crate::runtimes::RuntimeCatalog) -> bool {
+    runtime.min_version.is_some() && runtime.update_args.is_empty()
+}
+
+pub(crate) fn unsupported_version_message(
+    runtime: &crate::runtimes::RuntimeCatalog,
+    installed: &str,
+) -> String {
+    let detected = if runtime.name == Runtime::OpenCode {
+        "OpenCode"
+    } else {
+        runtime.display_name
+    };
+    let minimum = runtime.min_version.unwrap_or_default();
+    format!(
+        "{detected} {installed} was found. Runner only supports {} ({minimum} or newer).",
+        runtime.display_name
+    )
+}
+
 pub fn status_list(
     pool: &DbPool,
     shell_env: &SharedShellEnv,
     discovery: &SharedDiscoveryState,
 ) -> Result<RuntimeStatusResponse> {
+    status_list_with_events(pool, shell_env, discovery, None)
+}
+
+pub(crate) fn status_list_with_events(
+    pool: &DbPool,
+    shell_env: &SharedShellEnv,
+    discovery: &SharedDiscoveryState,
+    events: Option<&crate::events::EventChannel>,
+) -> Result<RuntimeStatusResponse> {
+    let shell_env_arc = shell_env;
+    let discovery_arc = discovery;
     let shell_env = shell_env
         .read()
         .map_err(|_| Error::msg("runtime shell environment lock poisoned"))?
@@ -71,30 +102,72 @@ pub fn status_list(
             let detected_path =
                 find_executable(runtime.command, &path).map(|path| path.display().to_string());
             let override_path = overrides.get(runtime.name.key()).cloned();
-            let invalid_reason = override_path
+            let mut invalid_reason = override_path
                 .as_deref()
                 .and_then(|path| validate_executable_path(Path::new(path)).err())
                 .map(|error| error.message);
-            let valid_override = override_path
+            let mut valid_override = override_path
                 .as_deref()
                 .filter(|_| invalid_reason.is_none())
                 .map(str::to_string);
-            let (effective_command, effective_source) = if let Some(path) = valid_override {
-                (Some(path), Some(RuntimeCommandSource::Override))
-            } else if let Some(path) = detected_path.clone() {
-                (Some(path), Some(RuntimeCommandSource::Detected))
-            } else if discovery.checking {
-                (
-                    Some(runtime.command.to_string()),
-                    Some(RuntimeCommandSource::Catalog),
-                )
-            } else {
-                (None, None)
-            };
+            let mut override_version = None;
+            let mut override_below_minimum = false;
+            if let Some(path) = valid_override.as_deref() {
+                override_version = match discovery.versions.probed(runtime.name, path) {
+                    Some(version) => version.map(str::to_owned),
+                    None if withholds_below_minimum(runtime) => versions::ensure_probed(
+                        runtime.name,
+                        path,
+                        shell_env_arc,
+                        discovery_arc,
+                        events,
+                    ),
+                    None => None,
+                };
+                if withholds_below_minimum(runtime)
+                    && versions::below_minimum(override_version.as_deref(), runtime.min_version)
+                {
+                    invalid_reason = Some(unsupported_version_message(
+                        runtime,
+                        override_version.as_deref().unwrap(),
+                    ));
+                    valid_override = None;
+                    override_below_minimum = true;
+                }
+            }
+            let detected_version = override_path
+                .is_none()
+                .then(|| {
+                    detected_path
+                        .as_deref()
+                        .and_then(|command| discovery.versions.installed(runtime.name, command))
+                        .map(str::to_owned)
+                })
+                .flatten();
+            let detected_below_minimum = override_path.is_none()
+                && withholds_below_minimum(runtime)
+                && versions::below_minimum(detected_version.as_deref(), runtime.min_version);
+            let (effective_command, effective_source) =
+                if override_below_minimum || detected_below_minimum {
+                    (None, None)
+                } else if let Some(path) = valid_override {
+                    (Some(path), Some(RuntimeCommandSource::Override))
+                } else if let Some(path) = detected_path.clone() {
+                    (Some(path), Some(RuntimeCommandSource::Detected))
+                } else if discovery.checking {
+                    (
+                        Some(runtime.command.to_string()),
+                        Some(RuntimeCommandSource::Catalog),
+                    )
+                } else {
+                    (None, None)
+                };
             let state = if invalid_reason.is_some() {
                 RuntimeRowState::InvalidOverride
             } else if override_path.is_some() {
                 RuntimeRowState::Override
+            } else if detected_below_minimum {
+                RuntimeRowState::NotFound
             } else if discovery.checking {
                 RuntimeRowState::Checking
             } else if failed {
@@ -104,11 +177,21 @@ pub fn status_list(
             } else {
                 RuntimeRowState::NotFound
             };
-            let installed_version = effective_command
-                .as_deref()
-                .filter(|_| effective_source != Some(RuntimeCommandSource::Catalog))
-                .and_then(|command| discovery.versions.installed(runtime.name, command))
-                .map(str::to_owned);
+            let installed_version = if override_below_minimum {
+                override_version
+            } else if detected_below_minimum {
+                detected_version
+            } else {
+                effective_command
+                    .as_deref()
+                    .filter(|_| effective_source != Some(RuntimeCommandSource::Catalog))
+                    .and_then(|command| {
+                        override_version
+                            .as_deref()
+                            .or_else(|| discovery.versions.installed(runtime.name, command))
+                    })
+                    .map(str::to_owned)
+            };
             let available_version = versions::updatable(runtime.name)
                 .then(|| {
                     discovery
@@ -160,7 +243,7 @@ pub fn status_list(
     })
 }
 
-pub fn effective_runtime_command(
+pub(crate) fn candidate_runtime_command(
     runtime: Runtime,
     pool: &DbPool,
     shell_env: &SharedShellEnv,
@@ -174,13 +257,43 @@ pub fn effective_runtime_command(
     let checking = discovery
         .read()
         .map_err(|_| Error::msg("runtime discovery lock poisoned"))?
-        .clone();
-    effective_runtime_command_on_path(
-        runtime,
-        &overrides,
-        &direct_chat_path(&shell_env),
-        checking.checking,
-    )
+        .checking;
+    effective_runtime_command_on_path(runtime, &overrides, &direct_chat_path(&shell_env), checking)
+}
+
+pub fn effective_runtime_command(
+    runtime: Runtime,
+    pool: &DbPool,
+    shell_env: &SharedShellEnv,
+    discovery: &SharedDiscoveryState,
+) -> Result<EffectiveRuntimeCommand> {
+    effective_runtime_command_with_events(runtime, pool, shell_env, discovery, None)
+}
+
+pub(crate) fn effective_runtime_command_with_events(
+    runtime: Runtime,
+    pool: &DbPool,
+    shell_env: &SharedShellEnv,
+    discovery: &SharedDiscoveryState,
+    events: Option<&crate::events::EventChannel>,
+) -> Result<EffectiveRuntimeCommand> {
+    let candidate = candidate_runtime_command(runtime, pool, shell_env, discovery)?;
+    let Some(definition) = crate::runtimes::adapter(runtime).catalog() else {
+        return Ok(candidate);
+    };
+    if candidate.source != RuntimeCommandSource::Catalog && withholds_below_minimum(&definition) {
+        let installed =
+            versions::ensure_probed(runtime, &candidate.command, shell_env, discovery, events);
+        if versions::below_minimum(installed.as_deref(), definition.min_version) {
+            return Err(runner_core::protocol::runtime::RuntimeVersionGate {
+                runtime,
+                installed_version: installed.unwrap(),
+                min_version: definition.min_version.unwrap().into(),
+            }
+            .into());
+        }
+    }
+    Ok(candidate)
 }
 
 fn effective_runtime_command_on_path(
@@ -248,13 +361,53 @@ pub fn validate_override(
     runtime: Runtime,
     path: &str,
 ) -> std::result::Result<(), OverrideValidationError> {
-    if crate::runtimes::adapter(runtime).catalog().is_none() {
+    validate_override_with_env(runtime, path, &LoginShellEnv::default())
+}
+
+pub(crate) fn validate_override_with_env(
+    runtime: Runtime,
+    path: &str,
+    env: &LoginShellEnv,
+) -> std::result::Result<(), OverrideValidationError> {
+    validate_and_probe_override(runtime, path, env).map(|_| ())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ValidatedOverrideProbe {
+    pub(crate) version: Option<String>,
+    pub(crate) fingerprint: Option<versions::ExecutableFingerprint>,
+}
+
+pub(crate) fn validate_and_probe_override(
+    runtime: Runtime,
+    path: &str,
+    env: &LoginShellEnv,
+) -> std::result::Result<Option<ValidatedOverrideProbe>, OverrideValidationError> {
+    let Some(definition) = crate::runtimes::adapter(runtime).catalog() else {
         return Err(validation_error(
             "unknown_runtime",
             format!("Unknown runtime: {runtime}."),
         ));
+    };
+    validate_executable_path(Path::new(path))?;
+    if withholds_below_minimum(&definition) {
+        let fingerprint = versions::executable_fingerprint(path);
+        let version = versions::probe_command_version(path, env);
+        if let Some(installed) = version
+            .as_deref()
+            .filter(|version| versions::below_minimum(Some(version), definition.min_version))
+        {
+            return Err(validation_error(
+                "unsupported_version",
+                unsupported_version_message(&definition, installed),
+            ));
+        }
+        return Ok(Some(ValidatedOverrideProbe {
+            version,
+            fingerprint,
+        }));
     }
-    validate_executable_path(Path::new(path))
+    Ok(None)
 }
 
 use runner_core::protocol::runtime_paths::validate_executable_path;
@@ -333,33 +486,53 @@ pub fn start_background_discovery(
     model_runtimes: Vec<Runtime>,
 ) {
     std::thread::spawn(move || {
-        // Persisted catalogs publish before the shell probe, so model fields
-        // never wait on discovery to show what they already know.
-        models::load_cached(&pool, &discovery, &events);
-        let result = crate::shell_path::resolve_login_shell_env();
-        if let Err(error) = apply_discovery_result(&pool, &shell_env, &discovery, result) {
-            log::warn!("runtime discovery state update failed: {error}");
-            if let Ok(mut state) = discovery.write() {
-                state.checking = false;
-            }
-        }
-        log_runtime_paths(&pool, &shell_env);
-        events.emit("runtime/changed", &());
-        let runtimes: Vec<_> = crate::runtimes::catalogs()
-            .iter()
-            .map(|runtime| runtime.name)
-            .collect();
-        versions::request_probes(&pool, &shell_env, &discovery, &events, &runtimes, true);
-        versions::run_deferred_latest(&pool, &shell_env, &discovery, &events);
-        models::request(
-            &pool,
-            &shell_env,
-            &discovery,
-            &events,
-            &model_runtimes,
+        run_background_discovery_with(
+            events,
+            pool,
+            shell_env,
+            discovery,
             force_models,
+            model_runtimes,
+            crate::shell_path::resolve_login_shell_env,
         );
     });
+}
+
+pub(crate) fn run_background_discovery_with(
+    events: EventChannel,
+    pool: Arc<DbPool>,
+    shell_env: SharedShellEnv,
+    discovery: SharedDiscoveryState,
+    force_models: bool,
+    model_runtimes: Vec<Runtime>,
+    resolve_env: impl FnOnce() -> DiscoveryResult,
+) {
+    // Persisted catalogs publish before the shell probe, so model fields
+    // never wait on discovery to show what they already know.
+    models::load_cached(&pool, &discovery, &events);
+    let result = resolve_env();
+    if let Err(error) = apply_discovery_result(&pool, &shell_env, &discovery, result) {
+        log::warn!("runtime discovery state update failed: {error}");
+        if let Ok(mut state) = discovery.write() {
+            state.checking = false;
+        }
+    }
+    log_runtime_paths(&pool, &shell_env);
+    events.emit("runtime/changed", &());
+    let runtimes: Vec<_> = crate::runtimes::catalogs()
+        .iter()
+        .map(|runtime| runtime.name)
+        .collect();
+    versions::request_probes(&pool, &shell_env, &discovery, &events, &runtimes, true);
+    versions::run_deferred_latest(&pool, &shell_env, &discovery, &events);
+    models::request(
+        &pool,
+        &shell_env,
+        &discovery,
+        &events,
+        &model_runtimes,
+        force_models,
+    );
 }
 
 pub fn refresh_background_discovery(
@@ -369,6 +542,24 @@ pub fn refresh_background_discovery(
     discovery: SharedDiscoveryState,
     model_runtimes: Vec<Runtime>,
 ) -> Result<bool> {
+    refresh_background_discovery_with(
+        events,
+        pool,
+        shell_env,
+        discovery,
+        model_runtimes,
+        crate::shell_path::resolve_login_shell_env,
+    )
+}
+
+pub(crate) fn refresh_background_discovery_with(
+    events: EventChannel,
+    pool: Arc<DbPool>,
+    shell_env: SharedShellEnv,
+    discovery: SharedDiscoveryState,
+    model_runtimes: Vec<Runtime>,
+    resolve_env: impl FnOnce() -> DiscoveryResult + Send + 'static,
+) -> Result<bool> {
     {
         let mut state = discovery
             .write()
@@ -377,10 +568,20 @@ pub fn refresh_background_discovery(
             return Ok(false);
         }
         state.checking = true;
-        state.versions.clear_help_flags(None);
+        state.versions.clear_probes();
     }
     events.emit("runtime/changed", &());
-    start_background_discovery(events, pool, shell_env, discovery, true, model_runtimes);
+    std::thread::spawn(move || {
+        run_background_discovery_with(
+            events,
+            pool,
+            shell_env,
+            discovery,
+            true,
+            model_runtimes,
+            resolve_env,
+        );
+    });
     Ok(true)
 }
 
@@ -469,7 +670,7 @@ mod tests {
                 (Runtime::Trae, "TRAE CLI", "traecli"),
                 (Runtime::Cursor, "Cursor", "cursor-agent"),
                 (Runtime::Grok, "Grok", "grok"),
-                (Runtime::OpenCode, "OpenCode", "opencode"),
+                (Runtime::OpenCode, "OpenCode v2", "opencode"),
             ],
         );
     }
@@ -776,5 +977,300 @@ mod tests {
         assert_eq!(snapshot.env, refreshed);
         assert!(snapshot.shell.is_empty());
         assert_ne!(snapshot.captured_at, "2026-09-20T00:00:00Z");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn opencode_v1_on_path_is_not_found_and_still_probes_until_upgraded_to_v2() {
+        let pool = crate::db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("opencode");
+        std::fs::write(&bin, "#!/bin/sh\necho '1.19.5'\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let shell_env = Arc::new(RwLock::new(LoginShellEnv {
+            path: Some(dir.path().display().to_string()),
+            vars: Default::default(),
+        }));
+        let discovery = completed_discovery();
+        let events = EventChannel::new();
+
+        assert_eq!(
+            versions::probe_now(Runtime::OpenCode, &pool, &shell_env, &discovery, &events)
+                .as_deref(),
+            Some("1.19.5")
+        );
+        let status = status_list(&pool, &shell_env, &discovery).unwrap();
+        let row = status
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.name == Runtime::OpenCode)
+            .unwrap();
+        assert_eq!(row.state, RuntimeRowState::NotFound);
+        assert_eq!(row.effective_command, None);
+        assert_eq!(row.effective_source, None);
+        assert!(row.below_minimum);
+        assert_eq!(row.installed_version.as_deref(), Some("1.19.5"));
+        assert_eq!(row.detected_path.as_deref(), Some(bin.to_str().unwrap()));
+
+        let err = effective_runtime_command(Runtime::OpenCode, &pool, &shell_env, &discovery)
+            .unwrap_err();
+        let Error::RuntimeVersionGate(gate) = err else {
+            panic!("expected RuntimeVersionGate, got {err}");
+        };
+        assert_eq!(gate.installed_version, "1.19.5");
+        assert_eq!(gate.min_version, "2.0.0");
+
+        // Candidate executable still probes after an in-place upgrade to v2.
+        std::fs::write(&bin, "#!/bin/sh\necho '2.0.29'\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            versions::probe_now(Runtime::OpenCode, &pool, &shell_env, &discovery, &events)
+                .as_deref(),
+            Some("2.0.29")
+        );
+        let status = status_list(&pool, &shell_env, &discovery).unwrap();
+        let row = status
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.name == Runtime::OpenCode)
+            .unwrap();
+        assert_eq!(row.state, RuntimeRowState::Detected);
+        assert_eq!(
+            row.effective_command.as_deref(),
+            Some(bin.to_str().unwrap())
+        );
+        assert_eq!(row.effective_source, Some(RuntimeCommandSource::Detected));
+        assert!(!row.below_minimum);
+        assert_eq!(row.installed_version.as_deref(), Some("2.0.29"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn opencode_v1_override_is_rejected_in_validation_and_status_list() {
+        let pool = crate::db::open_in_memory().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let v1 = dir.path().join("opencode-v1");
+        std::fs::write(&v1, "#!/bin/sh\necho 'opencode 1.19.5'\n").unwrap();
+        std::fs::set_permissions(&v1, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let err = validate_override(Runtime::OpenCode, v1.to_str().unwrap()).unwrap_err();
+        assert_eq!(err.code, "unsupported_version");
+        assert!(err.message.contains("1.19.5"), "{}", err.message);
+        assert!(
+            err.message.contains("OpenCode v2 (2.0.0 or newer)"),
+            "{}",
+            err.message
+        );
+
+        db::set_runtime_override(&pool, "opencode", Some(v1.to_str().unwrap())).unwrap();
+        let shell_env = Arc::new(RwLock::new(LoginShellEnv::default()));
+        let discovery = completed_discovery();
+        let status = status_list(&pool, &shell_env, &discovery).unwrap();
+        let row = status
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.name == Runtime::OpenCode)
+            .unwrap();
+        assert_eq!(row.state, RuntimeRowState::InvalidOverride);
+        assert_eq!(row.effective_command, None);
+        assert_eq!(row.effective_source, None);
+        assert!(row.below_minimum);
+        assert_eq!(row.installed_version.as_deref(), Some("1.19.5"));
+        assert!(row
+            .invalid_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("1.19.5")
+                && reason.contains("OpenCode v2 (2.0.0 or newer)")));
+
+        let v2 = dir.path().join("opencode-v2");
+        std::fs::write(&v2, "#!/bin/sh\necho '2.0.29'\n").unwrap();
+        std::fs::set_permissions(&v2, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(validate_override(Runtime::OpenCode, v2.to_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn refresh_clears_cached_v2_probe_and_skips_v1_model_serve() {
+        let dir = tempfile::tempdir().unwrap();
+        let mode_file = dir.path().join("mode");
+        let serve_called = dir.path().join("serve.called");
+        let bin = dir.path().join("opencode");
+        let write_wrapper = || {
+            let script = format!(
+                "#!/bin/sh\nmode=$(cat '{mode}')\nif [ \"$1\" = --version ]; then\n  if [ \"$mode\" = v2 ]; then\n    echo '2.0.29'\n  else\n    echo '1.19.5'\n  fi\n  exit 0\nfi\nif [ \"$1\" = serve ]; then\n  touch '{serve}'\n  printf '%s' '{{\"providers\":[]}}'\n  exit 0\nfi\nexit 1\n",
+                mode = mode_file.display(),
+                serve = serve_called.display(),
+            );
+            std::fs::write(&bin, script).unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        std::fs::write(&mode_file, "v2").unwrap();
+        write_wrapper();
+
+        let pool = Arc::new(crate::db::open_pool(&dir.path().join("runner.db")).unwrap());
+        let shell_env = Arc::new(RwLock::new(LoginShellEnv::default()));
+        let discovery = Arc::new(RwLock::new(DiscoveryState::startup(None, None)));
+        let events = EventChannel::new();
+        let path_env = dir.path().to_str().unwrap().to_owned();
+        let discovery_result = move || DiscoveryResult {
+            shell: Some("/bin/zsh".into()),
+            outcome: DiscoveryOutcome::Ok,
+            duration_ms: 1,
+            env: LoginShellEnv {
+                path: Some(path_env.clone()),
+                vars: Default::default(),
+            },
+        };
+
+        run_background_discovery_with(
+            events.clone(),
+            Arc::clone(&pool),
+            Arc::clone(&shell_env),
+            Arc::clone(&discovery),
+            true,
+            vec![Runtime::OpenCode],
+            discovery_result.clone(),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while discovery
+            .read()
+            .unwrap()
+            .versions
+            .installed(Runtime::OpenCode, bin.to_str().unwrap())
+            != Some("2.0.29")
+            || discovery
+                .read()
+                .unwrap()
+                .versions
+                .has_in_flight_async(Runtime::OpenCode)
+            || discovery
+                .read()
+                .unwrap()
+                .models
+                .is_in_flight(Runtime::OpenCode)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "initial probe timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // 1) Unchanged-metadata wrapper flipped to v1 -> Refresh must wipe cached v2 BEFORE models::request runs.
+        std::fs::write(&mode_file, "v1").unwrap();
+        let _ = std::fs::remove_file(&serve_called);
+        assert!(refresh_background_discovery_with(
+            events.clone(),
+            Arc::clone(&pool),
+            Arc::clone(&shell_env),
+            Arc::clone(&discovery),
+            vec![Runtime::OpenCode],
+            discovery_result.clone(),
+        )
+        .unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while discovery.read().unwrap().checking
+            || discovery
+                .read()
+                .unwrap()
+                .versions
+                .has_in_flight_async(Runtime::OpenCode)
+            || discovery
+                .read()
+                .unwrap()
+                .models
+                .is_in_flight(Runtime::OpenCode)
+            || discovery
+                .read()
+                .unwrap()
+                .versions
+                .installed(Runtime::OpenCode, bin.to_str().unwrap())
+                != Some("1.19.5")
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "refresh probe timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            !serve_called.exists(),
+            "Refresh must not spawn opencode v1 serve --stdio using stale cached v2 probe"
+        );
+        let status = status_list(&pool, &shell_env, &discovery).unwrap();
+        let row = status
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.name == Runtime::OpenCode)
+            .unwrap();
+        assert_eq!(row.state, RuntimeRowState::NotFound);
+        assert!(row.below_minimum);
+        assert_eq!(row.installed_version.as_deref(), Some("1.19.5"));
+
+        // 2) Flip back to v2, Refresh cleanly discovers 2.0.29, then atomically replace binary on disk with v1.
+        std::fs::write(&mode_file, "v2").unwrap();
+        assert!(refresh_background_discovery_with(
+            events.clone(),
+            Arc::clone(&pool),
+            Arc::clone(&shell_env),
+            Arc::clone(&discovery),
+            vec![Runtime::OpenCode],
+            discovery_result.clone(),
+        )
+        .unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while discovery.read().unwrap().checking
+            || discovery
+                .read()
+                .unwrap()
+                .versions
+                .has_in_flight_async(Runtime::OpenCode)
+            || discovery
+                .read()
+                .unwrap()
+                .models
+                .is_in_flight(Runtime::OpenCode)
+            || discovery
+                .read()
+                .unwrap()
+                .versions
+                .installed(Runtime::OpenCode, bin.to_str().unwrap())
+                != Some("2.0.29")
+        {
+            assert!(std::time::Instant::now() < deadline, "v2 restore timed out");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let _ = std::fs::remove_file(&serve_called);
+        let tmp = dir.path().join("opencode.v1");
+        std::fs::write(
+            &tmp,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = --version ]; then echo '1.19.5'; exit 0; fi\nif [ \"$1\" = serve ]; then touch '{}'; fi\nexit 1\n",
+                serve_called.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::rename(&tmp, &bin).unwrap();
+        models::request(
+            &pool,
+            &shell_env,
+            &discovery,
+            &events,
+            &[Runtime::OpenCode],
+            true,
+        );
+        assert!(
+            !serve_called.exists(),
+            "same-path binary swap must invalidate probe before models::request runs"
+        );
+        assert_eq!(
+            discovery
+                .read()
+                .unwrap()
+                .versions
+                .installed(Runtime::OpenCode, bin.to_str().unwrap()),
+            Some("1.19.5")
+        );
     }
 }

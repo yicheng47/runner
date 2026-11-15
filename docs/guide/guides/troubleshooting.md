@@ -87,6 +87,10 @@ Runner requires Codex **0.149.0 or newer**. **Update needed** appears only on Co
 
 If Codex rejects its startup configuration and exits before the first turn, the stopped card explains the configuration failure and offers **Update Codex**. Update, then let Runner retry the waiting chat. An ordinary stopped chat keeps its usual Resume behavior. If updating does not resolve the error, retain the displayed cause and relevant terminal output for a bug report.
 
+## OpenCode v1 is installed instead of OpenCode v2
+
+Runner supports **OpenCode v2 (2.0.0 or newer)** and launches `opencode --standalone`. OpenCode v1 (`0.15.x` and `1.x`) uses the same `opencode` command name without `--standalone`, so Runner lists **OpenCode v2** under **Not installed** in **Settings → Agents** when an older `opencode` is on `PATH`, rejects overrides below 2.0.0, and offers **Open Settings** on refused launches or resumes. Install OpenCode v2 from [opencode.ai/v2/docs](https://opencode.ai/v2/docs) or point **Settings → Agents → OpenCode v2 → Executable** at a 2.0.0+ binary, then click **Refresh**.
+
 ## An agent update needs attention
 
 **May be waiting for your input** is a guess based on a quiet installer prompt. Nothing opens automatically. Open the background task list and choose **Answer** to focus the installer terminal; **Hide**, Escape and the close button leave it running. A failed update offers **Retry** and **Show output**. If stopping an update breaks the executable, choose **Reinstall** on its retained task row.

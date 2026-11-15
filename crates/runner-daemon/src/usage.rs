@@ -409,11 +409,7 @@ impl UsageService {
     }
 
     fn fetch(&self, core: &AppCore, force: bool) {
-        let statuses = crate::runtime_status::status_list(
-            &core.db,
-            &core.runtime_shell_env,
-            &core.runtime_discovery,
-        );
+        let statuses = crate::ops::runtime::runtime_status_list(core);
         let env = core.runtime_shell_env.read().unwrap().clone();
         let enabled = self.fetch_runtimes(force);
         let mut results = Vec::new();

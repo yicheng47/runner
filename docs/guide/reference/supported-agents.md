@@ -20,7 +20,7 @@ Every agent page has a **Launch** card and a read-only **Command** preview, incl
 | Bypass permissions | Claude Code | Off | Chats, every account |
 | Bypass permissions | Antigravity CLI | Off | Chats |
 | Remote plugin catalog | Codex | On | Chats, resumes, missions and forks |
-| Status hooks | Codex, Claude Code, pi, Copilot CLI, OpenCode; Grok on macOS/Linux | On | Chats |
+| Status hooks | Codex, Claude Code, pi, Copilot CLI, OpenCode v2; Grok on macOS/Linux | On | Chats |
 | Custom flags | All agents | Empty | Chats, roles, missions, resumes and forks |
 
 Bypass lets a chat run without asking for permission; Codex also runs outside its sandbox. Enable it only for trusted folders. The Bypass switch applies to every Codex, Claude Code and Antigravity CLI chat, including role-backed chats. Chat starts, resumes and forks strip stored role permission flags; with Bypass off, the agent’s own configuration governs approvals. Missions always use their broad-access permissions and status hooks, regardless of the chat switches.
@@ -46,7 +46,7 @@ Use each provider's setup instructions, then run its CLI in a normal terminal to
 | GitHub Copilot CLI | `copilot` | [Copilot CLI setup](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli); Copilot subscription |
 | Cursor Agent CLI | `cursor` | [Cursor CLI setup](https://cursor.com/docs/cli/installation); install the CLI separately from the editor |
 | Grok Build | `grok` | [Grok Build setup](https://docs.x.ai/build/overview); existing grok.com sign-in; updates itself |
-| OpenCode v2 | `opencode` | [OpenCode](https://opencode.ai); configure an available provider and model |
+| OpenCode v2 | `opencode` | [OpenCode v2 docs](https://opencode.ai/v2/docs); configure an available provider and model |
 | TRAE CLI | `trae` | Opt-in runtime; enable it in Settings → Agents after installing and configuring its CLI |
 
 All listed runtimes except TRAE are enabled by default when detected. The runtime name is Runner's identifier; it need not be the executable name. For example, Runner's Claude Code runtime is `claude-code`, while its executable is `claude`.
@@ -86,7 +86,7 @@ All listed runtimes except TRAE are enabled by default when detected. The runtim
 
 - Runner ships for macOS (Apple Silicon and Intel) and Windows x64. References to Linux above describe a runtime adapter's behavior; the Linux beta's install and validation scope is in [Install Runner](../getting-started/install.md).
 - Windows agents run natively, without WSL. Claude Code and pi's bash tool need Git for Windows. npm-installed agents need Node.js; Copilot's npm installation requires Node.js 22. PowerShell 7 is optional.
-- Antigravity CLI and pi have Windows implementation paths but no completed native Windows smoke check. Cursor, Grok and OpenCode also have Windows validation gaps.
+- Antigravity CLI and pi have Windows implementation paths but no completed native Windows smoke check. Cursor, Grok and OpenCode v2 also have Windows validation gaps.
 - Grok chats, missions and stop/resume were checked on macOS; full app-relaunch persistence remains unverified. Switching an already loaded Grok dashboard conversation updates Runner's resume key on the next prompt, not an idle dashboard switch.
 - A resume key identifies the runtime's conversation. The runtime must still have that conversation history. Working/idle and needs-input indicators depend on the runtime's reporting and do not certify completion of a task.
 
@@ -95,6 +95,8 @@ See [Sessions](../concepts/sessions.md) for lifecycle behavior and [Troubleshoot
 ## Minimum versions and agent updates
 
 Codex needs **0.149.0 or newer** for Runner's launch hooks. The launcher marks only an older Codex’s agent row **Update needed**; role rows have no update labels or actions. The notice explains that starting Codex or a role using it updates Codex first and leaves the pane waiting; the chat starts when the update succeeds. A refused resume or fork offers the same recovery. An unknown version is allowed to try launching.
+
+OpenCode v2 needs **2.0.0 or newer** for Runner's `--standalone` server, model discovery and session history. When an older `opencode` (`0.15.x` or `1.x`) is found on `PATH`, Runner keeps **OpenCode v2** under **Not installed** in **Settings → Agents**, explains which version was found, and omits it from the launcher's installed agents. Explicit overrides below 2.0.0 are rejected, and refused launches or resumes offer **Open Settings** instead of an update task because OpenCode v2 has no Runner-managed update command.
 
 On macOS and Linux, Antigravity CLI usage checks require **1.5.8 or newer** so Runner can verify authentication without triggering interactive login before reading `/usage`. Older or unrecognized builds remain usable for chats and missions, while keeping Antigravity CLI usage unavailable without running sign-in checks. On Windows, Runner reads Antigravity's saved sign-in directly and queries quota endpoints over HTTPS without spawning `agy`.
 

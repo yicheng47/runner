@@ -338,6 +338,7 @@ pub struct SessionManager {
     /// way Terminal.app's children would (issues #109 / #152).
     shell_env: Arc<RwLock<crate::shell_path::LoginShellEnv>>,
     discovery_state: crate::runtime_status::SharedDiscoveryState,
+    runtime_events: RwLock<Option<crate::events::EventChannel>>,
     launch_gate: Mutex<Option<Instant>>,
     /// Cancellation flags for in-flight background mission spawns,
     /// keyed by `mission_id`. `mission_start` registers a fresh flag
@@ -459,6 +460,10 @@ impl SessionManager {
         *self.hook_endpoint.write().unwrap() = Some(endpoint);
     }
 
+    pub fn set_runtime_events(&self, events: crate::events::EventChannel) {
+        *self.runtime_events.write().unwrap() = Some(events);
+    }
+
     pub(crate) fn admit_hook(
         &self,
         report: runner_core::protocol::HookReport,
@@ -477,6 +482,7 @@ impl SessionManager {
             delivery_listeners: Mutex::new(HashMap::new()),
             shell_env,
             discovery_state,
+            runtime_events: RwLock::new(None),
             launch_gate: Mutex::new(None),
             pending_mission_cancels: Mutex::new(HashMap::new()),
             runtime,

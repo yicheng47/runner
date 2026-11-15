@@ -7,10 +7,7 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use super::{
-    direct_chat_path, effective_runtime_command, RuntimeCommandSource, SharedDiscoveryState,
-    SharedShellEnv,
-};
+use super::{direct_chat_path, RuntimeCommandSource, SharedDiscoveryState, SharedShellEnv};
 use crate::db::DbPool;
 use crate::events::EventChannel;
 use crate::model::Runtime;
@@ -104,6 +101,13 @@ impl ModelDiscovery {
             .as_ref()
             .filter(|record| &record.source == source)
             .map(|record| &record.catalog)
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn is_in_flight(&self, runtime: Runtime) -> bool {
+        self.runtimes
+            .get(&runtime)
+            .is_some_and(|state| state.in_flight)
     }
 
     pub(crate) fn queue_refresh(&mut self, runtimes: &[Runtime]) {
@@ -201,7 +205,8 @@ pub(crate) fn request(
             .model_discovery()
             .is_some()
     }) {
-        let Some((source, env)) = current_source_and_env(runtime, pool, shell_env, discovery)
+        let Some((source, env)) =
+            current_source_and_env(runtime, pool, shell_env, discovery, Some(events))
         else {
             continue;
         };
@@ -221,7 +226,8 @@ pub(crate) fn request(
             let method = query.method;
             let result = (query.query)(&source.command, &env);
             let duration_ms = started.elapsed().as_millis();
-            let current = current_source(runtime, &pool, &shell_env, &discovery);
+            let current =
+                current_source_with_events(runtime, &pool, &shell_env, &discovery, Some(&events));
             let applied = current.as_ref() == Some(&source);
             let catalog = match result {
                 Ok(catalog) => {
@@ -263,13 +269,24 @@ pub(crate) fn request(
     }
 }
 
+#[cfg(all(test, unix))]
 fn current_source(
     runtime: Runtime,
     pool: &DbPool,
     shell_env: &SharedShellEnv,
     discovery: &SharedDiscoveryState,
 ) -> Option<ModelSource> {
-    current_source_and_env(runtime, pool, shell_env, discovery).map(|(source, _)| source)
+    current_source_and_env(runtime, pool, shell_env, discovery, None).map(|(source, _)| source)
+}
+
+fn current_source_with_events(
+    runtime: Runtime,
+    pool: &DbPool,
+    shell_env: &SharedShellEnv,
+    discovery: &SharedDiscoveryState,
+    events: Option<&EventChannel>,
+) -> Option<ModelSource> {
+    current_source_and_env(runtime, pool, shell_env, discovery, events).map(|(source, _)| source)
 }
 
 fn current_source_and_env(
@@ -277,10 +294,28 @@ fn current_source_and_env(
     pool: &DbPool,
     shell_env: &SharedShellEnv,
     discovery: &SharedDiscoveryState,
+    events: Option<&EventChannel>,
 ) -> Option<(ModelSource, LoginShellEnv)> {
-    let command = effective_runtime_command(runtime, pool, shell_env, discovery).ok()?;
+    let command = crate::runtime_status::effective_runtime_command_with_events(
+        runtime, pool, shell_env, discovery, events,
+    )
+    .ok()?;
     if command.source == RuntimeCommandSource::Catalog {
         return None;
+    }
+    if let Some(minimum) = crate::runtimes::adapter(runtime)
+        .catalog()
+        .and_then(|catalog| catalog.min_version)
+    {
+        let below = discovery.read().ok().is_some_and(|state| {
+            super::versions::below_minimum(
+                state.versions.installed(runtime, &command.command),
+                Some(minimum),
+            )
+        });
+        if below {
+            return None;
+        }
     }
     let mut env = shell_env.read().ok()?.clone();
     let mut source = source_with_env(runtime, &command.command, &env);
