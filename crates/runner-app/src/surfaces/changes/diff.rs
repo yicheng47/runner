@@ -1,5 +1,6 @@
-//! Virtualized Unified diff view with two-version background highlighting,
-//! gutter-free text selection/copy, hunk navigation, and end-of-diff viewed box.
+//! Virtualized Unified and Split diff view with two-version background
+//! highlighting, gutter-free text selection/copy, hunk navigation, and
+//! end-of-diff viewed box.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -17,6 +18,7 @@ use gpui::{
 use runner_app::ui::{app_scrollbar_gutter, Scrollbar, ScrollbarKind, ScrollbarMetrics};
 use runner_core::protocol::changes::{DiffHunk, DiffOp};
 
+use crate::app_settings::DiffViewMode;
 use crate::surfaces::files::code::{word_at, CodeView};
 use crate::surfaces::files::document::Document;
 use crate::surfaces::files::highlight::{self, Grammar, Highlights};
@@ -30,6 +32,7 @@ const SIGN_WIDTH: f32 = 10.;
 const TEXT_GAP: f32 = 8.;
 const TEXT_PAD_RIGHT: f32 = 24.;
 const TOP_PAD: f32 = 6.;
+const BOTTOM_PAD_NO_FOOTER: f32 = 8.;
 const FOOTER_HEIGHT: f32 = 40.;
 
 pub(crate) type DiffCallback = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -40,6 +43,13 @@ pub(crate) struct DiffPos {
     pub(crate) offset: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum DiffSide {
+    Left,
+    #[default]
+    Right,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum DiffRow {
     Hunk { header: SharedString },
@@ -48,8 +58,23 @@ pub(crate) enum DiffRow {
     Added { new_line: usize },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SplitCell {
+    Empty,
+    Context { line: usize },
+    Removed { line: usize },
+    Added { line: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SplitRow {
+    Hunk { header: SharedString },
+    Pair { left: SplitCell, right: SplitCell },
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
+    mode: DiffViewMode,
     bounds: Bounds<Pixels>,
     line_height: Pixels,
     char_width: Pixels,
@@ -57,20 +82,75 @@ struct Metrics {
     new_num_right: Pixels,
     sign_left: Pixels,
     text_left: Pixels,
+    left_col_width: Pixels,
+    right_col_left: Pixels,
+    right_col_width: Pixels,
+    right_num_right: Pixels,
+    right_sign_left: Pixels,
+    right_text_left: Pixels,
 }
 
 impl Metrics {
-    fn text_width(&self) -> Pixels {
-        (self.bounds.size.width - self.text_left).max(px(0.))
+    fn left_text_width(&self) -> Pixels {
+        (self.left_col_width - self.text_left).max(px(0.))
+    }
+
+    fn right_text_width(&self) -> Pixels {
+        (self.right_col_width - self.right_text_left).max(px(0.))
+    }
+
+    fn scroll_viewport_width(&self) -> Pixels {
+        match self.mode {
+            DiffViewMode::Unified => (self.bounds.size.width - self.text_left).max(px(0.)),
+            DiffViewMode::Split => self.left_text_width().min(self.right_text_width()),
+        }
+    }
+
+    fn shape_viewport_width(&self) -> Pixels {
+        match self.mode {
+            DiffViewMode::Unified => (self.bounds.size.width - self.text_left).max(px(0.)),
+            DiffViewMode::Split => self.left_text_width().max(self.right_text_width()),
+        }
+    }
+
+    fn side_at_x(&self, x: Pixels) -> DiffSide {
+        if x < self.bounds.left() + self.right_col_left {
+            DiffSide::Left
+        } else {
+            DiffSide::Right
+        }
+    }
+
+    fn side_text_left_abs(&self, side: DiffSide) -> Pixels {
+        match (self.mode, side) {
+            (DiffViewMode::Unified, _) | (DiffViewMode::Split, DiffSide::Left) => {
+                self.bounds.left() + self.text_left
+            }
+            (DiffViewMode::Split, DiffSide::Right) => {
+                self.bounds.left() + self.right_col_left + self.right_text_left
+            }
+        }
+    }
+
+    fn side_right_abs(&self, side: DiffSide) -> Pixels {
+        match (self.mode, side) {
+            (DiffViewMode::Split, DiffSide::Left) => self.bounds.left() + self.left_col_width,
+            _ => self.bounds.right(),
+        }
     }
 }
 
 pub(crate) struct UnifiedDiffView {
     old_doc: Arc<Document>,
     new_doc: Arc<Document>,
+    mode: DiffViewMode,
+    show_viewed_footer: bool,
     rows: Arc<Vec<DiffRow>>,
     hunk_rows: Vec<usize>,
-    max_columns: usize,
+    split_rows: Arc<Vec<SplitRow>>,
+    split_hunk_rows: Vec<usize>,
+    unified_max_columns: usize,
+    split_max_columns: usize,
     old_digits: usize,
     new_digits: usize,
     grammar: Option<&'static Grammar>,
@@ -82,6 +162,7 @@ pub(crate) struct UnifiedDiffView {
     cursor_row: usize,
     reveal_row: Option<usize>,
     selection: Option<(DiffPos, DiffPos)>,
+    selection_side: DiffSide,
     selects_all: bool,
     dragging: bool,
     file_name: SharedString,
@@ -96,6 +177,14 @@ pub(crate) struct UnifiedDiffView {
     on_focus_in: Option<DiffCallback>,
     #[cfg(test)]
     pub(crate) painted: std::cell::RefCell<std::collections::BTreeMap<usize, Vec<(String, Hsla)>>>,
+}
+
+fn sanitize_header(header: &str) -> SharedString {
+    if header.contains('\r') {
+        header.replace('\r', "").into()
+    } else {
+        header.to_owned().into()
+    }
 }
 
 fn build_rows(
@@ -114,10 +203,9 @@ fn build_rows(
 
     for hunk in hunks {
         hunk_rows.push(rows.len());
-        max_columns = max_columns.max(hunk.header.chars().count());
-        rows.push(DiffRow::Hunk {
-            header: hunk.header.clone().into(),
-        });
+        let header = sanitize_header(&hunk.header);
+        max_columns = max_columns.max(header.chars().count());
+        rows.push(DiffRow::Hunk { header });
         let mut old_idx = hunk.old_start.saturating_sub(1) as usize;
         let mut new_idx = hunk.new_start.saturating_sub(1) as usize;
         for op in &hunk.ops {
@@ -161,6 +249,82 @@ fn build_rows(
     (rows, hunk_rows, max_columns, old_digits, new_digits)
 }
 
+pub(crate) fn build_split_rows(
+    old_doc: &Document,
+    new_doc: &Document,
+    hunks: &[DiffHunk],
+) -> (Vec<SplitRow>, Vec<usize>, usize) {
+    let mut rows = Vec::new();
+    let mut hunk_rows = Vec::with_capacity(hunks.len());
+    let old_count = old_doc.line_count();
+    let new_count = new_doc.line_count();
+
+    let flush_run = |rows: &mut Vec<SplitRow>, removed: &mut Vec<usize>, added: &mut Vec<usize>| {
+        let pair_count = removed.len().max(added.len());
+        for i in 0..pair_count {
+            let left = removed
+                .get(i)
+                .map_or(SplitCell::Empty, |&line| SplitCell::Removed { line });
+            let right = added
+                .get(i)
+                .map_or(SplitCell::Empty, |&line| SplitCell::Added { line });
+            rows.push(SplitRow::Pair { left, right });
+        }
+        removed.clear();
+        added.clear();
+    };
+
+    let mut removed_run = Vec::new();
+    let mut added_run = Vec::new();
+
+    for hunk in hunks {
+        hunk_rows.push(rows.len());
+        rows.push(SplitRow::Hunk {
+            header: sanitize_header(&hunk.header),
+        });
+        let mut old_idx = hunk.old_start.saturating_sub(1) as usize;
+        let mut new_idx = hunk.new_start.saturating_sub(1) as usize;
+        for op in &hunk.ops {
+            match *op {
+                DiffOp::Context { count } => {
+                    flush_run(&mut rows, &mut removed_run, &mut added_run);
+                    for _ in 0..count {
+                        let o = old_idx.min(old_count.saturating_sub(1));
+                        let n = new_idx.min(new_count.saturating_sub(1));
+                        rows.push(SplitRow::Pair {
+                            left: SplitCell::Context { line: o },
+                            right: SplitCell::Context { line: n },
+                        });
+                        old_idx += 1;
+                        new_idx += 1;
+                    }
+                }
+                DiffOp::Removed { count } => {
+                    if !added_run.is_empty() {
+                        flush_run(&mut rows, &mut removed_run, &mut added_run);
+                    }
+                    for _ in 0..count {
+                        let o = old_idx.min(old_count.saturating_sub(1));
+                        removed_run.push(o);
+                        old_idx += 1;
+                    }
+                }
+                DiffOp::Added { count } => {
+                    for _ in 0..count {
+                        let n = new_idx.min(new_count.saturating_sub(1));
+                        added_run.push(n);
+                        new_idx += 1;
+                    }
+                }
+            }
+        }
+        flush_run(&mut rows, &mut removed_run, &mut added_run);
+    }
+
+    let max_columns = old_doc.columns().max(new_doc.columns());
+    (rows, hunk_rows, max_columns)
+}
+
 impl UnifiedDiffView {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -173,8 +337,10 @@ impl UnifiedDiffView {
         changed_since_viewed: bool,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (rows, hunk_rows, max_columns, old_digits, new_digits) =
+        let (rows, hunk_rows, unified_max_columns, old_digits, new_digits) =
             build_rows(&old_doc, &new_doc, hunks);
+        let (split_rows, split_hunk_rows, split_max_columns) =
+            build_split_rows(&old_doc, &new_doc, hunks);
         let initial_cursor = hunk_rows
             .first()
             .map(|&h| (h + 1).min(rows.len().saturating_sub(1)))
@@ -185,9 +351,14 @@ impl UnifiedDiffView {
         let mut view = Self {
             old_doc,
             new_doc,
+            mode: DiffViewMode::Unified,
+            show_viewed_footer: true,
             rows: Arc::new(rows),
             hunk_rows,
-            max_columns,
+            split_rows: Arc::new(split_rows),
+            split_hunk_rows,
+            unified_max_columns,
+            split_max_columns,
             old_digits,
             new_digits,
             grammar,
@@ -199,6 +370,7 @@ impl UnifiedDiffView {
             cursor_row: initial_cursor,
             reveal_row: None,
             selection: None,
+            selection_side: DiffSide::Right,
             selects_all: false,
             dragging: false,
             file_name,
@@ -218,14 +390,128 @@ impl UnifiedDiffView {
         view
     }
 
+    pub(crate) fn set_show_viewed_footer(&mut self, show: bool) {
+        self.show_viewed_footer = show;
+    }
+
+    pub(crate) fn set_mode(&mut self, mode: DiffViewMode, cx: &mut Context<Self>) {
+        if self.mode == mode {
+            return;
+        }
+        let mapped_cursor = self.map_cursor_to_mode(mode);
+        self.mode = mode;
+        self.cursor_row = mapped_cursor;
+        self.reveal_row = Some(mapped_cursor);
+        self.selection = None;
+        self.selects_all = false;
+        self.dragging = false;
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mode(&self) -> DiffViewMode {
+        self.mode
+    }
+
+    fn map_cursor_to_mode(&self, target_mode: DiffViewMode) -> usize {
+        if target_mode == self.mode {
+            return self.cursor_row;
+        }
+        match (self.mode, target_mode) {
+            (DiffViewMode::Unified, DiffViewMode::Split) => {
+                let Some(row) = self.rows.get(self.cursor_row) else {
+                    return 0;
+                };
+                let found = match *row {
+                    DiffRow::Hunk { .. } => self
+                        .hunk_rows
+                        .iter()
+                        .position(|&h| h == self.cursor_row)
+                        .and_then(|ord| self.split_hunk_rows.get(ord).copied()),
+                    DiffRow::Context { old_line, new_line } => {
+                        self.split_rows.iter().position(|sr| {
+                            matches!(
+                                sr,
+                                SplitRow::Pair {
+                                    left: SplitCell::Context { line: o },
+                                    right: SplitCell::Context { line: n },
+                                } if *o == old_line && *n == new_line
+                            )
+                        })
+                    }
+                    DiffRow::Removed { old_line } => self.split_rows.iter().position(|sr| {
+                        matches!(
+                            sr,
+                            SplitRow::Pair {
+                                left: SplitCell::Removed { line: o },
+                                ..
+                            } if *o == old_line
+                        )
+                    }),
+                    DiffRow::Added { new_line } => self.split_rows.iter().position(|sr| {
+                        matches!(
+                            sr,
+                            SplitRow::Pair {
+                                right: SplitCell::Added { line: n },
+                                ..
+                            } if *n == new_line
+                        )
+                    }),
+                };
+                found
+                    .unwrap_or_else(|| self.cursor_row.min(self.split_rows.len().saturating_sub(1)))
+            }
+            (DiffViewMode::Split, DiffViewMode::Unified) => {
+                let Some(sr) = self.split_rows.get(self.cursor_row) else {
+                    return 0;
+                };
+                let found = match *sr {
+                    SplitRow::Hunk { .. } => self
+                        .split_hunk_rows
+                        .iter()
+                        .position(|&h| h == self.cursor_row)
+                        .and_then(|ord| self.hunk_rows.get(ord).copied()),
+                    SplitRow::Pair { left, right } => {
+                        let prefer_left = self.selection_side == DiffSide::Left;
+                        let match_cell = |cell: SplitCell| -> Option<usize> {
+                            match cell {
+                                SplitCell::Empty => None,
+                                SplitCell::Context { line } => self.rows.iter().position(|ur| {
+                                    if prefer_left {
+                                        matches!(ur, DiffRow::Context { old_line, .. } if *old_line == line)
+                                    } else {
+                                        matches!(ur, DiffRow::Context { new_line, .. } if *new_line == line)
+                                    }
+                                }),
+                                SplitCell::Removed { line } => self.rows.iter().position(|ur| {
+                                    matches!(ur, DiffRow::Removed { old_line } if *old_line == line)
+                                }),
+                                SplitCell::Added { line } => self.rows.iter().position(|ur| {
+                                    matches!(ur, DiffRow::Added { new_line } if *new_line == line)
+                                }),
+                            }
+                        };
+                        if prefer_left {
+                            match_cell(left).or_else(|| match_cell(right))
+                        } else {
+                            match_cell(right).or_else(|| match_cell(left))
+                        }
+                    }
+                };
+                found.unwrap_or_else(|| self.cursor_row.min(self.rows.len().saturating_sub(1)))
+            }
+            _ => self.cursor_row,
+        }
+    }
+
     pub(crate) fn set_callbacks(
         &mut self,
         on_escape: DiffCallback,
-        on_toggle_viewed: DiffCallback,
+        on_toggle_viewed: Option<DiffCallback>,
         on_focus_in: DiffCallback,
     ) {
         self.on_escape = Some(on_escape);
-        self.on_toggle_viewed = Some(on_toggle_viewed);
+        self.on_toggle_viewed = on_toggle_viewed;
         self.on_focus_in = Some(on_focus_in);
     }
 
@@ -258,20 +544,26 @@ impl UnifiedDiffView {
         changed_since_viewed: bool,
         cx: &mut Context<Self>,
     ) {
-        let (rows, hunk_rows, max_columns, old_digits, new_digits) =
+        let (rows, hunk_rows, unified_max_columns, old_digits, new_digits) =
             build_rows(&old_doc, &new_doc, hunks);
+        let (split_rows, split_hunk_rows, split_max_columns) =
+            build_split_rows(&old_doc, &new_doc, hunks);
         self.old_doc = old_doc;
         self.new_doc = new_doc;
         self.rows = Arc::new(rows);
         self.hunk_rows = hunk_rows;
-        self.max_columns = max_columns;
+        self.split_rows = Arc::new(split_rows);
+        self.split_hunk_rows = split_hunk_rows;
+        self.unified_max_columns = unified_max_columns;
+        self.split_max_columns = split_max_columns;
         self.old_digits = old_digits;
         self.new_digits = new_digits;
         self.grammar = grammar;
         self.file_name = file_name;
         self.viewed = viewed;
         self.changed_since_viewed = changed_since_viewed;
-        self.cursor_row = self.cursor_row.min(self.rows.len().saturating_sub(1));
+        let len = self.active_row_count();
+        self.cursor_row = self.cursor_row.min(len.saturating_sub(1));
         self.selection = self
             .selection
             .map(|(a, b)| (self.clamp_pos(a), self.clamp_pos(b)));
@@ -279,6 +571,27 @@ impl UnifiedDiffView {
         self.new_highlights = None;
         self.highlight(cx);
         cx.notify();
+    }
+
+    fn active_row_count(&self) -> usize {
+        match self.mode {
+            DiffViewMode::Unified => self.rows.len(),
+            DiffViewMode::Split => self.split_rows.len(),
+        }
+    }
+
+    fn active_hunk_rows(&self) -> &[usize] {
+        match self.mode {
+            DiffViewMode::Unified => &self.hunk_rows,
+            DiffViewMode::Split => &self.split_hunk_rows,
+        }
+    }
+
+    fn active_max_columns(&self) -> usize {
+        match self.mode {
+            DiffViewMode::Unified => self.unified_max_columns,
+            DiffViewMode::Split => self.split_max_columns,
+        }
     }
 
     fn highlight(&mut self, cx: &mut Context<Self>) {
@@ -318,31 +631,54 @@ impl UnifiedDiffView {
         .detach();
     }
 
-    fn row_line_text(&self, row: usize) -> Option<&str> {
-        match self.rows.get(row)? {
-            DiffRow::Hunk { .. } => None,
-            DiffRow::Context { new_line, .. } | DiffRow::Added { new_line } => {
-                Some(self.new_doc.line(*new_line))
-            }
-            DiffRow::Removed { old_line } => Some(self.old_doc.line(*old_line)),
+    fn row_doc_and_line_for_side(&self, row: usize, side: DiffSide) -> Option<(&Document, usize)> {
+        match self.mode {
+            DiffViewMode::Unified => match self.rows.get(row)? {
+                DiffRow::Hunk { .. } => None,
+                DiffRow::Context { new_line, .. } | DiffRow::Added { new_line } => {
+                    Some((&self.new_doc, *new_line))
+                }
+                DiffRow::Removed { old_line } => Some((&self.old_doc, *old_line)),
+            },
+            DiffViewMode::Split => match self.split_rows.get(row)? {
+                SplitRow::Hunk { .. } => None,
+                SplitRow::Pair { left, right } => match side {
+                    DiffSide::Left => match *left {
+                        SplitCell::Context { line } | SplitCell::Removed { line } => {
+                            Some((&self.old_doc, line))
+                        }
+                        SplitCell::Empty | SplitCell::Added { .. } => None,
+                    },
+                    DiffSide::Right => match *right {
+                        SplitCell::Context { line } | SplitCell::Added { line } => {
+                            Some((&self.new_doc, line))
+                        }
+                        SplitCell::Empty | SplitCell::Removed { .. } => None,
+                    },
+                },
+            },
         }
     }
 
     fn row_doc_and_line(&self, row: usize) -> Option<(&Document, usize)> {
-        match self.rows.get(row)? {
-            DiffRow::Hunk { .. } => None,
-            DiffRow::Context { new_line, .. } | DiffRow::Added { new_line } => {
-                Some((&self.new_doc, *new_line))
-            }
-            DiffRow::Removed { old_line } => Some((&self.old_doc, *old_line)),
-        }
+        self.row_doc_and_line_for_side(row, self.selection_side)
+    }
+
+    fn row_line_text(&self, row: usize) -> Option<&str> {
+        let (doc, line) = self.row_doc_and_line(row)?;
+        Some(doc.line(line))
+    }
+
+    fn side_has_any_lines(&self, side: DiffSide) -> bool {
+        (0..self.active_row_count()).any(|row| self.row_doc_and_line_for_side(row, side).is_some())
     }
 
     fn clamp_pos(&self, pos: DiffPos) -> DiffPos {
-        if self.rows.is_empty() {
+        let count = self.active_row_count();
+        if count == 0 {
             return DiffPos::default();
         }
-        let row = pos.row.min(self.rows.len() - 1);
+        let row = pos.row.min(count - 1);
         let max_offset = self.row_line_text(row).map_or(0, str::len);
         let mut offset = pos.offset.min(max_offset);
         if let Some(line) = self.row_line_text(row) {
@@ -354,13 +690,12 @@ impl UnifiedDiffView {
     }
 
     pub(crate) fn selected_text(&self) -> Option<String> {
-        if self.rows.is_empty() {
+        let count = self.active_row_count();
+        if count == 0 {
             return None;
         }
         if self.selects_all {
-            let lines: Vec<&str> = (0..self.rows.len())
-                .filter_map(|r| self.row_line_text(r))
-                .collect();
+            let lines: Vec<&str> = (0..count).filter_map(|r| self.row_line_text(r)).collect();
             return (!lines.is_empty()).then(|| lines.join("\n"));
         }
         let (anchor, head) = self.selection?;
@@ -369,7 +704,7 @@ impl UnifiedDiffView {
         }
         let (start, end) = (anchor.min(head), anchor.max(head));
         let mut pieces = Vec::new();
-        for r in start.row..=end.row.min(self.rows.len().saturating_sub(1)) {
+        for r in start.row..=end.row.min(count.saturating_sub(1)) {
             let Some(line) = self.row_line_text(r) else {
                 continue;
             };
@@ -391,11 +726,13 @@ impl UnifiedDiffView {
     }
 
     pub(crate) fn jump_hunk(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
-        if self.hunk_rows.is_empty() || self.rows.is_empty() {
+        let count = self.active_row_count();
+        let hunks = self.active_hunk_rows();
+        if hunks.is_empty() || count == 0 {
             return false;
         }
-        let last = self.rows.len() - 1;
-        let targets: Vec<usize> = self.hunk_rows.iter().map(|&h| (h + 1).min(last)).collect();
+        let last = count - 1;
+        let targets: Vec<usize> = hunks.iter().map(|&h| (h + 1).min(last)).collect();
         let next = if forward {
             targets.iter().copied().find(|&t| t > self.cursor_row)
         } else {
@@ -412,11 +749,12 @@ impl UnifiedDiffView {
     }
 
     pub(crate) fn step_line(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.rows.is_empty() {
+        let count = self.active_row_count();
+        if count == 0 {
             return;
         }
-        let next = (self.cursor_row as isize + delta)
-            .clamp(0, self.rows.len().saturating_sub(1) as isize) as usize;
+        let next =
+            (self.cursor_row as isize + delta).clamp(0, count.saturating_sub(1) as isize) as usize;
         if next != self.cursor_row {
             self.cursor_row = next;
             self.reveal_row = Some(next);
@@ -440,12 +778,31 @@ impl UnifiedDiffView {
     }
 
     #[cfg(test)]
+    pub(crate) fn split_rows(&self) -> &[SplitRow] {
+        &self.split_rows
+    }
+
+    #[cfg(test)]
     pub(crate) fn set_selection_for_test(
         &mut self,
         start: DiffPos,
         end: DiffPos,
         cx: &mut Context<Self>,
     ) {
+        self.selection = Some((self.clamp_pos(start), self.clamp_pos(end)));
+        self.selects_all = false;
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_split_selection_for_test(
+        &mut self,
+        side: DiffSide,
+        start: DiffPos,
+        end: DiffPos,
+        cx: &mut Context<Self>,
+    ) {
+        self.selection_side = side;
         self.selection = Some((self.clamp_pos(start), self.clamp_pos(end)));
         self.selects_all = false;
         cx.notify();
@@ -458,10 +815,20 @@ impl UnifiedDiffView {
     }
 
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
-        if self.rows.is_empty() {
+        let count = self.active_row_count();
+        if count == 0 {
             return;
         }
-        let last = self.rows.len() - 1;
+        if self.mode == DiffViewMode::Split && !self.side_has_any_lines(self.selection_side) {
+            let other = match self.selection_side {
+                DiffSide::Left => DiffSide::Right,
+                DiffSide::Right => DiffSide::Left,
+            };
+            if self.side_has_any_lines(other) {
+                self.selection_side = other;
+            }
+        }
+        let last = count - 1;
         let end_offset = self.row_line_text(last).map_or(0, str::len);
         self.selection = Some((
             DiffPos { row: 0, offset: 0 },
@@ -475,9 +842,18 @@ impl UnifiedDiffView {
         cx.notify();
     }
 
+    fn bottom_extra(&self) -> f32 {
+        if self.show_viewed_footer {
+            FOOTER_HEIGHT
+        } else {
+            BOTTOM_PAD_NO_FOOTER
+        }
+    }
+
     fn content_size(&self, metrics: &Metrics) -> (Pixels, Pixels) {
-        let width = metrics.char_width * self.max_columns as f32 + px(TEXT_PAD_RIGHT);
-        let height = metrics.line_height * self.rows.len() as f32 + px(TOP_PAD + FOOTER_HEIGHT);
+        let width = metrics.char_width * self.active_max_columns() as f32 + px(TEXT_PAD_RIGHT);
+        let height = metrics.line_height * self.active_row_count() as f32
+            + px(TOP_PAD + self.bottom_extra());
         (width, height)
     }
 
@@ -490,7 +866,7 @@ impl UnifiedDiffView {
                 position: f32::from(self.scroll.y),
             },
             ScrollbarMetrics {
-                viewport: f32::from(metrics.text_width()),
+                viewport: f32::from(metrics.scroll_viewport_width()),
                 content: f32::from(width),
                 position: f32::from(self.scroll.x),
             },
@@ -499,7 +875,7 @@ impl UnifiedDiffView {
 
     fn clamp_scroll(&mut self, metrics: &Metrics) {
         let (width, height) = self.content_size(metrics);
-        let max_x = (width - metrics.text_width()).max(px(0.));
+        let max_x = (width - metrics.scroll_viewport_width()).max(px(0.));
         let max_y = (height - metrics.bounds.size.height).max(px(0.));
         self.scroll.x = self.scroll.x.clamp(px(0.), max_x);
         self.scroll.y = self.scroll.y.clamp(px(0.), max_y);
@@ -666,14 +1042,18 @@ impl Render for UnifiedDiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (_, font_size) = CodeView::font(cx);
         let line_height = (font_size * crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT).round();
-        let text_left = self
-            .metrics
-            .get()
-            .map_or(px(0.), |metrics| metrics.text_left);
-        let footer_top = px(TOP_PAD) + line_height * self.rows.len() as f32 - self.scroll.y;
-        let show_footer = self.metrics.get().is_none_or(|metrics| {
-            footer_top < metrics.bounds.size.height && footer_top + px(FOOTER_HEIGHT) > px(0.)
-        });
+        let horizontal_left = match self.mode {
+            DiffViewMode::Unified => self
+                .metrics
+                .get()
+                .map_or(px(0.), |metrics| metrics.text_left),
+            DiffViewMode::Split => px(0.),
+        };
+        let footer_top = px(TOP_PAD) + line_height * self.active_row_count() as f32 - self.scroll.y;
+        let show_footer = self.show_viewed_footer
+            && self.metrics.get().is_none_or(|metrics| {
+                footer_top < metrics.bounds.size.height && footer_top + px(FOOTER_HEIGHT) > px(0.)
+            });
         let toggle_cb = self.on_toggle_viewed.clone();
         let viewed = self.viewed;
         let changed = self.changed_since_viewed;
@@ -681,11 +1061,18 @@ impl Render for UnifiedDiffView {
             "changes.mark_file_viewed",
             &[("name", self.file_name.to_string())],
         );
+        let is_split = self.mode == DiffViewMode::Split;
 
         div()
             .id("changes-unified-diff")
-            .when(cfg!(test), |element| {
-                element.debug_selector(|| "CHANGES_DIFF_CODE".into())
+            .when(cfg!(test), move |element| {
+                element.debug_selector(move || {
+                    if is_split {
+                        "CHANGES_DIFF_CODE split".into()
+                    } else {
+                        "CHANGES_DIFF_CODE".into()
+                    }
+                })
             })
             .track_focus(&self.focus)
             .relative()
@@ -736,14 +1123,14 @@ impl Render for UnifiedDiffView {
                     .absolute()
                     .top_0()
                     .bottom_0()
-                    .left(text_left)
+                    .left(horizontal_left)
                     .right(app_scrollbar_gutter())
                     .child(self.horizontal_bar.clone()),
             )
     }
 }
 
-struct ShapedDiffRow {
+struct ShapedUnifiedRow {
     row_index: usize,
     bg: Option<Hsla>,
     cursor: bool,
@@ -754,6 +1141,35 @@ struct ShapedDiffRow {
     hunk_line: Option<ShapedLine>,
     #[cfg(test)]
     painted: Vec<(String, Hsla)>,
+}
+
+struct ShapedSplitHalf {
+    bg: Option<Hsla>,
+    num: Option<ShapedLine>,
+    sign: Option<ShapedLine>,
+    segments: Vec<(usize, ShapedLine)>,
+    #[cfg(test)]
+    painted: Vec<(String, Hsla)>,
+}
+
+#[allow(clippy::large_enum_variant)]
+enum ShapedSplitRowKind {
+    Hunk(ShapedLine),
+    Pair {
+        left: ShapedSplitHalf,
+        right: ShapedSplitHalf,
+    },
+}
+
+struct ShapedSplitRow {
+    row_index: usize,
+    cursor: bool,
+    kind: ShapedSplitRowKind,
+}
+
+enum ShapedRows {
+    Unified(Vec<ShapedUnifiedRow>),
+    Split(Vec<ShapedSplitRow>),
 }
 
 struct RowStyle<'a> {
@@ -849,6 +1265,101 @@ fn shape_plain(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+fn shape_split_cell(
+    cell: SplitCell,
+    doc: &Document,
+    style: &RowStyle,
+    (from, to): (usize, usize),
+    font: &Font,
+    font_size: Pixels,
+    num_font_size: Pixels,
+    number_color: Hsla,
+    add_bg: Hsla,
+    del_bg: Hsla,
+    filler_bg: Hsla,
+    window: &Window,
+) -> ShapedSplitHalf {
+    match cell {
+        SplitCell::Empty => ShapedSplitHalf {
+            bg: Some(filler_bg),
+            num: None,
+            sign: None,
+            segments: Vec::new(),
+            #[cfg(test)]
+            painted: Vec::new(),
+        },
+        SplitCell::Context { line } => {
+            let shaped = shape_doc_line(doc, line, (from, to), style, window);
+            let num = Some(shape_plain(
+                (line + 1).to_string().into(),
+                font,
+                num_font_size,
+                number_color,
+                window,
+            ));
+            ShapedSplitHalf {
+                bg: None,
+                num,
+                sign: None,
+                segments: shaped.segments,
+                #[cfg(test)]
+                painted: shaped.painted,
+            }
+        }
+        SplitCell::Removed { line } => {
+            let shaped = shape_doc_line(doc, line, (from, to), style, window);
+            let num = Some(shape_plain(
+                (line + 1).to_string().into(),
+                font,
+                num_font_size,
+                number_color,
+                window,
+            ));
+            let sign = Some(shape_plain(
+                "−".into(),
+                font,
+                font_size,
+                theme::danger(),
+                window,
+            ));
+            ShapedSplitHalf {
+                bg: Some(del_bg),
+                num,
+                sign,
+                segments: shaped.segments,
+                #[cfg(test)]
+                painted: shaped.painted,
+            }
+        }
+        SplitCell::Added { line } => {
+            let shaped = shape_doc_line(doc, line, (from, to), style, window);
+            let num = Some(shape_plain(
+                (line + 1).to_string().into(),
+                font,
+                num_font_size,
+                number_color,
+                window,
+            ));
+            let sign = Some(shape_plain(
+                "+".into(),
+                font,
+                font_size,
+                theme::accent(),
+                window,
+            ));
+            ShapedSplitHalf {
+                bg: Some(add_bg),
+                num,
+                sign,
+                segments: shaped.segments,
+                #[cfg(test)]
+                painted: shaped.painted,
+            }
+        }
+    }
+}
+
 struct UnifiedDiffElement {
     view: Entity<UnifiedDiffView>,
 }
@@ -858,7 +1369,8 @@ struct DiffPrepaint {
     metrics: Metrics,
     scroll: Point<Pixels>,
     focused: bool,
-    rows: Vec<ShapedDiffRow>,
+    selection_side: DiffSide,
+    rows: ShapedRows,
     selections: Vec<Bounds<Pixels>>,
 }
 
@@ -913,18 +1425,43 @@ impl Element for UnifiedDiffElement {
         let line_height = (font_size * crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT).round();
         let num_font_size = (font_size * 0.9).max(px(10.));
 
-        let (old_digits, new_digits, focused) = {
+        let (mode, old_digits, new_digits, focused, selection_side) = {
             let v = self.view.read(cx);
-            (v.old_digits, v.new_digits, v.focus.is_focused(window))
+            (
+                v.mode,
+                v.old_digits,
+                v.new_digits,
+                v.focus.is_focused(window),
+                v.selection_side,
+            )
         };
         let old_col_w = char_width * old_digits as f32;
         let new_col_w = char_width * new_digits as f32;
+
         let old_num_right = px(GUTTER_PAD_LEFT) + old_col_w;
-        let new_num_right = old_num_right + px(COL_GAP) + new_col_w;
-        let sign_left = new_num_right + px(COL_GAP);
-        let text_left = sign_left + px(SIGN_WIDTH + TEXT_GAP);
+        let (new_num_right, sign_left, text_left) = match mode {
+            DiffViewMode::Unified => {
+                let new_num_right = old_num_right + px(COL_GAP) + new_col_w;
+                let sign_left = new_num_right + px(COL_GAP);
+                let text_left = sign_left + px(SIGN_WIDTH + TEXT_GAP);
+                (new_num_right, sign_left, text_left)
+            }
+            DiffViewMode::Split => {
+                let sign_left = old_num_right + px(COL_GAP);
+                let text_left = sign_left + px(SIGN_WIDTH + TEXT_GAP);
+                (px(0.), sign_left, text_left)
+            }
+        };
+
+        let left_col_width = ((bounds.size.width - px(1.)) * 0.5).floor().max(px(0.));
+        let right_col_left = left_col_width + px(1.);
+        let right_col_width = (bounds.size.width - right_col_left).max(px(0.));
+        let right_num_right = px(GUTTER_PAD_LEFT) + new_col_w;
+        let right_sign_left = right_num_right + px(COL_GAP);
+        let right_text_left = right_sign_left + px(SIGN_WIDTH + TEXT_GAP);
 
         let metrics = Metrics {
+            mode,
             bounds,
             line_height,
             char_width,
@@ -932,6 +1469,12 @@ impl Element for UnifiedDiffElement {
             new_num_right,
             sign_left,
             text_left,
+            left_col_width,
+            right_col_left,
+            right_col_width,
+            right_num_right,
+            right_sign_left,
+            right_text_left,
         };
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
 
@@ -950,9 +1493,9 @@ impl Element for UnifiedDiffElement {
             .max(0.) as usize;
         let shown_lines =
             (f32::from(bounds.size.height) / f32::from(line_height)).ceil() as usize + 1;
-        let last = (first + shown_lines).min(view.rows.len());
+        let last = (first + shown_lines).min(view.active_row_count());
 
-        let visible = metrics.text_width();
+        let visible = metrics.shape_viewport_width();
         let from = (f32::from(scroll.x) / f32::from(char_width)).floor() as usize;
         let to = from + (f32::from(visible) / f32::from(char_width)).ceil() as usize + 2;
 
@@ -960,6 +1503,7 @@ impl Element for UnifiedDiffElement {
         let add_bg = theme::with_alpha(theme::accent(), if light { 0.12 } else { 0.10 });
         let del_bg = theme::with_alpha(theme::danger(), if light { 0.12 } else { 0.13 });
         let hunk_bg = theme::panel();
+        let filler_bg = theme::panel();
         let number_color = theme::faint();
         let text_color = theme::text();
 
@@ -980,165 +1524,260 @@ impl Element for UnifiedDiffElement {
             syntax: view.new_highlights.as_deref().zip(syntax.as_ref()),
         };
 
-        let mut shaped_rows = Vec::with_capacity(last.saturating_sub(first));
-        for row_index in first..last {
-            let cursor = row_index == view.cursor_row;
-            match &view.rows[row_index] {
-                DiffRow::Hunk { header } => {
-                    let hunk_line = Some(shape_plain(
-                        header.clone(),
-                        &font,
-                        num_font_size,
-                        number_color,
-                        window,
-                    ));
-                    shaped_rows.push(ShapedDiffRow {
-                        row_index,
-                        bg: Some(hunk_bg),
-                        cursor,
-                        old_num: None,
-                        new_num: None,
-                        sign: None,
-                        segments: Vec::new(),
-                        hunk_line,
-                        #[cfg(test)]
-                        painted: Vec::new(),
-                    });
+        let rows = match mode {
+            DiffViewMode::Unified => {
+                let mut shaped_rows = Vec::with_capacity(last.saturating_sub(first));
+                for row_index in first..last {
+                    let cursor = row_index == view.cursor_row;
+                    match &view.rows[row_index] {
+                        DiffRow::Hunk { header } => {
+                            let hunk_line = Some(shape_plain(
+                                header.clone(),
+                                &font,
+                                num_font_size,
+                                number_color,
+                                window,
+                            ));
+                            shaped_rows.push(ShapedUnifiedRow {
+                                row_index,
+                                bg: Some(hunk_bg),
+                                cursor,
+                                old_num: None,
+                                new_num: None,
+                                sign: None,
+                                segments: Vec::new(),
+                                hunk_line,
+                                #[cfg(test)]
+                                painted: Vec::new(),
+                            });
+                        }
+                        DiffRow::Context { old_line, new_line } => {
+                            let shaped = shape_doc_line(
+                                &view.new_doc,
+                                *new_line,
+                                (from, to),
+                                &new_style,
+                                window,
+                            );
+                            let old_num = Some(shape_plain(
+                                (*old_line + 1).to_string().into(),
+                                &font,
+                                num_font_size,
+                                number_color,
+                                window,
+                            ));
+                            let new_num = Some(shape_plain(
+                                (*new_line + 1).to_string().into(),
+                                &font,
+                                num_font_size,
+                                number_color,
+                                window,
+                            ));
+                            shaped_rows.push(ShapedUnifiedRow {
+                                row_index,
+                                bg: None,
+                                cursor,
+                                old_num,
+                                new_num,
+                                sign: None,
+                                segments: shaped.segments,
+                                hunk_line: None,
+                                #[cfg(test)]
+                                painted: shaped.painted,
+                            });
+                        }
+                        DiffRow::Removed { old_line } => {
+                            let shaped = shape_doc_line(
+                                &view.old_doc,
+                                *old_line,
+                                (from, to),
+                                &old_style,
+                                window,
+                            );
+                            let old_num = Some(shape_plain(
+                                (*old_line + 1).to_string().into(),
+                                &font,
+                                num_font_size,
+                                number_color,
+                                window,
+                            ));
+                            let sign = Some(shape_plain(
+                                "−".into(),
+                                &font,
+                                font_size,
+                                theme::danger(),
+                                window,
+                            ));
+                            shaped_rows.push(ShapedUnifiedRow {
+                                row_index,
+                                bg: Some(del_bg),
+                                cursor,
+                                old_num,
+                                new_num: None,
+                                sign,
+                                segments: shaped.segments,
+                                hunk_line: None,
+                                #[cfg(test)]
+                                painted: shaped.painted,
+                            });
+                        }
+                        DiffRow::Added { new_line } => {
+                            let shaped = shape_doc_line(
+                                &view.new_doc,
+                                *new_line,
+                                (from, to),
+                                &new_style,
+                                window,
+                            );
+                            let new_num = Some(shape_plain(
+                                (*new_line + 1).to_string().into(),
+                                &font,
+                                num_font_size,
+                                number_color,
+                                window,
+                            ));
+                            let sign = Some(shape_plain(
+                                "+".into(),
+                                &font,
+                                font_size,
+                                theme::accent(),
+                                window,
+                            ));
+                            shaped_rows.push(ShapedUnifiedRow {
+                                row_index,
+                                bg: Some(add_bg),
+                                cursor,
+                                old_num: None,
+                                new_num,
+                                sign,
+                                segments: shaped.segments,
+                                hunk_line: None,
+                                #[cfg(test)]
+                                painted: shaped.painted,
+                            });
+                        }
+                    }
                 }
-                DiffRow::Context { old_line, new_line } => {
-                    let shaped =
-                        shape_doc_line(&view.new_doc, *new_line, (from, to), &new_style, window);
-                    let old_num = Some(shape_plain(
-                        (*old_line + 1).to_string().into(),
-                        &font,
-                        num_font_size,
-                        number_color,
-                        window,
-                    ));
-                    let new_num = Some(shape_plain(
-                        (*new_line + 1).to_string().into(),
-                        &font,
-                        num_font_size,
-                        number_color,
-                        window,
-                    ));
-                    shaped_rows.push(ShapedDiffRow {
-                        row_index,
-                        bg: None,
-                        cursor,
-                        old_num,
-                        new_num,
-                        sign: None,
-                        segments: shaped.segments,
-                        hunk_line: None,
-                        #[cfg(test)]
-                        painted: shaped.painted,
-                    });
-                }
-                DiffRow::Removed { old_line } => {
-                    let shaped =
-                        shape_doc_line(&view.old_doc, *old_line, (from, to), &old_style, window);
-                    let old_num = Some(shape_plain(
-                        (*old_line + 1).to_string().into(),
-                        &font,
-                        num_font_size,
-                        number_color,
-                        window,
-                    ));
-                    let sign = Some(shape_plain(
-                        "−".into(),
-                        &font,
-                        font_size,
-                        theme::danger(),
-                        window,
-                    ));
-                    shaped_rows.push(ShapedDiffRow {
-                        row_index,
-                        bg: Some(del_bg),
-                        cursor,
-                        old_num,
-                        new_num: None,
-                        sign,
-                        segments: shaped.segments,
-                        hunk_line: None,
-                        #[cfg(test)]
-                        painted: shaped.painted,
-                    });
-                }
-                DiffRow::Added { new_line } => {
-                    let shaped =
-                        shape_doc_line(&view.new_doc, *new_line, (from, to), &new_style, window);
-                    let new_num = Some(shape_plain(
-                        (*new_line + 1).to_string().into(),
-                        &font,
-                        num_font_size,
-                        number_color,
-                        window,
-                    ));
-                    let sign = Some(shape_plain(
-                        "+".into(),
-                        &font,
-                        font_size,
-                        theme::accent(),
-                        window,
-                    ));
-                    shaped_rows.push(ShapedDiffRow {
-                        row_index,
-                        bg: Some(add_bg),
-                        cursor,
-                        old_num: None,
-                        new_num,
-                        sign,
-                        segments: shaped.segments,
-                        hunk_line: None,
-                        #[cfg(test)]
-                        painted: shaped.painted,
-                    });
-                }
+                #[cfg(test)]
+                view.painted.replace(
+                    shaped_rows
+                        .iter()
+                        .map(|r| (r.row_index, r.painted.clone()))
+                        .collect(),
+                );
+                ShapedRows::Unified(shaped_rows)
             }
-        }
+            DiffViewMode::Split => {
+                let mut shaped_rows = Vec::with_capacity(last.saturating_sub(first));
+                #[cfg(test)]
+                let mut test_painted = std::collections::BTreeMap::new();
+                for row_index in first..last {
+                    let cursor = row_index == view.cursor_row;
+                    match &view.split_rows[row_index] {
+                        SplitRow::Hunk { header } => {
+                            let hunk_line = shape_plain(
+                                header.clone(),
+                                &font,
+                                num_font_size,
+                                number_color,
+                                window,
+                            );
+                            #[cfg(test)]
+                            test_painted.insert(row_index, Vec::new());
+                            shaped_rows.push(ShapedSplitRow {
+                                row_index,
+                                cursor,
+                                kind: ShapedSplitRowKind::Hunk(hunk_line),
+                            });
+                        }
+                        SplitRow::Pair { left, right } => {
+                            let left_shaped = shape_split_cell(
+                                *left,
+                                &view.old_doc,
+                                &old_style,
+                                (from, to),
+                                &font,
+                                font_size,
+                                num_font_size,
+                                number_color,
+                                add_bg,
+                                del_bg,
+                                filler_bg,
+                                window,
+                            );
+                            let right_shaped = shape_split_cell(
+                                *right,
+                                &view.new_doc,
+                                &new_style,
+                                (from, to),
+                                &font,
+                                font_size,
+                                num_font_size,
+                                number_color,
+                                add_bg,
+                                del_bg,
+                                filler_bg,
+                                window,
+                            );
+                            #[cfg(test)]
+                            {
+                                let mut row_tokens = left_shaped.painted.clone();
+                                row_tokens.extend(right_shaped.painted.iter().cloned());
+                                test_painted.insert(row_index, row_tokens);
+                            }
+                            shaped_rows.push(ShapedSplitRow {
+                                row_index,
+                                cursor,
+                                kind: ShapedSplitRowKind::Pair {
+                                    left: left_shaped,
+                                    right: right_shaped,
+                                },
+                            });
+                        }
+                    }
+                }
+                #[cfg(test)]
+                view.painted.replace(test_painted);
+                ShapedRows::Split(shaped_rows)
+            }
+        };
 
-        #[cfg(test)]
-        view.painted.replace(
-            shaped_rows
-                .iter()
-                .map(|r| (r.row_index, r.painted.clone()))
-                .collect(),
-        );
-
-        let text_x = bounds.left() + text_left - scroll.x;
+        let text_x = metrics.side_text_left_abs(selection_side) - scroll.x;
         let row_top = |r: usize| top + line_height * r as f32;
         let mut selections = Vec::new();
         if let Some((anchor, head)) = view.selection.filter(|(a, b)| a != b || view.selects_all) {
             let (start, end) = (anchor.min(head), anchor.max(head));
-            for shaped in shaped_rows
-                .iter()
-                .filter(|r| r.row_index >= start.row && r.row_index <= end.row)
-            {
-                let Some((doc, doc_line)) = view.row_doc_and_line(shaped.row_index) else {
-                    continue;
-                };
-                let line_str = doc.line(doc_line);
-                let s_off = if shaped.row_index == start.row {
-                    start.offset.min(line_str.len())
-                } else {
-                    0
-                };
-                let e_off = if shaped.row_index == end.row {
-                    end.offset.min(line_str.len())
-                } else {
-                    line_str.len()
-                };
-                let left = text_x + char_width * doc.column_at(doc_line, s_off) as f32;
-                let right = text_x + char_width * doc.column_at(doc_line, e_off) as f32;
-                let mut sel_bounds = Bounds::new(
-                    point(left, row_top(shaped.row_index)),
-                    size((right - left).max(px(0.)), line_height),
-                );
-                if shaped.row_index != end.row {
-                    sel_bounds.size.width += char_width / 2.;
+            let vis_start = start.row.max(first);
+            let vis_end = end.row.min(last.saturating_sub(1));
+            if vis_start <= vis_end && last > first {
+                for row_index in vis_start..=vis_end {
+                    let Some((doc, doc_line)) =
+                        view.row_doc_and_line_for_side(row_index, selection_side)
+                    else {
+                        continue;
+                    };
+                    let line_str = doc.line(doc_line);
+                    let s_off = if row_index == start.row {
+                        start.offset.min(line_str.len())
+                    } else {
+                        0
+                    };
+                    let e_off = if row_index == end.row {
+                        end.offset.min(line_str.len())
+                    } else {
+                        line_str.len()
+                    };
+                    let left = text_x + char_width * doc.column_at(doc_line, s_off) as f32;
+                    let right = text_x + char_width * doc.column_at(doc_line, e_off) as f32;
+                    let mut sel_bounds = Bounds::new(
+                        point(left, row_top(row_index)),
+                        size((right - left).max(px(0.)), line_height),
+                    );
+                    if row_index != end.row {
+                        sel_bounds.size.width += char_width / 2.;
+                    }
+                    selections.push(sel_bounds);
                 }
-                selections.push(sel_bounds);
             }
         }
 
@@ -1147,7 +1786,8 @@ impl Element for UnifiedDiffElement {
             metrics,
             scroll,
             focused,
-            rows: shaped_rows,
+            selection_side,
+            rows,
             selections,
         }
     }
@@ -1167,116 +1807,348 @@ impl Element for UnifiedDiffElement {
         let top = bounds.top() + px(TOP_PAD) - prepaint.scroll.y;
         let cursor_tint =
             theme::with_alpha(theme::info(), if prepaint.focused { 0.14 } else { 0.06 });
+        let selection_color = theme::with_alpha(theme::accent(), 0.28);
 
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            for row in &prepaint.rows {
-                let y = top + metrics.line_height * row.row_index as f32;
-                let row_bounds = Bounds::new(
-                    point(bounds.left(), y),
-                    size(bounds.size.width, metrics.line_height),
-                );
-                if let Some(bg) = row.bg {
-                    window.paint_quad(fill(row_bounds, bg));
-                }
-                if row.cursor {
-                    window.paint_quad(fill(row_bounds, cursor_tint));
-                    if prepaint.focused {
-                        window.paint_quad(fill(
-                            Bounds::new(point(bounds.left(), y), size(px(2.), metrics.line_height)),
-                            theme::info(),
-                        ));
-                    }
-                }
-            }
-        });
-
-        let text_bounds = Bounds::new(
-            point(bounds.left() + metrics.text_left, bounds.top()),
-            size(metrics.text_width(), bounds.size.height),
-        );
-        window.with_content_mask(
-            Some(ContentMask {
-                bounds: text_bounds,
-            }),
-            |window| {
-                let selection_color = theme::with_alpha(theme::accent(), 0.28);
-                for sel in &prepaint.selections {
-                    window.paint_quad(fill(*sel, selection_color));
-                }
-                let text_x = bounds.left() + metrics.text_left - prepaint.scroll.x;
-                for row in &prepaint.rows {
-                    let y = top + metrics.line_height * row.row_index as f32;
-                    for (column, shaped) in &row.segments {
-                        let origin = point(text_x + metrics.char_width * *column as f32, y);
-                        let _ = shaped.paint(
-                            origin,
-                            metrics.line_height,
-                            TextAlign::Left,
-                            None,
-                            window,
-                            cx,
+        match &prepaint.rows {
+            ShapedRows::Unified(rows) => {
+                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                    for row in rows {
+                        let y = top + metrics.line_height * row.row_index as f32;
+                        let row_bounds = Bounds::new(
+                            point(bounds.left(), y),
+                            size(bounds.size.width, metrics.line_height),
                         );
+                        if let Some(bg) = row.bg {
+                            window.paint_quad(fill(row_bounds, bg));
+                        }
+                        if row.cursor {
+                            window.paint_quad(fill(row_bounds, cursor_tint));
+                            if prepaint.focused {
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        point(bounds.left(), y),
+                                        size(px(2.), metrics.line_height),
+                                    ),
+                                    theme::info(),
+                                ));
+                            }
+                        }
                     }
-                }
-            },
-        );
+                });
 
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            for row in &prepaint.rows {
-                let y = top + metrics.line_height * row.row_index as f32;
-                if let Some(hunk) = &row.hunk_line {
-                    let _ = hunk.paint(
-                        point(bounds.left() + px(10.) - prepaint.scroll.x.min(px(0.)), y),
-                        metrics.line_height,
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    );
-                    continue;
-                }
-                if let Some(old_num) = &row.old_num {
-                    let x = bounds.left() + metrics.old_num_right - old_num.width;
-                    let _ = old_num.paint(
-                        point(x, y),
-                        metrics.line_height,
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    );
-                }
-                if let Some(new_num) = &row.new_num {
-                    let x = bounds.left() + metrics.new_num_right - new_num.width;
-                    let _ = new_num.paint(
-                        point(x, y),
-                        metrics.line_height,
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    );
-                }
-                if let Some(sign) = &row.sign {
-                    let x = bounds.left() + metrics.sign_left;
-                    let _ = sign.paint(
-                        point(x, y),
-                        metrics.line_height,
-                        TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    );
-                }
+                let text_bounds = Bounds::new(
+                    point(bounds.left() + metrics.text_left, bounds.top()),
+                    size(metrics.scroll_viewport_width(), bounds.size.height),
+                );
+                window.with_content_mask(
+                    Some(ContentMask {
+                        bounds: text_bounds,
+                    }),
+                    |window| {
+                        for sel in &prepaint.selections {
+                            window.paint_quad(fill(*sel, selection_color));
+                        }
+                        let text_x = bounds.left() + metrics.text_left - prepaint.scroll.x;
+                        for row in rows {
+                            let y = top + metrics.line_height * row.row_index as f32;
+                            for (column, shaped) in &row.segments {
+                                let origin = point(text_x + metrics.char_width * *column as f32, y);
+                                let _ = shaped.paint(
+                                    origin,
+                                    metrics.line_height,
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        }
+                    },
+                );
+
+                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                    for row in rows {
+                        let y = top + metrics.line_height * row.row_index as f32;
+                        if let Some(hunk) = &row.hunk_line {
+                            let _ = hunk.paint(
+                                point(bounds.left() + px(10.) - prepaint.scroll.x.min(px(0.)), y),
+                                metrics.line_height,
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                            continue;
+                        }
+                        if let Some(old_num) = &row.old_num {
+                            let x = bounds.left() + metrics.old_num_right - old_num.width;
+                            let _ = old_num.paint(
+                                point(x, y),
+                                metrics.line_height,
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                        }
+                        if let Some(new_num) = &row.new_num {
+                            let x = bounds.left() + metrics.new_num_right - new_num.width;
+                            let _ = new_num.paint(
+                                point(x, y),
+                                metrics.line_height,
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                        }
+                        if let Some(sign) = &row.sign {
+                            let x = bounds.left() + metrics.sign_left;
+                            let _ = sign.paint(
+                                point(x, y),
+                                metrics.line_height,
+                                TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                        }
+                    }
+                });
             }
-        });
+            ShapedRows::Split(rows) => {
+                let hunk_bg = theme::panel();
+                let border_color = theme::border();
+
+                // 1. Backgrounds, center divider on code rows, cursor tint, and hunk text.
+                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                    for row in rows {
+                        let y = top + metrics.line_height * row.row_index as f32;
+                        let row_bounds = Bounds::new(
+                            point(bounds.left(), y),
+                            size(bounds.size.width, metrics.line_height),
+                        );
+                        match &row.kind {
+                            ShapedSplitRowKind::Hunk(hunk) => {
+                                window.paint_quad(fill(row_bounds, hunk_bg));
+                                if row.cursor {
+                                    window.paint_quad(fill(row_bounds, cursor_tint));
+                                    if prepaint.focused {
+                                        window.paint_quad(fill(
+                                            Bounds::new(
+                                                point(bounds.left(), y),
+                                                size(px(2.), metrics.line_height),
+                                            ),
+                                            theme::info(),
+                                        ));
+                                    }
+                                }
+                                let _ = hunk.paint(
+                                    point(
+                                        bounds.left() + px(10.) - prepaint.scroll.x.min(px(0.)),
+                                        y,
+                                    ),
+                                    metrics.line_height,
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                );
+                            }
+                            ShapedSplitRowKind::Pair { left, right } => {
+                                if let Some(bg) = left.bg {
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(bounds.left(), y),
+                                            size(metrics.left_col_width, metrics.line_height),
+                                        ),
+                                        bg,
+                                    ));
+                                }
+                                if let Some(bg) = right.bg {
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            point(bounds.left() + metrics.right_col_left, y),
+                                            size(metrics.right_col_width, metrics.line_height),
+                                        ),
+                                        bg,
+                                    ));
+                                }
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        point(bounds.left() + metrics.left_col_width, y),
+                                        size(px(1.), metrics.line_height),
+                                    ),
+                                    border_color,
+                                ));
+                                if row.cursor {
+                                    window.paint_quad(fill(row_bounds, cursor_tint));
+                                    if prepaint.focused {
+                                        window.paint_quad(fill(
+                                            Bounds::new(
+                                                point(bounds.left(), y),
+                                                size(px(2.), metrics.line_height),
+                                            ),
+                                            theme::info(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                // 2. Left column text & selection (clipped to left text area).
+                let left_text_bounds = Bounds::new(
+                    point(bounds.left() + metrics.text_left, bounds.top()),
+                    size(metrics.left_text_width(), bounds.size.height),
+                );
+                window.with_content_mask(
+                    Some(ContentMask {
+                        bounds: left_text_bounds,
+                    }),
+                    |window| {
+                        if prepaint.selection_side == DiffSide::Left {
+                            for sel in &prepaint.selections {
+                                window.paint_quad(fill(*sel, selection_color));
+                            }
+                        }
+                        let left_text_x = bounds.left() + metrics.text_left - prepaint.scroll.x;
+                        for row in rows {
+                            if let ShapedSplitRowKind::Pair { left, .. } = &row.kind {
+                                let y = top + metrics.line_height * row.row_index as f32;
+                                for (column, shaped) in &left.segments {
+                                    let origin =
+                                        point(left_text_x + metrics.char_width * *column as f32, y);
+                                    let _ = shaped.paint(
+                                        origin,
+                                        metrics.line_height,
+                                        TextAlign::Left,
+                                        None,
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }
+                        }
+                    },
+                );
+
+                // 3. Right column text & selection (clipped to right text area).
+                let right_text_bounds = Bounds::new(
+                    point(
+                        bounds.left() + metrics.right_col_left + metrics.right_text_left,
+                        bounds.top(),
+                    ),
+                    size(metrics.right_text_width(), bounds.size.height),
+                );
+                window.with_content_mask(
+                    Some(ContentMask {
+                        bounds: right_text_bounds,
+                    }),
+                    |window| {
+                        if prepaint.selection_side == DiffSide::Right {
+                            for sel in &prepaint.selections {
+                                window.paint_quad(fill(*sel, selection_color));
+                            }
+                        }
+                        let right_text_x =
+                            bounds.left() + metrics.right_col_left + metrics.right_text_left
+                                - prepaint.scroll.x;
+                        for row in rows {
+                            if let ShapedSplitRowKind::Pair { right, .. } = &row.kind {
+                                let y = top + metrics.line_height * row.row_index as f32;
+                                for (column, shaped) in &right.segments {
+                                    let origin = point(
+                                        right_text_x + metrics.char_width * *column as f32,
+                                        y,
+                                    );
+                                    let _ = shaped.paint(
+                                        origin,
+                                        metrics.line_height,
+                                        TextAlign::Left,
+                                        None,
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }
+                        }
+                    },
+                );
+
+                // 4. Left & right gutters (line numbers and −/+ signs).
+                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                    for row in rows {
+                        if let ShapedSplitRowKind::Pair { left, right } = &row.kind {
+                            let y = top + metrics.line_height * row.row_index as f32;
+                            if let Some(num) = &left.num {
+                                let x = bounds.left() + metrics.old_num_right - num.width;
+                                let _ = num.paint(
+                                    point(x, y),
+                                    metrics.line_height,
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                );
+                            }
+                            if let Some(sign) = &left.sign {
+                                let x = bounds.left() + metrics.sign_left;
+                                let _ = sign.paint(
+                                    point(x, y),
+                                    metrics.line_height,
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                );
+                            }
+                            if let Some(num) = &right.num {
+                                let x = bounds.left()
+                                    + metrics.right_col_left
+                                    + metrics.right_num_right
+                                    - num.width;
+                                let _ = num.paint(
+                                    point(x, y),
+                                    metrics.line_height,
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                );
+                            }
+                            if let Some(sign) = &right.sign {
+                                let x = bounds.left()
+                                    + metrics.right_col_left
+                                    + metrics.right_sign_left;
+                                let _ = sign.paint(
+                                    point(x, y),
+                                    metrics.line_height,
+                                    TextAlign::Left,
+                                    None,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+        }
 
         register_mouse(self.view.clone(), prepaint.hitbox.clone(), metrics, window);
     }
 }
 
-fn position_at(view: &UnifiedDiffView, metrics: &Metrics, at: Point<Pixels>) -> DiffPos {
-    if view.rows.is_empty() {
+fn position_at(
+    view: &UnifiedDiffView,
+    metrics: &Metrics,
+    at: Point<Pixels>,
+    side: DiffSide,
+) -> DiffPos {
+    let count = view.active_row_count();
+    if count == 0 {
         return DiffPos::default();
     }
     let y = at.y - metrics.bounds.top() - px(TOP_PAD) + view.scroll.y;
@@ -1284,11 +2156,11 @@ fn position_at(view: &UnifiedDiffView, metrics: &Metrics, at: Point<Pixels>) -> 
     if row_f < 0. {
         return DiffPos { row: 0, offset: 0 };
     }
-    let row = (row_f as usize).min(view.rows.len() - 1);
-    let Some((doc, doc_line)) = view.row_doc_and_line(row) else {
+    let row = (row_f as usize).min(count - 1);
+    let Some((doc, doc_line)) = view.row_doc_and_line_for_side(row, side) else {
         return DiffPos { row, offset: 0 };
     };
-    let x = at.x - metrics.bounds.left() - metrics.text_left + view.scroll.x;
+    let x = at.x - metrics.side_text_left_abs(side) + view.scroll.x;
     let column = f32::from(x.max(px(0.))) / f32::from(metrics.char_width);
     DiffPos {
         row,
@@ -1329,7 +2201,12 @@ fn register_mouse(
         down_view.update(cx, |view, cx| {
             view.focus.focus(window, cx);
             focus_cb = view.on_focus_in.clone();
-            let at = position_at(view, &metrics, event.position);
+            let keep_side = event.modifiers.shift && view.selection.is_some();
+            if metrics.mode == DiffViewMode::Split && !keep_side {
+                view.selection_side = metrics.side_at_x(event.position.x);
+            }
+            let side = view.selection_side;
+            let at = position_at(view, &metrics, event.position, side);
             view.cursor_row = at.row;
             view.selects_all = false;
             match event.click_count {
@@ -1387,22 +2264,24 @@ fn register_mouse(
         }
         move_view.update(cx, |view, cx| {
             let bounds = metrics.bounds;
+            let side = view.selection_side;
             let mut delta = Point::default();
             if event.position.y < bounds.top() {
                 delta.y = bounds.top() - event.position.y;
             } else if event.position.y > bounds.bottom() {
                 delta.y = bounds.bottom() - event.position.y;
             }
-            let text_left = bounds.left() + metrics.text_left;
+            let text_left = metrics.side_text_left_abs(side);
+            let side_right = metrics.side_right_abs(side);
             if event.position.x < text_left {
                 delta.x = text_left - event.position.x;
-            } else if event.position.x > bounds.right() {
-                delta.x = bounds.right() - event.position.x;
+            } else if event.position.x > side_right {
+                delta.x = side_right - event.position.x;
             }
             if delta != Point::default() {
                 view.scroll_by(delta, cx);
             }
-            let head = position_at(view, &metrics, event.position);
+            let head = position_at(view, &metrics, event.position, side);
             if let Some((anchor, _)) = view.selection {
                 view.selection = Some((anchor, head));
             }

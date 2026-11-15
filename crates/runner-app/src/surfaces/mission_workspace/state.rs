@@ -271,6 +271,8 @@ impl MissionWorkspace {
             primary_label: None,
             rail_surfaces: crate::surfaces::side_panel::PanelSurfaces::new(Default::default(), cx),
             rail_open: None,
+            rail_maximized: false,
+            rail_focus: cx.focus_handle(),
             rail_switched: false,
             rails_by_mission: HashMap::new(),
             rail_files: Default::default(),
@@ -298,6 +300,7 @@ impl MissionWorkspace {
                     crate::surfaces::side_panel::SavedPanel {
                         surfaces: self.rail_surfaces.open.clone(),
                         open: self.rail_open,
+                        maximized: self.rail_maximized,
                     },
                 );
             }
@@ -307,9 +310,11 @@ impl MissionWorkspace {
                 .unwrap_or_default();
             self.rail_surfaces.reset(saved.surfaces);
             self.rail_open = saved.open;
+            self.rail_maximized = saved.maximized;
             self.rail_switched = true;
         } else {
             self.rail_surfaces.reset(Default::default());
+            self.rail_maximized = false;
         }
         self.mission_id = Some(mission_id);
         self.attached.clear();
@@ -828,8 +833,14 @@ impl MissionWorkspace {
             self.presentation.refresh_settings(&self.app_store, cx);
             let settings = self.settings(cx).clone();
             self.rail_surfaces.open.close_off(&settings, true);
+            if !settings.show_side_panel {
+                self.rail_maximized = false;
+            }
             for panel in self.rails_by_mission.values_mut() {
                 panel.surfaces.close_off(&settings, true);
+                if !settings.show_side_panel {
+                    panel.maximized = false;
+                }
             }
             let count = self.feed_list.item_count();
             self.feed_empty_panel_min_height.set(px(0.));
@@ -837,6 +848,13 @@ impl MissionWorkspace {
             self.feed_list
                 .clone()
                 .with_uniform_item_height(px(FEED_ROW_HEIGHT_HINT * self.settings(cx).app_zoom));
+        }
+        if reactions.sync_error && self.app_store.read(cx).daemon_disconnected {
+            self.rail_maximized = false;
+            for panel in self.rails_by_mission.values_mut() {
+                panel.maximized = false;
+            }
+            cx.notify();
         }
         if reactions.apply_terminal_settings {
             self.apply_terminal_settings(cx);

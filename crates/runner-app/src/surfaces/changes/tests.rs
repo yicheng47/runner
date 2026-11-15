@@ -29,6 +29,8 @@ struct Host {
     outside_focus: FocusHandle,
     closed_panes: usize,
     app_zooms: Vec<&'static str>,
+    maximized: bool,
+    maximize_requests: usize,
 }
 
 impl Render for Host {
@@ -37,16 +39,38 @@ impl Render for Host {
             Some(context) => {
                 let settings = &crate::app_store::global_app_store(cx).read(cx).settings;
                 let widened = Some(Widened {
-                    file: settings.file_viewer_width.max(288.),
+                    file: if self.maximized {
+                        960.
+                    } else {
+                        settings.file_viewer_width.max(288.)
+                    },
                     tree: true,
                     tree_width: settings.file_tree_width,
                     standard: 288.,
                 });
                 let owner = cx.entity_id();
-                Some(
-                    self.panel
-                        .show_changes_with(context, widened, Some(owner), cx),
-                )
+                let weak = cx.weak_entity();
+                let on_request_maximize: crate::surfaces::side_panel::PanelCallback =
+                    std::rc::Rc::new(move |_, cx| {
+                        let _ = weak.update(cx, |host, cx| {
+                            host.maximized = true;
+                            host.maximize_requests += 1;
+                            cx.notify();
+                        });
+                    });
+                if !self.maximized {
+                    let _ = self
+                        .panel
+                        .show_changes_with(context, widened, Some(owner), cx);
+                }
+                Some(self.panel.show_changes_with_maximize(
+                    context,
+                    widened,
+                    Some(owner),
+                    self.maximized,
+                    Some(on_request_maximize),
+                    cx,
+                ))
             }
             None => {
                 self.panel.hide(cx);
@@ -202,6 +226,8 @@ fn harness(context: Option<PanelContext>) -> Harness {
         outside_focus: cx.focus_handle(),
         closed_panes: 0,
         app_zooms: Vec::new(),
+        maximized: false,
+        maximize_requests: 0,
     });
     let visual = VisualTestContext::from_window(host.into(), &cx);
     visual.simulate_resize(size(px(760.), px(900.)));
@@ -1333,5 +1359,347 @@ fn removing_multiple_changed_files_advances_selection_to_surviving_neighbor() {
     assert_eq!(
         h.read(|v| v.highlighted_row().map(|r| r.path().to_owned())),
         Some("mode.sh".into())
+    );
+}
+
+#[test]
+fn split_diff_pairs_changed_blocks_strips_crlf_and_copies_active_side_only() {
+    use super::diff::{build_split_rows, DiffSide, SplitCell, SplitRow};
+    use crate::app_settings::DiffViewMode;
+    use crate::surfaces::files::document::Document;
+    use runner_core::protocol::changes::{DiffHunk, DiffOp};
+
+    let old_doc = Document::decode(b"ctx0\r\nrem1\r\nrem2\r\nrem3\r\nctx1\r\ndel_only\r\n");
+    let new_doc = Document::decode(b"ctx0\nadd1\nctx1\nins1\nins2\n");
+    let hunks = vec![DiffHunk {
+        old_start: 1,
+        old_lines: 6,
+        new_start: 1,
+        new_lines: 5,
+        header: "@@ -1,6 +1,5 @@ fn demo()\r".into(),
+        ops: vec![
+            DiffOp::Context { count: 1 },
+            DiffOp::Removed { count: 3 },
+            DiffOp::Added { count: 1 },
+            DiffOp::Context { count: 1 },
+            DiffOp::Removed { count: 1 },
+            DiffOp::Added { count: 2 },
+        ],
+    }];
+    let (rows, hunk_rows, _) = build_split_rows(&old_doc, &new_doc, &hunks);
+    assert_eq!(hunk_rows, vec![0]);
+    assert_eq!(
+        rows,
+        vec![
+            SplitRow::Hunk {
+                header: "@@ -1,6 +1,5 @@ fn demo()".into(),
+            },
+            SplitRow::Pair {
+                left: SplitCell::Context { line: 0 },
+                right: SplitCell::Context { line: 0 },
+            },
+            SplitRow::Pair {
+                left: SplitCell::Removed { line: 1 },
+                right: SplitCell::Added { line: 1 },
+            },
+            SplitRow::Pair {
+                left: SplitCell::Removed { line: 2 },
+                right: SplitCell::Empty,
+            },
+            SplitRow::Pair {
+                left: SplitCell::Removed { line: 3 },
+                right: SplitCell::Empty,
+            },
+            SplitRow::Pair {
+                left: SplitCell::Context { line: 4 },
+                right: SplitCell::Context { line: 2 },
+            },
+            SplitRow::Pair {
+                left: SplitCell::Removed { line: 5 },
+                right: SplitCell::Added { line: 3 },
+            },
+            SplitRow::Pair {
+                left: SplitCell::Empty,
+                right: SplitCell::Added { line: 4 },
+            },
+        ]
+    );
+
+    let mut h = harness(None);
+    let long_tail = " + 1".repeat(80);
+    std::fs::write(
+        h.worktree.join("pair.rs"),
+        format!(
+            "fn one() {{ let x = 1{long_tail}; }}\nfn two() {{\n    old_a();\n    old_b();\n}}\n{}\nfn tail() {{ old_tail(); }}\n",
+            (1..=12)
+                .map(|i| format!("let keep_{i} = {i};"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    )
+    .unwrap();
+    git(&h.worktree, &["add", "pair.rs"]);
+    git(&h.worktree, &["commit", "-q", "-m", "add pair.rs"]);
+    std::fs::write(
+        h.worktree.join("pair.rs"),
+        format!(
+            "fn one() {{ let x = 1{long_tail}; }}\nfn two() {{\n    new_only();\n}}\n{}\nfn tail() {{\n    new_tail_1();\n    new_tail_2();\n}}\n",
+            (1..=12)
+                .map(|i| format!("let keep_{i} = {i};"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ),
+    )
+    .unwrap();
+
+    h.store.update(&mut h.visual, |store, cx| {
+        store.update_settings(
+            |settings| {
+                settings.file_viewer_width = 800.;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    h.visual.simulate_resize(size(px(1100.), px(900.)));
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait("pair.rs diff", |h| h.has("CHANGES_DIFF_CODE"));
+
+    h.click("CHANGES_DIFF_MODE_SPLIT");
+    let diff = h.read(|v| v.unified_diff_view()).unwrap();
+    assert_eq!(
+        diff.read_with(&h.visual, |d, _| d.mode()),
+        DiffViewMode::Split
+    );
+    let split_len = diff.read_with(&h.visual, |d, _| d.split_rows().len());
+    assert!(split_len > 6, "split rows built: {split_len}");
+
+    // Left-side selection copies only old/context lines without @@, gutter, or blank filler.
+    diff.update(&mut h.visual, |d, cx| {
+        d.set_split_selection_for_test(
+            DiffSide::Left,
+            DiffPos { row: 0, offset: 0 },
+            DiffPos {
+                row: 5,
+                offset: 200,
+            },
+            cx,
+        );
+    });
+    let left_copied = diff
+        .read_with(&h.visual, |d, _| d.selected_text())
+        .expect("left selected text");
+    assert!(!left_copied.contains("@@"), "{left_copied:?}");
+    assert!(left_copied.contains("old_a();"), "{left_copied:?}");
+    assert!(left_copied.contains("old_b();"), "{left_copied:?}");
+    assert!(!left_copied.contains("new_only();"), "{left_copied:?}");
+
+    // Right-side selection copies only new/context lines without @@, gutter, or blank filler.
+    diff.update(&mut h.visual, |d, cx| {
+        d.set_split_selection_for_test(
+            DiffSide::Right,
+            DiffPos { row: 0, offset: 0 },
+            DiffPos {
+                row: 5,
+                offset: 200,
+            },
+            cx,
+        );
+    });
+    let right_copied = diff
+        .read_with(&h.visual, |d, _| d.selected_text())
+        .expect("right selected text");
+    assert!(!right_copied.contains("@@"), "{right_copied:?}");
+    assert!(right_copied.contains("new_only();"), "{right_copied:?}");
+    assert!(!right_copied.contains("old_a();"), "{right_copied:?}");
+    assert!(!right_copied.contains("old_b();"), "{right_copied:?}");
+
+    // Keyboard navigation in Split: Enter focuses diff, j/k moves row, ]/[ jumps hunks,
+    // right/left scrolls horizontally in sync, Escape returns to list.
+    h.click("CHANGES_ROW pair.rs");
+    h.press("enter");
+    assert_eq!(h.read(|v| v.focus_place()), FocusPlace::Diff);
+    let row0 = diff.read_with(&h.visual, |d, _| d.cursor_row());
+    h.press("j");
+    let row1 = diff.read_with(&h.visual, |d, _| d.cursor_row());
+    assert_eq!(row1, row0 + 1);
+    h.press("]");
+    let hunk2 = diff.read_with(&h.visual, |d, _| d.cursor_row());
+    assert!(hunk2 > row1, "{hunk2} vs {row1}");
+    h.press("[");
+    assert!(diff.read_with(&h.visual, |d, _| d.cursor_row()) < hunk2);
+    h.press("right");
+    let sx = diff.read_with(&h.visual, |d, _| d.scroll_offset().x);
+    assert!(sx > px(0.), "split horizontal scroll: {sx:?}");
+    h.press("escape");
+    assert_eq!(h.read(|v| v.focus_place()), FocusPlace::Files);
+}
+
+#[test]
+fn split_360px_rule_auto_maximizes_narrow_panel_and_falls_back_to_unified_on_restore() {
+    use crate::app_settings::DiffViewMode;
+
+    let mut h = harness(None);
+    h.store.update(&mut h.visual, |store, cx| {
+        store.update_settings(
+            |settings| {
+                settings.file_viewer_width = 520.;
+                settings.changes_diff_mode = DiffViewMode::Unified;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait("src/lib.rs diff", |h| h.has("CHANGES_DIFF_CODE"));
+
+    let diff = h.read(|v| v.unified_diff_view()).unwrap();
+    assert_eq!(
+        diff.read_with(&h.visual, |d, _| d.mode()),
+        DiffViewMode::Unified
+    );
+
+    // At 520 px (< 720 px, so < 360 px per side), picking Split saves the preference
+    // and requests side-panel maximize so Split can render.
+    h.click("CHANGES_DIFF_MODE_SPLIT");
+    assert_eq!(
+        h.store
+            .read_with(&h.visual, |store, _| store.settings.changes_diff_mode),
+        DiffViewMode::Split
+    );
+    assert_eq!(
+        h.host
+            .read_with(&h.visual, |host, _| (
+                host.maximized,
+                host.maximize_requests
+            ))
+            .unwrap(),
+        (true, 1)
+    );
+    assert_eq!(
+        diff.read_with(&h.visual, |d, _| d.mode()),
+        DiffViewMode::Split
+    );
+
+    // Restore chat while panel width is still 520 px: preference stays Split,
+    // rendered mode falls back to Unified.
+    h.host
+        .update(&mut h.visual, |host, _, cx| {
+            host.maximized = false;
+            cx.notify();
+        })
+        .unwrap();
+    h.settle();
+    assert_eq!(
+        h.store
+            .read_with(&h.visual, |store, _| store.settings.changes_diff_mode),
+        DiffViewMode::Split,
+        "remembered preference stays Split"
+    );
+    assert_eq!(
+        diff.read_with(&h.visual, |d, _| d.mode()),
+        DiffViewMode::Unified,
+        "narrow unmaximized panel falls back to Unified"
+    );
+
+    // Widening the diff past 720 px (360 px per side) renders Split without maximizing.
+    h.store.update(&mut h.visual, |store, cx| {
+        store.update_settings(
+            |settings| {
+                settings.file_viewer_width = 760.;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    h.settle();
+    assert_eq!(
+        diff.read_with(&h.visual, |d, _| d.mode()),
+        DiffViewMode::Split
+    );
+    assert!(!h
+        .host
+        .read_with(&h.visual, |host, _| host.maximized)
+        .unwrap());
+}
+
+#[test]
+fn narrow_diff_header_keeps_unified_split_switch_in_bounds_and_clickable_for_long_paths() {
+    use crate::app_settings::DiffViewMode;
+
+    let mut h = harness(None);
+    let rel = "src/deep/nested/very_long_component_filename_that_exceeds_narrow_panel_header.rs";
+    let full = h.worktree.join(rel);
+    std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+    std::fs::write(&full, "fn before() {}\n").unwrap();
+    git(&h.worktree, &["add", rel]);
+    git(&h.worktree, &["commit", "-q", "-m", "add long path"]);
+    std::fs::write(&full, "fn after() {\n    let x = 1;\n}\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&full, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    h.store.update(&mut h.visual, |store, cx| {
+        store.update_settings(
+            |settings| {
+                settings.file_viewer_width = 288.;
+                settings.changes_diff_mode = DiffViewMode::Unified;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    h.show(Some(mission_ctx("on-worktree")));
+    h.visual.simulate_resize(size(px(288. + 240.), px(900.)));
+    h.settle();
+    let selector = format!("CHANGES_ROW {rel}");
+    h.wait("long-path row", |h| h.has(&selector));
+    h.click(&selector);
+    h.wait("long-path diff code", |h| h.has("CHANGES_DIFF_CODE"));
+
+    let header = h.visual.debug_bounds("CHANGES_DIFF_HEADER").unwrap();
+    let mode_box = h.visual.debug_bounds("CHANGES_DIFF_MODE").unwrap();
+    let unified_btn = h
+        .visual
+        .debug_bounds("CHANGES_DIFF_MODE_UNIFIED")
+        .or_else(|| h.visual.debug_bounds("CHANGES_DIFF_MODE_UNIFIED active"))
+        .unwrap();
+    let split_btn = h
+        .visual
+        .debug_bounds("CHANGES_DIFF_MODE_SPLIT")
+        .or_else(|| h.visual.debug_bounds("CHANGES_DIFF_MODE_SPLIT active"))
+        .unwrap();
+
+    assert_eq!(header.size.width, px(288.));
+    assert!(
+        mode_box.left() >= header.left() && mode_box.right() <= header.right(),
+        "mode switch {mode_box:?} must stay inside header {header:?}"
+    );
+    assert!(
+        unified_btn.left() >= header.left() && split_btn.right() <= header.right(),
+        "Unified {unified_btn:?} and Split {split_btn:?} must stay inside header {header:?}"
+    );
+
+    // Clicking Split inside the 288 px header hits the control and triggers auto-maximize.
+    h.click("CHANGES_DIFF_MODE_SPLIT");
+    assert_eq!(
+        h.store
+            .read_with(&h.visual, |store, _| store.settings.changes_diff_mode),
+        DiffViewMode::Split
+    );
+    assert!(h
+        .host
+        .read_with(&h.visual, |host, _| host.maximized)
+        .unwrap());
+    let diff = h.read(|v| v.unified_diff_view()).unwrap();
+    assert_eq!(
+        diff.read_with(&h.visual, |d, _| d.mode()),
+        DiffViewMode::Split
     );
 }

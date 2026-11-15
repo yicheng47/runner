@@ -84,9 +84,16 @@ impl FilesView {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                 this.activate_tab(index, cx);
-                match this.active_view() {
-                    Some(view) => view.read(cx).focus_handle().clone().focus(window, cx),
-                    None => this.focus.focus(window, cx),
+                if let Some(diff) = this.active_diff_view() {
+                    diff.read(cx).focus_handle().clone().focus(window, cx);
+                } else if this.active_showing_diff() {
+                    this.viewer_focus.focus(window, cx);
+                } else if let Some(view) = this.active_view() {
+                    view.read(cx).focus_handle().clone().focus(window, cx);
+                } else if let Some(page) = this.active_rendered() {
+                    page.read(cx).focus_handle().clone().focus(window, cx);
+                } else {
+                    this.focus.focus(window, cx);
                 }
             }))
             .on_mouse_down(
@@ -171,6 +178,8 @@ impl FilesView {
         let open_in_anchor = self.viewer.open_in_anchor.clone();
         let (_, effective) = found_editors(cx);
         let deleted = self.active_deleted();
+        let can_diff = self.active_can_diff();
+        let showing_diff = self.active_showing_diff();
         let open_in_label = crate::i18n::tf(
             "format.open_in_editor",
             &[("editor", effective.label().to_owned())],
@@ -233,29 +242,57 @@ impl FilesView {
                         })),
                 )
             })
-            .when_some(self.active_markdown(), |element, source| {
+            .when_some(
+                self.active_markdown().filter(|_| !showing_diff),
+                |element, source| {
+                    element.child(
+                        strip_button("file-markdown-source", source)
+                            .when(deleted, |element| element.opacity(0.4).cursor_default())
+                            .when(!source, |element| {
+                                element.border_color(gpui::transparent_black())
+                            })
+                            .tooltip(move |_, cx| {
+                                runner_app::ui::tooltip::tooltip_view(
+                                    crate::i18n::t(if source {
+                                        "ui.show_markdown_rendered"
+                                    } else {
+                                        "ui.show_markdown_source"
+                                    }),
+                                    cx,
+                                )
+                            })
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.toggle_source(window, cx)),
+                            )
+                            .child(svg().size(px(14.)).path("code.svg").text_color(if source {
+                                theme::text()
+                            } else {
+                                theme::muted()
+                            })),
+                    )
+                },
+            )
+            .when(can_diff, |element| {
                 element.child(
-                    strip_button("file-markdown-source", source)
-                        .when(deleted, |element| element.opacity(0.4).cursor_default())
-                        .when(!source, |element| {
-                            element.border_color(gpui::transparent_black())
-                        })
+                    strip_button("file-diff-toggle", showing_diff)
                         .tooltip(move |_, cx| {
                             runner_app::ui::tooltip::tooltip_view(
-                                crate::i18n::t(if source {
-                                    "ui.show_markdown_rendered"
+                                crate::i18n::t(if showing_diff {
+                                    "changes.show_file"
                                 } else {
-                                    "ui.show_markdown_source"
+                                    "changes.show_diff"
                                 }),
                                 cx,
                             )
                         })
-                        .on_click(cx.listener(|this, _, window, cx| this.toggle_source(window, cx)))
-                        .child(svg().size(px(14.)).path("code.svg").text_color(if source {
-                            theme::text()
-                        } else {
-                            theme::muted()
-                        })),
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_diff(window, cx)))
+                        .child(svg().size(px(14.)).path("git-compare.svg").text_color(
+                            if showing_diff {
+                                theme::text()
+                            } else {
+                                theme::muted()
+                            },
+                        )),
                 )
             })
             .when(self.has_tabs(), |strip| {
@@ -582,10 +619,14 @@ impl FilesView {
         let Some(tab) = self.viewer.tabs.active() else {
             return self.render_no_file(cx);
         };
+        let tab_path = tab.path.clone();
         let name = tab.name().to_owned();
-        let Some(file) = self.viewer.files.get(&tab.path) else {
+        let Some(file) = self.viewer.files.get(&tab_path) else {
             return div().flex_1().into_any_element();
         };
+        if file.showing_diff && self.active_can_diff() {
+            return self.render_tab_diff(&tab_path, cx);
+        }
         let root = cx.weak_entity();
         match &file.content {
             Content::Loading => div().flex_1().into_any_element(),
@@ -725,6 +766,118 @@ impl FilesView {
                 }
             }
         }
+    }
+
+    fn render_tab_diff(&self, tab_path: &str, cx: &mut Context<Self>) -> AnyElement {
+        use crate::surfaces::changes::{
+            render_shared_diff_header, render_shared_diff_placeholder, DiffHeaderProps,
+            LoadedDiffKind,
+        };
+        use runner_core::protocol::files::FileStatus;
+
+        let effective_mode = self.effective_diff_mode(cx);
+        let Some(file) = self.viewer.files.get(tab_path) else {
+            return div().flex_1().into_any_element();
+        };
+
+        let (status_opt, counts_opt, mode_change, conflicted, has_head) = match &file.diff {
+            super::FileTabDiff::Loaded(loaded) => (
+                Some(&loaded.status),
+                Some(loaded.counts),
+                loaded.mode_change.as_ref(),
+                loaded.conflicted,
+                loaded.has_head,
+            ),
+            _ => (None, None, None, false, self.root_has_head()),
+        };
+
+        let weak = cx.weak_entity();
+        let mode_handler: crate::surfaces::changes::DiffModeCallback =
+            Rc::new(move |mode, window, cx| {
+                let _ = weak.update(cx, |this, cx| this.select_diff_mode(mode, window, cx));
+            });
+
+        let compare_label = Some(
+            crate::i18n::text(if has_head {
+                "changes.working_tree_vs_head"
+            } else {
+                "changes.working_tree_unborn"
+            })
+            .to_owned(),
+        );
+
+        let header = render_shared_diff_header(DiffHeaderProps {
+            path: matches!(status_opt, Some(FileStatus::Renamed { .. })).then_some(tab_path),
+            status: status_opt,
+            counts: counts_opt,
+            mode_change,
+            conflicted,
+            compare_label,
+            mode_switch: Some((effective_mode, mode_handler)),
+        });
+
+        let body = match &file.diff {
+            super::FileTabDiff::Idle | super::FileTabDiff::Loading => div()
+                .when(cfg!(test), |el| {
+                    el.debug_selector(|| "FILE_DIFF_LOADING".into())
+                })
+                .flex_1()
+                .min_h(px(0.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(theme::text_ui())
+                .text_color(theme::faint())
+                .child(crate::i18n::text("changes.loading"))
+                .into_any_element(),
+            super::FileTabDiff::Failed(error) => div()
+                .flex_1()
+                .p_4()
+                .text_size(theme::text_ui())
+                .text_color(theme::danger())
+                .child(error.clone())
+                .into_any_element(),
+            super::FileTabDiff::Loaded(loaded) => match &loaded.kind {
+                LoadedDiffKind::Unified(entity) => {
+                    entity.update(cx, |v, cx| v.set_mode(effective_mode, cx));
+                    entity.clone().into_any_element()
+                }
+                _ => {
+                    let Some(root_path) = self.root_path() else {
+                        return div().flex_1().into_any_element();
+                    };
+                    let open_entity = cx.entity();
+                    render_shared_diff_placeholder(
+                        root_path,
+                        &loaded.path,
+                        &loaded.status,
+                        &loaded.kind,
+                        Rc::new(move |editor, path, cx| {
+                            open_entity.update(cx, |this, cx| {
+                                this.launch(editor, path, None, cx);
+                            });
+                        }),
+                        None,
+                        cx,
+                    )
+                }
+            },
+        };
+
+        div()
+            .id("file-diff-column")
+            .when(cfg!(test), |el| {
+                el.debug_selector(|| "FILE_DIFF_COLUMN".into())
+            })
+            .on_key_down(cx.listener(Self::on_placeholder_diff_key))
+            .flex_1()
+            .min_w(px(0.))
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(body)
+            .into_any_element()
     }
 
     fn render_rendered(

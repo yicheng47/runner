@@ -149,11 +149,19 @@ impl NativeRoot {
             );
         let panel_open = self.chat_panel_is_open(cx)
             && side_panel_available(self.settings(cx), PanelSurface::Chat);
-        let (panel_visibility, panel_animating) = self.chat_panel_visibility.animate_to(
-            if panel_open { 1. } else { 0. },
-            Instant::now(),
-            Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
-        );
+        if !panel_open && self.chat_panel_maximized {
+            self.chat_panel_maximized = false;
+        }
+        let panel_maximized = panel_open && self.chat_panel_maximized;
+        let (panel_visibility, panel_animating) = if panel_maximized {
+            (1., false)
+        } else {
+            self.chat_panel_visibility.animate_to(
+                if panel_open { 1. } else { 0. },
+                Instant::now(),
+                Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
+            )
+        };
         if panel_animating {
             window.request_animation_frame();
         }
@@ -182,7 +190,7 @@ impl NativeRoot {
             .h_full()
             .flex()
             .child(self.chat_files.measure(self.settings(cx).app_zoom))
-            .child(chat_column)
+            .when(!panel_maximized, |el| el.child(chat_column))
             .child(side_panel)
             .into_any_element()
     }
@@ -362,11 +370,19 @@ impl NativeRoot {
         let panel_open = self.remote_client.is_local()
             && !show_start
             && (self.chat_panel_is_open(cx) && side_panel_available(self.settings(cx), surface));
-        let (panel_visibility, panel_animating) = self.chat_panel_visibility.animate_to(
-            if panel_open { 1. } else { 0. },
-            Instant::now(),
-            Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
-        );
+        if !panel_open && self.chat_panel_maximized {
+            self.chat_panel_maximized = false;
+        }
+        let panel_maximized = panel_open && self.chat_panel_maximized;
+        let (panel_visibility, panel_animating) = if panel_maximized {
+            (1., false)
+        } else {
+            self.chat_panel_visibility.animate_to(
+                if panel_open { 1. } else { 0. },
+                Instant::now(),
+                Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
+            )
+        };
         if panel_animating {
             window.request_animation_frame();
         }
@@ -376,12 +392,20 @@ impl NativeRoot {
                 .map(|chat| chat.session_id.clone()),
         );
         let panel_layout = self.chat_panel_layout(self.active_chat_detail.as_ref(), cx);
-        let side_panel = self.cached_region(
-            "side-panel",
+        let panel_region_style = if panel_maximized {
+            gpui::StyleRefinement::default()
+                .flex_1()
+                .min_w(px(0.))
+                .h_full()
+        } else {
             gpui::StyleRefinement::default()
                 .w(rems(panel_layout.0 * panel_visibility / 16.))
                 .h_full()
-                .flex_none(),
+                .flex_none()
+        };
+        let side_panel = self.cached_region(
+            "side-panel",
+            panel_region_style,
             move |root, window, cx| {
                 root.render_chat_side_panel(
                     root.active_chat_detail.as_ref(),
@@ -398,7 +422,7 @@ impl NativeRoot {
             cx,
         );
         let widened = panel_layout.1;
-        let panel_resize = (panel_open || panel_animating).then(|| {
+        let panel_resize = (!panel_maximized && (panel_open || panel_animating)).then(|| {
             let zoom = self.settings(cx).app_zoom;
             let panel_width = panel_layout.0 * panel_visibility * zoom;
             resize_strip(
@@ -436,9 +460,9 @@ impl NativeRoot {
             .h_full()
             .flex()
             .child(self.chat_files.measure(self.settings(cx).app_zoom))
-            .child(chat_column)
+            .when(!panel_maximized, |el| el.child(chat_column))
             .children(
-                (panel_open || panel_animating)
+                (!panel_maximized && (panel_open || panel_animating))
                     .then(|| div().w(rems(6. / 16.)).h_full().flex_none()),
             )
             .child(side_panel)

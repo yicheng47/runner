@@ -147,6 +147,8 @@ impl FilesView {
                         tree,
                         listed: Default::default(),
                         next_listing: 0,
+                        uncommitted_paths: None,
+                        uncommitted_seq: 0,
                     }));
                     self.scroll = UniformListScrollHandle::new();
                     let owner = cx.entity_id();
@@ -171,6 +173,7 @@ impl FilesView {
         }
         if same {
             self.read_again_after_resolve(cx);
+            self.refresh_uncommitted_paths(true, cx);
         }
         if !self.searchable() {
             self.finder = None;
@@ -597,6 +600,13 @@ impl FilesView {
 
     pub(in super::super) fn root_is_git(&self) -> bool {
         matches!(&self.body, Body::Root(state) if state.root.git.is_some())
+    }
+
+    pub(in super::super) fn root_has_head(&self) -> bool {
+        matches!(
+            &self.body,
+            Body::Root(state) if state.root.git.as_ref().is_some_and(|git| git.commit.is_some())
+        )
     }
 
     pub(super) fn render_picker(

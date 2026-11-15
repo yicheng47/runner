@@ -10,9 +10,9 @@ use gpui::{
     FontWeight, KeyDownEvent, MouseButton, Pixels, Window,
 };
 use runner_app::ui::menu::popup_layer;
-use runner_app::ui::{IconButton, IconButtonSize};
+use runner_app::ui::{ButtonVariant, IconButton, IconButtonSize};
 
-use crate::app_settings::AppSettings;
+use crate::app_settings::{AppSettings, DiffViewMode};
 use crate::theme;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
@@ -126,6 +126,22 @@ pub(crate) struct PanelContext {
 pub(crate) const MAIN_MIN_WIDTH: f32 = 420.;
 /// From this width the mission's Sessions roster places two cards per row.
 pub(crate) const ROSTER_TWO_UP_WIDTH: f32 = 560.;
+/// Each side of a Split diff takes at least this much unmaximized; narrower
+/// panels maximize on picking Split and fall back to Unified on Restore chat.
+pub(crate) const SPLIT_SIDE_MIN_WIDTH: f32 = 360.;
+pub(crate) const SPLIT_MIN_DIFF_WIDTH: f32 = SPLIT_SIDE_MIN_WIDTH * 2.;
+
+pub(crate) fn effective_diff_mode(
+    preferred: DiffViewMode,
+    diff_width: f32,
+    panel_maximized: bool,
+) -> DiffViewMode {
+    if preferred == DiffViewMode::Split && (panel_maximized || diff_width >= SPLIT_MIN_DIFF_WIDTH) {
+        DiffViewMode::Split
+    } else {
+        DiffViewMode::Unified
+    }
+}
 
 /// A panel widened by an open file: the file's width, whether the tree
 /// beside it is on, the tree's width, and the panel's standard width.
@@ -243,6 +259,7 @@ impl OpenSurfaces {
 pub(crate) struct SavedPanel {
     pub(crate) surfaces: OpenSurfaces,
     pub(crate) open: Option<bool>,
+    pub(crate) maximized: bool,
 }
 
 /// The surfaces `surface` offers to open: those Settings turns on, a
@@ -371,6 +388,10 @@ impl PanelSurfaces {
         &self.list_focus
     }
 
+    pub(crate) fn menu_focused(&self, window: &Window) -> bool {
+        self.menu_open && self.menu_focus.is_focused(window)
+    }
+
     pub(crate) fn apply(
         &mut self,
         surface: PanelSurface,
@@ -464,15 +485,23 @@ fn surface_key(
     }
 }
 
+pub(crate) type PanelCallback = Rc<dyn Fn(&mut Window, &mut App)>;
+
+pub(crate) struct MaximizeControl {
+    pub(crate) maximized: bool,
+    pub(crate) on_toggle: PanelCallback,
+}
+
 /// The header (Jason, 2026-11-05, after t3code): the open surfaces as tabs,
 /// the shown one raised with a × where it closes, then `+` for the surface
-/// menu, then `collapse` on the right.
+/// menu, then `maximize` and `collapse` on the right.
 pub(crate) fn header_tabs(
     surface: PanelSurface,
     settings: &AppSettings,
     surfaces: &OpenSurfaces,
     (menu, window): (&PanelSurfaces, &Window),
     handler: SurfaceHandler,
+    maximize: Option<MaximizeControl>,
     collapse: impl IntoElement,
 ) -> Div {
     let shown = shown(surface, settings, surfaces);
@@ -510,7 +539,45 @@ pub(crate) fn header_tabs(
                     surface_menu(&rows, surfaces, menu, anchor, handler.clone(), window)
                 }))
         });
-    // Tabs shrink, their names first, so `+` and collapse always show.
+    let maximize = maximize.map(|control| {
+        let maximized = control.maximized;
+        let on_toggle = control.on_toggle;
+        let label = crate::i18n::text(if maximized {
+            "ui.restore_chat"
+        } else {
+            "ui.maximize_side_panel"
+        });
+        let tooltip =
+            crate::keymap::effective_binding("toggle-maximize-pane", &settings.keymap_overrides)
+                .map_or_else(
+                    || label.to_owned(),
+                    |combo| format!("{label} · {}", crate::keymap::format_combo(&combo)),
+                );
+        div()
+            .flex_none()
+            .debug_selector(move || {
+                if maximized {
+                    "SIDE_PANEL_MAXIMIZE active".into()
+                } else {
+                    "SIDE_PANEL_MAXIMIZE".into()
+                }
+            })
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                IconButton::new(
+                    "side-panel-maximize",
+                    if maximized {
+                        "minimize-2.svg"
+                    } else {
+                        "maximize-2.svg"
+                    },
+                )
+                .when(maximized, |button| button.variant(ButtonVariant::Secondary))
+                .tooltip(tooltip)
+                .on_press(move |window, cx| on_toggle(window, cx)),
+            )
+    });
+    // Tabs shrink, their names first, so `+`, maximize and collapse always show.
     div()
         .flex_1()
         .min_w(px(0.))
@@ -528,6 +595,7 @@ pub(crate) fn header_tabs(
         )
         .children(add)
         .child(div().flex_1().min_w(px(0.)).h_full())
+        .children(maximize)
         .child(
             div()
                 .flex_none()

@@ -27,6 +27,8 @@ struct Host {
     app_zooms: Vec<&'static str>,
     /// Whether the owner's layout shows the tree beside an open file.
     tree_fits: bool,
+    maximized: bool,
+    maximize_requests: usize,
 }
 
 impl Render for Host {
@@ -43,13 +45,36 @@ impl Render for Host {
                     .is_some_and(|view| view.read(cx).has_tabs());
                 // As `FilesPanel::layout`: no room and no file, no widening.
                 let widened = (self.tree_fits || has_file).then_some(Widened {
-                    file: settings.file_viewer_width.max(288.),
+                    file: if self.maximized {
+                        960.
+                    } else {
+                        settings.file_viewer_width.max(288.)
+                    },
                     tree: self.tree_fits,
                     tree_width: settings.file_tree_width,
                     standard: 288.,
                 });
                 let owner = cx.entity_id();
-                Some(self.panel.show_with(context, widened, Some(owner), cx))
+                let weak = cx.weak_entity();
+                let on_request_maximize: crate::surfaces::side_panel::PanelCallback =
+                    std::rc::Rc::new(move |_, cx| {
+                        let _ = weak.update(cx, |host, cx| {
+                            host.maximized = true;
+                            host.maximize_requests += 1;
+                            cx.notify();
+                        });
+                    });
+                if !self.maximized {
+                    let _ = self.panel.show_with(context, widened, Some(owner), cx);
+                }
+                Some(self.panel.show_with_maximize(
+                    context,
+                    widened,
+                    Some(owner),
+                    self.maximized,
+                    Some(on_request_maximize),
+                    cx,
+                ))
             }
             None => {
                 self.panel.hide(cx);
@@ -195,6 +220,8 @@ fn harness(context: Option<PanelContext>) -> Harness {
         closed_panes: 0,
         app_zooms: Vec::new(),
         tree_fits: true,
+        maximized: false,
+        maximize_requests: 0,
     });
     let visual = VisualTestContext::from_window(host.into(), &cx);
     visual.simulate_resize(size(px(340.), px(900.)));
@@ -4362,4 +4389,197 @@ fn a_status_that_arrives_clears_the_error_of_one_that_failed() {
     h.wait("the error", |h| h.has("FILES_ERROR"));
     receive_status(&mut h, GitStatus::new(Vec::new(), vec!["other.log".into()]));
     assert!(h.has("FILES_ERROR"));
+}
+
+#[test]
+fn files_diff_toggle_swaps_changed_tab_in_place_shares_split_mode_and_resets_when_clean() {
+    use crate::app_settings::DiffViewMode;
+    use runner_core::protocol::files::{FileStatus, GitStatus, StatusEntry};
+
+    let mut h = viewer(chat("in-project"));
+    h.store.update(&mut h.visual, |store, cx| {
+        store.update_settings(
+            |settings| {
+                settings.file_viewer_width = 520.;
+                settings.changes_diff_mode = DiffViewMode::Unified;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    h.wait("initial git status", |h| h.status_read());
+
+    // Clean file tab has no Diff button.
+    h.open("a.txt");
+    h.wait("clean file code", |h| h.has("FILE_CODE"));
+    assert!(!h.has("FILE_DIFF_TOGGLE"));
+    assert!(!h.read(|v| v.showing_diff()));
+
+    // Edit `src/deep/x.rs` on disk and report modified status.
+    std::fs::write(
+        h.repo.join("src/deep/x.rs"),
+        "fn x() {\n    let edited = 1;\n}\n",
+    )
+    .unwrap();
+    receive_status(
+        &mut h,
+        GitStatus::new(
+            vec![StatusEntry {
+                path: "src/deep/x.rs".into(),
+                status: FileStatus::Modified,
+            }],
+            Vec::new(),
+        ),
+    );
+    h.open("src/deep/x.rs");
+    h.wait("dirty file code and diff toggle", |h| {
+        h.has("FILE_CODE") && h.has("FILE_DIFF_TOGGLE")
+    });
+
+    // Switching back to clean `a.txt` hides the Diff button; switching back shows it again.
+    h.click("FILE_TAB a.txt");
+    assert!(!h.has("FILE_DIFF_TOGGLE"));
+    h.click("FILE_TAB src/deep/x.rs");
+    assert!(h.has("FILE_DIFF_TOGGLE"));
+
+    // Toggle Diff in place: shows diff header + code, omits Viewed checkbox, disables Find bar.
+    h.click("FILE_DIFF_TOGGLE");
+    h.wait("in-place file diff loaded", |h| {
+        h.has("FILE_DIFF_COLUMN") && h.has("CHANGES_DIFF_HEADER") && h.has("CHANGES_DIFF_CODE")
+    });
+    assert!(h.read(|v| v.showing_diff()));
+    assert!(
+        !h.has("CHANGES_DIFF_VIEWED"),
+        "Files' in-place diff has no Viewed checkbox"
+    );
+    h.visual.simulate_keystrokes(&primary("f"));
+    h.settle();
+    assert!(
+        !h.has("FILE_FIND_BAR"),
+        "⌘F does not open Find while showing diff"
+    );
+
+    // Picking Split in a 520 px viewer auto-maximizes and persists `changes_diff_mode = Split`.
+    h.click("CHANGES_DIFF_MODE_SPLIT");
+    assert_eq!(
+        h.store
+            .read_with(&h.visual, |store, _| store.settings.changes_diff_mode),
+        DiffViewMode::Split
+    );
+    assert_eq!(
+        h.host
+            .read_with(&h.visual, |host, _| (
+                host.maximized,
+                host.maximize_requests
+            ))
+            .unwrap(),
+        (true, 1)
+    );
+    let diff = h.read(|v| v.tab_diff_view()).unwrap();
+    assert_eq!(
+        diff.read_with(&h.visual, |d, _| d.mode()),
+        DiffViewMode::Split
+    );
+
+    // Per-tab state: switching to `a.txt` shows the file, switching back restores the diff.
+    h.click("FILE_TAB a.txt");
+    assert!(!h.read(|v| v.showing_diff()));
+    assert!(h.has("FILE_CODE"));
+    h.click("FILE_TAB src/deep/x.rs");
+    assert!(h.read(|v| v.showing_diff()));
+    assert!(h.has("FILE_DIFF_COLUMN"));
+
+    // When uncommitted changes clear, hide Diff button and return the tab to the file viewer.
+    git(&h.repo, &["checkout", "--", "src/deep/x.rs"]);
+    receive_status(&mut h, GitStatus::default());
+    h.wait("tab returned to file after changes cleared", |h| {
+        h.has("FILE_CODE") && !h.has("FILE_DIFF_TOGGLE") && !h.has("FILE_DIFF_COLUMN")
+    });
+    assert!(!h.read(|v| v.showing_diff()));
+    assert!(h.read(|v| v.tab_diff_view()).is_none());
+}
+
+#[test]
+fn files_diff_toggle_reflects_working_tree_vs_head_when_staged_edit_is_reverted_on_disk() {
+    use runner_core::protocol::files::{FileStatus, GitStatus, StatusEntry};
+
+    let mut h = viewer(chat("in-project"));
+    h.wait("initial git status", |h| h.status_read());
+
+    let path = h.repo.join("src/deep/x.rs");
+    let head_content = std::fs::read_to_string(&path).unwrap();
+
+    // Stage an edit in the index, then write the original HEAD content back on disk without
+    // unstaging: `git status --porcelain` reports `MM` (Modified), yet `Working tree vs HEAD`
+    // has zero net changes.
+    std::fs::write(&path, "fn x() {\n    staged_only();\n}\n").unwrap();
+    git(&h.repo, &["add", "src/deep/x.rs"]);
+    std::fs::write(&path, &head_content).unwrap();
+    receive_status(
+        &mut h,
+        GitStatus::new(
+            vec![StatusEntry {
+                path: "src/deep/x.rs".into(),
+                status: FileStatus::Modified,
+            }],
+            Vec::new(),
+        ),
+    );
+
+    h.open("src/deep/x.rs");
+    h.wait(
+        "reverted MM file code loaded and uncommitted paths settled",
+        |h| {
+            h.has("FILE_CODE") && h.read(|v| v.has_uncommitted_diff("src/deep/x.rs") == Some(false))
+        },
+    );
+    assert!(
+        h.has("FILE_TAB_LETTER src/deep/x.rs M"),
+        "tab keeps git status badge while staged index differs"
+    );
+    assert!(
+        !h.has("FILE_DIFF_TOGGLE"),
+        "Diff button stays hidden when working tree matches HEAD"
+    );
+
+    // Edit the working tree so it now differs from HEAD: Diff button appears and opens cleanly.
+    std::fs::write(&path, "fn x() {\n    working_tree_changed();\n}\n").unwrap();
+    receive_status(
+        &mut h,
+        GitStatus::new(
+            vec![StatusEntry {
+                path: "src/deep/x.rs".into(),
+                status: FileStatus::Modified,
+            }],
+            Vec::new(),
+        ),
+    );
+    h.wait(
+        "Diff button appears once working tree differs from HEAD",
+        |h| h.has("FILE_DIFF_TOGGLE"),
+    );
+    h.click("FILE_DIFF_TOGGLE");
+    h.wait("in-place file diff loaded", |h| {
+        h.has("FILE_DIFF_COLUMN") && h.has("CHANGES_DIFF_CODE")
+    });
+
+    // Revert the working tree back to HEAD again while leaving the staged edit in the index
+    // (`git status` still reports Modified `MM`): Diff button hides and tab returns to file.
+    std::fs::write(&path, &head_content).unwrap();
+    receive_status(
+        &mut h,
+        GitStatus::new(
+            vec![StatusEntry {
+                path: "src/deep/x.rs".into(),
+                status: FileStatus::Modified,
+            }],
+            Vec::new(),
+        ),
+    );
+    h.wait(
+        "tab returned to file and Diff button hidden once working tree matches HEAD",
+        |h| h.has("FILE_CODE") && !h.has("FILE_DIFF_TOGGLE") && !h.has("FILE_DIFF_COLUMN"),
+    );
+    assert!(!h.read(|v| v.showing_diff()));
 }

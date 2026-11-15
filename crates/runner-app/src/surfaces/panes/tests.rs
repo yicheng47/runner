@@ -3876,3 +3876,146 @@ fn dropped_files_focus_the_pane_they_land_on() {
     })
     .unwrap();
 }
+
+#[test]
+fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_ephemeral() {
+    use crate::surfaces::side_panel::PanelViewId;
+    use crate::{AppRoute, NativeRoot, ToggleMaximizePane};
+
+    let (temp, mut cx, store, host, mut visual) = panel_root("direct-agent");
+    // Split the active chat tab into two panes (`direct-agent` + `busy-shell`) so WS-PANE-07
+    // pane maximize and side-panel maximize coexist in the same tab.
+    let right_pane = host
+        .update(&mut visual, |root, _, cx| {
+            let layout = root.tabs.active_mut().unwrap();
+            let right = layout.split("p1", SplitOrientation::Row).unwrap();
+            layout.assign_session(&right, "busy-shell").unwrap();
+            assert!(layout.focus_pane("p1"));
+            root.chat_surfaces.open = surfaces_of(
+                &[PanelViewId::Info, PanelViewId::Files, PanelViewId::Changes],
+                PanelViewId::Info,
+            );
+            cx.notify();
+            right
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    let right_selector: &'static str =
+        Box::leak(format!("PANE_ISLAND:{right_pane}").into_boxed_str());
+    assert!(visual.debug_bounds("PANE_ISLAND:p1").is_some());
+    assert!(visual.debug_bounds(right_selector).is_some());
+    assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE").is_some());
+    assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE active").is_none());
+
+    // 1. Focus in chat: `ToggleMaximizePane` (`⇧⌘↩`) maximizes the focused split pane (`p1`),
+    // leaving the side panel unmaximized (`WS-PANE-07`).
+    host.update(&mut visual, |root, window, cx| {
+        root.chat_focus.focus(window, cx);
+        root.toggle_maximize_pane_action(&ToggleMaximizePane, window, cx);
+    })
+    .unwrap();
+    visual.run_until_parked();
+    assert_eq!(
+        host.read_with(&visual, |root, _| {
+            (
+                root.chat_panel_maximized,
+                root.maximized_panes.values().cloned().collect::<Vec<_>>(),
+            )
+        })
+        .unwrap(),
+        (false, vec!["p1".to_owned()])
+    );
+    assert!(visual.debug_bounds(right_selector).is_none());
+    assert!(visual.debug_bounds("CHAT_SIDE_PANEL").is_some());
+
+    // Restore split pane before testing side-panel maximize.
+    host.update(&mut visual, |root, window, cx| {
+        root.toggle_maximize_pane_action(&ToggleMaximizePane, window, cx);
+    })
+    .unwrap();
+    visual.run_until_parked();
+    assert!(visual.debug_bounds(right_selector).is_some());
+
+    // 2. Maximize button is present on Info, Files, and Changes; clicking it hides chat panes
+    // and the panel resize gutter, fills the tab, and turns into Restore chat (`active`).
+    for tab in ["PANEL_TAB Files", "PANEL_TAB Changes", "PANEL_TAB Info"] {
+        click_selector(&mut visual, tab);
+        assert!(
+            visual.debug_bounds("SIDE_PANEL_MAXIMIZE").is_some(),
+            "{tab}"
+        );
+    }
+    let unmax_panel_width = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap().size.width;
+    click_selector(&mut visual, "SIDE_PANEL_MAXIMIZE");
+    assert!(host
+        .read_with(&visual, |root, _| root.chat_panel_maximized)
+        .unwrap());
+    assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE active").is_some());
+    assert!(visual.debug_bounds("PANE_ISLAND:p1").is_none());
+    assert!(visual.debug_bounds(right_selector).is_none());
+    assert!(visual.debug_bounds("CHAT_PANEL_GUTTER").is_none());
+    let max_panel_width = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap().size.width;
+    assert!(
+        max_panel_width > unmax_panel_width + px(400.),
+        "maximized panel fills the tab: {max_panel_width:?} vs {unmax_panel_width:?}"
+    );
+
+    // 3. `ToggleMaximizePane` while maximized restores the chat with >= 420 px minimum intact.
+    host.update(&mut visual, |root, window, cx| {
+        root.toggle_maximize_pane_action(&ToggleMaximizePane, window, cx);
+    })
+    .unwrap();
+    visual.run_until_parked();
+    assert!(!host
+        .read_with(&visual, |root, _| root.chat_panel_maximized)
+        .unwrap());
+    assert!(visual.debug_bounds("PANE_ISLAND:p1").is_some());
+    assert!(visual.debug_bounds(right_selector).is_some());
+
+    // 4. Focus inside the side panel (`PANEL_EMPTY` surface list): `ToggleMaximizePane`
+    // maximizes the side panel rather than the split chat pane.
+    host.update(&mut visual, |root, window, cx| {
+        root.chat_surfaces.open = Default::default();
+        root.chat_surfaces.list_focus().focus(window, cx);
+    })
+    .unwrap();
+    visual.run_until_parked();
+    host.update(&mut visual, |root, window, cx| {
+        root.toggle_maximize_pane_action(&ToggleMaximizePane, window, cx);
+    })
+    .unwrap();
+    visual.run_until_parked();
+    assert_eq!(
+        host.read_with(&visual, |root, _| {
+            (root.chat_panel_maximized, root.maximized_panes.is_empty())
+        })
+        .unwrap(),
+        (true, true)
+    );
+
+    // 5. Maximize is ephemeral: a newly constructed window/restart starts unmaximized.
+    let restarted = cx.add_window(|window, cx| {
+        let mut root = NativeRoot::new(
+            "side-panel-restart".into(),
+            temp.path().join("logs2"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        );
+        root.apply_tab_rows(cx);
+        assert!(root.tabs.activate_session("direct-agent"));
+        root.route = AppRoute::Chat;
+        root.sync_active_chat_detail(cx);
+        root
+    });
+    let restarted_max = restarted
+        .read_with(&cx, |root, _| root.chat_panel_maximized)
+        .unwrap();
+    assert!(
+        !restarted_max,
+        "side-panel maximize must never persist across restarts"
+    );
+}

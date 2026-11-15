@@ -90,6 +90,7 @@ impl MissionWorkspace {
     }
 
     pub(super) fn select_mission_feed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.rail_maximized = false;
         self.cache_active_terminal_size(window, cx);
         self.schedule_mission_grid_hint(window, cx);
         self.clear_feed_selection();
@@ -134,6 +135,7 @@ impl MissionWorkspace {
             self.select_mission_feed(window, cx);
             return;
         }
+        self.rail_maximized = false;
         self.cache_active_terminal_size(window, cx);
         self.schedule_mission_grid_hint(window, cx);
         self.clear_feed_selection();

@@ -399,6 +399,8 @@ impl NativeRoot {
             chat_surfaces: crate::surfaces::side_panel::PanelSurfaces::new(Default::default(), cx),
             chat_panel_tab: None,
             chat_panel_open: None,
+            chat_panel_maximized: false,
+            chat_panel_focus: cx.focus_handle(),
             chat_panels_by_tab: HashMap::new(),
             chat_files: Default::default(),
             panel_chat_by_tab: HashMap::new(),

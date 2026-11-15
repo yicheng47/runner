@@ -36,7 +36,7 @@ In Projects, number shortcuts follow the visible tabs and missions, with a linke
 | Next chat pane | ⌘] | Ctrl+] |
 | Split right | ⌘D | Ctrl+Shift+D |
 | Split down | ⇧⌘D | Alt+Shift+D |
-| Maximize the focused pane of a split tab, or restore the split | ⇧⌘↩ | Ctrl+Shift+Enter |
+| Maximize the focused pane of a split tab or the focused side panel, or restore it | ⇧⌘↩ | Ctrl+Shift+Enter |
 | Hide focused mission drawer, close focused pane, close chat tab, or close the launcher page | ⌘W | Ctrl+Shift+W |
 | Stop focused chat or mission slot | ⇧⌘X | Ctrl+Shift+X |
 | Resume focused stopped chat or mission slot | ⇧⌘R | Ctrl+Shift+R |
@@ -109,8 +109,9 @@ These keys act while the side panel's Files view has focus and, except for zoom,
 | Scroll the diff sideways | ← / → | ← / → |
 | Copy the selected diff text | ⌘C | Ctrl+C |
 | Larger or smaller text in the diff | ⌘+ / ⌘− | Ctrl+= / Ctrl+− |
+| Maximize or restore the side panel | ⇧⌘↩ | Ctrl+Shift+Enter |
 
-These keys act only while the side panel's Changes view has focus and, except for zoom, are fixed; when a terminal has focus, `j`, `k`, `Space`, `[` and `]` reach the terminal as usual. Clicking a line in the diff also moves focus into the diff at that line, and **Mark <file> viewed** at the end of a diff is toggled by clicking rather than **Space**. The zoom keys change the viewer's text size only while the diff has focus, shared with Files, and follow any rebinding of **Zoom in** and **Zoom out**. See [Review changes in the side panel](../guides/chats-and-windows.md#review-changes-in-the-side-panel).
+These keys act only while the side panel's Changes view has focus and, except for zoom and maximize, are fixed; when a terminal has focus, `j`, `k`, `Space`, `[` and `]` reach the terminal as usual. Clicking a line in the diff also moves focus into the diff at that line, and **Mark <file> viewed** at the end of a diff is toggled by clicking rather than **Space**. **⇧⌘↩** (**Ctrl+Shift+Enter**) maximizes or restores the side panel across any of its views and follows any rebinding of **Toggle Maximize Pane**. The zoom keys change the viewer's text size only while the diff has focus, shared with Files, and follow any rebinding of **Zoom in** and **Zoom out**. See [Review changes in the side panel](../guides/chats-and-windows.md#review-changes-in-the-side-panel).
 
 ## Dialogs
 

@@ -82,10 +82,13 @@ impl NativeRoot {
             return !hidden && self.remote_client.shows_remote_terminal(id, cx);
         }
         match &self.route {
-            AppRoute::Chat => self.tabs.active().is_some_and(|tab| {
-                pane_shows_session(&self.maximized_panes, tab, id)
-                    || tab.drawer_open() && tab.active_drawer_shell() == Some(id)
-            }),
+            AppRoute::Chat => {
+                !self.chat_panel_effectively_maximized(cx)
+                    && self.tabs.active().is_some_and(|tab| {
+                        pane_shows_session(&self.maximized_panes, tab, id)
+                            || tab.drawer_open() && tab.active_drawer_shell() == Some(id)
+                    })
+            }
             AppRoute::Mission(mission) => self
                 .mission_workspace
                 .read(cx)

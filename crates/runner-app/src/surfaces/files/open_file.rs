@@ -50,6 +50,25 @@ pub(super) enum Content {
     Failed(SharedString),
 }
 
+pub(super) struct LoadedFileDiff {
+    pub(super) path: String,
+    pub(super) status: runner_core::protocol::files::FileStatus,
+    pub(super) counts: runner_core::protocol::changes::DiffCounts,
+    pub(super) mode_change: Option<runner_core::protocol::changes::ModeChange>,
+    pub(super) conflicted: bool,
+    pub(super) has_head: bool,
+    pub(super) kind: crate::surfaces::changes::LoadedDiffKind,
+}
+
+#[derive(Default)]
+pub(super) enum FileTabDiff {
+    #[default]
+    Idle,
+    Loading,
+    Loaded(Box<LoadedFileDiff>),
+    Failed(SharedString),
+}
+
 pub(super) struct OpenFile {
     pub(super) content: Content,
     /// The newest read sent; an older reply arriving late is dropped.
@@ -69,6 +88,11 @@ pub(super) struct OpenFile {
     source: bool,
     /// The line a ⌘-clicked link cites, shown once the file reads.
     line: Option<u32>,
+    /// Whether this tab shows its uncommitted diff in place instead of the file.
+    pub(super) showing_diff: bool,
+    pub(super) diff: FileTabDiff,
+    diff_read: u64,
+    diff_reading: bool,
 }
 
 /// A Markdown file's page and the local images it shows.
@@ -113,6 +137,7 @@ pub(super) struct Viewer {
     /// leaves the tree its room.
     pub(super) widened: Option<Widened>,
     next_read: u64,
+    next_diff_read: u64,
     next_search: u64,
     find: Option<Find>,
     list_open: bool,
@@ -179,6 +204,15 @@ impl FilesView {
     /// Redraws the tree and every open file when Settings → Side panel →
     /// Files changes what they draw with.
     pub(super) fn settings_changed(&mut self, cx: &mut Context<Self>) {
+        let diff_mode = super::settings(cx)
+            .map_or(crate::app_settings::DiffViewMode::Unified, |settings| {
+                settings.changes_diff_mode
+            });
+        if diff_mode != self.diff_mode_pref {
+            self.diff_mode_pref = diff_mode;
+            self.sync_effective_diff_mode(cx);
+            cx.notify();
+        }
         let look = super::Look::current(cx);
         if look == self.look {
             return;
@@ -191,8 +225,24 @@ impl FilesView {
             if let Some(rendered) = &file.rendered {
                 rendered.update(cx, |_, cx| cx.notify());
             }
+            if let FileTabDiff::Loaded(loaded) = &file.diff
+                && let crate::surfaces::changes::LoadedDiffKind::Unified(diff) = &loaded.kind
+            {
+                diff.update(cx, |_, cx| cx.notify());
+            }
         }
         cx.notify();
+    }
+
+    pub(super) fn sync_effective_diff_mode(&self, cx: &mut Context<Self>) {
+        let mode = self.effective_diff_mode(cx);
+        for file in self.viewer.files.values() {
+            if let FileTabDiff::Loaded(loaded) = &file.diff
+                && let crate::surfaces::changes::LoadedDiffKind::Unified(diff) = &loaded.kind
+            {
+                diff.update(cx, |v, cx| v.set_mode(mode, cx));
+            }
+        }
     }
 
     pub(super) fn has_tabs(&self) -> bool {
@@ -202,6 +252,7 @@ impl FilesView {
     /// Opens `path` in a tab of its own, or switches to its tab.
     pub(crate) fn open_file(&mut self, path: String, cx: &mut Context<Self>) {
         let new = self.viewer.tabs.open(&path);
+        self.ensure_uncommitted_paths(cx);
         self.after_open(path, new, cx);
     }
 
@@ -211,8 +262,11 @@ impl FilesView {
         self.open_file(path.clone(), cx);
         if let Some(file) = self.viewer.files.get_mut(&path) {
             file.line = line;
-            if line.is_some() && is_markdown(&path) {
-                file.source = true;
+            if line.is_some() {
+                file.showing_diff = false;
+                if is_markdown(&path) {
+                    file.source = true;
+                }
             }
         }
         self.show_line(&path, cx);
@@ -247,6 +301,10 @@ impl FilesView {
                     rendered: None,
                     source,
                     line: None,
+                    showing_diff: false,
+                    diff: FileTabDiff::Idle,
+                    diff_read: 0,
+                    diff_reading: false,
                 },
             );
             self.note_ignored_tabs();
@@ -271,6 +329,13 @@ impl FilesView {
             self.after_move(moved, cx);
         }
         if let Some(path) = self.viewer.tabs.active().map(|tab| tab.path.clone()) {
+            let needs_diff =
+                self.viewer.files.get(&path).is_some_and(|file| {
+                    file.showing_diff && matches!(file.diff, FileTabDiff::Idle)
+                });
+            if needs_diff {
+                self.load_tab_diff(path.clone(), cx);
+            }
             self.refresh_ignored(path, cx);
         }
         self.search(cx);
@@ -305,7 +370,11 @@ impl FilesView {
         if tree_shown && self.focus.is_focused(window) {
             return;
         }
-        if let Some(view) = self.active_view() {
+        if let Some(diff) = self.active_diff_view() {
+            diff.read(cx).focus_handle().clone().focus(window, cx);
+        } else if self.active_showing_diff() {
+            self.viewer_focus.focus(window, cx);
+        } else if let Some(view) = self.active_view() {
             view.read(cx).focus_handle().clone().focus(window, cx);
         } else if let Some(page) = self.active_rendered() {
             page.read(cx).focus_handle().clone().focus(window, cx);
@@ -337,6 +406,7 @@ impl FilesView {
             // Reads stay numbered across resets, so a reply for a closed
             // tab never passes for one of the same file reopened.
             next_read: viewer.next_read,
+            next_diff_read: viewer.next_diff_read,
             next_search: viewer.next_search,
             #[cfg(test)]
             hold_search: viewer.hold_search,
@@ -405,8 +475,22 @@ impl FilesView {
             .filter(|(_, file)| file.reading)
             .map(|(path, _)| path.clone())
             .collect::<Vec<_>>();
+        let waiting_diffs = self
+            .viewer
+            .files
+            .iter()
+            .filter(|(_, file)| {
+                file.diff_reading
+                    || (file.showing_diff
+                        && matches!(file.diff, FileTabDiff::Idle | FileTabDiff::Loading))
+            })
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
         for path in waiting {
             self.read_file(path, cx);
+        }
+        for path in waiting_diffs {
+            self.load_tab_diff(path, cx);
         }
     }
 
@@ -545,6 +629,9 @@ impl FilesView {
                 if let Some(view) = &kept {
                     view.update(cx, |view, cx| view.set_deleted(true, cx));
                 }
+                file.showing_diff = false;
+                file.diff = FileTabDiff::Idle;
+                file.diff_reading = false;
                 if active {
                     self.viewer.open_in_open = false;
                 }
@@ -586,7 +673,15 @@ impl FilesView {
             })
             .collect::<Vec<_>>();
         for path in paths {
-            self.read_file(path, cx);
+            self.read_file(path.clone(), cx);
+            if self
+                .viewer
+                .files
+                .get(&path)
+                .is_some_and(|file| file.showing_diff)
+            {
+                self.load_tab_diff(path, cx);
+            }
         }
     }
 
@@ -606,11 +701,11 @@ impl FilesView {
         cx.notify();
     }
 
-    /// The active file's code view, unless it shows its rendered page.
+    /// The active file's code view, unless it shows its rendered page or diff.
     fn active_view(&self) -> Option<&Entity<CodeView>> {
         let tab = self.viewer.tabs.active()?;
         let file = self.viewer.files.get(&tab.path)?;
-        if self.shows_rendered(file) {
+        if file.showing_diff || self.shows_rendered(file) {
             return None;
         }
         match &file.content {
@@ -620,7 +715,8 @@ impl FilesView {
     }
 
     fn shows_rendered(&self, file: &OpenFile) -> bool {
-        file.rendered.is_some()
+        !file.showing_diff
+            && file.rendered.is_some()
             && !file.source
             && matches!(file.content, Content::Text(_) | Content::Deleted(Some(_)))
     }
@@ -632,6 +728,301 @@ impl FilesView {
         self.shows_rendered(file)
             .then_some(file.rendered.as_ref())
             .flatten()
+    }
+
+    pub(super) fn active_can_diff(&self) -> bool {
+        let Some(tab) = self.viewer.tabs.active() else {
+            return false;
+        };
+        !self.active_deleted() && self.has_uncommitted_diff(&tab.path) == Some(true)
+    }
+
+    pub(super) fn active_showing_diff(&self) -> bool {
+        let Some(tab) = self.viewer.tabs.active() else {
+            return false;
+        };
+        self.active_can_diff()
+            && self
+                .viewer
+                .files
+                .get(&tab.path)
+                .is_some_and(|file| file.showing_diff)
+    }
+
+    pub(super) fn active_diff_view(
+        &self,
+    ) -> Option<&Entity<crate::surfaces::changes::UnifiedDiffView>> {
+        let tab = self.viewer.tabs.active()?;
+        if !self.active_can_diff() {
+            return None;
+        }
+        let file = self.viewer.files.get(&tab.path)?;
+        if !file.showing_diff {
+            return None;
+        }
+        match &file.diff {
+            FileTabDiff::Loaded(loaded) => match &loaded.kind {
+                crate::surfaces::changes::LoadedDiffKind::Unified(entity) => Some(entity),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub(super) fn toggle_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.active_can_diff() {
+            return;
+        }
+        let Some(path) = self.viewer.tabs.active().map(|tab| tab.path.clone()) else {
+            return;
+        };
+        let entering_diff = match self.viewer.files.get(&path) {
+            Some(file) => !file.showing_diff,
+            None => return,
+        };
+        if entering_diff {
+            if let Some(view) = self.active_view().cloned() {
+                view.update(cx, |view, cx| view.set_find(Arc::default(), None, cx));
+            }
+            self.viewer.find = None;
+        }
+        if let Some(file) = self.viewer.files.get_mut(&path) {
+            file.showing_diff = entering_diff;
+        }
+        if entering_diff {
+            self.load_tab_diff(path, cx);
+            if let Some(diff) = self.active_diff_view() {
+                diff.read(cx).focus_handle().clone().focus(window, cx);
+            } else {
+                self.viewer_focus.focus(window, cx);
+            }
+        } else {
+            self.search(cx);
+            if let Some(view) = self.active_view() {
+                view.read(cx).focus_handle().clone().focus(window, cx);
+            } else if let Some(page) = self.active_rendered() {
+                page.read(cx).focus_handle().clone().focus(window, cx);
+            } else {
+                self.keep_focus(window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn escape_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.tree_shown() {
+            self.focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn on_placeholder_diff_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let keystroke = &event.keystroke;
+        let modifiers = keystroke.modifiers;
+        let plain = !modifiers.platform && !modifiers.control && !modifiers.alt && !modifiers.shift;
+        if plain && keystroke.key == "escape" && self.active_showing_diff() && self.tree_shown() {
+            self.focus.focus(window, cx);
+            cx.stop_propagation();
+            cx.notify();
+        }
+    }
+
+    pub(super) fn reconcile_diff_tabs(
+        &mut self,
+        refresh_active_diffs: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let clean_paths = self
+            .viewer
+            .files
+            .iter()
+            .filter(|(path, file)| {
+                matches!(file.content, Content::Deleted(_))
+                    || self.has_uncommitted_diff(path) == Some(false)
+            })
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+        for path in clean_paths {
+            if let Some(file) = self.viewer.files.get_mut(&path) {
+                file.showing_diff = false;
+                file.diff = FileTabDiff::Idle;
+                file.diff_reading = false;
+            }
+        }
+        if refresh_active_diffs {
+            let active_diff_paths = self
+                .viewer
+                .files
+                .iter()
+                .filter(|(_, file)| file.showing_diff)
+                .map(|(path, _)| path.clone())
+                .collect::<Vec<_>>();
+            for path in active_diff_paths {
+                self.load_tab_diff(path, cx);
+            }
+        }
+    }
+
+    pub(super) fn load_tab_diff(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(root) = self.root_path().map(PathBuf::from) else {
+            return;
+        };
+        let default_has_head = self.root_has_head();
+        self.viewer.next_diff_read += 1;
+        let seq = self.viewer.next_diff_read;
+        if let Some(file) = self.viewer.files.get_mut(&path) {
+            file.diff_read = seq;
+            file.diff_reading = true;
+            if !matches!(file.diff, FileTabDiff::Loaded(_)) {
+                file.diff = FileTabDiff::Loading;
+            }
+        }
+        let relative = path.clone();
+        self.request(
+            cx,
+            move |client| {
+                let diff = client.changes_diff(
+                    &root,
+                    &runner_core::protocol::changes::ChangesTarget::Uncommitted,
+                    &relative,
+                )?;
+                let has_head = client
+                    .changes_commits(&root)
+                    .map(|commits| commits.head_commit.is_some())
+                    .unwrap_or(default_has_head);
+                let prepared = crate::surfaces::changes::prepare_diff_body(&diff);
+                Ok((diff, prepared, has_head))
+            },
+            move |this, result, cx| this.apply_tab_diff(path, seq, result, cx),
+        );
+    }
+
+    fn apply_tab_diff(
+        &mut self,
+        path: String,
+        seq: u64,
+        result: Result<
+            (
+                runner_core::protocol::changes::ChangesDiff,
+                crate::surfaces::changes::PreparedDiffBody,
+                bool,
+            ),
+            runner_core::protocol::ClientError,
+        >,
+        cx: &mut Context<Self>,
+    ) {
+        let effective_mode = self.effective_diff_mode(cx);
+        let weak = cx.weak_entity();
+        let Some(file) = self.viewer.files.get_mut(&path) else {
+            return;
+        };
+        if file.diff_read != seq {
+            return;
+        }
+        file.diff_reading = false;
+        if !file.showing_diff {
+            return;
+        }
+        let mut became_clean = false;
+        match result {
+            Ok((diff, prepared, has_head)) => {
+                let file_name: SharedString =
+                    crate::surfaces::changes::model::file_name(&diff.path)
+                        .to_owned()
+                        .into();
+                let grammar = super::highlight::grammar_for_path(&diff.path);
+                let kind = match prepared {
+                    crate::surfaces::changes::PreparedDiffBody::Unified {
+                        old_doc,
+                        new_doc,
+                        hunks,
+                    } => {
+                        if let FileTabDiff::Loaded(existing) = &file.diff
+                            && let crate::surfaces::changes::LoadedDiffKind::Unified(entity) =
+                                &existing.kind
+                        {
+                            let entity = entity.clone();
+                            entity.update(cx, |v, cx| {
+                                v.set_show_viewed_footer(false);
+                                v.set_mode(effective_mode, cx);
+                                v.update_content(
+                                    old_doc, new_doc, &hunks, grammar, file_name, false, false, cx,
+                                );
+                            });
+                            crate::surfaces::changes::LoadedDiffKind::Unified(entity)
+                        } else {
+                            let esc_weak = weak;
+                            let entity = cx.new(|cx| {
+                                let mut v = crate::surfaces::changes::UnifiedDiffView::new(
+                                    old_doc, new_doc, &hunks, grammar, file_name, false, false, cx,
+                                );
+                                v.set_show_viewed_footer(false);
+                                v.set_mode(effective_mode, cx);
+                                v.set_callbacks(
+                                    Rc::new(move |window, cx| {
+                                        let _ = esc_weak.update(cx, |this, cx| {
+                                            this.escape_diff(window, cx);
+                                        });
+                                    }),
+                                    None,
+                                    Rc::new(move |_, _| {}),
+                                );
+                                v
+                            });
+                            crate::surfaces::changes::LoadedDiffKind::Unified(entity)
+                        }
+                    }
+                    crate::surfaces::changes::PreparedDiffBody::CrlfOnly => {
+                        crate::surfaces::changes::LoadedDiffKind::CrlfOnly
+                    }
+                    crate::surfaces::changes::PreparedDiffBody::Binary { old_size, new_size } => {
+                        crate::surfaces::changes::LoadedDiffKind::Binary { old_size, new_size }
+                    }
+                    crate::surfaces::changes::PreparedDiffBody::TooLarge { old_size, new_size } => {
+                        crate::surfaces::changes::LoadedDiffKind::TooLarge { old_size, new_size }
+                    }
+                    crate::surfaces::changes::PreparedDiffBody::ModeOnly { old_mode, new_mode } => {
+                        crate::surfaces::changes::LoadedDiffKind::ModeOnly { old_mode, new_mode }
+                    }
+                    crate::surfaces::changes::PreparedDiffBody::Submodule {
+                        old_commit,
+                        new_commit,
+                    } => crate::surfaces::changes::LoadedDiffKind::Submodule {
+                        old_commit,
+                        new_commit,
+                    },
+                };
+                file.diff = FileTabDiff::Loaded(Box::new(LoadedFileDiff {
+                    path: diff.path,
+                    status: diff.status,
+                    counts: diff.counts,
+                    mode_change: diff.mode_change,
+                    conflicted: diff.conflicted,
+                    has_head,
+                    kind,
+                }));
+            }
+            Err(error) => {
+                let message = error.to_string();
+                if message.contains("has no changes in target") {
+                    file.showing_diff = false;
+                    file.diff = FileTabDiff::Idle;
+                    became_clean = true;
+                } else {
+                    file.diff = FileTabDiff::Failed(message.into());
+                }
+            }
+        }
+        if became_clean {
+            self.clear_uncommitted_path(&path);
+            self.refresh_uncommitted_paths(false, cx);
+        }
+        cx.notify();
     }
 
     /// Whether the active file is Markdown with a page, and if so whether
@@ -761,6 +1152,16 @@ impl FilesView {
 
     pub(crate) fn code_view(&self) -> Option<Entity<CodeView>> {
         self.active_view().cloned()
+    }
+
+    pub(crate) fn showing_diff(&self) -> bool {
+        self.active_showing_diff()
+    }
+
+    pub(crate) fn tab_diff_view(
+        &self,
+    ) -> Option<Entity<crate::surfaces::changes::UnifiedDiffView>> {
+        self.active_diff_view().cloned()
     }
 
     pub(crate) fn read_seq(&self, path: &str) -> Option<u64> {
