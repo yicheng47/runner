@@ -849,6 +849,7 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
     // A resize from the daemon, with the controller unchanged, still
     // wakes the views so an open find bar recomputes.
     let before = wakes.load(Ordering::SeqCst);
+    let before_activity = mirror.output_activity();
     let mark = mirror.scroll_mark();
     frames
         .send(TerminalFrame::Resized {
@@ -867,6 +868,13 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
         thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(mirror.size(), (24, 5));
+    let after_resize = mirror.output_activity();
+    assert_eq!(after_resize.last_seq, 11);
+    assert_eq!(
+        after_resize.last_output_seq,
+        before_activity.last_output_seq
+    );
+    assert_eq!(after_resize.last_paint_seq, before_activity.last_paint_seq);
     assert_eq!(mark.moved_since(mirror.scroll_mark()), None);
     let resized = mirror.scroll_mark();
     mirror.test_feed(12, b"\x1b[?1049h");
@@ -1678,4 +1686,49 @@ fn split_mode_sequence_across_live_chunks_marks_tui_ready() {
     mirror.test_feed(2, b"49h");
     assert_eq!(mirror.output_activity().tui_ready_seq, 2);
     assert_eq!(mirror.output_activity().first_paint_seq, 0);
+}
+
+#[test]
+fn restore_empty_nonzero_snapshot_and_resume_repaint_track_output_and_last_paint_seq() {
+    // Resize-only pre-resume snapshot (non-zero seq, serializer scaffold only).
+    let resized_empty = snapshot_mirror(2, &[]);
+    let empty_activity = resized_empty.output_activity();
+    assert_eq!(empty_activity.last_seq, 2);
+    assert_eq!(empty_activity.last_output_seq, 0);
+    assert_eq!(empty_activity.tui_ready_seq, 0);
+    assert_eq!(empty_activity.first_paint_seq, 0);
+    assert_eq!(empty_activity.last_paint_seq, 0);
+    assert!(empty_activity.last_output_at.is_none());
+
+    // Resumed mirror inheriting pre-stop painted content at baseline seq 50.
+    let mirror = snapshot_mirror(50, &[b"\x1b[?2004hClaude Code v2.0"]);
+    let initial = mirror.output_activity();
+    assert_eq!(initial.last_seq, 50);
+    assert_eq!(initial.last_output_seq, 50);
+    assert_eq!(initial.tui_ready_seq, 50);
+    assert_eq!(initial.first_paint_seq, 50);
+    assert_eq!(initial.last_paint_seq, 50);
+
+    // Cursor hide / alt-screen clear after resume must not advance last_paint_seq onto old text.
+    mirror.test_feed(51, b"\x1b[?25l");
+    let hid_cursor = mirror.output_activity();
+    assert_eq!(hid_cursor.last_output_seq, 51);
+    assert_eq!(hid_cursor.last_paint_seq, 50);
+
+    mirror.test_feed(52, b"\x1b[?1049h\x1b[2J\x1b[H");
+    let cleared = mirror.output_activity();
+    assert_eq!(cleared.last_output_seq, 52);
+    assert_eq!(cleared.tui_ready_seq, 52);
+    assert_eq!(cleared.last_paint_seq, 50);
+
+    // Draw + clear in the same chunk leaves the screen blank and must not report painted.
+    mirror.test_feed(53, b"flash\x1b[2J\x1b[H");
+    assert_eq!(mirror.output_activity().last_paint_seq, 50);
+
+    // First post-resume visible frame advances last_paint_seq past baseline.
+    mirror.test_feed(54, b"\x1b[1;1HWelcome back");
+    let repainted = mirror.output_activity();
+    assert_eq!(repainted.last_output_seq, 54);
+    assert_eq!(repainted.first_paint_seq, 50);
+    assert_eq!(repainted.last_paint_seq, 54);
 }

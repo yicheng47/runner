@@ -199,6 +199,7 @@ impl SessionManager {
             mission_id,
             cols: terminal_size.0,
             rows: terminal_size.1,
+            output_seq: state.lock().unwrap().output_seq,
         }
     }
 

@@ -429,8 +429,10 @@ impl BurstHold {
 #[derive(Default)]
 struct SequenceState {
     last: u64,
+    last_output_seq: u64,
     tui_ready_seq: u64,
     first_paint_seq: u64,
+    last_paint_seq: u64,
     last_output_at: Option<Instant>,
 }
 
@@ -566,8 +568,10 @@ pub struct TerminalScrollState {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TerminalOutputActivity {
     pub last_seq: u64,
+    pub last_output_seq: u64,
     pub tui_ready_seq: u64,
     pub first_paint_seq: u64,
+    pub last_paint_seq: u64,
     pub last_output_at: Option<Instant>,
 }
 
@@ -812,7 +816,16 @@ impl TerminalMirror {
             .restore_preceding_char(attachment.snapshot.preceding_char);
         parse(&mut parser, &mut term, &attachment.snapshot.bytes[split..]);
         sequence.last = attachment.snapshot.seq;
-        if attachment.snapshot.seq > 0 && !attachment.snapshot.bytes.is_empty() {
+        let snapshot_painted = term_has_visible_paint(&term);
+        let snapshot_tui_ready = term_indicates_tui_ready(&term, &parser)
+            || chunk_indicates_tui_ready(&attachment.snapshot.bytes[split..]);
+        let snapshot_active = !attachment.snapshot.bytes.is_empty()
+            && (snapshot_tui_ready
+                || snapshot_painted
+                || term.grid().cursor.point != Point::default()
+                || !attachment.snapshot.bytes[split..].is_empty());
+        if attachment.snapshot.seq > 0 && snapshot_active {
+            sequence.last_output_seq = sequence.last_output_seq.max(attachment.snapshot.seq);
             if sequence.last_output_at.is_none() {
                 sequence.last_output_at = Some(Instant::now());
             }
@@ -835,6 +848,9 @@ impl TerminalMirror {
             TermMode::empty(),
             attachment.snapshot.seq,
         );
+        if attachment.snapshot.seq > 0 && snapshot_painted {
+            sequence.last_paint_seq = sequence.last_paint_seq.max(attachment.snapshot.seq);
+        }
         self.scroll_mark.lock().unwrap().rebuild();
         *self.size.lock().unwrap() = (attachment.snapshot.cols, attachment.snapshot.rows);
         self.apply_controller(attachment.snapshot.controller.clone());
@@ -900,9 +916,31 @@ impl TerminalMirror {
         let sequence = self.sequence.lock().unwrap();
         TerminalOutputActivity {
             last_seq: sequence.last,
+            last_output_seq: sequence.last_output_seq,
             tui_ready_seq: sequence.tui_ready_seq,
             first_paint_seq: sequence.first_paint_seq,
+            last_paint_seq: sequence.last_paint_seq,
             last_output_at: sequence.last_output_at,
+        }
+    }
+    fn apply_output_chunk(
+        &self,
+        sequence: &mut SequenceState,
+        parser: &mut ParserState,
+        seq: u64,
+        bytes: &[u8],
+    ) {
+        let mut term = self.term.lock();
+        let previous = *term.mode();
+        let was_tui_ready = term_indicates_tui_ready(&term, parser);
+        parser.processor.begin_paint_tracking();
+        self.track_scroll(&mut term, |tracker| parse_with(parser, tracker, bytes));
+        update_tui_ready(sequence, &term, parser, was_tui_ready, seq);
+        mark_paint(sequence, &mut term, previous, seq);
+        if parser.processor.wrote_visible() && term_has_visible_paint(&term) {
+            sequence.last_paint_seq = sequence.last_paint_seq.max(seq);
+        } else if sequence.first_paint_seq > 0 && sequence.last_paint_seq == 0 {
+            sequence.last_paint_seq = sequence.first_paint_seq;
         }
     }
     /// Returns whether the bytes reached the terminal; a held burst has not.
@@ -913,6 +951,7 @@ impl TerminalMirror {
         }
         let now = Instant::now();
         sequence.last = seq;
+        sequence.last_output_seq = seq;
         sequence.last_output_at = Some(now);
         if chunk_indicates_tui_ready(bytes) {
             sequence.tui_ready_seq = sequence.tui_ready_seq.max(seq);
@@ -937,12 +976,7 @@ impl TerminalMirror {
         } else {
             bytes
         };
-        let mut term = self.term.lock();
-        let previous = *term.mode();
-        let was_tui_ready = term_indicates_tui_ready(&term, &parser);
-        self.track_scroll(&mut term, |tracker| parse_with(&mut parser, tracker, bytes));
-        update_tui_ready(&mut sequence, &term, &parser, was_tui_ready, seq);
-        mark_paint(&mut sequence, &mut term, previous, seq);
+        self.apply_output_chunk(&mut sequence, &mut parser, seq, bytes);
         if parser.processor.sync_timeout().sync_timeout().is_some()
             && !std::mem::replace(&mut parser.flush_scheduled, true)
         {
@@ -955,13 +989,8 @@ impl TerminalMirror {
             return false;
         }
         let held = parser.burst.take();
-        let mut term = self.term.lock();
-        let previous = *term.mode();
-        let was_tui_ready = term_indicates_tui_ready(&term, parser);
-        self.track_scroll(&mut term, |tracker| parse_with(parser, tracker, &held));
         let seq = sequence.last;
-        update_tui_ready(sequence, &term, parser, was_tui_ready, seq);
-        mark_paint(sequence, &mut term, previous, seq);
+        self.apply_output_chunk(sequence, parser, seq, &held);
         true
     }
     fn flush_held_output(&self) -> Option<Instant> {
@@ -2068,6 +2097,12 @@ fn url_regex() -> &'static Regex {
         Regex::new(r#"(?i:https?|file)://[^\s\"'!*(){}|\\\^<>`]*[^\s\"':,.!?{}|\\\^~\[\]`()<>]"#)
             .expect("valid terminal URL regex")
     })
+}
+
+fn term_has_visible_paint(term: &Term<EventProxy>) -> bool {
+    term.grid()
+        .display_iter()
+        .any(|cell| !cell.c.is_whitespace() && !cell.c.is_control())
 }
 
 const TUI_READY_MODES: TermMode = TermMode::ALT_SCREEN

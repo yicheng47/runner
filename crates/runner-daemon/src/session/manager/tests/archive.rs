@@ -590,3 +590,46 @@ fn forget_cannot_split_terminal_and_live_handle_installation() {
         "forget must preserve the newly installed live stream"
     );
 }
+
+#[test]
+fn spawned_event_reports_preserved_output_seq_across_resize_stop_and_resume() {
+    let data = tempfile::tempdir().unwrap();
+    let fake = fake_runtime();
+    let core = core_with_fake(data.path(), fake);
+    let mut rx = core.events.subscribe();
+
+    let id = spawn(&core, "claude-code");
+    let spawned = next_spawned_event(&mut rx, &id);
+    assert_eq!(spawned["output_seq"].as_u64(), Some(0));
+
+    core.sessions.resize(&id, 100, 30, &core.db).unwrap();
+    core.sessions.resize(&id, 80, 24, &core.db).unwrap();
+    assert_eq!(core.sessions.terminal_output_sequence(&id), 2);
+
+    session_stop(&core, &id).unwrap();
+    session_resume(&core, &id, None, None).unwrap();
+
+    let resumed = next_spawned_event(&mut rx, &id);
+    assert_eq!(resumed["output_seq"].as_u64(), Some(2));
+}
+
+fn next_spawned_event(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::events::AppEvent>,
+    session_id: &str,
+) -> serde_json::Value {
+    let deadline = Instant::now() + ci_scaled_budget(Duration::from_secs(5));
+    loop {
+        if let Ok(event) = rx.try_recv() {
+            if event.name == "session/spawned"
+                && event.payload.get("session_id").and_then(|v| v.as_str()) == Some(session_id)
+            {
+                return event.payload;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for session/spawned for {session_id}"
+        );
+        thread::yield_now();
+    }
+}

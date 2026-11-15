@@ -559,7 +559,7 @@ impl MissionWorkspace {
                         .attached
                         .get(&tracked_id)
                         .map(|chat| chat.terminal.output_activity());
-                    let settled = chat_lifecycle::transition_should_settle(
+                    let settled = chat_lifecycle::evaluate_transition_settle(
                         match transition.kind {
                             MissionTransitionKind::Starting => {
                                 chat_lifecycle::TransitionKind::Starting
@@ -568,18 +568,10 @@ impl MissionWorkspace {
                                 chat_lifecycle::TransitionKind::Resuming
                             }
                         },
+                        transition.baseline_seq,
                         now.saturating_duration_since(transition.started_at),
-                        activity.is_some_and(|activity| {
-                            activity.first_paint_seq > transition.baseline_seq
-                        }),
-                        activity.is_some_and(|activity| {
-                            activity.tui_ready_seq > transition.baseline_seq
-                        }),
-                        activity
-                            .is_some_and(|activity| activity.last_seq > transition.baseline_seq),
-                        activity
-                            .and_then(|activity| activity.last_output_at)
-                            .map(|last| now.saturating_duration_since(last)),
+                        activity,
+                        now,
                     );
                     if settled {
                         this.transitions.remove(&tracked_id);

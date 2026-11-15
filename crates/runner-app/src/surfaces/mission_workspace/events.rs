@@ -223,12 +223,15 @@ impl MissionWorkspace {
                         }
                     } else if event.name == "session/spawned" {
                         if let Some(session_id) = session_id.as_deref() {
+                            let spawned_seq = chat_lifecycle::spawned_output_seq(&event.payload);
                             self.attached.remove(session_id);
                             self.delivery_blocked.remove(session_id);
                             self.drawer_exit_codes.remove(session_id);
                             self.slot_exit_codes.remove(session_id);
                             let existing = self.transitions.get_mut(session_id).map(|transition| {
-                                transition.baseline_seq = 0;
+                                if let Some(seq) = spawned_seq {
+                                    transition.baseline_seq = seq;
+                                }
                                 transition.started_at = Instant::now();
                                 transition.kind
                             });
@@ -236,7 +239,7 @@ impl MissionWorkspace {
                                 self.begin_mission_transition(
                                     session_id,
                                     kind,
-                                    Some(0),
+                                    Some(spawned_seq.unwrap_or(0)),
                                     window,
                                     cx,
                                 );

@@ -1214,6 +1214,7 @@ fn registry_replaces_terminal_on_respawn_and_resets_first_paint() {
         mission_id: None,
         cols: 80,
         rows: 24,
+        output_seq: 0,
     });
     events.output(&output(1, "old-child"));
     let old = bridge.session("replay-race").unwrap();
@@ -1224,6 +1225,7 @@ fn registry_replaces_terminal_on_respawn_and_resets_first_paint() {
         mission_id: None,
         cols: 100,
         rows: 30,
+        output_seq: 0,
     });
     let fresh = bridge.session("replay-race").unwrap();
     assert!(!Arc::ptr_eq(&old, &fresh));
@@ -1254,6 +1256,7 @@ fn registry_has_zero_live_terminals_after_twenty_spawn_exit_cycles() {
             mission_id: None,
             cols: 80,
             rows: 24,
+            output_seq: 0,
         });
         events.output(&output(seq, "cycle"));
         assert_eq!(bridge.live_session_count(), 1);
