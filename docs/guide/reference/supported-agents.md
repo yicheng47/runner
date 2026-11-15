@@ -96,7 +96,7 @@ See [Sessions](../concepts/sessions.md) for lifecycle behavior and [Troubleshoot
 
 Codex needs **0.149.0 or newer** for Runner's launch hooks. The launcher marks only an older Codex’s agent row **Update needed**; role rows have no update labels or actions. The notice explains that starting Codex or a role using it updates Codex first and leaves the pane waiting; the chat starts when the update succeeds. A refused resume or fork offers the same recovery. An unknown version is allowed to try launching.
 
-Antigravity CLI usage checks require **1.5.8 or newer** so Runner can verify authentication without triggering interactive login before reading `/usage`. Older or unrecognized builds remain usable for chats and missions, while keeping Antigravity CLI usage unavailable without running sign-in checks.
+On macOS and Linux, Antigravity CLI usage checks require **1.5.8 or newer** so Runner can verify authentication without triggering interactive login before reading `/usage`. Older or unrecognized builds remain usable for chats and missions, while keeping Antigravity CLI usage unavailable without running sign-in checks. On Windows, Runner reads Antigravity's saved sign-in directly and queries quota endpoints over HTTPS without spawning `agy`.
 
 When a supported agent has a newer version, only its agent row shows the installed and available versions with **Update**; its roles keep their normal rows. You can still start chats on the supported installed version. A dot on the sidebar's Settings gear opens **Settings → Agents** and covers enabled agents with an update command, including those without a usage meter.
 
