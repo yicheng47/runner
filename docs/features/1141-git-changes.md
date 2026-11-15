@@ -1,7 +1,7 @@
 # 1141 — Git changes view
 
 > Tracking issue: [#1141](https://github.com/yicheng47/runner/issues/1141). Scheduling and priority live on the issue and in the [roadmap](../roadmap.md). Platforms: macOS, Windows and Linux.
-> Status: spec agreed by Jason on 2026-11-13, with the [decisions](#decisions-settled-with-this-spec) below; All changes added on 2026-11-15. m1 merged in [#1314](https://github.com/yicheng47/runner/pull/1314); m2 is next. The boards match this spec.
+> Status: spec agreed by Jason on 2026-11-13, with the [decisions](#decisions-settled-with-this-spec) below; All changes added on 2026-11-15. m1 merged in [#1314](https://github.com/yicheng47/runner/pull/1314); m2 merged in [#1339](https://github.com/yicheng47/runner/pull/1339); m3 is next. The boards match this spec.
 > Design: `runner/desktop/specs/1141-git-changes.pen` in `yeelinks_design`, revision `3d9bd0d`. Boards: `H5T5Lj` (where the file list sits, screen `D4i2wZ`), `EqrNQ` (from Files to the diff, screen `pCdt6`), `B38Ah` (keyboard map, table `TU4G7`), `Xc2TS` (Split with the panel maximized, screen `tv7xO`) and `o98BJ` (viewed files, screen `TjFT3`).
 > Builds on: [#634](./archive/634-file-preview.md), whose side panel, `runnerd` file service, watcher, status letters, code view and highlighter this reuses. Related: [#1293](https://github.com/yicheng47/runner/issues/1293) (line comments and review to the agent, the next stage), [#1072](https://github.com/yicheng47/runner/issues/1072) (side panel views).
 

@@ -349,6 +349,8 @@ pub(crate) struct NativeRoot {
     pub(crate) chat_surfaces: crate::surfaces::side_panel::PanelSurfaces,
     pub(crate) chat_panel_tab: Option<String>,
     pub(crate) chat_panel_open: Option<bool>,
+    pub(crate) chat_panel_maximized: bool,
+    pub(crate) chat_panel_focus: FocusHandle,
     pub(crate) chat_panels_by_tab: HashMap<String, crate::surfaces::side_panel::SavedPanel>,
     pub(crate) chat_files: crate::surfaces::files::FilesPanel,
     pub(crate) panel_chat_by_tab: HashMap<String, String>,

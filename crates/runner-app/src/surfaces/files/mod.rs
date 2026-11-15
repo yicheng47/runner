@@ -24,8 +24,8 @@ use std::sync::Arc;
 
 use futures::StreamExt as _;
 use gpui::{
-    canvas, AnyElement, App, AppContext as _, Entity, EntityId, EventEmitter, Global,
-    IntoElement as _, Styled as _,
+    canvas, AnyElement, App, AppContext as _, Entity, EntityId, EventEmitter, FocusHandle, Global,
+    IntoElement as _, Styled as _, Window,
 };
 use runner_core::protocol::changes::{ChangesViewed, CHANGES_VIEWED_EVENT};
 use runner_core::protocol::files::{
@@ -200,11 +200,24 @@ impl FilesPanel {
     /// Shows the subject's view, telling it how the owner widened the panel
     /// for an open file, and which entity to redraw when opening or closing
     /// files changes the panel's width.
+    #[cfg(test)]
     pub(crate) fn show_with(
         &self,
         context: &PanelContext,
         widened: Option<Widened>,
         owner: Option<EntityId>,
+        cx: &mut App,
+    ) -> AnyElement {
+        self.show_with_maximize(context, widened, owner, false, None, cx)
+    }
+
+    pub(crate) fn show_with_maximize(
+        &self,
+        context: &PanelContext,
+        widened: Option<Widened>,
+        owner: Option<EntityId>,
+        maximized: bool,
+        on_request_maximize: Option<side_panel::PanelCallback>,
         cx: &mut App,
     ) -> AnyElement {
         let mut views = self.views.borrow_mut();
@@ -223,6 +236,8 @@ impl FilesPanel {
         }
         view.update(cx, |view, cx| {
             view.set_context(context.clone(), cx);
+            view.set_maximized(maximized, cx);
+            view.set_on_request_maximize(on_request_maximize);
             view.set_widened(widened, cx);
             view.set_owner(owner);
             view.set_shown(true, cx);
@@ -293,10 +308,20 @@ impl FilesPanel {
         .into_any_element()
     }
 
+    pub(crate) fn maximized_width(&self, fallback: f32) -> f32 {
+        let measured = self.surface.get();
+        if measured > 0. {
+            measured
+        } else {
+            fallback
+        }
+    }
+
     /// The panel's width for `subject`: `standard`, or widened by the file
     /// area and its tree into the room the chat or mission leaves, less `gap`.
     /// Without a file open, a tree on that has no room beside the file area
     /// takes the panel at `standard` instead, as the tree is the way to a file.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn layout(
         &self,
@@ -308,6 +333,46 @@ impl FilesPanel {
         gap: f32,
         cx: &App,
     ) -> (f32, Option<Widened>) {
+        self.layout_with_maximize(subject, files, standard, file, tree_width, gap, false, cx)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn layout_with_maximize(
+        &self,
+        subject: Option<&PanelSubject>,
+        files: FilesSurface,
+        standard: f32,
+        file: f32,
+        tree_width: f32,
+        gap: f32,
+        maximized: bool,
+        cx: &App,
+    ) -> (f32, Option<Widened>) {
+        if maximized {
+            let measured = self.surface.get() > 0.;
+            let full = self.maximized_width(
+                (side_panel::SPLIT_MIN_DIFF_WIDTH + tree_width)
+                    .max(file + tree_width)
+                    .max(standard),
+            );
+            let Some(tree) = subject.and_then(|subject| self.widening(subject, files, cx)) else {
+                return (full, None);
+            };
+            let fits = full >= standard + tree_width;
+            if tree && measured && !fits && !self.has_file_open(subject, cx) {
+                return (full, None);
+            }
+            let file_width = (full - if tree { tree_width } else { 0. }).max(standard);
+            return (
+                full,
+                Some(Widened {
+                    file: file_width,
+                    tree,
+                    tree_width,
+                    standard,
+                }),
+            );
+        }
         let Some(tree) = subject.and_then(|subject| self.widening(subject, files, cx)) else {
             return (standard, None);
         };
@@ -328,11 +393,24 @@ impl FilesPanel {
             .any(|(shown, view)| Some(shown) == subject && view.read(cx).has_tabs())
     }
 
+    #[cfg(test)]
     pub(crate) fn show_changes_with(
         &self,
         context: &PanelContext,
         widened: Option<Widened>,
         owner: Option<EntityId>,
+        cx: &mut App,
+    ) -> AnyElement {
+        self.show_changes_with_maximize(context, widened, owner, false, None, cx)
+    }
+
+    pub(crate) fn show_changes_with_maximize(
+        &self,
+        context: &PanelContext,
+        widened: Option<Widened>,
+        owner: Option<EntityId>,
+        maximized: bool,
+        on_request_maximize: Option<side_panel::PanelCallback>,
         cx: &mut App,
     ) -> AnyElement {
         let mut changes = self.changes.borrow_mut();
@@ -351,6 +429,8 @@ impl FilesPanel {
         }
         view.update(cx, |view, cx| {
             view.set_context(context.clone(), cx);
+            view.set_maximized(maximized, cx);
+            view.set_on_request_maximize(on_request_maximize);
             view.set_widened(widened, cx);
             view.set_owner(owner);
             view.set_shown(true, cx);
@@ -363,13 +443,15 @@ impl FilesPanel {
 
     /// Changes opens wide, as Files does with a file open: the diff takes
     /// `file` and the list `tree_width`.
-    pub(crate) fn changes_layout(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn changes_layout_with_maximize(
         &self,
         subject: Option<&PanelSubject>,
         standard: f32,
         file: f32,
         tree_width: f32,
         gap: f32,
+        maximized: bool,
         cx: &App,
     ) -> (f32, Option<Widened>) {
         let wide = subject.is_some_and(|subject| {
@@ -389,12 +471,70 @@ impl FilesPanel {
                     .is_some_and(|(_, view)| view.read(cx).root_is_git()),
             }
         });
+        if maximized {
+            let full = self.maximized_width(
+                (side_panel::SPLIT_MIN_DIFF_WIDTH + tree_width)
+                    .max(file + tree_width)
+                    .max(standard),
+            );
+            if !wide {
+                return (full, None);
+            }
+            let file_width = (full - tree_width).max(standard);
+            return (
+                full,
+                Some(Widened {
+                    file: file_width,
+                    tree: true,
+                    tree_width,
+                    standard,
+                }),
+            );
+        }
         if !wide {
             return (standard, None);
         }
         let available = self.surface.get() - gap;
         let layout = side_panel::widened(available, standard, file, tree_width, true);
         (layout.width(), Some(layout))
+    }
+
+    pub(crate) fn focus_shown(
+        &self,
+        subject: Option<&PanelSubject>,
+        shown: Option<side_panel::PanelViewId>,
+        fallback: &FocusHandle,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        match (shown, subject) {
+            (Some(side_panel::PanelViewId::Changes), Some(subject)) => {
+                if let Some(view) = self
+                    .changes
+                    .borrow()
+                    .iter()
+                    .find(|(s, _)| s == subject)
+                    .map(|(_, v)| v.clone())
+                {
+                    view.update(cx, |view, cx| view.focus_default(window, cx));
+                    return;
+                }
+            }
+            (Some(side_panel::PanelViewId::Files), Some(subject)) => {
+                if let Some(view) = self
+                    .views
+                    .borrow()
+                    .iter()
+                    .find(|(s, _)| s == subject)
+                    .map(|(_, v)| v.clone())
+                {
+                    view.update(cx, |view, cx| view.focus_default(window, cx));
+                    return;
+                }
+            }
+            _ => {}
+        }
+        fallback.focus(window, cx);
     }
 
     pub(crate) fn hide_files(&self, cx: &mut App) {

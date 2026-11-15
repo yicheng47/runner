@@ -26,20 +26,25 @@ use runner_core::protocol::changes::{
 use runner_core::protocol::files::{FileStatus, FilesRoot, FilesRootOutcome, FilesSubject};
 use runner_core::protocol::{ClientError, DaemonClient};
 
-use crate::app_settings::{FileLinkEditor, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN};
+use crate::app_settings::{
+    DiffViewMode, FileLinkEditor, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN,
+};
 #[cfg(not(test))]
 use crate::file_links::{self, FileLinkTarget};
 use crate::surfaces::files::document::Document;
 use crate::surfaces::files::highlight;
 use crate::surfaces::files::{self, absolute, picker, FilesEvent, FilesHub, Look};
-use crate::surfaces::side_panel::{PanelContext, PanelSurface, Widened};
+use crate::surfaces::side_panel::{self, PanelContext, PanelSurface, Widened};
 use crate::theme;
 
-use diff::UnifiedDiffView;
+pub(crate) use diff::UnifiedDiffView;
 use model::{
     build_commit_rows, build_flat_rows, build_tree_rows, choose_initial_target, has_all_changes,
     is_crlf_only_change, reconcile_file_selection, reconcile_target, CommitRow, FocusPlace,
     ListRow, SelectedTarget,
+};
+pub(crate) use render::{
+    render_shared_diff_header, render_shared_diff_placeholder, DiffHeaderProps, DiffModeCallback,
 };
 
 fn subject(context: &PanelContext) -> FilesSubject {
@@ -211,7 +216,7 @@ fn resolve_highlighted_row(
     fallback_idx.min(rows.len().saturating_sub(1))
 }
 
-pub(super) enum LoadedDiffKind {
+pub(crate) enum LoadedDiffKind {
     Unified(Entity<UnifiedDiffView>),
     CrlfOnly,
     Binary {
@@ -232,7 +237,7 @@ pub(super) enum LoadedDiffKind {
     },
 }
 
-enum PreparedDiffBody {
+pub(crate) enum PreparedDiffBody {
     Unified {
         old_doc: Arc<Document>,
         new_doc: Arc<Document>,
@@ -255,6 +260,43 @@ enum PreparedDiffBody {
         old_commit: Option<String>,
         new_commit: Option<String>,
     },
+}
+
+pub(crate) fn prepare_diff_body(diff: &ChangesDiff) -> PreparedDiffBody {
+    match &diff.body {
+        DiffBody::Text { old, new, hunks } => {
+            if is_crlf_only_change(&old.0, &new.0, diff.mode_change.as_ref(), diff.conflicted) {
+                PreparedDiffBody::CrlfOnly
+            } else {
+                let old_doc = Arc::new(Document::decode(&old.0));
+                let new_doc = Arc::new(Document::decode(&new.0));
+                PreparedDiffBody::Unified {
+                    old_doc,
+                    new_doc,
+                    hunks: hunks.clone(),
+                }
+            }
+        }
+        DiffBody::Binary { old_size, new_size } => PreparedDiffBody::Binary {
+            old_size: *old_size,
+            new_size: *new_size,
+        },
+        DiffBody::TooLarge { old_size, new_size } => PreparedDiffBody::TooLarge {
+            old_size: *old_size,
+            new_size: *new_size,
+        },
+        DiffBody::ModeOnly { old_mode, new_mode } => PreparedDiffBody::ModeOnly {
+            old_mode: old_mode.clone(),
+            new_mode: new_mode.clone(),
+        },
+        DiffBody::Submodule {
+            old_commit,
+            new_commit,
+        } => PreparedDiffBody::Submodule {
+            old_commit: old_commit.clone(),
+            new_commit: new_commit.clone(),
+        },
+    }
 }
 
 struct SnapshotPayload {
@@ -286,11 +328,14 @@ pub(crate) struct ChangesView {
     pub(super) files_scroll: UniformListScrollHandle,
     pub(super) files_scrollbar: Entity<Scrollbar>,
     pub(super) widened: Option<Widened>,
+    pub(super) maximized: bool,
+    pub(super) on_request_maximize: Option<side_panel::PanelCallback>,
     pub(super) owner: Option<EntityId>,
     pub(super) reported_wide: Option<bool>,
     pub(super) tree_resizing: bool,
     look: Option<Look>,
     tree_view_pref: bool,
+    diff_mode_pref: DiffViewMode,
     #[cfg(test)]
     pub(super) launched: Vec<(Option<FileLinkEditor>, PathBuf)>,
     #[cfg(test)]
@@ -343,6 +388,8 @@ impl ChangesView {
         let base = files_scroll.0.borrow().base_handle.clone();
         let files_scrollbar = cx.new(|_| Scrollbar::app(base, entity_id));
         let tree_view_pref = files::settings(cx).is_some_and(|s| s.changes_tree_view);
+        let diff_mode_pref =
+            files::settings(cx).map_or(DiffViewMode::Unified, |s| s.changes_diff_mode);
 
         let mut view = Self {
             body: if context.remote {
@@ -370,11 +417,14 @@ impl ChangesView {
             files_scroll,
             files_scrollbar,
             widened: None,
+            maximized: false,
+            on_request_maximize: None,
             owner: None,
             reported_wide: None,
             tree_resizing: false,
             look: Look::current(cx),
             tree_view_pref,
+            diff_mode_pref,
             #[cfg(test)]
             launched: Vec::new(),
             #[cfg(test)]
@@ -426,8 +476,85 @@ impl ChangesView {
     pub(crate) fn set_widened(&mut self, widened: Option<Widened>, cx: &mut Context<Self>) {
         if self.widened != widened {
             self.widened = widened;
+            self.sync_effective_diff_mode(cx);
             cx.notify();
         }
+    }
+
+    pub(crate) fn set_maximized(&mut self, maximized: bool, cx: &mut Context<Self>) {
+        if self.maximized != maximized {
+            self.maximized = maximized;
+            self.sync_effective_diff_mode(cx);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_on_request_maximize(&mut self, handler: Option<side_panel::PanelCallback>) {
+        self.on_request_maximize = handler;
+    }
+
+    pub(crate) fn focus_default(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.root_focus.contains_focused(window, cx) {
+            return;
+        }
+        if matches!(self.body, Body::Root(_)) {
+            self.focus_list(window, cx);
+        } else {
+            self.root_focus.focus(window, cx);
+        }
+    }
+
+    pub(super) fn diff_width(&self) -> f32 {
+        self.widened
+            .map_or(crate::app_settings::FILE_VIEWER_DEFAULT, |w| w.file)
+    }
+
+    pub(super) fn effective_diff_mode(&self, cx: &App) -> DiffViewMode {
+        let preferred = files::settings(cx).map_or(self.diff_mode_pref, |s| s.changes_diff_mode);
+        side_panel::effective_diff_mode(preferred, self.diff_width(), self.maximized)
+    }
+
+    fn sync_effective_diff_mode(&self, cx: &mut Context<Self>) {
+        let mode = self.effective_diff_mode(cx);
+        if let Body::Root(state) = &self.body
+            && let ActiveDiff::Loaded(loaded) = &state.diff_state
+            && let LoadedDiffKind::Unified(entity) = &loaded.kind
+        {
+            entity.update(cx, |v, cx| v.set_mode(mode, cx));
+        }
+    }
+
+    pub(super) fn select_diff_mode(
+        &mut self,
+        mode: DiffViewMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.diff_mode_pref = mode;
+        crate::app_store::global_app_store(cx).update(cx, |store, cx| {
+            store.update_settings(
+                |settings| {
+                    let changed = settings.changes_diff_mode != mode;
+                    settings.changes_diff_mode = mode;
+                    changed
+                },
+                true,
+                cx,
+            );
+        });
+        if !self.root_focus.contains_focused(window, cx) {
+            self.focus_default(window, cx);
+        }
+        if mode == DiffViewMode::Split
+            && !self.maximized
+            && self.diff_width() < side_panel::SPLIT_MIN_DIFF_WIDTH
+            && let Some(request) = self.on_request_maximize.clone()
+        {
+            self.maximized = true;
+            request(window, cx);
+        }
+        self.sync_effective_diff_mode(cx);
+        cx.notify();
     }
 
     pub(crate) fn set_owner(&mut self, owner: Option<EntityId>) {
@@ -1164,45 +1291,7 @@ impl ChangesView {
         let generation = self.generation;
         let task = cx.background_spawn(async move {
             let diff = client.changes_diff(&root_path, &target, &req_path)?;
-            let prepared = match &diff.body {
-                DiffBody::Text { old, new, hunks } => {
-                    if is_crlf_only_change(
-                        &old.0,
-                        &new.0,
-                        diff.mode_change.as_ref(),
-                        diff.conflicted,
-                    ) {
-                        PreparedDiffBody::CrlfOnly
-                    } else {
-                        let old_doc = Arc::new(Document::decode(&old.0));
-                        let new_doc = Arc::new(Document::decode(&new.0));
-                        PreparedDiffBody::Unified {
-                            old_doc,
-                            new_doc,
-                            hunks: hunks.clone(),
-                        }
-                    }
-                }
-                DiffBody::Binary { old_size, new_size } => PreparedDiffBody::Binary {
-                    old_size: *old_size,
-                    new_size: *new_size,
-                },
-                DiffBody::TooLarge { old_size, new_size } => PreparedDiffBody::TooLarge {
-                    old_size: *old_size,
-                    new_size: *new_size,
-                },
-                DiffBody::ModeOnly { old_mode, new_mode } => PreparedDiffBody::ModeOnly {
-                    old_mode: old_mode.clone(),
-                    new_mode: new_mode.clone(),
-                },
-                DiffBody::Submodule {
-                    old_commit,
-                    new_commit,
-                } => PreparedDiffBody::Submodule {
-                    old_commit: old_commit.clone(),
-                    new_commit: new_commit.clone(),
-                },
-            };
+            let prepared = prepare_diff_body(&diff);
             Ok((diff, prepared))
         });
         cx.spawn(async move |this, cx| {
@@ -1250,6 +1339,7 @@ impl ChangesView {
         let mut list_stale = false;
         match result {
             Ok((diff, prepared)) => {
+                let effective_mode = self.effective_diff_mode(cx);
                 let Body::Root(state) = &mut self.body else {
                     return;
                 };
@@ -1284,6 +1374,7 @@ impl ChangesView {
                         {
                             let entity = entity.clone();
                             entity.update(cx, |v, cx| {
+                                v.set_mode(effective_mode, cx);
                                 v.update_content(
                                     old_doc,
                                     new_doc,
@@ -1311,17 +1402,18 @@ impl ChangesView {
                                     changed_since_viewed,
                                     cx,
                                 );
+                                v.set_mode(effective_mode, cx);
                                 v.set_callbacks(
                                     Rc::new(move |window, cx| {
                                         let _ = esc_weak.update(cx, |this, cx| {
                                             this.focus_list(window, cx);
                                         });
                                     }),
-                                    Rc::new(move |_, cx| {
+                                    Some(Rc::new(move |_, cx| {
                                         let _ = toggle_weak.update(cx, |this, cx| {
                                             this.toggle_viewed_for_loaded_diff(cx);
                                         });
-                                    }),
+                                    })),
                                     Rc::new(move |_, cx| {
                                         let _ = focus_weak.update(cx, |this, cx| {
                                             if this.focus_place != FocusPlace::Diff {
@@ -1621,6 +1713,12 @@ impl ChangesView {
         if tree_pref != self.tree_view_pref {
             self.rebuild_list_rows(tree_pref, cx);
         }
+        let diff_mode = files::settings(cx).map_or(DiffViewMode::Unified, |s| s.changes_diff_mode);
+        if diff_mode != self.diff_mode_pref {
+            self.diff_mode_pref = diff_mode;
+            self.sync_effective_diff_mode(cx);
+            cx.notify();
+        }
         if look == self.look {
             return;
         }
@@ -1680,20 +1778,37 @@ impl ChangesView {
             return;
         };
         self.tree_resizing = true;
-        let (file, tree) = widened.resize_tree(tree);
-        crate::app_store::global_app_store(cx).update(cx, |store, cx| {
-            store.update_settings(
-                |settings| {
-                    let changed =
-                        settings.file_tree_width != tree || settings.file_viewer_width != file;
-                    settings.file_tree_width = tree;
-                    settings.file_viewer_width = file;
-                    changed
-                },
-                false,
-                cx,
-            );
-        });
+        if self.maximized {
+            let total = widened.file + widened.tree_width;
+            let tree = crate::app_settings::clamp_file_tree_width(tree)
+                .min((total - widened.standard).max(crate::app_settings::FILE_TREE_MIN));
+            crate::app_store::global_app_store(cx).update(cx, |store, cx| {
+                store.update_settings(
+                    |settings| {
+                        let changed = settings.file_tree_width != tree;
+                        settings.file_tree_width = tree;
+                        changed
+                    },
+                    false,
+                    cx,
+                );
+            });
+        } else {
+            let (file, tree) = widened.resize_tree(tree);
+            crate::app_store::global_app_store(cx).update(cx, |store, cx| {
+                store.update_settings(
+                    |settings| {
+                        let changed =
+                            settings.file_tree_width != tree || settings.file_viewer_width != file;
+                        settings.file_tree_width = tree;
+                        settings.file_viewer_width = file;
+                        changed
+                    },
+                    false,
+                    cx,
+                );
+            });
+        }
         if let Some(owner) = self.owner {
             cx.defer(move |cx| cx.notify(owner));
         }

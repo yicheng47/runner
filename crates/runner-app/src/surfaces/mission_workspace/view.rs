@@ -19,7 +19,7 @@ use crate::surfaces::*;
 use crate::*;
 
 impl MissionWorkspace {
-    fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
+    pub(super) fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
         let zoom = self.settings(cx).app_zoom;
         if self.sidebar_collapsed && cfg!(target_os = "macos") {
             platform_ui::navigation_left(window, zoom) - 8. * zoom - 1.
@@ -28,7 +28,7 @@ impl MissionWorkspace {
         }
     }
 
-    fn render_collapsed_titlebar_spacer(&self) -> Option<AnyElement> {
+    pub(super) fn render_collapsed_titlebar_spacer(&self) -> Option<AnyElement> {
         (self.sidebar_collapsed && cfg!(target_os = "macos")).then(|| {
             div()
                 .debug_selector(|| "WINDOW_NAVIGATION_SPACE".into())
@@ -39,12 +39,12 @@ impl MissionWorkspace {
         })
     }
 
-    fn render_titlebar_drag_area(
+    pub(super) fn render_titlebar_drag_area(
         &self,
         id: &'static str,
         area: gpui::Div,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> impl IntoElement + use<> {
         area.id(id)
             .window_control_area(WindowControlArea::Drag)
             .capture_any_mouse_down(|event, _, _| platform_ui::capture_titlebar_press(event))
@@ -299,25 +299,41 @@ impl MissionWorkspace {
             self.rail_open.get_or_insert(default_open);
         }
         let rail_open = self.settings(cx).show_side_panel && self.rail_is_open(cx);
+        if !rail_open && self.rail_maximized {
+            self.rail_maximized = false;
+        }
+        let rail_maximized = rail_open && self.rail_maximized && !self.presentation.is_remote();
         if std::mem::take(&mut self.rail_switched) {
             self.rail_visibility = SidebarVisibilityTransition::new(rail_open);
         }
-        let (rail_visibility, rail_animating) = self.rail_visibility.animate_to(
-            if rail_open { 1. } else { 0. },
-            Instant::now(),
-            Duration::from_millis(MISSION_RAIL_TRANSITION_MS),
-        );
+        let (rail_visibility, rail_animating) = if rail_maximized {
+            (1., false)
+        } else {
+            self.rail_visibility.animate_to(
+                if rail_open { 1. } else { 0. },
+                Instant::now(),
+                Duration::from_millis(MISSION_RAIL_TRANSITION_MS),
+            )
+        };
         if rail_animating {
             window.request_animation_frame();
         }
         let rail_layout = self.rail_layout(cx);
         let widened = rail_layout.1;
-        let rail = self.cached_region(
-            "mission-rail",
+        let rail_region_style = if rail_maximized {
+            gpui::StyleRefinement::default()
+                .flex_1()
+                .min_w(px(0.))
+                .h_full()
+        } else {
             gpui::StyleRefinement::default()
                 .w(rems(rail_layout.0 * rail_visibility / 16.))
                 .h_full()
-                .flex_none(),
+                .flex_none()
+        };
+        let rail = self.cached_region(
+            "mission-rail",
+            rail_region_style,
             move |workspace, window, cx| {
                 workspace.render_mission_rail(
                     rail_layout,
@@ -329,7 +345,7 @@ impl MissionWorkspace {
             },
             cx,
         );
-        let rail_resize = (rail_open || rail_animating).then(|| {
+        let rail_resize = (!rail_maximized && (rail_open || rail_animating)).then(|| {
             let zoom = self.settings(cx).app_zoom;
             resize_strip(
                 "mission-rail-resize",
@@ -365,9 +381,10 @@ impl MissionWorkspace {
             .h_full()
             .flex()
             .child(self.rail_files.measure(self.settings(cx).app_zoom))
-            .child(center)
+            .when(!rail_maximized, |el| el.child(center))
             .children(
-                (rail_open || rail_animating).then(|| div().w(rems(6. / 16.)).h_full().flex_none()),
+                (!rail_maximized && (rail_open || rail_animating))
+                    .then(|| div().w(rems(6. / 16.)).h_full().flex_none()),
             )
             .child(rail)
             .children(rail_resize)
@@ -379,6 +396,7 @@ impl MissionWorkspace {
                     }
                 }),
             )
+            .on_action(cx.listener(Self::toggle_maximize_rail_action))
             .on_action(cx.listener(Self::stop_focused_session))
             .on_action(cx.listener(Self::resume_focused_session))
             .on_action(cx.listener(Self::focus_previous_mission_tab))
@@ -1271,6 +1289,7 @@ impl MissionWorkspace {
             || self.loading
             || self.mission_id.as_deref() != Some(mission)
             || self.mission_view().is_none()
+            || self.rail_effectively_maximized(cx)
         {
             return Vec::new();
         }

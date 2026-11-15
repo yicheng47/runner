@@ -96,11 +96,88 @@ impl FilesView {
         .detach();
     }
 
+    pub(in super::super) fn has_uncommitted_diff(&self, path: &str) -> Option<bool> {
+        let Body::Root(state) = &self.body else {
+            return Some(false);
+        };
+        if state.root.git.is_none() {
+            return Some(false);
+        }
+        state
+            .uncommitted_paths
+            .as_ref()
+            .map(|paths| paths.contains(path))
+    }
+
+    pub(in super::super) fn clear_uncommitted_path(&mut self, path: &str) {
+        if let Body::Root(state) = &mut self.body
+            && let Some(paths) = &mut state.uncommitted_paths
+        {
+            paths.remove(path);
+        }
+    }
+
+    pub(in super::super) fn ensure_uncommitted_paths(&mut self, cx: &mut Context<Self>) {
+        if matches!(&self.body, Body::Root(state) if state.uncommitted_paths.is_none()) {
+            self.refresh_uncommitted_paths(false, cx);
+        }
+    }
+
+    pub(in super::super) fn refresh_uncommitted_paths(
+        &mut self,
+        refresh_active_diffs: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let has_tabs = self.has_tabs();
+        let (root, seq) = match &mut self.body {
+            Body::Root(state) => {
+                if !has_tabs {
+                    state.uncommitted_paths = None;
+                    state.uncommitted_seq += 1;
+                    return;
+                }
+                if state.root.git.is_none() {
+                    state.uncommitted_paths = Some(Default::default());
+                    self.reconcile_diff_tabs(false, cx);
+                    return;
+                }
+                state.uncommitted_seq += 1;
+                (state.root.path.clone(), state.uncommitted_seq)
+            }
+            _ => return,
+        };
+        self.request(
+            cx,
+            move |client| {
+                client.changes_files(
+                    &root,
+                    &runner_core::protocol::changes::ChangesTarget::Uncommitted,
+                )
+            },
+            move |this, result, cx| {
+                let Body::Root(state) = &mut this.body else {
+                    return;
+                };
+                if state.uncommitted_seq != seq {
+                    return;
+                }
+                if let Ok(files) = result {
+                    state.uncommitted_paths =
+                        Some(files.files.into_iter().map(|entry| entry.path).collect());
+                    this.reconcile_diff_tabs(refresh_active_diffs, cx);
+                    cx.notify();
+                }
+            },
+        );
+    }
+
     fn apply_status(&mut self, status: Arc<PreparedStatus>, cx: &mut Context<Self>) {
         if let Body::Root(state) = &mut self.body {
             self.status_error = None;
             state.tree.set_status(status);
             self.note_ignored_tabs();
+            self.reconcile_diff_tabs(false, cx);
+            self.refresh_uncommitted_paths(true, cx);
             cx.notify();
         }
     }
@@ -124,6 +201,7 @@ impl FilesView {
                 };
                 self.load(folders, cx);
                 self.reload_changed(Some(changed), cx);
+                self.refresh_uncommitted_paths(false, cx);
             }
             FilesEvent::Status { root, status } => {
                 if self.shown && self.root_path() == Some(root.as_path()) {

@@ -66,6 +66,10 @@ struct RootState {
     /// arriving late never replaces a newer one.
     listed: std::collections::HashMap<String, u64>,
     next_listing: u64,
+    /// Paths with uncommitted changes against `HEAD` (`ChangesTarget::Uncommitted`),
+    /// so `Files`'s `Diff` toggle reflects actual `Working tree vs HEAD` diffs.
+    uncommitted_paths: Option<std::collections::HashSet<String>>,
+    uncommitted_seq: u64,
 }
 
 pub(super) struct Picker {
@@ -123,6 +127,9 @@ pub(crate) struct FilesView {
     scrollbar: Entity<Scrollbar>,
     pub(super) viewer: Viewer,
     pub(super) links: Links,
+    pub(super) maximized: bool,
+    pub(super) on_request_maximize: Option<crate::surfaces::side_panel::PanelCallback>,
+    pub(super) diff_mode_pref: crate::app_settings::DiffViewMode,
     /// Redrawn when the panel's width should change.
     owner: Option<gpui::EntityId>,
     /// The widening and open file last told to the owner, whose layout reads both.
@@ -228,6 +235,12 @@ impl FilesView {
             scrollbar,
             viewer: Viewer::default(),
             links: Links::default(),
+            maximized: false,
+            on_request_maximize: None,
+            diff_mode_pref: super::settings(cx)
+                .map_or(crate::app_settings::DiffViewMode::Unified, |settings| {
+                    settings.changes_diff_mode
+                }),
             owner: None,
             reported: (None, false),
             tree_resizing: false,
@@ -289,8 +302,85 @@ impl FilesView {
     pub(crate) fn set_widened(&mut self, widened: Option<Widened>, cx: &mut Context<Self>) {
         if self.viewer.widened != widened {
             self.viewer.widened = widened;
+            self.sync_effective_diff_mode(cx);
             cx.notify();
         }
+    }
+
+    pub(crate) fn set_maximized(&mut self, maximized: bool, cx: &mut Context<Self>) {
+        if self.maximized != maximized {
+            self.maximized = maximized;
+            self.sync_effective_diff_mode(cx);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_on_request_maximize(
+        &mut self,
+        handler: Option<crate::surfaces::side_panel::PanelCallback>,
+    ) {
+        self.on_request_maximize = handler;
+    }
+
+    pub(crate) fn focus_default(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.root_focus.contains_focused(window, cx) {
+            return;
+        }
+        if matches!(self.body, Body::Root(_)) {
+            self.keep_focus(window, cx);
+        } else {
+            self.root_focus.focus(window, cx);
+        }
+    }
+
+    pub(super) fn diff_width(&self) -> f32 {
+        self.viewer
+            .widened
+            .map_or(crate::app_settings::FILE_VIEWER_DEFAULT, |widened| {
+                widened.file
+            })
+    }
+
+    pub(super) fn effective_diff_mode(&self, cx: &App) -> crate::app_settings::DiffViewMode {
+        let preferred = super::settings(cx).map_or(self.diff_mode_pref, |s| s.changes_diff_mode);
+        crate::surfaces::side_panel::effective_diff_mode(
+            preferred,
+            self.diff_width(),
+            self.maximized,
+        )
+    }
+
+    pub(super) fn select_diff_mode(
+        &mut self,
+        mode: crate::app_settings::DiffViewMode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.diff_mode_pref = mode;
+        crate::app_store::global_app_store(cx).update(cx, |store, cx| {
+            store.update_settings(
+                |settings| {
+                    let changed = settings.changes_diff_mode != mode;
+                    settings.changes_diff_mode = mode;
+                    changed
+                },
+                true,
+                cx,
+            );
+        });
+        if !self.root_focus.contains_focused(window, cx) {
+            self.focus_default(window, cx);
+        }
+        if mode == crate::app_settings::DiffViewMode::Split
+            && !self.maximized
+            && self.diff_width() < crate::surfaces::side_panel::SPLIT_MIN_DIFF_WIDTH
+            && let Some(request) = self.on_request_maximize.clone()
+        {
+            self.maximized = true;
+            request(window, cx);
+        }
+        self.sync_effective_diff_mode(cx);
+        cx.notify();
     }
 
     pub(crate) fn set_owner(&mut self, owner: Option<gpui::EntityId>) {
@@ -304,20 +394,37 @@ impl FilesView {
             return;
         };
         self.tree_resizing = true;
-        let (file, tree) = widened.resize_tree(tree);
-        crate::app_store::global_app_store(cx).update(cx, |store, cx| {
-            store.update_settings(
-                |settings| {
-                    let changed =
-                        settings.file_tree_width != tree || settings.file_viewer_width != file;
-                    settings.file_tree_width = tree;
-                    settings.file_viewer_width = file;
-                    changed
-                },
-                false,
-                cx,
-            );
-        });
+        if self.maximized {
+            let total = widened.file + widened.tree_width;
+            let tree = crate::app_settings::clamp_file_tree_width(tree)
+                .min((total - widened.standard).max(crate::app_settings::FILE_TREE_MIN));
+            crate::app_store::global_app_store(cx).update(cx, |store, cx| {
+                store.update_settings(
+                    |settings| {
+                        let changed = settings.file_tree_width != tree;
+                        settings.file_tree_width = tree;
+                        changed
+                    },
+                    false,
+                    cx,
+                );
+            });
+        } else {
+            let (file, tree) = widened.resize_tree(tree);
+            crate::app_store::global_app_store(cx).update(cx, |store, cx| {
+                store.update_settings(
+                    |settings| {
+                        let changed =
+                            settings.file_tree_width != tree || settings.file_viewer_width != file;
+                        settings.file_tree_width = tree;
+                        settings.file_viewer_width = file;
+                        changed
+                    },
+                    false,
+                    cx,
+                );
+            });
+        }
         if let Some(owner) = self.owner {
             cx.defer(move |cx| cx.notify(owner));
         }
@@ -425,6 +532,12 @@ impl Render for FilesView {
             if let Some(owner) = self.owner {
                 cx.defer(move |cx| cx.notify(owner));
             }
+        }
+        if self.active_showing_diff()
+            && self.viewer_focus.is_focused(window)
+            && let Some(diff) = self.active_diff_view()
+        {
+            diff.read(cx).focus_handle().clone().focus(window, cx);
         }
         let context = self.context.clone();
         let body = match &self.body {

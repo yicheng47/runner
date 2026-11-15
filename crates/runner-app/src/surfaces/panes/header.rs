@@ -21,6 +21,7 @@ impl NativeRoot {
                 side_panel::SavedPanel {
                     surfaces: self.chat_surfaces.open.clone(),
                     open: self.chat_panel_open,
+                    maximized: self.chat_panel_maximized,
                 },
             );
         }
@@ -30,22 +31,27 @@ impl NativeRoot {
         if let Some(saved) = saved {
             self.chat_surfaces.reset(saved.surfaces);
             self.chat_panel_open = saved.open;
+            self.chat_panel_maximized = saved.maximized;
         } else {
             self.chat_surfaces.reset(Default::default());
             self.chat_panel_open = None;
+            self.chat_panel_maximized = false;
         }
         self.chat_panel_tab = tab;
         let open = self
             .chat_panel_open
             .unwrap_or(self.settings(cx).chat_panel_open);
         self.chat_panel_open = Some(open);
-        self.chat_panel_visibility = SidebarVisibilityTransition::new(
-            open && !start_surface_visible(self.tabs.active())
-                && side_panel_available(
-                    self.settings(cx),
-                    side_panel_surface(self.active_tab_is_terminal(cx)),
-                ),
-        );
+        let visible = open
+            && !start_surface_visible(self.tabs.active())
+            && side_panel_available(
+                self.settings(cx),
+                side_panel_surface(self.active_tab_is_terminal(cx)),
+            );
+        if !open {
+            self.chat_panel_maximized = false;
+        }
+        self.chat_panel_visibility = SidebarVisibilityTransition::new(visible);
     }
 
     pub(crate) fn chat_panel_is_open(&self, cx: &App) -> bool {
@@ -56,11 +62,98 @@ impl NativeRoot {
     pub(crate) fn set_chat_panel_open(&mut self, open: bool, cx: &mut Context<Self>) {
         self.sync_chat_panel(cx);
         self.chat_panel_open = Some(open);
+        if !open {
+            self.chat_panel_maximized = false;
+        }
         self.update_app_settings(cx, true, |settings| {
             let changed = settings.chat_panel_open != open;
             settings.chat_panel_open = open;
             changed
         });
+    }
+
+    pub(crate) fn chat_panel_contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.chat_panel_focus.contains_focused(window, cx)
+            || self.chat_surfaces.menu_focused(window)
+    }
+
+    pub(crate) fn focus_chat_panel_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let surface = if self.route == AppRoute::ArchivedChat {
+            PanelSurface::Chat
+        } else {
+            side_panel_surface(self.active_tab_is_terminal(cx))
+        };
+        let settings = self.settings(cx);
+        let shown = side_panel::shown(surface, settings, &self.chat_surfaces.open);
+        if shown.is_none() {
+            self.chat_surfaces.list_focus().focus(window, cx);
+            return;
+        }
+        let detail = if self.route == AppRoute::ArchivedChat {
+            self.archived_chat_detail.as_ref()
+        } else {
+            self.active_chat_detail.as_ref()
+        };
+        let subject = detail.map(|d| PanelSubject::Session(d.session_id.clone()));
+        self.chat_files
+            .focus_shown(subject.as_ref(), shown, &self.chat_panel_focus, window, cx);
+    }
+
+    pub(crate) fn chat_panel_effectively_maximized(&self, cx: &App) -> bool {
+        if !self.chat_panel_maximized
+            || !self.remote_client.is_local()
+            || !self.chat_panel_is_open(cx)
+        {
+            return false;
+        }
+        let surface = if self.route == AppRoute::ArchivedChat {
+            PanelSurface::Chat
+        } else if !start_surface_visible(self.tabs.active()) && self.front_page_is_chat() {
+            side_panel_surface(self.active_tab_is_terminal(cx))
+        } else {
+            return false;
+        };
+        side_panel_available(self.settings(cx), surface)
+    }
+
+    pub(crate) fn set_chat_panel_maximized(
+        &mut self,
+        maximized: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sync_chat_panel(cx);
+        let surface = if self.route == AppRoute::ArchivedChat {
+            PanelSurface::Chat
+        } else {
+            side_panel_surface(self.active_tab_is_terminal(cx))
+        };
+        let allowed = self.remote_client.is_local()
+            && (self.route == AppRoute::ArchivedChat
+                || (!start_surface_visible(self.tabs.active()) && self.front_page_is_chat()))
+            && self.chat_panel_is_open(cx)
+            && side_panel_available(self.settings(cx), surface);
+        let next = maximized && allowed;
+        if self.chat_panel_maximized == next {
+            return;
+        }
+        self.chat_panel_maximized = next;
+        if next {
+            self.chat_panel_visibility = SidebarVisibilityTransition::new(true);
+            if !self.chat_panel_contains_focus(window, cx) {
+                self.focus_chat_panel_shown(window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn toggle_chat_panel_maximized(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let next = !self.chat_panel_maximized;
+        self.set_chat_panel_maximized(next, window, cx);
     }
 
     pub(super) fn render_island_panel_toggle(
@@ -293,32 +386,39 @@ impl NativeRoot {
         cx: &App,
     ) -> (f32, Option<crate::surfaces::side_panel::Widened>) {
         let settings = self.settings(cx);
-        let surface = side_panel_surface(self.active_tab_is_terminal(cx));
+        let surface = if self.route == AppRoute::ArchivedChat {
+            PanelSurface::Chat
+        } else {
+            side_panel_surface(self.active_tab_is_terminal(cx))
+        };
+        let maximized = self.chat_panel_maximized;
         if side_panel::shown(surface, settings, &self.chat_surfaces.open)
             == Some(PanelViewId::Changes)
         {
             let subject = detail
                 .filter(|_| settings.changes_view)
                 .map(|detail| PanelSubject::Session(detail.session_id.clone()));
-            return self.chat_files.changes_layout(
+            return self.chat_files.changes_layout_with_maximize(
                 subject.as_ref(),
                 settings.chat_panel_width,
                 settings.file_viewer_width,
                 settings.file_tree_width,
                 6.,
+                maximized,
                 cx,
             );
         }
         let subject = detail
             .filter(|_| settings.files_view)
             .map(|detail| PanelSubject::Session(detail.session_id.clone()));
-        self.chat_files.layout(
+        self.chat_files.layout_with_maximize(
             subject.as_ref(),
             crate::surfaces::files::FilesSurface::of(surface, settings, &self.chat_surfaces.open),
             settings.chat_panel_width,
             settings.file_viewer_width,
             settings.file_tree_width,
             6.,
+            maximized,
             cx,
         )
     }
@@ -338,6 +438,7 @@ impl NativeRoot {
     ) -> AnyElement {
         #[cfg(test)]
         crate::render_counts::count_render("side-panel", cx);
+        let maximized = show_panel && self.chat_panel_maximized;
         let visible_width = width * visibility;
         if !show_panel {
             self.chat_files.hide(cx);
@@ -361,6 +462,8 @@ impl NativeRoot {
                     .cloned()
             });
         let collapse_root = cx.entity();
+        let maximize_root = cx.entity();
+        let req_max_root = cx.entity();
         let surface_root = cx.entity();
         let settings = self.settings(cx).clone();
         let shown = side_panel::shown(surface, &settings, &self.chat_surfaces.open);
@@ -373,11 +476,25 @@ impl NativeRoot {
                 // `+` menu that handed focus back to it: the chat takes the keys.
                 if matches!(action, side_panel::SurfaceAction::Open(_))
                     && this.chat_surfaces.list_focus().is_focused(window)
+                    && !this.chat_panel_maximized
                 {
                     this.focus_active_terminal(window, cx);
                 }
                 cx.notify();
             })
+        });
+        let maximize_control = Some(side_panel::MaximizeControl {
+            maximized,
+            on_toggle: Rc::new(move |window, cx| {
+                maximize_root.update(cx, |this, cx| {
+                    this.toggle_chat_panel_maximized(window, cx);
+                });
+            }),
+        });
+        let on_request_maximize: side_panel::PanelCallback = Rc::new(move |window, cx| {
+            req_max_root.update(cx, |this, cx| {
+                this.set_chat_panel_maximized(true, window, cx);
+            });
         });
         let header = self.render_titlebar_drag_area(
             "chat-panel-titlebar-drag",
@@ -396,7 +513,16 @@ impl NativeRoot {
                 .items_center()
                 .border_b_1()
                 .border_color(theme::border())
+                .when(maximized, |h| h.rounded_tl(rems(11. / 16.)))
                 .rounded_tr(rems(11. / 16.))
+                .when(
+                    maximized && self.front_page_sidebar_collapsed() && cfg!(target_os = "macos"),
+                    |header| {
+                        header
+                            .pl(px(self.workspace_titlebar_padding(window, cx)))
+                            .children(self.render_collapsed_titlebar_spacer())
+                    },
+                )
                 .map(|element| {
                     #[cfg(test)]
                     let element = crate::theme_snapshot::record_fill("CHAT_PANEL_HEADER", element);
@@ -408,11 +534,17 @@ impl NativeRoot {
                     &self.chat_surfaces.open,
                     (&self.chat_surfaces, window),
                     handler.clone(),
+                    maximize_control,
                     IconButton::new("collapse-chat-panel", "panel-right-open.svg")
                         .tooltip(crate::i18n::text("ui.collapse_side_panel"))
-                        .on_press(move |_, cx| {
+                        .on_press(move |window, cx| {
                             collapse_root.update(cx, |this, cx| {
+                                let return_focus = this.chat_panel_contains_focus(window, cx)
+                                    || this.chat_panel_maximized;
                                 this.set_chat_panel_open(false, cx);
+                                if return_focus && this.route == AppRoute::Chat {
+                                    this.focus_active_terminal(window, cx);
+                                }
                                 cx.notify();
                             });
                         }),
@@ -422,19 +554,23 @@ impl NativeRoot {
         let files = match (shown, detail) {
             (Some(PanelViewId::Files), Some(detail)) => {
                 self.chat_files.hide_changes(cx);
-                Some(self.chat_files.show_with(
+                Some(self.chat_files.show_with_maximize(
                     &self.chat_panel_context(detail, surface, cx),
                     widened,
                     Some(cx.entity_id()),
+                    maximized,
+                    Some(on_request_maximize),
                     cx,
                 ))
             }
             (Some(PanelViewId::Changes), Some(detail)) => {
                 self.chat_files.hide_files(cx);
-                Some(self.chat_files.show_changes_with(
+                Some(self.chat_files.show_changes_with_maximize(
                     &self.chat_panel_context(detail, surface, cx),
                     widened,
                     Some(cx.entity_id()),
+                    maximized,
+                    Some(on_request_maximize),
                     cx,
                 ))
             }
@@ -486,9 +622,9 @@ impl NativeRoot {
         };
         let panel = div()
             .relative()
-            .w(rems(width / 16.))
+            .when(maximized, |p| p.w_full().flex_1().min_w(px(0.)))
+            .when(!maximized, |p| p.w(rems(width / 16.)).flex_none())
             .h_full()
-            .flex_none()
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -508,6 +644,14 @@ impl NativeRoot {
                             .min_h(px(0.))
                             .overflow_y_scroll()
                             .p_5()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    if !this.chat_panel_contains_focus(window, cx) {
+                                        this.chat_panel_focus.focus(window, cx);
+                                    }
+                                }),
+                            )
                             .child(content)
                             .into_any_element(),
                         (None, None) => {
@@ -518,10 +662,11 @@ impl NativeRoot {
         div()
             .id("chat-side-panel")
             .debug_selector(|| "CHAT_SIDE_PANEL".into())
+            .track_focus(&self.chat_panel_focus)
             .relative()
-            .w(rems(visible_width / 16.))
+            .when(maximized, |p| p.flex_1().min_w(px(0.)).w_full())
+            .when(!maximized, |p| p.w(rems(visible_width / 16.)).flex_none())
             .h_full()
-            .flex_none()
             .overflow_hidden()
             .when(self.route == AppRoute::Chat, |panel| {
                 panel
@@ -530,9 +675,10 @@ impl NativeRoot {
                     .border_color(theme::border())
                     .bg(theme::bg())
             })
-            .when(self.route != AppRoute::Chat && border_on, |panel| {
-                panel.border_l_1().border_color(theme::border())
-            })
+            .when(
+                self.route != AppRoute::Chat && border_on && !maximized,
+                |panel| panel.border_l_1().border_color(theme::border()),
+            )
             .child(panel)
             .into_any_element()
     }

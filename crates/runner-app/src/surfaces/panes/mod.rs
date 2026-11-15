@@ -128,7 +128,7 @@ fn split_tab_archiving(layout: &PaneLayout, archiving: impl Fn(&str) -> bool) ->
         && session_ids.iter().all(|session_id| archiving(session_id))
 }
 
-fn start_surface_visible(layout: Option<&PaneLayout>) -> bool {
+pub(crate) fn start_surface_visible(layout: Option<&PaneLayout>) -> bool {
     layout.is_none_or(|layout| {
         let leaves = layout.root.leaves();
         leaves.len() == 1 && leaves[0].session_id.is_none()
@@ -280,7 +280,7 @@ fn starting_overlay_label(runtime: &str, fork_materializing: bool) -> Option<&'s
     }
 }
 
-fn side_panel_surface(terminal_tab: bool) -> PanelSurface {
+pub(crate) fn side_panel_surface(terminal_tab: bool) -> PanelSurface {
     if terminal_tab {
         PanelSurface::Terminal
     } else {
@@ -290,7 +290,7 @@ fn side_panel_surface(terminal_tab: bool) -> PanelSurface {
 
 /// Whether `surface`'s panel can show at all: Settings → Side panel shows
 /// the panel and turns on at least one of its views.
-fn side_panel_available(settings: &AppSettings, surface: PanelSurface) -> bool {
+pub(crate) fn side_panel_available(settings: &AppSettings, surface: PanelSurface) -> bool {
     settings.show_side_panel && side_panel::views(surface, settings).next().is_some()
 }
 

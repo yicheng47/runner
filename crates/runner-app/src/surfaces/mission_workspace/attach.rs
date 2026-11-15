@@ -651,6 +651,12 @@ impl MissionWorkspace {
             }
             return;
         }
+        if self.rail_effectively_maximized(cx) {
+            if !self.rail_contains_focus(window, cx) {
+                window.focus(&self.rail_focus, cx);
+            }
+            return;
+        }
         let MissionTab::Session(session_id) = &self.active_tab else {
             window.focus(&self.root_focus, cx);
             return;

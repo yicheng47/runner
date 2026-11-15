@@ -414,6 +414,8 @@ pub(crate) struct MissionWorkspace {
     primary_label: Option<String>,
     rail_surfaces: crate::surfaces::side_panel::PanelSurfaces,
     rail_open: Option<bool>,
+    pub(crate) rail_maximized: bool,
+    pub(crate) rail_focus: FocusHandle,
     rail_switched: bool,
     rails_by_mission: HashMap<String, crate::surfaces::side_panel::SavedPanel>,
     rail_files: crate::surfaces::files::FilesPanel,

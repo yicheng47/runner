@@ -1,4 +1,5 @@
 use super::*;
+use crate::surfaces::panes::{side_panel_available, side_panel_surface, start_surface_visible};
 
 impl NativeRoot {
     pub(crate) fn apply_pane_drop(
@@ -203,8 +204,31 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(self.route, AppRoute::Mission(_)) {
+            let mission = self.mission_workspace.clone();
+            mission.update(cx, |ws, cx| ws.toggle_maximize_rail_if_focused(window, cx));
+            return;
+        }
+        if self.route == AppRoute::ArchivedChat {
+            if self.chat_panel_maximized || self.chat_panel_contains_focus(window, cx) {
+                self.toggle_chat_panel_maximized(window, cx);
+            }
+            return;
+        }
         if !self.front_page_is_chat() {
             return;
+        }
+        if self.remote_client.is_local()
+            && (self.chat_panel_maximized || self.chat_panel_contains_focus(window, cx))
+        {
+            let surface = side_panel_surface(self.active_tab_is_terminal(cx));
+            if !start_surface_visible(self.tabs.active())
+                && self.chat_panel_is_open(cx)
+                && side_panel_available(self.settings(cx), surface)
+            {
+                self.toggle_chat_panel_maximized(window, cx);
+                return;
+            }
         }
         let Some(pane_id) = self
             .front_page_layout()
