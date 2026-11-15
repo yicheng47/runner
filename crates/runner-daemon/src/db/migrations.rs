@@ -211,6 +211,11 @@ pub(super) const MIGRATIONS: &[(i64, &str, bool)] = &[
         include_str!("../../migrations/0030_files_root.sql"),
         false,
     ),
+    (
+        31,
+        include_str!("../../migrations/0031_onboarding_completed.sql"),
+        false,
+    ),
 ];
 
 pub(super) fn run_migrations(conn: &mut Connection) -> Result<()> {
@@ -263,6 +268,9 @@ pub(super) fn apply_migration(
         }
         if version == 26 {
             backfill_0026_launch_definitions(&tx)?;
+        }
+        if version == 31 {
+            backfill_0031_onboarding_completed(&tx)?;
         }
         if foreign_keys_off {
             let mut check = tx.prepare("PRAGMA foreign_key_check")?;
@@ -579,6 +587,25 @@ fn backfill_0026_launch_definitions(tx: &rusqlite::Transaction) -> rusqlite::Res
             }
             Err(error) => log::warn!("session {} launch definition conversion: {error}", row.id),
         }
+    }
+    Ok(())
+}
+
+fn backfill_0031_onboarding_completed(tx: &rusqlite::Transaction) -> Result<()> {
+    let has_user_history: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sessions LIMIT 1)
+             OR EXISTS (SELECT 1 FROM missions LIMIT 1)
+             OR EXISTS (SELECT 1 FROM crews WHERE id != ?1 LIMIT 1)
+             OR EXISTS (SELECT 1 FROM roles WHERE id NOT IN (?2, ?3) LIMIT 1)",
+        params![
+            super::seed::SEED_CREW_ID,
+            super::seed::SEED_CODER_ROLE_ID,
+            super::seed::SEED_REVIEWER_ROLE_ID
+        ],
+        |row| row.get(0),
+    )?;
+    if has_user_history {
+        super::app_state::mark_onboarding_completed_conn(tx)?;
     }
     Ok(())
 }

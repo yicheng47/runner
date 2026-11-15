@@ -5,6 +5,7 @@ use runner_core::protocol::StartDirectSessionArgs;
 #[derive(Default)]
 struct TrackingRuntime {
     stops: std::sync::atomic::AtomicUsize,
+    spawns: std::sync::Mutex<Vec<crate::session::runtime::SpawnSpec>>,
     outputs: std::sync::Mutex<
         std::collections::HashMap<
             String,
@@ -21,6 +22,7 @@ impl crate::session::runtime::SessionRuntime for TrackingRuntime {
         crate::session::runtime::RuntimeSession,
         crate::session::runtime::OutputStream,
     )> {
+        self.spawns.lock().unwrap().push(spec.clone());
         let (sender, receiver) = std::sync::mpsc::channel();
         self.outputs
             .lock()
@@ -123,15 +125,7 @@ fn assert_project_row_and_tab(handler: &AppCore, session_id: &str, project_id: &
 #[test]
 fn direct_start_requires_a_role_or_runtime() {
     let core = crate::test_support::test_core();
-    let args = StartDirectSessionArgs {
-        role_id: None,
-        runtime: None,
-        model: None,
-        effort: None,
-        speed: None,
-        project_id: None,
-        cwd: None,
-    };
+    let args = StartDirectSessionArgs::default();
     assert_eq!(
         session::session_start_chat(&core, args)
             .unwrap_err()
@@ -172,12 +166,7 @@ fn role_direct_start_infers_project_from_working_dir_for_the_row_and_tab() {
             &handler,
             StartDirectSessionArgs {
                 role_id: Some("role".into()),
-                runtime: None,
-                model: None,
-                effort: None,
-                speed: None,
-                project_id: None,
-                cwd: None,
+                ..Default::default()
             },
         )
         .unwrap(),
@@ -208,13 +197,9 @@ fn runtime_direct_request_infers_project_for_the_session_row_and_tab() {
         session::session_start_chat(
             &handler,
             StartDirectSessionArgs {
-                role_id: None,
                 runtime: Some(crate::model::Runtime::Codex),
-                model: None,
-                effort: None,
-                speed: None,
-                project_id: None,
                 cwd: Some(cwd.to_string_lossy().into_owned()),
+                ..Default::default()
             },
         )
         .unwrap(),
@@ -278,11 +263,9 @@ fn direct_request_persists_speed_for_role_and_runtime_chats() {
                 StartDirectSessionArgs {
                     role_id: role_id.map(str::to_owned),
                     runtime: role_id.is_none().then_some(crate::model::Runtime::Codex),
-                    model: None,
-                    effort: None,
                     speed,
-                    project_id: None,
                     cwd: Some(temp.path().to_string_lossy().into_owned()),
+                    ..Default::default()
                 },
             )
             .unwrap(),
@@ -310,13 +293,10 @@ fn direct_request_persists_speed_for_role_and_runtime_chats() {
         session::session_start_chat(
             &handler,
             StartDirectSessionArgs {
-                role_id: None,
                 runtime: Some(crate::model::Runtime::ClaudeCode),
-                model: None,
-                effort: None,
                 speed: Some(crate::model::CodexSpeed::Fast),
-                project_id: None,
                 cwd: Some(temp.path().to_string_lossy().into_owned()),
+                ..Default::default()
             },
         )
         .unwrap(),
@@ -735,4 +715,265 @@ fn session_archive_refuses_a_running_terminal_without_stopping_it() {
     );
 
     session::session_kill(&handler, &spawned.id).unwrap();
+}
+
+#[test]
+fn direct_chat_initial_prompt_respects_prompt_channels_for_role_and_roleless_chats() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_data_dir = temp.path().join("app-data");
+    std::fs::create_dir_all(&app_data_dir).unwrap();
+    let mut core = crate::test_support::test_core_in(app_data_dir);
+    let runtime = std::sync::Arc::new(TrackingRuntime::default());
+    core.sessions = crate::session::SessionManager::new(
+        std::sync::Arc::clone(&core.runtime_shell_env),
+        std::sync::Arc::clone(&core.runtime_discovery),
+        runtime.clone(),
+    );
+
+    {
+        let conn = core.db.get().unwrap();
+        for (id, handle, rt, cmd) in [
+            ("role-pi", "pi-role", "pi", "pi"),
+            ("role-claude", "c-role", "claude-code", "claude"),
+        ] {
+            crate::test_support::insert_test_role(&conn, id, handle, rt, cmd);
+            conn.execute(
+                "UPDATE roles SET system_prompt = 'Persona instructions' WHERE id = ?1",
+                rusqlite::params![id],
+            )
+            .unwrap();
+        }
+    }
+
+    // Pi (`PromptChannels.system_prompt == true`): persona goes to `--append-system-prompt`
+    // while initial_prompt stays cleanly in first_turn.
+    let pi_role_out = session::session_start_chat(
+        &core,
+        StartDirectSessionArgs {
+            role_id: Some("role-pi".into()),
+            cwd: Some(temp.path().to_string_lossy().into_owned()),
+            initial_prompt: Some("Inspect README.md".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // Claude Code (`PromptChannels.system_prompt == false`): persona and initial_prompt combine into first_turn.
+    let claude_role_out = session::session_start_chat(
+        &core,
+        StartDirectSessionArgs {
+            role_id: Some("role-claude".into()),
+            cwd: Some(temp.path().to_string_lossy().into_owned()),
+            initial_prompt: Some("Inspect README.md".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // Roleless Claude direct chat still passes initial_prompt as the first user turn.
+    let claude_direct_out = session::session_start_chat(
+        &core,
+        StartDirectSessionArgs {
+            runtime: Some(crate::model::Runtime::ClaudeCode),
+            cwd: Some(temp.path().to_string_lossy().into_owned()),
+            initial_prompt: Some("Say hello".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let spawns = runtime.spawns.lock().unwrap().clone();
+    assert_eq!(spawns.len(), 3);
+    let pi_prompt_flag = spawns[0]
+        .args
+        .windows(2)
+        .find(|pair| pair[0] == "--append-system-prompt")
+        .expect("pi should pass --append-system-prompt");
+    let pi_prompt_body = std::fs::read_to_string(&pi_prompt_flag[1]).unwrap();
+    assert!(pi_prompt_body.contains("Persona instructions"));
+    assert_eq!(
+        spawns[0].args.last().map(String::as_str),
+        Some("Inspect README.md")
+    );
+    assert_eq!(
+        spawns[1].args.last().map(String::as_str),
+        Some("Persona instructions\n\nInspect README.md")
+    );
+    assert!(!spawns[2]
+        .args
+        .iter()
+        .any(|arg| arg == "--append-system-prompt"));
+    assert_eq!(spawns[2].args.last().map(String::as_str), Some("Say hello"));
+
+    for id in [
+        pi_role_out.session.id,
+        claude_role_out.session.id,
+        claude_direct_out.session.id,
+    ] {
+        session::session_kill(&core, &id).unwrap();
+    }
+}
+
+#[test]
+fn direct_chat_and_mission_mark_onboarding_completed_while_shell_does_not() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_data_dir = temp.path().join("app-data");
+    std::fs::create_dir_all(&app_data_dir).unwrap();
+    let handler = tracking_handler(app_data_dir);
+    let mut events = handler.events.subscribe();
+
+    assert!(!crate::db::is_onboarding_completed(&handler.db).unwrap());
+
+    // Starting a terminal shell (e.g. from Setup's "Open terminal") does not complete onboarding.
+    let shell = session::session_start_shell_in(
+        &handler,
+        ProjectScope::Infer,
+        Some(temp.path().to_string_lossy().into_owned()),
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(!crate::db::is_onboarding_completed(&handler.db).unwrap());
+    session::session_kill(&handler, &shell.id).unwrap();
+
+    // Starting a direct chat marks onboarding completed and emits onboarding/changed.
+    let chat = session::session_start_chat(
+        &handler,
+        StartDirectSessionArgs {
+            runtime: Some(crate::model::Runtime::Codex),
+            cwd: Some(temp.path().to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(crate::db::is_onboarding_completed(&handler.db).unwrap());
+    let mut saw_chat_onboarding = false;
+    while let Ok(evt) = events.try_recv() {
+        if evt.name == "onboarding/changed" {
+            saw_chat_onboarding = true;
+        }
+    }
+    assert!(saw_chat_onboarding);
+    session::session_kill(&handler, &chat.session.id).unwrap();
+
+    // Starting a mission on a fresh DB also marks onboarding completed and emits onboarding/changed.
+    let mission_app_data = temp.path().join("mission-app-data");
+    std::fs::create_dir_all(&mission_app_data).unwrap();
+    let mission_core = tracking_handler(mission_app_data);
+    {
+        let conn = mission_core.db.get().unwrap();
+        crate::test_support::insert_test_role(&conn, "r1", "coder", "shell", "sh");
+        conn.execute(
+            "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES ('c1', 'Starter', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        crate::test_support::insert_test_slot(&conn, "s1", "c1", "r1", "coder", 0, false);
+    }
+    let mut mission_events = mission_core.events.subscribe();
+    assert!(!crate::db::is_onboarding_completed(&mission_core.db).unwrap());
+    let out = crate::daemon::block_on(crate::ops::mission::mission_start_impl_with_size(
+        &mission_core,
+        crate::ops::mission::MissionStart {
+            crew_id: Some("c1".into()),
+            scope: ProjectScope::Infer,
+            title: "First mission".into(),
+            goal_override: Some("Check status".into()),
+            cwd: Some(temp.path().to_string_lossy().into_owned()),
+            started_by_session_id: None,
+            no_report: false,
+        },
+        None,
+    ))
+    .unwrap();
+    assert!(crate::db::is_onboarding_completed(&mission_core.db).unwrap());
+    let mut saw_mission_onboarding = false;
+    while let Ok(evt) = mission_events.try_recv() {
+        if evt.name == "onboarding/changed" {
+            saw_mission_onboarding = true;
+        }
+    }
+    assert!(saw_mission_onboarding);
+    crate::daemon::block_on(crate::ops::mission::mission_stop_impl(
+        &mission_core,
+        out.mission.id,
+    ))
+    .unwrap();
+}
+
+#[test]
+fn session_start_chat_honors_root_scope_and_initial_pty_size_for_role_and_runtime() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_data_dir = temp.path().join("app-data");
+    let project_dir = temp.path().join("registered-project");
+    std::fs::create_dir_all(&app_data_dir).unwrap();
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let mut core = crate::test_support::test_core_in(app_data_dir);
+    let runtime = std::sync::Arc::new(TrackingRuntime::default());
+    core.sessions = crate::session::SessionManager::new(
+        std::sync::Arc::clone(&core.runtime_shell_env),
+        std::sync::Arc::clone(&core.runtime_discovery),
+        runtime.clone(),
+    );
+
+    {
+        let conn = core.db.get().unwrap();
+        crate::repo::project::create(&conn, "Registered", project_dir.to_string_lossy().as_ref())
+            .unwrap();
+        crate::test_support::insert_test_role(&conn, "role-codex", "coder", "codex", "codex");
+    }
+
+    let role_out = session::session_start_chat(
+        &core,
+        StartDirectSessionArgs {
+            role_id: Some("role-codex".into()),
+            cwd: Some(project_dir.to_string_lossy().into_owned()),
+            scope: Some(ProjectScope::Root),
+            cols: Some(132),
+            rows: Some(44),
+            initial_prompt: Some("Inspect README".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(role_out.project_id, None);
+
+    let runtime_out = session::session_start_chat(
+        &core,
+        StartDirectSessionArgs {
+            runtime: Some(crate::model::Runtime::Codex),
+            cwd: Some(project_dir.to_string_lossy().into_owned()),
+            scope: Some(ProjectScope::Root),
+            cols: Some(121),
+            rows: Some(39),
+            initial_prompt: Some("Inspect Cargo.toml".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(runtime_out.project_id, None);
+    {
+        let conn = core.db.get().unwrap();
+        assert_eq!(
+            crate::repo::session::get_row(&conn, &role_out.session.id)
+                .unwrap()
+                .unwrap()
+                .project_id,
+            None
+        );
+        assert_eq!(
+            crate::repo::session::get_row(&conn, &runtime_out.session.id)
+                .unwrap()
+                .unwrap()
+                .project_id,
+            None
+        );
+    }
+
+    let spawns = runtime.spawns.lock().unwrap().clone();
+    assert_eq!(spawns.len(), 2);
+    assert_eq!(spawns[0].initial_size, Some((132, 44)));
+    assert_eq!(spawns[1].initial_size, Some((121, 39)));
+
+    session::session_kill(&core, &role_out.session.id).unwrap();
+    session::session_kill(&core, &runtime_out.session.id).unwrap();
 }

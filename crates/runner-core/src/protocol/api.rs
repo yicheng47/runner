@@ -50,7 +50,12 @@ macro_rules! daemon_api {
         session_start_chat(args: StartDirectSessionArgs => StartDirectSessionArgs = { args }) -> StartDirectSessionOutput [false] => |core: &crate::AppCore, args: StartDirectSessionArgs| { crate::ops::session::session_start_chat(core, args) };
 
         session_live_ids() -> Vec<String> [true] => |core: &crate::AppCore| { Ok(core.sessions.live_session_ids()) };
+        onboarding_status() -> OnboardingStatus [false] => |core: &crate::AppCore| { crate::ops::onboarding::status(core) };
+        onboarding_complete() -> OnboardingStatus [false] => |core: &crate::AppCore| { crate::ops::onboarding::complete(core) };
+        onboarding_starter_crew_proposal(args: CreateStarterCrewArgs => CreateStarterCrewArgs = { args }) -> StarterCrewProposal [false] => |core: &crate::AppCore, args: CreateStarterCrewArgs| { crate::ops::onboarding::starter_crew_proposal(core, args) };
+        onboarding_create_starter_crew(args: CreateStarterCrewArgs => CreateStarterCrewArgs = { args }) -> Option<Crew> [false] => |core: &crate::AppCore, args: CreateStarterCrewArgs| { crate::ops::onboarding::create_starter_crew(core, args) };
         runtime_task_start(runtime: Runtime => Runtime = { runtime }) -> RuntimeUpdateTask [false] => |core: &crate::AppCore, runtime: Runtime| { crate::ops::runtime_tasks::start(core, runtime) };
+        runtime_install_start(runtime: Runtime => Runtime = { runtime }) -> RuntimeUpdateTask [false] => |core: &crate::AppCore, runtime: Runtime| { crate::ops::runtime_tasks::start_install(core, runtime) };
         runtime_task_list() -> Vec<RuntimeUpdateTask> [false] => |core: &crate::AppCore| { Ok(crate::ops::runtime_tasks::list(core)) };
         runtime_task_stop(id: &str => String = { id.to_owned() }) -> () [false] => |core: &crate::AppCore, id: String| { crate::ops::runtime_tasks::stop(core, &id) };
         runtime_task_dismiss(id: &str => String = { id.to_owned() }) -> () [false] => |core: &crate::AppCore, id: String| { crate::ops::runtime_tasks::dismiss(core, &id) };

@@ -12,6 +12,7 @@ use super::DbPool;
 use crate::error::Result;
 
 pub(super) const SEED_MARKER_KEY: &str = "default_crew_seeded";
+pub(crate) const ONBOARDING_COMPLETED_KEY: &str = "onboarding_completed";
 const LOGIN_SHELL_ENV_LKG_KEY: &str = "login_shell_env_lkg";
 const RUNTIME_OVERRIDES_KEY: &str = "runtime_overrides";
 const RUNTIME_LAUNCH_OPTIONS_KEY: &str = "runtime_launch_options";
@@ -59,6 +60,34 @@ pub(crate) fn app_state_set(conn: &Connection, key: &str, value: &str) -> Result
         params![key, value],
     )?;
     Ok(())
+}
+
+pub(crate) fn onboarding_completed_at_conn(conn: &Connection) -> Result<Option<String>> {
+    app_state_get(conn, ONBOARDING_COMPLETED_KEY)
+}
+
+pub fn onboarding_completed_at(pool: &DbPool) -> Result<Option<String>> {
+    let conn = pool.get()?;
+    onboarding_completed_at_conn(&conn)
+}
+
+pub fn is_onboarding_completed(pool: &DbPool) -> Result<bool> {
+    Ok(onboarding_completed_at(pool)?.is_some())
+}
+
+/// Records onboarding completion if it is not already set, preserving the
+/// first completion timestamp. Returns `true` if newly marked.
+pub(crate) fn mark_onboarding_completed_conn(conn: &Connection) -> Result<bool> {
+    let changed = conn.execute(
+        "INSERT OR IGNORE INTO _app_state (key, value) VALUES (?1, ?2)",
+        params![ONBOARDING_COMPLETED_KEY, chrono::Utc::now().to_rfc3339()],
+    )?;
+    Ok(changed > 0)
+}
+
+pub fn mark_onboarding_completed(pool: &DbPool) -> Result<bool> {
+    let conn = pool.get()?;
+    mark_onboarding_completed_conn(&conn)
 }
 
 pub fn login_shell_env_lkg(pool: &DbPool) -> Result<Option<LoginShellEnvLkg>> {

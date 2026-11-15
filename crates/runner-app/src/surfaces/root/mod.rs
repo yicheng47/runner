@@ -316,6 +316,7 @@ pub(crate) struct NativeRoot {
     pub(crate) quit_dialog: Option<Entity<surfaces::quit_dialog::QuitDialog>>,
     pub(crate) agent_tasks: surfaces::background_tasks::BackgroundTasks,
     pub(crate) agent_update: Option<Entity<surfaces::agent_update::AgentUpdateDialog>>,
+    pub(crate) setup: surfaces::start_chat::setup::SetupState,
     pub(crate) fork_confirm: Option<ForkConfirm>,
     pub(crate) forking_sessions: HashMap<String, String>,
     pub(crate) last_focused_role_id: Option<String>,

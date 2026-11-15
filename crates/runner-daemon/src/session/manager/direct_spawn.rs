@@ -66,6 +66,7 @@ impl SessionManager {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_direct_with_speed(
         self: &Arc<Self>,
         role: &Role,
@@ -82,6 +83,42 @@ impl SessionManager {
         events: Arc<dyn SessionEvents>,
         first_turn: Option<String>,
     ) -> Result<SpawnedSession> {
+        self.spawn_direct_with_speed_and_prompt(
+            role,
+            runtime_override,
+            model_override,
+            effort_override,
+            speed_override,
+            project_id,
+            cwd,
+            cols,
+            rows,
+            app_data_dir,
+            pool,
+            events,
+            first_turn,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_direct_with_speed_and_prompt(
+        self: &Arc<Self>,
+        role: &Role,
+        runtime_override: Option<&str>,
+        model_override: Option<&str>,
+        effort_override: Option<&str>,
+        speed_override: Option<CodexSpeed>,
+        project_id: Option<&str>,
+        cwd: Option<&str>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+        first_turn: Option<String>,
+        initial_prompt: Option<String>,
+    ) -> Result<SpawnedSession> {
         self.spawn_direct_inner(
             role,
             runtime_override,
@@ -97,6 +134,7 @@ impl SessionManager {
             pool,
             events,
             first_turn,
+            initial_prompt,
             true,
         )
     }
@@ -113,6 +151,32 @@ impl SessionManager {
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
     ) -> Result<SpawnedSession> {
+        self.spawn_runtime_direct_with_prompt(
+            role,
+            project_id,
+            cwd,
+            cols,
+            rows,
+            app_data_dir,
+            pool,
+            events,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_runtime_direct_with_prompt(
+        self: &Arc<Self>,
+        role: &Role,
+        project_id: Option<&str>,
+        cwd: Option<&str>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+        initial_prompt: Option<String>,
+    ) -> Result<SpawnedSession> {
         self.spawn_direct_inner(
             role,
             None,
@@ -128,6 +192,7 @@ impl SessionManager {
             pool,
             events,
             None,
+            initial_prompt,
             false,
         )
     }
@@ -149,6 +214,7 @@ impl SessionManager {
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
         first_turn: Option<String>,
+        initial_prompt: Option<String>,
         emit_activity: bool,
     ) -> Result<SpawnedSession> {
         // Chat-level runtime override (feature 41) — same resolution
@@ -218,9 +284,18 @@ impl SessionManager {
             manager: Arc::downgrade(self),
             session_id: session_id.clone(),
         };
-        let (system_prompt, first_turn) = crate::runtimes::for_key(&role.runtime)
+        let (system_prompt, persona_first_turn) = crate::runtimes::for_key(&role.runtime)
             .prompt_channels()
             .split(router::prompt::SessionPromptKind::Direct, first_turn);
+        let initial_prompt = initial_prompt
+            .map(|prompt| prompt.trim().to_string())
+            .filter(|prompt| !prompt.is_empty());
+        let first_turn = match (persona_first_turn, initial_prompt) {
+            (Some(persona), Some(initial)) => Some(format!("{persona}\n\n{initial}")),
+            (Some(persona), None) => Some(persona),
+            (None, Some(initial)) => Some(initial),
+            (None, None) => None,
+        };
         let system_prompt_path = system_prompt
             .as_deref()
             .map(|body| crate::session::system_prompt::write(app_data_dir, &session_id, body))

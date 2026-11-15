@@ -34,9 +34,9 @@ Runner does not isolate working directories automatically. If the team should wo
 
 ## Use the examples
 
-### Default pair-coding crew
+### Starter pair-coding crew
 
-Fresh installations seed **Pair coding crew**, a two-role loop that reviews the working-tree diff before any commit. Both slots use Codex by default; switch either slot to another installed agent if you want to mix providers. Existing installations with roles or crews may not receive the seed.
+Fresh installations no longer seed a crew blindly before any agent is installed. Instead, first-run **Setup** offers **Pair coding**, a two-role loop that pairs two distinct eligible runtimes when possible (preferring your default and signed-in agents) or falls back to one runtime for both slots. Switch either slot to another installed agent at any time in **Crews**, or reopen **Open setup** from **Settings → Agents** when no crews exist.
 
 | Role | Responsibility | System prompt |
 | --- | --- | --- |

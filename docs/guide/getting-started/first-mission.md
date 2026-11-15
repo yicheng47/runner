@@ -4,7 +4,7 @@ Run the default pair-coding crew on a small task: the coder implements it, the r
 
 ## Prepare the crew and folder
 
-On a fresh installation, Runner seeds **Pair coding crew**, with **@coder** and **@reviewer** as its slots. Both use Codex, so first install Codex, sign in, and confirm it works in a [chat](first-chat.md). Open **Crews**, select **Pair coding crew**, and check both slots. Existing installations with roles or crews may not receive the seed; [Build a crew](../guides/build-a-crew.md) explains how to create the same pair or choose different agents.
+On a fresh installation, **Setup** offers to create the **Pair coding** starter crew, with **@coder** and **@reviewer** as its slots, pairing two distinct eligible agents when available (or using your available agent for both). Finish **Setup**, or open **Crews** to create a crew or inspect **Pair coding**; if no crews exist yet, **Mission** in the launcher shows **No crews yet** with **Create a crew** and **Open setup**. [Build a crew](../guides/build-a-crew.md) explains how to configure slots or create your own roles from scratch.
 
 Choose a small repository or a disposable project for the first task. Runner starts the crew in the directory you give it. It does not create an isolated copy or Git worktree for you; all members can see and change that directory.
 
@@ -14,7 +14,7 @@ Choose a small repository or a disposable project for the first task. Runner sta
 ## Start a mission
 
 1. Press **⇧⌘M** / **Ctrl+Shift+M**, or choose **Mission** on the launcher page. The page shows its crew step without creating a tab: a **Mission** chip in the search field and your crews, most recently used first. **Start mission** on a crew’s page skips to the next step with that crew picked.
-2. Pick **Pair coding crew**. The search field becomes the goal, with the crew's chip; its slots are listed below with each role and model.
+2. Pick **Pair coding**. The search field becomes the goal, with the crew's chip; its slots are listed below with each role and model.
 3. Type a concrete goal, for example:
 
    ```text

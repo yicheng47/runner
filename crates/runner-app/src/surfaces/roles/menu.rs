@@ -191,6 +191,7 @@ impl NativeRoot {
                     project: None,
                     cwd: None,
                     size: (INITIAL_COLS, INITIAL_ROWS),
+                    initial_prompt: None,
                 },
                 placement: None,
                 started: None,

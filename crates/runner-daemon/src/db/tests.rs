@@ -3,13 +3,15 @@ use std::collections::BTreeMap;
 use rusqlite::{params, Connection, ErrorCode};
 
 use super::app_state::{
-    login_shell_env_lkg, runtime_overrides, set_login_shell_env_lkg, set_runtime_override,
-    set_usage_lkg, usage_lkg, LoginShellEnvLkg, UsageLkg,
+    is_onboarding_completed, login_shell_env_lkg, mark_onboarding_completed,
+    onboarding_completed_at, onboarding_completed_at_conn, runtime_overrides,
+    set_login_shell_env_lkg, set_runtime_override, set_usage_lkg, usage_lkg, LoginShellEnvLkg,
+    UsageLkg, SEED_MARKER_KEY,
 };
 use super::migrations::{run_migrations, run_migrations_up_to, MIGRATIONS};
 use super::seed::{
-    seed_defaults, SEED_CODER_PROMPT, SEED_CREW_ADDENDUM, SEED_CREW_ID, SEED_REVIEWER_PROMPT,
-    SEED_ROLE_ARGS_JSON,
+    seed_defaults, SEED_CODER_PROMPT, SEED_CODER_ROLE_ID, SEED_CREW_ADDENDUM, SEED_CREW_ID,
+    SEED_REVIEWER_PROMPT, SEED_REVIEWER_ROLE_ID,
 };
 use super::{open_in_memory, open_pool};
 
@@ -55,14 +57,16 @@ fn fixture_pool_preserves_file_backing_schema_and_connection_guards() {
     );
     assert_eq!(
         connections[0]
-            .query_row(
-                "SELECT COUNT(*) FROM crews WHERE id = ?1",
-                [SEED_CREW_ID],
-                |row| row.get::<_, i64>(0)
-            )
+            .query_row("SELECT COUNT(*) FROM crews", [], |row| row.get::<_, i64>(0))
             .unwrap(),
-        1
+        0
     );
+    assert!(
+        super::app_state::app_state_get(&connections[0], SEED_MARKER_KEY)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(onboarding_completed_at_conn(&connections[0]).unwrap(), None);
     insert_crew(&connections[0], "fixture-persisted");
     drop(connections);
     drop(pool);
@@ -649,10 +653,20 @@ fn deleting_crew_requires_explicit_slot_cleanup() {
 }
 
 #[test]
-fn seed_defaults_inserts_pair_coding_crew_on_empty_db() {
+fn seed_defaults_leaves_crews_empty_and_records_marker_idempotently() {
     let pool = open_in_memory().unwrap();
     let mut conn = pool.get().unwrap();
     seed_defaults(&mut conn).unwrap();
+    let marker = super::app_state::app_state_get(&conn, SEED_MARKER_KEY)
+        .unwrap()
+        .expect("seed marker should be recorded");
+    assert!(SEED_CREW_ADDENDUM.contains("a task is done when"));
+
+    seed_defaults(&mut conn).unwrap();
+    let marker_after = super::app_state::app_state_get(&conn, SEED_MARKER_KEY)
+        .unwrap()
+        .expect("seed marker should persist");
+    assert_eq!(marker_after, marker);
 
     let crew_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
@@ -661,60 +675,10 @@ fn seed_defaults_inserts_pair_coding_crew_on_empty_db() {
     let slot_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM slots", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(crew_count, 1);
-    assert_eq!(role_count, 2);
-    assert_eq!(slot_count, 2);
-
-    let lead_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM slots WHERE lead != 0", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    assert_eq!(lead_count, 0);
-
-    let (name, addendum): (String, Option<String>) = conn
-        .query_row(
-            "SELECT name, system_prompt_addendum FROM crews WHERE id = ?1",
-            params![SEED_CREW_ID],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(name, "Pair coding crew");
-    assert_eq!(
-        addendum.as_deref(),
-        Some(SEED_CREW_ADDENDUM.trim_end_matches('\n'))
-    );
-    assert!(SEED_CREW_ADDENDUM.contains("a task is done when"));
-
-    let expected_args: Vec<String> = serde_json::from_str(SEED_ROLE_ARGS_JSON).unwrap();
-    let codex_seed_count = crate::repo::role::list(&conn)
-        .unwrap()
-        .into_iter()
-        .filter(|role| {
-            role.runtime == "codex"
-                && role.command == "codex"
-                && role.args == expected_args
-                && role.model.is_none()
-                && role.effort.is_none()
-                && role.codex_speed.is_none()
-        })
-        .count();
-    assert_eq!(
-        codex_seed_count, 2,
-        "all seeded roles should use codex Auto with inherited model/effort",
-    );
-
-    for (handle, prompt) in [
-        ("coder", SEED_CODER_PROMPT),
-        ("reviewer", SEED_REVIEWER_PROMPT),
-    ] {
-        let stored = crate::repo::role::get_by_handle(&conn, handle)
-            .unwrap()
-            .unwrap()
-            .system_prompt
-            .unwrap();
-        assert_eq!(stored, prompt.trim_end_matches('\n'));
-    }
+    assert_eq!(crew_count, 0);
+    assert_eq!(role_count, 0);
+    assert_eq!(slot_count, 0);
+    assert_eq!(onboarding_completed_at_conn(&conn).unwrap(), None);
 }
 
 /// Verbatim copy of the pre-#51 architect `system_prompt`
@@ -904,76 +868,17 @@ fn seeded_personas_contain_no_bus_verbs() {
 }
 
 #[test]
-fn seed_defaults_skips_when_user_has_a_crew() {
+fn onboarding_completed_marks_once_and_preserves_timestamp() {
     let pool = open_in_memory().unwrap();
-    let mut conn = pool.get().unwrap();
-    insert_crew(&conn, "user-c1");
-    seed_defaults(&mut conn).unwrap();
+    assert!(!is_onboarding_completed(&pool).unwrap());
+    assert_eq!(onboarding_completed_at(&pool).unwrap(), None);
 
-    let crew_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(crew_count, 1, "should not seed when crews already exist");
-}
+    assert!(mark_onboarding_completed(&pool).unwrap());
+    assert!(is_onboarding_completed(&pool).unwrap());
+    let first = onboarding_completed_at(&pool).unwrap().unwrap();
 
-#[test]
-fn seed_defaults_skips_when_user_has_a_role_but_no_crew() {
-    // Any existing role means this is not a first-launch-empty DB.
-    // The seed must bail as one unit instead of colliding on a handle
-    // and leaving a partial crew.
-    let pool = open_in_memory().unwrap();
-    let mut conn = pool.get().unwrap();
-    insert_role(&conn, "user-r1", "coder").unwrap();
-    seed_defaults(&mut conn).unwrap();
-
-    let crew_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
-        .unwrap();
-    let role_count = crate::repo::role::count(&conn).unwrap();
-    assert_eq!(crew_count, 0, "should not create Pair coding crew");
-    assert_eq!(role_count, 1, "user's runner stays untouched");
-}
-
-#[test]
-fn seed_defaults_marker_prevents_reseed_after_user_deletes_everything() {
-    // First launch: empty DB → seed runs and marker is recorded.
-    let pool = open_in_memory().unwrap();
-    let mut conn = pool.get().unwrap();
-    seed_defaults(&mut conn).unwrap();
-
-    conn.execute("DELETE FROM slots", []).unwrap();
-    conn.execute("DELETE FROM crews", []).unwrap();
-    crate::repo::role::delete_all(&conn).unwrap();
-    let crew_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(crew_count, 0);
-
-    // Next launch: seed sees the marker and skips, even though
-    // the DB looks "empty" again.
-    seed_defaults(&mut conn).unwrap();
-    let crew_count_after: i64 = conn
-        .query_row("SELECT COUNT(*) FROM crews", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(
-        crew_count_after, 0,
-        "marker must prevent reseeding after deletion"
-    );
-}
-
-#[test]
-fn seed_defaults_is_idempotent_across_reseeds() {
-    let pool = open_in_memory().unwrap();
-    let mut conn = pool.get().unwrap();
-    seed_defaults(&mut conn).unwrap();
-    seed_defaults(&mut conn).unwrap();
-
-    let role_count = crate::repo::role::count(&conn).unwrap();
-    let slot_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM slots", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(role_count, 2);
-    assert_eq!(slot_count, 2);
+    assert!(!mark_onboarding_completed(&pool).unwrap());
+    assert_eq!(onboarding_completed_at(&pool).unwrap(), Some(first));
 }
 
 /// Migration 0014: seed a pre-migration-shaped DB (schema 13),
@@ -2070,4 +1975,95 @@ fn migration_0030_adds_a_saved_files_root_that_goes_with_its_row() {
     assert_eq!(session::files_root(&conn, "chat").unwrap(), None);
     session::delete_many(&conn, &["chat".into()]).unwrap();
     assert_eq!(session::files_root(&conn, "chat").unwrap(), None);
+}
+
+#[test]
+fn migration_0031_marks_existing_user_history_and_leaves_fresh_and_seed_only_unset() {
+    // 1. Fresh DB at 30 -> 31 leaves onboarding unset.
+    let mut fresh = Connection::open_in_memory().unwrap();
+    run_migrations_up_to(&mut fresh, 30).unwrap();
+    run_migrations_up_to(&mut fresh, 31).unwrap();
+    assert_eq!(
+        super::app_state::onboarding_completed_at_conn(&fresh).unwrap(),
+        None
+    );
+
+    // 2. Seed-only DB at 30 -> 31 leaves onboarding unset.
+    let mut seed_only = Connection::open_in_memory().unwrap();
+    run_migrations_up_to(&mut seed_only, 30).unwrap();
+    seed_only
+        .execute(
+            "INSERT INTO crews (id, name, created_at, updated_at) VALUES (?1, 'Pair coding crew', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+            params![SEED_CREW_ID],
+        )
+        .unwrap();
+    seed_only
+        .execute(
+            "INSERT INTO roles (id, handle, display_name, runtime, command, created_at, updated_at)
+             VALUES (?1, 'coder', 'Coder', 'codex', 'codex', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z'),
+                    (?2, 'reviewer', 'Reviewer', 'codex', 'codex', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+            params![SEED_CODER_ROLE_ID, SEED_REVIEWER_ROLE_ID],
+        )
+        .unwrap();
+    run_migrations_up_to(&mut seed_only, 31).unwrap();
+    assert_eq!(
+        super::app_state::onboarding_completed_at_conn(&seed_only).unwrap(),
+        None
+    );
+
+    // 3. Any session marks onboarding completed.
+    let mut with_session = Connection::open_in_memory().unwrap();
+    run_migrations_up_to(&mut with_session, 30).unwrap();
+    with_session
+        .execute(
+            "INSERT INTO sessions (id, status) VALUES ('s1', 'stopped')",
+            [],
+        )
+        .unwrap();
+    run_migrations_up_to(&mut with_session, 31).unwrap();
+    assert!(
+        super::app_state::onboarding_completed_at_conn(&with_session)
+            .unwrap()
+            .is_some()
+    );
+
+    // 4. Any mission marks onboarding completed.
+    let mut with_mission = Connection::open_in_memory().unwrap();
+    run_migrations_up_to(&mut with_mission, 30).unwrap();
+    with_mission
+        .execute(
+            "INSERT INTO missions (id, title, status, started_at) VALUES ('m1', 'M', 'running', '2026-11-02T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    run_migrations_up_to(&mut with_mission, 31).unwrap();
+    assert!(
+        super::app_state::onboarding_completed_at_conn(&with_mission)
+            .unwrap()
+            .is_some()
+    );
+
+    // 5. Any non-seed crew marks onboarding completed.
+    let mut with_crew = Connection::open_in_memory().unwrap();
+    run_migrations_up_to(&mut with_crew, 30).unwrap();
+    insert_crew(&with_crew, "custom");
+    run_migrations_up_to(&mut with_crew, 31).unwrap();
+    assert!(super::app_state::onboarding_completed_at_conn(&with_crew)
+        .unwrap()
+        .is_some());
+
+    // 6. Any non-seed role marks onboarding completed (even if seed crew exists).
+    let mut with_role = Connection::open_in_memory().unwrap();
+    run_migrations_up_to(&mut with_role, 30).unwrap();
+    with_role
+        .execute(
+            "INSERT INTO crews (id, name, created_at, updated_at) VALUES (?1, 'Pair coding crew', '2026-08-01T00:00:00Z', '2026-08-01T00:00:00Z')",
+            params![SEED_CREW_ID],
+        )
+        .unwrap();
+    insert_role(&with_role, "custom-role", "helper").unwrap();
+    run_migrations_up_to(&mut with_role, 31).unwrap();
+    assert!(super::app_state::onboarding_completed_at_conn(&with_role)
+        .unwrap()
+        .is_some());
 }

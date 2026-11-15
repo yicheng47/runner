@@ -34,6 +34,7 @@ pub(crate) struct AgentUpdateRequest {
     )>,
     pub(crate) task_id: String,
     pub(crate) runtime: Runtime,
+    pub(crate) kind: runner_core::protocol::RuntimeTaskKind,
     pub(crate) display_name: String,
     /// Catalog command name (`codex`), for the `codex update` label.
     pub(crate) command: String,
@@ -43,7 +44,14 @@ pub(crate) struct AgentUpdateRequest {
 
 impl AgentUpdateRequest {
     fn command_label(&self) -> String {
-        let args = runner_core::protocol::runtime_metadata::catalog_for(self.runtime)
+        let catalog = runner_core::protocol::runtime_metadata::catalog_for(self.runtime);
+        if self.kind == runner_core::protocol::RuntimeTaskKind::Install {
+            return catalog
+                .and_then(|definition| definition.npm_package)
+                .map(|pkg| format!("npm install -g {pkg}"))
+                .unwrap_or_else(|| self.command.clone());
+        }
+        let args = catalog
             .map(|definition| definition.update_args.join(" "))
             .unwrap_or_default();
         format!("{} {args}", self.command).trim().to_owned()
@@ -133,17 +141,26 @@ fn footer(
             version,
             running_sessions,
         } => {
+            let install = request.kind == runner_core::protocol::RuntimeTaskKind::Install;
             let mut lines = vec![(
                 version.as_ref().map_or_else(
                     || {
                         crate::i18n::tf(
-                            "format.update_finished",
+                            if install {
+                                "agent_updates.install_finished"
+                            } else {
+                                "format.update_finished"
+                            },
                             &[("runtime", (request.display_name).to_string())],
                         )
                     },
                     |version| {
                         crate::i18n::tf(
-                            "format.is_now",
+                            if install {
+                                "agent_updates.installed_version"
+                            } else {
+                                "format.is_now"
+                            },
                             &[
                                 ("runtime", (request.display_name).to_string()),
                                 ("version", (version).to_string()),
@@ -182,9 +199,12 @@ fn footer(
     footer
 }
 
-fn exit_message(exit_code: Option<i32>) -> String {
+fn exit_message(kind: runner_core::protocol::RuntimeTaskKind, exit_code: Option<i32>) -> String {
     match exit_code {
         Some(code) => crate::i18n::tf("format.exited_with_code", &[("code", (code).to_string())]),
+        None if kind == runner_core::protocol::RuntimeTaskKind::Install => {
+            crate::i18n::text("agent_updates.no_exit_code_install").into()
+        }
         None => crate::i18n::text("ui.the_update_ended_without_an_exit_code").into(),
     }
 }
@@ -384,7 +404,7 @@ impl AgentUpdateDialog {
             State::Failed | State::BrokenAfterStop => Phase::Failed(
                 task.message
                     .clone()
-                    .unwrap_or_else(|| exit_message(task.exit_code)),
+                    .unwrap_or_else(|| exit_message(task.kind, task.exit_code)),
             ),
             State::Verifying => Phase::Verifying,
             _ => Phase::Running,
@@ -633,16 +653,25 @@ impl Render for AgentUpdateDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = terminal_style_for(&self.app_store.read(cx).settings, cx);
         let mark = ChatIcon::for_runtime(self.request.runtime.key());
+        let install = self.request.kind == runner_core::protocol::RuntimeTaskKind::Install;
         let title = crate::i18n::tf(
-            "format.updating",
+            if install {
+                "agent_updates.installing"
+            } else {
+                "format.updating"
+            },
             &[("runtime", (self.request.display_name).to_string())],
         );
-        let subtitle = format!(
-            "{} → {} · {}",
-            self.request.installed,
-            self.request.available,
+        let subtitle = if install {
             self.request.command_label()
-        );
+        } else {
+            format!(
+                "{} → {} · {}",
+                self.request.installed,
+                self.request.available,
+                self.request.command_label()
+            )
+        };
         let close = cx.weak_entity();
         let terminal = self.render_terminal(style.clone(), cx);
         let footer = self.render_footer(cx);
@@ -781,11 +810,35 @@ mod tests {
             terminal: None,
             task_id: "update".into(),
             runtime: Runtime::Codex,
+            kind: runner_core::protocol::RuntimeTaskKind::Update,
             display_name: "Codex".into(),
             command: "codex".into(),
             installed: "0.153.4".into(),
             available: "0.155.0".into(),
         }
+    }
+
+    #[test]
+    fn install_request_formats_command_and_completion() {
+        let mut request = request();
+        request.kind = runner_core::protocol::RuntimeTaskKind::Install;
+        assert_eq!(request.command_label(), "npm install -g @openai/codex");
+        assert_eq!(
+            footer(
+                &Phase::Succeeded {
+                    version: Some("0.155.0".into()),
+                    running_sessions: 0,
+                },
+                false,
+                &request,
+                None,
+            ),
+            Footer {
+                lines: vec![("Codex 0.155.0 installed".into(), FooterTone::Text)],
+                busy: false,
+                button: Some(crate::i18n::text("agent_updates.hide")),
+            }
+        );
     }
 
     #[test]
@@ -848,7 +901,10 @@ mod tests {
         );
         assert_eq!(
             footer(
-                &Phase::Failed(exit_message(Some(243))),
+                &Phase::Failed(exit_message(
+                    runner_core::protocol::RuntimeTaskKind::Update,
+                    Some(243)
+                )),
                 false,
                 &request,
                 None
@@ -1098,7 +1154,10 @@ mod tests {
         assert_eq!(closes.get(), 2);
 
         host.update(&mut window, |dialog, cx| {
-            dialog.phase = Phase::Failed(exit_message(Some(1)));
+            dialog.phase = Phase::Failed(exit_message(
+                runner_core::protocol::RuntimeTaskKind::Update,
+                Some(1),
+            ));
             cx.notify();
         });
         window.run_until_parked();

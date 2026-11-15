@@ -123,6 +123,7 @@ impl NativeRoot {
                             this.refresh_add_slot_runtimes(cx);
                             this.refresh_slot_override_runtimes(cx);
                             this.refresh_agents_pane(cx);
+                            this.refresh_setup_data(cx);
                             this.usage_installed =
                                 crate::surfaces::app_shell::usage_installed(this.core(cx));
                             let runtimes = this
@@ -379,6 +380,7 @@ impl NativeRoot {
                     .collect(),
                 ..Default::default()
             },
+            setup: Default::default(),
             agent_update: None,
             fork_confirm: None,
             forking_sessions: HashMap::new(),

@@ -15,7 +15,7 @@ The CLI can create the same association:
 ```sh
 runner project create "My app" --path /absolute/path/to/my-app
 runner chat start --runtime codex --project "My app"
-runner mission start --crew "Pair coding crew" --project "My app" --title "README review" --goal "Review the README for accuracy."
+runner mission start --crew "Pair coding" --project "My app" --title "README review" --goal "Review the README for accuracy."
 ```
 
 On Windows, use an absolute Windows path such as `C:\Users\you\src\my-app`. Quote paths containing spaces.

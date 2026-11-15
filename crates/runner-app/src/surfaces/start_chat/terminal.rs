@@ -78,6 +78,16 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.new_terminal_tab_in(scope, None, window, cx);
+    }
+
+    pub(crate) fn new_terminal_tab_in(
+        &mut self,
+        scope: ProjectScope,
+        cwd_override: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let remote = self.front_page_client(cx).is_remote();
         let mut draft = PaneLayout::single(None, &[]);
         if remote {
@@ -99,18 +109,20 @@ impl NativeRoot {
                 .find(|project| project.id == project_id)
                 .map(|project| project.cwd.as_str())
         });
-        let cwd = (!remote)
-            .then(|| {
-                terminal_working_dir(
-                    None,
-                    project_cwd,
-                    &self.settings(cx).default_working_dir,
-                    runner_core::app_paths::home_dir()
-                        .as_deref()
-                        .and_then(|home| home.to_str()),
-                )
-            })
-            .flatten();
+        let cwd = cwd_override.or_else(|| {
+            (!remote)
+                .then(|| {
+                    terminal_working_dir(
+                        None,
+                        project_cwd,
+                        &self.settings(cx).default_working_dir,
+                        runner_core::app_paths::home_dir()
+                            .as_deref()
+                            .and_then(|home| home.to_str()),
+                    )
+                })
+                .flatten()
+        });
         let input = crate::surfaces::front_page::actions::ShellStart {
             draft: draft.clone(),
             pane: Some(draft.focused_pane_id.clone()),

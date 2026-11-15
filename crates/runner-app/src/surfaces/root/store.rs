@@ -161,6 +161,14 @@ impl NativeRoot {
             self.apply_terminal_settings(cx);
         }
 
+        if (revisions.settings != previous.settings
+            || revisions.onboarding != previous.onboarding
+            || revisions.crews != previous.crews)
+            && self.setup_visible(cx)
+        {
+            self.refresh_setup_data(cx);
+        }
+
         if reactions.notify_shell() || (reactions.terminal_wake && self.route.terminal_visible()) {
             cx.notify();
         }

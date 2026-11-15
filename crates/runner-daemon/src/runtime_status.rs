@@ -85,6 +85,7 @@ pub(crate) fn status_list_with_events(
     let overrides = db::runtime_overrides(pool)?;
     let launch_options = db::runtime_launch_options(pool)?;
     let path = direct_chat_path(&shell_env);
+    let npm_available = find_executable("npm", &path).is_some();
     let home = runner_core::app_paths::home_dir();
     let result = discovery.result.as_ref();
     let failed = result.is_some_and(|result| !result.outcome.is_success());
@@ -223,11 +224,13 @@ pub(crate) fn status_list_with_events(
                 min_version: runtime.min_version.map(str::to_owned),
                 installed_version,
                 available_version,
+                sign_in: runner_core::protocol::RuntimeSignInStatus::Unknown,
             }
         })
         .collect();
 
     Ok(RuntimeStatusResponse {
+        npm_available,
         shell: ShellDiscoveryStatus {
             shell: result
                 .and_then(|result| result.shell.clone())
@@ -414,7 +417,19 @@ use runner_core::protocol::runtime_paths::validate_executable_path;
 
 use runner_core::protocol::runtime_paths::validation_error;
 
+#[cfg(test)]
+pub(crate) const TEST_ISOLATE_PATH_ENV: &str = "__RUNNER_TEST_ISOLATE_PATH";
+
 pub fn direct_chat_path(shell_env: &LoginShellEnv) -> String {
+    #[cfg(test)]
+    if shell_env
+        .vars
+        .get(TEST_ISOLATE_PATH_ENV)
+        .is_some_and(|value| value == "1")
+    {
+        return shell_env.path.clone().unwrap_or_default();
+    }
+
     let process_path = std::env::var("PATH").ok();
     let home = runner_core::app_paths::home_dir();
     launch::compose_path(

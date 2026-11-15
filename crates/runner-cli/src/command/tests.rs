@@ -2093,3 +2093,24 @@ async fn mission_commands_carry_the_calling_chat() {
     );
     assert!(calls.is_empty());
 }
+
+#[tokio::test]
+async fn mission_start_without_crew_explains_setup_when_no_crews_exist() {
+    let cli = Cli::try_parse_from(["runner", "mission", "start", "--title", "First"]).unwrap();
+    let client = SequenceClient::new(vec![("crew_list", Ok(json!([])))]);
+    let error = run_connected(&client, &cli, &BusContext::OffBus, None)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, 2);
+    assert!(
+        error.message.contains("runner role create"),
+        "{}",
+        error.message
+    );
+    assert!(
+        error.message.contains("runner crew create"),
+        "{}",
+        error.message
+    );
+    assert!(error.message.contains("setup"), "{}", error.message);
+}

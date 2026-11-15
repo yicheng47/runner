@@ -234,6 +234,18 @@ impl AgentsPane {
                         .child(self.render_toggle(runtime, cx)),
                 )
             })
+            .when(!installed, |row| {
+                row.children(self.render_install_action(runtime, cx).map(|action| {
+                    div()
+                        .id(SharedString::from(format!("agent-row-install-{name}")))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(action)
+                }))
+            })
             .child(
                 svg()
                     .flex_none()
@@ -244,6 +256,136 @@ impl AgentsPane {
             .into_any_element()
     }
 
+    pub(super) fn render_install_action(
+        &self,
+        runtime: &RuntimeExecutableStatus,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        use runner_core::protocol::RuntimeUpdateState as State;
+
+        let name = runtime.name;
+        if let Some(task) = self.tasks.iter().find(|task| task.runtime == name) {
+            if task.state == State::MayNeedInput {
+                let shell = self.shell.clone();
+                let task_for_dialog = task.clone();
+                return Some(
+                    div()
+                        .debug_selector(|| format!("AGENT_INSTALL_ROW_{name}"))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .debug_selector(|| format!("AGENT_TASK_CAPTION_{name}"))
+                                .text_size(theme::text_meta())
+                                .text_color(theme::warning())
+                                .child(super::super::super::background_tasks::label(task)),
+                        )
+                        .child(
+                            Button::new(
+                                SharedString::from(format!("agent-install-answer-{name}")),
+                                crate::i18n::text("agent_updates.answer"),
+                            )
+                            .debug_selector(format!("AGENT_INSTALL_ANSWER_{name}"))
+                            .size(ButtonSize::Sm)
+                            .variant(ButtonVariant::Secondary)
+                            .on_press(move |window, cx| {
+                                let task_for_dialog = task_for_dialog.clone();
+                                let _ = shell.update(cx, |root, cx| {
+                                    root.show_target_task(task_for_dialog, None, window, cx);
+                                });
+                            }),
+                        )
+                        .into_any_element(),
+                );
+            }
+            if matches!(task.state, State::Failed | State::BrokenAfterStop) {
+                let shell = self.shell.clone();
+                let install = task.kind == runner_core::protocol::RuntimeTaskKind::Install;
+                return Some(
+                    div()
+                        .debug_selector(|| format!("AGENT_INSTALL_ROW_{name}"))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .debug_selector(|| format!("AGENT_TASK_CAPTION_{name}"))
+                                .text_size(theme::text_meta())
+                                .text_color(theme::danger())
+                                .child(crate::i18n::text("agent_updates.settings_install_failed")),
+                        )
+                        .child(
+                            Button::new(
+                                SharedString::from(format!("agent-task-retry-{name}")),
+                                crate::i18n::text("ui.retry"),
+                            )
+                            .debug_selector(format!("AGENT_TASK_RETRY_{name}"))
+                            .size(ButtonSize::Sm)
+                            .variant(ButtonVariant::Secondary)
+                            .on_press(move |_, cx| {
+                                let _ = shell.update(cx, |root, cx| {
+                                    root.start_agent_task(name, install, cx);
+                                });
+                            }),
+                        )
+                        .into_any_element(),
+                );
+            }
+            if task.state.active() {
+                return Some(
+                    div()
+                        .debug_selector(|| format!("AGENT_INSTALL_ROW_{name}"))
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(spinner(
+                            SharedString::from(format!("agent-install-spinner-{name}")),
+                            12.,
+                            theme::muted(),
+                        ))
+                        .child(
+                            div()
+                                .debug_selector(|| format!("AGENT_TASK_CAPTION_{name}"))
+                                .text_size(theme::text_meta())
+                                .text_color(theme::muted())
+                                .child(crate::i18n::text("agent_updates.settings_installing")),
+                        )
+                        .into_any_element(),
+                );
+            }
+        }
+        let can_install = self
+            .status
+            .as_ref()
+            .is_some_and(|status| status.npm_available)
+            && runner_core::protocol::runtime_metadata::catalog_for(name)
+                .is_some_and(|entry| entry.npm_package.is_some());
+        if !can_install {
+            return None;
+        }
+        let pane = cx.entity();
+        let status = runtime.clone();
+        Some(
+            div()
+                .debug_selector(|| format!("AGENT_INSTALL_ROW_{name}"))
+                .child(
+                    Button::new(
+                        SharedString::from(format!("agent-row-install-{name}")),
+                        crate::i18n::text("onboarding.install"),
+                    )
+                    .debug_selector(format!("AGENT_ROW_INSTALL_{name}"))
+                    .icon("download.svg")
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Secondary)
+                    .on_press(move |window, cx| {
+                        pane.update(cx, |this, cx| this.open_install(&status, window, cx));
+                    }),
+                )
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn render_update_button(
         &self,
         runtime: &RuntimeExecutableStatus,
@@ -252,31 +394,42 @@ impl AgentsPane {
         if let Some(task) = self.tasks.iter().find(|task| task.runtime == runtime.name) {
             use runner_core::protocol::RuntimeUpdateState as State;
             let name = task.runtime;
+            let install = task.kind == runner_core::protocol::RuntimeTaskKind::Install;
             let answer = task.state == State::MayNeedInput;
             let failed = matches!(task.state, State::Failed | State::BrokenAfterStop);
             let broken = task.state == State::BrokenAfterStop;
             let caption = if answer || failed {
                 super::super::super::background_tasks::label(task)
             } else if task.state.active() {
-                crate::i18n::tf(
-                    "agent_updates.settings_updating",
-                    &[(
-                        "version",
-                        task.to_version.clone().unwrap_or_else(|| {
-                            crate::i18n::text("agent_updates.latest_version").into()
-                        }),
-                    )],
-                )
+                if install {
+                    crate::i18n::text("agent_updates.settings_installing").into()
+                } else {
+                    crate::i18n::tf(
+                        "agent_updates.settings_updating",
+                        &[(
+                            "version",
+                            task.to_version.clone().unwrap_or_else(|| {
+                                crate::i18n::text("agent_updates.latest_version").into()
+                            }),
+                        )],
+                    )
+                }
             } else if task.state == State::Succeeded {
-                crate::i18n::tf(
-                    "agent_updates.settings_updated",
-                    &[(
-                        "version",
-                        task.installed_version.clone().unwrap_or_else(|| {
-                            crate::i18n::text("agent_updates.latest_version").into()
-                        }),
-                    )],
-                )
+                if install {
+                    crate::i18n::text("ui.installed").into()
+                } else {
+                    crate::i18n::tf(
+                        "agent_updates.settings_updated",
+                        &[(
+                            "version",
+                            task.installed_version.clone().unwrap_or_else(|| {
+                                crate::i18n::text("agent_updates.latest_version").into()
+                            }),
+                        )],
+                    )
+                }
+            } else if install {
+                crate::i18n::text("agent_updates.settings_install_failed").into()
             } else {
                 crate::i18n::text("agent_updates.settings_failed").into()
             };
@@ -314,8 +467,9 @@ impl AgentsPane {
                             .size(ButtonSize::Sm)
                             .variant(ButtonVariant::Secondary)
                             .on_press(move |_, cx| {
-                                let _ =
-                                    shell.update(cx, |root, cx| root.start_agent_update(name, cx));
+                                let _ = shell.update(cx, |root, cx| {
+                                    root.start_agent_task(name, install, cx);
+                                });
                             }),
                         )
                     })
@@ -987,8 +1141,27 @@ impl Render for AgentsPane {
                 )
                 .into_any_element()
             };
+            let setup_pane = cx.entity();
+            let header_actions = div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    Button::new(
+                        "agents-open-setup",
+                        crate::i18n::text("onboarding.open_setup"),
+                    )
+                    .debug_selector("AGENTS_OPEN_SETUP")
+                    .icon("list-checks.svg")
+                    .size(ButtonSize::Sm)
+                    .variant(ButtonVariant::Secondary)
+                    .on_press(move |window, cx| {
+                        setup_pane.update(cx, |this, cx| this.open_setup(window, cx));
+                    }),
+                )
+                .child(self.render_refresh(cx));
             div().flex().flex_col().gap_5()
-                .child(PaneHeader::new(crate::i18n::text("ui.agents"), shell_description(self.status.as_ref().map(|status| &status.shell))).action(self.render_refresh(cx)))
+                .child(PaneHeader::new(crate::i18n::text("ui.agents"), shell_description(self.status.as_ref().map(|status| &status.shell))).action(header_actions))
                 .child(runtime_section_caption(crate::i18n::text("ui.open_agent_settings_hint")))
                 .child(lists)
                 .child(runtime_section_caption(crate::i18n::text("ui.disabled_agents_stay_configured_but_are_hidden_from_agent_pickers_overrides_apply_to_new_s")))

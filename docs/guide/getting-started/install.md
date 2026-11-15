@@ -20,13 +20,15 @@ On Linux, local package installation registers Runner's application-menu entry a
 
 ## Set up an agent
 
-1. Install an agent CLI using its provider's instructions. [Supported agents](../reference/supported-agents.md) lists the runtimes and setup links. The default pair-coding crew uses Codex for both roles.
-2. Open your usual terminal and run the agent. Complete its sign-in or provider configuration and confirm it can answer a prompt.
-3. Open **Settings → Agents** in Runner. Confirm the agent is enabled and that Runner shows its executable and version. Use **Refresh** after installing a CLI; use **Browse** to select its executable if it is outside `PATH`.
+On first launch, Runner opens **Setup** in place of the launcher so you can check detected agents, install npm-packaged CLIs (Claude Code, Codex, GitHub Copilot CLI and pi) when `npm` is available, open a terminal to complete sign-in, and prepare the **Pair coding** starter crew. You can also reopen it anytime from **Settings → Agents → Open setup**.
+
+1. In **Setup** or **Settings → Agents**, click **Install** beside an npm-packaged agent when Node.js and `npm` are available, or install another CLI using its provider's instructions and **Guide** link. [Supported agents](../reference/supported-agents.md) lists the runtimes and setup links. When at least one eligible agent is ready, Setup offers to create the **Pair coding** starter crew.
+2. Open your usual terminal (or click **Open terminal** from Setup) and run the agent. Complete its sign-in or provider configuration and confirm it can answer a prompt.
+3. Click **Recheck** in Setup, or **Refresh** in **Settings → Agents**, after installing Node.js or an agent CLI. Confirm the agent is enabled and that Runner shows its executable and version; use **Browse** to select its executable if it is outside `PATH`.
 
 On Windows, agents run natively without WSL. Claude Code and pi's bash tool need Git for Windows; npm-installed CLIs also need Node.js. PowerShell 7 is optional.
 
-Runner does not install the agent CLIs or supply subscriptions. Where supported, **Settings → Agents** offers **Update** when a newer CLI version is available. The update runs the agent's own updater in a terminal.
+Runner does not supply agent subscriptions, and automatic installs cover only npm-packaged CLIs when `npm` is on `PATH` (vendor shell scripts remain manual via **Guide** and **Copy**). Where supported, **Settings → Agents** also offers **Update** when a newer CLI version is available. Both **Install** and **Update** run in background terminal tasks.
 
 The dot on the Usage popover's **Agent settings** gear indicates an agent CLI update. Opening Usage or **Settings → Agents** refreshes the installed CLI versions, so the dot clears once every enabled agent is up to date. Updating Runner does not update these separately installed CLIs.
 

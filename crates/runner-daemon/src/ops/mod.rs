@@ -26,6 +26,7 @@ pub mod crew;
 pub mod mcp;
 pub mod mission;
 pub mod node;
+pub mod onboarding;
 pub mod project;
 pub mod role;
 pub mod runtime;

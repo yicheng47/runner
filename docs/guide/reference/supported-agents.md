@@ -6,7 +6,7 @@ Claude Code and Codex are the primary integrations, with tuned launch and nudge 
 
 ## Agent settings
 
-**Settings → Agents** groups agents into Installed and Not installed lists. Every row opens that agent’s page; use the **Agents** breadcrumb to return. Installed rows show the version, executable, default badge, enable switch and an Update button when available. Tab and Shift-Tab move between rows and controls; Enter or Space opens a focused row.
+**Settings → Agents** groups agents into Installed and Not installed lists. Every row opens that agent’s page; use the **Agents** breadcrumb to return, or click **Open setup** in the header to reopen the first-run setup page in this window. Installed rows show the version, executable, default badge, enable switch and an Update button when available; Not installed rows for npm-packaged agents (Claude Code, Codex, Copilot CLI, pi) show **Install** when `npm` is on `PATH`. Tab and Shift-Tab move between rows and controls; Enter or Space opens a focused row.
 
 The agent’s page has its enable switch and **Set as default** action, detection and update status, **Executable** field with Browse and Reset, and read-only **Defaults** for model and effort. Leave Executable on Auto to use discovery. A chosen path applies to new sessions using the agent’s default command; roles with a custom command keep it. A missing agent’s page includes its install instructions and Browse.
 
@@ -102,4 +102,4 @@ On macOS and Linux, Antigravity CLI usage checks require **1.5.8 or newer** so R
 
 When a supported agent has a newer version, only its agent row shows the installed and available versions with **Update**; its roles keep their normal rows. You can still start chats on the supported installed version. A dot on the sidebar's Settings gear opens **Settings → Agents** and covers enabled agents with an update command, including those without a usage meter.
 
-Manual updates run as [background tasks](../guides/chats-and-windows.md#background-tasks). Starting the same update again joins the existing task. Running chats keep their current executable version until they restart. These controls update agent CLIs; Runner's own updates remain in **Settings → Updates**. Automatic agent updates are separate work.
+Manual installs and updates run as [background tasks](../guides/chats-and-windows.md#background-tasks). When `npm` is available on `PATH`, Claude Code, Codex, GitHub Copilot CLI and pi can be installed via `npm install -g` from Setup or **Settings → Agents**; runtimes without an npm package keep manual Copy and guide links. Starting the same task again joins the existing task. Running chats keep their current executable version until they restart. These controls install or update agent CLIs; Runner's own updates remain in **Settings → Updates**. Automatic agent updates are separate work.

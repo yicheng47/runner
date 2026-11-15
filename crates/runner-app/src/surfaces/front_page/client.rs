@@ -252,9 +252,10 @@ impl FrontPageClient {
             project,
             cwd,
             size,
+            initial_prompt,
         } = input;
         if !self.is_remote() {
-            let scope = runner_core::protocol::project::ProjectScope::or_root(project);
+            let scope = runner_core::protocol::project::ProjectScope::or_root(project.clone());
             let speed = speed.map(|s| {
                 if s == "fast" {
                     runner_core::protocol::model::CodexSpeed::Fast
@@ -262,6 +263,26 @@ impl FrontPageClient {
                     runner_core::protocol::model::CodexSpeed::Standard
                 }
             });
+            if let Some(initial_prompt) = initial_prompt {
+                let output = self.daemon.session_start_chat(
+                    runner_core::protocol::StartDirectSessionArgs {
+                        role_id: role,
+                        runtime: runtime
+                            .as_deref()
+                            .and_then(runner_core::protocol::model::Runtime::parse),
+                        model,
+                        effort,
+                        speed,
+                        project_id: project,
+                        cwd,
+                        scope: Some(scope),
+                        cols: Some(size.0),
+                        rows: Some(size.1),
+                        initial_prompt: Some(initial_prompt),
+                    },
+                )?;
+                return Ok(output.session.id);
+            }
             return if let Some(role) = role {
                 self.daemon
                     .session_start_direct_with_speed(
@@ -291,6 +312,31 @@ impl FrontPageClient {
                     .map(|s| s.session.id)
             };
         }
+        self.start_chat_remote(ChatStart {
+            role,
+            runtime,
+            model,
+            effort,
+            speed,
+            project,
+            cwd,
+            size,
+            initial_prompt: None,
+        })
+    }
+
+    fn start_chat_remote(&self, input: ChatStart) -> ClientResult<String> {
+        let ChatStart {
+            role,
+            runtime,
+            model,
+            effort,
+            speed,
+            project,
+            cwd,
+            size,
+            initial_prompt: _,
+        } = input;
         self.action::<SessionResult>(
             "startChat",
             ActionRequest::StartChat {
@@ -444,6 +490,7 @@ impl FrontPageClient {
             project: None,
             cwd,
             size,
+            initial_prompt: None,
         })
     }
 
@@ -1230,6 +1277,7 @@ pub(crate) struct ChatStart {
     pub(crate) project: Option<String>,
     pub(crate) cwd: Option<String>,
     pub(crate) size: (u16, u16),
+    pub(crate) initial_prompt: Option<String>,
 }
 
 pub(crate) struct MissionResume {
