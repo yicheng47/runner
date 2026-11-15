@@ -128,6 +128,15 @@ pub enum RuntimeRowState {
     InvalidOverride,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSignInStatus {
+    SignedIn,
+    SignInNeeded,
+    #[default]
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShellDiscoveryStatus {
     pub shell: Option<String>,
@@ -162,12 +171,16 @@ pub struct RuntimeExecutableStatus {
     pub min_version: Option<String>,
     #[serde(default)]
     pub below_minimum: bool,
+    #[serde(default)]
+    pub sign_in: RuntimeSignInStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeStatusResponse {
     pub shell: ShellDiscoveryStatus,
     pub runtimes: Vec<RuntimeExecutableStatus>,
+    #[serde(default)]
+    pub npm_available: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -438,10 +451,28 @@ impl RuntimeUpdateState {
         }
     }
 }
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeTaskKind {
+    #[default]
+    Update,
+    Install,
+}
+
+pub const NODEJS_DOWNLOAD_URL: &str = "https://nodejs.org";
+
+pub fn npm_install_command(runtime: Runtime) -> Option<String> {
+    super::runtime_metadata::catalog_for(runtime)
+        .and_then(|catalog| catalog.npm_package)
+        .map(|package| format!("npm install -g {package}"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeUpdateTask {
     pub id: String,
     pub runtime: Runtime,
+    #[serde(default)]
+    pub kind: RuntimeTaskKind,
     pub from_version: Option<String>,
     pub to_version: Option<String>,
     pub state: RuntimeUpdateState,

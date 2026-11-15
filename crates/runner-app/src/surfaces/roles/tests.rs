@@ -1351,6 +1351,7 @@ fn a_search_with_no_matches_keeps_the_count() {
     use crate::surfaces::AppRoute;
 
     let mut page = role_page_harness("role-list-no-matches");
+    let _ = create_test_role(&page.core, "seeded-role", None);
     let total = runner_daemon::ops::role::role_list(&page.core)
         .unwrap()
         .len();

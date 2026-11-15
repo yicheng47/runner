@@ -40,6 +40,7 @@ pub(crate) enum StoreRefreshKind {
     Nodes,
     Missions,
     Runtimes,
+    Onboarding,
     All,
 }
 
@@ -47,6 +48,7 @@ impl StoreRefreshKind {
     pub(crate) fn for_event(event: &AppEvent) -> Option<Self> {
         match event.name.as_str() {
             "runtime/changed" => Some(Self::Runtimes),
+            "onboarding/changed" => Some(Self::Onboarding),
             "claude_accounts/changed" | "usage/updated" | "window_focus_map" | "session/status" => {
                 Some(Self::Activity)
             }
@@ -120,6 +122,7 @@ pub(crate) struct StoreRevisions {
     pub(crate) full_refresh: u64,
     pub(crate) error: u64,
     pub(crate) restart: u64,
+    pub(crate) onboarding: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -340,6 +343,7 @@ pub(crate) struct AppStore {
     pub(crate) claude_accounts: runner_core::protocol::ClaudeAccounts,
     pub(crate) claude_account_usage: BTreeMap<String, runner_core::protocol::RuntimeUsage>,
     pub(crate) file_link_environment: (String, std::collections::HashMap<String, bool>),
+    pub(crate) onboarding: runner_core::protocol::OnboardingStatus,
     command_install_support: Option<CommandInstallSupport>,
     runner_command_status: Option<runner_core::command_install::RunnerCommandStatus>,
     command_install_requires_escalation: bool,
@@ -600,6 +604,7 @@ impl AppStore {
                         }
                         if entity_refresh.crews() {
                             this.refresh_crews_inner();
+                            this.refresh_onboarding_inner();
                         }
                         cx.notify();
                     })
@@ -728,6 +733,7 @@ impl AppStore {
             claude_accounts: Default::default(),
             claude_account_usage: Default::default(),
             file_link_environment: Default::default(),
+            onboarding: Default::default(),
             command_install_support,
             runner_command_status: None,
             command_install_requires_escalation: false,
@@ -757,11 +763,18 @@ impl AppStore {
         store.refresh_missions_blocking_inner();
         store.refresh_activity_inner();
         store.refresh_render_snapshots();
+        store.refresh_onboarding_inner();
         store.collecting_startup_errors = false;
         store
     }
 
     pub(crate) fn refresh(&mut self, refresh: StoreRefreshKind, cx: &mut Context<Self>) {
+        if matches!(
+            refresh,
+            StoreRefreshKind::Onboarding | StoreRefreshKind::All
+        ) {
+            self.refresh_onboarding_inner();
+        }
         if matches!(refresh, StoreRefreshKind::Runtimes | StoreRefreshKind::All) {
             self.initialize_mcp_removal();
             self.initialize_skill_defaults();
@@ -953,7 +966,7 @@ impl AppStore {
         }
     }
 
-    fn refresh_roles_inner(&mut self) {
+    pub(crate) fn refresh_roles_inner(&mut self) {
         match self.client.role_list() {
             Ok(roles) => {
                 self.roles = roles;
@@ -963,7 +976,7 @@ impl AppStore {
         }
     }
 
-    fn refresh_crews_inner(&mut self) {
+    pub(crate) fn refresh_crews_inner(&mut self) {
         let result = self.client.crew_list_all();
         match result {
             Ok(crews) => {
@@ -971,6 +984,23 @@ impl AppStore {
                 self.revisions.crews = self.revisions.crews.wrapping_add(1);
             }
             Err(error) => self.record_error(error.to_string()),
+        }
+    }
+
+    pub(crate) fn onboarding_completed(&self) -> bool {
+        self.onboarding.completed
+    }
+
+    pub(crate) fn has_crews(&self) -> bool {
+        self.onboarding.has_crews || !self.crews.is_empty()
+    }
+
+    pub(crate) fn refresh_onboarding_inner(&mut self) {
+        if let Ok(next) = self.client.onboarding_status() {
+            if self.onboarding != next {
+                self.onboarding = next;
+                self.revisions.onboarding = self.revisions.onboarding.wrapping_add(1);
+            }
         }
     }
 
@@ -1375,6 +1405,10 @@ mod tests {
         assert_eq!(
             StoreRefreshKind::for_event(&event("session/fork-started")),
             Some(StoreRefreshKind::All)
+        );
+        assert_eq!(
+            StoreRefreshKind::for_event(&event("onboarding/changed")),
+            Some(StoreRefreshKind::Onboarding)
         );
         assert_eq!(StoreRefreshKind::for_event(&event("unrelated")), None);
     }

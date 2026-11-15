@@ -3476,6 +3476,7 @@ fn start_surface_and_split_pane_variants_render_in_their_own_contexts() {
         let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
         store.update(&mut cx, |store, cx| {
             crate::app_store::seed_mixed_working_sessions(store);
+            let _ = runner_daemon::ops::onboarding::complete(&store.test_core);
             store
                 .test_core
                 .db
@@ -3485,6 +3486,7 @@ fn start_surface_and_split_pane_variants_render_in_their_own_contexts() {
                 .unwrap();
             store.refresh(crate::app_store::StoreRefreshKind::All, cx);
         });
+        cx.run_until_parked();
         let host = cx.add_window(|window, cx| {
             let mut root = NativeRoot::new(
                 "surface-variants".into(),
@@ -3576,6 +3578,10 @@ fn start_surface_column_stays_440_pixels_wide_and_centred() {
     let temp = tempfile::tempdir().unwrap();
     let mut cx = TestAppContext::single();
     let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    store.update(&mut cx, |store, cx| {
+        let _ = runner_daemon::ops::onboarding::complete(&store.test_core);
+        store.refresh(crate::app_store::StoreRefreshKind::Onboarding, cx);
+    });
     let host = cx.add_window(|window, cx| {
         let mut root = NativeRoot::new(
             "start-surface-width".into(),

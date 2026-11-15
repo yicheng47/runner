@@ -77,7 +77,14 @@ pub(super) async fn run_mission(
         } => {
             let crew = match crew {
                 Some(crew) => Some(resolve_named(client, "crew", "crew_list", crew).await?),
-                None => None,
+                None => {
+                    if list(client, "crew_list", json!({})).await?.is_empty() {
+                        return Err(CliError::usage(
+                            "no crews exist yet; create roles and a crew with `runner role create` and `runner crew create`, or open Runner to run setup",
+                        ));
+                    }
+                    None
+                }
             };
             let goal = read_text(goal.as_deref(), goal_file.as_deref(), "goal")?;
             let project_id = match project {

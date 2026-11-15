@@ -15,7 +15,7 @@ CLI 也能创建相同的关联：
 ```sh
 runner project create "My app" --path /absolute/path/to/my-app
 runner chat start --runtime codex --project "My app"
-runner mission start --crew "Pair coding crew" --project "My app" --title "README review" --goal "Review the README for accuracy."
+runner mission start --crew "Pair coding" --project "My app" --title "README review" --goal "Review the README for accuracy."
 ```
 
 Windows 上请使用绝对 Windows 路径，例如 `C:\Users\you\src\my-app`。包含空格的路径要加引号。

@@ -361,6 +361,26 @@ impl AgentsPane {
         });
     }
 
+    fn open_install(
+        &mut self,
+        runtime: &RuntimeExecutableStatus,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = runtime.name;
+        let shell = self.shell.clone();
+        window.defer(cx, move |_, cx| {
+            let _ = shell.update(cx, |root, cx| root.start_agent_install(name, cx));
+        });
+    }
+
+    fn open_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let shell = self.shell.clone();
+        window.defer(cx, move |window, cx| {
+            let _ = shell.update(cx, |root, cx| root.open_setup(window, cx));
+        });
+    }
+
     fn refresh_discovery(&mut self, cx: &mut Context<Self>) {
         if self.refreshing
             || self

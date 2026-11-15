@@ -59,6 +59,7 @@ enum UpdateAction {
         pane: Option<PaneKey>,
         scope: ProjectScope,
         cwd: Option<String>,
+        initial_prompt: Option<String>,
     },
     Mission(mission::MissionRequest),
     Fork(super::super::chat::ForkRequest),
@@ -110,15 +111,18 @@ pub(crate) struct ChatLauncher {
     goal: Entity<TextField>,
     slots: Option<Vec<SlotLine>>,
     origin: Option<LauncherOrigin>,
+    sample_prompt: Option<Entity<TextField>>,
+    sample_prompt_auto: Option<String>,
     store: Entity<AppStore>,
     subscriptions: Vec<Subscription>,
 }
 
-fn launcher_input(
+pub(super) fn launcher_input(
     key: &EntryKey,
     project: Option<String>,
     cwd: Option<String>,
     size: (u16, u16),
+    initial_prompt: Option<String>,
 ) -> ChatStart {
     let (role, runtime) = match key {
         EntryKey::Agent(key) => (None, Some(key.clone())),
@@ -133,7 +137,24 @@ fn launcher_input(
         project,
         cwd,
         size,
+        initial_prompt,
     }
+}
+
+fn sample_prompt_for_folder(cwd: &str) -> String {
+    let trimmed = cwd.trim();
+    if trimmed.is_empty() {
+        return crate::i18n::text("onboarding.sample_prompt_fallback").into();
+    }
+    let folder = Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(trimmed);
+    crate::i18n::tf(
+        "onboarding.sample_prompt_folder",
+        &[("folder", folder.to_owned()), ("path", trimmed.to_owned())],
+    )
 }
 
 fn launcher_directory(
@@ -217,6 +238,10 @@ pub(crate) fn record_launcher_use(directory: &Path, target: &FrontPageTarget, ke
 }
 
 impl ChatLauncher {
+    pub(crate) fn has_update_retry(&self) -> bool {
+        self.update_retry.is_some()
+    }
+
     fn reload_recents(&mut self, cx: &mut Context<Self>) {
         self.recent_revision = RECENT_REVISION.load(std::sync::atomic::Ordering::Acquire);
         self.recents = RecentStore::load(&self.app_data_dir);
@@ -242,6 +267,7 @@ impl ChatLauncher {
         if project.is_none() {
             let directory = self.default_directory(cx);
             self.cwd.update(cx, |input, cx| input.reset(directory, cx));
+            self.sync_sample_prompt_to_cwd(cx);
         }
         let project = project.unwrap_or_default();
         self.project
@@ -457,6 +483,8 @@ impl ChatLauncher {
             goal,
             slots: None,
             origin: None,
+            sample_prompt: None,
+            sample_prompt_auto: None,
             store: root.app_store.clone(),
             subscriptions: vec![subscription],
         };
@@ -464,6 +492,82 @@ impl ChatLauncher {
             this.load_host(root.remote_client.computer().cloned(), window, cx);
         }
         this
+    }
+
+    pub(crate) fn enable_sample_prompt(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let prompt = sample_prompt_for_folder(self.cwd.read(cx).text());
+        let field = cx.new(|input_cx| {
+            let mut input = TextField::textarea(
+                input_cx.focus_handle(),
+                prompt.clone(),
+                crate::i18n::text("onboarding.sample_prompt_label"),
+                2,
+                false,
+            )
+            .auto_grow(5)
+            .text_size(rems(12. / 16.));
+            input.set_bare(true, input_cx);
+            input.set_right_padding(0., input_cx);
+            input
+        });
+        self.sample_prompt = Some(field);
+        self.sample_prompt_auto = Some(prompt);
+        self.step = Step::Start;
+        self.selected = 0;
+        self.query.update(cx, |query, cx| query.reset("", cx));
+        cx.notify();
+    }
+
+    fn sync_sample_prompt_to_cwd(&mut self, cx: &mut Context<Self>) {
+        let Some(field) = self.sample_prompt.clone() else {
+            return;
+        };
+        let next = sample_prompt_for_folder(self.cwd.read(cx).text());
+        let previous = self.sample_prompt_auto.as_deref();
+        if previous.is_some_and(|auto| field.read(cx).text() == auto) {
+            field.update(cx, |input, cx| input.reset(next.clone(), cx));
+            self.sample_prompt_auto = Some(next);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_cwd_for_test(&mut self, cwd: &str, cx: &mut Context<Self>) {
+        self.cwd.update(cx, |input, cx| input.reset(cwd, cx));
+        self.sync_sample_prompt_to_cwd(cx);
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_sample_prompt_for_test(&mut self, text: &str, cx: &mut Context<Self>) {
+        if let Some(field) = &self.sample_prompt {
+            field.update(cx, |input, cx| input.reset(text, cx));
+            cx.notify();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sample_prompt_text_for_test(&self, cx: &App) -> Option<String> {
+        self.sample_prompt
+            .as_ref()
+            .map(|field| field.read(cx).text().to_owned())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_update_retry_for_test(&mut self, runtime: Runtime, cx: &mut Context<Self>) {
+        self.update_retry = Some(UpdateRetry {
+            runtime,
+            gate: None,
+            action: UpdateAction::Chat {
+                key: None,
+                pane: None,
+                scope: ProjectScope::Root,
+                cwd: None,
+                initial_prompt: None,
+            },
+            requested: false,
+            ready: false,
+        });
+        cx.notify();
     }
 
     fn load_host(
@@ -566,6 +670,7 @@ impl ChatLauncher {
                                     this.changed_directory = true;
                                     let path = this.cwd.read(cx).text().to_owned();
                                     this.project.picked(&path, cx);
+                                    this.sync_sample_prompt_to_cwd(cx);
                                     cx.notify();
                                 },
                             ));
@@ -677,7 +782,11 @@ impl ChatLauncher {
             rows.push(Row::pinned(
                 Choice::Mission,
                 crate::i18n::text("launcher.mission"),
-                crate::i18n::text("ui.work_with_a_crew_of_agents"),
+                if self.crews.is_empty() {
+                    crate::i18n::text("launcher.no_crews_yet")
+                } else {
+                    crate::i18n::text("ui.work_with_a_crew_of_agents")
+                },
             ));
         }
         if let (false, Some(height)) = (self.default_page, self.height) {
@@ -828,6 +937,7 @@ impl ChatLauncher {
         let current = self.cwd.read(cx).text().to_owned();
         if let Some(path) = self.project.choose(id, &current) {
             self.cwd.update(cx, |input, cx| input.reset(path, cx));
+            self.sync_sample_prompt_to_cwd(cx);
         }
         self.changed_directory = false;
         cx.notify();
@@ -864,6 +974,7 @@ impl ChatLauncher {
                             this.project.picked(&path, cx);
                             this.cwd.update(cx, |input, cx| input.reset(path, cx));
                             this.changed_directory = true;
+                            this.sync_sample_prompt_to_cwd(cx);
                         }
                     }
                     Ok(Ok(None)) => {}
@@ -1015,6 +1126,78 @@ impl Render for ChatLauncher {
                             }))
                     })),
             );
+        }
+        let zero_crews = self.step == Step::Crews && self.crews.is_empty() && !self.loading;
+        if zero_crews {
+            let root_create = self.root.clone();
+            let root_setup = self.root.clone();
+            let remote = self.client.is_remote();
+            card = card.child(
+                div()
+                    .debug_selector(|| "LAUNCHER_NO_CREWS".into())
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .gap(rems(8. / 16.))
+                    .child(
+                        div()
+                            .text_size(theme::text_ui())
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::text())
+                            .child(crate::i18n::text("launcher.no_crews_yet")),
+                    )
+                    .child(
+                        div()
+                            .whitespace_normal()
+                            .text_size(theme::text_meta())
+                            .text_color(theme::muted())
+                            .child(crate::i18n::text("launcher.no_crews_hint")),
+                    )
+                    .when(!remote, |banner| {
+                        banner.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    Button::new(
+                                        "launcher-no-crews-create",
+                                        crate::i18n::text("launcher.create_crew"),
+                                    )
+                                    .debug_selector("LAUNCHER_NO_CREWS_CREATE")
+                                    .size(runner_app::ui::ButtonSize::Sm)
+                                    .variant(ButtonVariant::Secondary)
+                                    .on_press(
+                                        move |window, cx| {
+                                            let _ = root_create.update(cx, |root, cx| {
+                                                root.open_create_crew(window, cx);
+                                            });
+                                        },
+                                    ),
+                                )
+                                .child(
+                                    Button::new(
+                                        "launcher-no-crews-setup",
+                                        crate::i18n::text("launcher.open_setup"),
+                                    )
+                                    .debug_selector("LAUNCHER_NO_CREWS_SETUP")
+                                    .icon("list-checks.svg")
+                                    .size(runner_app::ui::ButtonSize::Sm)
+                                    .variant(ButtonVariant::Secondary)
+                                    .on_press(
+                                        move |window, cx| {
+                                            let _ = root_setup.update(cx, |root, cx| {
+                                                root.open_setup(window, cx);
+                                            });
+                                        },
+                                    ),
+                                ),
+                        )
+                    }),
+            );
+            if !rows.is_empty() {
+                card = card.child(div().h(px(1.)).mx_2().my_1().bg(theme::border()));
+            }
         }
         for (index, row) in rows.into_iter().enumerate() {
             if index == ranked_count && ranked_count > 0 {
@@ -1316,6 +1499,76 @@ impl Render for ChatLauncher {
                 .child(div().flex_1().min_w(px(0.)).child(self.query.clone()))
                 .into_any_element()
         };
+        let sample_prompt = (self.step == Step::Start && !split)
+            .then_some(self.sample_prompt.as_ref())
+            .flatten()
+            .map(|prompt_field| {
+                div()
+                    .debug_selector(|| "LAUNCHER_SAMPLE_PROMPT".into())
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .gap(rems(6. / 16.))
+                    .px(rems(12. / 16.))
+                    .py(rems(8. / 16.))
+                    .rounded(rems(8. / 16.))
+                    .border_1()
+                    .border_color(theme::border())
+                    .bg(theme::panel())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(rems(6. / 16.))
+                                    .child(
+                                        svg()
+                                            .path("message-square.svg")
+                                            .size(rems(12. / 16.))
+                                            .text_color(theme::muted()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(theme::text_meta())
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(theme::muted())
+                                            .child(crate::i18n::text(
+                                                "onboarding.sample_prompt_label",
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(|| "LAUNCHER_CLEAR_SAMPLE_PROMPT".into())
+                                    .child(
+                                        runner_app::ui::IconButton::new(
+                                            "launcher-clear-sample-prompt",
+                                            "close.svg",
+                                        )
+                                        .size(runner_app::ui::IconButtonSize::Sm)
+                                        .tooltip(crate::i18n::text(
+                                            "onboarding.clear_sample_prompt",
+                                        ))
+                                        .on_press({
+                                            let this_entity = cx.weak_entity();
+                                            move |_, cx| {
+                                                let _ = this_entity.update(cx, |this, cx| {
+                                                    this.sample_prompt = None;
+                                                    this.sample_prompt_auto = None;
+                                                    cx.notify();
+                                                });
+                                            }
+                                        }),
+                                    ),
+                            ),
+                    )
+                    .child(prompt_field.clone())
+            });
         // The mark stays on every step, so a tab reads as the same tab throughout.
         let brand = self.default_page.then(|| {
             div()
@@ -1401,6 +1654,7 @@ impl Render for ChatLauncher {
                     .children(brand)
                     .child(field)
                     .children(location)
+                    .children(sample_prompt)
                     .children(self.error.as_ref().map(|error| {
                         runner_app::ui::notice_banner(error.clone(), runner_app::ui::Tone::Danger)
                     }))
@@ -1773,7 +2027,18 @@ impl NativeRoot {
                     pane,
                     scope,
                     cwd,
-                } => self.launch_from_launcher(launcher, key, pane, scope, cwd, true, window, cx),
+                    initial_prompt,
+                } => self.launch_from_launcher_with_prompt(
+                    launcher,
+                    key,
+                    pane,
+                    scope,
+                    cwd,
+                    true,
+                    initial_prompt,
+                    window,
+                    cx,
+                ),
                 UpdateAction::Mission(request) => {
                     self.launch_mission_from_launcher(launcher, request, true, window, cx)
                 }
@@ -2212,6 +2477,7 @@ impl NativeRoot {
         if self.remote_client.is_active() {
             self.select_remote_item(crate::surfaces::remote_client::RemoteItem::Launcher, cx);
         } else {
+            self.setup.open = false;
             self.set_route(AppRoute::Launcher, cx);
         }
         if !visible {
@@ -2245,7 +2511,7 @@ impl NativeRoot {
         launcher.read(cx).page_project.clone()
     }
 
-    fn page_launcher(&self, cx: &App) -> Option<&Entity<ChatLauncher>> {
+    pub(crate) fn page_launcher(&self, cx: &App) -> Option<&Entity<ChatLauncher>> {
         let target = self.front_page_client(cx).target;
         self.launchers
             .get(&format!("{target:?}:{:?}", None::<PaneKey>))
@@ -2392,6 +2658,24 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.launch_from_launcher_with_prompt(
+            launcher, key, pane, scope, cwd, background, None, window, cx,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn launch_from_launcher_with_prompt(
+        &mut self,
+        launcher: Entity<ChatLauncher>,
+        key: Option<EntryKey>,
+        pane: Option<PaneKey>,
+        scope: ProjectScope,
+        cwd: Option<String>,
+        background: bool,
+        initial_prompt: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let client = launcher.read(cx).client.clone();
         if !client.valid()
             || (client.target != self.front_page_client(cx).target
@@ -2399,6 +2683,14 @@ impl NativeRoot {
         {
             return;
         }
+        let initial_prompt = key.as_ref().and_then(|_| {
+            initial_prompt.or_else(|| {
+                let view = launcher.read(cx);
+                view.sample_prompt
+                    .as_ref()
+                    .and_then(|field| normalized_value(field.read(cx).text()))
+            })
+        });
         let gated = key.as_ref().and_then(|key| {
             let view = launcher.read(cx);
             let runtime_key = match key {
@@ -2443,6 +2735,7 @@ impl NativeRoot {
                         pane,
                         scope,
                         cwd,
+                        initial_prompt,
                     },
                     requested: updatable,
                     ready: false,
@@ -2639,7 +2932,13 @@ impl NativeRoot {
         }
         let key = key.unwrap();
         let mut launch = ChatLaunch {
-            input: launcher_input(&key, scope.project_id().map(str::to_owned), cwd, size),
+            input: launcher_input(
+                &key,
+                scope.project_id().map(str::to_owned),
+                cwd,
+                size,
+                initial_prompt,
+            ),
             placement,
             started: launcher
                 .read(cx)
@@ -2720,6 +3019,7 @@ impl NativeRoot {
                             pane,
                             scope: scope.clone(),
                             cwd: launch.input.cwd.clone(),
+                            initial_prompt: launch.input.initial_prompt.clone(),
                         },
                         requested: false,
                         ready: false,
@@ -2735,7 +3035,10 @@ impl NativeRoot {
                         return;
                     }
                     launcher.update(cx, |launcher, cx| {
-                        if result.is_err() {
+                        if result.is_ok() {
+                            launcher.sample_prompt = None;
+                            launcher.sample_prompt_auto = None;
+                        } else {
                             launcher.pending = None;
                         }
                         launcher.launched_session =
@@ -2756,6 +3059,10 @@ impl NativeRoot {
                     }
                 } else {
                     launcher.update(cx, |launcher, cx| {
+                        if result.is_ok() {
+                            launcher.sample_prompt = None;
+                            launcher.sample_prompt_auto = None;
+                        }
                         launcher.pending = None;
                         launcher.started =
                             launch.started.clone().map(|session| (key.clone(), session));

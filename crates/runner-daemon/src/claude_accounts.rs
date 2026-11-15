@@ -140,6 +140,11 @@ impl AccountService {
             child.stop();
         }
     }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn is_refreshing(&self) -> bool {
+        *self.refreshing.lock().unwrap()
+    }
 }
 
 fn initial(home: &Path) -> AccountsState {
@@ -412,7 +417,7 @@ pub fn action(core: &AppCore, action: ClaudeAccountAction) -> Result<ClaudeAccou
 }
 
 fn command(core: &AppCore, account: &ClaudeAccount) -> Result<Command> {
-    let statuses = crate::ops::runtime::runtime_status_list(core)?;
+    let statuses = crate::ops::runtime::runtime_status_list_base(core)?;
     let executable = statuses
         .runtimes
         .into_iter()
@@ -664,15 +669,59 @@ fn refresh_statuses_inner(core: &AppCore) {
                     == previous.as_ref()
             {
                 let status = ready_status(&account, status);
+                let changed = previous.as_ref() != Some(&status);
                 core.claude_accounts
                     .statuses
                     .lock()
                     .unwrap()
                     .insert(account.id, status);
-                core.events.emit("claude_accounts/changed", &());
+                if changed {
+                    core.events.emit("claude_accounts/changed", &());
+                    core.events.emit("runtime/changed", &());
+                }
             }
         }
     }
+}
+
+pub(crate) fn active_sign_in_status(
+    core: &AppCore,
+    shell_vars: &BTreeMap<String, String>,
+) -> Option<runner_core::protocol::RuntimeSignInStatus> {
+    use runner_core::protocol::RuntimeSignInStatus;
+    if shell_vars
+        .get("ANTHROPIC_API_KEY")
+        .is_some_and(|v| !v.trim().is_empty())
+        || shell_vars
+            .get("CLAUDE_CODE_OAUTH_TOKEN")
+            .is_some_and(|v| !v.trim().is_empty())
+    {
+        return Some(RuntimeSignInStatus::SignedIn);
+    }
+    let state = load(&core.db).ok()?;
+    let active_status = {
+        let statuses = core.claude_accounts.statuses.lock().unwrap();
+        statuses.get(&state.active_id).cloned()
+    };
+    if let Some(ref status) = active_status {
+        if !status.error {
+            return Some(if status.logged_in {
+                RuntimeSignInStatus::SignedIn
+            } else {
+                RuntimeSignInStatus::SignInNeeded
+            });
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Some(account) = state.accounts.iter().find(|acc| acc.id == state.active_id) {
+        let cred_path = Path::new(&account.folder).join(".credentials.json");
+        if let Ok(raw) = std::fs::read_to_string(&cred_path) {
+            if !raw.trim().is_empty() && serde_json::from_str::<serde_json::Value>(&raw).is_ok() {
+                return Some(RuntimeSignInStatus::SignedIn);
+            }
+        }
+    }
+    active_status.map(|_| RuntimeSignInStatus::Unknown)
 }
 
 fn login(core: &AppCore, account: ClaudeAccount) -> Result<()> {

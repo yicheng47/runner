@@ -229,8 +229,14 @@ impl NativeRoot {
             });
 
         let Some(layout) = self.front_page_layout().cloned() else {
-            let launcher = self.render_launcher(None, true, window, cx);
-            let close = self.launcher_page_closable(cx).then(|| {
+            let setup_visible = self.setup_visible(cx);
+            let content = if setup_visible {
+                self.render_setup(window, cx)
+            } else {
+                self.render_launcher(None, true, window, cx)
+                    .into_any_element()
+            };
+            let close = (!setup_visible && self.launcher_page_closable(cx)).then(|| {
                 let root = cx.entity();
                 div()
                     .debug_selector(|| "LAUNCHER_PAGE_CLOSE".into())
@@ -272,7 +278,7 @@ impl NativeRoot {
                         .min_h(px(0.))
                         .flex()
                         .flex_col()
-                        .child(launcher)
+                        .child(content)
                         .children(close),
                 )
                 .into_any_element();

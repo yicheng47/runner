@@ -964,6 +964,7 @@ pub fn session_take_resume_on_launch(state: &AppCore, session_id: &str) -> Resul
 /// mission, no orchestrator, no event log (C8.5). Used by the Role
 /// Detail page's "Chat now" button: the user picks a working directory
 /// and gets a one-on-one terminal with the agent's CLI.
+#[cfg(test)]
 pub(crate) fn resolve_direct_start(
     conn: &rusqlite::Connection,
     role_id: &str,
@@ -1008,17 +1009,56 @@ pub fn session_start_direct_impl_with_speed(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<StartDirectSessionOutput> {
-    let (role, project_id, cwd) = {
-        let conn = state.db.get()?;
-        resolve_direct_start(&conn, &role_id, project_id.as_deref(), cwd)?
-    };
-    spawn_direct_chat(
-        state, &role, runtime, model, effort, speed, project_id, cwd, cols, rows,
+    session_start_direct_impl_with_speed_and_prompt(
+        state,
+        role_id,
+        runtime,
+        model,
+        effort,
+        speed,
+        ProjectScope::or_infer(project_id),
+        cwd,
+        cols,
+        rows,
+        None,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn spawn_direct_chat(
+fn session_start_direct_impl_with_speed_and_prompt(
+    state: &AppCore,
+    role_id: String,
+    runtime: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    speed: Option<CodexSpeed>,
+    scope: ProjectScope,
+    cwd: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    initial_prompt: Option<String>,
+) -> Result<StartDirectSessionOutput> {
+    let (role, project_id, cwd) = {
+        let conn = state.db.get()?;
+        resolve_direct_start_in(&conn, &role_id, &scope, cwd)?
+    };
+    spawn_direct_chat_with_prompt(
+        state,
+        &role,
+        runtime,
+        model,
+        effort,
+        speed,
+        project_id,
+        cwd,
+        cols,
+        rows,
+        initial_prompt,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_direct_chat_with_prompt(
     state: &AppCore,
     role: &Role,
     runtime: Option<String>,
@@ -1029,13 +1069,14 @@ fn spawn_direct_chat(
     effective_cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
+    initial_prompt: Option<String>,
 ) -> Result<StartDirectSessionOutput> {
     let first_turn =
         crate::router::prompt::compose_direct_first_turn(role.system_prompt.as_deref());
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let session = state
         .sessions
-        .spawn_direct_with_speed(
+        .spawn_direct_with_speed_and_prompt(
             role,
             runtime.as_deref(),
             model.as_deref(),
@@ -1049,8 +1090,10 @@ fn spawn_direct_chat(
             state.db.clone(),
             emitter,
             first_turn,
+            initial_prompt,
         )
         .map_err(|e| e.context("session_start_direct"))?;
+    crate::ops::onboarding::mark_completed_on_activity(state)?;
     Ok(StartDirectSessionOutput {
         session,
         project_id,
@@ -1088,12 +1131,8 @@ pub fn session_start_direct_with_speed(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
-    let (role, project_id, cwd) = {
-        let conn = state.db.get()?;
-        resolve_direct_start_in(&conn, &role_id, &scope, cwd)?
-    };
-    Ok(spawn_direct_chat(
-        state, &role, runtime, model, effort, speed, project_id, cwd, cols, rows,
+    Ok(session_start_direct_impl_with_speed_and_prompt(
+        state, role_id, runtime, model, effort, speed, scope, cwd, cols, rows, None,
     )?
     .session)
 }
@@ -1124,6 +1163,24 @@ pub fn session_start_runtime_with_speed(
     effort: Option<String>,
     speed: Option<CodexSpeed>,
 ) -> Result<StartDirectSessionOutput> {
+    session_start_runtime_with_speed_and_prompt(
+        state, runtime, scope, cwd, cols, rows, model, effort, speed, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn session_start_runtime_with_speed_and_prompt(
+    state: &AppCore,
+    runtime: &str,
+    scope: ProjectScope,
+    cwd: Option<String>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    model: Option<String>,
+    effort: Option<String>,
+    speed: Option<CodexSpeed>,
+    initial_prompt: Option<String>,
+) -> Result<StartDirectSessionOutput> {
     let (project_id, cwd) = {
         let conn = state.db.get()?;
         project::resolve_scope(&conn, &scope, cwd)?
@@ -1135,7 +1192,7 @@ pub fn session_start_runtime_with_speed(
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let spawned = state
         .sessions
-        .spawn_runtime_direct(
+        .spawn_runtime_direct_with_prompt(
             &role,
             project_id.as_deref(),
             cwd.as_deref(),
@@ -1144,8 +1201,12 @@ pub fn session_start_runtime_with_speed(
             &state.app_data_dir,
             state.db.clone(),
             emitter,
+            initial_prompt,
         )
         .map_err(|e| e.context("session_start_runtime"))?;
+    if role.runtime != Runtime::Shell.key() {
+        crate::ops::onboarding::mark_completed_on_activity(state)?;
+    }
     state.events.emit(
         "session/updated",
         &serde_json::json!({ "session_id": spawned.id }),
@@ -1335,29 +1396,34 @@ pub fn session_start_chat(
     state: &AppCore,
     args: runner_core::protocol::StartDirectSessionArgs,
 ) -> Result<StartDirectSessionOutput> {
+    let scope = args
+        .scope
+        .unwrap_or_else(|| ProjectScope::or_infer(args.project_id));
     match (args.role_id, args.runtime) {
-        (Some(role_id), runtime) => session_start_direct_impl_with_speed(
+        (Some(role_id), runtime) => session_start_direct_impl_with_speed_and_prompt(
             state,
             role_id,
             runtime.map(|runtime| runtime.to_string()),
             args.model,
             args.effort,
             args.speed,
-            args.project_id,
+            scope,
             args.cwd,
-            None,
-            None,
+            args.cols,
+            args.rows,
+            args.initial_prompt,
         ),
-        (None, Some(runtime)) => session_start_runtime_with_speed(
+        (None, Some(runtime)) => session_start_runtime_with_speed_and_prompt(
             state,
             runtime.key(),
-            crate::ops::project::ProjectScope::or_infer(args.project_id),
+            scope,
             args.cwd,
-            None,
-            None,
+            args.cols,
+            args.rows,
             args.model,
             args.effort,
             args.speed,
+            args.initial_prompt,
         ),
         (None, None) => Err(Error::msg("one of role_id or runtime is required")),
     }

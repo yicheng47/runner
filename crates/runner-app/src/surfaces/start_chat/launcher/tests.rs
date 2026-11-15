@@ -268,6 +268,7 @@ fn a_gated_pane_launches_after_success_without_replacing_new_work_or_focus() {
             vec![RuntimeUpdateTask {
                 id: "successful-update".into(),
                 runtime: Runtime::Codex,
+                kind: runner_core::protocol::RuntimeTaskKind::Update,
                 state: RuntimeUpdateState::Succeeded,
                 from_version: Some("0.147.0".into()),
                 to_version: Some("0.167.0".into()),
@@ -348,6 +349,7 @@ fn shared_update_queues_both_panes_behind_the_tabs_active_start() {
             vec![RuntimeUpdateTask {
                 id: "one-update".into(),
                 runtime: Runtime::Codex,
+                kind: runner_core::protocol::RuntimeTaskKind::Update,
                 state: RuntimeUpdateState::Succeeded,
                 from_version: None,
                 to_version: None,
@@ -470,6 +472,10 @@ fn deferred_mission_and_fork_keep_the_saved_host_and_later_work_focused() {
             let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
             remote_test::enable_front_page(&fake);
             let core = store.read_with(&cx, |store, _| store.test_core.clone());
+            let _ = runner_daemon::ops::onboarding::complete(&core);
+            store.update(&mut cx, |store, cx| {
+                store.refresh(crate::app_store::StoreRefreshKind::Onboarding, cx);
+            });
             let trace = std::sync::Arc::new(DeferredOrigin {
                 base: fake.clone(),
                 core: core.clone(),
@@ -670,6 +676,7 @@ fn requests_have_no_form_overrides_and_directory_change_wins_over_role_directory
             Some("project".into()),
             Some("/shown".into()),
             (90, 30),
+            None,
         );
         assert_eq!(request.project.as_deref(), Some("project"));
         assert_eq!(request.cwd.as_deref(), Some("/shown"));
@@ -2491,4 +2498,269 @@ fn capability_hiding_keeps_pinned_rows_out_of_ranking() {
             assert_eq!(rows[0].choice, Choice::Terminal);
         });
     });
+}
+
+struct PromptLaunchFixture {
+    inner: runner_daemon::daemon::InProcessTransport,
+    prompts: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    mode: std::sync::Arc<std::sync::Mutex<PromptFixtureMode>>,
+}
+
+#[derive(Clone, Copy)]
+enum PromptFixtureMode {
+    ErrorThenSucceed { failed_once: bool },
+    GateThenSucceed { gated_once: bool },
+    Succeed,
+}
+
+impl runner_core::protocol::Transport for PromptLaunchFixture {
+    fn call(
+        &self,
+        request: runner_core::protocol::Request,
+    ) -> runner_core::protocol::ClientResult<runner_core::protocol::Response> {
+        if matches!(
+            request,
+            runner_core::protocol::Request::runtime_task_start { .. }
+        ) {
+            return Ok(runner_core::protocol::Response::runtime_task_start(Err(
+                runner_core::protocol::ClientError::msg("scratch updater is offline"),
+            )));
+        }
+        if let runner_core::protocol::Request::session_start_chat { args } = &request {
+            let mut mode = self.mode.lock().unwrap();
+            match &mut *mode {
+                PromptFixtureMode::ErrorThenSucceed { failed_once } if !*failed_once => {
+                    *failed_once = true;
+                    return Ok(runner_core::protocol::Response::session_start_chat(Err(
+                        runner_core::protocol::ClientError::msg("missing folder"),
+                    )));
+                }
+                PromptFixtureMode::GateThenSucceed { gated_once } if !*gated_once => {
+                    *gated_once = true;
+                    return Ok(runner_core::protocol::Response::session_start_chat(Err(
+                        runner_core::protocol::ClientError {
+                            message: "update required".into(),
+                            version_gate: Some(runner_core::protocol::RuntimeVersionGate {
+                                runtime: Runtime::Codex,
+                                installed_version: "0.147.0".into(),
+                                min_version: "0.149.0".into(),
+                            }),
+                        },
+                    )));
+                }
+                _ => {}
+            }
+            self.prompts
+                .lock()
+                .unwrap()
+                .push(args.initial_prompt.clone());
+            let conn = self.inner.0.db.get().unwrap();
+            let count: i64 = conn
+                .query_row("SELECT count(*) FROM sessions", [], |row| row.get(0))
+                .unwrap();
+            let id = format!("prompt-chat-{count}");
+            conn.execute(
+                "INSERT INTO sessions(id, status, agent_runtime, agent_command) VALUES (?1, 'stopped', 'codex', 'codex')",
+                [&id],
+            )
+            .unwrap();
+            return Ok(runner_core::protocol::Response::session_start_chat(Ok(
+                runner_core::protocol::session::StartDirectSessionOutput {
+                    session: runner_core::protocol::session::SpawnedSession {
+                        id,
+                        mission_id: None,
+                        role_id: None,
+                        handle: "codex".into(),
+                        pid: None,
+                    },
+                    project_id: args.project_id.clone(),
+                    cwd: args.cwd.clone(),
+                },
+            )));
+        }
+        self.inner.call(request)
+    }
+
+    fn subscribe(&self) -> Box<dyn runner_core::protocol::EventSubscription> {
+        self.inner.subscribe()
+    }
+}
+
+#[test]
+fn failed_and_version_gated_starts_preserve_sample_prompt_until_spawn_succeeds() {
+    use runner_core::protocol::{RuntimeTaskKind, RuntimeUpdateState, RuntimeUpdateTask};
+
+    // 1. A non-gate start failure preserves the user-edited sample prompt so retry sends it once.
+    {
+        let mut harness = modal_harness(1200., 900., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let prompts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut page = None;
+        harness.act(|root, window, cx| {
+            root.start_chat_modal = None;
+            root.app_store.update(cx, |store, _| {
+                store.client = runner_core::protocol::DaemonClient::new(std::sync::Arc::new(
+                    PromptLaunchFixture {
+                        inner: runner_daemon::daemon::InProcessTransport(store.test_core.clone()),
+                        prompts: prompts.clone(),
+                        mode: std::sync::Arc::new(std::sync::Mutex::new(
+                            PromptFixtureMode::ErrorThenSucceed { failed_once: false },
+                        )),
+                    },
+                ));
+            });
+            root.open_launcher_page(ProjectScope::Root, Step::Start, false, window, cx);
+            let launcher = root.render_launcher(None, true, window, cx);
+            launcher.update(cx, |view, cx| {
+                view.runtimes = vec![agent()];
+                view.set_cwd_for_test("/tmp/demo-app", cx);
+                view.enable_sample_prompt(window, cx);
+                view.set_sample_prompt_for_test("Keep this edited prompt", cx);
+            });
+            page = Some(launcher.clone());
+            root.launch_from_launcher(
+                launcher,
+                Some(EntryKey::Agent("codex".into())),
+                None,
+                ProjectScope::Root,
+                Some("/tmp/demo-app".into()),
+                false,
+                window,
+                cx,
+            );
+        });
+        let launcher = page.unwrap();
+        harness.act(|_root, _window, cx| {
+            assert!(launcher.read(cx).error.is_some());
+            assert!(prompts.lock().unwrap().is_empty());
+            assert_eq!(
+                launcher.read(cx).sample_prompt_text_for_test(cx).as_deref(),
+                Some("Keep this edited prompt")
+            );
+        });
+        harness.act(|root, window, cx| {
+            root.launch_from_launcher(
+                launcher.clone(),
+                Some(EntryKey::Agent("codex".into())),
+                None,
+                ProjectScope::Root,
+                Some("/tmp/demo-app".into()),
+                false,
+                window,
+                cx,
+            );
+        });
+        harness.act(|_root, _window, cx| {
+            assert_eq!(
+                *prompts.lock().unwrap(),
+                vec![Some("Keep this edited prompt".to_owned())]
+            );
+            assert_eq!(launcher.read(cx).sample_prompt_text_for_test(cx), None);
+        });
+    }
+
+    // 2. Both early UI version-gating and backend version_gate retain the edited sample prompt
+    // across UpdateRetry and deliver it once after the update succeeds.
+    for (below_minimum, initial_mode, edited_prompt) in [
+        (
+            true,
+            PromptFixtureMode::Succeed,
+            "Delivered after UI update gate",
+        ),
+        (
+            false,
+            PromptFixtureMode::GateThenSucceed { gated_once: false },
+            "Delivered after daemon version gate",
+        ),
+    ] {
+        let mut harness = modal_harness(1200., 900., Vec::new(), Vec::new(), ChatMode::Runtime);
+        let prompts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut page = None;
+        harness.act(|root, window, cx| {
+            root.start_chat_modal = None;
+            root.app_store.update(cx, |store, _| {
+                store.client = runner_core::protocol::DaemonClient::new(std::sync::Arc::new(
+                    PromptLaunchFixture {
+                        inner: runner_daemon::daemon::InProcessTransport(store.test_core.clone()),
+                        prompts: prompts.clone(),
+                        mode: std::sync::Arc::new(std::sync::Mutex::new(initial_mode)),
+                    },
+                ));
+            });
+            root.open_launcher_page(ProjectScope::Root, Step::Start, false, window, cx);
+            let launcher = root.render_launcher(None, true, window, cx);
+            launcher.update(cx, |view, cx| {
+                let mut runtime = agent();
+                runtime.below_minimum = below_minimum;
+                if below_minimum {
+                    runtime.installed_version = Some("0.147.0".into());
+                    runtime.min_version = Some("0.149.0".into());
+                }
+                view.runtimes = vec![runtime];
+                view.set_cwd_for_test("/tmp/demo-app", cx);
+                view.enable_sample_prompt(window, cx);
+                view.set_sample_prompt_for_test(edited_prompt, cx);
+            });
+            page = Some(launcher.clone());
+            root.launch_from_launcher(
+                launcher,
+                Some(EntryKey::Agent("codex".into())),
+                None,
+                ProjectScope::Root,
+                Some("/tmp/demo-app".into()),
+                false,
+                window,
+                cx,
+            );
+        });
+        let launcher = page.unwrap();
+        if !below_minimum {
+            let bounds = harness
+                .bounds("LAUNCHER_UPDATE_ACTION")
+                .expect("backend version gate renders Update action");
+            harness
+                .visual
+                .simulate_click(bounds.center(), gpui::Modifiers::default());
+            harness.visual.run_until_parked();
+        }
+        harness.act(|root, window, cx| {
+            let retry = launcher.read(cx).update_retry.as_ref().unwrap();
+            assert!(retry.requested);
+            assert!(matches!(
+                &retry.action,
+                UpdateAction::Chat {
+                    initial_prompt: Some(saved),
+                    ..
+                } if saved == edited_prompt
+            ));
+            assert_eq!(
+                launcher.read(cx).sample_prompt_text_for_test(cx).as_deref(),
+                Some(edited_prompt)
+            );
+            assert!(prompts.lock().unwrap().is_empty());
+            root.apply_agent_tasks(
+                vec![RuntimeUpdateTask {
+                    id: "prompt-gate-update".into(),
+                    runtime: Runtime::Codex,
+                    kind: RuntimeTaskKind::Update,
+                    state: RuntimeUpdateState::Succeeded,
+                    from_version: Some("0.147.0".into()),
+                    to_version: Some("0.167.0".into()),
+                    installed_version: Some("0.167.0".into()),
+                    step: "Done".into(),
+                    message: None,
+                    exit_code: Some(0),
+                    running_sessions: 0,
+                }],
+                window,
+                cx,
+            );
+        });
+        harness.act(|_root, _window, cx| {
+            assert_eq!(
+                *prompts.lock().unwrap(),
+                vec![Some(edited_prompt.to_owned())]
+            );
+            assert_eq!(launcher.read(cx).sample_prompt_text_for_test(cx), None);
+        });
+    }
 }

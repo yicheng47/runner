@@ -50,20 +50,48 @@ impl BackgroundTasks {
 
 pub(crate) fn label(task: &RuntimeUpdateTask) -> String {
     let name = task.runtime.display_name();
+    let install = task.kind == runner_core::protocol::RuntimeTaskKind::Install;
     match task.state {
         State::MayNeedInput => tf("agent_updates.may_need_input", &[("runtime", name.into())]),
-        State::Failed => tf("agent_updates.failed", &[("runtime", name.into())]),
+        State::Failed => tf(
+            if install {
+                "agent_updates.install_failed"
+            } else {
+                "agent_updates.failed"
+            },
+            &[("runtime", name.into())],
+        ),
         State::BrokenAfterStop => tf("agent_updates.broken", &[("runtime", name.into())]),
         State::Succeeded => task.installed_version.as_ref().map_or_else(
-            || tf("agent_updates.updated", &[("runtime", name.into())]),
+            || {
+                tf(
+                    if install {
+                        "agent_updates.installed"
+                    } else {
+                        "agent_updates.updated"
+                    },
+                    &[("runtime", name.into())],
+                )
+            },
             |version| {
                 tf(
-                    "agent_updates.updated_to",
+                    if install {
+                        "agent_updates.installed_version"
+                    } else {
+                        "agent_updates.updated_to"
+                    },
                     &[("runtime", name.into()), ("version", version.clone())],
                 )
             },
         ),
-        _ => tf("agent_updates.updating", &[("runtime", name.into())]),
+        _ => tf(
+            if install {
+                "agent_updates.installing"
+            } else {
+                "agent_updates.updating"
+            },
+            &[("runtime", name.into())],
+        ),
     }
 }
 
@@ -206,8 +234,27 @@ impl NativeRoot {
     }
 
     pub(crate) fn start_agent_update(&mut self, runtime: Runtime, cx: &mut Context<Self>) {
+        self.start_agent_task(runtime, false, cx);
+    }
+
+    pub(crate) fn start_agent_install(&mut self, runtime: Runtime, cx: &mut Context<Self>) {
+        self.start_agent_task(runtime, true, cx);
+    }
+
+    pub(crate) fn start_agent_task(
+        &mut self,
+        runtime: Runtime,
+        install: bool,
+        cx: &mut Context<Self>,
+    ) {
         let client = self.core(cx).clone();
-        let work = cx.background_spawn(async move { client.runtime_task_start(runtime) });
+        let work = cx.background_spawn(async move {
+            if install {
+                client.runtime_install_start(runtime)
+            } else {
+                client.runtime_task_start(runtime)
+            }
+        });
         cx.spawn(async move |root, cx| {
             let result = work.await;
             let _ = root.update(cx, |root, cx| {
@@ -273,6 +320,9 @@ impl NativeRoot {
             });
         }
         self.refresh_agents_tasks(&self.agent_tasks.tasks, cx);
+        if self.setup_visible(cx) {
+            self.refresh_setup_data(cx);
+        }
         self.notify_update_launchers(cx);
         for runtime in completed {
             self.retry_gated_launches(
@@ -443,15 +493,25 @@ impl NativeRoot {
                         div()
                             .text_size(theme::text_meta())
                             .text_color(theme::muted())
-                            .child(format!(
-                                "{} → {}",
-                                task.from_version
-                                    .as_deref()
-                                    .unwrap_or(text("agent_updates.unknown")),
-                                task.to_version
-                                    .as_deref()
-                                    .unwrap_or(text("agent_updates.latest"))
-                            )),
+                            .child(
+                                if task.kind == runner_core::protocol::RuntimeTaskKind::Install {
+                                    task.installed_version
+                                        .as_deref()
+                                        .or(task.to_version.as_deref())
+                                        .unwrap_or(text("agent_updates.latest"))
+                                        .to_owned()
+                                } else {
+                                    format!(
+                                        "{} → {}",
+                                        task.from_version
+                                            .as_deref()
+                                            .unwrap_or(text("agent_updates.unknown")),
+                                        task.to_version
+                                            .as_deref()
+                                            .unwrap_or(text("agent_updates.latest"))
+                                    )
+                                },
+                            ),
                     )
                     .child(
                         div()
@@ -483,6 +543,7 @@ impl NativeRoot {
                 }
                 let mut actions = div().flex().gap_2();
                 if matches!(task.state, State::Failed | State::BrokenAfterStop) {
+                    let install = task.kind == runner_core::protocol::RuntimeTaskKind::Install;
                     actions = actions.child(
                         Button::new(
                             SharedString::from(format!("task-retry-{}", task.id)),
@@ -495,8 +556,8 @@ impl NativeRoot {
                         .size(ButtonSize::Sm)
                         .variant(ButtonVariant::Secondary)
                         .on_press(move |_, cx| {
-                            let _ =
-                                retry.update(cx, |root, cx| root.start_agent_update(runtime, cx));
+                            let _ = retry
+                                .update(cx, |root, cx| root.start_agent_task(runtime, install, cx));
                         }),
                     );
                 }
@@ -548,6 +609,7 @@ impl NativeRoot {
                 .unwrap_or_else(|| task.id.clone()),
             terminal: remote_terminal.map(|(_, client, lifetime)| (client, lifetime)),
             runtime: task.runtime,
+            kind: task.kind,
             display_name: task.runtime.display_name().into(),
             command: task.runtime.command().unwrap_or_default().into(),
             installed: task
@@ -577,6 +639,7 @@ mod tests {
         RuntimeUpdateTask {
             id: runtime.key().into(),
             runtime,
+            kind: runner_core::protocol::RuntimeTaskKind::Update,
             state,
             from_version: Some("0.166.0".into()),
             to_version: Some("0.167.0".into()),

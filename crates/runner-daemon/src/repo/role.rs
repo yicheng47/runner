@@ -273,11 +273,6 @@ pub fn delete(conn: &Connection, id: &str) -> rusqlite::Result<usize> {
     conn.execute("DELETE FROM roles WHERE id = ?1", rusqlite::params![id])
 }
 
-#[cfg(test)]
-pub(crate) fn delete_all(conn: &Connection) -> rusqlite::Result<usize> {
-    conn.execute("DELETE FROM roles", [])
-}
-
 pub fn clear_inheriting_slot_agent_overrides(
     conn: &Connection,
     role_id: &str,

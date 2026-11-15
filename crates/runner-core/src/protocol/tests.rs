@@ -514,6 +514,8 @@ record!(RuntimeCatalogOption {
     supported_efforts
 });
 variant!(RuntimeCommandSource => Self::Override);
+variant!(RuntimeSignInStatus => Self::SignedIn);
+variant!(RuntimeTaskKind => Self::Install);
 record!(RuntimeExecutableStatus {
     launch_options,
     name,
@@ -530,10 +532,15 @@ record!(RuntimeExecutableStatus {
     installed_version,
     available_version,
     min_version,
-    below_minimum
+    below_minimum,
+    sign_in
 });
 variant!(RuntimeRowState => Self::Detected);
-record!(RuntimeStatusResponse { shell, runtimes });
+record!(RuntimeStatusResponse {
+    shell,
+    runtimes,
+    npm_available
+});
 record!(RuntimeUsage { value, error });
 record!(Session {
     id,
@@ -623,7 +630,26 @@ record!(StartDirectSessionArgs {
     effort,
     speed,
     project_id,
-    cwd
+    cwd,
+    scope,
+    cols,
+    rows,
+    initial_prompt
+});
+record!(OnboardingStatus {
+    completed,
+    completed_at,
+    has_crews
+});
+record!(StarterCrewSlotProposal {
+    handle,
+    display_name,
+    runtime
+});
+record!(StarterCrewProposal { name, slots });
+record!(CreateStarterCrewArgs {
+    default_runtime,
+    enabled_runtimes
 });
 record!(StartMissionOutput { mission, goal });
 variant!(Subject => Self::Mission(Sample::sample()));
@@ -1196,6 +1222,7 @@ variant!(RuntimeUpdateState => Self::Running);
 record!(RuntimeUpdateTask {
     id,
     runtime,
+    kind,
     from_version,
     to_version,
     state,
@@ -1205,3 +1232,53 @@ record!(RuntimeUpdateTask {
     installed_version,
     running_sessions
 });
+
+#[test]
+fn onboarding_and_install_protocol_fields_default_on_older_payloads() {
+    let legacy_task: RuntimeUpdateTask = serde_json::from_value(serde_json::json!({
+        "id": "task-1",
+        "runtime": "codex",
+        "from_version": "0.1.0",
+        "to_version": "0.2.0",
+        "state": "running",
+        "step": "Updating",
+        "message": null,
+        "exit_code": null,
+        "installed_version": null,
+        "running_sessions": 0
+    }))
+    .unwrap();
+    assert_eq!(legacy_task.kind, RuntimeTaskKind::Update);
+
+    let legacy_status: RuntimeStatusResponse = serde_json::from_value(serde_json::json!({
+        "shell": ShellDiscoveryStatus::sample(),
+        "runtimes": [{
+            "name": "claude-code",
+            "display_name": "Claude Code",
+            "command": "claude",
+            "default_model": null,
+            "default_effort": null,
+            "detected_path": null,
+            "override_path": null,
+            "effective_command": null,
+            "effective_source": null,
+            "state": "not_found",
+            "invalid_reason": null,
+            "installed_version": null,
+            "available_version": null
+        }]
+    }))
+    .unwrap();
+    assert!(!legacy_status.npm_available);
+    assert_eq!(
+        legacy_status.runtimes[0].sign_in,
+        RuntimeSignInStatus::Unknown
+    );
+
+    let legacy_direct: StartDirectSessionArgs =
+        serde_json::from_value(serde_json::json!({"runtime": "codex"})).unwrap();
+    assert_eq!(legacy_direct.scope, None);
+    assert_eq!(legacy_direct.cols, None);
+    assert_eq!(legacy_direct.rows, None);
+    assert_eq!(legacy_direct.initial_prompt, None);
+}

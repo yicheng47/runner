@@ -7,6 +7,7 @@ mod modal;
 mod project_field;
 mod render;
 mod role_setup;
+pub(crate) mod setup;
 mod terminal;
 
 use self::project_field::{ProjectChoice, ProjectField};
@@ -400,6 +401,7 @@ pub(super) mod tests {
             runtime_shell_env,
             runtime_discovery,
         );
+        let _ = runner_daemon::ops::onboarding::complete(&core);
         let mut cx = TestAppContext::single();
         cx.update(|cx| {
             keymap::install_bindings(

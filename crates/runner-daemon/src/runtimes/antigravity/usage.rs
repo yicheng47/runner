@@ -85,6 +85,114 @@ pub(crate) fn fetch_antigravity_with_timeouts(
     }
 }
 
+pub(crate) fn has_stored_credential(env: &LoginShellEnv) -> bool {
+    #[cfg(windows)]
+    {
+        direct_quota::load_stored_credential(env, direct_quota::read_windows_default_credential)
+            .is_ok()
+    }
+    #[cfg(not(windows))]
+    {
+        token_paths::has_token_file(env)
+    }
+}
+
+mod token_paths {
+    use super::LoginShellEnv;
+    use serde_json::Value;
+    use std::path::PathBuf;
+
+    pub(super) const KEYRING_UNAVAILABLE_MARKER: &str = "antigravity-keyring-unavailable";
+
+    pub(super) fn env_non_empty<'a>(env: &'a LoginShellEnv, name: &str) -> Option<&'a str> {
+        env.vars
+            .get(name)
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    }
+
+    pub(super) fn token_storage_paths(env: &LoginShellEnv) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        #[cfg(windows)]
+        let overridden_home =
+            env_non_empty(env, "USERPROFILE").or_else(|| env_non_empty(env, "HOME"));
+        #[cfg(not(windows))]
+        let overridden_home =
+            env_non_empty(env, "HOME").or_else(|| env_non_empty(env, "USERPROFILE"));
+
+        let process_cli_dir = if overridden_home.is_none() {
+            std::env::var("ANTIGRAVITY_GEMINI_DIR")
+                .ok()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+        } else {
+            None
+        };
+        let cli_override = env_non_empty(env, "ANTIGRAVITY_GEMINI_DIR")
+            .map(PathBuf::from)
+            .or_else(|| process_cli_dir.map(PathBuf::from));
+
+        let home = overridden_home
+            .map(PathBuf::from)
+            .or_else(runner_core::app_paths::home_dir);
+
+        let gemini_dir = match (cli_override, home) {
+            (Some(override_dir), _) => override_dir,
+            (None, Some(home)) => home.join(".gemini"),
+            (None, None) => return (Vec::new(), Vec::new()),
+        };
+        let cli_dir = gemini_dir.join("antigravity-cli");
+
+        let markers = vec![
+            cli_dir.join("cache").join(KEYRING_UNAVAILABLE_MARKER),
+            gemini_dir.join("cache").join(KEYRING_UNAVAILABLE_MARKER),
+        ];
+        let token_files = vec![
+            cli_dir.join("antigravity-oauth-token"),
+            gemini_dir.join("antigravity-oauth-token"),
+            gemini_dir.join("jetski-standalone-oauth-token"),
+        ];
+        (markers, token_files)
+    }
+
+    pub(super) fn extract_tokens(raw: &str) -> Option<(String, String, Value)> {
+        let value: Value = serde_json::from_str(raw.trim()).ok()?;
+        let obj = value.as_object()?;
+        let token_obj = obj.get("token").and_then(Value::as_object).unwrap_or(obj);
+
+        let access_token = token_obj
+            .get("access_token")
+            .or_else(|| token_obj.get("accessToken"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_owned();
+        let refresh_token = token_obj
+            .get("refresh_token")
+            .or_else(|| token_obj.get("refreshToken"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_owned();
+
+        if access_token.is_empty() && refresh_token.is_empty() {
+            return None;
+        }
+        Some((access_token, refresh_token, value))
+    }
+
+    #[cfg(not(windows))]
+    pub(super) fn has_token_file(env: &LoginShellEnv) -> bool {
+        let (_markers, token_files) = token_storage_paths(env);
+        token_files.into_iter().any(|path| {
+            std::fs::read_to_string(path)
+                .ok()
+                .and_then(|raw| extract_tokens(&raw))
+                .is_some()
+        })
+    }
+}
+
 #[cfg(not(windows))]
 mod cli_probe {
     use super::*;
@@ -591,12 +699,11 @@ mod direct_quota {
     use reqwest::{Proxy, StatusCode};
     use serde::Deserialize;
     use serde_json::{json, Value};
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::time::{Duration, Instant, SystemTime};
 
     #[cfg(windows)]
     const WINDOWS_CREDENTIAL_TARGET: &str = "gemini:antigravity";
-    const KEYRING_UNAVAILABLE_MARKER: &str = "antigravity-keyring-unavailable";
     const KEYRING_UNAVAILABLE_TTL: Duration = Duration::from_secs(3600);
     const RUNNER_USER_AGENT: &str = concat!("Runner/", env!("CARGO_PKG_VERSION"));
     // Measured against Cloud Code on 2026-11-15: plain `Runner/...` omits
@@ -774,13 +881,7 @@ mod direct_quota {
         }
     }
 
-    fn env_non_empty<'a>(env: &'a LoginShellEnv, name: &str) -> Option<&'a str> {
-        env.vars
-            .get(name)
-            .map(String::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-    }
+    use super::token_paths::{extract_tokens, token_storage_paths};
 
     fn effective_env_value(
         env: &LoginShellEnv,
@@ -835,49 +936,6 @@ mod direct_quota {
         }
 
         builder.build()
-    }
-
-    pub(super) fn token_storage_paths(env: &LoginShellEnv) -> (Vec<PathBuf>, Vec<PathBuf>) {
-        #[cfg(windows)]
-        let overridden_home =
-            env_non_empty(env, "USERPROFILE").or_else(|| env_non_empty(env, "HOME"));
-        #[cfg(not(windows))]
-        let overridden_home =
-            env_non_empty(env, "HOME").or_else(|| env_non_empty(env, "USERPROFILE"));
-
-        let process_cli_dir = if overridden_home.is_none() {
-            std::env::var("ANTIGRAVITY_GEMINI_DIR")
-                .ok()
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty())
-        } else {
-            None
-        };
-        let cli_override = env_non_empty(env, "ANTIGRAVITY_GEMINI_DIR")
-            .map(PathBuf::from)
-            .or_else(|| process_cli_dir.map(PathBuf::from));
-
-        let home = overridden_home
-            .map(PathBuf::from)
-            .or_else(runner_core::app_paths::home_dir);
-
-        let gemini_dir = match (cli_override, home) {
-            (Some(override_dir), _) => override_dir,
-            (None, Some(home)) => home.join(".gemini"),
-            (None, None) => return (Vec::new(), Vec::new()),
-        };
-        let cli_dir = gemini_dir.join("antigravity-cli");
-
-        let markers = vec![
-            cli_dir.join("cache").join(KEYRING_UNAVAILABLE_MARKER),
-            gemini_dir.join("cache").join(KEYRING_UNAVAILABLE_MARKER),
-        ];
-        let token_files = vec![
-            cli_dir.join("antigravity-oauth-token"),
-            gemini_dir.join("antigravity-oauth-token"),
-            gemini_dir.join("jetski-standalone-oauth-token"),
-        ];
-        (markers, token_files)
     }
 
     fn marker_is_recent(path: &Path) -> bool {
@@ -966,28 +1024,9 @@ mod direct_quota {
     }
 
     pub(super) fn parse_stored_credential(raw: &str) -> Option<StoredCredential> {
-        let value: Value = serde_json::from_str(raw.trim()).ok()?;
+        let (access_token, refresh_token, value) = extract_tokens(raw)?;
         let obj = value.as_object()?;
         let token_obj = obj.get("token").and_then(Value::as_object).unwrap_or(obj);
-
-        let access_token = token_obj
-            .get("access_token")
-            .or_else(|| token_obj.get("accessToken"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .unwrap_or_default()
-            .to_owned();
-        let refresh_token = token_obj
-            .get("refresh_token")
-            .or_else(|| token_obj.get("refreshToken"))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .unwrap_or_default()
-            .to_owned();
-
-        if access_token.is_empty() && refresh_token.is_empty() {
-            return None;
-        }
 
         let expiry = parse_expiry(token_obj.get("expiry").and_then(Value::as_str));
         let auth_method = obj

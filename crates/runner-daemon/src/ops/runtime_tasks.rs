@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use runner_core::protocol::{Runtime, RuntimeUpdateState, RuntimeUpdateTask};
+use runner_core::protocol::{Runtime, RuntimeTaskKind, RuntimeUpdateState, RuntimeUpdateTask};
 
 use crate::error::{Error, Result};
 use crate::AppCore;
@@ -51,6 +51,18 @@ fn publish(core: &AppCore) {
 }
 
 pub fn start(core: &AppCore, runtime: Runtime) -> Result<RuntimeUpdateTask> {
+    start_task(core, runtime, RuntimeTaskKind::Update)
+}
+
+pub fn start_install(core: &AppCore, runtime: Runtime) -> Result<RuntimeUpdateTask> {
+    start_task(core, runtime, RuntimeTaskKind::Install)
+}
+
+fn start_task(
+    core: &AppCore,
+    runtime: Runtime,
+    kind: RuntimeTaskKind,
+) -> Result<RuntimeUpdateTask> {
     let status = super::runtime::runtime_status_list(core)?
         .runtimes
         .into_iter()
@@ -64,7 +76,14 @@ pub fn start(core: &AppCore, runtime: Runtime) -> Result<RuntimeUpdateTask> {
     {
         return Ok(task.clone());
     }
-    let spec = super::runtime::runtime_update_spawn_spec(core, runtime, (80, 24))?;
+    let spec = match kind {
+        RuntimeTaskKind::Update => {
+            super::runtime::runtime_update_spawn_spec(core, runtime, (80, 24))?
+        }
+        RuntimeTaskKind::Install => {
+            super::runtime::runtime_install_spawn_spec(core, runtime, (80, 24))?
+        }
+    };
     let id = spec.session_id.clone();
     let events: Arc<dyn crate::session::manager::SessionEvents> = Arc::new(core.session_events());
     core.sessions
@@ -82,10 +101,20 @@ pub fn start(core: &AppCore, runtime: Runtime) -> Result<RuntimeUpdateTask> {
     let task = RuntimeUpdateTask {
         id: id.clone(),
         runtime,
-        from_version: status.installed_version,
-        to_version: status.available_version,
+        kind,
+        from_version: match kind {
+            RuntimeTaskKind::Update => status.installed_version,
+            RuntimeTaskKind::Install => None,
+        },
+        to_version: match kind {
+            RuntimeTaskKind::Update => status.available_version,
+            RuntimeTaskKind::Install => None,
+        },
         state: RuntimeUpdateState::Running,
-        step: "Starting update…".into(),
+        step: match kind {
+            RuntimeTaskKind::Update => "Starting update…".into(),
+            RuntimeTaskKind::Install => "Starting install…".into(),
+        },
         message: None,
         exit_code: None,
         installed_version: None,
@@ -222,7 +251,7 @@ pub fn dismiss(core: &AppCore, id: &str) -> Result<()> {
 }
 
 fn finish(core: &AppCore, id: &str, code: Option<i32>, error: Option<String>) {
-    let runtime = {
+    let (runtime, kind) = {
         let mut updates = core.sessions.runtime_updates.lock().unwrap();
         let Some(task) = updates.tasks.iter_mut().find(|task| task.id == id) else {
             return;
@@ -230,7 +259,7 @@ fn finish(core: &AppCore, id: &str, code: Option<i32>, error: Option<String>) {
         if task.state != RuntimeUpdateState::Stopping {
             task.state = RuntimeUpdateState::Verifying;
         }
-        task.runtime
+        (task.runtime, task.kind)
     };
     publish(core);
     let final_line = core.sessions.terminal_model(id).ok().and_then(|model| {
@@ -240,14 +269,28 @@ fn finish(core: &AppCore, id: &str, code: Option<i32>, error: Option<String>) {
             .rev()
             .find(|row| !row.trim().is_empty())
     });
-    let installed = super::runtime::runtime_probe_version(core, runtime);
-    let works = installed.is_some()
-        || crate::runtime_status::versions::starts_now(
-            runtime,
-            &core.db,
-            &core.runtime_shell_env,
-            &core.runtime_discovery,
-        );
+    let stopping_now = core
+        .sessions
+        .runtime_updates
+        .lock()
+        .unwrap()
+        .tasks
+        .iter()
+        .find(|task| task.id == id)
+        .is_some_and(|task| task.state == RuntimeUpdateState::Stopping);
+    let (installed, works) = if stopping_now && kind == RuntimeTaskKind::Install {
+        (None, true)
+    } else {
+        let installed = super::runtime::runtime_probe_version(core, runtime);
+        let works = installed.is_some()
+            || crate::runtime_status::versions::starts_now(
+                runtime,
+                &core.db,
+                &core.runtime_shell_env,
+                &core.runtime_discovery,
+            );
+        (installed, works)
+    };
     let running = super::session::live_session_counts(core)
         .ok()
         .and_then(|counts| counts.get(&runtime).copied())
@@ -260,7 +303,8 @@ fn finish(core: &AppCore, id: &str, code: Option<i32>, error: Option<String>) {
         task.step = line.trim().to_owned();
     }
     let stopping = task.state == RuntimeUpdateState::Stopping;
-    if stopping && works {
+    let emit_runtime_changed = !stopping && code == Some(0) && error.is_none();
+    if stopping && (works || kind == RuntimeTaskKind::Install) {
         updates.tasks.retain(|task| task.id != id);
         core.sessions.discard_unlisted_terminal(id);
     } else {
@@ -275,13 +319,42 @@ fn finish(core: &AppCore, id: &str, code: Option<i32>, error: Option<String>) {
         task.running_sessions = running;
         task.exit_code = code;
         task.message = error.or_else(|| match task.state {
-            RuntimeUpdateState::Failed => Some(format!("{} {}", code.map_or_else(|| "The update ended without an exit code.".into(), |code| format!("Exited with code {code}.")), task.step)),
-            RuntimeUpdateState::BrokenAfterStop => Some(format!("{} doesn't start after the update was stopped. Reinstall puts the latest version in place.", runtime.display_name())),
+            RuntimeUpdateState::Failed => Some(format!(
+                "{} {}",
+                code.map_or_else(
+                    || match kind {
+                        RuntimeTaskKind::Update => "The update ended without an exit code.".into(),
+                        RuntimeTaskKind::Install => {
+                            "The install ended without an exit code.".into()
+                        }
+                    },
+                    |code| format!("Exited with code {code}.")
+                ),
+                task.step
+            )),
+            RuntimeUpdateState::BrokenAfterStop => Some(format!(
+                "{} doesn't start after the update was stopped. Reinstall puts the latest version in place.",
+                runtime.display_name()
+            )),
             _ => None,
         });
     }
     updates.changed();
     drop(updates);
+    if emit_runtime_changed {
+        core.events.emit("runtime/changed", &());
+        crate::runtime_status::models::request(
+            &core.db,
+            &core.runtime_shell_env,
+            &core.runtime_discovery,
+            &core.events,
+            &[runtime],
+            true,
+        );
+        if runtime == Runtime::ClaudeCode {
+            crate::claude_accounts::refresh(core);
+        }
+    }
     publish(core);
     schedule_clear(core);
 }
@@ -326,6 +399,7 @@ mod tests {
         RuntimeUpdateTask {
             id: "update".into(),
             runtime: Runtime::Codex,
+            kind: RuntimeTaskKind::Update,
             from_version: Some("0.166.0".into()),
             to_version: Some("0.167.0".into()),
             state,
@@ -559,5 +633,132 @@ mod tests {
         }
         assert!(core.sessions.terminal_model(&retry.id).is_err());
         core.sessions.drain_terminal_workers();
+    }
+
+    #[cfg(unix)]
+    fn install_fixture(npm_script: &str) -> (tempfile::TempDir, AppCore) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let npm = dir.path().join("npm");
+        std::fs::write(&npm, npm_script).unwrap();
+        std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut core = crate::test_support::test_core_in(dir.path().into());
+        core.sessions = crate::session::SessionManager::new(
+            core.runtime_shell_env.clone(),
+            core.runtime_discovery.clone(),
+            Arc::new(crate::session::pty_runtime::PtyRuntime::new()),
+        );
+        core.runtime_shell_env.write().unwrap().path = Some(dir.path().display().to_string());
+        core.runtime_discovery.write().unwrap().checking = false;
+        (dir, core)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_task_reprobes_and_emits_runtime_changed_on_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin_dir = dir.path().display().to_string();
+        let npm_script = format!(
+            "#!/bin/sh\ncat <<'EOF' > {bin_dir}/pi\n#!/bin/sh\necho '9.9.9'\nEOF\nchmod 755 {bin_dir}/pi\necho 'installed @earendil-works/pi-coding-agent'\n"
+        );
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(dir.path().join("npm"), npm_script).unwrap();
+        std::fs::set_permissions(
+            dir.path().join("npm"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+
+        let mut core = crate::test_support::test_core_in(dir.path().into());
+        core.sessions = crate::session::SessionManager::new(
+            core.runtime_shell_env.clone(),
+            core.runtime_discovery.clone(),
+            Arc::new(crate::session::pty_runtime::PtyRuntime::new()),
+        );
+        core.runtime_shell_env.write().unwrap().path = Some(bin_dir);
+        core.runtime_discovery.write().unwrap().checking = false;
+
+        let mut events = core.events.subscribe();
+        let started = start_install(&core, Runtime::Pi).unwrap();
+        assert_eq!(started.kind, RuntimeTaskKind::Install);
+        assert!(started.from_version.is_none());
+
+        let finished = await_task(&core, RuntimeUpdateState::Succeeded);
+        assert_eq!(finished.kind, RuntimeTaskKind::Install);
+        assert_eq!(finished.installed_version.as_deref(), Some("9.9.9"));
+
+        let mut saw_runtime_changed = false;
+        while let Ok(evt) = events.try_recv() {
+            if evt.name == "runtime/changed" {
+                saw_runtime_changed = true;
+            }
+        }
+        assert!(
+            saw_runtime_changed,
+            "successful install must emit runtime/changed"
+        );
+
+        let status = crate::ops::runtime::runtime_status_list(&core).unwrap();
+        let pi = status
+            .runtimes
+            .iter()
+            .find(|r| r.name == Runtime::Pi)
+            .unwrap();
+        assert_eq!(
+            pi.state,
+            runner_core::protocol::runtime::RuntimeRowState::Detected
+        );
+        assert_eq!(pi.installed_version.as_deref(), Some("9.9.9"));
+        core.sessions.drain_terminal_workers();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_task_failure_retries_and_stopped_install_clears_without_broken_state() {
+        let (dir, core) = install_fixture("#!/bin/sh\necho 'permission denied'\nexit 1\n");
+        let failed_start = start_install(&core, Runtime::Pi).unwrap();
+        let failed = await_task(&core, RuntimeUpdateState::Failed);
+        assert_eq!(failed.id, failed_start.id);
+        assert_eq!(failed.kind, RuntimeTaskKind::Install);
+
+        // Retry with a slow npm and stop it mid-flight: stopped installs must clear
+        // instead of transitioning into BrokenAfterStop ("Reinstall").
+        std::fs::write(dir.path().join("npm"), "#!/bin/sh\nsleep 30\n").unwrap();
+        let retried = start_install(&core, Runtime::Pi).unwrap();
+        assert_ne!(retried.id, failed.id);
+        stop(&core, &retried.id).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if list(&core).is_empty() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "stopped install task must clear without BrokenAfterStop, got {:?}",
+                list(&core)
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        core.sessions.drain_terminal_workers();
+    }
+
+    #[test]
+    fn install_task_rejects_missing_npm_or_non_npm_runtime() {
+        let empty_dir = tempfile::tempdir().unwrap();
+        let core = crate::test_support::test_core();
+        {
+            let mut env = core.runtime_shell_env.write().unwrap();
+            env.path = Some(empty_dir.path().display().to_string());
+            env.vars.insert(
+                crate::runtime_status::TEST_ISOLATE_PATH_ENV.into(),
+                "1".into(),
+            );
+        }
+        core.runtime_discovery.write().unwrap().checking = false;
+
+        assert!(start_install(&core, Runtime::Antigravity).is_err());
+        let missing_npm = start_install(&core, Runtime::ClaudeCode).unwrap_err();
+        assert!(missing_npm.to_string().contains("npm"), "{missing_npm}");
     }
 }

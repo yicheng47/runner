@@ -32,6 +32,26 @@ impl Runtime {
         Self::Shell,
     ];
 
+    /// Priority order used in onboarding and starter-crew ranking.
+    pub const SETUP_ORDER: [Self; 9] = [
+        Self::ClaudeCode,
+        Self::Codex,
+        Self::Antigravity,
+        Self::Pi,
+        Self::Copilot,
+        Self::Cursor,
+        Self::OpenCode,
+        Self::Grok,
+        Self::Trae,
+    ];
+
+    pub fn setup_rank(self) -> usize {
+        Self::SETUP_ORDER
+            .iter()
+            .position(|candidate| *candidate == self)
+            .unwrap_or(Self::SETUP_ORDER.len())
+    }
+
     pub fn key(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude-code",

@@ -24,7 +24,10 @@ pub fn runtime_list() -> Vec<RuntimeDefinition> {
         .collect()
 }
 
-pub fn runtime_status_list(state: &AppCore) -> Result<RuntimeStatusResponse> {
+use runner_core::protocol::runtime::{RuntimeRowState, RuntimeSignInStatus};
+use runner_core::protocol::usage::UnavailableReason;
+
+pub(crate) fn runtime_status_list_base(state: &AppCore) -> Result<RuntimeStatusResponse> {
     let status = crate::runtime_status::status_list_with_events(
         &state.db,
         &state.runtime_shell_env,
@@ -39,6 +42,141 @@ pub fn runtime_status_list(state: &AppCore) -> Result<RuntimeStatusResponse> {
         }
     }
     Ok(status)
+}
+
+pub fn runtime_status_list(state: &AppCore) -> Result<RuntimeStatusResponse> {
+    let mut response = runtime_status_list_base(state)?;
+    populate_sign_in_statuses(state, &mut response);
+    Ok(response)
+}
+
+fn populate_sign_in_statuses(state: &AppCore, response: &mut RuntimeStatusResponse) {
+    let shell_env = state
+        .runtime_shell_env
+        .read()
+        .map(|env| env.clone())
+        .unwrap_or_default();
+    let usage = state.usage.snapshot();
+    for entry in &mut response.runtimes {
+        let installed = matches!(
+            entry.state,
+            RuntimeRowState::Detected | RuntimeRowState::Override
+        );
+        if !installed {
+            entry.sign_in = RuntimeSignInStatus::Unknown;
+            continue;
+        }
+        entry.sign_in = match entry.name {
+            Runtime::ClaudeCode => claude_sign_in_status(state, &shell_env.vars, &usage),
+            Runtime::Codex => codex_sign_in_status(&shell_env.vars, &usage),
+            Runtime::Antigravity => antigravity_sign_in_status(&shell_env, &usage),
+            _ => RuntimeSignInStatus::Unknown,
+        };
+    }
+}
+
+fn usage_sign_in_status(
+    usage: &runner_core::protocol::UsageSnapshot,
+    runtime: Runtime,
+) -> Option<RuntimeSignInStatus> {
+    let entry = usage.runtimes.get(&runtime)?;
+    if entry.value.is_some() {
+        Some(RuntimeSignInStatus::SignedIn)
+    } else if entry.error == Some(UnavailableReason::SignIn) {
+        Some(RuntimeSignInStatus::SignInNeeded)
+    } else {
+        None
+    }
+}
+
+fn claude_sign_in_status(
+    state: &AppCore,
+    shell_vars: &std::collections::BTreeMap<String, String>,
+    usage: &runner_core::protocol::UsageSnapshot,
+) -> RuntimeSignInStatus {
+    match crate::claude_accounts::active_sign_in_status(state, shell_vars) {
+        Some(RuntimeSignInStatus::Unknown) => {
+            // An earlier `claude auth status` probe errored and was cached;
+            // avoid re-spawning it whenever `runtime/changed` reloads the list.
+            usage_sign_in_status(usage, Runtime::ClaudeCode).unwrap_or(RuntimeSignInStatus::Unknown)
+        }
+        Some(status) => status,
+        None => {
+            if let Some(status) = usage_sign_in_status(usage, Runtime::ClaudeCode) {
+                return status;
+            }
+            // Kick off a single background `claude auth status` check on native
+            // single-account setups when no cached sign-in status is available yet.
+            crate::claude_accounts::refresh(state);
+            RuntimeSignInStatus::Unknown
+        }
+    }
+}
+
+fn codex_sign_in_status(
+    shell_vars: &std::collections::BTreeMap<String, String>,
+    usage: &runner_core::protocol::UsageSnapshot,
+) -> RuntimeSignInStatus {
+    if shell_vars
+        .get("OPENAI_API_KEY")
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return RuntimeSignInStatus::SignedIn;
+    }
+    if let Some(status) = usage_sign_in_status(usage, Runtime::Codex) {
+        return status;
+    }
+    let codex_home = shell_vars
+        .get("CODEX_HOME")
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            shell_vars
+                .get("HOME")
+                .filter(|value| !value.trim().is_empty())
+                .map(|home| std::path::Path::new(home).join(".codex"))
+        })
+        .or_else(|| runner_core::app_paths::home_dir().map(|home| home.join(".codex")));
+    if let Some(codex_home) = codex_home {
+        if let Ok(raw) = std::fs::read_to_string(codex_home.join("auth.json")) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) {
+                let has_key = json
+                    .get("OPENAI_API_KEY")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty());
+                let has_tokens = json
+                    .get("tokens")
+                    .and_then(serde_json::Value::as_object)
+                    .is_some_and(|tokens| {
+                        ["access_token", "refresh_token", "id_token"]
+                            .into_iter()
+                            .any(|field| {
+                                tokens
+                                    .get(field)
+                                    .and_then(serde_json::Value::as_str)
+                                    .is_some_and(|value| !value.trim().is_empty())
+                            })
+                    });
+                if has_key || has_tokens {
+                    return RuntimeSignInStatus::SignedIn;
+                }
+            }
+        }
+    }
+    RuntimeSignInStatus::Unknown
+}
+
+fn antigravity_sign_in_status(
+    shell_env: &crate::shell_path::LoginShellEnv,
+    usage: &runner_core::protocol::UsageSnapshot,
+) -> RuntimeSignInStatus {
+    if let Some(status) = usage_sign_in_status(usage, Runtime::Antigravity) {
+        return status;
+    }
+    if crate::runtimes::antigravity::usage::has_stored_credential(shell_env) {
+        return RuntimeSignInStatus::SignedIn;
+    }
+    RuntimeSignInStatus::Unknown
 }
 
 pub fn runtime_set_launch_option(
@@ -301,6 +439,31 @@ pub fn runtime_check_updates(state: &AppCore, force: bool) {
     );
 }
 
+/// argv, env and cwd for a global npm install of a runtime (#1171).
+pub fn runtime_install_spawn_spec(
+    state: &AppCore,
+    runtime: Runtime,
+    size: (u16, u16),
+) -> Result<crate::session::runtime::SpawnSpec> {
+    let package = crate::runtimes::adapter(runtime)
+        .catalog()
+        .and_then(|definition| definition.npm_package)
+        .ok_or_else(|| Error::msg(format!("{runtime} cannot be installed via npm")))?;
+    let shell_env = state
+        .runtime_shell_env
+        .read()
+        .map_err(|_| Error::msg("runtime shell environment lock poisoned"))?;
+    let path = crate::runtime_status::direct_chat_path(&shell_env);
+    let npm = crate::runtime_status::find_executable("npm", &path)
+        .ok_or_else(|| Error::msg("npm was not found on PATH; install Node.js first"))?;
+    Ok(state.sessions.update_spawn_spec(
+        npm.display().to_string(),
+        vec!["install".into(), "-g".into(), package.to_owned()],
+        runner_core::app_paths::home_dir(),
+        size,
+    ))
+}
+
 /// argv, env and cwd for a runtime's own update (#533): the effective
 /// executable with the runtime's update arguments, the agent environment
 /// without Runner's layers, and the home directory.
@@ -416,7 +579,17 @@ pub fn runtime_refresh(
         model_runtimes.to_vec(),
     )?;
     runtime_check_updates(state, true);
-    runtime_status_list(state)
+    let status = runtime_status_list(state)?;
+    if status.runtimes.iter().any(|entry| {
+        entry.name == Runtime::ClaudeCode
+            && matches!(
+                entry.state,
+                RuntimeRowState::Detected | RuntimeRowState::Override
+            )
+    }) {
+        crate::claude_accounts::refresh(state);
+    }
+    Ok(status)
 }
 
 /// Whether a runtime is one of the agents Runner ships enabled by default.
@@ -999,6 +1172,95 @@ mod tests {
         assert!(!after.available);
         assert!(after.below_minimum);
         assert_eq!(after.installed_version.as_deref(), Some("1.19.5"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_status_list_reports_npm_availability_and_read_only_sign_in_statuses() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bin = tempfile::tempdir().unwrap();
+        for cmd in ["npm", "codex", "pi"] {
+            let path = bin.path().join(cmd);
+            std::fs::write(&path, "#!/bin/sh\necho '9.9.9'\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let codex_home = tempfile::tempdir().unwrap();
+        let empty_home = tempfile::tempdir().unwrap();
+
+        let state = crate::test_support::test_core();
+        {
+            let mut env = state.runtime_shell_env.write().unwrap();
+            env.path = Some(bin.path().display().to_string());
+            env.vars.insert(
+                crate::runtime_status::TEST_ISOLATE_PATH_ENV.into(),
+                "1".into(),
+            );
+            // Point HOME and CODEX_HOME away from developer machine creds so the
+            // initial check stays deterministic even when run locally.
+            env.vars.insert(
+                "HOME".into(),
+                empty_home.path().to_string_lossy().into_owned(),
+            );
+            env.vars.insert(
+                "CODEX_HOME".into(),
+                codex_home.path().to_string_lossy().into_owned(),
+            );
+        }
+        state.runtime_discovery.write().unwrap().checking = false;
+
+        let initial = runtime_status_list(&state).unwrap();
+        assert!(initial.npm_available);
+        assert_eq!(
+            initial
+                .runtimes
+                .iter()
+                .find(|r| r.name == Runtime::Codex)
+                .unwrap()
+                .sign_in,
+            RuntimeSignInStatus::Unknown
+        );
+        assert_eq!(
+            initial
+                .runtimes
+                .iter()
+                .find(|r| r.name == Runtime::Pi)
+                .unwrap()
+                .sign_in,
+            RuntimeSignInStatus::Unknown
+        );
+
+        // Codex `auth.json` tokens mark Codex SignedIn while Pi stays Unknown.
+        std::fs::write(
+            codex_home.path().join("auth.json"),
+            r#"{"tokens":{"access_token":"tok-123"}}"#,
+        )
+        .unwrap();
+        let with_auth_file = runtime_status_list(&state).unwrap();
+        assert_eq!(
+            with_auth_file
+                .runtimes
+                .iter()
+                .find(|r| r.name == Runtime::Codex)
+                .unwrap()
+                .sign_in,
+            RuntimeSignInStatus::SignedIn
+        );
+        assert_eq!(
+            with_auth_file
+                .runtimes
+                .iter()
+                .find(|r| r.name == Runtime::Pi)
+                .unwrap()
+                .sign_in,
+            RuntimeSignInStatus::Unknown
+        );
+
+        // Without npm on PATH, npm_available flips false.
+        let without_npm = tempfile::tempdir().unwrap();
+        state.runtime_shell_env.write().unwrap().path =
+            Some(without_npm.path().display().to_string());
+        assert!(!runtime_status_list(&state).unwrap().npm_available);
     }
 
     #[cfg(unix)]
@@ -1591,5 +1853,140 @@ mod tests {
                 .is_none(),
             "compatible v2 refresh must retire obsolete startup error"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_claude_auth_status_probe_caches_error_without_looping_until_explicit_recheck() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+
+        let temp = tempfile::tempdir().unwrap();
+        let app_data_dir = temp.path().join("app-data");
+        let empty_home = temp.path().join("home");
+        let claude_dir = temp.path().join("claude-cfg");
+        let bin = temp.path().join("bin");
+        let probe_log = temp.path().join("probes.log");
+        std::fs::create_dir_all(&app_data_dir).unwrap();
+        std::fs::create_dir_all(&empty_home).unwrap();
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+
+        let claude_bin = bin.join("claude");
+        std::fs::write(
+            &claude_bin,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  printf 'probe\\n' >> '{}'\n  echo 'not-json'\n  exit 1\nfi\necho '2.1.0'\n",
+                probe_log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&claude_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut state = crate::test_support::test_core_in(app_data_dir);
+        state.claude_accounts = Arc::new(crate::claude_accounts::AccountService::default());
+        state.usage = Arc::new(crate::usage::UsageService::without_fetch());
+        {
+            let mut env = state.runtime_shell_env.write().unwrap();
+            env.path = Some(bin.display().to_string());
+            env.vars.insert(
+                crate::runtime_status::TEST_ISOLATE_PATH_ENV.into(),
+                "1".into(),
+            );
+            env.vars
+                .insert("HOME".into(), empty_home.to_string_lossy().into_owned());
+        }
+        state.runtime_discovery.write().unwrap().checking = false;
+        crate::db::set_runtime_override(&state.db, "claude-code", claude_bin.to_str()).unwrap();
+        crate::db::app_state_set(
+            &state.db.get().unwrap(),
+            "claude_accounts",
+            &serde_json::json!({
+                "accounts": [{
+                    "id": "native",
+                    "name": "Personal",
+                    "folder": claude_dir.to_string_lossy().into_owned(),
+                    "native": true
+                }],
+                "main_id": "native",
+                "active_id": "native"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let mut events = state.events.subscribe();
+        let initial = runtime_status_list(&state).unwrap();
+        assert_eq!(
+            initial
+                .runtimes
+                .iter()
+                .find(|r| r.name == Runtime::ClaudeCode)
+                .unwrap()
+                .sign_in,
+            RuntimeSignInStatus::Unknown
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !crate::claude_accounts::snapshot(&state)
+            .unwrap()
+            .statuses
+            .get("native")
+            .is_some_and(|s| s.error)
+            || state.claude_accounts.is_refreshing()
+        {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for initial auth probe error"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let probe_count = || -> usize {
+            std::fs::read_to_string(&probe_log)
+                .map(|raw| raw.lines().count())
+                .unwrap_or(0)
+        };
+        assert_eq!(probe_count(), 1);
+
+        let mut saw_runtime_changed = false;
+        while let Ok(evt) = events.try_recv() {
+            if evt.name == "runtime/changed" {
+                saw_runtime_changed = true;
+            }
+        }
+        assert!(saw_runtime_changed);
+
+        for _ in 0..3 {
+            let reloaded = runtime_status_list(&state).unwrap();
+            assert_eq!(
+                reloaded
+                    .runtimes
+                    .iter()
+                    .find(|r| r.name == Runtime::ClaudeCode)
+                    .unwrap()
+                    .sign_in,
+                RuntimeSignInStatus::Unknown
+            );
+            std::thread::sleep(Duration::from_millis(20));
+            assert_eq!(probe_count(), 1);
+            assert!(events.try_recv().is_err());
+        }
+
+        runtime_refresh(&state, &[]).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while probe_count() < 2 || state.claude_accounts.is_refreshing() {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for explicit recheck probe"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(probe_count(), 2);
+        let mut emitted = Vec::new();
+        while let Ok(evt) = events.try_recv() {
+            emitted.push(evt.name);
+        }
+        assert!(!emitted.contains(&"claude_accounts/changed"));
     }
 }

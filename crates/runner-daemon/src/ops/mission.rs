@@ -294,6 +294,7 @@ pub fn start(
 
     // All log writes succeeded — commit the DB row so the mission becomes
     // visible to list/get only after its startup events are durable.
+    crate::db::mark_onboarding_completed_conn(&tx)?;
     let mission = get(&tx, &id)?;
     tx.commit()?;
     Ok(StartMissionOutput {
@@ -626,10 +627,14 @@ pub async fn mission_start_impl_with_size(
     let (initial_size, size_source) =
         mission_fork_size(initial_size, *state.mission_grid_hint.lock().unwrap());
 
+    let was_completed = crate::db::is_onboarding_completed(&state.db).unwrap_or(false);
     let out = {
         let mut conn = state.db.get()?;
         start(&mut conn, &state.app_data_dir, input)?
     };
+    if !was_completed {
+        state.events.emit("onboarding/changed", &());
+    }
     log::info!(
         "mission starting: id={} crew={:?} title={:?}",
         out.mission.id,
