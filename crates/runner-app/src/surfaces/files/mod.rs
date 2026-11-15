@@ -1,16 +1,16 @@
 //! The side panel's Files view (#634): the root and its states, the root
 //! picker and the tree with git status, served by `runnerd`'s file service.
 
-mod code;
-mod document;
+pub(crate) mod code;
+pub(crate) mod document;
 mod finder;
-mod highlight;
+pub(crate) mod highlight;
 mod links;
 mod markdown;
 mod open_file;
 mod panel_view;
 pub(crate) mod picker;
-mod syntax;
+pub(crate) mod syntax;
 mod tabs;
 pub(crate) mod tree;
 
@@ -27,18 +27,21 @@ use gpui::{
     canvas, AnyElement, App, AppContext as _, Entity, EntityId, EventEmitter, Global,
     IntoElement as _, Styled as _,
 };
+use runner_core::protocol::changes::{ChangesViewed, CHANGES_VIEWED_EVENT};
 use runner_core::protocol::files::{
     FilesChanged, FilesStatusChanged, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
 };
 use runner_core::protocol::DaemonClient;
 
+use crate::surfaces::changes::ChangesView;
 use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, Widened};
 pub(crate) use links::ShowPreview;
-pub(crate) use panel_view::FilesView;
+pub(crate) use open_file::{editor_icon, format_size, found_editors};
+pub(crate) use panel_view::{absolute, compact_missing_path, FileTreeResizeDrag, FilesView};
 use tree::PreparedStatus;
 
 /// The app's settings; `None` in a test that runs without a store.
-pub(super) fn settings(cx: &App) -> Option<&crate::app_settings::AppSettings> {
+pub(crate) fn settings(cx: &App) -> Option<&crate::app_settings::AppSettings> {
     cx.try_global::<crate::app_store::GlobalAppStore>()
         .map(|store| &store.0.read(cx).settings)
 }
@@ -46,14 +49,14 @@ pub(super) fn settings(cx: &App) -> Option<&crate::app_settings::AppSettings> {
 /// What Settings → Side panel → Files sets that the view draws with; a
 /// change redraws the open files.
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct Look {
-    pub(super) icons: crate::file_icons::IconSet,
+pub(crate) struct Look {
+    pub(crate) icons: crate::file_icons::IconSet,
     font: String,
     size: u16,
 }
 
 impl Look {
-    pub(super) fn current(cx: &App) -> Option<Self> {
+    pub(crate) fn current(cx: &App) -> Option<Self> {
         let settings = settings(cx)?;
         Some(Self {
             icons: settings.file_icons,
@@ -79,6 +82,11 @@ pub(crate) enum FilesEvent {
         root: PathBuf,
         status: Arc<PreparedStatus>,
     },
+    Viewed(ChangesViewed),
+    RootChanged {
+        subject: PanelSubject,
+        origin: EntityId,
+    },
     /// Events may have been missed; with `rewatch` the daemon restarted and
     /// forgot every watch.
     Resync {
@@ -86,7 +94,7 @@ pub(crate) enum FilesEvent {
     },
 }
 
-/// Forwards the daemon's `files/*` events to every Files view.
+/// Forwards the daemon's `files/*` and `changes/*` events to every Files and Changes view.
 pub(crate) struct FilesHub;
 
 impl EventEmitter<FilesEvent> for FilesHub {}
@@ -114,6 +122,9 @@ pub(crate) fn hub(client: &DaemonClient, cx: &mut App) -> Entity<FilesHub> {
                             status: PreparedStatus::new(update.status),
                         },
                     ),
+                    CHANGES_VIEWED_EVENT => serde_json::from_value(event.payload)
+                        .ok()
+                        .map(FilesEvent::Viewed),
                     "daemon/reconnected" => Some(FilesEvent::Resync { rewatch: true }),
                     _ => None,
                 },
@@ -179,6 +190,7 @@ impl FilesSurface {
 #[derive(Default)]
 pub(crate) struct FilesPanel {
     views: RefCell<Vec<(PanelSubject, Entity<FilesView>)>>,
+    changes: RefCell<Vec<(PanelSubject, Entity<ChangesView>)>>,
     /// The width the panel shares with its chat or mission, unzoomed, as
     /// last drawn.
     surface: Rc<Cell<f32>>,
@@ -316,21 +328,111 @@ impl FilesPanel {
             .any(|(shown, view)| Some(shown) == subject && view.read(cx).has_tabs())
     }
 
-    pub(crate) fn hide(&self, cx: &mut App) {
+    pub(crate) fn show_changes_with(
+        &self,
+        context: &PanelContext,
+        widened: Option<Widened>,
+        owner: Option<EntityId>,
+        cx: &mut App,
+    ) -> AnyElement {
+        let mut changes = self.changes.borrow_mut();
+        let view = match changes
+            .iter()
+            .position(|(subject, _)| *subject == context.subject)
+        {
+            Some(index) => changes.remove(index).1,
+            None => {
+                let context = context.clone();
+                cx.new(|cx| ChangesView::new(context, cx))
+            }
+        };
+        for (_, other) in changes.iter() {
+            other.update(cx, |other, cx| other.set_shown(false, cx));
+        }
+        view.update(cx, |view, cx| {
+            view.set_context(context.clone(), cx);
+            view.set_widened(widened, cx);
+            view.set_owner(owner);
+            view.set_shown(true, cx);
+        });
+        changes.push((context.subject.clone(), view.clone()));
+        let excess = changes.len().saturating_sub(KEPT_VIEWS);
+        changes.drain(..excess);
+        view.into_any_element()
+    }
+
+    /// Changes opens wide, as Files does with a file open: the diff takes
+    /// `file` and the list `tree_width`.
+    pub(crate) fn changes_layout(
+        &self,
+        subject: Option<&PanelSubject>,
+        standard: f32,
+        file: f32,
+        tree_width: f32,
+        gap: f32,
+        cx: &App,
+    ) -> (f32, Option<Widened>) {
+        let wide = subject.is_some_and(|subject| {
+            let from_changes = self
+                .changes
+                .borrow()
+                .iter()
+                .find(|(shown, _)| shown == subject)
+                .and_then(|(_, view)| view.read(cx).widening());
+            match from_changes {
+                Some(wide) => wide,
+                None => self
+                    .views
+                    .borrow()
+                    .iter()
+                    .find(|(shown, _)| shown == subject)
+                    .is_some_and(|(_, view)| view.read(cx).root_is_git()),
+            }
+        });
+        if !wide {
+            return (standard, None);
+        }
+        let available = self.surface.get() - gap;
+        let layout = side_panel::widened(available, standard, file, tree_width, true);
+        (layout.width(), Some(layout))
+    }
+
+    pub(crate) fn hide_files(&self, cx: &mut App) {
         for (_, view) in self.views.borrow().iter() {
             view.update(cx, |view, cx| view.set_shown(false, cx));
         }
+    }
+
+    pub(crate) fn hide_changes(&self, cx: &mut App) {
+        for (_, view) in self.changes.borrow().iter() {
+            view.update(cx, |view, cx| view.set_shown(false, cx));
+        }
+    }
+
+    pub(crate) fn hide(&self, cx: &mut App) {
+        self.hide_files(cx);
+        self.hide_changes(cx);
     }
 
     /// Hides every view and drops them, for a window that is closing.
     pub(crate) fn release(&self, cx: &mut App) {
         self.hide(cx);
         self.views.borrow_mut().clear();
+        self.changes.borrow_mut().clear();
     }
 
     #[cfg(test)]
     pub(crate) fn view(&self, subject: &PanelSubject) -> Option<Entity<FilesView>> {
         self.views
+            .borrow()
+            .iter()
+            .find(|(shown, _)| shown == subject)
+            .map(|(_, view)| view.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn changes_view(&self, subject: &PanelSubject) -> Option<Entity<ChangesView>> {
+        self.changes
             .borrow()
             .iter()
             .find(|(shown, _)| shown == subject)

@@ -4,6 +4,7 @@ pub(crate) mod agent_recovery;
 pub(crate) mod agent_update;
 pub(crate) mod app_shell;
 pub(crate) mod background_tasks;
+pub(crate) mod changes;
 pub(crate) mod chat;
 pub(crate) mod chat_lifecycle;
 pub(crate) mod command_palette;

@@ -293,10 +293,25 @@ impl NativeRoot {
         cx: &App,
     ) -> (f32, Option<crate::surfaces::side_panel::Widened>) {
         let settings = self.settings(cx);
+        let surface = side_panel_surface(self.active_tab_is_terminal(cx));
+        if side_panel::shown(surface, settings, &self.chat_surfaces.open)
+            == Some(PanelViewId::Changes)
+        {
+            let subject = detail
+                .filter(|_| settings.changes_view)
+                .map(|detail| PanelSubject::Session(detail.session_id.clone()));
+            return self.chat_files.changes_layout(
+                subject.as_ref(),
+                settings.chat_panel_width,
+                settings.file_viewer_width,
+                settings.file_tree_width,
+                6.,
+                cx,
+            );
+        }
         let subject = detail
             .filter(|_| settings.files_view)
             .map(|detail| PanelSubject::Session(detail.session_id.clone()));
-        let surface = side_panel_surface(self.active_tab_is_terminal(cx));
         self.chat_files.layout(
             subject.as_ref(),
             crate::surfaces::files::FilesSurface::of(surface, settings, &self.chat_surfaces.open),
@@ -404,19 +419,30 @@ impl NativeRoot {
                 )),
             cx,
         );
-        let files = detail
-            .filter(|_| shown == Some(PanelViewId::Files))
-            .map(|detail| {
-                self.chat_files.show_with(
+        let files = match (shown, detail) {
+            (Some(PanelViewId::Files), Some(detail)) => {
+                self.chat_files.hide_changes(cx);
+                Some(self.chat_files.show_with(
                     &self.chat_panel_context(detail, surface, cx),
                     widened,
                     Some(cx.entity_id()),
                     cx,
-                )
-            });
-        if files.is_none() {
-            self.chat_files.hide(cx);
-        }
+                ))
+            }
+            (Some(PanelViewId::Changes), Some(detail)) => {
+                self.chat_files.hide_files(cx);
+                Some(self.chat_files.show_changes_with(
+                    &self.chat_panel_context(detail, surface, cx),
+                    widened,
+                    Some(cx.entity_id()),
+                    cx,
+                ))
+            }
+            _ => {
+                self.chat_files.hide(cx);
+                None
+            }
+        };
         let content = if shown.is_none() {
             None
         } else if let Some(detail) = detail {

@@ -2125,7 +2125,7 @@ fn terminal_tab_panel_holds_files_alone_and_keeps_its_own_panel_state() {
     let width = store.read_with(&visual, |store, _| store.settings.chat_panel_width);
     assert!((panel.size.width - px(width)).abs() <= px(1.), "{panel:?}");
     assert!(visual.debug_bounds("CHAT_PANEL_GUTTER").is_some());
-    // One surface: its permanent tab and collapse, with no × or `+`.
+    // Two permanent surfaces on a terminal tab: Files and Changes, with no × or `+`.
     for view in ["Info", "Sessions"] {
         assert!(
             visual
@@ -2134,7 +2134,10 @@ fn terminal_tab_panel_holds_files_alone_and_keeps_its_own_panel_state() {
             "{view}"
         );
     }
+    assert!(visual.debug_bounds("PANEL_TAB Files").is_some());
+    assert!(visual.debug_bounds("PANEL_TAB Changes").is_some());
     assert!(visual.debug_bounds("PANEL_TAB_CLOSE Files").is_none());
+    assert!(visual.debug_bounds("PANEL_TAB_CLOSE Changes").is_none());
     assert!(visual.debug_bounds("PANEL_ADD_SURFACE").is_none());
     let tab = visual.debug_bounds("PANEL_TAB Files").unwrap();
     assert!(tab.left() - panel.left() <= px(12.), "{tab:?} {panel:?}");
@@ -2148,11 +2151,11 @@ fn terminal_tab_panel_holds_files_alone_and_keeps_its_own_panel_state() {
     assert!(visual
         .debug_bounds(format!("FILES_VIEW {context:?}").leak())
         .is_some());
-    assert_eq!(
-        chat_surfaces(&host, &mut visual),
-        Default::default(),
-        "the terminal tab keeps only its own surfaces"
-    );
+    click_selector(&mut visual, "PANEL_TAB Changes");
+    assert!(visual
+        .debug_bounds(format!("CHANGES_VIEW {context:?}").leak())
+        .is_some());
+    click_selector(&mut visual, "PANEL_TAB Files");
     for intent in [ThemeIntent::Dark, ThemeIntent::Light] {
         set_panel_theme(&store, &mut visual, intent);
         assert_text(&mut visual, "PANEL_TAB_INK Files", theme::text());
@@ -2372,6 +2375,7 @@ fn settings_remove_the_chat_panel_and_its_toggle() {
     set(&mut visual, |settings| {
         settings.info_view = false;
         settings.files_view = false;
+        settings.changes_view = false;
     });
     assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_none());
     host.update(&mut visual, |root, _, cx| {
@@ -3035,10 +3039,15 @@ fn pane_identity_branches_for_chat_terminal_and_empty_panes() {
         ..AppSettings::default()
     };
     assert!(side_panel_available(&files_off, PanelSurface::Chat));
-    assert!(!side_panel_available(&files_off, PanelSurface::Terminal));
+    assert!(side_panel_available(&files_off, PanelSurface::Terminal));
+    let terminal_off = AppSettings {
+        changes_view: false,
+        ..files_off
+    };
+    assert!(!side_panel_available(&terminal_off, PanelSurface::Terminal));
     let all_off = AppSettings {
         info_view: false,
-        ..files_off
+        ..terminal_off
     };
     assert!(!side_panel_available(&all_off, PanelSurface::Chat));
 

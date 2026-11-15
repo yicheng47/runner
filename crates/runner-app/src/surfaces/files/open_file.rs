@@ -32,7 +32,7 @@ use crate::file_links::{self, FileLinkTarget};
 use crate::surfaces::side_panel::Widened;
 use crate::terminal::find::{find_bar_panel, FindBarParts};
 use crate::theme;
-use open_in::{editor_icon, found_editors};
+pub(crate) use open_in::{editor_icon, found_editors};
 pub(super) use open_in::{reveal, reveal_label};
 
 /// What a tab shows below the strip.
@@ -156,7 +156,7 @@ fn read_image(
 }
 
 /// `bytes` for people: `512 B`, `1.2 MB`, `214 MB`.
-pub(super) fn format_size(bytes: u64) -> String {
+pub(crate) fn format_size(bytes: u64) -> String {
     let mut value = bytes as f64;
     let mut unit = "B";
     for next in ["KB", "MB", "GB"] {

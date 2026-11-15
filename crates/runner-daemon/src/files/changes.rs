@@ -33,10 +33,15 @@ struct ViewedMarkKey {
 /// In-memory store of viewed file marks keyed by checkout top path.
 ///
 /// The boolean records whether the mark was made on `ChangesTarget::Uncommitted`
-/// (sticky once true) so subsequent edits show as changed since viewed.
+/// or `ChangesTarget::Branch` (sticky once true) so subsequent edits or commits
+/// show as changed since viewed.
 #[derive(Default)]
 pub(crate) struct ViewedMarks {
     by_checkout: Mutex<HashMap<PathBuf, HashMap<ViewedMarkKey, bool>>>,
+}
+
+fn target_tracks_changes(target: &ChangesTarget) -> bool {
+    matches!(target, ChangesTarget::Uncommitted | ChangesTarget::Branch)
 }
 
 impl ViewedMarks {
@@ -46,7 +51,7 @@ impl ViewedMarks {
         path: &str,
         old_blob_id: Option<&str>,
         new_blob_id: Option<&str>,
-        uncommitted: bool,
+        tracks_changes: bool,
     ) {
         let key = ViewedMarkKey {
             path: path.to_owned(),
@@ -59,7 +64,7 @@ impl ViewedMarks {
             .or_default()
             .entry(key)
             .or_insert(false);
-        *entry |= uncommitted;
+        *entry |= tracks_changes;
     }
 
     pub(crate) fn clear(
@@ -89,7 +94,7 @@ impl ViewedMarks {
         &self,
         checkout_top: &Path,
         items: impl IntoIterator<Item = (&'a str, Option<&'a str>, Option<&'a str>)>,
-        is_uncommitted: bool,
+        tracks_changes: bool,
     ) -> Vec<(bool, bool)> {
         let by_checkout = self.by_checkout.lock().unwrap();
         let Some(marks) = by_checkout.get(checkout_top) else {
@@ -105,10 +110,10 @@ impl ViewedMarks {
                 )
             })
             .collect();
-        let uncommitted_paths: HashSet<&str> = if is_uncommitted {
+        let tracked_paths: HashSet<&str> = if tracks_changes {
             marks
                 .iter()
-                .filter_map(|(k, &uncommitted)| uncommitted.then_some(k.path.as_str()))
+                .filter_map(|(k, &tracked)| tracked.then_some(k.path.as_str()))
                 .collect()
         } else {
             HashSet::new()
@@ -119,7 +124,7 @@ impl ViewedMarks {
                 let viewed =
                     exact.contains(&(path, old_blob_id.unwrap_or(""), new_blob_id.unwrap_or("")));
                 let changed_since_viewed =
-                    is_uncommitted && !viewed && uncommitted_paths.contains(path);
+                    tracks_changes && !viewed && tracked_paths.contains(path);
                 (viewed, changed_since_viewed)
             })
             .collect()
@@ -215,7 +220,7 @@ pub fn changes_files(core: &AppCore, root: &Path, target: &ChangesTarget) -> Res
     let (git, repo) = resolve_checkout(core, root)?;
     let (_, entries) = collect_changed_entries(&git, &repo, root, target)?;
 
-    let is_uncommitted = matches!(target, ChangesTarget::Uncommitted);
+    let tracks_changes = target_tracks_changes(target);
     let flags = core.files.changes_viewed.flags_for(
         &repo.top,
         entries.iter().map(|entry| {
@@ -225,7 +230,7 @@ pub fn changes_files(core: &AppCore, root: &Path, target: &ChangesTarget) -> Res
                 entry.new_blob_id.as_deref(),
             )
         }),
-        is_uncommitted,
+        tracks_changes,
     );
 
     let mut totals = ChangesTotals::default();
@@ -467,7 +472,7 @@ pub fn changes_set_viewed(
     let (_git, repo) = resolve_checkout(core, root)?;
     let (norm_rel, _) = validate_relative_path(root, path)?;
     let checkout_rel_path = checkout_relative(&repo.prefix, &norm_rel);
-    let uncommitted = matches!(target, ChangesTarget::Uncommitted);
+    let tracks_changes = target_tracks_changes(target);
 
     if viewed {
         core.files.changes_viewed.set(
@@ -475,7 +480,7 @@ pub fn changes_set_viewed(
             &checkout_rel_path,
             old_blob_id,
             new_blob_id,
-            uncommitted,
+            tracks_changes,
         );
     } else {
         core.files
@@ -769,8 +774,53 @@ fn collect_changed_entries(
 ) -> Result<(DiffContext, Vec<InternalDiffEntry>)> {
     match target {
         ChangesTarget::Uncommitted => collect_uncommitted_entries(git, repo, root),
+        ChangesTarget::Branch => collect_branch_entries(git, repo, root),
         ChangesTarget::Commit(id) => collect_commit_entries(git, repo, root, id),
     }
+}
+
+fn collect_branch_entries(
+    git: &Git,
+    repo: &RepoPaths,
+    root: &Path,
+) -> Result<(DiffContext, Vec<InternalDiffEntry>)> {
+    let Some(head_sha) = try_run_git(
+        git,
+        &repo.top,
+        &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+    )?
+    .map(trimmed_utf8)
+    .filter(|s| !s.is_empty()) else {
+        return Ok((
+            DiffContext::Commit {
+                parent_sha: EMPTY_TREE_SHA.to_owned(),
+                commit_sha: EMPTY_TREE_SHA.to_owned(),
+            },
+            Vec::new(),
+        ));
+    };
+
+    let Some((_, merge_base)) = resolve_base(git, &repo.top)? else {
+        return Ok((
+            DiffContext::Commit {
+                parent_sha: head_sha.clone(),
+                commit_sha: head_sha,
+            },
+            Vec::new(),
+        ));
+    };
+
+    if merge_base == head_sha {
+        return Ok((
+            DiffContext::Commit {
+                parent_sha: merge_base,
+                commit_sha: head_sha,
+            },
+            Vec::new(),
+        ));
+    }
+
+    diff_tree_entries(git, repo, root, merge_base, head_sha)
 }
 
 fn collect_commit_entries(
@@ -803,6 +853,16 @@ fn collect_commit_entries(
         .unwrap_or(EMPTY_TREE_SHA)
         .to_owned();
 
+    diff_tree_entries(git, repo, root, parent_sha, commit_sha)
+}
+
+fn diff_tree_entries(
+    git: &Git,
+    repo: &RepoPaths,
+    root: &Path,
+    parent_sha: String,
+    commit_sha: String,
+) -> Result<(DiffContext, Vec<InternalDiffEntry>)> {
     let diff_raw = run_git(
         git,
         root,

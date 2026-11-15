@@ -50,7 +50,7 @@ const OPEN_IN_WIDTH: f32 = 224.;
 
 /// The editors whose command-line launcher is on PATH, then whether the
 /// chosen one is among them.
-pub(super) fn found_editors(cx: &App) -> (Vec<FileLinkEditor>, FileLinkEditor) {
+pub(crate) fn found_editors(cx: &App) -> (Vec<FileLinkEditor>, FileLinkEditor) {
     let store = crate::app_store::global_app_store(cx).read(cx);
     let found = FileLinkEditor::ALL
         .into_iter()
@@ -74,7 +74,7 @@ pub(super) fn found_editors(cx: &App) -> (Vec<FileLinkEditor>, FileLinkEditor) {
     (found, effective)
 }
 
-pub(super) fn editor_icon(editor: FileLinkEditor, size: f32) -> AnyElement {
+pub(crate) fn editor_icon(editor: FileLinkEditor, size: f32) -> AnyElement {
     let png = match editor {
         FileLinkEditor::Zed => Some("open-in/zed.png"),
         FileLinkEditor::VsCode => Some("open-in/vscode.png"),

@@ -1,8 +1,8 @@
 # 1141 — Git changes view
 
 > Tracking issue: [#1141](https://github.com/yicheng47/runner/issues/1141). Scheduling and priority live on the issue and in the [roadmap](../roadmap.md). Platforms: macOS, Windows and Linux.
-> Status: spec agreed by Jason on 2026-11-13, with the [decisions](#decisions-settled-with-this-spec) below; m1 is in development. The design boards `B38Ah` and `o98BJ` still show the keyboard and Viewed-box details this spec changed, and are updated before m2.
-> Design: `runner/desktop/specs/1141-git-changes.pen` in `yeelinks_design`, revision `563d27b`. Boards: `H5T5Lj` (where the file list sits, screen `D4i2wZ`), `EqrNQ` (from Files to the diff, screen `pCdt6`), `B38Ah` (keyboard map, table `TU4G7`), `Xc2TS` (Split with the panel maximized, screen `tv7xO`) and `o98BJ` (viewed files, screen `TjFT3`).
+> Status: spec agreed by Jason on 2026-11-13, with the [decisions](#decisions-settled-with-this-spec) below; All changes added on 2026-11-15. m1 merged in [#1314](https://github.com/yicheng47/runner/pull/1314); m2 is next. The boards match this spec.
+> Design: `runner/desktop/specs/1141-git-changes.pen` in `yeelinks_design`, revision `3d9bd0d`. Boards: `H5T5Lj` (where the file list sits, screen `D4i2wZ`), `EqrNQ` (from Files to the diff, screen `pCdt6`), `B38Ah` (keyboard map, table `TU4G7`), `Xc2TS` (Split with the panel maximized, screen `tv7xO`) and `o98BJ` (viewed files, screen `TjFT3`).
 > Builds on: [#634](./archive/634-file-preview.md), whose side panel, `runnerd` file service, watcher, status letters, code view and highlighter this reuses. Related: [#1293](https://github.com/yicheng47/runner/issues/1293) (line comments and review to the agent, the next stage), [#1072](https://github.com/yicheng47/runner/issues/1072) (side panel views).
 
 ## Motivation
@@ -32,10 +32,12 @@ Changes is a surface of the side panel, beside Info and Files, opened from the `
 
 The list has two sections: Commits above, files below.
 
-- **Commits** starts with "Uncommitted changes" and its file count, then the branch's commits since its base, newest first, each with its short commit id and subject, and its author and date in the tooltip. The section header names the branch, or "detached at" with the short commit, and the commit count.
+- **All changes** (Jason, 2026-11-15) is the first row in Commits, with its file count: the branch's committed changes as one diff, from the merge base to `HEAD`, as a pull request's Files changed shows them. Uncommitted changes are not part of it; they keep their own row. It is shown when the branch has at least one commit since its base.
+- **Commits** continues with "Uncommitted changes" and its file count, then the branch's commits since its base, newest first, each with its short commit id and subject, and its author and date in the tooltip. The section header names the branch, or "detached at" with the short commit, and the commit count.
 - **The base** (Jason, 2026-11-13) is where `HEAD` split off the remote's default branch: the merge base of `HEAD` and `origin/HEAD`, falling back in turn to `origin/main`, `origin/master`, then a local `main` or `master` when the repository has no `origin`. The commits are those reachable from `HEAD` and not from the base, so a branch worktree lists its own commits, the main checkout lists its unpushed commits, and a checkout level with its base lists none. With no base at all, Commits shows only "Uncommitted changes". A merge commit made by merging the base into the branch is listed; the base's own commits are not. At most 200 commits are listed, followed by "N older commits not shown".
-- **Selection.** Selecting a row in Commits shows its files below and selects the first. Changes opens on "Uncommitted changes" when it has changes, otherwise on the newest commit, otherwise on "No changes since <base>".
+- **Selection.** Selecting a row in Commits shows its files below and selects the first. Changes opens on "Uncommitted changes" when it has changes, otherwise on All changes, otherwise on "No changes since <base>".
 - **The label** in the diff header always says what is compared, since a shared checkout mixes the human's edits and other sessions' changes and must not imply the diff is the session's:
+  - "feat/1141-git-changes vs origin/main" for All changes, naming the branch, or the short commit when `HEAD` is detached, and the base it resolved to.
   - "Working tree vs HEAD" for uncommitted changes, which include staged, unstaged and untracked files in one diff per file, as `git diff HEAD` with untracked files added.
   - "a1f3c9e vs its parent" for a commit, "a1f3c9e vs its first parent" for a merge commit, and "a1f3c9e, the first commit" for a root commit.
   - "Working tree, no commits yet" in a repository whose `HEAD` has no commit, where every file shows as added.
@@ -63,8 +65,8 @@ The list has two sections: Commits above, files below.
 
 - **Marking.** Each changed file has a Viewed box at the start of its row. A click on the box, Space while the list has focus, or the "Mark <file> viewed" box at the end of its diff toggles it. Nothing is marked automatically.
 - **Look.** Viewed rows dim their name and counts, and the summary counts them.
-- **Changed since viewed.** When a viewed file's diff changes in Uncommitted changes, its box clears and turns amber, and its folder hint reads "changed" in amber, until it is viewed again.
-- **What a mark belongs to** (Jason, 2026-11-13): a mark is the checkout, the path, and the two versions compared, by their git blob ids, `runnerd` hashing a working-tree file. A file shows as viewed whenever a mark matches what it compares, so a mark made in Uncommitted changes carries over when the agent commits the file unchanged, and a commit's files keep their marks since a commit never changes. A file shows as changed since viewed when it is not viewed and an earlier mark exists for its path in the same checkout, made in Uncommitted changes.
+- **Changed since viewed.** When a viewed file's diff changes in Uncommitted changes or All changes, as when the agent commits to it again, its box clears and turns amber, and its folder hint reads "changed" in amber, until it is viewed again.
+- **What a mark belongs to** (Jason, 2026-11-13): a mark is the checkout, the path, and the two versions compared, by their git blob ids, `runnerd` hashing a working-tree file. A file shows as viewed whenever a mark matches what it compares, so a mark made in Uncommitted changes carries over when the agent commits the file unchanged, and a commit's files keep their marks since a commit never changes. A file shows as changed since viewed when it is not viewed and an earlier mark exists for its path in the same checkout, made in Uncommitted changes or All changes. A mark made in All changes records the merge base's version and `HEAD`'s, so it no longer matches once the base moves, as when the branch merges its base in.
 - **Where marks live** (Jason, 2026-11-14): `runnerd` keeps marks in memory, with no table and no schema change, so every window on the same checkout shows them at once and remote sessions can follow later. They last as long as `runnerd` runs: a Runner update, stopping `runnerd` or restarting the computer clears them. Durable marks, if wanted later, would be a file in the checkout's git folder rather than a table.
 
 ### From Files to the diff
@@ -108,22 +110,26 @@ New requests, all slow, beside #634's `files_*`:
 | Request | Returns |
 |---|---|
 | `changes_commits(root)` | The branch or detached commit, the base it resolved to (or none), and the commits since it: id, short id, subject, author, date and parent count, at most 200 with the total |
-| `changes_files(root, target)` | For `uncommitted` or a commit id: each changed file under the root with its status, old path for a rename, added and removed counts or binary, both blob ids, whether a viewed mark matches, and whether it changed since viewed; plus the totals |
+| `changes_files(root, target)` | For `uncommitted`, `branch` (merge base to `HEAD`) or a commit id: each changed file under the root with its status, old path for a rename, added and removed counts or binary, both blob ids, whether a viewed mark matches, and whether it changed since viewed; plus the totals |
 | `changes_diff(root, target, path)` | The hunks as line ranges with their `@@` rows, and the old and new contents within #634's 10 MB limit per side, or a placeholder reason: binary, too large, mode only or submodule |
-| `changes_set_viewed(root, target, path, old_blob_id, new_blob_id, viewed)` | Stores or removes a mark, recording whether it was made on uncommitted changes, and pushes `changes/viewed` to every client watching that checkout |
+| `changes_set_viewed(root, target, path, old_blob_id, new_blob_id, viewed)` | Stores or removes a mark, recording whether it was made on uncommitted changes or All changes, and pushes `changes/viewed` to every client watching that checkout |
 
 Refreshes reuse `files_watch` and its `files/changed` and `files/status` events. The marks are held in `runnerd`'s memory, keyed by the checkout's top path, the path and the two blob ids; the database and its schema do not change. The CLI gets no commands.
 
 Remembered view choices (Unified or Split, flat or tree) are app settings in `ui-settings.json`, like Files' options.
 
+### Language
+
+Every string Runner writes in Changes goes through `crates/runner-app/i18n/`, with its key in both `en.toml` and `zh-hans.toml`, as the catalog test requires: labels, placeholders, tooltips, the comparison labels and counts with plurals. What comes from git stays as git gives it: paths, branch and base names, commit ids and subjects, `@@` rows and diff text. The status letters `M` `A` `R` `D` `U` `!` stay untranslated, as in Files. Chinese wording follows the standard terms of VS Code's Simplified Chinese language pack (`microsoft/vscode-loc`, `vscode-language-pack-zh-hans`) for its matching strings, such as 更改 for Changes, 提交 for a commit and 分支 for a branch (Jason, 2026-11-15); Runner's existing catalog terms win where Runner already names something.
+
 ## Non-goals
 
-Read-only, as #634: no stage, unstage or discard; no commit, push or pull request creation; no editing. Line comments and sending a review to the agent are #1293. Storing reviews as records or syncing them to GitHub pull requests. Remote sessions in this version (deferred, see [The Changes view](#the-changes-view)). Choosing the base by hand, which the commits list replaced. Expanding the context around a hunk, and ⌘F in a diff; both can follow. Reordering the panel's surfaces with grips, which #634 deferred until Changes joined.
+Read-only, as #634: no stage, unstage or discard; no commit, push or pull request creation; no editing. Line comments and sending a review to the agent are #1293. Storing reviews as records or syncing them to GitHub pull requests. Remote sessions in this version (deferred, see [The Changes view](#the-changes-view)). Choosing the base by hand, which the commits list replaced. A range of commits, GitHub's "changes since your last review" and GitLab's comparison of any two versions; each can follow on the same model. Expanding the context around a hunk, and ⌘F in a diff; both can follow. Reordering the panel's surfaces with grips, which #634 deferred until Changes joined.
 
 ## Risks
 
 - **Shared checkouts.** A chat or mission without its own worktree shares the checkout, so Uncommitted changes mixes the human's edits and other sessions'. The comparison label says what is compared; nothing implies the diff is the session's.
-- **Base guessing.** Repositories differ: no `origin`, a default branch with another name, a remote that is not `origin`. The fallback order covers the common cases, and a wrong guess only lists extra or fewer commits; Uncommitted changes never depends on it.
+- **Base guessing.** Repositories differ: no `origin`, a default branch with another name, a remote that is not `origin`. The fallback order covers the common cases, and a wrong guess only lists extra or fewer commits and widens or narrows All changes; Uncommitted changes never depends on it.
 - **Large diffs.** A regenerated lockfile or a vendored folder can add hundreds of thousands of lines. Counts come from one `git diff --numstat` per selection, the diff is fetched only for the selected file, and both are virtualized.
 - **Highlighting two versions.** Highlighting the old and new files doubles the highlighter's work for a selection. It runs off the UI thread as #634's does, and the diff shows plain until it arrives.
 - **Git as a subprocess.** Windows needs `git.exe` on PATH; without it Changes shows the not-in-git state, as Files does. CRLF is handled as above.
@@ -135,11 +141,11 @@ No umbrella branch: each step stands on its own on `main`, so three sequential p
 
 | Step | What | Crew | Labels |
 |---|---|---|---|
-| m1 — runnerd changes service | The four requests, base resolution and the in-memory viewed marks. Nothing a person sees | agy duo | `core-review`, no live checks |
-| m2 — the Changes view | The surface and its `C` key and Settings row, the list flat and tree, Commits, the Unified diff with highlighting and edge cases, live refresh, the keyboard, and viewed marks | agy trio | `frontend-only` |
+| m1 — runnerd changes service | The four requests, base resolution and the in-memory viewed marks. Nothing a person sees. Merged in #1314 | agy duo | `core-review`, no live checks |
+| m2 — the Changes view | `runnerd`'s `branch` target and its marks; the surface and its `C` key and Settings row, the list flat and tree, Commits with All changes, the Unified diff with highlighting and edge cases, live refresh, the keyboard, and viewed marks | agy trio | `core-review` for the new target |
 | m3 — Split and Files' Diff button | Split, the side panel's maximize and the 360 px rule, and the Diff button on a file's tab | agy trio | `frontend-only` |
 
-The crews use the Antigravity coder on `gemini-4-hydrogen` at `xhigh` with the codex reviewer, and the trios add the codex `qa` (Jason, 2026-11-13). m2 waits on m1, and m3 on m2. Each step updates the guide pages for what it adds.
+The crews use the Antigravity coder on `gemini-4-carbon` at `high` (Jason, 2026-11-15) with the codex reviewer, and the trios add the codex `qa` (Jason, 2026-11-13). m2 waits on m1, and m3 on m2. Each step updates the guide pages for what it adds.
 
 m1 lands on `main` without changing anything that runs today: it adds requests no client sends until m2, changes no existing `files_*` request or event, and leaves the database schema as it is. Its `changes/viewed` event goes only to clients watching that checkout, and the app ignores event names it does not know.
 
@@ -150,7 +156,8 @@ m1 lands on `main` without changing anything that runs today: it adds requests n
 - **Parsers:** `git diff --numstat -z` with renames, copies, binary files and paths with spaces and newlines; unified hunks, including `\ No newline at end of file`; the commit log.
 - **Base resolution,** in fixture repositories built with the git CLI: `origin/HEAD` set, only `origin/main`, only `origin/master`, no `origin` with a local `main`, no base, a detached `HEAD`, the main checkout level with its base and two commits ahead, a branch that merged its base in, and a repository with no commit.
 - **Files and diffs** in a fixture with modified, added, renamed, deleted, untracked, binary, over-10 MB, CRLF-only, mode-only, conflicted and symlink files and a submodule: counts and statuses match git, and each placeholder appears where expected. A subfolder root lists only its subtree.
-- **Viewed marks:** set and clear; a mark carries from Uncommitted changes to the commit that commits the file unchanged; an edit after viewing shows changed; a second client gets `changes/viewed`.
+- **All changes:** the `branch` target matches `git diff --numstat <merge-base> HEAD` in a worktree two commits ahead, after the branch merges its base in, with a detached `HEAD`, and with no base or no commits since it, where the row is absent; uncommitted edits stay out of it.
+- **Viewed marks:** set and clear; a mark carries from Uncommitted changes to the commit that commits the file unchanged; an edit after viewing shows changed; a file viewed in All changes shows changed after a new commit touches it; a second client gets `changes/viewed`.
 - **App:** Split's line pairing, the 360 px rule, flat and tree grouping, the keyboard's focus moves, and CRLF-only detection.
 
 ### Live checks
@@ -159,7 +166,7 @@ The agy trio's `qa` runs these on macOS and Windows, and on Linux when a Linux m
 
 1. **List and summary** match `git status` and `git diff --numstat HEAD` for the fixture's file kinds, in dark and light. Reason: new view.
 2. **Selection and keys:** ↑↓, j/k and clicks swap the diff at once; Tab, Enter, Esc, `[` `]`, ← → and Space act as the table says, and the terminal keeps its keys. Reason: new keyboard map.
-3. **Commits:** the worktree lists its two commits and the main checkout none; selecting a commit shows its files and the label; a repository with no `origin` resolves its local `main`. Reason: base resolution.
+3. **Commits:** the worktree lists All changes and its two commits, and the main checkout none; All changes shows both commits' files with an uncommitted edit left out; selecting a commit shows its files and the label; a repository with no `origin` resolves its local `main`. Reason: base resolution and the branch diff.
 4. **Live refresh:** an owned bounded agent edits a viewed file, which turns changed, then commits it; the file moves to the new commit, and an unchanged viewed file keeps its mark. Reason: watcher reuse and mark carry-over.
 5. **Viewed marks** show in a second window at once, and a restart of the development daemon clears them. Reason: marks live in `runnerd`'s memory.
 6. **Split and maximize:** Split in a narrow panel maximizes it; Restore chat returns to Unified; ⇧⌘↩ / Ctrl+Shift+Enter maximizes the panel with focus in it and the pane with focus in the chat; the chat keeps its 420 px. Reason: new panel control (m3).
@@ -174,10 +181,11 @@ Selected regression cases: [WS-FILES-05](../tests/regression/workspace.md) (pane
 
 ## Decisions settled with this spec
 
-Agreed by Jason on 2026-11-13, beside those dated in the sections above. Where this spec and the design boards differ on these points, the spec wins until the boards are updated.
+Agreed by Jason on 2026-11-13, beside those dated in the sections above.
 
-1. **Keyboard.** Three focus places and only `[` `]` for hunks, since ← → is the only keyboard way to scroll long lines, which never wrap. The board `B38Ah` still shows two focus zones and ← → for hunks.
-2. **The box at the end of a diff** is a manual toggle, as the issue says, and carries no `Space` keycap, since Space acts only in the list. The board `o98BJ` note still reads as marking the file automatically "once it has been read to the bottom".
+1. **Keyboard.** Three focus places and only `[` `]` for hunks, since ← → is the only keyboard way to scroll long lines, which never wrap.
+2. **The box at the end of a diff** is a manual toggle, as the issue says, and carries no `Space` keycap, since Space acts only in the list.
 3. **Terminal-only tabs** get Changes beside Files as two permanent tabs.
 4. **Out of this version:** surface reordering grips, expanding hunk context, and ⌘F in a diff.
 5. **Delivery** as three pull requests to `main` without an umbrella, on the agy crews.
+6. **All changes** (2026-11-15): the whole branch as one diff, committed changes only, modelled on GitHub's Files changed, and built in m2.

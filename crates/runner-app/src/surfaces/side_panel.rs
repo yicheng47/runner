@@ -21,6 +21,7 @@ pub(crate) enum PanelViewId {
     Sessions,
     Info,
     Files,
+    Changes,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,11 +53,12 @@ impl PanelView {
             PanelViewId::Sessions => true,
             PanelViewId::Info => settings.info_view,
             PanelViewId::Files => settings.files_view,
+            PanelViewId::Changes => settings.changes_view,
         }
     }
 }
 
-pub(crate) const VIEWS: [PanelView; 3] = [
+pub(crate) const VIEWS: [PanelView; 4] = [
     PanelView {
         id: PanelViewId::Sessions,
         label: "ui.sessions",
@@ -76,6 +78,17 @@ pub(crate) const VIEWS: [PanelView; 3] = [
         label: "ui.files",
         icon: "folder.svg",
         key: Some("F"),
+        surfaces: &[
+            PanelSurface::Chat,
+            PanelSurface::Terminal,
+            PanelSurface::Mission,
+        ],
+    },
+    PanelView {
+        id: PanelViewId::Changes,
+        label: "ui.changes",
+        icon: "git-compare.svg",
+        key: Some("C"),
         surfaces: &[
             PanelSurface::Chat,
             PanelSurface::Terminal,
@@ -208,10 +221,14 @@ impl OpenSurfaces {
             .iter()
             .filter(|view| !view.on(settings))
             .map(|view| view.id)
-            .filter(|id| self.open.contains(id))
             .collect::<Vec<_>>();
-        for id in off {
-            self.close(id, permanent);
+        for id in &off {
+            if self.open.contains(id) {
+                self.close(*id, permanent);
+            }
+        }
+        if self.active.is_some_and(|active| off.contains(&active)) {
+            self.active = None;
         }
     }
 
@@ -236,21 +253,28 @@ fn offered(surface: PanelSurface, settings: &AppSettings) -> Vec<&'static PanelV
         .collect()
 }
 
-/// The tab that cannot close: a mission's Sessions, or the one surface on
-/// offer.
-fn permanent(surface: PanelSurface, settings: &AppSettings) -> Option<PanelViewId> {
-    if surface == PanelSurface::Mission {
-        return Some(PanelViewId::Sessions);
-    }
-    match offered(surface, settings).as_slice() {
-        [only] => Some(only.id),
-        _ => None,
+/// The tabs that cannot close: a mission's Sessions, a terminal tab's
+/// offered surfaces, or the one surface on offer.
+fn permanents(surface: PanelSurface, settings: &AppSettings) -> Vec<PanelViewId> {
+    match surface {
+        PanelSurface::Mission => vec![PanelViewId::Sessions],
+        PanelSurface::Terminal => offered(surface, settings)
+            .into_iter()
+            .map(|view| view.id)
+            .collect(),
+        PanelSurface::Chat => match offered(surface, settings).as_slice() {
+            [only] => vec![only.id],
+            _ => Vec::new(),
+        },
     }
 }
 
 /// What the `+` menu and the empty list offer; nothing where a surface's
-/// one tab is permanent.
+/// tabs are permanent.
 pub(crate) fn menu_views(surface: PanelSurface, settings: &AppSettings) -> Vec<&'static PanelView> {
+    if surface == PanelSurface::Terminal {
+        return Vec::new();
+    }
     let offered = offered(surface, settings);
     if surface != PanelSurface::Mission && offered.len() < 2 {
         return Vec::new();
@@ -258,23 +282,23 @@ pub(crate) fn menu_views(surface: PanelSurface, settings: &AppSettings) -> Vec<&
     offered
 }
 
-/// The header's tabs, each with whether it closes: the permanent one
+/// The header's tabs, each with whether it closes: the permanent ones
 /// first, then the open surfaces on offer.
 pub(crate) fn tabs(
     surface: PanelSurface,
     settings: &AppSettings,
     surfaces: &OpenSurfaces,
 ) -> Vec<(PanelViewId, bool)> {
-    let permanent = permanent(surface, settings);
+    let permanents = permanents(surface, settings);
     let offered = offered(surface, settings);
-    permanent
-        .map(|id| (id, false))
-        .into_iter()
+    permanents
+        .iter()
+        .map(|id| (*id, false))
         .chain(
             surfaces
                 .open
                 .iter()
-                .filter(|id| Some(**id) != permanent && offered.iter().any(|view| view.id == **id))
+                .filter(|id| !permanents.contains(id) && offered.iter().any(|view| view.id == **id))
                 .map(|id| (*id, true)),
         )
         .collect()
@@ -858,9 +882,9 @@ mod tests {
     fn views_keep_one_order_and_filter_by_surface() {
         use PanelSurface::*;
         use PanelViewId::*;
-        assert_eq!(ids(Mission), [Sessions, Info, Files]);
-        assert_eq!(ids(Chat), [Info, Files]);
-        assert_eq!(ids(Terminal), [Files]);
+        assert_eq!(ids(Mission), [Sessions, Info, Files, Changes]);
+        assert_eq!(ids(Chat), [Info, Files, Changes]);
+        assert_eq!(ids(Terminal), [Files, Changes]);
         assert!(VIEWS.iter().all(|view| view.on(&AppSettings::default())));
     }
 
@@ -871,6 +895,7 @@ mod tests {
         let off = AppSettings {
             info_view: false,
             files_view: false,
+            changes_view: false,
             ..AppSettings::default()
         };
         assert_eq!(ids_with(&off, Mission), [Sessions]);
@@ -878,6 +903,7 @@ mod tests {
         assert_eq!(views(Terminal, &off).count(), 0);
         let files_only = AppSettings {
             info_view: false,
+            changes_view: false,
             ..AppSettings::default()
         };
         assert_eq!(ids_with(&files_only, Mission), [Sessions, Files]);
@@ -961,7 +987,7 @@ mod tests {
         use PanelSurface::*;
         use PanelViewId::*;
         let settings = AppSettings::default();
-        assert_eq!(menu_ids(Chat, &settings), [Info, Files]);
+        assert_eq!(menu_ids(Chat, &settings), [Info, Files, Changes]);
         let both = open(&[Info, Files], Some(Files));
         assert_eq!(tabs(Chat, &settings, &both), [(Info, true), (Files, true)]);
         assert_eq!(shown(Chat, &settings, &both), Some(Files));
@@ -970,7 +996,7 @@ mod tests {
         assert_eq!(shown(Chat, &settings, &none), None, "the empty list");
         assert_eq!(
             VIEWS.iter().map(|view| view.key).collect::<Vec<_>>(),
-            [None, Some("I"), Some("F")]
+            [None, Some("I"), Some("F"), Some("C")]
         );
     }
 
@@ -979,7 +1005,7 @@ mod tests {
         use PanelSurface::*;
         use PanelViewId::*;
         let settings = AppSettings::default();
-        assert_eq!(menu_ids(Mission, &settings), [Info, Files]);
+        assert_eq!(menu_ids(Mission, &settings), [Info, Files, Changes]);
         let none = OpenSurfaces::default();
         assert_eq!(tabs(Mission, &settings, &none), [(Sessions, false)]);
         assert_eq!(shown(Mission, &settings, &none), Some(Sessions));
@@ -991,12 +1017,14 @@ mod tests {
         // A mission with one surface on offer still has `+` for it.
         let files_only = AppSettings {
             info_view: false,
+            changes_view: false,
             ..AppSettings::default()
         };
         assert_eq!(menu_ids(Mission, &files_only), [Files]);
         let off = AppSettings {
             info_view: false,
             files_view: false,
+            changes_view: false,
             ..AppSettings::default()
         };
         assert!(menu_ids(Mission, &off).is_empty());
@@ -1011,10 +1039,25 @@ mod tests {
         let settings = AppSettings::default();
         let info = open(&[Info], Some(Info));
         assert!(menu_ids(Terminal, &settings).is_empty());
-        assert_eq!(tabs(Terminal, &settings, &info), [(Files, false)]);
+        assert_eq!(
+            tabs(Terminal, &settings, &info),
+            [(Files, false), (Changes, false)]
+        );
         assert_eq!(shown(Terminal, &settings, &info), Some(Files));
+        let mut terminal = OpenSurfaces::default();
+        terminal.select(Changes);
+        assert_eq!(shown(Terminal, &settings, &terminal), Some(Changes));
+        let changes_off = AppSettings {
+            changes_view: false,
+            ..AppSettings::default()
+        };
+        terminal.close_off(&changes_off, false);
+        assert_eq!(tabs(Terminal, &changes_off, &terminal), [(Files, false)]);
+        assert_eq!(shown(Terminal, &changes_off, &terminal), Some(Files));
+
         let files_only = AppSettings {
             info_view: false,
+            changes_view: false,
             ..AppSettings::default()
         };
         assert!(menu_ids(Chat, &files_only).is_empty());
@@ -1023,9 +1066,16 @@ mod tests {
         assert_eq!(shown(Chat, &files_only, &none), Some(Files));
         let info_only = AppSettings {
             files_view: false,
+            changes_view: false,
             ..AppSettings::default()
         };
         assert_eq!(tabs(Chat, &info_only, &none), [(Info, false)]);
+        let changes_only = AppSettings {
+            info_view: false,
+            files_view: false,
+            ..AppSettings::default()
+        };
+        assert_eq!(tabs(Chat, &changes_only, &none), [(Changes, false)]);
     }
 
     #[test]
@@ -1094,14 +1144,15 @@ mod tests {
         assert_eq!(key("i", 0, true), Some(Open(Info)));
         assert_eq!(key("f", 0, false), Some(Open(Files)));
         assert_eq!(key("shift-f", 0, true), Some(Open(Files)));
-        assert_eq!(key("c", 0, true), None, "no Changes yet");
+        assert_eq!(key("c", 0, true), Some(Open(Changes)));
+        assert_eq!(key("c", 0, false), Some(Open(Changes)));
         assert_eq!(key("cmd-f", 0, true), None);
         assert_eq!(key("ctrl-f", 0, false), None);
         assert_eq!(key("escape", 0, true), Some(DismissMenu));
         assert_eq!(key("escape", 0, false), None);
         assert_eq!(key("down", 0, true), Some(HighlightMenu(1)));
-        assert_eq!(key("down", 1, false), Some(HighlightList(0)));
-        assert_eq!(key("up", 0, true), Some(HighlightMenu(1)));
-        assert_eq!(key("enter", 1, true), Some(Open(Files)));
+        assert_eq!(key("down", 2, false), Some(HighlightList(0)));
+        assert_eq!(key("up", 0, true), Some(HighlightMenu(2)));
+        assert_eq!(key("enter", 2, true), Some(Open(Changes)));
     }
 }

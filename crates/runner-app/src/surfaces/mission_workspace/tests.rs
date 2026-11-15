@@ -1863,10 +1863,11 @@ fn mission_panel_header_keeps_sessions_first_and_adds_info_and_files_from_plus()
         assert_text(&mut visual, "PANEL_TAB_INK Sessions", theme::text());
     }
 
-    // `+` offers Info and Files, never Sessions, with nothing checked.
+    // `+` offers Info, Files and Changes, never Sessions, with nothing checked.
     click(&mut visual, "PANEL_ADD_SURFACE");
     assert!(visual.debug_bounds("PANEL_MENU_ROW Info").is_some());
     assert!(visual.debug_bounds("PANEL_MENU_ROW Files").is_some());
+    assert!(visual.debug_bounds("PANEL_MENU_ROW Changes").is_some());
     assert!(visual.debug_bounds("PANEL_MENU_ROW Sessions").is_none());
     assert!(visual.debug_bounds("PANEL_MENU_CHECK Info").is_none());
     click(&mut visual, "PANEL_MENU_ROW Files");
@@ -1925,7 +1926,7 @@ fn mission_panel_header_keeps_sessions_first_and_adds_info_and_files_from_plus()
     assert!(visual.debug_bounds("MISSION_ROLES_SCROLL").is_some());
     assert!(visual.debug_bounds("PANEL_EMPTY").is_none(), "never empty");
 
-    // Settings → Side panel turning Info and Files off leaves Sessions,
+    // Settings → Side panel turning Info, Files and Changes off leaves Sessions,
     // with no `+`, and closes an open Files tab.
     click(&mut visual, "PANEL_ADD_SURFACE");
     click(&mut visual, "PANEL_MENU_ROW Files");
@@ -1934,6 +1935,7 @@ fn mission_panel_header_keeps_sessions_first_and_adds_info_and_files_from_plus()
             |settings| {
                 settings.info_view = false;
                 settings.files_view = false;
+                settings.changes_view = false;
                 true
             },
             false,
@@ -1950,6 +1952,7 @@ fn mission_panel_header_keeps_sessions_first_and_adds_info_and_files_from_plus()
             |settings| {
                 settings.info_view = true;
                 settings.files_view = true;
+                settings.changes_view = true;
                 true
             },
             false,
