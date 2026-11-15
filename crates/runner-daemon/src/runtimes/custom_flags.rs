@@ -652,7 +652,7 @@ fn is_valid_help_flag(candidate: &str, allow_multi_short: bool) -> bool {
     }
 }
 
-fn strip_ansi(text: &str) -> String {
+pub(crate) fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {

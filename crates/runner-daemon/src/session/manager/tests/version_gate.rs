@@ -174,3 +174,89 @@ fn public_start_api_preserves_the_gate_through_operation_context() {
         .unwrap_err();
     assert_eq!(error.version_gate.unwrap().installed_version, "0.147.0");
 }
+
+#[test]
+#[cfg(unix)]
+fn unprobed_opencode_v1_is_probed_synchronously_and_refused_on_start_and_resume() {
+    use std::os::unix::fs::PermissionsExt;
+    let pool = pool_with_schema();
+    let data = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let bin = bin_dir.path().join("opencode");
+    std::fs::write(&bin, "#!/bin/sh\necho '2.0.29'\n").unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let fake = fake_runtime();
+    let manager = mgr_with_fake(None, fake.clone());
+    manager.shell_env.write().unwrap().path = Some(bin_dir.path().display().to_string());
+
+    let mut role = role("opencode", &[]);
+    role.runtime = "opencode".into();
+    let started = manager
+        .spawn_runtime_direct(
+            &role,
+            None,
+            Some(fixture_tmp_dir().to_str().unwrap()),
+            None,
+            None,
+            data.path(),
+            pool.clone(),
+            capture(),
+        )
+        .unwrap();
+    manager.kill(&started.id).unwrap();
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET agent_session_key='ses_abc123' WHERE id=?1",
+            [&started.id],
+        )
+        .unwrap();
+
+    // Downgrade binary on PATH to v1 and clear cached version probes to simulate cold launch/resume.
+    std::fs::write(
+        &bin,
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '1.19.5'; exit 0; fi\necho 'Usage: opencode [project]'\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    manager.discovery_state.write().unwrap().versions = Default::default();
+    let spawns_before = fake.spawns.lock().unwrap().len();
+
+    let Err(Error::RuntimeVersionGate(gate)) = manager.spawn_runtime_direct(
+        &role,
+        None,
+        Some(fixture_tmp_dir().to_str().unwrap()),
+        None,
+        None,
+        data.path(),
+        pool.clone(),
+        capture(),
+    ) else {
+        panic!("expected RuntimeVersionGate on unprobed OpenCode v1 launch");
+    };
+    assert_eq!(gate.runtime, Runtime::OpenCode);
+    assert_eq!(gate.installed_version, "1.19.5");
+    assert_eq!(gate.min_version, "2.0.0");
+
+    // Clear cache again and verify stopped-session resume also probes synchronously and gates cleanly.
+    manager.discovery_state.write().unwrap().versions = Default::default();
+    let Err(Error::RuntimeVersionGate(resume_gate)) = manager.resume(
+        &started.id,
+        None,
+        None,
+        data.path(),
+        pool.clone(),
+        capture(),
+    ) else {
+        panic!("expected RuntimeVersionGate on unprobed OpenCode v1 resume");
+    };
+    assert_eq!(resume_gate.runtime, Runtime::OpenCode);
+    assert_eq!(resume_gate.installed_version, "1.19.5");
+    assert_eq!(resume_gate.min_version, "2.0.0");
+    assert_eq!(
+        fake.spawns.lock().unwrap().len(),
+        spawns_before,
+        "must refuse v1 before spawning opencode --standalone"
+    );
+}

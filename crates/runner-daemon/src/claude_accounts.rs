@@ -412,11 +412,7 @@ pub fn action(core: &AppCore, action: ClaudeAccountAction) -> Result<ClaudeAccou
 }
 
 fn command(core: &AppCore, account: &ClaudeAccount) -> Result<Command> {
-    let statuses = crate::runtime_status::status_list(
-        &core.db,
-        &core.runtime_shell_env,
-        &core.runtime_discovery,
-    )?;
+    let statuses = crate::ops::runtime::runtime_status_list(core)?;
     let executable = statuses
         .runtimes
         .into_iter()

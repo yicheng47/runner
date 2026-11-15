@@ -193,6 +193,7 @@ pub(crate) enum SessionEvent {
         crashed: bool,
     },
     StartupError(runner_core::protocol::status::StartupError),
+    ClearStartupError,
     ConversationChanged(PersistKey),
     KeyPersisted(PersistKey),
 }
@@ -862,6 +863,12 @@ impl SessionModel {
                 self.status.observation.interactions.clear();
             }
             SessionEvent::StartupError(error) => self.status.startup_error = Some(error),
+            SessionEvent::ClearStartupError => {
+                if self.status.startup_error.take().is_some() {
+                    let state = self.activity.unwrap_or(SessionActivityState::Idle);
+                    effects.publication = Some((state, StatusSource::Unavailable));
+                }
+            }
             SessionEvent::ConversationChanged(report) => effects.persist_key = Some(report),
             SessionEvent::KeyPersisted(report) => {
                 self.key = Some(report);

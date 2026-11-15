@@ -12,6 +12,7 @@ pub(crate) fn core(
     runtime_discovery: Arc<RwLock<shell_path::DiscoveryState>>,
 ) -> AppCore {
     let events = events::EventChannel::new();
+    sessions.set_runtime_events(events.clone());
     AppCore {
         files: Arc::new(runner_daemon::files::FilesService::new(
             runtime_shell_env.clone(),

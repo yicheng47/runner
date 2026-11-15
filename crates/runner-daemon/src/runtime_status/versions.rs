@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::{
-    effective_runtime_command, RuntimeCommandSource, SharedDiscoveryState, SharedShellEnv,
+    candidate_runtime_command, RuntimeCommandSource, SharedDiscoveryState, SharedShellEnv,
 };
 use crate::db::DbPool;
 use crate::events::EventChannel;
@@ -26,9 +26,16 @@ const LATEST_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 #[derive(Debug, Clone, Default)]
 pub(crate) struct VersionDiscovery {
     installed: HashMap<Runtime, Probe>,
-    /// The newest probe started per runtime: its command and generation.
-    /// Only that probe may store its result; older ones are superseded.
-    probing: HashMap<Runtime, (String, u64)>,
+    /// The newest probe started per runtime (async or sync). Only that
+    /// probe's generation may commit its result into `installed` or retire
+    /// `probing[runtime]`.
+    probing: HashMap<Runtime, ActiveProbe>,
+    /// Currently running `EventChannel`-backed background workers per runtime.
+    in_flight_async: HashMap<Runtime, ActiveProbe>,
+    /// A `changed` result committed by an `events: None` sync probe while a
+    /// matching background worker was still in flight; cleared once that worker
+    /// or a newer channeled probe delivers `runtime/changed`.
+    pending_async_notify: HashMap<Runtime, u64>,
     next_probe: u64,
     latest: HashMap<Runtime, Latest>,
     /// The newest npm check started per runtime: its tag and generation.
@@ -51,9 +58,55 @@ struct HelpCacheKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExecutableFingerprint {
+    modified_ns: Option<u128>,
+    len: u64,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+pub(crate) fn executable_fingerprint(command: &str) -> Option<ExecutableFingerprint> {
+    let metadata = std::fs::metadata(command).ok()?;
+    let modified_ns = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_nanos());
+    #[cfg(unix)]
+    let (dev, ino) = {
+        use std::os::unix::fs::MetadataExt;
+        (metadata.dev(), metadata.ino())
+    };
+    Some(ExecutableFingerprint {
+        modified_ns,
+        len: metadata.len(),
+        #[cfg(unix)]
+        dev,
+        #[cfg(unix)]
+        ino,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Probe {
     command: String,
+    fingerprint: Option<ExecutableFingerprint>,
     version: Option<String>,
+}
+
+impl Probe {
+    fn matches(&self, command: &str, fingerprint: Option<&ExecutableFingerprint>) -> bool {
+        self.command == command && self.fingerprint.as_ref() == fingerprint
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveProbe {
+    command: String,
+    fingerprint: Option<ExecutableFingerprint>,
+    generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -71,6 +124,7 @@ impl VersionDiscovery {
             runtime,
             Probe {
                 command: command.into(),
+                fingerprint: executable_fingerprint(command),
                 version: version.map(str::to_owned),
             },
         );
@@ -83,10 +137,118 @@ impl VersionDiscovery {
 
     /// The probed version of `command`, if the last probe ran that command.
     pub(crate) fn installed(&self, runtime: Runtime, command: &str) -> Option<&str> {
+        let fingerprint = executable_fingerprint(command);
         self.installed
             .get(&runtime)
-            .filter(|probe| probe.command == command)
+            .filter(|probe| probe.matches(command, fingerprint.as_ref()))
             .and_then(|probe| probe.version.as_deref())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_in_flight_async(&self, runtime: Runtime) -> bool {
+        self.in_flight_async.contains_key(&runtime)
+    }
+
+    pub(crate) fn probed(&self, runtime: Runtime, command: &str) -> Option<Option<&str>> {
+        let fingerprint = executable_fingerprint(command);
+        self.installed
+            .get(&runtime)
+            .filter(|probe| probe.matches(command, fingerprint.as_ref()))
+            .map(|probe| probe.version.as_deref())
+    }
+
+    fn commit_probe(&mut self, runtime: Runtime, probe: Probe) -> bool {
+        let previous = self.installed.insert(runtime, probe.clone());
+        let changed = previous.as_ref() != Some(&probe);
+        if changed {
+            let binary_replaced = previous.as_ref().is_some_and(|prev| {
+                prev.command == probe.command && prev.fingerprint != probe.fingerprint
+            });
+            self.help_flags.retain(|key, _| {
+                key.command != probe.command || (!binary_replaced && key.version == probe.version)
+            });
+        }
+        changed
+    }
+
+    /// Records an already-validated override probe after persistence succeeds,
+    /// superseding any older in-flight probe so a stale result cannot win later.
+    pub(crate) fn record_override_probe(
+        &mut self,
+        runtime: Runtime,
+        command: String,
+        fingerprint: Option<ExecutableFingerprint>,
+        version: Option<String>,
+    ) -> bool {
+        self.next_probe += 1;
+        self.probing.remove(&runtime);
+        self.in_flight_async.remove(&runtime);
+        self.pending_async_notify.remove(&runtime);
+        self.commit_probe(
+            runtime,
+            Probe {
+                command,
+                fingerprint,
+                version,
+            },
+        )
+    }
+
+    fn begin_sync_probe(&mut self, runtime: Runtime, command: &str) -> Option<u64> {
+        if self.probed(runtime, command).is_some() {
+            return None;
+        }
+        let fingerprint = executable_fingerprint(command);
+        self.next_probe += 1;
+        let generation = self.next_probe;
+        self.probing.insert(
+            runtime,
+            ActiveProbe {
+                command: command.to_owned(),
+                fingerprint,
+                generation,
+            },
+        );
+        Some(generation)
+    }
+
+    fn finish_sync_probe(
+        &mut self,
+        runtime: Runtime,
+        generation: u64,
+        command: String,
+        version: Option<String>,
+        has_events: bool,
+    ) -> bool {
+        let Some(active) = self.probing.get(&runtime) else {
+            return false;
+        };
+        if active.generation != generation {
+            return false;
+        }
+        let fingerprint = active.fingerprint.clone();
+        self.probing.remove(&runtime);
+        let probe = Probe {
+            command,
+            fingerprint,
+            version,
+        };
+        let changed = self.commit_probe(runtime, probe.clone());
+        if has_events {
+            let pending = self.pending_async_notify.remove(&runtime).is_some();
+            return changed || pending;
+        }
+        if let Some(async_probe) = self
+            .in_flight_async
+            .get(&runtime)
+            .filter(|active| active.command == probe.command)
+        {
+            if changed {
+                self.pending_async_notify
+                    .insert(runtime, async_probe.generation);
+            }
+        }
+        false
     }
 
     /// The npm `latest` version when it is newer than `installed`.
@@ -100,33 +262,45 @@ impl VersionDiscovery {
     /// Either way the runtime is now on `command`, so a probe still running
     /// for another command is superseded and its result will be discarded.
     fn begin_probe(&mut self, runtime: Runtime, command: &str, force: bool) -> Option<u64> {
+        let fingerprint = executable_fingerprint(command);
         let running = self
-            .probing
+            .in_flight_async
             .get(&runtime)
-            .is_some_and(|(running, _)| running == command);
+            .is_some_and(|probe| probe.command == command && probe.fingerprint == fingerprint);
         let answered = self
             .installed
             .get(&runtime)
-            .is_some_and(|probe| probe.command == command);
+            .is_some_and(|probe| probe.matches(command, fingerprint.as_ref()));
         if !force && running {
             return None;
         }
         if !force && answered {
             self.probing.remove(&runtime);
+            self.in_flight_async.remove(&runtime);
             return None;
         }
         if force {
             self.help_flags.retain(|key, _| key.command != command);
         }
         self.next_probe += 1;
-        self.probing
-            .insert(runtime, (command.to_owned(), self.next_probe));
-        Some(self.next_probe)
+        let generation = self.next_probe;
+        let probe = ActiveProbe {
+            command: command.to_owned(),
+            fingerprint,
+            generation,
+        };
+        self.probing.insert(runtime, probe.clone());
+        self.in_flight_async.insert(runtime, probe);
+        if let Some(pending_gen) = self.pending_async_notify.get_mut(&runtime) {
+            *pending_gen = generation;
+        }
+        Some(generation)
     }
 
     /// Stores the result of the newest probe for `runtime` and reports
     /// whether the shown version changed. A superseded probe — an override
-    /// set while it ran, or a later forced probe — is discarded.
+    /// set while it ran, a later forced probe, or a newer sync probe — is
+    /// discarded without evicting the newer probe's state.
     fn finish_probe(
         &mut self,
         runtime: Runtime,
@@ -135,20 +309,68 @@ impl VersionDiscovery {
         version: Option<String>,
     ) -> bool {
         if self
-            .probing
+            .in_flight_async
             .get(&runtime)
-            .is_none_or(|(_, newest)| *newest != generation)
+            .is_some_and(|active| active.generation == generation)
         {
+            self.in_flight_async.remove(&runtime);
+        }
+        let Some(active) = self.probing.get(&runtime) else {
+            if self
+                .pending_async_notify
+                .get(&runtime)
+                .is_some_and(|pending| *pending == generation)
+            {
+                self.pending_async_notify.remove(&runtime);
+                return true;
+            }
+            return false;
+        };
+        if active.generation != generation {
+            if self
+                .pending_async_notify
+                .get(&runtime)
+                .is_some_and(|pending| *pending == generation)
+            {
+                self.pending_async_notify.remove(&runtime);
+                return true;
+            }
             return false;
         }
+        let fingerprint = active.fingerprint.clone();
         self.probing.remove(&runtime);
-        let probe = Probe { command, version };
-        let changed = self.installed.insert(runtime, probe.clone()) != Some(probe.clone());
-        if changed {
+        let pending = self.pending_async_notify.remove(&runtime).is_some();
+        let changed = self.commit_probe(
+            runtime,
+            Probe {
+                command,
+                fingerprint,
+                version,
+            },
+        );
+        changed || pending
+    }
+
+    pub(crate) fn clear_runtime_probe(&mut self, runtime: Runtime) -> bool {
+        self.next_probe += 1;
+        let removed = self.installed.remove(&runtime);
+        if let Some(probe) = &removed {
             self.help_flags
-                .retain(|key, _| key.command != probe.command || key.version == probe.version);
+                .retain(|key, _| key.command != probe.command);
         }
-        changed
+        self.probing.remove(&runtime);
+        self.in_flight_async.remove(&runtime);
+        self.pending_async_notify.remove(&runtime);
+        removed.is_some()
+    }
+
+    pub(super) fn clear_probes(&mut self) {
+        self.next_probe += 1;
+        self.installed.clear();
+        self.probing.clear();
+        self.in_flight_async.clear();
+        self.pending_async_notify.clear();
+        self.help_flags.clear();
     }
 
     pub(super) fn clear_help_flags(&mut self, command: Option<&str>) {
@@ -290,10 +512,56 @@ pub(crate) fn installed_command(
     shell_env: &SharedShellEnv,
     discovery: &SharedDiscoveryState,
 ) -> Option<String> {
-    effective_runtime_command(runtime, pool, shell_env, discovery)
+    candidate_runtime_command(runtime, pool, shell_env, discovery)
         .ok()
         .filter(|command| command.source != RuntimeCommandSource::Catalog)
         .map(|command| command.command)
+}
+
+pub(crate) fn probe_command_version(command: &str, env: &LoginShellEnv) -> Option<String> {
+    super::models::command_output(command, &["--version"], env, PROBE_TIMEOUT)
+        .and_then(|output| parse_version(&output))
+}
+
+pub(crate) fn ensure_probed(
+    runtime: Runtime,
+    command: &str,
+    shell_env: &SharedShellEnv,
+    discovery: &SharedDiscoveryState,
+    events: Option<&EventChannel>,
+) -> Option<String> {
+    let generation = {
+        let Ok(mut state) = discovery.write() else {
+            return None;
+        };
+        if let Some(cached) = state.versions.probed(runtime, command) {
+            return cached.map(str::to_owned);
+        }
+        state.versions.begin_sync_probe(runtime, command)
+    };
+    let env = shell_env.read().map(|env| env.clone()).unwrap_or_default();
+    let version = probe_command_version(command, &env);
+    log::info!(
+        "runtime version sync probe: runtime={runtime} version={}",
+        version.as_deref().unwrap_or("unknown")
+    );
+    let changed = generation.is_some_and(|generation| {
+        discovery.write().is_ok_and(|mut state| {
+            state.versions.finish_sync_probe(
+                runtime,
+                generation,
+                command.to_owned(),
+                version.clone(),
+                events.is_some(),
+            )
+        })
+    });
+    if changed {
+        if let Some(events) = events {
+            events.emit("runtime/changed", &());
+        }
+    }
+    version
 }
 
 /// Probes the installed version of each runtime that resolves to an
@@ -1325,6 +1593,192 @@ mod tests {
                 .installed(Runtime::Codex, &command_path),
             None
         );
+    }
+
+    #[test]
+    fn older_async_probe_never_evicts_sync_probe_or_overwrites_newer_sync_result() {
+        let mut versions = VersionDiscovery::default();
+        let command = "/p/opencode";
+
+        // Async completes FIRST with None while newer sync is still active: sync stays active.
+        let async_gen = versions
+            .begin_probe(Runtime::OpenCode, command, false)
+            .unwrap();
+        let sync_gen = versions
+            .begin_sync_probe(Runtime::OpenCode, command)
+            .unwrap();
+        assert!(!versions.finish_probe(Runtime::OpenCode, async_gen, command.into(), None));
+        assert!(!versions.has_in_flight_async(Runtime::OpenCode));
+        assert!(versions.probed(Runtime::OpenCode, command).is_none());
+        assert!(!versions.probing.is_empty());
+
+        assert!(versions.finish_sync_probe(
+            Runtime::OpenCode,
+            sync_gen,
+            command.into(),
+            Some("1.19.5".into()),
+            true,
+        ));
+        assert_eq!(
+            versions.installed(Runtime::OpenCode, command),
+            Some("1.19.5")
+        );
+        assert!(versions.probing.is_empty());
+
+        // Reverse order: events=None sync finishes FIRST, then older async returns None.
+        let mut versions = VersionDiscovery::default();
+        let async_gen = versions
+            .begin_probe(Runtime::OpenCode, command, false)
+            .unwrap();
+        let sync_gen = versions
+            .begin_sync_probe(Runtime::OpenCode, command)
+            .unwrap();
+        assert!(!versions.finish_sync_probe(
+            Runtime::OpenCode,
+            sync_gen,
+            command.into(),
+            Some("1.19.5".into()),
+            false,
+        ));
+        assert_eq!(
+            versions.installed(Runtime::OpenCode, command),
+            Some("1.19.5")
+        );
+
+        // Older async flushes pending notification without overwriting newer sync result.
+        assert!(versions.finish_probe(Runtime::OpenCode, async_gen, command.into(), None));
+        assert_eq!(
+            versions.installed(Runtime::OpenCode, command),
+            Some("1.19.5")
+        );
+        assert!(versions.probing.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_fingerprint_invalidates_cached_and_in_flight_same_path_probes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let command_path = dir.path().join("opencode");
+        let write_exec = |body: &str| {
+            let tmp = dir.path().join("opencode.tmp");
+            std::fs::write(&tmp, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::rename(&tmp, &command_path).unwrap();
+        };
+        let command = command_path.to_str().unwrap();
+
+        write_exec("echo '2.0.29'");
+        let mut versions = VersionDiscovery::default();
+        let g1 = versions
+            .begin_sync_probe(Runtime::OpenCode, command)
+            .unwrap();
+        assert!(versions.finish_sync_probe(
+            Runtime::OpenCode,
+            g1,
+            command.into(),
+            Some("2.0.29".into()),
+            true,
+        ));
+        assert_eq!(
+            versions.installed(Runtime::OpenCode, command),
+            Some("2.0.29")
+        );
+        assert_eq!(
+            versions.probed(Runtime::OpenCode, command),
+            Some(Some("2.0.29"))
+        );
+        assert_eq!(
+            versions.begin_probe(Runtime::OpenCode, command, false),
+            None
+        );
+
+        // Atomically replace the executable on disk with v1 without calling Refresh.
+        write_exec("echo '1.19.5' # replaced v1 binary");
+        assert_eq!(versions.installed(Runtime::OpenCode, command), None);
+        assert_eq!(versions.probed(Runtime::OpenCode, command), None);
+
+        // An in-flight async probe captured before a second swap is superseded when the binary changes again.
+        let async_v1 = versions
+            .begin_probe(Runtime::OpenCode, command, false)
+            .unwrap();
+        write_exec("echo '2.0.30' # second replacement binary");
+        let async_v2 = versions
+            .begin_probe(Runtime::OpenCode, command, false)
+            .expect("replaced binary must supersede in-flight probe");
+        assert!(!versions.finish_probe(
+            Runtime::OpenCode,
+            async_v1,
+            command.into(),
+            Some("1.19.5".into()),
+        ));
+        assert!(versions.finish_probe(
+            Runtime::OpenCode,
+            async_v2,
+            command.into(),
+            Some("2.0.30".into()),
+        ));
+        assert_eq!(
+            versions.installed(Runtime::OpenCode, command),
+            Some("2.0.30")
+        );
+
+        std::fs::remove_file(&command_path).unwrap();
+        assert_eq!(versions.installed(Runtime::OpenCode, command), None);
+        assert_eq!(versions.probed(Runtime::OpenCode, command), None);
+    }
+
+    #[test]
+    fn clear_probes_and_clear_runtime_probe_evict_cache_and_supersede_in_flight() {
+        let mut versions = VersionDiscovery::default();
+        let in_flight = versions
+            .begin_probe(Runtime::OpenCode, "/a/opencode", true)
+            .unwrap();
+        let other = versions
+            .begin_probe(Runtime::Codex, "/a/codex", true)
+            .unwrap();
+        assert!(versions.finish_probe(
+            Runtime::Codex,
+            other,
+            "/a/codex".into(),
+            Some("0.153.4".into()),
+        ));
+
+        assert!(!versions.clear_runtime_probe(Runtime::OpenCode));
+        assert!(!versions.has_in_flight_async(Runtime::OpenCode));
+        // Stale generation from before clear_runtime_probe cannot commit later.
+        assert!(!versions.finish_probe(
+            Runtime::OpenCode,
+            in_flight,
+            "/a/opencode".into(),
+            Some("2.0.29".into()),
+        ));
+        assert_eq!(versions.installed(Runtime::OpenCode, "/a/opencode"), None);
+        assert_eq!(
+            versions.installed(Runtime::Codex, "/a/codex"),
+            Some("0.153.4")
+        );
+
+        let g = versions
+            .begin_sync_probe(Runtime::OpenCode, "/a/opencode")
+            .unwrap();
+        assert!(versions.finish_sync_probe(
+            Runtime::OpenCode,
+            g,
+            "/a/opencode".into(),
+            Some("2.0.29".into()),
+            true,
+        ));
+        assert!(versions.clear_runtime_probe(Runtime::OpenCode));
+        assert_eq!(versions.installed(Runtime::OpenCode, "/a/opencode"), None);
+
+        versions.clear_probes();
+        assert_eq!(versions.installed(Runtime::Codex, "/a/codex"), None);
+        assert!(versions.probing.is_empty());
+        assert!(versions.in_flight_async.is_empty());
+        assert!(versions.pending_async_notify.is_empty());
+        assert!(versions.help_flags.is_empty());
     }
 
     #[test]

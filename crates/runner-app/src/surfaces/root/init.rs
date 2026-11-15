@@ -137,9 +137,21 @@ impl NativeRoot {
                                 .filter(|runtime| !runtime.below_minimum)
                                 .map(|runtime| runtime.name)
                                 .collect::<Vec<_>>();
+                            let verified_supported = runtimes
+                                .iter()
+                                .filter(|runtime| {
+                                    runtime.installed_version.is_some() && !runtime.below_minimum
+                                })
+                                .map(|runtime| runtime.name)
+                                .collect::<Vec<_>>();
                             this.clear_unblocked_gates(
                                 &surfaces::front_page::FrontPageTarget::Local,
                                 &supported,
+                            );
+                            this.retire_obsolete_startup_errors(
+                                &surfaces::front_page::FrontPageTarget::Local,
+                                &verified_supported,
+                                cx,
                             );
                             this.agent_tasks.minimums = runtimes
                                 .into_iter()

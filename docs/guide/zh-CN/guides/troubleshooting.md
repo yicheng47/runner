@@ -87,6 +87,10 @@ Runner 要求 Codex **0.149.0 或更新版本**。启动器只在 Codex 的智�
 
 Codex 拒绝启动配置且在首轮对话前退出时，已停止卡片会解释配置错误，并提供 **更新 Codex（Update Codex）**。更新后 Runner 会重试正在等待的聊天。普通停止的聊天保留原来的 **恢复（Resume）** 行为。如果更新后仍有错误，请保留显示的原因与相关终端输出，以便报告问题。
 
+## 安装了 OpenCode v1 而非 OpenCode v2
+
+Runner 仅支持 **OpenCode v2（2.0.0 或更新版本）** 并以 `opencode --standalone` 启动。OpenCode v1（`0.15.x` 与 `1.x`）同样使用 `opencode` 命令名但不支持 `--standalone`，因此当 `PATH` 中为旧版 `opencode` 时，Runner 会在 **设置 → 智能体** 中将 **OpenCode v2** 列在 **未安装（Not installed）** 下，拒绝低于 2.0.0 的覆盖路径，并在启动或恢复被拒绝时提供 **打开设置（Open Settings）**。请按 [opencode.ai/v2/docs](https://opencode.ai/v2/docs) 安装 OpenCode v2，或在 **设置 → 智能体 → OpenCode v2 → 可执行文件** 中指定 2.0.0+ 二进制文件后点击 **刷新（Refresh）**。
+
 ## 智能体更新需要处理
 
 **可能正在等待你的输入（May be waiting for your input）** 是根据安装程序安静的提示状态作出的推测。Runner 不会自动打开任何窗口。打开后台任务列表并选择 **回答（Answer）**，才会将焦点交给安装程序终端；**隐藏（Hide）**、Escape 与关闭按钮都会让它继续运行。失败的更新提供 **重试（Retry）** 与 **显示输出（Show output）**。如果停止更新后可执行文件损坏，请在保留的任务行选择 **重新安装（Reinstall）**。

@@ -322,6 +322,7 @@ impl SessionEvents for CoreSessionEvents {
     }
     fn status(&self, ev: &SessionActivityEvent) {
         if ev.source != StatusSource::CodexAttention
+            && ev.source != StatusSource::Unavailable
             && ev.status.observation.outcome != Some(TurnOutcome::Interrupted)
             && ev.status.observation.outcome != Some(TurnOutcome::Failed)
         {

@@ -16,6 +16,24 @@ impl RuntimeAdapter for OpenCode {
     fn probe_uses_shell_env(&self) -> bool {
         true
     }
+    fn classify_startup_error(
+        &self,
+        output: &str,
+    ) -> Option<runner_core::protocol::status::StartupError> {
+        let plain = crate::runtimes::custom_flags::strip_ansi(output);
+        let rejected_standalone = plain.lines().any(line_rejects_standalone);
+        let printed_v1_help = (plain.contains("Commands:") || plain.contains("Usage:"))
+            && plain.contains("Options:")
+            && !plain.contains("--standalone");
+        if !rejected_standalone && !printed_v1_help {
+            return None;
+        }
+        Some(runner_core::protocol::status::StartupError {
+            runtime: Runtime::OpenCode,
+            message: "This OpenCode executable does not support --standalone. Runner only supports OpenCode v2 (2.0.0 or newer).".into(),
+            output: plain.trim().chars().take(512).collect(),
+        })
+    }
     fn catalog(&self) -> Option<RuntimeCatalog> {
         runner_core::protocol::runtime_metadata::opencode::catalog()
     }
@@ -256,4 +274,28 @@ impl StatusHooks for Hooks {
     ) -> Option<Box<dyn HookWatcher>> {
         Some(Box::new(status::Watcher::new(receiver, spec)))
     }
+}
+
+fn line_rejects_standalone(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    const PHRASES: &[&str] = &[
+        "unknown arguments",
+        "unknown argument",
+        "unknown option",
+        "unknown flag",
+        "unrecognized option",
+        "unrecognized argument",
+        "unexpected argument",
+    ];
+    PHRASES.iter().any(|phrase| {
+        lower.find(phrase).is_some_and(|idx| {
+            let tail = lower[idx + phrase.len()..]
+                .trim_start_matches(|c: char| c.is_ascii_whitespace() || c == ':');
+            tail.split_whitespace().next().is_some_and(|arg| {
+                arg.trim_matches(|c: char| matches!(c, '\'' | '"' | '`' | ',' | '.'))
+                    .trim_start_matches('-')
+                    == "standalone"
+            })
+        })
+    })
 }

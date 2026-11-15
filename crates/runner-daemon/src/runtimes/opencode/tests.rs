@@ -245,6 +245,33 @@ esac
     );
 }
 #[test]
+fn classify_startup_error_matches_v1_standalone_failures_only() {
+    let adapter = crate::runtimes::adapter(Runtime::OpenCode);
+    for v1_output in [
+        "opencode [project]\n\nCommands:\n  opencode [project]  start opencode tui\n\nOptions:\n  -h, --help     Show help\n  -v, --version  Show version\n\nUnknown argument: standalone\n",
+        "\x1b[1mUsage:\x1b[22m opencode [options]\n\x1b[1mOptions:\x1b[22m\n  -m, --model  Model to use\n",
+        "error: unknown option '--standalone'\n",
+    ] {
+        let classified = adapter.classify_startup_error(v1_output).unwrap();
+        assert_eq!(classified.runtime, Runtime::OpenCode);
+        assert!(classified.message.contains("--standalone"));
+        assert!(classified.message.contains("OpenCode v2 (2.0.0 or newer)"));
+    }
+
+    for non_v1_output in [
+        "Error: API key is missing for provider anthropic",
+        "Usage: opencode [project]\nOptions:\n  --standalone  Run isolated private server\n",
+        "error: unknown option '--bogus'\nUsage: opencode [project]\nOptions:\n  --standalone   Run isolated private server\n",
+        "",
+    ] {
+        assert!(
+            adapter.classify_startup_error(non_v1_output).is_none(),
+            "unexpected classification for {non_v1_output:?}"
+        );
+    }
+}
+
+#[test]
 fn jsonc_edits_preserve_comments_unknown_fields_and_disabled_servers() {
     use crate::ops::mcp::{McpServerDefinition, NativeEntry};
     let root = tempfile::tempdir().unwrap();

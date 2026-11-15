@@ -625,3 +625,46 @@ fn discovery_catalog_golden() {
         ),
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn model_discovery_skips_opencode_below_minimum_without_spawning_serve() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let v1 = dir.path().join("opencode");
+    std::fs::write(
+        &v1,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "1.19.5"
+  exit 0
+fi
+echo "unexpected:$*" >> "$(dirname "$0")/unexpected"
+exit 1
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&v1, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let pool = Arc::new(crate::db::open_pool(&dir.path().join("runner.db")).unwrap());
+    let env = Arc::new(std::sync::RwLock::new(LoginShellEnv {
+        path: Some(dir.path().display().to_string()),
+        vars: Default::default(),
+    }));
+    let discovery = Arc::new(std::sync::RwLock::new(
+        crate::shell_path::DiscoveryState::startup(None, None),
+    ));
+    request(
+        &pool,
+        &env,
+        &discovery,
+        &EventChannel::new(),
+        &[Runtime::OpenCode],
+        true,
+    );
+    assert!(!dir.path().join("unexpected").exists());
+    let guard = discovery.read().unwrap();
+    let entry = guard.models.runtimes.get(&Runtime::OpenCode).unwrap();
+    assert!(!entry.in_flight);
+    assert!(entry.last_attempt.is_none());
+    assert!(entry.cached.is_none());
+}

@@ -130,6 +130,14 @@ impl AgentsPane {
                 parts.push(presentation.badge.to_owned());
             }
             parts.join(" · ")
+        } else if let Some(reason) = runtime
+            .invalid_reason
+            .as_ref()
+            .filter(|_| runtime.below_minimum)
+        {
+            reason.clone()
+        } else if let Some(unsupported) = unsupported_detected_version(runtime) {
+            unsupported
         } else {
             catalog
                 .map(|entry| {
@@ -450,6 +458,19 @@ impl AgentsPane {
     ) -> AnyElement {
         let catalog = self.catalog.iter().find(|entry| entry.name == runtime.name);
         let validation = self.validation.get(&runtime.name).map(String::as_str);
+        let unsupported_caption = validation
+            .is_none()
+            .then(|| {
+                runtime_presentation(
+                    runtime,
+                    self.status.as_ref().and_then(|status| status.shell.outcome),
+                    validation,
+                    self.saving.contains(&runtime.name),
+                )
+                .caption
+                .filter(|_| runtime.state == RuntimeRowState::NotFound && runtime.below_minimum)
+            })
+            .flatten();
         let pane = cx.entity();
         let name = runtime.name;
         div()
@@ -557,6 +578,10 @@ impl AgentsPane {
                 .children(validation.map(|message| {
                     runtime_caption(message.to_owned(), true)
                         .debug_selector(|| format!("AGENT_VALIDATION_{}", runtime.name))
+                }))
+                .children(unsupported_caption.map(|message| {
+                    runtime_caption(message, false)
+                        .debug_selector(|| format!("AGENT_UNSUPPORTED_CAPTION_{}", runtime.name))
                 }))
             })
             .into_any_element()

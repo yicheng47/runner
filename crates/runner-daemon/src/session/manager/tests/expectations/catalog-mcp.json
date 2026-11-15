@@ -154,7 +154,7 @@
       "client": "OpenCode",
       "key": "opencode",
       "runtime": "opencode",
-      "label": "OpenCode",
+      "label": "OpenCode v2",
       "config_file": "~/.config/opencode/opencode.jsonc",
       "path": "<HOME>/.config/opencode/opencode.jsonc",
       "json": true,

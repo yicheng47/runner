@@ -937,12 +937,7 @@ fn usage_refresh_reason(popover: bool) -> p::usage::RefreshReason {
 fn usage(core: &AppCore) -> Result<runner_core::companion::Usage> {
     let snapshot = core.usage.snapshot();
     let enabled = core.usage.enabled();
-    let statuses = crate::runtime_status::status_list(
-        &core.db,
-        &core.runtime_shell_env,
-        &core.runtime_discovery,
-    )
-    .map_err(failed)?;
+    let statuses = crate::ops::runtime::runtime_status_list(core).map_err(failed)?;
     let agents: Vec<_> = statuses
         .runtimes
         .into_iter()

@@ -1124,6 +1124,10 @@ impl Render for ChatLauncher {
                                 if !matches!(row.choice, Choice::Chat(EntryKey::Agent(_))) {
                                     return None;
                                 }
+                                if !crate::surfaces::agent_recovery::runtime_updatable(runtime.name)
+                                {
+                                    return None;
+                                }
                                 if runtime.below_minimum {
                                     return Some(
                                         div()
@@ -1404,7 +1408,13 @@ impl Render for ChatLauncher {
                     .children(
                         self.runtimes
                             .iter()
-                            .find(|runtime| runtime.below_minimum)
+                            .find(|runtime| {
+                                runtime.available
+                                    && runtime.below_minimum
+                                    && crate::surfaces::agent_recovery::runtime_updatable(
+                                        runtime.name,
+                                    )
+                            })
                             .map(|runtime| {
                                 div()
                                     .debug_selector(|| "LAUNCHER_VERSION_NOTICE".into())
@@ -1492,18 +1502,26 @@ impl Render for ChatLauncher {
 impl ChatLauncher {
     fn render_update_wait(&self, cx: &mut Context<Self>) -> gpui::Div {
         let retry = self.update_retry.as_ref().unwrap();
-        let task = self.root.upgrade().and_then(|root| {
-            root.read(cx)
-                .target_task(&self.client.target, retry.runtime)
-                .cloned()
-        });
+        let updatable = crate::surfaces::agent_recovery::runtime_updatable(retry.runtime);
+        let remote = self.client.is_remote();
+        let task = updatable
+            .then(|| {
+                self.root.upgrade().and_then(|root| {
+                    root.read(cx)
+                        .target_task(&self.client.target, retry.runtime)
+                        .cloned()
+                })
+            })
+            .flatten();
         let answer = task.as_ref().is_some_and(|task| {
             task.state == runner_core::protocol::RuntimeUpdateState::MayNeedInput
         });
         let waiting = retry.requested && task.as_ref().is_some_and(|task| task.state.active());
         let output_task = task.clone();
         let name = retry.runtime.display_name();
-        let title = if waiting {
+        let title = if !updatable {
+            crate::i18n::tf("agent_updates.too_old", &[("runtime", name.into())])
+        } else if waiting {
             crate::i18n::tf("agent_updates.waiting", &[("runtime", name.into())])
         } else {
             crate::i18n::tf("agent_updates.needs_update", &[("runtime", name.into())])
@@ -1515,7 +1533,13 @@ impl ChatLauncher {
                     crate::i18n::tf(
                         "agent_updates.minimum_reason",
                         &[
-                            ("runtime", name.into()),
+                            (
+                                "runtime",
+                                crate::surfaces::agent_recovery::installed_runtime_name(
+                                    gate.runtime,
+                                )
+                                .into(),
+                            ),
                             ("installed", gate.installed_version.clone()),
                             ("minimum", gate.min_version.clone()),
                         ],
@@ -1523,7 +1547,14 @@ impl ChatLauncher {
                 })
             })
             .unwrap_or_else(|| {
-                crate::i18n::tf("agent_updates.update_to_use", &[("runtime", name.into())])
+                if updatable {
+                    crate::i18n::tf("agent_updates.update_to_use", &[("runtime", name.into())])
+                } else {
+                    crate::i18n::tf(
+                        "format.install_or_set_an_explicit_executable_path",
+                        &[("runtime", name.into())],
+                    )
+                }
             });
         let root = self.root.clone();
         let owner = cx.weak_entity();
@@ -1534,6 +1565,17 @@ impl ChatLauncher {
                 "launcher-update-wait",
                 reason,
                 move |window, cx| {
+                    if !updatable {
+                        let _ = owner.update(cx, |view, cx| {
+                            view.update_retry = None;
+                            cx.notify();
+                        });
+                        let _ = root.update(cx, |root, cx| {
+                            root.start_chat_modal = None;
+                            root.enter_settings_route(Some("agents"), window, cx);
+                        });
+                        return;
+                    }
                     let _ = owner.update(cx, |view, cx| {
                         if let Some(retry) = &mut view.update_retry {
                             retry.requested = true;
@@ -1558,13 +1600,26 @@ impl ChatLauncher {
                 |_, _| {},
             )
             .title(title)
-            .primary_debug_selector("LAUNCHER_UPDATE_ACTION")
-            .label(if answer {
+            .primary_debug_selector(if updatable {
+                "LAUNCHER_UPDATE_ACTION"
+            } else {
+                "LAUNCHER_OPEN_SETTINGS"
+            })
+            .label(if !updatable {
+                crate::i18n::text("ui.open_settings").into()
+            } else if answer {
                 crate::i18n::text("agent_updates.answer").into()
             } else {
                 crate::i18n::tf("agent_updates.update_action", &[("runtime", name.into())])
             })
-            .actions_visible(!waiting || answer, false),
+            .actions_visible(
+                if updatable {
+                    !waiting || answer
+                } else {
+                    !remote
+                },
+                false,
+            ),
         )
     }
 }
@@ -2366,6 +2421,7 @@ impl NativeRoot {
                     task.state == runner_core::protocol::RuntimeUpdateState::Succeeded
                 })
         }) {
+            let updatable = crate::surfaces::agent_recovery::runtime_updatable(runtime);
             let pane = self.reserve_update_pane(&launcher, pane, &scope, cx);
             launcher.update(cx, |view, cx| {
                 view.pending = None;
@@ -2388,12 +2444,14 @@ impl NativeRoot {
                         scope,
                         cwd,
                     },
-                    requested: true,
+                    requested: updatable,
                     ready: false,
                 });
                 cx.notify();
             });
-            self.start_target_update(client, runtime, window, cx);
+            if updatable {
+                self.start_target_update(client, runtime, window, cx);
+            }
             return;
         }
         let has_pane = pane.is_some();

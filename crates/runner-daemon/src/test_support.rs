@@ -51,15 +51,17 @@ pub(crate) fn test_core_in(app_data_dir: PathBuf) -> AppCore {
         crate::shell_path::DiscoveryState::startup(None, None),
     ));
     let events = EventChannel::new();
+    let sessions = SessionManager::new(
+        Arc::clone(&runtime_shell_env),
+        Arc::clone(&runtime_discovery),
+        Arc::new(InertRuntime),
+    );
+    sessions.set_runtime_events(events.clone());
     AppCore {
         remote: Default::default(),
         db: Arc::new(db::open_in_memory().unwrap()),
         app_data_dir,
-        sessions: SessionManager::new(
-            Arc::clone(&runtime_shell_env),
-            Arc::clone(&runtime_discovery),
-            Arc::new(InertRuntime),
-        ),
+        sessions,
         files: Arc::new(crate::files::FilesService::new(
             Arc::clone(&runtime_shell_env),
             events.clone(),
