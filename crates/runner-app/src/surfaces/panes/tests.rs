@@ -4025,3 +4025,251 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
         "side-panel maximize must never persist across restarts"
     );
 }
+
+#[test]
+fn chat_panel_retains_widened_width_across_tab_switches_closes_and_divider_drag() {
+    use crate::surfaces::side_panel::PanelViewId;
+    use std::process::Command;
+
+    let (temp, _cx, store, host, mut visual) = panel_root("direct-agent");
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "core.autocrlf", "false"][..],
+    ] {
+        assert!(Command::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .status()
+            .unwrap()
+            .success());
+    }
+    std::fs::write(repo.join("lib.rs"), "pub fn run() {}\n").unwrap();
+    std::fs::write(repo.join("main.rs"), "fn main() {}\n").unwrap();
+    for args in [
+        &["add", "-A"][..],
+        &[
+            "-c",
+            "user.name=Runner",
+            "-c",
+            "user.email=runner@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ][..],
+    ] {
+        assert!(Command::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .status()
+            .unwrap()
+            .success());
+    }
+    let canonical = if cfg!(windows) {
+        repo
+    } else {
+        repo.canonicalize().unwrap()
+    };
+    store.update(&mut visual, |store, cx| {
+        store
+            .test_core
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET files_root = ?1, cwd = ?1, agent_runtime = 'codex' WHERE id = 'direct-agent'",
+                [canonical.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+    });
+    visual.run_until_parked();
+    host.update(&mut visual, |root, _, cx| {
+        root.sync_active_chat_detail(cx);
+        cx.notify();
+    })
+    .unwrap();
+    visual.run_until_parked();
+
+    let panel_width = |visual: &mut gpui::VisualTestContext| -> f32 {
+        f32::from(visual.debug_bounds("CHAT_SIDE_PANEL").unwrap().size.width)
+    };
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                ready: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !ready(visual) {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            visual.run_until_parked();
+        }
+    };
+
+    // Brand-new panel on Info starts at standard width (320 px).
+    assert!((panel_width(&mut visual) - 320.).abs() <= 1.);
+
+    // Opening Changes widens to 680 px; switching to Info, closing Changes, and
+    // closing Info down to Open a surface all retain 680 px.
+    click_selector(&mut visual, "PANEL_ADD_SURFACE");
+    click_selector(&mut visual, "PANEL_MENU_ROW Changes");
+    wait(&mut visual, "Changes widens", &|v| {
+        (panel_width(v) - 680.).abs() <= 1.
+    });
+    click_selector(&mut visual, "PANEL_TAB Info");
+    assert!((panel_width(&mut visual) - 680.).abs() <= 1.);
+    click_selector(&mut visual, "PANEL_TAB Changes");
+    click_selector(&mut visual, "PANEL_TAB_CLOSE Changes");
+    assert!((panel_width(&mut visual) - 680.).abs() <= 1.);
+    click_selector(&mut visual, "PANEL_TAB_CLOSE Info");
+    assert!(visual.debug_bounds("PANEL_EMPTY").is_some());
+    assert!((panel_width(&mut visual) - 680.).abs() <= 1.);
+
+    // Freshly reset panel starts back at 320 px until Files widens it.
+    host.update(&mut visual, |root, _, cx| {
+        let mut open = crate::surfaces::side_panel::OpenSurfaces::default();
+        open.open(PanelViewId::Info);
+        root.chat_surfaces.reset(open);
+        cx.notify();
+    })
+    .unwrap();
+    visual.run_until_parked();
+    assert!((panel_width(&mut visual) - 320.).abs() <= 1.);
+
+    click_selector(&mut visual, "PANEL_ADD_SURFACE");
+    click_selector(&mut visual, "PANEL_MENU_ROW Files");
+    wait(&mut visual, "Files tree", &|v| {
+        v.debug_bounds("FILES_ROW lib.rs").is_some() && (panel_width(v) - 680.).abs() <= 1.
+    });
+    // Switching to Info with zero open file tabs retains 680 px.
+    click_selector(&mut visual, "PANEL_TAB Info");
+    assert!((panel_width(&mut visual) - 680.).abs() <= 1.);
+
+    // Opening and closing the last file tab inside Files (tree on and tree off) retains width.
+    click_selector(&mut visual, "PANEL_TAB Files");
+    wait(&mut visual, "Files row after tab switch", &|v| {
+        v.debug_bounds("FILES_ROW lib.rs").is_some()
+    });
+    click_selector(&mut visual, "FILES_ROW lib.rs");
+    wait(&mut visual, "lib.rs open", &|v| {
+        v.debug_bounds("FILE_CODE").is_some()
+    });
+    click_selector(&mut visual, "FILE_TAB_CLOSE lib.rs");
+    assert!((panel_width(&mut visual) - 680.).abs() <= 1.);
+
+    wait(&mut visual, "Files row after tab close", &|v| {
+        v.debug_bounds("FILES_ROW main.rs").is_some()
+    });
+    click_selector(&mut visual, "FILES_ROW main.rs");
+    wait(&mut visual, "main.rs open", &|v| {
+        v.debug_bounds("FILE_CODE").is_some()
+    });
+    click_selector(&mut visual, "FILE_TREE_TOGGLE");
+    assert!((panel_width(&mut visual) - 440.).abs() <= 1.);
+    click_selector(&mut visual, "FILE_TAB_CLOSE main.rs");
+    assert!((panel_width(&mut visual) - 440.).abs() <= 1.);
+    click_selector(&mut visual, "PANEL_TAB Info");
+    assert!((panel_width(&mut visual) - 440.).abs() <= 1.);
+    click_selector(&mut visual, "PANEL_TAB Files");
+    click_selector(&mut visual, "FILE_TREE_TOGGLE");
+    assert!((panel_width(&mut visual) - 680.).abs() <= 1.);
+
+    // Combined Files (open file + tree hidden = 440 px) -> Changes (680 px) -> Info / close Changes:
+    // inactive Files must not override Changes' retained 680 px width, while shown Files keeps its toggle.
+    wait(&mut visual, "lib.rs row", &|v| {
+        v.debug_bounds("FILES_ROW lib.rs").is_some()
+    });
+    click_selector(&mut visual, "FILES_ROW lib.rs");
+    wait(&mut visual, "lib.rs open for combined check", &|v| {
+        v.debug_bounds("FILE_CODE").is_some()
+    });
+    click_selector(&mut visual, "FILE_TREE_TOGGLE");
+    assert!((panel_width(&mut visual) - 440.).abs() <= 1.);
+    // Arrange tab order [Files, Info, Changes] so closing Changes lands on Info while Files stays open.
+    click_selector(&mut visual, "PANEL_TAB Info");
+    click_selector(&mut visual, "PANEL_TAB_CLOSE Info");
+    click_selector(&mut visual, "PANEL_ADD_SURFACE");
+    click_selector(&mut visual, "PANEL_MENU_ROW Info");
+    assert!((panel_width(&mut visual) - 440.).abs() <= 1.);
+    click_selector(&mut visual, "PANEL_ADD_SURFACE");
+    click_selector(&mut visual, "PANEL_MENU_ROW Changes");
+    wait(&mut visual, "Changes re-widens to 680", &|v| {
+        (panel_width(v) - 680.).abs() <= 1.
+    });
+    click_selector(&mut visual, "PANEL_TAB Info");
+    assert!(
+        (panel_width(&mut visual) - 680.).abs() <= 1.,
+        "switching Changes -> Info keeps 680 px despite inactive tree-hidden Files"
+    );
+    click_selector(&mut visual, "PANEL_TAB Changes");
+    click_selector(&mut visual, "PANEL_TAB_CLOSE Changes");
+    assert!(
+        (panel_width(&mut visual) - 680.).abs() <= 1.,
+        "closing Changes to Info keeps 680 px despite inactive tree-hidden Files"
+    );
+
+    // Drag the outer divider on Info while tree-hidden Files remains open in the background:
+    // smooth resize from 680 px without snapping to 440 px or 480 px.
+    let start = visual.debug_bounds("CHAT_PANEL_GUTTER").unwrap().center();
+    visual.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
+    for _ in 0..3 {
+        visual.simulate_mouse_move(
+            start + gpui::point(px(40.), px(0.)),
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        visual.run_until_parked();
+    }
+    assert!((panel_width(&mut visual) - 640.).abs() <= 1.);
+    for _ in 0..3 {
+        visual.simulate_mouse_move(
+            start + gpui::point(px(-60.), px(0.)),
+            Some(gpui::MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        visual.run_until_parked();
+    }
+    visual.simulate_mouse_up(
+        start + gpui::point(px(-60.), px(0.)),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!((panel_width(&mut visual) - 740.).abs() <= 1.);
+    assert_eq!(
+        store.read_with(&visual, |s, _| s.settings.file_viewer_width),
+        500.
+    );
+
+    // Explicitly showing Files uses its tree-hidden toggle (500 px) and toggling tree back on restores 740 px.
+    click_selector(&mut visual, "PANEL_TAB Files");
+    assert!((panel_width(&mut visual) - 500.).abs() <= 1.);
+    click_selector(&mut visual, "FILE_TREE_TOGGLE");
+    assert!((panel_width(&mut visual) - 740.).abs() <= 1.);
+    click_selector(&mut visual, "PANEL_TAB_CLOSE Files");
+    assert!((panel_width(&mut visual) - 740.).abs() <= 1.);
+
+    // Switching workspace tabs keeps the other tab un-widened (320 px) and restores 740 px on return.
+    let switch = |session: &str, visual: &mut gpui::VisualTestContext| {
+        host.update(visual, |root, _, cx| {
+            assert!(root.tabs.activate_session(session));
+            root.sync_active_chat_detail(cx);
+            cx.notify();
+        })
+        .unwrap();
+        visual.run_until_parked();
+    };
+    switch("busy-shell", &mut visual);
+    assert!((panel_width(&mut visual) - 320.).abs() <= 1.);
+    switch("direct-agent", &mut visual);
+    assert!((panel_width(&mut visual) - 740.).abs() <= 1.);
+}

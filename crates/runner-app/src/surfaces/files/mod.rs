@@ -154,7 +154,7 @@ pub(crate) fn hub(client: &DaemonClient, cx: &mut App) -> Entity<FilesHub> {
 }
 
 /// Where Files stands among the panel's surfaces. Closing its tab keeps the
-/// view and its file tabs for when it opens again, but gives the width back.
+/// view, its file tabs, and any widened panel width.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FilesSurface {
     Shown,
@@ -317,10 +317,12 @@ impl FilesPanel {
         }
     }
 
-    /// The panel's width for `subject`: `standard`, or widened by the file
-    /// area and its tree into the room the chat or mission leaves, less `gap`.
-    /// Without a file open, a tree on that has no room beside the file area
-    /// takes the panel at `standard` instead, as the tree is the way to a file.
+    /// The panel's width for `subject`: `standard` until Files or Changes
+    /// widens it, then widened by the file area and any tree column into the
+    /// room the chat or mission leaves, less `gap`, and retained across
+    /// surface switches and tab closes. Without a file open or prior widening,
+    /// a tree on that has no room beside the file area takes the panel at
+    /// `standard` instead, as the tree is the way to a file.
     #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn layout(
@@ -333,7 +335,57 @@ impl FilesPanel {
         gap: f32,
         cx: &App,
     ) -> (f32, Option<Widened>) {
-        self.layout_with_maximize(subject, files, standard, file, tree_width, gap, false, cx)
+        let (width, widened, _) = self.layout_with_maximize(
+            subject, files, None, standard, file, tree_width, gap, false, cx,
+        );
+        (width, widened)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn panel_layout(
+        &self,
+        surface: side_panel::PanelSurface,
+        settings: &crate::app_settings::AppSettings,
+        surfaces: &side_panel::PanelSurfaces,
+        subject: Option<&PanelSubject>,
+        standard: f32,
+        gap: f32,
+        maximized: bool,
+        cx: &App,
+    ) -> (f32, Option<Widened>) {
+        let retained = surfaces.widened_tree();
+        let (width, widened, active_tree) = if side_panel::shown(surface, settings, &surfaces.open)
+            == Some(side_panel::PanelViewId::Changes)
+        {
+            let subject = subject.filter(|_| settings.changes_view);
+            self.changes_layout_with_maximize(
+                subject,
+                retained,
+                standard,
+                settings.file_viewer_width,
+                settings.file_tree_width,
+                gap,
+                maximized,
+                cx,
+            )
+        } else {
+            let subject = subject.filter(|_| settings.files_view);
+            self.layout_with_maximize(
+                subject,
+                FilesSurface::of(surface, settings, &surfaces.open),
+                retained,
+                standard,
+                settings.file_viewer_width,
+                settings.file_tree_width,
+                gap,
+                maximized,
+                cx,
+            )
+        };
+        if let Some(tree) = active_tree {
+            surfaces.set_widened_tree(Some(tree));
+        }
+        (width, widened)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -341,13 +393,23 @@ impl FilesPanel {
         &self,
         subject: Option<&PanelSubject>,
         files: FilesSurface,
+        retained: Option<bool>,
         standard: f32,
         file: f32,
         tree_width: f32,
         gap: f32,
         maximized: bool,
         cx: &App,
-    ) -> (f32, Option<Widened>) {
+    ) -> (f32, Option<Widened>, Option<bool>) {
+        // When another surface is showing and the panel already has a retained
+        // width (e.g. from Changes), keep that retained width rather than
+        // letting an inactive Files tab override it; only the shown Files
+        // surface (or an unseeded panel) supplies a new tree state.
+        let raw_active = if files == FilesSurface::Shown || retained.is_none() {
+            subject.and_then(|subject| self.widening(subject, files, cx))
+        } else {
+            None
+        };
         if maximized {
             let measured = self.surface.get() > 0.;
             let full = self.maximized_width(
@@ -355,12 +417,25 @@ impl FilesPanel {
                     .max(file + tree_width)
                     .max(standard),
             );
-            let Some(tree) = subject.and_then(|subject| self.widening(subject, files, cx)) else {
-                return (full, None);
-            };
             let fits = full >= standard + tree_width;
-            if tree && measured && !fits && !self.has_file_open(subject, cx) {
-                return (full, None);
+            let active_tree = raw_active.filter(|&tree| {
+                !(files == FilesSurface::Shown
+                    && tree
+                    && measured
+                    && !fits
+                    && retained.is_none()
+                    && !self.has_file_open(subject, cx))
+            });
+            let Some(tree) = active_tree.or(retained) else {
+                return (full, None, None);
+            };
+            if files == FilesSurface::Shown
+                && tree
+                && measured
+                && !fits
+                && !self.has_file_open(subject, cx)
+            {
+                return (full, None, active_tree);
             }
             let file_width = (full - if tree { tree_width } else { 0. }).max(standard);
             return (
@@ -371,19 +446,25 @@ impl FilesPanel {
                     tree_width,
                     standard,
                 }),
+                active_tree,
             );
         }
-        let Some(tree) = subject.and_then(|subject| self.widening(subject, files, cx)) else {
-            return (standard, None);
-        };
         let available = self.surface.get() - gap;
         let measured = self.surface.get() > 0.;
         let fits = available >= side_panel::MAIN_MIN_WIDTH + standard + tree_width;
-        if tree && measured && !fits && !self.has_file_open(subject, cx) {
-            return (standard, None);
-        }
+        let active_tree = raw_active.filter(|&tree| {
+            !(files == FilesSurface::Shown
+                && tree
+                && measured
+                && !fits
+                && retained.is_none()
+                && !self.has_file_open(subject, cx))
+        });
+        let Some(tree) = active_tree.or(retained) else {
+            return (standard, None, None);
+        };
         let layout = side_panel::widened(available, standard, file, tree_width, tree);
-        (layout.width(), Some(layout))
+        (layout.width(), Some(layout), active_tree)
     }
 
     fn has_file_open(&self, subject: Option<&PanelSubject>, cx: &App) -> bool {
@@ -447,13 +528,14 @@ impl FilesPanel {
     pub(crate) fn changes_layout_with_maximize(
         &self,
         subject: Option<&PanelSubject>,
+        retained: Option<bool>,
         standard: f32,
         file: f32,
         tree_width: f32,
         gap: f32,
         maximized: bool,
         cx: &App,
-    ) -> (f32, Option<Widened>) {
+    ) -> (f32, Option<Widened>, Option<bool>) {
         let wide = subject.is_some_and(|subject| {
             let from_changes = self
                 .changes
@@ -471,32 +553,34 @@ impl FilesPanel {
                     .is_some_and(|(_, view)| view.read(cx).root_is_git()),
             }
         });
+        let active_tree = wide.then_some(true);
         if maximized {
             let full = self.maximized_width(
                 (side_panel::SPLIT_MIN_DIFF_WIDTH + tree_width)
                     .max(file + tree_width)
                     .max(standard),
             );
-            if !wide {
-                return (full, None);
-            }
-            let file_width = (full - tree_width).max(standard);
+            let Some(tree) = active_tree.or(retained) else {
+                return (full, None, None);
+            };
+            let file_width = (full - if tree { tree_width } else { 0. }).max(standard);
             return (
                 full,
                 Some(Widened {
                     file: file_width,
-                    tree: true,
+                    tree,
                     tree_width,
                     standard,
                 }),
+                active_tree,
             );
         }
-        if !wide {
-            return (standard, None);
-        }
+        let Some(tree) = active_tree.or(retained) else {
+            return (standard, None, None);
+        };
         let available = self.surface.get() - gap;
-        let layout = side_panel::widened(available, standard, file, tree_width, true);
-        (layout.width(), Some(layout))
+        let layout = side_panel::widened(available, standard, file, tree_width, tree);
+        (layout.width(), Some(layout), active_tree)
     }
 
     pub(crate) fn focus_shown(

@@ -301,6 +301,7 @@ impl MissionWorkspace {
                         surfaces: self.rail_surfaces.open.clone(),
                         open: self.rail_open,
                         maximized: self.rail_maximized,
+                        widened_tree: self.rail_surfaces.widened_tree(),
                     },
                 );
             }
@@ -308,7 +309,8 @@ impl MissionWorkspace {
                 .rails_by_mission
                 .remove(&mission_id)
                 .unwrap_or_default();
-            self.rail_surfaces.reset(saved.surfaces);
+            self.rail_surfaces
+                .restore(saved.surfaces, saved.widened_tree);
             self.rail_open = saved.open;
             self.rail_maximized = saved.maximized;
             self.rail_switched = true;

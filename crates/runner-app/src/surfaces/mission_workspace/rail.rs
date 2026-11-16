@@ -114,43 +114,20 @@ impl MissionWorkspace {
         }
     }
 
-    /// The rail's width, widened while its Files view has a file open or Changes shows.
+    /// The rail's width, widened once Files or Changes has widened it.
     pub(super) fn rail_layout(&self, cx: &App) -> (f32, Option<side_panel::Widened>) {
         let settings = self.settings(cx);
-        let maximized = self.rail_maximized && !self.presentation.is_remote();
-        if side_panel::shown(PanelSurface::Mission, settings, &self.rail_surfaces.open)
-            == Some(PanelViewId::Changes)
-        {
-            let subject = self
-                .mission_view()
-                .filter(|_| settings.changes_view)
-                .map(|mission| PanelSubject::Mission(mission.id));
-            return self.rail_files.changes_layout_with_maximize(
-                subject.as_ref(),
-                settings.mission_rail_width,
-                settings.file_viewer_width,
-                settings.file_tree_width,
-                6.,
-                maximized,
-                cx,
-            );
-        }
         let subject = self
             .mission_view()
-            .filter(|_| settings.files_view)
             .map(|mission| PanelSubject::Mission(mission.id));
-        self.rail_files.layout_with_maximize(
+        self.rail_files.panel_layout(
+            PanelSurface::Mission,
+            settings,
+            &self.rail_surfaces,
             subject.as_ref(),
-            crate::surfaces::files::FilesSurface::of(
-                PanelSurface::Mission,
-                settings,
-                &self.rail_surfaces.open,
-            ),
             settings.mission_rail_width,
-            settings.file_viewer_width,
-            settings.file_tree_width,
             6.,
-            maximized,
+            self.rail_maximized && !self.presentation.is_remote(),
             cx,
         )
     }

@@ -22,6 +22,7 @@ impl NativeRoot {
                     surfaces: self.chat_surfaces.open.clone(),
                     open: self.chat_panel_open,
                     maximized: self.chat_panel_maximized,
+                    widened_tree: self.chat_surfaces.widened_tree(),
                 },
             );
         }
@@ -29,7 +30,8 @@ impl NativeRoot {
             .as_ref()
             .and_then(|id| self.chat_panels_by_tab.remove(id));
         if let Some(saved) = saved {
-            self.chat_surfaces.reset(saved.surfaces);
+            self.chat_surfaces
+                .restore(saved.surfaces, saved.widened_tree);
             self.chat_panel_open = saved.open;
             self.chat_panel_maximized = saved.maximized;
         } else {
@@ -379,7 +381,7 @@ impl NativeRoot {
         cx.notify();
     }
 
-    /// The chat panel's width, widened while its Files view has a file open.
+    /// The chat panel's width, widened once Files or Changes has widened it.
     pub(super) fn chat_panel_layout(
         &self,
         detail: Option<&DirectSessionEntry>,
@@ -391,34 +393,15 @@ impl NativeRoot {
         } else {
             side_panel_surface(self.active_tab_is_terminal(cx))
         };
-        let maximized = self.chat_panel_maximized;
-        if side_panel::shown(surface, settings, &self.chat_surfaces.open)
-            == Some(PanelViewId::Changes)
-        {
-            let subject = detail
-                .filter(|_| settings.changes_view)
-                .map(|detail| PanelSubject::Session(detail.session_id.clone()));
-            return self.chat_files.changes_layout_with_maximize(
-                subject.as_ref(),
-                settings.chat_panel_width,
-                settings.file_viewer_width,
-                settings.file_tree_width,
-                6.,
-                maximized,
-                cx,
-            );
-        }
-        let subject = detail
-            .filter(|_| settings.files_view)
-            .map(|detail| PanelSubject::Session(detail.session_id.clone()));
-        self.chat_files.layout_with_maximize(
+        let subject = detail.map(|detail| PanelSubject::Session(detail.session_id.clone()));
+        self.chat_files.panel_layout(
+            surface,
+            settings,
+            &self.chat_surfaces,
             subject.as_ref(),
-            crate::surfaces::files::FilesSurface::of(surface, settings, &self.chat_surfaces.open),
             settings.chat_panel_width,
-            settings.file_viewer_width,
-            settings.file_tree_width,
             6.,
-            maximized,
+            self.chat_panel_maximized,
             cx,
         )
     }
