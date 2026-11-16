@@ -14,6 +14,23 @@ fn commit_all(dir: &Path, message: &str) -> String {
     git(dir, &["rev-parse", "HEAD"]).trim().to_owned()
 }
 
+fn changes_commits(core: &AppCore, root: &Path) -> Result<ChangesCommits> {
+    super::changes_commits(core, root, None)
+}
+
+fn changes_files(core: &AppCore, root: &Path, target: &ChangesTarget) -> Result<ChangesFiles> {
+    super::changes_files(core, root, target, None)
+}
+
+fn changes_diff(
+    core: &AppCore,
+    root: &Path,
+    target: &ChangesTarget,
+    path: &str,
+) -> Result<ChangesDiff> {
+    super::changes_diff(core, root, target, path, None)
+}
+
 fn hash_object(dir: &Path, path: &Path) -> String {
     git(dir, &["hash-object", path.to_str().unwrap()])
         .trim()
@@ -772,9 +789,13 @@ fn protocol_dispatch_serves_all_four_changes_requests() {
     let root = fixture.path().to_path_buf();
     std::fs::write(root.join("a.txt"), "edited via dispatch\n").unwrap();
 
-    let Response::changes_commits(Ok(commits)) =
-        crate::daemon::dispatch(&core, Request::changes_commits { root: root.clone() })
-    else {
+    let Response::changes_commits(Ok(commits)) = crate::daemon::dispatch(
+        &core,
+        Request::changes_commits {
+            root: root.clone(),
+            base: None,
+        },
+    ) else {
         panic!("expected changes_commits Ok");
     };
     assert_eq!(commits.branch.as_deref(), Some("main"));
@@ -784,6 +805,7 @@ fn protocol_dispatch_serves_all_four_changes_requests() {
         Request::changes_files {
             root: root.clone(),
             target: ChangesTarget::Uncommitted,
+            base: None,
         },
     ) else {
         panic!("expected changes_files Ok");
@@ -796,6 +818,7 @@ fn protocol_dispatch_serves_all_four_changes_requests() {
             root: root.clone(),
             target: ChangesTarget::Uncommitted,
             path: "a.txt".into(),
+            base: None,
         },
     ) else {
         panic!("expected changes_diff Ok");
@@ -821,6 +844,7 @@ fn protocol_dispatch_serves_all_four_changes_requests() {
         Request::changes_files {
             root,
             target: ChangesTarget::Uncommitted,
+            base: None,
         },
     ) else {
         panic!("expected changes_files Ok after mark");
@@ -1965,4 +1989,333 @@ fn branch_target_matches_git_diff_and_tracks_viewed_marks() {
     assert_eq!(detached_branch.files.len(), after_merge.files.len());
 
     core.files.client_gone(77);
+}
+
+#[test]
+fn base_resolution_with_chosen_ref_handles_local_remote_upstream_deleted_tag_and_sha() {
+    let core = test_core();
+    let origin_bare = tempfile::tempdir().unwrap();
+    let upstream_bare = tempfile::tempdir().unwrap();
+    git(origin_bare.path(), &["init", "-q", "--bare", "-b", "main"]);
+    git(
+        upstream_bare.path(),
+        &["init", "-q", "--bare", "-b", "main"],
+    );
+
+    let fixture = repo();
+    let root = fixture.path();
+    git(
+        root,
+        &[
+            "remote",
+            "add",
+            "origin",
+            origin_bare.path().to_str().unwrap(),
+        ],
+    );
+    git(
+        root,
+        &[
+            "remote",
+            "add",
+            "upstream",
+            upstream_bare.path().to_str().unwrap(),
+        ],
+    );
+    git(root, &["push", "-q", "-u", "origin", "main"]);
+    git(root, &["push", "-q", "upstream", "main"]);
+    git(
+        root,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    );
+    git(
+        root,
+        &[
+            "symbolic-ref",
+            "refs/remotes/upstream/HEAD",
+            "refs/remotes/upstream/main",
+        ],
+    );
+
+    git(root, &["checkout", "-q", "-b", "feat/umbrella"]);
+    std::fs::write(root.join("umbrella1.txt"), "u1\n").unwrap();
+    commit_all(root, "umbrella 1");
+    std::fs::write(root.join("umbrella2.txt"), "u2\n").unwrap();
+    let umbrella_sha = commit_all(root, "umbrella 2");
+    git(root, &["tag", "v1.0-umbrella"]);
+    git(root, &["push", "-q", "origin", "feat/umbrella"]);
+    git(root, &["push", "-q", "upstream", "feat/umbrella"]);
+
+    git(root, &["checkout", "-q", "-b", "feat/child"]);
+    git(root, &["push", "-q", "-u", "origin", "feat/child"]);
+    for i in 1..=3 {
+        std::fs::write(root.join(format!("child{i}.txt")), format!("c{i}\n")).unwrap();
+        commit_all(root, &format!("child {i}"));
+    }
+
+    // None -> Auto (origin/main), 5 commits total.
+    let auto = super::changes_commits(&core, root, None).unwrap();
+    assert_eq!(auto.base.as_deref(), Some("origin/main"));
+    assert_eq!(auto.auto_base.as_deref(), Some("origin/main"));
+    assert!(!auto.base_missing);
+    assert_eq!(auto.total, 5);
+
+    // Local branch -> 3 commits, auto_base still reported as origin/main.
+    let local = super::changes_commits(&core, root, Some("feat/umbrella")).unwrap();
+    assert_eq!(local.base.as_deref(), Some("feat/umbrella"));
+    assert_eq!(local.auto_base.as_deref(), Some("origin/main"));
+    assert!(!local.base_missing);
+    assert_eq!(local.total, 3);
+
+    // Remote-tracking branch on origin.
+    let origin_ref = super::changes_commits(&core, root, Some("origin/feat/umbrella")).unwrap();
+    assert_eq!(origin_ref.base.as_deref(), Some("origin/feat/umbrella"));
+    assert_eq!(origin_ref.auto_base.as_deref(), Some("origin/main"));
+    assert!(!origin_ref.base_missing);
+    assert_eq!(origin_ref.total, 3);
+
+    // Remote-tracking branch on upstream remote.
+    let upstream_ref = super::changes_commits(&core, root, Some("upstream/feat/umbrella")).unwrap();
+    assert_eq!(upstream_ref.base.as_deref(), Some("upstream/feat/umbrella"));
+    assert_eq!(upstream_ref.auto_base.as_deref(), Some("origin/main"));
+    assert!(!upstream_ref.base_missing);
+    assert_eq!(upstream_ref.total, 3);
+
+    // Tag, commit SHA, revision suffix, and symref are all refused -> Auto with base_missing.
+    for invalid in [
+        "v1.0-umbrella",
+        "refs/tags/v1.0-umbrella",
+        umbrella_sha.as_str(),
+        "feat/umbrella~1",
+        "origin/HEAD",
+        "refs/remotes/origin/HEAD",
+    ] {
+        let fallback = super::changes_commits(&core, root, Some(invalid)).unwrap();
+        assert_eq!(fallback.base.as_deref(), Some("origin/main"), "{invalid}");
+        assert_eq!(
+            fallback.auto_base.as_deref(),
+            Some("origin/main"),
+            "{invalid}"
+        );
+        assert!(fallback.base_missing, "{invalid}");
+        assert_eq!(fallback.total, 5, "{invalid}");
+    }
+
+    // `changes_branches` groups local and both remotes without `origin/HEAD` or `upstream/HEAD`,
+    // and reports the checked-out branch's full canonical upstream ref.
+    let branches = super::changes_branches(&core, root).unwrap();
+    assert_eq!(branches.local, vec!["feat/child", "feat/umbrella", "main"]);
+    assert_eq!(
+        branches.upstream.as_deref(),
+        Some("refs/remotes/origin/feat/child")
+    );
+    assert_eq!(branches.remotes.len(), 2);
+    assert_eq!(branches.remotes[0].remote, "origin");
+    assert_eq!(
+        branches.remotes[0].branches,
+        vec!["origin/feat/child", "origin/feat/umbrella", "origin/main"]
+    );
+    assert_eq!(branches.remotes[1].remote, "upstream");
+    assert_eq!(
+        branches.remotes[1].branches,
+        vec!["upstream/feat/umbrella", "upstream/main"]
+    );
+
+    // Local upstream (`branch.<name>.remote = .`) reports `refs/heads/feat/umbrella`.
+    git(root, &["branch", "--set-upstream-to=feat/umbrella"]);
+    let local_up = super::changes_branches(&core, root).unwrap();
+    assert_eq!(
+        local_up.upstream.as_deref(),
+        Some("refs/heads/feat/umbrella")
+    );
+
+    // Colliding short name: a local branch literally named `origin/main` at `feat/umbrella`
+    // (3 commits behind HEAD) vs remote-tracking `refs/remotes/origin/main` (5 commits behind HEAD).
+    git(root, &["branch", "origin/main", &umbrella_sha]);
+    let local_colliding =
+        super::changes_commits(&core, root, Some("refs/heads/origin/main")).unwrap();
+    assert_eq!(local_colliding.base.as_deref(), Some("origin/main"));
+    assert!(!local_colliding.base_missing);
+    assert_eq!(local_colliding.total, 3);
+    let local_colliding_files = super::changes_files(
+        &core,
+        root,
+        &ChangesTarget::Branch,
+        Some("refs/heads/origin/main"),
+    )
+    .unwrap();
+    assert!(local_colliding_files
+        .files
+        .iter()
+        .all(|f| !f.path.starts_with("umbrella")));
+
+    let remote_colliding =
+        super::changes_commits(&core, root, Some("refs/remotes/origin/main")).unwrap();
+    assert_eq!(remote_colliding.base.as_deref(), Some("origin/main"));
+    assert!(!remote_colliding.base_missing);
+    assert_eq!(remote_colliding.total, 5);
+    let remote_colliding_files = super::changes_files(
+        &core,
+        root,
+        &ChangesTarget::Branch,
+        Some("refs/remotes/origin/main"),
+    )
+    .unwrap();
+    assert!(remote_colliding_files
+        .files
+        .iter()
+        .any(|f| f.path == "umbrella1.txt"));
+
+    // Deleting the selected local `refs/heads/origin/main` reports `base_missing = true`
+    // instead of silently switching to the surviving `refs/remotes/origin/main` without notice.
+    git(root, &["branch", "-D", "origin/main"]);
+    let deleted_local_colliding =
+        super::changes_commits(&core, root, Some("refs/heads/origin/main")).unwrap();
+    assert!(deleted_local_colliding.base_missing);
+    assert_eq!(deleted_local_colliding.base.as_deref(), Some("origin/main"));
+    assert_eq!(deleted_local_colliding.total, 5);
+
+    // Deleted local branch falls back to Auto with `base_missing = true`.
+    git(root, &["branch", "-D", "feat/umbrella"]);
+    let deleted = super::changes_commits(&core, root, Some("refs/heads/feat/umbrella")).unwrap();
+    assert_eq!(deleted.base.as_deref(), Some("origin/main"));
+    assert_eq!(deleted.auto_base.as_deref(), Some("origin/main"));
+    assert!(deleted.base_missing);
+    assert_eq!(deleted.total, 5);
+}
+
+#[test]
+fn all_changes_against_chosen_base_in_umbrella_worktree_matches_git_diff_numstat() {
+    use runner_core::protocol::api::{Request, Response};
+
+    let core = test_core();
+    let origin_bare = tempfile::tempdir().unwrap();
+    git(origin_bare.path(), &["init", "-q", "--bare", "-b", "main"]);
+
+    let fixture = repo();
+    let root = fixture.path();
+    git(
+        root,
+        &[
+            "remote",
+            "add",
+            "origin",
+            origin_bare.path().to_str().unwrap(),
+        ],
+    );
+    git(root, &["push", "-q", "-u", "origin", "main"]);
+    git(
+        root,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    );
+
+    // Umbrella two commits ahead of main.
+    git(root, &["checkout", "-q", "-b", "feat/umbrella"]);
+    std::fs::write(root.join("umbrella_only.txt"), "u1\nu2\n").unwrap();
+    commit_all(root, "umbrella 1");
+    std::fs::write(root.join("a.txt"), "a\numbrella edit\n").unwrap();
+    commit_all(root, "umbrella 2");
+    git(root, &["checkout", "-q", "main"]);
+
+    // Worktree cut from the umbrella with three commits of its own.
+    git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            ".worktrees/feat-child",
+            "-b",
+            "feat/child",
+            "feat/umbrella",
+        ],
+    );
+    let wt = root.join(".worktrees/feat-child");
+    std::fs::write(wt.join("child1.txt"), "one\n").unwrap();
+    commit_all(&wt, "child 1");
+    std::fs::write(wt.join("a.txt"), "a\numbrella edit\nchild line\n").unwrap();
+    commit_all(&wt, "child 2");
+    std::fs::write(wt.join("child3.txt"), "three\nfour\n").unwrap();
+    commit_all(&wt, "child 3");
+
+    let commits = super::changes_commits(&core, &wt, Some("feat/umbrella")).unwrap();
+    assert_eq!(commits.total, 3);
+    assert_eq!(
+        commits
+            .commits
+            .iter()
+            .map(|c| c.subject.as_str())
+            .collect::<Vec<_>>(),
+        vec!["child 3", "child 2", "child 1"]
+    );
+    assert_eq!(commits.worktrees.len(), 2);
+
+    let branch_files =
+        super::changes_files(&core, &wt, &ChangesTarget::Branch, Some("feat/umbrella")).unwrap();
+    let merge_base = git(&wt, &["merge-base", "HEAD", "feat/umbrella"])
+        .trim()
+        .to_owned();
+    let numstat = git(&wt, &["diff", "--numstat", &merge_base, "HEAD"]);
+    let expected: Vec<(String, u64, u64)> = numstat
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let mut parts = line.split('\t');
+            let added = parts.next().unwrap().parse::<u64>().unwrap();
+            let removed = parts.next().unwrap().parse::<u64>().unwrap();
+            let path = parts.next().unwrap().to_owned();
+            (path, added, removed)
+        })
+        .collect();
+    let actual: Vec<(String, u64, u64)> = branch_files
+        .files
+        .iter()
+        .map(|f| match f.counts {
+            DiffCounts::Lines { added, removed } => (f.path.clone(), added, removed),
+            DiffCounts::Binary => panic!("unexpected binary"),
+        })
+        .collect();
+    assert_eq!(actual, expected);
+    assert!(
+        branch_files
+            .files
+            .iter()
+            .all(|f| f.path != "umbrella_only.txt"),
+        "umbrella-only file must not appear when comparing against umbrella"
+    );
+
+    // `changes_diff` against `feat/umbrella` sees only child's addition on `a.txt`.
+    let diff = super::changes_diff(
+        &core,
+        &wt,
+        &ChangesTarget::Branch,
+        "a.txt",
+        Some("feat/umbrella"),
+    )
+    .unwrap();
+    assert_eq!(
+        diff.counts,
+        DiffCounts::Lines {
+            added: 1,
+            removed: 0
+        }
+    );
+
+    // Protocol dispatch for `changes_branches`.
+    let Response::changes_branches(Ok(dispatched_branches)) =
+        crate::daemon::dispatch(&core, Request::changes_branches { root: wt.clone() })
+    else {
+        panic!("expected changes_branches Ok");
+    };
+    assert!(dispatched_branches
+        .local
+        .contains(&"feat/umbrella".to_owned()));
 }

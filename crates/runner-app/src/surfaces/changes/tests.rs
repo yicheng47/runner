@@ -8,18 +8,23 @@ use gpui::{
     VisualTestContext, Window, WindowHandle,
 };
 use runner_core::protocol::changes::{
-    ChangedFile, ChangesCommits, ChangesTarget, CommitSummary, DiffCounts, ModeChange, MAX_COMMITS,
+    ChangedFile, ChangesBranches, ChangesCommits, ChangesTarget, CommitSummary, DiffCounts,
+    ModeChange, RemoteBranches, MAX_COMMITS,
 };
-use runner_core::protocol::files::FileStatus;
+use runner_core::protocol::files::{FileStatus, WorktreeEntry, WorktreeKind};
 
 use super::diff::DiffPos;
 use super::model::{
-    abbreviate_folder, branch_header_label, build_commit_rows, build_flat_rows, build_tree_rows,
-    choose_initial_target, comparison_label, is_crlf_only_change, older_commits_hidden,
-    reconcile_file_selection, CommitRow, FocusPlace, ListRow, SelectedTarget,
+    abbreviate_folder, base_chip_label, branch_header_label, build_base_picker_items,
+    build_commit_rows, build_flat_rows, build_tree_rows, choose_initial_target,
+    default_base_highlight, filter_base_picker_items, is_crlf_only_change, older_commits_hidden,
+    reconcile_file_selection, BasePickerSection, CommitRow, FocusPlace, ListRow, SelectedTarget,
 };
 use super::ChangesView;
 use crate::i18n::{self, Locale};
+use crate::surfaces::files::picker::{
+    checkout_session_labels, CheckoutSessionCandidate, CheckoutSessionKind,
+};
 use crate::surfaces::files::FilesPanel;
 use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelSurface, Widened};
 
@@ -318,6 +323,15 @@ impl Harness {
         view.read_with(&self.visual, |v, _| f(v))
     }
 
+    fn focused(&mut self, f: impl FnOnce(&ChangesView) -> &FocusHandle) -> bool {
+        let view = self.view();
+        self.host
+            .update(&mut self.visual, |_, window, cx| {
+                f(view.read(cx)).is_focused(window)
+            })
+            .unwrap()
+    }
+
     fn show(&mut self, context: Option<PanelContext>) {
         self.host
             .update(&mut self.visual, |host, _, cx| {
@@ -398,13 +412,15 @@ fn flat_and_tree_grouping_sorts_by_path_and_collapses_folders() {
 }
 
 #[test]
-fn opening_selection_and_comparison_labels_cover_every_target_and_older_commits_cap() {
+fn opening_selection_branch_labels_and_base_chip_labels_cover_every_state() {
     let now = chrono::Utc::now();
     let commits = ChangesCommits {
         checkout_top: PathBuf::from("/tmp/repo"),
         branch: Some("feat/1141".into()),
         head_commit: Some("a1f3c9e".into()),
         base: Some("origin/main".into()),
+        auto_base: Some("origin/main".into()),
+        base_missing: false,
         commits: vec![
             CommitSummary {
                 id: "a1f3c9e000".into(),
@@ -432,6 +448,7 @@ fn opening_selection_and_comparison_labels_cover_every_target_and_older_commits_
             },
         ],
         total: MAX_COMMITS + 5,
+        worktrees: Vec::new(),
     };
 
     let detached = i18n::testing::with_locale(Locale::English, || {
@@ -453,26 +470,13 @@ fn opening_selection_and_comparison_labels_cover_every_target_and_older_commits_
             .collect();
         assert_eq!(older_commits_hidden(&capped), 5);
         assert_eq!(branch_header_label(&commits), "feat/1141");
-
         assert_eq!(
-            comparison_label(&SelectedTarget::Branch, &commits),
-            "feat/1141 vs origin/main"
+            base_chip_label(None, Some(&commits)),
+            ("Auto · origin/main".into(), false)
         );
         assert_eq!(
-            comparison_label(&SelectedTarget::Uncommitted, &commits),
-            "Working tree vs HEAD"
-        );
-        assert_eq!(
-            comparison_label(&SelectedTarget::Commit("a1f3c9e000".into()), &commits),
-            "a1f3c9e vs its first parent"
-        );
-        assert_eq!(
-            comparison_label(&SelectedTarget::Commit("7be20d4000".into()), &commits),
-            "7be20d4 vs its parent"
-        );
-        assert_eq!(
-            comparison_label(&SelectedTarget::Commit("0c2ad18000".into()), &commits),
-            "0c2ad18, the first commit"
+            base_chip_label(Some("feat/645-runnerd"), Some(&commits)),
+            ("feat/645-runnerd".into(), true)
         );
 
         let unborn = ChangesCommits {
@@ -480,8 +484,11 @@ fn opening_selection_and_comparison_labels_cover_every_target_and_older_commits_
             branch: Some("main".into()),
             head_commit: None,
             base: None,
+            auto_base: None,
+            base_missing: false,
             commits: Vec::new(),
             total: 0,
+            worktrees: Vec::new(),
         };
         assert_eq!(
             choose_initial_target(&unborn, 0),
@@ -492,8 +499,8 @@ fn opening_selection_and_comparison_labels_cover_every_target_and_older_commits_
             vec![CommitRow::Uncommitted { count: 1 }]
         );
         assert_eq!(
-            comparison_label(&SelectedTarget::Uncommitted, &unborn),
-            "Working tree, no commits yet"
+            base_chip_label(None, Some(&unborn)),
+            ("Auto · none".into(), false)
         );
 
         let detached = ChangesCommits {
@@ -508,8 +515,8 @@ fn opening_selection_and_comparison_labels_cover_every_target_and_older_commits_
     i18n::testing::with_locale(Locale::SimplifiedChinese, || {
         assert_eq!(branch_header_label(&detached), "游离于 deadbee");
         assert_eq!(
-            comparison_label(&SelectedTarget::Branch, &detached),
-            "deadbee 对比 origin/main"
+            base_chip_label(None, Some(&detached)),
+            ("自动 · origin/main".into(), false)
         );
     });
 }
@@ -791,7 +798,7 @@ fn viewed_marks_toggle_at_end_of_diff_sync_across_clients_and_turn_amber_on_edit
         let files = h.store.read_with(&h.visual, |store, _| {
             store
                 .client
-                .changes_files(&h.worktree, &ChangesTarget::Uncommitted)
+                .changes_files(&h.worktree, &ChangesTarget::Uncommitted, None)
                 .unwrap()
         });
         files.totals.viewed == 1
@@ -1083,7 +1090,7 @@ fn enter_while_diff_is_loading_focuses_diff_on_arrival_without_stealing_if_focus
         FocusPlace::Commits,
         "list kept focus after Escape during loading"
     );
-    h.press("tab");
+    h.press("shift-tab");
     assert_eq!(h.read(|v| v.focus_place()), FocusPlace::Files);
 
     // 3. Press Enter while Loading, then focus an outside view BEFORE diff arrives -> does not steal focus.
@@ -1701,5 +1708,719 @@ fn narrow_diff_header_keeps_unified_split_switch_in_bounds_and_clickable_for_lon
     assert_eq!(
         diff.read_with(&h.visual, |d, _| d.mode()),
         DiffViewMode::Split
+    );
+    assert!(
+        !h.has("CHANGES_DIFF_COMPARE"),
+        "Changes diff header omits the comparison label"
+    );
+}
+
+#[test]
+fn base_picker_filtering_omits_own_branch_and_upstream_and_hides_auto_unless_matching() {
+    let branches = ChangesBranches {
+        local: vec![
+            "feat/child".into(),
+            "feat/umbrella".into(),
+            "main".into(),
+            "origin/main".into(),
+        ],
+        remotes: vec![
+            RemoteBranches {
+                remote: "origin".into(),
+                branches: vec![
+                    "origin/feat/child".into(),
+                    "origin/feat/umbrella".into(),
+                    "origin/main".into(),
+                ],
+            },
+            RemoteBranches {
+                remote: "upstream".into(),
+                branches: vec!["upstream/main".into()],
+            },
+        ],
+        upstream: Some("refs/remotes/origin/feat/child".into()),
+    };
+    let items = build_base_picker_items(
+        Some("refs/heads/origin/main"),
+        Some("origin/main"),
+        Some("feat/child"),
+        &branches,
+        "Auto",
+        "none",
+    );
+    let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec![
+            "Auto",
+            "feat/umbrella",
+            "main",
+            "origin/main",
+            "origin/feat/umbrella",
+            "origin/main",
+            "upstream/main",
+        ],
+        "own branch and its remote upstream are omitted while colliding short names remain in separate sections"
+    );
+    // Colliding short names keep distinct canonical refs and check only the selected LOCAL row.
+    let checked: Vec<(&BasePickerSection, Option<&str>)> = items
+        .iter()
+        .filter(|i| i.current)
+        .map(|i| (&i.section, i.base_ref.as_deref()))
+        .collect();
+    assert_eq!(
+        checked,
+        vec![(&BasePickerSection::Local, Some("refs/heads/origin/main"))]
+    );
+    assert_eq!(
+        base_chip_label(Some("refs/heads/origin/main"), None),
+        ("origin/main".into(), true)
+    );
+
+    // Selecting the remote `refs/remotes/origin/main` checks only the ORIGIN row.
+    let remote_items = build_base_picker_items(
+        Some("refs/remotes/origin/main"),
+        Some("origin/main"),
+        Some("feat/child"),
+        &branches,
+        "Auto",
+        "none",
+    );
+    let remote_checked: Vec<(&BasePickerSection, Option<&str>)> = remote_items
+        .iter()
+        .filter(|i| i.current)
+        .map(|i| (&i.section, i.base_ref.as_deref()))
+        .collect();
+    assert_eq!(
+        remote_checked,
+        vec![(
+            &BasePickerSection::Remote("origin".into()),
+            Some("refs/remotes/origin/main")
+        )]
+    );
+
+    // Local upstream (`branch.<name>.remote = .`) omits the LOCAL upstream branch while keeping remote `origin/feat/umbrella`.
+    let local_upstream_branches = ChangesBranches {
+        upstream: Some("refs/heads/feat/umbrella".into()),
+        ..branches.clone()
+    };
+    let local_up_items = build_base_picker_items(
+        None,
+        Some("origin/main"),
+        Some("feat/child"),
+        &local_upstream_branches,
+        "Auto",
+        "none",
+    );
+    assert!(
+        !local_up_items
+            .iter()
+            .any(|i| i.base_ref.as_deref() == Some("refs/heads/feat/umbrella")),
+        "local upstream must be omitted"
+    );
+    assert!(
+        local_up_items
+            .iter()
+            .any(|i| i.base_ref.as_deref() == Some("refs/remotes/origin/feat/umbrella")),
+        "remote branch sharing the short name stays available"
+    );
+
+    let visible_all = filter_base_picker_items(&items, "");
+    assert_eq!(default_base_highlight(&items, &visible_all, ""), 3);
+
+    let visible_umb = filter_base_picker_items(&items, "umbrella");
+    let umb_labels: Vec<&str> = visible_umb
+        .iter()
+        .map(|&idx| items[idx].label.as_str())
+        .collect();
+    assert_eq!(
+        umb_labels,
+        vec!["feat/umbrella", "origin/feat/umbrella"],
+        "Auto is hidden when query does not match it"
+    );
+    assert_eq!(default_base_highlight(&items, &visible_umb, "umbrella"), 0);
+
+    let visible_auto = filter_base_picker_items(&items, "auto");
+    assert_eq!(visible_auto, vec![0]);
+}
+
+#[test]
+fn checkout_session_labels_cover_own_session_chat_terminal_mission_slot_and_several_sessions() {
+    i18n::testing::with_locale(Locale::English, || {
+        let wt = |path: &str, branch: &str, kind: WorktreeKind| WorktreeEntry {
+            path: PathBuf::from(path),
+            branch: Some(branch.into()),
+            commit: Some("1234567".into()),
+            kind,
+            locked: false,
+            prunable: false,
+            uncommitted: Some(0),
+        };
+        let worktrees = vec![
+            wt("/repo", "main", WorktreeKind::Main),
+            wt(
+                "/repo/.worktrees/wt-chat",
+                "feat/chat",
+                WorktreeKind::Linked,
+            ),
+            wt(
+                "/repo/.worktrees/wt-term",
+                "feat/term",
+                WorktreeKind::Linked,
+            ),
+            wt(
+                "/repo/.worktrees/wt-slot",
+                "feat/slot",
+                WorktreeKind::Linked,
+            ),
+            wt(
+                "/repo/.worktrees/wt-many",
+                "feat/many",
+                WorktreeKind::Linked,
+            ),
+        ];
+        let candidates = vec![
+            CheckoutSessionCandidate {
+                cwd: PathBuf::from("/repo/.worktrees/wt-chat/src"),
+                kind: CheckoutSessionKind::Chat,
+            },
+            CheckoutSessionCandidate {
+                cwd: PathBuf::from("/repo/.worktrees/wt-term"),
+                kind: CheckoutSessionKind::Terminal,
+            },
+            CheckoutSessionCandidate {
+                cwd: PathBuf::from("/repo/.worktrees/wt-slot"),
+                kind: CheckoutSessionKind::MissionSlot("coder".into()),
+            },
+            CheckoutSessionCandidate {
+                cwd: PathBuf::from("/repo/.worktrees/wt-many"),
+                kind: CheckoutSessionKind::Chat,
+            },
+            CheckoutSessionCandidate {
+                cwd: PathBuf::from("/repo/.worktrees/wt-many/sub"),
+                kind: CheckoutSessionKind::MissionSlot("qa".into()),
+            },
+        ];
+
+        let labels = checkout_session_labels(
+            PanelSurface::Chat,
+            Some(Path::new("/repo")),
+            &worktrees,
+            &candidates,
+        );
+        assert_eq!(labels[Path::new("/repo")].text, "this chat");
+        assert!(labels[Path::new("/repo")].is_own);
+        assert_eq!(labels[Path::new("/repo/.worktrees/wt-chat")].text, "chat");
+        assert!(!labels[Path::new("/repo/.worktrees/wt-chat")].is_own);
+        assert_eq!(
+            labels[Path::new("/repo/.worktrees/wt-term")].text,
+            "terminal"
+        );
+        assert_eq!(
+            labels[Path::new("/repo/.worktrees/wt-slot")].text,
+            "mission · coder"
+        );
+        assert_eq!(
+            labels[Path::new("/repo/.worktrees/wt-many")].text,
+            "2 sessions"
+        );
+
+        let mission_labels = checkout_session_labels(
+            PanelSurface::Mission,
+            Some(Path::new("/repo/.worktrees/wt-slot")),
+            &worktrees,
+            &candidates,
+        );
+        assert_eq!(
+            mission_labels[Path::new("/repo/.worktrees/wt-slot")].text,
+            "this mission"
+        );
+        assert!(
+            !mission_labels.contains_key(Path::new("/repo")),
+            "nested .worktrees sessions must not match the main checkout"
+        );
+    });
+}
+
+fn wait_watcher_ready(h: &mut Harness, root: &Path) {
+    use runner_core::protocol::files::{FilesStatusChanged, FILES_STATUS_EVENT};
+    let events = h
+        .store
+        .read_with(&h.visual, |store, _| store.test_core.events.clone());
+    let mut sent = events.subscribe();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        h.visual.run_until_parked();
+        if std::iter::from_fn(|| sent.try_recv().ok()).any(|event| {
+            event.name == FILES_STATUS_EVENT
+                && serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(|update| {
+                    runner_core::app_paths::same_checkout_path(&update.root, root)
+                })
+        }) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(250));
+    h.settle();
+}
+
+#[test]
+fn base_row_picker_keyboard_persistence_and_missing_base_notice() {
+    let mut h = harness(None);
+    let first_feat_commit = {
+        let out = Command::new("git")
+            .current_dir(&h.worktree)
+            .args(["rev-parse", "HEAD~1"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    git(
+        &h.repo_path,
+        &["branch", "feat/umbrella", &first_feat_commit],
+    );
+    git(
+        &h.repo_path,
+        &[
+            "update-ref",
+            "refs/remotes/upstream/umbrella",
+            &first_feat_commit,
+        ],
+    );
+    std::fs::write(h.worktree.join("src/extra.rs"), "pub fn extra() {}\n").unwrap();
+    git(&h.worktree, &["add", "-A"]);
+    git(&h.worktree, &["commit", "-q", "-m", "feat: extra commit"]);
+
+    let worktree_path = h.worktree.clone();
+    h.show(Some(mission_ctx("on-worktree")));
+    wait_watcher_ready(&mut h, &worktree_path);
+    h.wait("Auto · main base chip", |h| {
+        h.has("CHANGES_BASE_CHIP Auto · main")
+    });
+    assert!(h.has("CHANGES_BRANCH_COUNT 3 commits"));
+
+    // Focus Changes via `focus_default` (starts on `Files`) and traverse via real Tab keystrokes:
+    // Files -> Commits -> Base chip -> Checkout button -> Files (and Shift-Tab backwards).
+    let view = h.view();
+    h.host
+        .update(&mut h.visual, |_, window, cx| {
+            view.update(cx, |v, cx| v.focus_default(window, cx));
+        })
+        .unwrap();
+    h.settle();
+    assert!(h.focused(|v| &v.list_focus) && h.read(|v| v.focus_place() == FocusPlace::Files));
+
+    h.press("tab");
+    assert!(h.focused(|v| &v.list_focus) && h.read(|v| v.focus_place() == FocusPlace::Commits));
+    h.press("tab");
+    assert!(
+        h.focused(|v| &v.base_chip_focus),
+        "second Tab reaches the Base chip trigger"
+    );
+    h.press("tab");
+    assert!(
+        h.focused(|v| &v.checkout_button_focus),
+        "third Tab reaches the Checkout picker trigger"
+    );
+    h.press("shift-tab");
+    assert!(
+        h.focused(|v| &v.base_chip_focus),
+        "Shift-Tab returns from Checkout button to Base chip"
+    );
+
+    // Open BasePicker with Enter, filter and pick `feat/umbrella` with Enter; verify focus returns to Base chip.
+    h.press("enter");
+    h.wait("base picker item for umbrella", |h| {
+        h.has("CHANGES_BASE_PICKER_ITEM 1 feat/umbrella")
+    });
+    h.visual.simulate_input("feat/umbrella");
+    h.settle();
+    assert!(
+        h.has("CHANGES_BASE_PICKER_ITEM 0 feat/umbrella"),
+        "typing hides Auto and leaves feat/umbrella at index 0"
+    );
+    h.press("enter");
+
+    h.wait("chosen base chip feat/umbrella", |h| {
+        h.has("CHANGES_BASE_CHIP feat/umbrella") && h.has("CHANGES_BRANCH_COUNT 2 commits")
+    });
+    assert!(!h.has("CHANGES_BASE_PICKER"));
+    assert!(
+        h.focused(|v| &v.base_chip_focus),
+        "picking a base returns focus to the Base chip"
+    );
+    assert_eq!(
+        h.store.read_with(&h.visual, |store, _| {
+            store
+                .settings
+                .changes_base(&h.worktree, Some("feat/x"))
+                .map(str::to_owned)
+        }),
+        Some("refs/heads/feat/umbrella".to_owned()),
+        "chosen base is saved as canonical full ref in settings keyed by checkout and branch"
+    );
+
+    // Picking Auto removes the saved entry.
+    h.click("CHANGES_BASE_CHIP feat/umbrella");
+    h.wait("base picker Auto row", |h| {
+        h.has("CHANGES_BASE_PICKER_ITEM 0 Auto")
+    });
+    h.click("CHANGES_BASE_PICKER_ITEM 0 Auto");
+    h.wait("Auto · main restored", |h| {
+        h.has("CHANGES_BASE_CHIP Auto · main") && h.has("CHANGES_BRANCH_COUNT 3 commits")
+    });
+    assert_eq!(
+        h.store.read_with(&h.visual, |store, _| {
+            store
+                .settings
+                .changes_base(&h.worktree, Some("feat/x"))
+                .map(str::to_owned)
+        }),
+        None,
+        "picking Auto removes the entry"
+    );
+
+    // Pick local `feat/umbrella`, then delete the branch on disk -> real OS watcher event (no manual load_snapshot!)
+    // refreshes Changes, falls back to Auto with amber notice, and removes saved entry.
+    h.click("CHANGES_BASE_CHIP Auto · main");
+    h.wait("umbrella row", |h| {
+        h.has("CHANGES_BASE_PICKER_ITEM 1 feat/umbrella")
+    });
+    h.click("CHANGES_BASE_PICKER_ITEM 1 feat/umbrella");
+    h.wait("chosen umbrella", |h| {
+        h.has("CHANGES_BASE_CHIP feat/umbrella")
+    });
+
+    git(&h.repo_path, &["branch", "-D", "feat/umbrella"]);
+    h.wait("watcher-driven missing local base notice", |h| {
+        h.has("CHANGES_MISSING_BASE_NOTICE") && h.has("CHANGES_BASE_CHIP Auto · main")
+    });
+    assert_eq!(
+        h.store.read_with(&h.visual, |store, _| {
+            store
+                .settings
+                .changes_base(&h.worktree, Some("feat/x"))
+                .map(str::to_owned)
+        }),
+        None,
+        "deleted base removes saved entry"
+    );
+
+    // Opening the picker clears the missing-base notice; pick remote `upstream/umbrella`, then delete remote ref ->
+    // real OS watcher event refreshes Changes for remote-tracking refs too.
+    h.click("CHANGES_BASE_CHIP Auto · main");
+    h.wait("base picker open", |h| {
+        h.has("CHANGES_BASE_PICKER_ITEM 2 upstream/umbrella")
+    });
+    assert!(
+        !h.has("CHANGES_MISSING_BASE_NOTICE"),
+        "opening the picker clears the missing-base notice"
+    );
+    h.click("CHANGES_BASE_PICKER_ITEM 2 upstream/umbrella");
+    h.wait("chosen remote base upstream/umbrella", |h| {
+        h.has("CHANGES_BASE_CHIP upstream/umbrella") && h.has("CHANGES_BRANCH_COUNT 2 commits")
+    });
+
+    git(
+        &h.repo_path,
+        &["update-ref", "-d", "refs/remotes/upstream/umbrella"],
+    );
+    h.wait("watcher-driven missing remote base notice", |h| {
+        h.has("CHANGES_MISSING_BASE_NOTICE") && h.has("CHANGES_BASE_CHIP Auto · main")
+    });
+}
+
+#[test]
+fn selecting_target_while_base_snapshot_is_pending_preserves_new_base_commits_and_target() {
+    let mut h = harness(None);
+    let first_feat_commit = {
+        let out = Command::new("git")
+            .current_dir(&h.worktree)
+            .args(["rev-parse", "HEAD~1"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    let tip_short = {
+        let out = Command::new("git")
+            .current_dir(&h.worktree)
+            .args(["rev-parse", "--short", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    git(
+        &h.repo_path,
+        &["branch", "feat/umbrella", &first_feat_commit],
+    );
+    std::fs::write(h.worktree.join("dirty.txt"), "uncommitted\n").unwrap();
+
+    let worktree_path = h.worktree.clone();
+    h.show(Some(mission_ctx("on-worktree")));
+    wait_watcher_ready(&mut h, &worktree_path);
+    h.wait("initial 2 commits since main", |h| {
+        h.has("CHANGES_BRANCH_COUNT 2 commits") && h.has("CHANGES_ROW dirty.txt")
+    });
+
+    let view = h.view();
+    view.update(&mut h.visual, |v, _| {
+        v.hold_snapshots = true;
+    });
+
+    // Pick `refs/heads/feat/umbrella` while snapshots are held.
+    h.host
+        .update(&mut h.visual, |_, window, cx| {
+            view.update(cx, |v, cx| {
+                v.pick_base(Some("refs/heads/feat/umbrella".into()), window, cx);
+            });
+        })
+        .unwrap();
+    h.settle();
+    h.wait("held snapshot queued", |h| {
+        h.read(|v| !v.held_snapshots.is_empty())
+    });
+
+    // Before the snapshot releases, select the tip commit target (`src/sub/added.rs`).
+    h.click(format!("CHANGES_COMMIT {tip_short}"));
+    h.wait(
+        "tip commit file loaded while base snapshot still held",
+        |h| h.has("CHANGES_ROW src/sub/added.rs"),
+    );
+    assert!(
+        h.has("CHANGES_BRANCH_COUNT 2 commits"),
+        "snapshot metadata has not landed yet while held"
+    );
+
+    // Release the held base snapshot -> commit count & list update to 1 commit (ahead of feat/umbrella)
+    // AND the selected tip commit's files (`src/sub/added.rs`) remain intact.
+    view.update(&mut h.visual, |v, _| {
+        v.hold_snapshots = false;
+        for tx in v.held_snapshots.drain(..) {
+            let _ = tx.send(());
+        }
+    });
+    h.wait(
+        "base metadata applied without losing target selection",
+        |h| {
+            h.has("CHANGES_BASE_CHIP feat/umbrella")
+                && h.has("CHANGES_BRANCH_COUNT 1 commit")
+                && h.has("CHANGES_ROW src/sub/added.rs")
+        },
+    );
+}
+
+#[test]
+fn missing_base_notice_allows_shared_settings_sync_and_clears_on_branch_switch() {
+    let mut h = harness(None);
+    git(&h.repo_path, &["branch", "feat/gone-base"]);
+    git(&h.repo_path, &["branch", "feat/shared-base"]);
+    h.store.update(&mut h.visual, |store, cx| {
+        store.update_settings(
+            |s| {
+                let a = s.set_changes_base(
+                    &h.worktree,
+                    Some("feat/x"),
+                    Some("refs/heads/feat/gone-base"),
+                );
+                let b = s.set_changes_base(&h.worktree, Some("feat/y"), Some("refs/heads/main"));
+                a || b
+            },
+            false,
+            cx,
+        );
+    });
+
+    let worktree_path = h.worktree.clone();
+    h.show(Some(mission_ctx("on-worktree")));
+    wait_watcher_ready(&mut h, &worktree_path);
+    h.wait("chosen gone-base chip", |h| {
+        h.has("CHANGES_BASE_CHIP feat/gone-base")
+    });
+
+    // 1. Delete `feat/gone-base` -> missing-base notice appears.
+    git(&h.repo_path, &["branch", "-D", "feat/gone-base"]);
+    h.wait("missing base notice for feat/gone-base", |h| {
+        h.has("CHANGES_MISSING_BASE_NOTICE") && h.has("CHANGES_BASE_CHIP Auto · main")
+    });
+
+    // Another window/session saves `refs/heads/feat/shared-base` for `(worktree, feat/x)` ->
+    // panel synchronizes to the new shared base and clears the missing-base notice.
+    h.store.update(&mut h.visual, |store, cx| {
+        store.update_settings(
+            |s| {
+                s.set_changes_base(
+                    &h.worktree,
+                    Some("feat/x"),
+                    Some("refs/heads/feat/shared-base"),
+                )
+            },
+            false,
+            cx,
+        );
+    });
+    h.wait("shared base applied and notice cleared", |h| {
+        h.has("CHANGES_BASE_CHIP feat/shared-base") && !h.has("CHANGES_MISSING_BASE_NOTICE")
+    });
+
+    // 2. Delete `feat/shared-base` so notice appears again, then switch checkout to `feat/y` (which has valid saved base `main`) ->
+    // notice clears and `main` becomes the active base.
+    git(&h.repo_path, &["branch", "-D", "feat/shared-base"]);
+    h.wait("missing base notice for feat/shared-base", |h| {
+        h.has("CHANGES_MISSING_BASE_NOTICE")
+    });
+
+    git(&h.worktree, &["checkout", "-q", "-b", "feat/y"]);
+    h.wait(
+        "switched to feat/y with saved base main and notice cleared",
+        |h| h.has("CHANGES_BASE_CHIP main") && !h.has("CHANGES_MISSING_BASE_NOTICE"),
+    );
+}
+
+#[test]
+fn single_checkout_is_plain_and_multiple_checkouts_share_files_root_and_handle_removal() {
+    let mut h = harness(None);
+    // Single-checkout standalone git repo -> plain branch row, which becomes a picker automatically
+    // when a second worktree is created on disk (via watcher events, without manual load_snapshot).
+    let single_dir = h._temp.path().join("single-repo");
+    setup_repo(&single_dir);
+    let single_dir = real(&single_dir);
+    h.store.update(&mut h.visual, |store, cx| {
+        store
+            .test_core
+            .db
+            .get()
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT INTO projects (id, name, cwd, position, created_at)
+                 VALUES ('single', 'single', '{single}', 1, '2026-11-15T00:00:00Z');
+                 INSERT INTO sessions (id, status, agent_runtime, agent_command, cwd, project_id)
+                 VALUES ('single-chat', 'running', 'codex', 'codex', '{single}', 'single');",
+                single = sql(&single_dir),
+            ))
+            .unwrap();
+        store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+    });
+    h.show(Some(chat_ctx("single-chat", Some("single"), false)));
+    wait_watcher_ready(&mut h, &single_dir);
+    h.wait("single-repo base row", |h| h.has("CHANGES_BASE_ROW"));
+    assert!(h.has("CHANGES_BRANCH_HEADER"));
+    assert!(
+        !h.has("CHANGES_CHECKOUT_BUTTON"),
+        "one checkout keeps the plain branch row"
+    );
+
+    git(
+        &single_dir,
+        &["worktree", "add", "-q", "--detach", ".worktrees/second"],
+    );
+    h.wait("watcher turns plain branch row into checkout picker", |h| {
+        h.has("CHANGES_CHECKOUT_BUTTON")
+    });
+    git(
+        &single_dir,
+        &["worktree", "remove", "--force", ".worktrees/second"],
+    );
+    h.wait(
+        "watcher returns branch row to plain when second worktree is removed",
+        |h| !h.has("CHANGES_CHECKOUT_BUTTON"),
+    );
+
+    // Multi-checkout repo (`main-chat` on `repo_path`, with linked worktree `feat/x`).
+    std::fs::write(h.worktree.join("untracked_wt.txt"), "dirty\n").unwrap();
+    let repo_path = h.repo_path.clone();
+    let worktree_path = h.worktree.clone();
+    h.show(Some(chat_ctx("main-chat", Some("runner"), false)));
+    wait_watcher_ready(&mut h, &repo_path);
+    h.wait("multi-checkout main button", |h| {
+        h.has("CHANGES_CHECKOUT_KIND_MAIN") && h.has("CHANGES_CHECKOUT_BUTTON")
+    });
+
+    // Traverse via keyboard (`Shift-Tab` from default `Files` focus lands directly on `Checkout` trigger),
+    // open CheckoutPicker with Enter, filter and pick `feat/x` with Enter, and verify focus returns to Checkout trigger.
+    let view = h.view();
+    h.host
+        .update(&mut h.visual, |_, window, cx| {
+            view.update(cx, |v, cx| v.focus_default(window, cx));
+        })
+        .unwrap();
+    h.settle();
+    h.press("shift-tab");
+    assert!(
+        h.focused(|v| &v.checkout_button_focus),
+        "Shift-Tab from Files reaches Checkout button"
+    );
+    h.press("enter");
+    h.wait("checkout picker rows", |h| {
+        h.has("CHANGES_CHECKOUT_PICKER_ITEM 0 main")
+            && h.has("CHANGES_CHECKOUT_PICKER_ITEM 1 feat/x")
+    });
+    h.visual.simulate_input("feat-x");
+    h.settle();
+    assert!(h.has("CHANGES_CHECKOUT_PICKER_ITEM 0 feat/x"));
+    h.press("enter");
+
+    h.wait(
+        "viewing feat/x with tint, shortened count and return button",
+        |h| {
+            h.has("CHANGES_BRANCH_HEADER other")
+                && h.has("CHANGES_CHECKOUT_KIND_LINKED")
+                && h.has("CHANGES_CHECKOUT_RETURN")
+                && h.has("CHANGES_BRANCH_COUNT 2")
+                && h.has("CHANGES_ROW untracked_wt.txt")
+        },
+    );
+    assert!(
+        h.focused(|v| &v.checkout_button_focus),
+        "picking a checkout preserves return focus on the Checkout trigger"
+    );
+
+    // Verify Files' root for `main-chat` was updated to `h.worktree` too (`files_set_root`).
+    let resolved_for_files = h.store.read_with(&h.visual, |store, _| {
+        store
+            .client
+            .files_root(&runner_core::protocol::files::FilesSubject::Session(
+                "main-chat".into(),
+            ))
+            .unwrap()
+    });
+    match resolved_for_files {
+        runner_core::protocol::files::FilesRootOutcome::Root(r) => {
+            assert_eq!(
+                runner_core::app_paths::normalize_checkout_path(&r.path),
+                runner_core::app_paths::normalize_checkout_path(&h.worktree),
+            );
+        }
+        other => panic!("expected saved worktree root, got {other:?}"),
+    }
+
+    // Tab from Checkout trigger reaches the Return button, and Enter switches back to own checkout (`None`).
+    h.press("tab");
+    assert!(h.focused(|v| &v.checkout_return_focus));
+    h.press("enter");
+    h.wait("returned to main checkout", |h| {
+        h.has("CHANGES_CHECKOUT_KIND_MAIN") && !h.has("CHANGES_CHECKOUT_RETURN")
+    });
+
+    // Switch back to `feat/x`, wait for watcher on `h.worktree`, then remove `h.worktree` ->
+    // real OS watcher event falls back to own checkout with amber notice (no manual load_snapshot!).
+    h.click("CHANGES_CHECKOUT_BUTTON");
+    h.wait("checkout picker", |h| {
+        h.has("CHANGES_CHECKOUT_PICKER_ITEM 1 feat/x")
+    });
+    h.click("CHANGES_CHECKOUT_PICKER_ITEM 1 feat/x");
+    h.wait("viewing feat/x again", |h| h.has("CHANGES_CHECKOUT_RETURN"));
+    wait_watcher_ready(&mut h, &worktree_path);
+
+    git(
+        &h.repo_path,
+        &["worktree", "remove", "--force", ".worktrees/feat-x"],
+    );
+    h.wait("removed worktree amber notice on own checkout", |h| {
+        h.has("CHANGES_REMOVED_CHECKOUT_NOTICE") && !h.has("CHANGES_CHECKOUT_RETURN")
+    });
+    assert!(
+        !h.has("CHANGES_CHECKOUT_BUTTON"),
+        "with feat/x removed, only one checkout remains so branch row returns to plain"
     );
 }

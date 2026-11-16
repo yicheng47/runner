@@ -944,9 +944,12 @@ impl Sample for files::FilesRootOutcome {
                 worktree: files::WorktreeKind::Linked,
                 branch: Some("feat/634".into()),
                 commit: None,
+                worktrees: Sample::sample(),
             }),
             cwd: Some("src/deep".into()),
             source: files::FilesRootSource::Saved,
+            own_checkout_top: Some(PathBuf::sample()),
+            removed_checkout: Some("feat/1345".into()),
         })
     }
 }
@@ -982,6 +985,7 @@ impl Sample for files::WorktreeEntry {
             kind: files::WorktreeKind::Main,
             locked: true,
             prunable: true,
+            uncommitted: Some(2),
         }
     }
 }
@@ -1027,8 +1031,28 @@ impl Sample for changes::ChangesCommits {
             branch: Sample::sample(),
             head_commit: Sample::sample(),
             base: Sample::sample(),
+            auto_base: Some("origin/main".into()),
+            base_missing: true,
             commits: Sample::sample(),
             total: Sample::sample(),
+            worktrees: Sample::sample(),
+        }
+    }
+}
+impl Sample for changes::RemoteBranches {
+    fn sample() -> Self {
+        Self {
+            remote: "origin".into(),
+            branches: vec!["origin/main".into(), "origin/feat/1345".into()],
+        }
+    }
+}
+impl Sample for changes::ChangesBranches {
+    fn sample() -> Self {
+        Self {
+            local: vec!["main".into(), "feat/1345".into()],
+            remotes: Sample::sample(),
+            upstream: Some("refs/remotes/origin/feat/1345".into()),
         }
     }
 }
@@ -1163,6 +1187,73 @@ fn changes_variants_cross_json() {
         new_commit: Some("def".into()),
     });
     round_trip(changes::ChangesViewed::sample());
+    round_trip(changes::ChangesBranches::sample());
+
+    let legacy_commits_req: Request = serde_json::from_value(serde_json::json!({
+        "changes_commits": { "root": "/repo" }
+    }))
+    .unwrap();
+    assert!(matches!(
+        legacy_commits_req,
+        Request::changes_commits { base: None, .. }
+    ));
+    let legacy_files_req: Request = serde_json::from_value(serde_json::json!({
+        "changes_files": { "root": "/repo", "target": { "kind": "branch" } }
+    }))
+    .unwrap();
+    assert!(matches!(
+        legacy_files_req,
+        Request::changes_files { base: None, .. }
+    ));
+    let legacy_diff_req: Request = serde_json::from_value(serde_json::json!({
+        "changes_diff": { "root": "/repo", "target": { "kind": "branch" }, "path": "a.rs" }
+    }))
+    .unwrap();
+    assert!(matches!(
+        legacy_diff_req,
+        Request::changes_diff { base: None, .. }
+    ));
+
+    let legacy_commits: changes::ChangesCommits = serde_json::from_value(serde_json::json!({
+        "checkout_top": "/repo",
+        "branch": "main",
+        "head_commit": "abc1234",
+        "base": "origin/main",
+        "commits": [],
+        "total": 0
+    }))
+    .unwrap();
+    assert_eq!(legacy_commits.auto_base, None);
+    assert!(!legacy_commits.base_missing);
+    assert!(legacy_commits.worktrees.is_empty());
+
+    let legacy_worktree: files::WorktreeEntry = serde_json::from_value(serde_json::json!({
+        "path": "/repo",
+        "branch": "main",
+        "commit": "abc1234",
+        "kind": "main",
+        "locked": false,
+        "prunable": false
+    }))
+    .unwrap();
+    assert_eq!(legacy_worktree.uncommitted, None);
+
+    let legacy_root: files::FilesRoot = serde_json::from_value(serde_json::json!({
+        "path": "/repo",
+        "name": "repo",
+        "git": {
+            "top": "/repo",
+            "worktree": "main",
+            "branch": "main",
+            "commit": "abc1234"
+        },
+        "cwd": null,
+        "source": "own"
+    }))
+    .unwrap();
+    assert_eq!(legacy_root.own_checkout_top, None);
+    assert_eq!(legacy_root.removed_checkout, None);
+    assert!(legacy_root.git.unwrap().worktrees.is_empty());
 }
 
 impl Sample for RuntimeLaunchOptions {

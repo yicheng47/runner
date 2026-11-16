@@ -316,11 +316,20 @@ impl FilesView {
                 }
             }
         });
+        let initial_worktrees = match &self.body {
+            Body::Root(state) => state
+                .root
+                .git
+                .as_ref()
+                .map(|git| git.worktrees.clone())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
         field.read(cx).focus_handle().focus(window, cx);
         self.picker = Some(Picker {
             field,
             query: String::new(),
-            worktrees: Vec::new(),
+            worktrees: initial_worktrees,
             items: Vec::new(),
             highlighted: 0,
             moved: false,
@@ -347,10 +356,10 @@ impl FilesView {
     }
 
     fn rebuild_picker(&mut self, cx: &mut Context<Self>) {
-        let current = match &self.body {
-            Body::Root(state) => state.root.path.clone(),
-            Body::Missing { path } => path.clone(),
-            _ => PathBuf::new(),
+        let (current, own_checkout_top) = match &self.body {
+            Body::Root(state) => (state.root.path.clone(), state.root.own_checkout_top.clone()),
+            Body::Missing { path } => (path.clone(), None),
+            _ => (PathBuf::new(), None),
         };
         let projects = if self.context.project.is_none() {
             self.projects(cx)
@@ -358,12 +367,20 @@ impl FilesView {
             Vec::new()
         };
         let home = Self::home(cx);
+        let context = self.context.clone();
         let Some(picker) = &mut self.picker else {
             return;
         };
+        let session_labels = picker::collect_checkout_session_labels(
+            &context,
+            own_checkout_top.as_deref(),
+            &picker.worktrees,
+            cx,
+        );
         picker.items = picker::picker_items(PickerSources {
             current: &current,
             worktrees: &picker.worktrees,
+            session_labels: &session_labels,
             recent: &self.recent,
             projects: &projects,
             home: home.as_deref(),
@@ -439,7 +456,17 @@ impl FilesView {
         };
         match item.path {
             Some(path) => {
-                self.set_root(Some(path), cx);
+                let is_own_worktree = matches!(item.kind, PickerKind::Worktree(_))
+                    && matches!(
+                        &self.body,
+                        Body::Root(state)
+                            if state
+                                .root
+                                .own_checkout_top
+                                .as_deref()
+                                .is_some_and(|own| picker::same_checkout_path(own, &path))
+                    );
+                self.set_root((!is_own_worktree).then_some(path), cx);
                 self.focus.focus(window, cx);
             }
             None => self.browse(cx),
@@ -701,25 +728,85 @@ impl FilesView {
                     )
                     .child(
                         div()
+                            .flex_1()
                             .min_w(px(0.))
                             .flex()
                             .flex_col()
                             .child(
                                 div()
-                                    .truncate()
-                                    .text_size(theme::text_ui())
-                                    .text_color(theme::text())
-                                    .child(item.title.clone()),
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .truncate()
+                                            .text_size(theme::text_ui())
+                                            .text_color(theme::text())
+                                            .child(item.title.clone()),
+                                    )
+                                    .when_some(item.session_label.as_ref(), |row, label| {
+                                        row.child(
+                                            div()
+                                                .flex_none()
+                                                .text_size(theme::text_meta())
+                                                .text_color(if label.is_own {
+                                                    theme::muted()
+                                                } else {
+                                                    theme::faint()
+                                                })
+                                                .child(label.text.clone()),
+                                        )
+                                    }),
                             )
-                            .when(!item.subtitle.is_empty(), |element| {
-                                element.child(
-                                    div()
-                                        .truncate()
-                                        .text_size(theme::text_meta())
-                                        .text_color(theme::faint())
-                                        .child(item.subtitle.clone()),
-                                )
-                            }),
+                            .when(
+                                !item.subtitle.is_empty() || item.uncommitted.is_some(),
+                                |element| {
+                                    element.child(
+                                        div()
+                                            .w_full()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(4.))
+                                            .min_w(px(0.))
+                                            .text_size(theme::text_meta())
+                                            .text_color(theme::faint())
+                                            .when(!item.subtitle.is_empty(), |sub| {
+                                                sub.child(
+                                                    div()
+                                                        .min_w(px(0.))
+                                                        .truncate()
+                                                        .child(item.subtitle.clone()),
+                                                )
+                                            })
+                                            .when_some(item.uncommitted, |sub, count| {
+                                                let (text, color) = if count == 0 {
+                                                    (
+                                                        crate::i18n::text("changes.clean")
+                                                            .to_owned(),
+                                                        theme::faint(),
+                                                    )
+                                                } else {
+                                                    (
+                                                        crate::i18n::tn(
+                                                            "changes.uncommitted_count",
+                                                            count,
+                                                        ),
+                                                        theme::warning(),
+                                                    )
+                                                };
+                                                sub.when(!item.subtitle.is_empty(), |s| {
+                                                    s.child(div().flex_none().child("·"))
+                                                })
+                                                .child(
+                                                    div().flex_none().text_color(color).child(text),
+                                                )
+                                            }),
+                                    )
+                                },
+                            ),
                     )
                     .into_any_element(),
             );

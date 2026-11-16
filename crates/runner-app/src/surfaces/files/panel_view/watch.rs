@@ -152,6 +152,7 @@ impl FilesView {
                 client.changes_files(
                     &root,
                     &runner_core::protocol::changes::ChangesTarget::Uncommitted,
+                    None,
                 )
             },
             move |this, result, cx| {

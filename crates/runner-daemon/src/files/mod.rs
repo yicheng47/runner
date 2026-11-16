@@ -245,7 +245,11 @@ impl FilesService {
     pub fn worktrees(&self, root: &Path) -> Result<Vec<WorktreeEntry>> {
         fs::check_root(root)?;
         match (git::checkout_top(root), self.git()) {
-            (Some(_), Some(git)) => git.worktrees(root),
+            (Some(_), Some(git)) => {
+                let mut entries = git.worktrees(root)?;
+                git.populate_worktree_uncommitted(&mut entries);
+                Ok(entries)
+            }
             _ => Ok(Vec::new()),
         }
     }
@@ -347,9 +351,12 @@ impl FilesService {
 
     /// Whether `client` holds an active watch on any folder inside `checkout_top`.
     pub fn is_client_watching_checkout(&self, client: u64, checkout_top: &Path) -> bool {
+        let target = runner_core::app_paths::normalize_checkout_path(checkout_top);
         self.watches.lock().unwrap().values().any(|watched| {
             watched.subscribers.contains_key(&client)
-                && watched.checkout_top.as_deref() == Some(checkout_top)
+                && watched.checkout_top.as_deref().is_some_and(|top| {
+                    runner_core::app_paths::same_normalized_checkout_path(top, &target)
+                })
         })
     }
 
@@ -471,7 +478,9 @@ pub fn read(root: &Path, path: &str, want_bytes: bool) -> Result<FileContent> {
     fs::read(root, path, want_bytes)
 }
 
-pub use changes::{changes_commits, changes_diff, changes_files, changes_set_viewed};
+pub use changes::{
+    changes_branches, changes_commits, changes_diff, changes_files, changes_set_viewed,
+};
 
 #[cfg(test)]
 pub(crate) mod fixture {

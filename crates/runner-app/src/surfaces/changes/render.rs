@@ -7,16 +7,17 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, img, px, rems, svg, uniform_list, AnyElement, App, Context, FontWeight, ImageSource,
-    MouseButton, Resource, SharedString, Window,
+    canvas, div, img, px, relative, rems, svg, uniform_list, AnyElement, App, Context, FontWeight,
+    ImageSource, KeyDownEvent, MouseButton, Resource, SharedString, Window,
 };
 use runner_app::ui::{
+    menu::popup_layer_right_aligned,
     resize::{resize_strip, resize_strip_inset, ResizeAxis},
     tooltip::tooltip_view,
     Button, ButtonVariant, IconButton,
 };
 use runner_core::protocol::changes::{DiffCounts, ModeChange};
-use runner_core::protocol::files::FileStatus;
+use runner_core::protocol::files::{FileStatus, WorktreeKind};
 
 use crate::app_settings::{DiffViewMode, FileLinkEditor};
 use crate::file_icons::{self, IconSet};
@@ -24,18 +25,23 @@ use crate::surfaces::files::{
     self, absolute, compact_missing_path, editor_icon, format_size, found_editors, picker,
     FileTreeResizeDrag,
 };
+use crate::surfaces::side_panel::PanelSurface;
 use crate::text_util::{abbreviate_home, HomePath};
 use crate::theme;
 
 use super::diff::render_viewed_checkbox;
 use super::model::{
-    abbreviate_folder, branch_header_label, build_commit_rows, comparison_label, file_name,
-    older_commits_hidden, status_letter_and_color, CommitRow, FocusPlace, ListRow, SelectedTarget,
+    abbreviate_folder, base_chip_label, branch_header_label, build_commit_rows, display_base_ref,
+    file_name, filter_base_picker_items, filter_checkout_picker_items, is_viewing_other_checkout,
+    live_worktrees, older_commits_hidden, status_letter_and_color, BasePickerSection, CommitRow,
+    FocusPlace, ListRow, SelectedTarget,
 };
 use super::{ActiveDiff, Body, ChangesView, LoadedDiff, LoadedDiffKind, RootChanges};
 
 const ROW_HEIGHT: f32 = 26.;
 const INDENT: f32 = 14.;
+const BASE_PICKER_WIDTH: f32 = 300.;
+const CHECKOUT_PICKER_WIDTH: f32 = 420.;
 
 impl Render for ChangesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -184,6 +190,8 @@ impl ChangesView {
             .map_or(crate::app_settings::FILE_TREE_DEFAULT, |w| w.tree_width);
         let diff_column = self.render_diff_column(window, cx);
         let list_column = self.render_list_column(tree_width, window, cx);
+        let base_picker = self.render_base_picker(window, cx);
+        let checkout_picker = self.render_checkout_picker(window, cx);
         let resize = resize_strip(
             "changes-tree-resize",
             ResizeAxis::Columns,
@@ -219,6 +227,8 @@ impl ChangesView {
             .child(diff_column)
             .child(list_column)
             .child(resize)
+            .children(base_picker)
+            .children(checkout_picker)
             .into_any_element()
     }
 
@@ -239,7 +249,8 @@ impl ChangesView {
             return div().into_any_element();
         };
 
-        let branch_header = self.render_branch_header(state);
+        let branch_header = self.render_branch_header(state, window, cx);
+        let base_row = self.render_base_row(state, window, cx);
         let commits_section = self.render_commits_section(state, commits_focused, cx);
         let summary_row = self.render_files_summary(state, tree_view, cx);
         let row_count = state.list_rows.len();
@@ -282,6 +293,8 @@ impl ChangesView {
                 el.debug_selector(|| "CHANGES_LIST_COLUMN".into())
             })
             .track_focus(&self.list_focus)
+            .tab_index(0)
+            .tab_stop(true)
             .on_key_down(cx.listener(Self::on_list_key))
             .flex_none()
             .w(rems(tree_width / 16.))
@@ -290,9 +303,11 @@ impl ChangesView {
             .bg(theme::panel())
             .border_l_1()
             .border_color(theme::border())
+            .rounded_br(rems(11. / 16.))
             .flex()
             .flex_col()
             .child(branch_header)
+            .child(base_row)
             .children(error_banner)
             .child(commits_section)
             .child(summary_row)
@@ -316,35 +331,186 @@ impl ChangesView {
             .into_any_element()
     }
 
-    fn render_branch_header(&self, state: &RootChanges) -> AnyElement {
+    fn render_branch_header(
+        &self,
+        state: &RootChanges,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let viewing_other = is_viewing_other_checkout(&state.root);
+        let worktrees_slice = state
+            .commits
+            .as_ref()
+            .map(|c| c.worktrees.as_slice())
+            .filter(|w| !w.is_empty())
+            .or_else(|| state.root.git.as_ref().map(|g| g.worktrees.as_slice()))
+            .unwrap_or(&[]);
+        let multiple_checkouts = live_worktrees(worktrees_slice).len() > 1 || viewing_other;
+
         let (branch_name, commit_count) = match &state.commits {
             Some(commits) => (
                 branch_header_label(commits),
-                commits
-                    .base
-                    .is_some()
-                    .then(|| crate::i18n::tn("changes.commits", commits.total)),
+                commits.base.is_some().then(|| {
+                    if viewing_other {
+                        commits.total.to_string()
+                    } else {
+                        crate::i18n::tn("changes.commits", commits.total)
+                    }
+                }),
             ),
-            None => (state.root.name.clone(), None),
+            None => (
+                state
+                    .root
+                    .git
+                    .as_ref()
+                    .and_then(|g| g.branch.clone())
+                    .unwrap_or_else(|| state.root.name.clone()),
+                None,
+            ),
         };
-        div()
+
+        let removed_notice = self.removed_checkout_notice.as_ref().map(|name| {
+            let notice_key = match self.context.surface {
+                PanelSurface::Chat => "changes.checkout_removed_chat",
+                PanelSurface::Terminal => "changes.checkout_removed_terminal",
+                PanelSurface::Mission => "changes.checkout_removed_mission",
+            };
+            div()
+                .when(cfg!(test), |el| {
+                    el.debug_selector(|| "CHANGES_REMOVED_CHECKOUT_NOTICE".into())
+                })
+                .px(px(10.))
+                .pb(px(6.))
+                .flex()
+                .items_start()
+                .gap(px(6.))
+                .child(
+                    svg()
+                        .flex_none()
+                        .mt(px(2.))
+                        .size(px(12.))
+                        .path("triangle-alert.svg")
+                        .text_color(theme::warning()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(theme::text_meta())
+                        .line_height(relative(1.4))
+                        .text_color(theme::warning())
+                        .child(crate::i18n::tf(notice_key, &[("name", name.clone())])),
+                )
+        });
+
+        if !multiple_checkouts {
+            let plain_row = div()
+                .when(cfg!(test), |el| {
+                    el.debug_selector(|| "CHANGES_BRANCH_HEADER".into())
+                })
+                .flex_none()
+                .h(px(36.))
+                .px(px(10.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    svg()
+                        .flex_none()
+                        .size(px(13.))
+                        .path("git-branch.svg")
+                        .text_color(theme::muted()),
+                )
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .truncate()
+                        .text_size(theme::text_ui())
+                        .text_color(theme::text())
+                        .child(branch_name),
+                )
+                .child(div().flex_1())
+                .children(commit_count.map(|count| {
+                    div()
+                        .flex_none()
+                        .text_size(theme::text_meta())
+                        .text_color(theme::faint())
+                        .child(count)
+                }));
+            return div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .border_b_1()
+                .border_color(theme::border())
+                .child(plain_row)
+                .children(removed_notice)
+                .into_any_element();
+        }
+
+        let is_main = state
+            .root
+            .git
+            .as_ref()
+            .is_some_and(|g| g.worktree == WorktreeKind::Main);
+        let kind_icon = if is_main {
+            "house.svg"
+        } else {
+            "folder-git-2.svg"
+        };
+        let kind_selector = if is_main {
+            "CHANGES_CHECKOUT_KIND_MAIN"
+        } else {
+            "CHANGES_CHECKOUT_KIND_LINKED"
+        };
+        let picker_open = self.checkout_picker.is_some();
+        let button_focused = self.checkout_button_focus.is_focused(window);
+        let anchor = self.checkout_picker_anchor.clone();
+        let branch_button = div()
+            .id("changes-checkout-button")
             .when(cfg!(test), |el| {
-                el.debug_selector(|| "CHANGES_BRANCH_HEADER".into())
+                el.debug_selector(|| "CHANGES_CHECKOUT_BUTTON".into())
             })
-            .flex_none()
-            .h(px(36.))
-            .px(px(10.))
+            .track_focus(&self.checkout_button_focus)
+            .tab_index(0)
+            .tab_stop(true)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                let m = event.keystroke.modifiers;
+                if m.platform || m.control || m.alt {
+                    return;
+                }
+                if event.keystroke.key == "enter" || event.keystroke.key == "space" {
+                    cx.stop_propagation();
+                    this.toggle_checkout_picker(window, cx);
+                }
+            }))
+            .relative()
+            .min_w(px(0.))
+            .flex_shrink(1.)
+            .py(px(2.))
+            .pl(px(4.))
+            .pr(px(5.))
             .flex()
             .items_center()
-            .gap(px(6.))
-            .border_b_1()
-            .border_color(theme::border())
+            .gap(px(4.))
+            .rounded(px(5.))
+            .border_1()
+            .border_color(if picker_open || button_focused {
+                theme::accent()
+            } else {
+                gpui::transparent_black()
+            })
+            .when(picker_open, |el| {
+                el.bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
+            })
+            .hover(|el| el.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_checkout_picker(window, cx)))
             .child(
-                svg()
-                    .flex_none()
-                    .size(px(13.))
-                    .path("git-branch.svg")
-                    .text_color(theme::muted()),
+                canvas(move |bounds, _, _| anchor.set(bounds), |_, _, _, _| {})
+                    .absolute()
+                    .inset_0(),
             )
             .child(
                 div()
@@ -354,15 +520,676 @@ impl ChangesView {
                     .text_color(theme::text())
                     .child(branch_name),
             )
+            .child(
+                svg()
+                    .flex_none()
+                    .size(px(11.))
+                    .path("chevron-down.svg")
+                    .text_color(theme::muted()),
+            );
+
+        let return_tip_key = match self.context.surface {
+            PanelSurface::Chat => "changes.back_to_chat_checkout",
+            PanelSurface::Terminal => "changes.back_to_terminal_checkout",
+            PanelSurface::Mission => "changes.back_to_mission_checkout",
+        };
+        let return_focused = self.checkout_return_focus.is_focused(window);
+        let return_button = viewing_other.then(|| {
+            div()
+                .id("changes-checkout-return")
+                .when(cfg!(test), |el| {
+                    el.debug_selector(|| "CHANGES_CHECKOUT_RETURN".into())
+                })
+                .track_focus(&self.checkout_return_focus)
+                .tab_index(0)
+                .tab_stop(true)
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    let m = event.keystroke.modifiers;
+                    if m.platform || m.control || m.alt {
+                        return;
+                    }
+                    if event.keystroke.key == "enter" || event.keystroke.key == "space" {
+                        cx.stop_propagation();
+                        this.set_root(None, cx);
+                        this.checkout_button_focus.focus(window, cx);
+                    }
+                }))
+                .flex_none()
+                .size(px(22.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(if return_focused {
+                    theme::accent()
+                } else {
+                    gpui::transparent_black()
+                })
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|el| el.bg(theme::with_alpha(theme::raised(), 0.7)))
+                .tooltip(move |_, cx| tooltip_view(crate::i18n::t(return_tip_key), cx))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|this, _, _, cx| this.set_root(None, cx)))
+                .child(
+                    svg()
+                        .size(px(13.))
+                        .path("undo-2.svg")
+                        .text_color(theme::muted()),
+                )
+        });
+
+        let row = div()
+            .when(cfg!(test), |el| {
+                el.debug_selector(move || {
+                    if viewing_other {
+                        "CHANGES_BRANCH_HEADER other".into()
+                    } else {
+                        "CHANGES_BRANCH_HEADER".into()
+                    }
+                })
+            })
+            .flex_none()
+            .h(px(36.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(5.))
+            .when(viewing_other, |el| el.bg(theme::sidebar_selected()))
+            .child(
+                div()
+                    .when(cfg!(test), move |el| {
+                        el.debug_selector(move || kind_selector.into())
+                    })
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .child(
+                        svg()
+                            .size(px(13.))
+                            .path(kind_icon)
+                            .text_color(theme::muted()),
+                    ),
+            )
+            .child(branch_button)
             .child(div().flex_1())
             .children(commit_count.map(|count| {
                 div()
+                    .when(cfg!(test), {
+                        let c = count.clone();
+                        move |el| el.debug_selector(move || format!("CHANGES_BRANCH_COUNT {c}"))
+                    })
                     .flex_none()
                     .text_size(theme::text_meta())
                     .text_color(theme::faint())
                     .child(count)
             }))
+            .children(return_button);
+
+        div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .border_b_1()
+            .border_color(theme::border())
+            .child(row)
+            .children(removed_notice)
             .into_any_element()
+    }
+
+    fn render_base_row(
+        &self,
+        state: &RootChanges,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (chip_text, is_custom) =
+            base_chip_label(state.chosen_base.as_deref(), state.commits.as_ref());
+        let picker_open = self.base_picker.is_some();
+        let chip_focused = self.base_chip_focus.is_focused(window);
+        let anchor = self.base_picker_anchor.clone();
+        let chip = div()
+            .id("changes-base-chip")
+            .when(cfg!(test), {
+                let text = chip_text.clone();
+                move |el| el.debug_selector(move || format!("CHANGES_BASE_CHIP {text}"))
+            })
+            .track_focus(&self.base_chip_focus)
+            .tab_index(0)
+            .tab_stop(true)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                let m = event.keystroke.modifiers;
+                if m.platform || m.control || m.alt {
+                    return;
+                }
+                if event.keystroke.key == "enter" || event.keystroke.key == "space" {
+                    cx.stop_propagation();
+                    this.toggle_base_picker(window, cx);
+                }
+            }))
+            .relative()
+            .min_w(px(0.))
+            .flex_shrink(1.)
+            .py(px(2.))
+            .pl(px(8.))
+            .pr(px(6.))
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .rounded(px(5.))
+            .border_1()
+            .border_color(if picker_open || chip_focused {
+                theme::accent()
+            } else {
+                theme::border()
+            })
+            .bg(theme::raised())
+            .hover(|el| el.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
+            .cursor_pointer()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_base_picker(window, cx)))
+            .child(
+                canvas(move |bounds, _, _| anchor.set(bounds), |_, _, _, _| {})
+                    .absolute()
+                    .inset_0(),
+            )
+            .child(
+                div()
+                    .min_w(px(0.))
+                    .truncate()
+                    .text_size(theme::text_meta())
+                    .text_color(if is_custom {
+                        theme::text()
+                    } else {
+                        theme::muted()
+                    })
+                    .child(chip_text),
+            )
+            .child(
+                svg()
+                    .flex_none()
+                    .size(px(11.))
+                    .path("chevron-down.svg")
+                    .text_color(theme::muted()),
+            );
+
+        let missing_notice = state.missing_base_notice.as_ref().map(|missing| {
+            div()
+                .when(cfg!(test), |el| {
+                    el.debug_selector(|| "CHANGES_MISSING_BASE_NOTICE".into())
+                })
+                .px(px(10.))
+                .pb(px(6.))
+                .flex()
+                .items_start()
+                .gap(px(6.))
+                .child(
+                    svg()
+                        .flex_none()
+                        .mt(px(2.))
+                        .size(px(12.))
+                        .path("triangle-alert.svg")
+                        .text_color(theme::warning()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(theme::text_meta())
+                        .line_height(relative(1.4))
+                        .text_color(theme::warning())
+                        .child(crate::i18n::tf(
+                            "changes.base_missing_notice",
+                            &[("base", display_base_ref(missing).to_owned())],
+                        )),
+                )
+        });
+
+        div()
+            .when(cfg!(test), |el| {
+                el.debug_selector(|| "CHANGES_BASE_ROW".into())
+            })
+            .flex_none()
+            .flex()
+            .flex_col()
+            .border_b_1()
+            .border_color(theme::border())
+            .child(
+                div()
+                    .h(px(30.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(theme::text_meta())
+                            .text_color(theme::faint())
+                            .child(crate::i18n::text("changes.base")),
+                    )
+                    .child(div().flex_1())
+                    .child(chip),
+            )
+            .children(missing_notice)
+            .into_any_element()
+    }
+
+    fn render_base_picker(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let picker = self.base_picker.as_ref()?;
+        let visible = filter_base_picker_items(&picker.items, &picker.query);
+        let mut rows = Vec::new();
+        let mut last_section: Option<&BasePickerSection> = None;
+        for (position, index) in visible.iter().copied().enumerate() {
+            let item = &picker.items[index];
+            let changed_section = last_section.is_some() && last_section != Some(&item.section);
+            if changed_section {
+                rows.push(
+                    div()
+                        .my(px(4.))
+                        .h(px(1.))
+                        .bg(theme::border())
+                        .into_any_element(),
+                );
+            }
+            if last_section != Some(&item.section) {
+                let header = match &item.section {
+                    BasePickerSection::Auto => None,
+                    BasePickerSection::Local => {
+                        Some(crate::i18n::text("changes.local_branches").to_owned())
+                    }
+                    BasePickerSection::Remote(remote) => Some(remote.to_uppercase()),
+                };
+                if let Some(header) = header {
+                    rows.push(
+                        div()
+                            .px(px(8.))
+                            .pt(px(4.))
+                            .pb(px(2.))
+                            .text_size(theme::text_caption())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::faint())
+                            .child(header)
+                            .into_any_element(),
+                    );
+                }
+            }
+            last_section = Some(&item.section);
+
+            let highlighted = position == picker.highlighted;
+            if highlighted && picker.reveal.replace(false) {
+                picker.scroll.scroll_to_item(rows.len());
+            }
+            let base_ref = item.base_ref.clone();
+            let check_el = if item.current {
+                svg()
+                    .flex_none()
+                    .size(px(12.))
+                    .path("check.svg")
+                    .text_color(theme::accent())
+                    .into_any_element()
+            } else {
+                div().flex_none().size(px(12.)).into_any_element()
+            };
+            rows.push(
+                div()
+                    .id(("changes-base-picker-item", position))
+                    .when(cfg!(test), {
+                        let label = item.label.clone();
+                        move |el| {
+                            el.debug_selector(move || {
+                                format!("CHANGES_BASE_PICKER_ITEM {position} {label}")
+                            })
+                        }
+                    })
+                    .h(px(28.))
+                    .px(px(8.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .when(highlighted, |el| el.bg(theme::sidebar_selected()))
+                    .hover(|el| el.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.pick_base(base_ref.clone(), window, cx);
+                    }))
+                    .child(check_el)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .truncate()
+                            .text_size(theme::text_ui())
+                            .text_color(theme::text())
+                            .child(item.label.clone()),
+                    )
+                    .when_some(item.hint.as_ref(), |el, hint| {
+                        el.child(
+                            div()
+                                .flex_none()
+                                .text_size(theme::text_meta())
+                                .text_color(theme::faint())
+                                .child(hint.clone()),
+                        )
+                    })
+                    .into_any_element(),
+            );
+        }
+        if rows.is_empty() {
+            rows.push(
+                div()
+                    .px(px(8.))
+                    .py(px(10.))
+                    .text_size(theme::text_meta())
+                    .text_color(theme::faint())
+                    .child(crate::i18n::text("changes.no_matching_branches"))
+                    .into_any_element(),
+            );
+        }
+
+        let content = div()
+            .when(cfg!(test), |el| {
+                el.debug_selector(|| "CHANGES_BASE_PICKER".into())
+            })
+            .flex()
+            .flex_col()
+            .rounded(rems(8. / 16.))
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::raised())
+            .shadow_2xl()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex_none()
+                    .px(px(12.))
+                    .pt(px(8.))
+                    .pb(px(2.))
+                    .text_size(theme::text_meta())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::muted())
+                    .child(crate::i18n::text("changes.compare_against")),
+            )
+            .child(
+                div().flex_none().px(px(8.)).pt(px(4.)).pb(px(6.)).child(
+                    div()
+                        .h(px(28.))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(theme::border())
+                        .bg(theme::panel())
+                        .child(
+                            svg()
+                                .flex_none()
+                                .size(px(12.))
+                                .path("search.svg")
+                                .text_color(theme::faint()),
+                        )
+                        .child(div().flex_1().min_w(px(0.)).child(picker.field.clone())),
+                ),
+            )
+            .child(
+                div()
+                    .id("changes-base-picker-list")
+                    .when(cfg!(test), |el| {
+                        el.debug_selector(|| "CHANGES_BASE_PICKER_LIST".into())
+                    })
+                    .max_h(px(320.))
+                    .overflow_y_scroll()
+                    .track_scroll(&picker.scroll)
+                    .px(px(4.))
+                    .pb(px(6.))
+                    .flex()
+                    .flex_col()
+                    .children(rows),
+            )
+            .into_any_element();
+
+        let root = cx.entity();
+        Some(popup_layer_right_aligned(
+            self.base_picker_anchor.get(),
+            window,
+            px(BASE_PICKER_WIDTH),
+            content,
+            Rc::new(move |window, cx| {
+                root.update(cx, |this, cx| this.close_base_picker(window, cx));
+            }),
+        ))
+    }
+
+    fn render_checkout_picker(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let picker = self.checkout_picker.as_ref()?;
+        let visible = filter_checkout_picker_items(&picker.items, &picker.query);
+        let mut rows = Vec::new();
+        for (position, index) in visible.iter().copied().enumerate() {
+            let item = &picker.items[index];
+            let highlighted = position == picker.highlighted;
+            if highlighted && picker.reveal.replace(false) {
+                picker.scroll.scroll_to_item(rows.len());
+            }
+            let check_el = if item.current {
+                svg()
+                    .flex_none()
+                    .size(px(12.))
+                    .path("check.svg")
+                    .text_color(theme::accent())
+                    .into_any_element()
+            } else {
+                div().flex_none().size(px(12.)).into_any_element()
+            };
+            let kind_icon = match item.kind {
+                WorktreeKind::Main => "house.svg",
+                WorktreeKind::Linked => "folder-git-2.svg",
+            };
+            let pick_path = item.path.clone();
+            let line2 = div()
+                .w_full()
+                .min_w(px(0.))
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .text_size(theme::text_caption())
+                .text_color(theme::faint())
+                .when_some(item.commit.as_ref(), |el, sha| {
+                    el.child(
+                        div()
+                            .flex_none()
+                            .font_family(theme::UI_MONOSPACE_FONT)
+                            .child(sha.clone()),
+                    )
+                    .child(div().flex_none().child("·"))
+                })
+                .when_some(item.uncommitted, |el, count| {
+                    let (text, color) = if count == 0 {
+                        (
+                            crate::i18n::text("changes.clean").to_owned(),
+                            theme::faint(),
+                        )
+                    } else {
+                        (
+                            crate::i18n::tn("changes.uncommitted_count", count),
+                            theme::warning(),
+                        )
+                    };
+                    el.child(div().flex_none().text_color(color).child(text))
+                        .child(div().flex_none().child("·"))
+                })
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .truncate()
+                        .child(item.short_path.clone()),
+                );
+
+            rows.push(
+                div()
+                    .id(("changes-checkout-picker-item", position))
+                    .when(cfg!(test), {
+                        let branch = item.branch_label.clone();
+                        move |el| {
+                            el.debug_selector(move || {
+                                format!("CHANGES_CHECKOUT_PICKER_ITEM {position} {branch}")
+                            })
+                        }
+                    })
+                    .px(px(8.))
+                    .py(px(6.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .when(highlighted, |el| el.bg(theme::sidebar_selected()))
+                    .hover(|el| el.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.pick_checkout(pick_path.clone(), window, cx);
+                    }))
+                    .child(check_el)
+                    .child(
+                        svg()
+                            .flex_none()
+                            .size(px(13.))
+                            .path(kind_icon)
+                            .text_color(theme::muted()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .truncate()
+                                            .text_size(theme::text_ui())
+                                            .text_color(theme::text())
+                                            .child(item.branch_label.clone()),
+                                    )
+                                    .when_some(item.session_label.as_ref(), |row, label| {
+                                        row.child(
+                                            div()
+                                                .flex_none()
+                                                .text_size(theme::text_caption())
+                                                .text_color(if label.is_own {
+                                                    theme::muted()
+                                                } else {
+                                                    theme::faint()
+                                                })
+                                                .child(label.text.clone()),
+                                        )
+                                    }),
+                            )
+                            .child(line2),
+                    )
+                    .into_any_element(),
+            );
+        }
+        if rows.is_empty() {
+            rows.push(
+                div()
+                    .px(px(8.))
+                    .py(px(10.))
+                    .text_size(theme::text_meta())
+                    .text_color(theme::faint())
+                    .child(crate::i18n::text("changes.no_matching_checkouts"))
+                    .into_any_element(),
+            );
+        }
+
+        let content = div()
+            .when(cfg!(test), |el| {
+                el.debug_selector(|| "CHANGES_CHECKOUT_PICKER".into())
+            })
+            .flex()
+            .flex_col()
+            .rounded(rems(8. / 16.))
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::raised())
+            .shadow_2xl()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex_none()
+                    .px(px(12.))
+                    .pt(px(8.))
+                    .pb(px(2.))
+                    .text_size(theme::text_meta())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::muted())
+                    .child(crate::i18n::text("changes.show_changes_in")),
+            )
+            .child(
+                div().flex_none().px(px(8.)).pt(px(4.)).pb(px(6.)).child(
+                    div()
+                        .h(px(28.))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(theme::border())
+                        .bg(theme::panel())
+                        .child(
+                            svg()
+                                .flex_none()
+                                .size(px(12.))
+                                .path("search.svg")
+                                .text_color(theme::faint()),
+                        )
+                        .child(div().flex_1().min_w(px(0.)).child(picker.field.clone())),
+                ),
+            )
+            .child(
+                div()
+                    .id("changes-checkout-picker-list")
+                    .when(cfg!(test), |el| {
+                        el.debug_selector(|| "CHANGES_CHECKOUT_PICKER_LIST".into())
+                    })
+                    .max_h(px(340.))
+                    .overflow_y_scroll()
+                    .track_scroll(&picker.scroll)
+                    .px(px(4.))
+                    .pb(px(6.))
+                    .flex()
+                    .flex_col()
+                    .children(rows),
+            )
+            .into_any_element();
+
+        let root = cx.entity();
+        Some(popup_layer_right_aligned(
+            self.checkout_picker_anchor.get(),
+            window,
+            px(CHECKOUT_PICKER_WIDTH),
+            content,
+            Rc::new(move |window, cx| {
+                root.update(cx, |this, cx| this.close_checkout_picker(window, cx));
+            }),
+        ))
     }
 
     fn render_commits_section(
@@ -911,12 +1738,8 @@ impl ChangesView {
         let Body::Root(state) = &self.body else {
             return div().flex_1().into_any_element();
         };
-        let compare_pill = state
-            .commits
-            .as_ref()
-            .map(|c| comparison_label(&state.selected_target, c));
 
-        let header = self.render_diff_header(state, compare_pill, effective_mode, cx);
+        let header = self.render_diff_header(state, effective_mode, cx);
         let body = match &state.diff_state {
             ActiveDiff::Empty => self.render_empty_target(state),
             ActiveDiff::Loading => self.render_loading(),
@@ -956,7 +1779,6 @@ impl ChangesView {
     fn render_diff_header(
         &self,
         state: &RootChanges,
-        compare_pill: Option<String>,
         effective_mode: DiffViewMode,
         cx: &Context<Self>,
     ) -> AnyElement {
@@ -1002,7 +1824,7 @@ impl ChangesView {
             counts: counts_opt,
             mode_change,
             conflicted,
-            compare_label: compare_pill,
+            compare_label: None,
             mode_switch,
         })
     }

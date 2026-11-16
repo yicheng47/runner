@@ -707,6 +707,7 @@ impl Render for FilesView {
                                 .bg(theme::panel())
                                 .border_l_1()
                                 .border_color(theme::border())
+                                .rounded_br(rems(11. / 16.))
                         })
                         .map(|element| {
                             #[cfg(test)]

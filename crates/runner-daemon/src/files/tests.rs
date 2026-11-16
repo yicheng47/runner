@@ -624,9 +624,11 @@ fn each_request_runs_git_at_most_once() {
         1
     );
     assert_eq!(counted(&|| drop(files.status(plain.path()).unwrap())), 0);
+    // `files.worktrees` lists the repository's worktrees once and reads
+    // uncommitted counts for each live worktree (here 2).
     assert_eq!(
         counted(&|| assert_eq!(files.worktrees(root).unwrap().len(), 2)),
-        1
+        3
     );
     assert_eq!(
         counted(&|| assert!(files.worktrees(plain.path()).unwrap().is_empty())),
@@ -937,11 +939,11 @@ fn an_old_git_lists_worktrees_with_one_retry_then_one_run() {
         (WorktreeKind::Linked, Some("feat/x".to_owned())),
     ];
     assert_eq!(
-        counted(2),
+        counted(4),
         expected,
-        "the first list is refused and retried"
+        "the first list is refused and retried, plus one status per worktree"
     );
-    assert_eq!(counted(1), expected);
+    assert_eq!(counted(3), expected);
     let FilesRootOutcome::Root(root) = super::root::resolve(
         files.git().as_ref(),
         None,
@@ -1256,4 +1258,168 @@ fn a_repeated_status_shares_the_slow_one_and_a_new_watcher_runs_after_it() {
     assert_eq!(repeat.join().unwrap().unwrap(), marked("slow"));
     let first = status_of(&next_event(&mut rx, &root, FILES_STATUS_EVENT));
     assert_ne!(first, marked("slow"), "from a run of its own");
+}
+
+#[test]
+fn files_worktrees_counts_clean_modified_untracked_and_prunable_checkouts() {
+    let fixture = repo();
+    let root = fixture.path();
+    git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            ".worktrees/dirty-wt",
+            "-b",
+            "feat/dirty",
+        ],
+    );
+    git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            ".worktrees/gone-wt",
+            "-b",
+            "feat/gone",
+        ],
+    );
+    let dirty = root.join(".worktrees/dirty-wt");
+    std::fs::write(dirty.join("a.txt"), "modified\n").unwrap();
+    std::fs::write(dirty.join("brand_new.txt"), "untracked\n").unwrap();
+    let gone = root.join(".worktrees/gone-wt");
+    std::fs::remove_dir_all(&gone).unwrap();
+
+    let (files, _rx) = service();
+    let worktrees = files.worktrees(root).unwrap();
+    let by_branch = |branch: &str| {
+        worktrees
+            .iter()
+            .find(|w| w.branch.as_deref() == Some(branch))
+            .unwrap_or_else(|| panic!("missing worktree {branch}"))
+    };
+    let main = by_branch("main");
+    assert_eq!(main.uncommitted, Some(0));
+    assert!(!main.prunable);
+    assert_eq!(
+        main.path,
+        runner_core::app_paths::normalize_checkout_path(root)
+    );
+
+    let dirty_entry = by_branch("feat/dirty");
+    assert_eq!(dirty_entry.uncommitted, Some(2));
+    assert!(!dirty_entry.prunable);
+    assert_eq!(
+        dirty_entry.path,
+        runner_core::app_paths::normalize_checkout_path(&dirty)
+    );
+
+    let gone_entry = by_branch("feat/gone");
+    assert!(gone_entry.prunable);
+    assert_eq!(gone_entry.uncommitted, None);
+    assert_eq!(
+        gone_entry.path,
+        runner_core::app_paths::normalize_checkout_path(&gone)
+    );
+
+    // Resolving a removed saved worktree falls back to own checkout and names the removed branch.
+    let resolved = super::root::resolve(files.git().as_ref(), Some(&gone), Some(root)).unwrap();
+    assert!(resolved.forget_saved);
+    let FilesRootOutcome::Root(resolved_root) = resolved.outcome else {
+        panic!("expected own root");
+    };
+    assert_eq!(resolved_root.removed_checkout.as_deref(), Some("feat/gone"));
+    assert_eq!(
+        resolved_root.own_checkout_top.as_deref(),
+        Some(runner_core::app_paths::normalize_checkout_path(root).as_path())
+    );
+}
+
+#[test]
+fn git_metadata_events_refresh_status_for_local_base_remote_refs_and_worktrees() {
+    let fixture = repo();
+    let root = fixture.path();
+    git(root, &["branch", "feat/umbrella"]);
+    let head_sha = String::from_utf8(
+        std::process::Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+
+    let (files, mut rx) = service();
+    assert_eq!(watch_ready(&files, &mut rx, root).changed, 0);
+
+    // 1. Deleting a local branch emits FILES_STATUS_EVENT even though working-tree status stays clean.
+    git(root, &["branch", "-D", "feat/umbrella"]);
+    assert_eq!(
+        status_of(&next_event(&mut rx, root, FILES_STATUS_EVENT)),
+        GitStatus::default()
+    );
+    events_during(&mut rx, root, Duration::from_millis(300));
+
+    // 2. Creating and deleting a remote-tracking ref emits FILES_STATUS_EVENT when working-tree status stays clean.
+    git(root, &["update-ref", "refs/remotes/origin/main", &head_sha]);
+    assert_eq!(
+        status_of(&next_event(&mut rx, root, FILES_STATUS_EVENT)),
+        GitStatus::default()
+    );
+    events_during(&mut rx, root, Duration::from_millis(300));
+
+    git(root, &["update-ref", "-d", "refs/remotes/origin/main"]);
+    assert_eq!(
+        status_of(&next_event(&mut rx, root, FILES_STATUS_EVENT)),
+        GitStatus::default()
+    );
+    events_during(&mut rx, root, Duration::from_millis(300));
+
+    // 3. Adding and removing a detached linked worktree emits FILES_STATUS_EVENT without touching refs/heads,
+    // while index churn inside that linked worktree emits nothing for `root`.
+    let outside = tempfile::tempdir().unwrap();
+    let linked = outside.path().join("linked-wt");
+    git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            linked.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        status_of(&next_event(&mut rx, root, FILES_STATUS_EVENT)),
+        GitStatus::default()
+    );
+    events_during(&mut rx, root, Duration::from_millis(400));
+
+    let runs_before = files.status_runs(root);
+    std::fs::write(linked.join("a.txt"), "linked edit\n").unwrap();
+    git(&linked, &["add", "a.txt"]);
+    let quiet = events_during(
+        &mut rx,
+        root,
+        super::watch::MAX_WAIT + Duration::from_millis(500),
+    );
+    assert!(quiet.is_empty(), "{quiet:?}");
+    #[cfg(not(windows))]
+    assert_eq!(files.status_runs(root), runs_before);
+    #[cfg(windows)]
+    let _ = runs_before;
+
+    git(
+        root,
+        &["worktree", "remove", "--force", linked.to_str().unwrap()],
+    );
+    assert_eq!(
+        status_of(&next_event(&mut rx, root, FILES_STATUS_EVENT)),
+        GitStatus::default()
+    );
 }

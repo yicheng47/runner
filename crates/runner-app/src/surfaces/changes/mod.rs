@@ -8,6 +8,7 @@ mod render;
 #[cfg(test)]
 mod tests;
 
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -15,15 +16,18 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    App, Context, Entity, EntityId, FocusHandle, KeyDownEvent, PathPromptOptions, ScrollHandle,
-    ScrollStrategy, SharedString, Subscription, Task, UniformListScrollHandle, Window,
+    App, Bounds, Context, Entity, EntityId, FocusHandle, KeyDownEvent, PathPromptOptions, Pixels,
+    ScrollHandle, ScrollStrategy, SharedString, Subscription, Task, UniformListScrollHandle,
+    Window,
 };
 use runner_app::ui::{Scrollbar, TextField};
 use runner_core::protocol::changes::{
-    ChangedFile, ChangesCommits, ChangesDiff, ChangesFiles, ChangesTotals, ChangesViewed, DiffBody,
-    DiffCounts, DiffHunk, ModeChange,
+    ChangedFile, ChangesBranches, ChangesCommits, ChangesDiff, ChangesFiles, ChangesTotals,
+    ChangesViewed, DiffBody, DiffCounts, DiffHunk, ModeChange,
 };
-use runner_core::protocol::files::{FileStatus, FilesRoot, FilesRootOutcome, FilesSubject};
+use runner_core::protocol::files::{
+    FileStatus, FilesRoot, FilesRootOutcome, FilesSubject, WorktreeEntry,
+};
 use runner_core::protocol::{ClientError, DaemonClient};
 
 use crate::app_settings::{
@@ -39,9 +43,11 @@ use crate::theme;
 
 pub(crate) use diff::UnifiedDiffView;
 use model::{
-    build_commit_rows, build_flat_rows, build_tree_rows, choose_initial_target, has_all_changes,
-    is_crlf_only_change, reconcile_file_selection, reconcile_target, CommitRow, FocusPlace,
-    ListRow, SelectedTarget,
+    build_base_picker_items, build_checkout_picker_items, build_commit_rows, build_flat_rows,
+    build_tree_rows, choose_initial_target, default_base_highlight, default_checkout_highlight,
+    filter_base_picker_items, filter_checkout_picker_items, has_all_changes, is_crlf_only_change,
+    is_viewing_other_checkout, live_worktrees, reconcile_file_selection, reconcile_target,
+    BasePickerItem, CheckoutPickerItem, CommitRow, FocusPlace, ListRow, SelectedTarget,
 };
 pub(crate) use render::{
     render_shared_diff_header, render_shared_diff_placeholder, DiffHeaderProps, DiffModeCallback,
@@ -67,6 +73,8 @@ pub(super) enum Body {
 pub(super) struct RootChanges {
     pub(super) root: FilesRoot,
     pub(super) commits: Option<ChangesCommits>,
+    pub(super) chosen_base: Option<String>,
+    pub(super) missing_base_notice: Option<String>,
     pub(super) selected_target: SelectedTarget,
     pub(super) initial_target_chosen: bool,
     pub(super) uncommitted_count: usize,
@@ -78,8 +86,9 @@ pub(super) struct RootChanges {
     pub(super) selected_path: Option<String>,
     pub(super) highlighted_list_row: usize,
     pub(super) diff_state: ActiveDiff,
-    pub(super) in_flight_diff: Option<(u64, SelectedTarget, String)>,
+    pub(super) in_flight_diff: Option<(u64, SelectedTarget, Option<String>, String)>,
     pub(super) snapshot_seq: u64,
+    pub(super) files_seq: u64,
     pub(super) diff_seq: u64,
 }
 
@@ -93,6 +102,7 @@ pub(super) enum ActiveDiff {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct DiffVersion {
     pub(super) target: SelectedTarget,
+    pub(super) base: Option<String>,
     pub(super) path: String,
     pub(super) old_blob_id: Option<String>,
     pub(super) new_blob_id: Option<String>,
@@ -111,8 +121,17 @@ pub(super) struct LoadedDiff {
 }
 
 impl LoadedDiff {
-    pub(super) fn matches_file(&self, target: &SelectedTarget, file: &ChangedFile) -> bool {
+    pub(super) fn matches_file(
+        &self,
+        target: &SelectedTarget,
+        chosen_base: Option<&str>,
+        file: &ChangedFile,
+    ) -> bool {
+        let expected_base = matches!(target, SelectedTarget::Branch)
+            .then_some(chosen_base)
+            .flatten();
         &self.version.target == target
+            && self.version.base.as_deref() == expected_base
             && self.version.path == file.path
             && self.version.old_blob_id == file.old_blob_id
             && self.version.new_blob_id == file.new_blob_id
@@ -301,9 +320,36 @@ pub(crate) fn prepare_diff_body(diff: &ChangesDiff) -> PreparedDiffBody {
 
 struct SnapshotPayload {
     commits: ChangesCommits,
+    wanted_base: Option<String>,
     uncommitted: ChangesFiles,
     branch: Option<ChangesFiles>,
     commit_files: Option<(String, ChangesFiles)>,
+}
+
+pub(super) struct BasePickerState {
+    pub(super) field: Entity<TextField>,
+    pub(super) query: String,
+    pub(super) branches: ChangesBranches,
+    pub(super) items: Vec<BasePickerItem>,
+    pub(super) highlighted: usize,
+    pub(super) moved: bool,
+    pub(super) scroll: ScrollHandle,
+    pub(super) reveal: Cell<bool>,
+    pub(super) return_focus: FocusHandle,
+    _observe: Subscription,
+}
+
+pub(super) struct CheckoutPickerState {
+    pub(super) field: Entity<TextField>,
+    pub(super) query: String,
+    pub(super) worktrees: Vec<WorktreeEntry>,
+    pub(super) items: Vec<CheckoutPickerItem>,
+    pub(super) highlighted: usize,
+    pub(super) moved: bool,
+    pub(super) scroll: ScrollHandle,
+    pub(super) reveal: Cell<bool>,
+    pub(super) return_focus: FocusHandle,
+    _observe: Subscription,
 }
 
 pub(crate) struct ChangesView {
@@ -312,6 +358,9 @@ pub(crate) struct ChangesView {
     pub(super) root_focus: FocusHandle,
     pub(super) list_focus: FocusHandle,
     pub(super) diff_focus: FocusHandle,
+    pub(super) checkout_button_focus: FocusHandle,
+    pub(super) checkout_return_focus: FocusHandle,
+    pub(super) base_chip_focus: FocusHandle,
     pub(super) focus_place: FocusPlace,
     pub(super) _focus_lost: Option<Subscription>,
     pub(super) body: Body,
@@ -324,6 +373,11 @@ pub(crate) struct ChangesView {
     pub(super) error: Option<SharedString>,
     pub(super) recent: Vec<PathBuf>,
     pub(super) choose_field: Entity<TextField>,
+    pub(super) base_picker: Option<BasePickerState>,
+    pub(super) base_picker_anchor: Rc<Cell<Bounds<Pixels>>>,
+    pub(super) checkout_picker: Option<CheckoutPickerState>,
+    pub(super) checkout_picker_anchor: Rc<Cell<Bounds<Pixels>>>,
+    pub(super) removed_checkout_notice: Option<String>,
     pub(super) commits_scroll: ScrollHandle,
     pub(super) files_scroll: UniformListScrollHandle,
     pub(super) files_scrollbar: Entity<Scrollbar>,
@@ -400,8 +454,11 @@ impl ChangesView {
             context,
             client,
             root_focus: cx.focus_handle(),
-            list_focus: cx.focus_handle(),
+            list_focus: cx.focus_handle().tab_stop(true),
             diff_focus: cx.focus_handle(),
+            checkout_button_focus: cx.focus_handle().tab_stop(true),
+            checkout_return_focus: cx.focus_handle().tab_stop(true),
+            base_chip_focus: cx.focus_handle().tab_stop(true),
             focus_place: FocusPlace::Files,
             _focus_lost: None,
             generation: 0,
@@ -413,6 +470,11 @@ impl ChangesView {
             error: None,
             recent: Vec::new(),
             choose_field,
+            base_picker: None,
+            base_picker_anchor: Rc::default(),
+            checkout_picker: None,
+            checkout_picker_anchor: Rc::default(),
+            removed_checkout_notice: None,
             commits_scroll: ScrollHandle::new(),
             files_scroll,
             files_scrollbar,
@@ -566,6 +628,10 @@ impl ChangesView {
             return;
         }
         self.shown = shown;
+        if !shown {
+            self.base_picker = None;
+            self.checkout_picker = None;
+        }
         self.sync_watch(cx);
     }
 
@@ -662,6 +728,9 @@ impl ChangesView {
         if self.context.remote {
             return;
         }
+        self.base_picker = None;
+        self.checkout_picker = None;
+        self.removed_checkout_notice = None;
         self.root_change += 1;
         let change = self.root_change;
         let subject = subject(&self.context);
@@ -709,6 +778,18 @@ impl ChangesView {
         outcome: Result<FilesRootOutcome, ClientError>,
         cx: &mut Context<Self>,
     ) {
+        let old_removed_other: Option<String> = match &self.body {
+            Body::Root(old) if is_viewing_other_checkout(&old.root) && !old.root.path.is_dir() => {
+                Some(
+                    old.commits
+                        .as_ref()
+                        .and_then(|c| c.branch.clone())
+                        .or_else(|| old.root.git.as_ref().and_then(|g| g.branch.clone()))
+                        .unwrap_or_else(|| old.root.name.clone()),
+                )
+            }
+            _ => None,
+        };
         let same = matches!(
             (&outcome, &self.body),
             (Ok(FilesRootOutcome::Root(root)), Body::Root(state))
@@ -716,10 +797,30 @@ impl ChangesView {
         );
         if !same {
             self.generation += 1;
+            self.base_picker = None;
+            self.checkout_picker = None;
         }
         self.error = None;
         match outcome {
             Ok(FilesRootOutcome::Root(root)) => {
+                if is_viewing_other_checkout(&root) {
+                    self.removed_checkout_notice = None;
+                } else if let Some(removed) =
+                    root.removed_checkout.clone().or(old_removed_other.clone())
+                {
+                    self.removed_checkout_notice = Some(removed);
+                    if old_removed_other.is_some() {
+                        let panel_subject = self.context.subject.clone();
+                        let origin = cx.entity_id();
+                        let client = self.client.clone();
+                        files::hub(&client, cx).update(cx, |_, cx| {
+                            cx.emit(FilesEvent::RootChanged {
+                                subject: panel_subject,
+                                origin,
+                            });
+                        });
+                    }
+                }
                 if root.git.is_none() {
                     self.body = Body::NotInGit;
                 } else if let Body::Root(state) = &mut self.body
@@ -733,9 +834,16 @@ impl ChangesView {
                     let base = self.files_scroll.0.borrow().base_handle.clone();
                     self.files_scrollbar = cx.new(|_| Scrollbar::app(base, entity_id));
                     self.commits_scroll = ScrollHandle::new();
+                    let chosen_base = root.git.as_ref().and_then(|git| {
+                        files::settings(cx)?
+                            .changes_base(&git.top, git.branch.as_deref())
+                            .map(str::to_owned)
+                    });
                     self.body = Body::Root(Box::new(RootChanges {
                         root,
                         commits: None,
+                        chosen_base,
+                        missing_base_notice: None,
                         selected_target: SelectedTarget::Uncommitted,
                         initial_target_chosen: false,
                         uncommitted_count: 0,
@@ -749,6 +857,7 @@ impl ChangesView {
                         diff_state: ActiveDiff::Empty,
                         in_flight_diff: None,
                         snapshot_seq: 0,
+                        files_seq: 0,
                         diff_seq: 0,
                     }));
                     self.load_snapshot(cx);
@@ -886,12 +995,20 @@ impl ChangesView {
     fn on_files_event(&mut self, event: &FilesEvent, cx: &mut Context<Self>) {
         match event {
             FilesEvent::Changed(changed) => {
-                if self.shown && self.watched_git_root() == Some(changed.root.as_path()) {
+                if self.shown
+                    && self
+                        .watched_git_root()
+                        .is_some_and(|watched| picker::same_checkout_path(watched, &changed.root))
+                {
                     self.load_snapshot(cx);
                 }
             }
             FilesEvent::Status { root, .. } => {
-                if self.shown && self.watched_git_root() == Some(root.as_path()) {
+                if self.shown
+                    && self
+                        .watched_git_root()
+                        .is_some_and(|watched| picker::same_checkout_path(watched, root))
+                {
                     self.load_snapshot(cx);
                 }
             }
@@ -946,12 +1063,32 @@ impl ChangesView {
     }
 
     fn load_snapshot_inner(&mut self, reload_same_diff: bool, cx: &mut Context<Self>) {
+        let settings_snapshot = files::settings(cx).cloned();
         let Body::Root(state) = &mut self.body else {
             return;
         };
         state.snapshot_seq += 1;
+        state.files_seq += 1;
         let seq = state.snapshot_seq;
+        let files_seq = state.files_seq;
         let root_path = state.root.path.clone();
+        let known_top_and_branch = state
+            .commits
+            .as_ref()
+            .map(|c| (c.checkout_top.clone(), c.branch.clone()))
+            .or_else(|| {
+                state
+                    .root
+                    .git
+                    .as_ref()
+                    .map(|g| (g.top.clone(), g.branch.clone()))
+            });
+        let initial_base = known_top_and_branch.and_then(|(top, branch)| {
+            settings_snapshot
+                .as_ref()?
+                .changes_base(&top, branch.as_deref())
+                .map(str::to_owned)
+        });
         let wanted_commit = match &state.selected_target {
             SelectedTarget::Commit(id) => Some(id.clone()),
             _ => None,
@@ -965,15 +1102,27 @@ impl ChangesView {
         let client = self.client.clone();
         let generation = self.generation;
         let task = cx.background_spawn(async move {
-            let commits = client.changes_commits(&root_path)?;
+            let mut commits = client.changes_commits(&root_path, initial_base.as_deref())?;
+            let wanted_base = settings_snapshot
+                .as_ref()
+                .and_then(|s| s.changes_base(&commits.checkout_top, commits.branch.as_deref()))
+                .map(str::to_owned);
+            if wanted_base != initial_base {
+                commits = client.changes_commits(&root_path, wanted_base.as_deref())?;
+            }
+            let effective_base = (!commits.base_missing)
+                .then_some(wanted_base.as_deref())
+                .flatten();
             let uncommitted = client.changes_files(
                 &root_path,
                 &runner_core::protocol::changes::ChangesTarget::Uncommitted,
+                None,
             )?;
             let branch = if has_all_changes(&commits) {
                 Some(client.changes_files(
                     &root_path,
                     &runner_core::protocol::changes::ChangesTarget::Branch,
+                    effective_base,
                 )?)
             } else {
                 None
@@ -984,6 +1133,7 @@ impl ChangesView {
                         .changes_files(
                             &root_path,
                             &runner_core::protocol::changes::ChangesTarget::Commit(id.clone()),
+                            None,
                         )
                         .ok()
                         .map(|files| (id, files))
@@ -995,6 +1145,7 @@ impl ChangesView {
             };
             Ok(SnapshotPayload {
                 commits,
+                wanted_base,
                 uncommitted,
                 branch,
                 commit_files,
@@ -1008,7 +1159,7 @@ impl ChangesView {
             }
             let _ = this.update(cx, |this, cx| {
                 if this.generation == generation {
-                    this.apply_snapshot(seq, reload_same_diff, result, cx);
+                    this.apply_snapshot(seq, files_seq, reload_same_diff, result, cx);
                 }
             });
         })
@@ -1018,6 +1169,7 @@ impl ChangesView {
     fn apply_snapshot(
         &mut self,
         seq: u64,
+        files_seq: u64,
         reload_same_diff: bool,
         result: Result<SnapshotPayload, ClientError>,
         cx: &mut Context<Self>,
@@ -1045,8 +1197,50 @@ impl ChangesView {
             return;
         };
         self.error = None;
+        let prev_top_and_branch = state
+            .commits
+            .as_ref()
+            .map(|c| (c.checkout_top.clone(), c.branch.clone()))
+            .or_else(|| {
+                state
+                    .root
+                    .git
+                    .as_ref()
+                    .map(|g| (g.top.clone(), g.branch.clone()))
+            });
+        let new_top_and_branch = (
+            payload.commits.checkout_top.clone(),
+            payload.commits.branch.clone(),
+        );
+        let branch_changed = prev_top_and_branch
+            .as_ref()
+            .is_some_and(|(prev_top, prev_branch)| {
+                !picker::same_checkout_path(prev_top, &new_top_and_branch.0)
+                    || prev_branch != &new_top_and_branch.1
+            });
+        let mut forget_missing_base: Option<(PathBuf, Option<String>)> = None;
+        if payload.commits.base_missing {
+            if let Some(missing_ref) = payload.wanted_base.clone() {
+                state.missing_base_notice = Some(missing_ref);
+                state.chosen_base = None;
+                forget_missing_base = Some(new_top_and_branch);
+            } else if branch_changed {
+                state.missing_base_notice = None;
+                state.chosen_base = None;
+            }
+        } else {
+            if branch_changed
+                || payload.wanted_base.is_some()
+                || payload.wanted_base != state.chosen_base
+            {
+                state.missing_base_notice = None;
+            }
+            state.chosen_base = payload.wanted_base;
+        }
         let uncommitted_count = payload.uncommitted.files.len();
         let branch_count = payload.branch.as_ref().map_or(0, |b| b.files.len());
+        let prev_target = state.selected_target.clone();
+        let prev_files_seq = state.files_seq;
         let next_target = if !state.initial_target_chosen {
             state.initial_target_chosen = true;
             choose_initial_target(&payload.commits, uncommitted_count)
@@ -1054,29 +1248,64 @@ impl ChangesView {
             reconcile_target(&state.selected_target, &payload.commits, uncommitted_count)
         };
 
-        let active_files = match &next_target {
-            SelectedTarget::Uncommitted => payload.uncommitted,
-            SelectedTarget::Branch => payload.branch.unwrap_or(ChangesFiles {
+        let active_files_opt = match &next_target {
+            SelectedTarget::Uncommitted => Some(payload.uncommitted),
+            SelectedTarget::Branch => Some(payload.branch.unwrap_or(ChangesFiles {
                 checkout_top: payload.commits.checkout_top.clone(),
                 files: Vec::new(),
                 totals: ChangesTotals::default(),
-            }),
+            })),
             SelectedTarget::Commit(id) => payload
                 .commit_files
                 .filter(|(loaded_id, _)| loaded_id == id)
-                .map(|(_, files)| files)
-                .unwrap_or(ChangesFiles {
-                    checkout_top: payload.commits.checkout_top.clone(),
-                    files: Vec::new(),
-                    totals: ChangesTotals::default(),
-                }),
+                .map(|(_, files)| files),
         };
 
         state.commits = Some(payload.commits);
         state.uncommitted_count = uncommitted_count;
         state.branch_count = branch_count;
-        state.selected_target = next_target;
-        self.apply_files_list(active_files, reload_same_diff, cx);
+        state.selected_target = next_target.clone();
+        if let Some((top, branch)) = forget_missing_base {
+            crate::app_store::global_app_store(cx).update(cx, |store, cx| {
+                store.update_settings(
+                    |settings| settings.set_changes_base(&top, branch.as_deref(), None),
+                    true,
+                    cx,
+                );
+            });
+        }
+        if self.base_picker.is_some() {
+            self.rebuild_base_picker();
+        }
+        if self.checkout_picker.is_some() {
+            self.rebuild_checkout_picker(cx);
+        }
+        if files_seq < prev_files_seq && next_target == prev_target && active_files_opt.is_none() {
+            cx.notify();
+            return;
+        }
+        let active_files = active_files_opt.unwrap_or_else(|| {
+            let Body::Root(state) = &self.body else {
+                unreachable!()
+            };
+            ChangesFiles {
+                checkout_top: state
+                    .commits
+                    .as_ref()
+                    .map(|c| c.checkout_top.clone())
+                    .unwrap_or_default(),
+                files: Vec::new(),
+                totals: ChangesTotals::default(),
+            }
+        });
+        if let Body::Root(state) = &mut self.body {
+            state.files_seq += 1;
+        }
+        self.apply_files_list(
+            active_files,
+            reload_same_diff && files_seq >= prev_files_seq,
+            cx,
+        );
     }
 
     pub(super) fn select_target(&mut self, target: SelectedTarget, cx: &mut Context<Self>) {
@@ -1091,16 +1320,19 @@ impl ChangesView {
         state.highlighted_list_row = 0;
         state.diff_state = ActiveDiff::Empty;
         state.in_flight_diff = None;
-        state.snapshot_seq += 1;
-        let seq = state.snapshot_seq;
+        state.files_seq += 1;
+        let files_seq = state.files_seq;
         let root_path = state.root.path.clone();
+        let chosen_base = matches!(target, SelectedTarget::Branch)
+            .then(|| state.chosen_base.clone())
+            .flatten();
         let proto = target.to_protocol();
         self.request(
             cx,
-            move |client| client.changes_files(&root_path, &proto),
+            move |client| client.changes_files(&root_path, &proto, chosen_base.as_deref()),
             move |this, result, cx| {
                 let is_current = match &this.body {
-                    Body::Root(state) => seq >= state.snapshot_seq,
+                    Body::Root(state) => files_seq >= state.files_seq,
                     _ => false,
                 };
                 if !is_current {
@@ -1195,11 +1427,12 @@ impl ChangesView {
                 state.diff_state = ActiveDiff::Empty;
                 state.in_flight_diff = None;
             }
+            let chosen_base_ref = state.chosen_base.as_deref();
             if let ActiveDiff::Loaded(loaded) = &mut state.diff_state
                 && let Some(file) = state
                     .files
                     .iter()
-                    .find(|f| loaded.matches_file(&state.selected_target, f))
+                    .find(|f| loaded.matches_file(&state.selected_target, chosen_base_ref, f))
             {
                 loaded.set_viewed_state(file.viewed, file.changed_since_viewed, cx);
             }
@@ -1208,12 +1441,19 @@ impl ChangesView {
                     .files
                     .iter()
                     .find(|f| &f.path == path)
-                    .is_some_and(|f| loaded.matches_file(&state.selected_target, f)),
+                    .is_some_and(|f| {
+                        loaded.matches_file(&state.selected_target, chosen_base_ref, f)
+                    }),
                 _ => false,
             };
+            let expected_in_flight_base = matches!(state.selected_target, SelectedTarget::Branch)
+                .then_some(chosen_base_ref)
+                .flatten();
             let already_in_flight = match (&state.selected_path, &state.in_flight_diff) {
-                (Some(path), Some((_, in_flight_target, in_flight_path))) => {
-                    in_flight_target == &state.selected_target && in_flight_path == path
+                (Some(path), Some((_, in_flight_target, in_flight_base, in_flight_path))) => {
+                    in_flight_target == &state.selected_target
+                        && in_flight_base.as_deref() == expected_in_flight_base
+                        && in_flight_path == path
                 }
                 _ => false,
             };
@@ -1261,24 +1501,40 @@ impl ChangesView {
     }
 
     fn load_diff(&mut self, path: String, cx: &mut Context<Self>) {
-        let (seq, root_path, selected_target, target) = {
+        let (seq, root_path, selected_target, requested_base, target) = {
             let Body::Root(state) = &mut self.body else {
                 return;
             };
             state.diff_seq += 1;
             let seq = state.diff_seq;
             let selected_target = state.selected_target.clone();
-            state.in_flight_diff = Some((seq, selected_target.clone(), path.clone()));
+            let requested_base = matches!(selected_target, SelectedTarget::Branch)
+                .then(|| state.chosen_base.clone())
+                .flatten();
+            state.in_flight_diff = Some((
+                seq,
+                selected_target.clone(),
+                requested_base.clone(),
+                path.clone(),
+            ));
             let keep_existing = matches!(
                 &state.diff_state,
                 ActiveDiff::Loaded(loaded)
-                    if loaded.version.target == selected_target && loaded.path == path
+                    if loaded.version.target == selected_target
+                        && loaded.version.base == requested_base
+                        && loaded.path == path
             );
             if !keep_existing {
                 state.diff_state = ActiveDiff::Loading;
             }
             let proto = selected_target.to_protocol();
-            (seq, state.root.path.clone(), selected_target, proto)
+            (
+                seq,
+                state.root.path.clone(),
+                selected_target,
+                requested_base,
+                proto,
+            )
         };
         #[cfg(test)]
         let hold_rx = self.hold_diffs.then(|| {
@@ -1287,10 +1543,11 @@ impl ChangesView {
             rx
         });
         let req_path = path.clone();
+        let req_base = requested_base.clone();
         let client = self.client.clone();
         let generation = self.generation;
         let task = cx.background_spawn(async move {
-            let diff = client.changes_diff(&root_path, &target, &req_path)?;
+            let diff = client.changes_diff(&root_path, &target, &req_path, req_base.as_deref())?;
             let prepared = prepare_diff_body(&diff);
             Ok((diff, prepared))
         });
@@ -1302,7 +1559,7 @@ impl ChangesView {
             }
             let _ = this.update(cx, |this, cx| {
                 if this.generation == generation {
-                    this.apply_diff(seq, selected_target, path, result, cx);
+                    this.apply_diff(seq, selected_target, requested_base, path, result, cx);
                 }
             });
         })
@@ -1313,6 +1570,7 @@ impl ChangesView {
         &mut self,
         seq: u64,
         requested_target: SelectedTarget,
+        requested_base: Option<String>,
         requested_path: String,
         result: Result<(ChangesDiff, PreparedDiffBody), ClientError>,
         cx: &mut Context<Self>,
@@ -1329,8 +1587,12 @@ impl ChangesView {
             {
                 state.in_flight_diff = None;
             }
+            let expected_base = matches!(state.selected_target, SelectedTarget::Branch)
+                .then(|| state.chosen_base.clone())
+                .flatten();
             if seq < state.diff_seq
                 || state.selected_target != requested_target
+                || expected_base != requested_base
                 || state.selected_path.as_deref() != Some(requested_path.as_str())
             {
                 return;
@@ -1345,6 +1607,7 @@ impl ChangesView {
                 };
                 let version = DiffVersion {
                     target: requested_target,
+                    base: requested_base,
                     path: diff.path.clone(),
                     old_blob_id: diff.old_blob_id,
                     new_blob_id: diff.new_blob_id,
@@ -1496,7 +1759,11 @@ impl ChangesView {
                     file.changed_since_viewed = false;
                 }
                 let matches_loaded = match &state.diff_state {
-                    ActiveDiff::Loaded(loaded) => loaded.matches_file(&state.selected_target, file),
+                    ActiveDiff::Loaded(loaded) => loaded.matches_file(
+                        &state.selected_target,
+                        state.chosen_base.as_deref(),
+                        file,
+                    ),
                     _ => false,
                 };
                 (
@@ -1617,12 +1884,15 @@ impl ChangesView {
             && state
                 .commits
                 .as_ref()
-                .is_some_and(|c| c.checkout_top == event.checkout_top)
+                .is_some_and(|c| picker::same_checkout_path(&c.checkout_top, &event.checkout_top))
         {
             matched_checkout = true;
-            let event_abs = absolute(&event.checkout_top, &event.path);
+            let event_top = runner_core::app_paths::normalize_checkout_path(&event.checkout_top);
+            let root_norm = runner_core::app_paths::normalize_checkout_path(&state.root.path);
+            let event_abs = absolute(&event_top, &event.path);
             for file in &mut state.files {
-                if absolute(&state.root.path, &file.path) == event_abs
+                let file_abs = absolute(&root_norm, &file.path);
+                if runner_core::app_paths::same_normalized_checkout_path(&file_abs, &event_abs)
                     && file.old_blob_id == event.old_blob_id
                     && file.new_blob_id == event.new_blob_id
                 {
@@ -1633,7 +1903,10 @@ impl ChangesView {
                 }
             }
             if let ActiveDiff::Loaded(loaded) = &mut state.diff_state
-                && absolute(&state.root.path, &loaded.version.path) == event_abs
+                && runner_core::app_paths::same_normalized_checkout_path(
+                    &absolute(&root_norm, &loaded.version.path),
+                    &event_abs,
+                )
                 && loaded.version.old_blob_id == event.old_blob_id
                 && loaded.version.new_blob_id == event.new_blob_id
             {
@@ -1705,9 +1978,439 @@ impl ChangesView {
         self.rebuild_list_rows(tree_mode, cx);
     }
 
+    // ── Base & Checkout pickers ────────────────────────────────────────
+
+    pub(super) fn toggle_base_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(picker) = self.base_picker.take() {
+            picker.return_focus.focus(window, cx);
+            cx.notify();
+            return;
+        }
+        self.checkout_picker = None;
+        let root_path = match &mut self.body {
+            Body::Root(state) => {
+                state.missing_base_notice = None;
+                state.root.path.clone()
+            }
+            _ => return,
+        };
+        let return_focus = if self.base_chip_focus.is_focused(window) {
+            self.base_chip_focus.clone()
+        } else {
+            self.list_focus.clone()
+        };
+        let root = cx.weak_entity();
+        let field = cx.new(move |field_cx| {
+            let mut field = TextField::new(
+                field_cx.focus_handle(),
+                "",
+                crate::i18n::message("changes.filter_branches"),
+                false,
+            )
+            .text_size(theme::text_ui())
+            .key_interceptor(Rc::new(move |event, window, cx| {
+                root.update(cx, |this, cx| this.on_base_picker_key(event, window, cx))
+                    .unwrap_or(false)
+            }));
+            field.set_bare(true, field_cx);
+            field
+        });
+        let observe = cx.observe(&field, |this, field, cx| {
+            let query = field.read(cx).text().to_owned();
+            if let Some(picker) = &mut this.base_picker
+                && picker.query != query
+            {
+                picker.query = query;
+                picker.moved = false;
+                let visible = filter_base_picker_items(&picker.items, &picker.query);
+                picker.highlighted = default_base_highlight(&picker.items, &visible, &picker.query);
+                picker.scroll.set_offset(gpui::Point::default());
+                cx.notify();
+            }
+        });
+        field.read(cx).focus_handle().focus(window, cx);
+        self.base_picker = Some(BasePickerState {
+            field,
+            query: String::new(),
+            branches: ChangesBranches::default(),
+            items: Vec::new(),
+            highlighted: 0,
+            moved: false,
+            scroll: ScrollHandle::new(),
+            reveal: Cell::new(false),
+            return_focus,
+            _observe: observe,
+        });
+        self.rebuild_base_picker();
+        self.request(
+            cx,
+            move |client| client.changes_branches(&root_path),
+            |this, result, cx| {
+                if let (Some(picker), Ok(branches)) = (&mut this.base_picker, result) {
+                    picker.branches = branches;
+                    this.rebuild_base_picker();
+                    cx.notify();
+                }
+            },
+        );
+        cx.notify();
+    }
+
+    pub(super) fn close_base_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(picker) = self.base_picker.take() {
+            picker.return_focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn rebuild_base_picker(&mut self) {
+        let (chosen_base, auto_base, current_branch) = match &self.body {
+            Body::Root(state) => {
+                let auto = state.commits.as_ref().and_then(|c| c.auto_base.clone());
+                let branch = state
+                    .commits
+                    .as_ref()
+                    .and_then(|c| c.branch.clone())
+                    .or_else(|| state.root.git.as_ref().and_then(|g| g.branch.clone()));
+                (state.chosen_base.clone(), auto, branch)
+            }
+            _ => return,
+        };
+        let Some(picker) = &mut self.base_picker else {
+            return;
+        };
+        picker.items = build_base_picker_items(
+            chosen_base.as_deref(),
+            auto_base.as_deref(),
+            current_branch.as_deref(),
+            &picker.branches,
+            crate::i18n::text("changes.base_auto"),
+            crate::i18n::text("changes.base_none"),
+        );
+        let visible = filter_base_picker_items(&picker.items, &picker.query);
+        picker.highlighted = if picker.moved {
+            picker.highlighted.min(visible.len().saturating_sub(1))
+        } else {
+            default_base_highlight(&picker.items, &visible, &picker.query)
+        };
+    }
+
+    fn on_base_picker_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(picker) = &mut self.base_picker else {
+            return false;
+        };
+        let visible = filter_base_picker_items(&picker.items, &picker.query);
+        match event.keystroke.key.as_str() {
+            "down" => {
+                picker.highlighted = (picker.highlighted + 1).min(visible.len().saturating_sub(1));
+                picker.moved = true;
+                picker.reveal.set(true);
+            }
+            "up" => {
+                picker.highlighted = picker.highlighted.saturating_sub(1);
+                picker.moved = true;
+                picker.reveal.set(true);
+            }
+            "escape" => {
+                self.close_base_picker(window, cx);
+                return true;
+            }
+            "enter" => {
+                if let Some(index) = visible.get(picker.highlighted).copied()
+                    && let Some(item) = picker.items.get(index).cloned()
+                {
+                    self.pick_base(item.base_ref, window, cx);
+                }
+                return true;
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    pub(super) fn pick_base(
+        &mut self,
+        next_base: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let return_focus = self.base_picker.take().map(|p| p.return_focus);
+        let top_and_branch = match &mut self.body {
+            Body::Root(state) => {
+                state.missing_base_notice = None;
+                state.chosen_base = next_base.clone();
+                state
+                    .commits
+                    .as_ref()
+                    .map(|c| (c.checkout_top.clone(), c.branch.clone()))
+                    .or_else(|| {
+                        state
+                            .root
+                            .git
+                            .as_ref()
+                            .map(|g| (g.top.clone(), g.branch.clone()))
+                    })
+            }
+            _ => None,
+        };
+        if let Some((top, branch)) = top_and_branch {
+            crate::app_store::global_app_store(cx).update(cx, |store, cx| {
+                store.update_settings(
+                    |settings| {
+                        settings.set_changes_base(&top, branch.as_deref(), next_base.as_deref())
+                    },
+                    true,
+                    cx,
+                );
+            });
+        }
+        if let Some(focus) = return_focus {
+            focus.focus(window, cx);
+        }
+        self.load_snapshot(cx);
+        cx.notify();
+    }
+
+    pub(super) fn toggle_checkout_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(picker) = self.checkout_picker.take() {
+            picker.return_focus.focus(window, cx);
+            cx.notify();
+            return;
+        }
+        self.base_picker = None;
+        self.removed_checkout_notice = None;
+        let (root_path, initial_worktrees) = match &self.body {
+            Body::Root(state) => {
+                let wts = state
+                    .commits
+                    .as_ref()
+                    .map(|c| c.worktrees.clone())
+                    .filter(|w| !w.is_empty())
+                    .or_else(|| state.root.git.as_ref().map(|g| g.worktrees.clone()))
+                    .unwrap_or_default();
+                (state.root.path.clone(), wts)
+            }
+            _ => return,
+        };
+        let return_focus = if self.checkout_button_focus.is_focused(window) {
+            self.checkout_button_focus.clone()
+        } else {
+            self.list_focus.clone()
+        };
+        let root = cx.weak_entity();
+        let field = cx.new(move |field_cx| {
+            let mut field = TextField::new(
+                field_cx.focus_handle(),
+                "",
+                crate::i18n::message("changes.filter_checkouts"),
+                false,
+            )
+            .text_size(theme::text_ui())
+            .key_interceptor(Rc::new(move |event, window, cx| {
+                root.update(cx, |this, cx| {
+                    this.on_checkout_picker_key(event, window, cx)
+                })
+                .unwrap_or(false)
+            }));
+            field.set_bare(true, field_cx);
+            field
+        });
+        let observe = cx.observe(&field, |this, field, cx| {
+            let query = field.read(cx).text().to_owned();
+            if let Some(picker) = &mut this.checkout_picker
+                && picker.query != query
+            {
+                picker.query = query;
+                picker.moved = false;
+                let visible = filter_checkout_picker_items(&picker.items, &picker.query);
+                picker.highlighted =
+                    default_checkout_highlight(&picker.items, &visible, &picker.query);
+                picker.scroll.set_offset(gpui::Point::default());
+                cx.notify();
+            }
+        });
+        field.read(cx).focus_handle().focus(window, cx);
+        self.checkout_picker = Some(CheckoutPickerState {
+            field,
+            query: String::new(),
+            worktrees: initial_worktrees,
+            items: Vec::new(),
+            highlighted: 0,
+            moved: false,
+            scroll: ScrollHandle::new(),
+            reveal: Cell::new(false),
+            return_focus,
+            _observe: observe,
+        });
+        self.rebuild_checkout_picker(cx);
+        self.request(
+            cx,
+            move |client| client.files_worktrees(&root_path),
+            |this, result, cx| {
+                if let (Some(picker), Ok(worktrees)) = (&mut this.checkout_picker, result) {
+                    picker.worktrees = worktrees;
+                    this.rebuild_checkout_picker(cx);
+                    cx.notify();
+                }
+            },
+        );
+        cx.notify();
+    }
+
+    pub(super) fn close_checkout_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(picker) = self.checkout_picker.take() {
+            picker.return_focus.focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn rebuild_checkout_picker(&mut self, cx: &App) {
+        let (current_top, own_checkout_top) = match &self.body {
+            Body::Root(state) => {
+                let current_top = state
+                    .commits
+                    .as_ref()
+                    .map(|c| c.checkout_top.clone())
+                    .or_else(|| state.root.git.as_ref().map(|g| g.top.clone()))
+                    .unwrap_or_else(|| state.root.path.clone());
+                (current_top, state.root.own_checkout_top.clone())
+            }
+            _ => return,
+        };
+        let home = Self::home(cx);
+        let context = self.context.clone();
+        let Some(picker) = &mut self.checkout_picker else {
+            return;
+        };
+        let session_labels = picker::collect_checkout_session_labels(
+            &context,
+            own_checkout_top.as_deref(),
+            &picker.worktrees,
+            cx,
+        );
+        picker.items = build_checkout_picker_items(
+            &current_top,
+            &picker.worktrees,
+            &session_labels,
+            home.as_deref(),
+            crate::i18n::text("ui.detached"),
+        );
+        let visible = filter_checkout_picker_items(&picker.items, &picker.query);
+        picker.highlighted = if picker.moved {
+            picker.highlighted.min(visible.len().saturating_sub(1))
+        } else {
+            default_checkout_highlight(&picker.items, &visible, &picker.query)
+        };
+    }
+
+    fn on_checkout_picker_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(picker) = &mut self.checkout_picker else {
+            return false;
+        };
+        let visible = filter_checkout_picker_items(&picker.items, &picker.query);
+        match event.keystroke.key.as_str() {
+            "down" => {
+                picker.highlighted = (picker.highlighted + 1).min(visible.len().saturating_sub(1));
+                picker.moved = true;
+                picker.reveal.set(true);
+            }
+            "up" => {
+                picker.highlighted = picker.highlighted.saturating_sub(1);
+                picker.moved = true;
+                picker.reveal.set(true);
+            }
+            "escape" => {
+                self.close_checkout_picker(window, cx);
+                return true;
+            }
+            "enter" => {
+                if let Some(index) = visible.get(picker.highlighted).copied()
+                    && let Some(item) = picker.items.get(index).cloned()
+                {
+                    self.pick_checkout(item.path, window, cx);
+                }
+                return true;
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
+    pub(super) fn pick_checkout(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let return_focus = self.checkout_picker.take().map(|p| p.return_focus);
+        let is_own = matches!(
+            &self.body,
+            Body::Root(state)
+                if state
+                    .root
+                    .own_checkout_top
+                    .as_deref()
+                    .is_some_and(|own| picker::same_checkout_path(own, &path))
+        );
+        self.set_root((!is_own).then_some(path), cx);
+        if let Some(focus) = return_focus {
+            focus.focus(window, cx);
+        } else {
+            self.list_focus.focus(window, cx);
+        }
+    }
+
     // ── Settings, zoom, divider resize & external launch ───────────────
 
     fn settings_changed(&mut self, cx: &mut Context<Self>) {
+        if self.checkout_picker.is_some() {
+            self.rebuild_checkout_picker(cx);
+        }
+        let external_base_change = match &mut self.body {
+            Body::Root(state) => {
+                let top_and_branch = state
+                    .commits
+                    .as_ref()
+                    .map(|c| (&c.checkout_top, c.branch.as_deref()))
+                    .or_else(|| {
+                        state
+                            .root
+                            .git
+                            .as_ref()
+                            .map(|g| (&g.top, g.branch.as_deref()))
+                    });
+                if let Some((top, branch)) = top_and_branch {
+                    let next = files::settings(cx)
+                        .and_then(|s| s.changes_base(top, branch))
+                        .map(str::to_owned);
+                    if next != state.chosen_base {
+                        state.chosen_base = next;
+                        state.missing_base_notice = None;
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        };
+        if external_base_change {
+            self.load_snapshot(cx);
+        }
         let look = Look::current(cx);
         let tree_pref = files::settings(cx).is_some_and(|s| s.changes_tree_view);
         if tree_pref != self.tree_view_pref {
@@ -1864,7 +2567,12 @@ impl ChangesView {
         {
             self.diff_focus.focus(window, cx);
             cx.notify();
-        } else if target == self.root_focus || target == self.diff_focus {
+        } else if target == self.root_focus
+            || target == self.diff_focus
+            || target == self.checkout_button_focus
+            || target == self.checkout_return_focus
+            || target == self.base_chip_focus
+        {
             self.focus_list(window, cx);
         }
     }
@@ -1900,6 +2608,81 @@ impl ChangesView {
         false
     }
 
+    fn has_checkout_trigger(&self) -> bool {
+        let Body::Root(state) = &self.body else {
+            return false;
+        };
+        let viewing_other = is_viewing_other_checkout(&state.root);
+        let worktrees_slice = state
+            .commits
+            .as_ref()
+            .map(|c| c.worktrees.as_slice())
+            .filter(|w| !w.is_empty())
+            .or_else(|| state.root.git.as_ref().map(|g| g.worktrees.as_slice()))
+            .unwrap_or(&[]);
+        live_worktrees(worktrees_slice).len() > 1 || viewing_other
+    }
+
+    fn is_viewing_other(&self) -> bool {
+        matches!(&self.body, Body::Root(state) if is_viewing_other_checkout(&state.root))
+    }
+
+    fn cycle_list_focus(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum ListStop {
+            Files,
+            Commits,
+            Base,
+            Checkout,
+            CheckoutReturn,
+        }
+
+        let mut stops = vec![ListStop::Files, ListStop::Commits, ListStop::Base];
+        if self.has_checkout_trigger() {
+            stops.push(ListStop::Checkout);
+            if self.is_viewing_other() {
+                stops.push(ListStop::CheckoutReturn);
+            }
+        }
+        let current = if self.checkout_return_focus.is_focused(window) {
+            ListStop::CheckoutReturn
+        } else if self.checkout_button_focus.is_focused(window) {
+            ListStop::Checkout
+        } else if self.base_chip_focus.is_focused(window) {
+            ListStop::Base
+        } else if self.focus_place == FocusPlace::Commits {
+            ListStop::Commits
+        } else {
+            ListStop::Files
+        };
+        let pos = stops.iter().position(|&s| s == current).unwrap_or(0);
+        let next_pos = if backwards {
+            pos.checked_sub(1).unwrap_or(stops.len() - 1)
+        } else {
+            (pos + 1) % stops.len()
+        };
+        match stops[next_pos] {
+            ListStop::Files => {
+                self.focus_place = FocusPlace::Files;
+                self.list_focus.focus(window, cx);
+            }
+            ListStop::Commits => {
+                self.focus_place = FocusPlace::Commits;
+                self.list_focus.focus(window, cx);
+            }
+            ListStop::Base => {
+                self.base_chip_focus.focus(window, cx);
+            }
+            ListStop::Checkout => {
+                self.checkout_button_focus.focus(window, cx);
+            }
+            ListStop::CheckoutReturn => {
+                self.checkout_return_focus.focus(window, cx);
+            }
+        }
+        cx.notify();
+    }
+
     pub(super) fn on_list_key(
         &mut self,
         event: &KeyDownEvent,
@@ -1910,12 +2693,15 @@ impl ChangesView {
         if modifiers.platform || modifiers.control || modifiers.alt {
             return;
         }
+        if event.keystroke.key == "tab" {
+            cx.stop_propagation();
+            self.cycle_list_focus(modifiers.shift, window, cx);
+            return;
+        }
+        if !self.list_focus.is_focused(window) {
+            return;
+        }
         match event.keystroke.key.as_str() {
-            "tab" => {
-                cx.stop_propagation();
-                self.focus_place = self.focus_place.toggle_list_section();
-                cx.notify();
-            }
             "down" | "j" => {
                 cx.stop_propagation();
                 self.step_list(1, cx);

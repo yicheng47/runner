@@ -890,9 +890,10 @@ impl FilesView {
                     &root,
                     &runner_core::protocol::changes::ChangesTarget::Uncommitted,
                     &relative,
+                    None,
                 )?;
                 let has_head = client
-                    .changes_commits(&root)
+                    .changes_commits(&root, None)
                     .map(|commits| commits.head_commit.is_some())
                     .unwrap_or(default_has_head);
                 let prepared = crate::surfaces::changes::prepare_diff_body(&diff);

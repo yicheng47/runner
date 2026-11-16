@@ -18,6 +18,7 @@
 //! same buffer as an agent's edits.
 
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -72,6 +73,8 @@ impl RootWatch {
             runs,
             status_runs: status_runs.clone(),
             pending: Pending::default(),
+            watching_worktrees: false,
+            worktree_dirs: BTreeSet::new(),
             #[cfg(target_os = "linux")]
             watched: BTreeSet::new(),
             polling: cfg!(windows),
@@ -101,8 +104,16 @@ struct Pending {
     paths: BTreeSet<String>,
     rescan: bool,
     git: bool,
+    git_meta: bool,
     first: Option<Instant>,
     last: Option<Instant>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GitFileChange {
+    Ignored,
+    StatusOnly,
+    Metadata,
 }
 
 impl Pending {
@@ -129,6 +140,8 @@ struct Watch {
     runs: Arc<StatusRuns>,
     status_runs: Arc<AtomicUsize>,
     pending: Pending,
+    watching_worktrees: bool,
+    worktree_dirs: BTreeSet<OsString>,
     #[cfg(target_os = "linux")]
     watched: BTreeSet<PathBuf>,
     /// Run a status every [`POLL`], reporting it and the root as changed
@@ -151,14 +164,17 @@ impl Watch {
         if let Some(repo) = &self.repo {
             self.git_dir_canonical = repo.git_dir.canonicalize().ok();
             self.common_dir_canonical = repo.common_dir.canonicalize().ok();
-            // What moves a branch without touching `index` or `HEAD`, such as
-            // `git reset --soft`: its ref, which a linked worktree keeps in the
-            // common directory, and a `packed-refs` or reftable there.
+            // What moves a branch, remote ref or worktree set without touching
+            // `index` or `HEAD`, such as `git reset --soft`, `git branch -D`,
+            // `git fetch` or `git worktree add`/`remove`: refs, `packed-refs`,
+            // reftable and `worktrees/` in the common directory.
             let common = &repo.common_dir;
-            let mut watches = vec![
-                (repo.git_dir.clone(), RecursiveMode::NonRecursive),
-                (common.join("refs/heads"), RecursiveMode::Recursive),
-            ];
+            let mut watches = vec![(repo.git_dir.clone(), RecursiveMode::NonRecursive)];
+            if common.join("refs").is_dir() {
+                watches.push((common.join("refs"), RecursiveMode::Recursive));
+            } else if common.join("refs/heads").is_dir() {
+                watches.push((common.join("refs/heads"), RecursiveMode::Recursive));
+            }
             if self.common_dir_canonical != self.git_dir_canonical {
                 watches.push((common.clone(), RecursiveMode::NonRecursive));
             }
@@ -170,6 +186,7 @@ impl Watch {
                     log::warn!("files watcher on {}: {error}", path.display());
                 }
             }
+            self.sync_worktree_watch(&mut watcher);
         }
         // Every watch is in place before the first status is taken, so a
         // change while it runs arrives as an event and refreshes it. Linux
@@ -226,32 +243,87 @@ impl Watch {
         )
     }
 
-    /// Whether `path` is one of the git files a status depends on: the git
-    /// directory's `index` or `HEAD`, or a branch in the common directory.
-    /// `None` when it is in neither directory.
-    fn git_file(&self, path: &Path) -> Option<bool> {
-        let repo = self.repo.as_ref()?;
-        let inside = |dir: &Path, canonical: &Option<PathBuf>| {
-            path.strip_prefix(dir)
-                .ok()
-                .or_else(|| path.strip_prefix(canonical.as_ref()?).ok())
-                .map(Path::to_path_buf)
+    fn read_worktree_dirs(common_dir: &Path) -> BTreeSet<OsString> {
+        std::fs::read_dir(common_dir.join("worktrees"))
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                entry.file_type().ok()?.is_dir().then(|| entry.file_name())
+            })
+            .collect()
+    }
+
+    fn sync_worktree_watch(&mut self, watcher: &mut RecommendedWatcher) -> bool {
+        let Some(repo) = &self.repo else {
+            return false;
         };
-        let own = inside(&repo.git_dir, &self.git_dir_canonical);
-        let common = inside(&repo.common_dir, &self.common_dir_canonical);
+        let wt_dir = repo.common_dir.join("worktrees");
+        if wt_dir.is_dir() && !self.watching_worktrees {
+            if let Err(error) = watcher.watch(&wt_dir, RecursiveMode::NonRecursive) {
+                log::warn!("files watcher on {}: {error}", wt_dir.display());
+            } else {
+                self.watching_worktrees = true;
+            }
+        } else if !wt_dir.is_dir() {
+            self.watching_worktrees = false;
+        }
+        let next = Self::read_worktree_dirs(&repo.common_dir);
+        let changed = next != self.worktree_dirs;
+        self.worktree_dirs = next;
+        changed
+    }
+
+    /// Classifies `path` when it lies inside the checkout's git or common
+    /// directory (`None` when it is in neither): `StatusOnly` for `index`,
+    /// `Metadata` for `HEAD`, local/remote refs, `packed-refs`, reftable,
+    /// `config` or worktree additions/removals, and `Ignored` otherwise.
+    fn git_file(&mut self, watcher: &mut RecommendedWatcher, path: &Path) -> Option<GitFileChange> {
+        let (own, common) = {
+            let repo = self.repo.as_ref()?;
+            let inside = |dir: &Path, canonical: &Option<PathBuf>| {
+                path.strip_prefix(dir)
+                    .ok()
+                    .or_else(|| path.strip_prefix(canonical.as_ref()?).ok())
+                    .map(Path::to_path_buf)
+            };
+            (
+                inside(&repo.git_dir, &self.git_dir_canonical),
+                inside(&repo.common_dir, &self.common_dir_canonical),
+            )
+        };
         if own.is_none() && common.is_none() {
             return None;
         }
-        let state = own.is_some_and(|own| own == Path::new("index") || own == Path::new("HEAD"));
-        let branch = common.is_some_and(|common| {
-            common == Path::new("packed-refs")
+        if own.as_deref() == Some(Path::new("HEAD")) {
+            return Some(GitFileChange::Metadata);
+        }
+        if own.as_deref() == Some(Path::new("index")) {
+            return Some(GitFileChange::StatusOnly);
+        }
+        if let Some(common) = common {
+            let not_lock = common
+                .extension()
+                .is_none_or(|extension| extension != "lock");
+            if common == Path::new("packed-refs")
                 || common == Path::new("reftable/tables.list")
-                || (common.starts_with("refs/heads")
-                    && common
-                        .extension()
-                        .is_none_or(|extension| extension != "lock"))
-        });
-        Some(state || branch)
+                || common == Path::new("config")
+                || ((common.starts_with("refs/heads") || common.starts_with("refs/remotes"))
+                    && not_lock)
+            {
+                return Some(GitFileChange::Metadata);
+            }
+            if common == Path::new("worktrees")
+                || (common.starts_with("worktrees") && common.components().count() <= 2)
+            {
+                if self.sync_worktree_watch(watcher) {
+                    return Some(GitFileChange::Metadata);
+                }
+                return Some(GitFileChange::Ignored);
+            }
+        }
+        Some(GitFileChange::Ignored)
     }
 
     fn ignored(&self, relative: &str) -> bool {
@@ -263,12 +335,20 @@ impl Watch {
         let mut relevant = false;
         let mut dropped = false;
         for path in &event.paths {
-            if let Some(tracked) = self.git_file(path) {
-                if tracked {
-                    self.pending.git = true;
-                    relevant = true;
-                } else {
-                    dropped = true;
+            if let Some(git_change) = self.git_file(watcher, path) {
+                match git_change {
+                    GitFileChange::Metadata => {
+                        self.pending.git = true;
+                        self.pending.git_meta = true;
+                        relevant = true;
+                    }
+                    GitFileChange::StatusOnly => {
+                        self.pending.git = true;
+                        relevant = true;
+                    }
+                    GitFileChange::Ignored => {
+                        dropped = true;
+                    }
                 }
                 continue;
             }
@@ -323,7 +403,16 @@ impl Watch {
             );
         }
         if self.repo.is_some() && (files_changed || pending.git) {
-            self.refresh_status(watcher, false);
+            let status_changed = self.refresh_status(watcher, false);
+            if pending.git_meta && !files_changed && !status_changed && self.root.is_dir() {
+                self.events.emit(
+                    FILES_STATUS_EVENT,
+                    &FilesStatusChanged {
+                        root: self.root.clone(),
+                        status: self.status.clone(),
+                    },
+                );
+            }
         }
     }
 
@@ -355,6 +444,9 @@ impl Watch {
     fn refresh_status(&mut self, watcher: &mut RecommendedWatcher, first: bool) -> bool {
         // An event brought this here, so a run that began before it won't do.
         let Some(status) = self.run_status(StatusSince::Now) else {
+            if !self.root.is_dir() {
+                self.emit_changed(vec![String::new()], Vec::new());
+            }
             return false;
         };
         let changed = status != self.status;
@@ -514,6 +606,8 @@ mod tests {
             runs: Default::default(),
             status_runs: Default::default(),
             pending: Pending::default(),
+            watching_worktrees: false,
+            worktree_dirs: BTreeSet::new(),
             watched: BTreeSet::new(),
             polling: false,
         };
