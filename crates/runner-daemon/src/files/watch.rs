@@ -78,6 +78,7 @@ impl RootWatch {
             #[cfg(target_os = "linux")]
             watched: BTreeSet::new(),
             polling: cfg!(windows),
+            root_missing: false,
         };
         let notify_tx = tx.clone();
         std::thread::Builder::new()
@@ -147,6 +148,7 @@ struct Watch {
     /// Run a status every [`POLL`], reporting it and the root as changed
     /// when it differs.
     polling: bool,
+    root_missing: bool,
 }
 
 impl Watch {
@@ -222,7 +224,10 @@ impl Watch {
             }
             if self.polling && next_poll <= Instant::now() {
                 next_poll = Instant::now() + POLL;
-                if self.repo.is_some() && self.refresh_status(&mut watcher, false) {
+                if self.repo.is_some()
+                    && !self.root_missing
+                    && self.refresh_status(&mut watcher, false)
+                {
                     self.emit_changed(vec![String::new()], Vec::new());
                 }
             }
@@ -260,13 +265,14 @@ impl Watch {
             return false;
         };
         let wt_dir = repo.common_dir.join("worktrees");
-        if wt_dir.is_dir() && !self.watching_worktrees {
+        let wt_dir_live = runner_core::app_paths::is_existing_dir(&wt_dir);
+        if wt_dir_live && !self.watching_worktrees {
             if let Err(error) = watcher.watch(&wt_dir, RecursiveMode::NonRecursive) {
                 log::warn!("files watcher on {}: {error}", wt_dir.display());
             } else {
                 self.watching_worktrees = true;
             }
-        } else if !wt_dir.is_dir() {
+        } else if !wt_dir_live {
             self.watching_worktrees = false;
         }
         let next = Self::read_worktree_dirs(&repo.common_dir);
@@ -380,9 +386,49 @@ impl Watch {
         }
     }
 
+    fn unwatch_missing_root(&mut self, watcher: &mut RecommendedWatcher) {
+        let _ = watcher.unwatch(&self.root);
+        #[cfg(target_os = "linux")]
+        for folder in std::mem::take(&mut self.watched) {
+            let _ = watcher.unwatch(&folder);
+        }
+        if let Some(repo) = &self.repo {
+            let common = &repo.common_dir;
+            for path in [
+                repo.git_dir.clone(),
+                common.clone(),
+                common.join("refs"),
+                common.join("refs/heads"),
+                common.join("reftable"),
+                common.join("worktrees"),
+            ] {
+                let _ = watcher.unwatch(&path);
+            }
+        }
+        self.watching_worktrees = false;
+    }
+
+    fn mark_root_missing(&mut self, watcher: &mut RecommendedWatcher, emit: bool) {
+        let first_notice = !self.root_missing;
+        if first_notice {
+            // Release OS watch handles right away so a deleted directory does
+            // not linger in Windows STATUS_DELETE_PENDING until unsubscribe.
+            self.unwatch_missing_root(watcher);
+            self.root_missing = true;
+        }
+        if first_notice || emit {
+            self.emit_changed(vec![String::new()], Vec::new());
+        }
+    }
+
     fn flush(&mut self, watcher: &mut RecommendedWatcher) {
         let pending = std::mem::take(&mut self.pending);
         let files_changed = pending.rescan || !pending.paths.is_empty();
+        if !runner_core::app_paths::is_existing_dir(&self.root) {
+            self.mark_root_missing(watcher, files_changed);
+            return;
+        }
+        self.root_missing = false;
         if pending.rescan {
             self.emit_changed(vec![String::new()], Vec::new());
         } else if !pending.paths.is_empty() {
@@ -393,7 +439,7 @@ impl Watch {
                         .map_or("", |(parent, _)| parent)
                         .to_owned(),
                 );
-                if self.root.join(path).is_dir() {
+                if runner_core::app_paths::is_existing_dir(&self.root.join(path)) {
                     folders.insert(path.clone());
                 }
             }
@@ -404,7 +450,11 @@ impl Watch {
         }
         if self.repo.is_some() && (files_changed || pending.git) {
             let status_changed = self.refresh_status(watcher, false);
-            if pending.git_meta && !files_changed && !status_changed && self.root.is_dir() {
+            if pending.git_meta
+                && !files_changed
+                && !status_changed
+                && runner_core::app_paths::is_existing_dir(&self.root)
+            {
                 self.events.emit(
                     FILES_STATUS_EVENT,
                     &FilesStatusChanged {
@@ -440,12 +490,11 @@ impl Watch {
 
     /// Runs `git status` and reports it when it changed, or always on the
     /// first run. Returns whether it changed.
-    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
     fn refresh_status(&mut self, watcher: &mut RecommendedWatcher, first: bool) -> bool {
         // An event brought this here, so a run that began before it won't do.
         let Some(status) = self.run_status(StatusSince::Now) else {
-            if !self.root.is_dir() {
-                self.emit_changed(vec![String::new()], Vec::new());
+            if !runner_core::app_paths::is_existing_dir(&self.root) {
+                self.mark_root_missing(watcher, false);
             }
             return false;
         };
@@ -610,6 +659,7 @@ mod tests {
             worktree_dirs: BTreeSet::new(),
             watched: BTreeSet::new(),
             polling: false,
+            root_missing: false,
         };
         let mut watcher = notify::recommended_watcher(|_| {}).unwrap();
         let created = |path: &Path| {

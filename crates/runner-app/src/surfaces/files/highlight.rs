@@ -426,7 +426,7 @@ pub(crate) struct Span {
 
 /// A file's spans, kept per line: each line's spans are sorted, do not
 /// overlap and hold byte offsets into that line.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Eq, PartialEq)]
 pub(crate) struct Highlights {
     spans: Vec<Span>,
     /// Where each line's spans end in `spans`.

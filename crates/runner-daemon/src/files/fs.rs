@@ -18,7 +18,7 @@ pub fn check_root(root: &Path) -> Result<()> {
             root.display()
         )));
     }
-    if !root.is_dir() {
+    if !runner_core::app_paths::is_existing_dir(root) {
         return Err(Error::msg(format!(
             "{} is not an existing folder",
             root.display()

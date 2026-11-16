@@ -222,6 +222,174 @@ fn clean_lexical_path(path: &Path) -> PathBuf {
     }
 }
 
+/// Checks whether `path` currently resolves to an openable directory.
+///
+/// On Windows, `std::fs::metadata` (`Path::is_dir`) falls back to directory
+/// enumeration on `ERROR_ACCESS_DENIED` and still reports `true` while a removed
+/// directory remains `STATUS_DELETE_PENDING` behind an open handle. Checking
+/// an open handle and distinguishing `STATUS_DELETE_PENDING` keeps deleted dirs
+/// as `Ok(false)` while preserving real permission/access failures as `Err`.
+pub fn check_existing_dir(path: &Path) -> std::io::Result<bool> {
+    #[cfg(not(windows))]
+    {
+        match std::fs::metadata(path) {
+            Ok(metadata) => Ok(metadata.is_dir()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_DELETE_PENDING};
+        use windows_sys::Win32::Storage::FileSystem::{
+            FileStandardInfo, GetFileInformationByHandleEx, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
+        };
+
+        let file = match std::fs::OpenOptions::new()
+            .access_mode(0)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+        {
+            Ok(file) => file,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(false);
+            }
+            Err(error) if error.raw_os_error() == Some(ERROR_DELETE_PENDING as i32) => {
+                return Ok(false);
+            }
+            // NT maps STATUS_DELETE_PENDING to Win32 ERROR_ACCESS_DENIED; only
+            // treat that error as missing when NTSTATUS proves DeletePending.
+            Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+                if is_windows_delete_pending(path) {
+                    return Ok(false);
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        let mut info = FILE_STANDARD_INFO::default();
+        // `file` is an open handle from `OpenOptions::open` above, and `info`
+        // points to valid stack storage sized for `FILE_STANDARD_INFO`.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileStandardInfo,
+                (&mut info as *mut FILE_STANDARD_INFO).cast(),
+                std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+            )
+        };
+        if ok == 0 {
+            return file.metadata().map(|metadata| metadata.is_dir());
+        }
+        Ok(info.Directory && !info.DeletePending)
+    }
+}
+
+#[cfg(windows)]
+fn windows_probe_wide(path: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let wide: Vec<u16> = abs
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    if wide.len() <= 248 {
+        return wide;
+    }
+    if let Some(raw) = abs.to_str()
+        && !raw.starts_with(r"\\")
+        && raw.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        && raw.get(1..3) == Some(r":\")
+    {
+        return std::ffi::OsStr::new(&format!(r"\\?\{raw}"))
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+    }
+    wide
+}
+
+#[cfg(windows)]
+fn is_windows_delete_pending(path: &Path) -> bool {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::{
+        GetLastError, ERROR_ACCESS_DENIED, ERROR_DELETE_PENDING, INVALID_HANDLE_VALUE, NTSTATUS,
+        STATUS_DELETE_PENDING,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FileStandardInfo, GetFileInformationByHandleEx, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, OPEN_EXISTING,
+    };
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn RtlGetLastNtStatus() -> NTSTATUS;
+    }
+
+    let wide = windows_probe_wide(path);
+    // `wide` is NUL-terminated for the lifetime of the call and `null()` security
+    // attributes / template handle are documented defaults for `CreateFileW`.
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        // Read `RtlGetLastNtStatus` and `GetLastError` immediately before any
+        // allocation or cleanup can alter TEB status slots.
+        let nt_status = unsafe { RtlGetLastNtStatus() };
+        let win_err = unsafe { GetLastError() };
+        return (win_err == ERROR_ACCESS_DENIED && nt_status == STATUS_DELETE_PENDING)
+            || win_err == ERROR_DELETE_PENDING;
+    }
+    // `handle` is valid and non-`INVALID_HANDLE_VALUE`.
+    let owned = unsafe { OwnedHandle::from_raw_handle(handle) };
+    let mut info = FILE_STANDARD_INFO::default();
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            owned.as_raw_handle(),
+            FileStandardInfo,
+            (&mut info as *mut FILE_STANDARD_INFO).cast(),
+            std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+        )
+    };
+    ok != 0 && info.DeletePending
+}
+
+/// Returns `true` if `path` exists as a live, openable directory.
+pub fn is_existing_dir(path: &Path) -> bool {
+    match check_existing_dir(path) {
+        Ok(exists) => exists,
+        // Keep ACL-protected folders out of the missing-directory branch while
+        // still rejecting Windows `STATUS_DELETE_PENDING` via `Ok(false)` above.
+        Err(_) => cfg!(windows) && path.is_dir(),
+    }
+}
+
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub(crate) fn normalize_windows_lexical(raw: &str) -> String {
     let stripped;
@@ -435,6 +603,146 @@ mod tests {
             &normalize_checkout_path(&gone_wt),
             &normalize_checkout_path(&wt_parent),
         ));
+    }
+
+    #[test]
+    fn existing_dir_rejects_files_and_missing_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        assert!(is_existing_dir(&folder));
+        assert!(check_existing_dir(&folder).unwrap());
+
+        let file = temp.path().join("file.txt");
+        std::fs::write(&file, "hi").unwrap();
+        assert!(!is_existing_dir(&file));
+        assert!(!check_existing_dir(&file).unwrap());
+        assert!(!is_existing_dir(&file.join("below")));
+        assert!(!check_existing_dir(&file.join("below")).unwrap());
+
+        let missing = temp.path().join("missing");
+        assert!(!is_existing_dir(&missing));
+        assert!(!check_existing_dir(&missing).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn existing_dir_rejects_legacy_delete_pending_directory_while_handle_is_open() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FileDispositionInfo, SetFileInformationByHandle, DELETE, FILE_DISPOSITION_INFO,
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("watched");
+        std::fs::create_dir(&target).unwrap();
+
+        let held = std::fs::OpenOptions::new()
+            .access_mode(0)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&target)
+            .unwrap();
+
+        // Windows Server 2025 / 24H2 `RemoveDirectoryW` uses POSIX unlink semantics,
+        // so set legacy `FileDispositionInfo` directly to keep `target` visible in
+        // parent enumeration (`target.is_dir() == true`) while `held` stays open.
+        let deleter = std::fs::OpenOptions::new()
+            .access_mode(DELETE)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&target)
+            .unwrap();
+        let info = FILE_DISPOSITION_INFO { DeleteFile: true };
+        // `deleter` is an open handle from `OpenOptions::open` above, and `info`
+        // points to valid stack storage sized for `FILE_DISPOSITION_INFO`.
+        let ok = unsafe {
+            SetFileInformationByHandle(
+                deleter.as_raw_handle(),
+                FileDispositionInfo,
+                (&info as *const FILE_DISPOSITION_INFO).cast(),
+                std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+            )
+        };
+        assert_ne!(
+            ok,
+            0,
+            "SetFileInformationByHandle failed: {}",
+            std::io::Error::last_os_error()
+        );
+        drop(deleter);
+
+        assert!(
+            target.is_dir(),
+            "FileDispositionInfo unexpectedly hid delete-pending dir while handle was open"
+        );
+        assert!(!is_existing_dir(&target));
+        assert!(matches!(check_existing_dir(&target), Ok(false)));
+
+        drop(held);
+        assert!(!target.is_dir());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn existing_dir_rejects_remove_dir_all_while_handle_is_open() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("watched-tree");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("file.txt"), "data").unwrap();
+
+        let held = std::fs::OpenOptions::new()
+            .access_mode(0)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&target)
+            .unwrap();
+
+        // `remove_dir_all` attempts POSIX delete first on Windows 10+/Server
+        // NTFS, so `target.is_dir()` may already be false or remain true on
+        // non-POSIX filesystems; either way `is_existing_dir` reports missing.
+        std::fs::remove_dir_all(&target).unwrap();
+        assert!(!is_existing_dir(&target));
+        assert!(matches!(check_existing_dir(&target), Ok(false)));
+
+        drop(held);
+        assert!(!is_existing_dir(&target));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn existing_dir_preserves_permission_denied_as_error() {
+        struct RestoreAcl(PathBuf);
+        impl Drop for RestoreAcl {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new("icacls")
+                    .arg(&self.0)
+                    .args(["/remove:d", "*S-1-1-0"])
+                    .status();
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let locked = temp.path().join("locked");
+        let saved = locked.join("saved");
+        std::fs::create_dir_all(&saved).unwrap();
+        let _guard = RestoreAcl(locked.clone());
+        let status = std::process::Command::new("icacls")
+            .arg(&locked)
+            .args(["/deny", "*S-1-1-0:(OI)(CI)(RX)"])
+            .status()
+            .unwrap();
+        assert!(status.success(), "icacls deny failed: {status}");
+
+        let err = check_existing_dir(&saved).expect_err("permission denied must stay Err");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{err}");
     }
 
     #[cfg(target_os = "linux")]

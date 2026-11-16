@@ -275,7 +275,7 @@ impl Git {
 
     /// Counts uncommitted files in `dir` via `git status --porcelain=v2 -z`.
     pub fn worktree_uncommitted_count(&self, dir: &Path) -> Option<usize> {
-        if !dir.is_dir() {
+        if !runner_core::app_paths::is_existing_dir(dir) {
             return None;
         }
         let stdout = self
@@ -300,7 +300,9 @@ impl Git {
         let targets: Vec<(usize, PathBuf)> = entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| !entry.prunable && entry.path.is_dir())
+            .filter(|(_, entry)| {
+                !entry.prunable && runner_core::app_paths::is_existing_dir(&entry.path)
+            })
             .map(|(idx, entry)| (idx, entry.path.clone()))
             .collect();
         if targets.is_empty() {
