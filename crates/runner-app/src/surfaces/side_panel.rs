@@ -260,6 +260,7 @@ pub(crate) struct SavedPanel {
     pub(crate) surfaces: OpenSurfaces,
     pub(crate) open: Option<bool>,
     pub(crate) maximized: bool,
+    pub(crate) widened_tree: Option<bool>,
 }
 
 /// The surfaces `surface` offers to open: those Settings turns on, a
@@ -353,6 +354,7 @@ pub(crate) type SurfaceHandler = Rc<dyn Fn(SurfaceAction, &mut Window, &mut App)
 /// keyboard highlights there and in the empty list, and their focus.
 pub(crate) struct PanelSurfaces {
     pub(crate) open: OpenSurfaces,
+    widened_tree: Cell<Option<bool>>,
     menu_open: bool,
     menu_highlighted: usize,
     list_highlighted: usize,
@@ -366,6 +368,7 @@ impl PanelSurfaces {
     pub(crate) fn new(open: OpenSurfaces, cx: &mut App) -> Self {
         Self {
             open,
+            widened_tree: Cell::new(None),
             menu_open: false,
             menu_highlighted: 0,
             list_highlighted: 0,
@@ -376,12 +379,27 @@ impl PanelSurfaces {
         }
     }
 
-    /// Starts over on `open`, with the menu closed.
+    /// Starts over on `open`, with the menu closed and widened state cleared.
     pub(crate) fn reset(&mut self, open: OpenSurfaces) {
         self.open = open;
+        self.widened_tree.set(None);
         self.menu_open = false;
         self.return_focus = None;
         self.list_highlighted = 0;
+    }
+
+    /// Restores a saved panel's surfaces and retained widened state.
+    pub(crate) fn restore(&mut self, open: OpenSurfaces, widened_tree: Option<bool>) {
+        self.reset(open);
+        self.widened_tree.set(widened_tree);
+    }
+
+    pub(crate) fn widened_tree(&self) -> Option<bool> {
+        self.widened_tree.get()
+    }
+
+    pub(crate) fn set_widened_tree(&self, tree: Option<bool>) {
+        self.widened_tree.set(tree);
     }
 
     pub(crate) fn list_focus(&self) -> &FocusHandle {
