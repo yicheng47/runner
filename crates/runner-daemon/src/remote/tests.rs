@@ -391,6 +391,7 @@ async fn status_wall_clock_advances_independently_of_tokio_time() {
     let wall = Arc::new(std::sync::Mutex::new(initial));
     let clock = Clock {
         wall: Some(wall.clone()),
+        ..Clock::default()
     };
     let instant = tokio::time::Instant::now();
     *wall.lock().unwrap() += chrono::Duration::hours(12);
@@ -612,6 +613,20 @@ async fn offline_refusal_and_dead_connection_leave_daemon_requests_serving() {
     let h = spawn_with_store(root.path().into(), store, core.events.clone());
     h.start(Some(service.origin.clone()), false).await.unwrap();
     until(&h, |s| matches!(s.state, RemoteState::Connected { .. })).await;
+    let (dead_host, _silent_peer) = tokio::io::duplex(1024);
+    let dead_host = tokio_tungstenite::WebSocketStream::from_raw_socket(
+        Box::new(dead_host) as Box<dyn transport::Connection>,
+        Role::Client,
+        None,
+    )
+    .await;
+    h.request(Command::TestSocket(transport::TestSocket(Box::new(
+        dead_host,
+    ))))
+    .await
+    .unwrap();
+    h.status_command(Command::TestDeadline).await.unwrap();
+    assert!(matches!(h.status().state, RemoteState::Connected { .. }));
     h.status_command(Command::TestDeadline).await.unwrap();
     assert!(matches!(h.status().state, RemoteState::Reconnecting { .. }));
     assert!(client.app_version().is_ok());
@@ -1120,6 +1135,7 @@ async fn unreachable_start_returns_off_through_client_transport_and_can_start_ag
         core.events.clone(),
         Clock {
             wall: Some(wall.clone()),
+            ..Clock::default()
         },
     );
     let server = SocketHarness::new(root.path(), core.clone()).await;
@@ -1849,4 +1865,594 @@ async fn a_slow_host_batch_can_exceed_ten_seconds_when_each_write_makes_progress
         .unwrap();
     assert!(writes.load(Ordering::Relaxed) > 1);
     assert!(started.elapsed() > Duration::from_secs(10));
+}
+
+async fn advance_awake(
+    wall: &Arc<std::sync::Mutex<chrono::DateTime<Utc>>>,
+    mut remaining: Duration,
+) {
+    tokio::task::yield_now().await;
+    while !remaining.is_zero() {
+        let step = remaining.min(Duration::from_millis(500));
+        *wall.lock().unwrap() += chrono::Duration::from_std(step).unwrap();
+        tokio::time::advance(step).await;
+        tokio::task::yield_now().await;
+        remaining -= step;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_socket_pings_refreshes_on_pong_avoids_spam_and_disconnects_within_fifteen_seconds() {
+    let initial = Utc::now();
+    let wall = Arc::new(std::sync::Mutex::new(initial));
+    let root = tempfile::tempdir().unwrap();
+    let handle = spawn_with_clock(
+        root.path().into(),
+        Arc::new(store::MemoryStore::default()),
+        crate::events::EventChannel::new(),
+        Clock {
+            wall: Some(wall.clone()),
+            ..Clock::default()
+        },
+    );
+    let (host, peer) = tokio::io::duplex(64 * 1024);
+    let host = tokio_tungstenite::WebSocketStream::from_raw_socket(
+        Box::new(host) as Box<dyn transport::Connection>,
+        Role::Client,
+        None,
+    )
+    .await;
+    let mut peer =
+        tokio_tungstenite::WebSocketStream::from_raw_socket(peer, Role::Server, None).await;
+    handle
+        .request(Command::TestSocket(transport::TestSocket(Box::new(host))))
+        .await
+        .unwrap();
+    assert!(matches!(
+        handle.status().state,
+        RemoteState::Connected { .. }
+    ));
+
+    for inbound in [
+        Message::Binary(vec![0, 0, 0, 1, 6].into()),
+        Message::Text(r#"{"type":"channelClosed","channel":1}"#.into()),
+        Message::Ping(vec![7].into()),
+    ] {
+        advance_awake(&wall, Duration::from_secs(6)).await;
+        peer.send(inbound).await.unwrap();
+        tokio::task::yield_now().await;
+    }
+    assert!(matches!(
+        peer.next().await.unwrap().unwrap(),
+        Message::Pong(bytes) if bytes.as_ref() == [7]
+    ));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), peer.next())
+            .await
+            .is_err(),
+        "active inbound traffic must not emit outbound idle pings"
+    );
+
+    advance_awake(&wall, Duration::from_secs(9)).await;
+    assert!(tokio::time::timeout(Duration::from_millis(10), peer.next())
+        .await
+        .is_err());
+    advance_awake(&wall, Duration::from_secs(1)).await;
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_millis(50), peer.next())
+            .await
+            .expect("host must send idle WebSocket Ping at 10s")
+            .unwrap()
+            .unwrap(),
+        Message::Ping(_)
+    ));
+
+    advance_awake(&wall, Duration::from_secs(2)).await;
+    peer.send(Message::Pong(vec![42].into())).await.unwrap();
+    tokio::task::yield_now().await;
+    advance_awake(&wall, Duration::from_secs(6)).await;
+    assert!(
+        matches!(handle.status().state, RemoteState::Connected { .. }),
+        "inbound Message::Pong on stream.next() must refresh liveness past the 5s pong deadline"
+    );
+
+    advance_awake(&wall, Duration::from_secs(4)).await;
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_millis(50), peer.next())
+            .await
+            .expect("next idle Ping must arrive 10s after Pong")
+            .unwrap()
+            .unwrap(),
+        Message::Ping(_)
+    ));
+
+    advance_awake(&wall, Duration::from_secs(4)).await;
+    assert!(matches!(
+        handle.status().state,
+        RemoteState::Connected { .. }
+    ));
+    advance_awake(&wall, Duration::from_secs(1)).await;
+    assert!(
+        matches!(handle.status().state, RemoteState::Reconnecting { .. }),
+        "unanswered idle Ping must disconnect within 15s (10s idle + 5s pong timeout)"
+    );
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn wake_and_network_signals_debounce_probe_connected_and_wake_reconnecting() {
+    let service = Service::new(vec![]).await;
+    let initial = Utc::now();
+    let wall = Arc::new(std::sync::Mutex::new(initial));
+    let root = tempfile::tempdir().unwrap();
+    let handle = spawn_with_clock(
+        root.path().into(),
+        Arc::new(store::MemoryStore::default()),
+        crate::events::EventChannel::new(),
+        Clock {
+            wall: Some(wall.clone()),
+            ..Clock::default()
+        },
+    );
+    handle
+        .start(Some(service.origin.clone()), false)
+        .await
+        .unwrap();
+    until(&handle, |s| {
+        matches!(s.state, RemoteState::Connected { .. })
+    })
+    .await;
+    tokio::time::pause();
+
+    let (host, peer) = tokio::io::duplex(64 * 1024);
+    let host = tokio_tungstenite::WebSocketStream::from_raw_socket(
+        Box::new(host) as Box<dyn transport::Connection>,
+        Role::Client,
+        None,
+    )
+    .await;
+    let mut peer =
+        tokio_tungstenite::WebSocketStream::from_raw_socket(peer, Role::Server, None).await;
+    let since = match handle
+        .status_command(Command::TestSocket(transport::TestSocket(Box::new(host))))
+        .await
+        .unwrap()
+        .state
+    {
+        RemoteState::Connected { since } => since,
+        other => panic!("expected Connected, got {other:?}"),
+    };
+
+    for _ in 0..4 {
+        handle.signal.fire();
+        advance_awake(&wall, Duration::from_millis(50)).await;
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), peer.next())
+            .await
+            .is_err(),
+        "rapid signal burst must be debounced before probing"
+    );
+    advance_awake(&wall, Duration::from_millis(310)).await;
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_millis(50), peer.next())
+            .await
+            .expect("debounced signal must emit one probe Ping")
+            .unwrap()
+            .unwrap(),
+        Message::Ping(_)
+    ));
+    assert!(tokio::time::timeout(Duration::from_millis(10), peer.next())
+        .await
+        .is_err());
+
+    advance_awake(&wall, Duration::from_secs(1)).await;
+    peer.send(Message::Pong(Vec::new().into())).await.unwrap();
+    tokio::task::yield_now().await;
+    advance_awake(&wall, Duration::from_secs(4)).await;
+    assert_eq!(
+        handle.status().state,
+        RemoteState::Connected { since },
+        "timely Pong after wake/network probe must preserve connection without double-reconnect"
+    );
+
+    handle.signal.fire();
+    advance_awake(&wall, Duration::from_millis(310)).await;
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_millis(50), peer.next())
+            .await
+            .expect("second signal must emit probe Ping")
+            .unwrap()
+            .unwrap(),
+        Message::Ping(_)
+    ));
+    service.refusal.store(503, Ordering::SeqCst);
+    advance_awake(&wall, Duration::from_secs(2)).await;
+    assert!(matches!(
+        handle.status().state,
+        RemoteState::Connected { .. }
+    ));
+    advance_awake(&wall, Duration::from_millis(1010)).await;
+    for _ in 0..20 {
+        if !matches!(handle.status().state, RemoteState::Connected { .. }) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !matches!(handle.status().state, RemoteState::Connected { .. }),
+        "unanswered wake/network probe must drop within 3s, got {:?}",
+        handle.status().state
+    );
+    tokio::time::resume();
+    until(&handle, |s| {
+        matches!(s.state, RemoteState::Reconnecting { .. })
+    })
+    .await;
+    tokio::time::pause();
+
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let (broken_io, _broken_peer) = tokio::io::duplex(1024);
+    let (closed, _rx) = oneshot::channel();
+    let broken = tokio_tungstenite::WebSocketStream::from_raw_socket(
+        Box::new(HeartbeatWriter {
+            read: broken_io,
+            entered: entered.clone(),
+            fail: true,
+            _closed: closed,
+        }) as Box<dyn transport::Connection>,
+        Role::Client,
+        None,
+    )
+    .await;
+    handle
+        .request(Command::TestSocket(transport::TestSocket(Box::new(broken))))
+        .await
+        .unwrap();
+    handle.signal.fire();
+    advance_awake(&wall, Duration::from_millis(310)).await;
+    entered.notified().await;
+    for _ in 0..20 {
+        if !matches!(handle.status().state, RemoteState::Connected { .. }) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(!matches!(
+        handle.status().state,
+        RemoteState::Connected { .. }
+    ));
+    tokio::time::resume();
+    until(&handle, |s| {
+        matches!(s.state, RemoteState::Reconnecting { .. })
+    })
+    .await;
+
+    for _ in 0..5 {
+        let status = handle.status_command(Command::TestDeadline).await.unwrap();
+        assert!(matches!(status.state, RemoteState::Reconnecting { .. }));
+    }
+    let attempt = match handle.status().state {
+        RemoteState::Reconnecting { attempt, .. } => attempt,
+        other => panic!("expected Reconnecting, got {other:?}"),
+    };
+    assert!(attempt >= 5);
+
+    service.refusal.store(0, Ordering::SeqCst);
+    let before_conns = service.connections.load(Ordering::SeqCst);
+    handle.signal.fire();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if matches!(handle.status().state, RemoteState::Connected { .. }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("network-change signal must immediately wake Reconnecting without waiting for backoff");
+    assert!(service.connections.load(Ordering::SeqCst) > before_conns);
+
+    service.refusal.store(503, Ordering::SeqCst);
+    let (silent_io, _silent_peer) = tokio::io::duplex(1024);
+    let silent = tokio_tungstenite::WebSocketStream::from_raw_socket(
+        Box::new(silent_io) as Box<dyn transport::Connection>,
+        Role::Client,
+        None,
+    )
+    .await;
+    handle
+        .request(Command::TestSocket(transport::TestSocket(Box::new(silent))))
+        .await
+        .unwrap();
+    handle.status_command(Command::TestDeadline).await.unwrap();
+    handle.status_command(Command::TestDeadline).await.unwrap();
+    assert!(matches!(
+        handle.status().state,
+        RemoteState::Reconnecting { .. }
+    ));
+
+    service.refusal.store(0, Ordering::SeqCst);
+    let before_conns = service.connections.load(Ordering::SeqCst);
+    tokio::time::pause();
+    *wall.lock().unwrap() += chrono::Duration::seconds(120);
+    tokio::time::advance(liveness::CLOCK_CHECK_INTERVAL).await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if matches!(handle.status().state, RemoteState::Connected { .. }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("clock-jump suspend detection must immediately wake Reconnecting");
+    assert!(service.connections.load(Ordering::SeqCst) > before_conns);
+
+    tokio::time::timeout(Duration::from_secs(2), handle.shutdown())
+        .await
+        .expect("watcher and remote task must shut down promptly without hanging");
+}
+
+#[tokio::test]
+async fn suspend_gap_across_channel_and_writer_wakeups_probes_within_three_seconds_without_native_watch(
+) {
+    use runner_core::companion::channel::{self, BrowserConnect, NoiseKeys, Records};
+
+    struct GatedWriter {
+        io: tokio::io::DuplexStream,
+        hold: Arc<std::sync::atomic::AtomicBool>,
+        waker: Arc<std::sync::Mutex<Option<std::task::Waker>>>,
+    }
+    impl tokio::io::AsyncRead for GatedWriter {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.io).poll_read(cx, buf)
+        }
+    }
+    impl tokio::io::AsyncWrite for GatedWriter {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            if self.hold.load(Ordering::Acquire) {
+                *self.waker.lock().unwrap() = Some(cx.waker().clone());
+                return std::task::Poll::Pending;
+            }
+            std::pin::Pin::new(&mut self.io).poll_write(cx, buf)
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            if self.hold.load(Ordering::Acquire) {
+                *self.waker.lock().unwrap() = Some(cx.waker().clone());
+                return std::task::Poll::Pending;
+            }
+            std::pin::Pin::new(&mut self.io).poll_flush(cx)
+        }
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::pin::Pin::new(&mut self.io).poll_shutdown(cx)
+        }
+    }
+
+    for check_writer_wakeup in [false, true] {
+        let initial = Utc::now();
+        let wall = Arc::new(std::sync::Mutex::new(initial));
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(store::MemoryStore::default());
+        let identity = store::Identity::generate().unwrap();
+        let host_key = identity.host_key().unwrap();
+        identity.save(store.as_ref()).unwrap();
+        let fake = Arc::new(crate::companion::tests::Fake::default());
+        let handle = spawn_with_clock(
+            root.path().into(),
+            store,
+            crate::events::EventChannel::new(),
+            Clock {
+                wall: Some(wall.clone()),
+                disable_native_watch: true,
+            },
+        );
+        handle.set_companion_core(fake.clone());
+        handle
+            .set_pin(remote::Secret("012345".into()))
+            .await
+            .unwrap();
+        let device = remote::HostKey::generate().unwrap();
+        handle
+            .record_paired(device.public.to_vec(), "test".into())
+            .await
+            .unwrap();
+
+        let hold = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let waker = Arc::new(std::sync::Mutex::new(None));
+        let (host, peer) = tokio::io::duplex(2 * 1024 * 1024);
+        let host = tokio_tungstenite::WebSocketStream::from_raw_socket(
+            Box::new(GatedWriter {
+                io: host,
+                hold: hold.clone(),
+                waker: waker.clone(),
+            }) as Box<dyn transport::Connection>,
+            Role::Client,
+            Some(
+                tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+                    .write_buffer_size(0),
+            ),
+        )
+        .await;
+        let mut peer =
+            tokio_tungstenite::WebSocketStream::from_raw_socket(peer, Role::Server, None).await;
+        handle
+            .request(Command::TestSocket(transport::TestSocket(Box::new(host))))
+            .await
+            .unwrap();
+
+        peer.send(Message::Text(
+            r#"{"type":"channelOpen","channel":1}"#.into(),
+        ))
+        .await
+        .unwrap();
+        let (connect, first) = BrowserConnect::start(
+            NoiseKeys {
+                private: &device.private,
+                fixed_ephemeral: None,
+            },
+            &host_key.public,
+        )
+        .unwrap();
+        peer.send(Message::Binary(channel::wrap(1, &first).into()))
+            .await
+            .unwrap();
+        let Message::Binary(accept) = peer.next().await.unwrap().unwrap() else {
+            panic!("accept required");
+        };
+        let (_, accept) = channel::unwrap(&accept).unwrap();
+        let mut browser = Records::new(connect.accept(accept).unwrap());
+        browser
+            .queue(br#"{"type":"hello","versions":[1],"client":"test","build":"test"}"#.to_vec())
+            .unwrap();
+        peer.send(Message::Binary(
+            channel::wrap(1, &browser.next_frame().unwrap().unwrap()).into(),
+        ))
+        .await
+        .unwrap();
+        loop {
+            let Message::Binary(bytes) = peer.next().await.unwrap().unwrap() else {
+                panic!("welcome required");
+            };
+            let (_, frame) = channel::unwrap(&bytes).unwrap();
+            if let Some(bytes) = browser.receive(frame).unwrap() {
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["type"],
+                    "welcome"
+                );
+                browser.handled();
+                break;
+            }
+        }
+        browser
+            .queue(
+                br#"{"type":"attach","id":3,"session":"test","cols":80,"rows":24,"control":"take"}"#
+                    .to_vec(),
+            )
+            .unwrap();
+        peer.send(Message::Binary(
+            channel::wrap(1, &browser.next_frame().unwrap().unwrap()).into(),
+        ))
+        .await
+        .unwrap();
+        loop {
+            let Message::Binary(bytes) = peer.next().await.unwrap().unwrap() else {
+                panic!("attachment required");
+            };
+            let (_, frame) = channel::unwrap(&bytes).unwrap();
+            if let Some(bytes) = browser.receive(frame).unwrap() {
+                let msg: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                browser.handled();
+                if msg["type"] == "resized" {
+                    break;
+                }
+            }
+        }
+
+        if check_writer_wakeup {
+            hold.store(true, Ordering::Release);
+            let backlog = WRITER_CAPACITY - CONTROL_HEADROOM + 4;
+            for idx in 0..backlog {
+                fake.events.emit(
+                    "session/clipboard",
+                    &serde_json::json!({"session_id": "test", "target": format!("t-{idx}"), "text": format!("msg-{idx}")}),
+                );
+            }
+            for _ in 0..200 {
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                waker.lock().unwrap().is_some(),
+                "writer must be blocked on gated sink"
+            );
+            tokio::time::pause();
+            tokio::task::yield_now().await;
+
+            *wall.lock().unwrap() += chrono::Duration::seconds(6);
+            hold.store(false, Ordering::Release);
+            if let Some(w) = waker.lock().unwrap().take() {
+                w.wake();
+            }
+            for _ in 0..200 {
+                tokio::task::yield_now().await;
+            }
+            for _ in 0..backlog {
+                assert!(matches!(
+                    tokio::time::timeout(Duration::from_millis(50), peer.next())
+                        .await
+                        .expect("queued backlog must flush after writer unblocks")
+                        .unwrap()
+                        .unwrap(),
+                    Message::Binary(_)
+                ));
+            }
+        } else {
+            tokio::time::pause();
+            tokio::task::yield_now().await;
+
+            *wall.lock().unwrap() += chrono::Duration::seconds(6);
+            fake.events.emit(
+                "session/clipboard",
+                &serde_json::json!({"session_id": "test", "target": "c", "text": "wake"}),
+            );
+            for _ in 0..20 {
+                tokio::task::yield_now().await;
+            }
+            assert!(matches!(
+                tokio::time::timeout(Duration::from_millis(50), peer.next())
+                    .await
+                    .expect("ready channel event must still be sent")
+                    .unwrap()
+                    .unwrap(),
+                Message::Binary(_)
+            ));
+        }
+
+        advance_awake(&wall, Duration::from_millis(310)).await;
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_millis(50), peer.next())
+                .await
+                .expect("suspend gap across wakeup must emit debounced probe Ping")
+                .unwrap()
+                .unwrap(),
+            Message::Ping(_)
+        ));
+
+        advance_awake(&wall, Duration::from_secs(2)).await;
+        assert!(matches!(
+            handle.status().state,
+            RemoteState::Connected { .. }
+        ));
+        advance_awake(&wall, Duration::from_millis(1010)).await;
+        for _ in 0..20 {
+            if !matches!(handle.status().state, RemoteState::Connected { .. }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            matches!(handle.status().state, RemoteState::Reconnecting { .. }),
+            "unanswered fallback wake probe must disconnect within 3s (writer={check_writer_wakeup}), got {:?}",
+            handle.status().state
+        );
+        tokio::time::resume();
+        handle.shutdown().await;
+    }
 }

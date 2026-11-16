@@ -42,10 +42,11 @@ Numbers match the issue. "Client" is the client's `runnerd`, "host" the host's.
 | 18 | Private keys, the PIN-derived key and credentials are not zeroized on drop | `runner-core/src/remote/mod.rs`, `HostKey`, `Secret`; `handshake.rs`, `HostPair` | 1 |
 | 19 | One OS thread per attached terminal per channel | `companion/mod.rs`, `Stream::new` | Left as is |
 | 20 | `NoiseKeys::fixed_ephemeral`, a test-vector hook, is a field of the production type | `handshake.rs` | Left as is |
+| 21 | Host `/relay/host` waits passively for 75 s without outbound idle pings or wake/network-change probing, stalling incoming handshakes on silently dropped NAT routes | `remote/machine.rs`, `remote/mod.rs`, `remote/liveness.rs` | Pre-3 (no wire change) |
 
 ## Scope
 
-Four phases, each its own pull request, each useful without the next. Phase 2 includes sender-local delivery pacing (finding 13), moved here from phase 4 after live flood measurements. Phase 4 contains only quiet input and raw terminal bytes. Phases 1 and 2 change no wire format. Phases 3 and 4 add negotiated, additive wire changes; the companion protocol version stays 1.
+Four phases, each its own pull request, each useful without the next, plus Addendum item 21 landed ahead of Phase 3 because it changes no wire or companion protocol format. Phase 2 includes sender-local delivery pacing (finding 13), moved here from phase 4 after live flood measurements. Phase 4 contains only quiet input and raw terminal bytes. Phases 1, 2 and item 21 change no wire format. Phases 3 and 4 add negotiated, additive wire changes; the companion protocol version stays 1.
 
 Out of scope: a direct or Tailscale route (#954), QUIC, predictive local echo, compression (message lengths are visible to the relay, so compressing secrets beside attacker-influenced text leaks through size), any change to pairing or the Noise patterns' key agreement, any screen, and the relay's internals, which belong to the service's repository.
 
@@ -158,6 +159,12 @@ The client's route keeps one pending `viewport` per terminal and sends the newes
 ### Pace by delivery, not only by bytes (13)
 
 The frame list also records when each frame was sent. While more than 128 KiB of frame cost is unacknowledged and the oldest such frame is at least 500 ms old, the host sends no new terminal output on that channel; pongs, results and pushes still go. Incoming credit removes acknowledged frames, so a paused stream resumes without losing or reordering output. An already-started message completes in record order, and snapshot chunks finish with their matching `resized` before any overflow resync replaces the stream. In-flight data then follows delivery rather than always filling the 512 KiB byte-credit window. This is host-local and changes no wire format or negotiation.
+
+## Host relay socket liveness (21)
+
+Host `runnerd` only, no wire or companion protocol change, landed ahead of Phase 3's negotiated wire changes (`earlyHello` and `resume`).
+
+Every valid inbound WebSocket frame (`Text`, `Binary`, `Ping`, `Pong`) refreshes `/relay/host` liveness. After 10 seconds of silence while `Connected`, the host sends an outbound RFC 6455 `Ping` through `Relay`'s writer (preserving `CONTROL_HEADROOM`) and enforces a 5-second pong deadline (15 seconds max silent bound, aligned with `ROUTE_TIMEOUT = 15s` and ahead of the relay's 25-second ping and 60-second idle drop). Cross-platform wall-versus-monotonic suspend detection and debounced native listeners (`SCDynamicStore` and `IORegisterForSystemPower` on macOS, `NotifyIpInterfaceChange`/`NotifyUnicastIpAddressChange`/`NotifyRouteChange2` and power resume callbacks on Windows, nonblocking `NETLINK_ROUTE` on Linux) probe `Connected` sockets immediately with a `Ping` and a 3-second deadline, and wake `Reconnecting` hosts out of stale backoff at once.
 
 ## Phase 3: faster connect and resume
 
