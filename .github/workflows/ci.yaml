@@ -70,7 +70,7 @@ jobs:
         run: cargo clippy --locked -p runner-app --features updater --all-targets --profile ci -- -D warnings
 
       - name: Test
-        run: cargo nextest run --locked --workspace --no-fail-fast --cargo-profile ci --timings
+        run: cargo nextest run --locked --workspace --no-fail-fast --profile ci --cargo-profile ci --timings
 
       - name: Check generated CLI reference
         run: |
@@ -132,7 +132,7 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings
 
       - name: Test
-        run: cargo nextest run --locked --workspace --no-fail-fast --cargo-profile ci --timings
+        run: cargo nextest run --locked --workspace --no-fail-fast --profile ci --cargo-profile ci --timings
 
       - name: Verify Runner manifest and icon
         shell: pwsh
@@ -251,7 +251,7 @@ jobs:
           # Later CLI and lockfile checks run as root against this checkout.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           runuser -u runner-ci -- env CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" \
-            cargo nextest run --locked --workspace --no-fail-fast --cargo-profile ci --timings
+            cargo nextest run --locked --workspace --no-fail-fast --profile ci --cargo-profile ci --timings
       - name: Check generated CLI reference
         run: |
           python3 script/generate-cli-reference.py --runner target/ci/runner-agent-cli --check
