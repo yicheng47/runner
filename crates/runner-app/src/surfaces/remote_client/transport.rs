@@ -42,21 +42,48 @@ impl RemoteTransport {
         title: String,
         connected: Arc<AtomicBool>,
     ) -> (DaemonClient, AttachmentLifetime) {
+        let (daemon, lifetime, _) = Self::client_with_handle(client, config, title, connected);
+        (daemon, lifetime)
+    }
+
+    pub(crate) fn client_with_handle(
+        client: DaemonClient,
+        config: RemoteTerminal,
+        title: String,
+        connected: Arc<AtomicBool>,
+    ) -> (DaemonClient, AttachmentLifetime, Arc<Self>) {
         let take_control = config.take_control;
         let attachment = Arc::new(Mutex::new(AttachmentState::default()));
         let lifetime = AttachmentLifetime(attachment.clone());
-        (
-            DaemonClient::new(Arc::new(Self {
-                attachment,
-                client,
-                config: Mutex::new(config),
-                title,
-                first_attach: AtomicBool::new(take_control),
-                connected,
-            })),
-            lifetime,
-        )
+        let transport = Arc::new(Self {
+            attachment,
+            client,
+            config: Mutex::new(config),
+            title,
+            first_attach: AtomicBool::new(take_control),
+            connected,
+        });
+        (DaemonClient::new(transport.clone()), lifetime, transport)
     }
+
+    pub(crate) fn claim_if_free(&self, cols: u16, rows: u16) -> Result<(), ClientError> {
+        let config = self.config.lock().unwrap().clone();
+        let cols = cols.max(20);
+        let rows = rows.max(8);
+        let result = if self.connected.load(Ordering::Acquire) {
+            self.client
+                .remote_claim_control(config.computer, config.session, cols, rows)
+        } else {
+            Err(ClientError::msg("remote terminal is disconnected"))
+        };
+        if result.is_ok() {
+            let mut config = self.config.lock().unwrap();
+            config.cols = cols;
+            config.rows = rows;
+        }
+        result
+    }
+
     fn check(&self, address: &str) -> Result<RemoteTerminal, ClientError> {
         let config = self.config.lock().unwrap().clone();
         if address != config.address() {

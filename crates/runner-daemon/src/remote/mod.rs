@@ -135,6 +135,17 @@ impl RemoteHandle {
             .viewport(computer, session, cols, rows, take)
             .await
     }
+    pub async fn remote_claim_control(
+        &self,
+        computer: String,
+        session: String,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), String> {
+        self.client()?
+            .claim_control(computer, session, cols, rows)
+            .await
+    }
     pub fn set_companion_core(&self, core: Arc<dyn crate::companion::core::Core>) {
         let _ = self.companion.set(core);
     }

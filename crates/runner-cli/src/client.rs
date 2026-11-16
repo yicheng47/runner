@@ -575,6 +575,7 @@ mod remote_tests {
             "remote_overview",
             "remote_follow",
             "remote_take_control",
+            "remote_claim_control",
             "remote_status",
             "remote_enroll_start",
             "remote_enroll_confirm",

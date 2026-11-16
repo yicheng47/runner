@@ -1873,3 +1873,164 @@ async fn remote_mission_link_and_unlink_apply_host_rules_and_update_the_overview
     assert!(stored.archived_at.is_none());
     assert_eq!(stored.linked_chat, None);
 }
+
+#[tokio::test]
+async fn claim_control_uses_if_free_and_never_steals_when_host_or_other_browser_wins_the_race() {
+    let host = Host::new().await;
+    let session = host.start().await;
+    host.wait_live(&session).await;
+    let mut attachment = host
+        .fixture
+        .client
+        .attach(RemoteTerminal {
+            computer: "2".into(),
+            session: session.clone(),
+            cols: 80,
+            rows: 24,
+            take_control: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(attachment.snapshot.controller, TerminalController::Desktop);
+
+    for winner in ["desktop", "browser", "free"] {
+        host.core
+            .sessions
+            .browser_resize(
+                &session,
+                77,
+                "Transient",
+                90,
+                25,
+                true,
+                false,
+                &host.core.db,
+            )
+            .unwrap();
+        host.core.sessions.release_browser(&session, 77);
+        loop {
+            let (next, frame) = receive_terminal(attachment).await;
+            attachment = next;
+            if matches!(
+                frame,
+                TerminalFrame::Resized {
+                    controller: TerminalController::None,
+                    ..
+                }
+            ) {
+                break;
+            }
+        }
+
+        let writer = host.fixture.relay.writer.clone();
+        writer.blocked.store(true, Ordering::Release);
+        let client = host.fixture.client.clone();
+        let target = session.clone();
+        let claiming =
+            tokio::spawn(async move { client.claim_control("2".into(), target, 132, 43).await });
+        writer.entered.notified().await;
+
+        match winner {
+            "desktop" => {
+                host.core
+                    .sessions
+                    .take_back_terminal(&session, 100, 30, &host.core.db)
+                    .unwrap();
+            }
+            "browser" => {
+                host.core
+                    .sessions
+                    .browser_resize(
+                        &session,
+                        99,
+                        "Other laptop",
+                        104,
+                        32,
+                        true,
+                        false,
+                        &host.core.db,
+                    )
+                    .unwrap();
+            }
+            "free" => {}
+            _ => unreachable!(),
+        }
+
+        writer.blocked.store(false, Ordering::Release);
+        writer.waker.wake();
+        claiming.await.unwrap().unwrap();
+
+        loop {
+            let (next, frame) = receive_terminal(attachment).await;
+            attachment = next;
+            if matches!(frame, TerminalFrame::Resync) {
+                break;
+            }
+        }
+        let refreshed = host
+            .fixture
+            .client
+            .attach(RemoteTerminal {
+                computer: "2".into(),
+                session: session.clone(),
+                cols: 132,
+                rows: 43,
+                take_control: false,
+            })
+            .await
+            .unwrap();
+        drop(attachment);
+        attachment = refreshed;
+
+        let host_size = host.core.sessions.terminal_model(&session).unwrap().size();
+        let host_controller = host.core.sessions.browser_controller(&session, 1);
+        match winner {
+            "desktop" => {
+                assert_eq!(host_size, (100, 30));
+                assert_eq!(host_controller, c::Controller::Desktop);
+                assert_eq!(
+                    (attachment.snapshot.cols, attachment.snapshot.rows),
+                    (100, 30)
+                );
+                assert_eq!(
+                    attachment.snapshot.controller,
+                    TerminalController::Browser {
+                        channel: 0,
+                        name: "Host desktop".into(),
+                    }
+                );
+            }
+            "browser" => {
+                assert_eq!(host_size, (104, 32));
+                assert_eq!(
+                    host_controller,
+                    c::Controller::Browser {
+                        name: "Other laptop".into(),
+                    }
+                );
+                assert_eq!(
+                    (attachment.snapshot.cols, attachment.snapshot.rows),
+                    (104, 32)
+                );
+                assert_eq!(
+                    attachment.snapshot.controller,
+                    TerminalController::Browser {
+                        channel: 0,
+                        name: "Other laptop".into(),
+                    }
+                );
+            }
+            "free" => {
+                assert_eq!(host_size, (132, 43));
+                assert_eq!(host_controller, c::Controller::You);
+                assert_eq!(
+                    (attachment.snapshot.cols, attachment.snapshot.rows),
+                    (132, 43)
+                );
+                assert_eq!(attachment.snapshot.controller, TerminalController::Desktop);
+            }
+            _ => unreachable!(),
+        }
+    }
+    crate::ops::session::session_stop(&host.core, &session).unwrap();
+}

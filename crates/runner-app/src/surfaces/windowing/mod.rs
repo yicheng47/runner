@@ -11,7 +11,7 @@ use runner_core::protocol::window::Subject;
 impl NativeRoot {
     pub(crate) fn current_subjects(&self) -> Vec<Subject> {
         if self.remote_client.is_active() {
-            return Vec::new();
+            return self.remote_client.current_subjects();
         }
         match &self.route {
             AppRoute::Mission(mission_id) => vec![Subject::Mission(mission_id.clone())],
@@ -29,9 +29,12 @@ impl NativeRoot {
         if self.closing {
             return;
         }
+        let subjects = self.current_subjects();
+        self.remote_client
+            .record_reported_subjects(subjects.clone());
         if let Err(error) = self.core(cx).report_subjects(
             &self.window_label,
-            self.current_subjects(),
+            subjects,
             self.tabs
                 .active()
                 .filter(|_| self.route == AppRoute::Chat && self.remote_client.is_local())
@@ -54,9 +57,7 @@ impl NativeRoot {
                 self.error = Some(error.to_string().into());
             }
             crate::notifications::refresh_permission(cx);
-            if self.remote_client.is_active() {
-                self.mark_remote_sessions_viewed_if_unobstructed(cx);
-            } else if self.route == AppRoute::Chat {
+            if self.remote_client.is_local() && self.route == AppRoute::Chat {
                 self.mark_active_tab_viewed(window, cx);
             }
         } else {
@@ -64,6 +65,9 @@ impl NativeRoot {
         }
         crate::notifications::view_changed(cx);
         self.sync_subject_ownership(window, cx);
+        if window.is_window_active() && self.remote_client.is_active() {
+            self.mark_remote_sessions_viewed_if_unobstructed(cx);
+        }
         if self.remote_client.is_local() && matches!(self.route, AppRoute::Mission(_)) {
             self.mission_workspace.update(cx, |workspace, cx| {
                 workspace.mark_active_session_viewed(window, cx);
@@ -130,14 +134,32 @@ impl NativeRoot {
         if self.closing {
             return;
         }
-        if self.remote_client.is_active() {
-            return;
-        }
         self.sync_chat_subject_ownership(window, cx);
-        self.sync_mission_subject_ownership(window, cx);
+        if self.remote_client.is_local() {
+            self.sync_mission_subject_ownership(window, cx);
+        }
     }
 
     fn sync_chat_subject_ownership(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_client.is_active() {
+            self.refresh_chat_secondaries(cx);
+            self.release_demoted_remote_terminal_focus(window, cx);
+            self.remote_client.attach_remote_panes(cx);
+            if let Some(focused_id) = self
+                .remote_client
+                .active_tab_layout()
+                .and_then(PaneLayout::focused_session_id)
+                .map(str::to_owned)
+            {
+                self.restore_remote_terminal_focus_if_eligible(&focused_id, window, cx);
+            }
+            self.remote_client.reconcile_auto_take(cx);
+            if self.window_active && self.remote_unobstructed() {
+                self.remote_client.mark_remote_sessions_viewed_on_sync(cx);
+            }
+            cx.notify();
+            return;
+        }
         if self.route == AppRoute::Chat {
             if let Err(error) = self.ensure_owned_active_tab_attached(window, cx) {
                 self.chat_error = Some(error.to_string().into());
@@ -149,21 +171,99 @@ impl NativeRoot {
         cx.notify();
     }
 
-    pub(crate) fn refresh_chat_secondaries(&mut self, cx: &App) {
-        let active_ids = self
-            .tabs
-            .active()
-            .filter(|_| self.route == AppRoute::Chat && self.remote_client.is_local())
-            .map(PaneLayout::session_ids)
-            .unwrap_or_default();
+    fn release_demoted_remote_terminal_focus(&mut self, window: &mut Window, cx: &mut App) {
+        let Some(focused) = window.focused(cx) else {
+            return;
+        };
+        if self
+            .remote_client
+            .release_demoted_terminal_focus(&self.chat_secondaries, &focused)
+        {
+            self.chat_focus.focus(window, cx);
+        }
+    }
+
+    pub(crate) fn can_auto_focus_remote_terminal(&self, window: &Window, cx: &App) -> bool {
+        if self.closing
+            || !self.remote_client.is_active()
+            || self.command_palette.read(cx).is_open()
+            || self.start_chat_modal.is_some()
+            || self.project_modal.is_some()
+            || self.project_delete_confirm.is_some()
+            || self.pane_rename.is_some()
+            || self.terminal_close_confirm.is_some()
+            || self.fork_confirm.is_some()
+            || self.quit_dialog.is_some()
+            || self.agent_update.is_some()
+            || self.usage_open
+        {
+            return false;
+        }
+        let focused = window.focused(cx);
+        if focused
+            .as_ref()
+            .is_some_and(|current| current == &self.root_focus || current == &self.chat_focus)
+        {
+            return self.remote_client.allows_auto_terminal_focus(None);
+        }
+        self.remote_client
+            .allows_auto_terminal_focus(focused.as_ref())
+    }
+
+    pub(crate) fn restore_remote_terminal_focus_if_eligible(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if !self.can_auto_focus_remote_terminal(window, cx) {
+            return;
+        }
+        let Some(focused_id) = self
+            .remote_client
+            .active_tab_layout()
+            .and_then(PaneLayout::focused_session_id)
+        else {
+            return;
+        };
+        if focused_id != session_id || self.cached_chat_secondary_state(session_id).secondary {
+            return;
+        }
+        self.remote_client
+            .focus_terminal_and_clear_dropped(session_id, window, cx);
+    }
+
+    pub(crate) fn refresh_chat_secondaries(&mut self, cx: &mut Context<Self>) {
+        let active_ids = if self.remote_client.is_active() {
+            self.remote_client
+                .active_tab_layout()
+                .map(PaneLayout::session_ids)
+                .unwrap_or_default()
+        } else {
+            self.tabs
+                .active()
+                .filter(|_| self.route == AppRoute::Chat)
+                .map(PaneLayout::session_ids)
+                .unwrap_or_default()
+        };
+        let remote_computer = self.remote_client.computer_id().map(str::to_owned);
         let entries = self.core(cx).window_snapshot().unwrap_or_default();
+        self.app_store
+            .update(cx, |store, _| store.window_entries = entries.clone());
         let next = active_ids
             .iter()
             .filter_map(|session_id| {
+                let subject = match &remote_computer {
+                    Some(computer) => Subject::RemoteChat {
+                        computer: computer.clone(),
+                        session: session_id.clone(),
+                    },
+                    None => Subject::DirectChat(session_id.clone()),
+                };
                 let state = runner_core::protocol::window::is_secondary_for(
                     &entries,
                     &self.window_label,
-                    &Subject::DirectChat(session_id.clone()),
+                    &subject,
                 );
                 state
                     .primary_label
@@ -180,6 +280,8 @@ impl NativeRoot {
             }
             self.chat_secondaries = next;
         }
+        self.remote_client
+            .set_secondaries(self.chat_secondaries.keys().cloned().collect());
     }
 
     pub(crate) fn chat_secondary_state(
@@ -187,14 +289,18 @@ impl NativeRoot {
         session_id: &str,
         cx: &App,
     ) -> runner_core::protocol::window::SecondaryState {
-        if self.remote_client.is_active() {
-            return Default::default();
-        }
+        let subject = match self.remote_client.computer_id() {
+            Some(computer) => Subject::RemoteChat {
+                computer: computer.to_owned(),
+                session: session_id.to_owned(),
+            },
+            None => Subject::DirectChat(session_id.to_owned()),
+        };
 
         runner_core::protocol::window::is_secondary_for(
-            &self.app_store.read(cx).window_entries.clone(),
+            &self.app_store.read(cx).window_entries,
             &self.window_label,
-            &Subject::DirectChat(session_id.to_owned()),
+            &subject,
         )
     }
 
@@ -202,10 +308,6 @@ impl NativeRoot {
         &self,
         session_id: &str,
     ) -> runner_core::protocol::window::SecondaryState {
-        if self.remote_client.is_active() {
-            return Default::default();
-        }
-
         let primary_label = self.chat_secondaries.get(session_id).cloned();
         runner_core::protocol::window::SecondaryState {
             secondary: primary_label.is_some(),

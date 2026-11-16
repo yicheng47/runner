@@ -399,6 +399,7 @@ impl NativeRoot {
             usage_open: false,
             usage_refresh_task: None,
             usage_checked: None,
+            usage_enabled: None,
             claude_account_picker: None,
             usage_anchor: None,
             usage_installed: crate::surfaces::app_shell::usage_installed(&core),

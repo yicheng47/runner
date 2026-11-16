@@ -70,7 +70,7 @@ impl ResizeControl {
                 viewport,
             } => {
                 let owns = matches!(controller, Controller::Browser { channel: owner, .. } if *owner == channel);
-                if take || owns && viewport || !viewport && *controller == Controller::None {
+                if take || owns || !viewport && *controller == Controller::None {
                     *controller = Controller::Browser { channel, name };
                     true
                 } else {
@@ -970,7 +970,12 @@ impl SessionManager {
                 .filter_map(|id| self.session_state(id))
                 .all(|state| {
                     let state = state.lock().unwrap();
-                    state.terminal_input.is_none() || state.controller == Controller::None
+                    state.terminal_input.is_none()
+                        || state.controller == Controller::None
+                        || matches!(
+                            state.controller,
+                            Controller::Browser { channel: owner, .. } if owner == channel
+                        )
                 });
             if !take
                 && !viewport

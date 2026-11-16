@@ -547,6 +547,32 @@ impl Client {
             .map(|_| ())
             .map_err(|error| error.message)
     }
+
+    pub async fn claim_control(
+        &self,
+        computer: String,
+        session: String,
+        cols: u16,
+        rows: u16,
+    ) -> Result<()> {
+        let route = self.route(&computer).await?;
+        let (reply, receive) = oneshot::channel();
+        let timeout = Duration::from_secs(30);
+        route
+            .send(route::Command::Claim {
+                session,
+                cols,
+                rows,
+                reply,
+            })
+            .await?;
+        tokio::time::timeout(timeout + Duration::from_secs(5), receive)
+            .await
+            .map_err(|_| "Remote request timed out")?
+            .map_err(|_| route.failure())?
+            .map(|_| ())
+            .map_err(|error| error.message)
+    }
 }
 fn pairing_label(name: &str) -> &str {
     let mut end = name.len().min(64);

@@ -173,6 +173,9 @@ impl NativeRoot {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.chat_secondary_state(session_id, cx).secondary {
+            return;
+        }
         if self.remote_client.is_active() {
             if self.front_page_client(cx).supports(&["fork"])
                 && self

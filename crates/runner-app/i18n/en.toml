@@ -1480,7 +1480,6 @@
 "client.take_control" = "Take control"
 "client.this_computer" = "This computer"
 "client.pin" = "PIN"
-"client.no_controller" = "No computer controls this terminal. Take control to type here."
 "client.connection_forgotten" = "Forgotten here · pair to open"
 "client.forgotten_title" = "This computer forgot {computer}"
 "client.forgotten_detail" = "Its saved access key was removed here. Pair with {computer}’s PIN to open it again."

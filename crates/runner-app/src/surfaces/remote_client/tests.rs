@@ -56,6 +56,7 @@ impl TerminalSubscription for Frames {
     }
 }
 type MarkViewedHook = Box<dyn FnMut(&Fake, &str) + Send>;
+type ClaimHook = Box<dyn FnMut(&Fake) + Send>;
 
 pub(crate) struct Fake {
     base: runner_daemon::daemon::InProcessTransport,
@@ -77,6 +78,9 @@ pub(crate) struct Fake {
     input: Mutex<Vec<(String, Vec<u8>)>>,
     sizes: Mutex<Vec<(String, u16, u16)>>,
     takes: Mutex<Vec<(String, String, u16, u16)>>,
+    claims: Mutex<Vec<(String, String, u16, u16)>>,
+    frame_seq: AtomicUsize,
+    on_claim: Mutex<Option<ClaimHook>>,
     controller: Mutex<TerminalController>,
     frame_senders: Mutex<Vec<mpsc::Sender<Result<TerminalFrame, ClientError>>>>,
     frame_entries: Mutex<Vec<mpsc::Receiver<()>>>,
@@ -84,6 +88,7 @@ pub(crate) struct Fake {
     fail_attach: AtomicBool,
     fail_input: AtomicBool,
     fail_take: AtomicBool,
+    fail_claim: AtomicBool,
     fail_directory: AtomicBool,
     overview_gates: Mutex<HashMap<String, mpsc::Receiver<()>>>,
     overview_started: Mutex<Option<mpsc::Sender<String>>>,
@@ -192,6 +197,10 @@ impl Fake {
     }
     pub(crate) fn local_call_count(&self) -> usize {
         self.local_requests.lock().unwrap().len()
+    }
+
+    pub(crate) fn next_seq(&self) -> u64 {
+        self.frame_seq.fetch_add(1, Ordering::SeqCst) as u64
     }
 
     pub(crate) fn attach_count(&self) -> usize {
@@ -358,6 +367,60 @@ impl Transport for Fake {
                 } else {
                     Ok(())
                 })
+            }
+            Request::remote_claim_control {
+                computer,
+                session,
+                cols,
+                rows,
+            } => {
+                self.claims
+                    .lock()
+                    .unwrap()
+                    .push((computer, session, cols, rows));
+                let hook = self.on_claim.lock().unwrap().take();
+                if let Some(mut hook) = hook {
+                    hook(self);
+                }
+                if self.fail_claim.load(Ordering::SeqCst) {
+                    return Ok(Response::remote_claim_control(Err(ClientError::msg(
+                        "test claim control refused",
+                    ))));
+                }
+                let controller = {
+                    let mut current = self.controller.lock().unwrap();
+                    if *current == TerminalController::None {
+                        *current = TerminalController::Desktop;
+                    }
+                    current.clone()
+                };
+                let seq = self.next_seq();
+                if let Some(tx) = self.frame_senders.lock().unwrap().last() {
+                    let _ = tx.send(Ok(TerminalFrame::Resized {
+                        seq,
+                        cols,
+                        rows,
+                        controller,
+                    }));
+                }
+                Response::remote_claim_control(Ok(()))
+            }
+            request @ (Request::window_register { .. }
+            | Request::window_snapshot {}
+            | Request::report_subjects { .. }
+            | Request::mark_focused { .. }
+            | Request::mark_blurred { .. }
+            | Request::unregister { .. }
+            | Request::window_set_mission { .. }) => {
+                let broadcasts = !matches!(
+                    request,
+                    Request::window_register { .. } | Request::window_snapshot {}
+                );
+                let response = self.base.call(request);
+                if broadcasts && response.is_ok() {
+                    self.emit("window_focus_map", serde_json::Value::Null);
+                }
+                return response;
             }
             request => {
                 self.local_requests
@@ -536,6 +599,9 @@ pub(crate) fn fixture(
         input: Mutex::default(),
         sizes: Mutex::default(),
         takes: Mutex::default(),
+        claims: Mutex::default(),
+        frame_seq: AtomicUsize::new(2),
+        on_claim: Mutex::default(),
         controller: Mutex::new(TerminalController::Desktop),
         frame_senders: Mutex::default(),
         frame_entries: Mutex::default(),
@@ -543,6 +609,7 @@ pub(crate) fn fixture(
         fail_attach: AtomicBool::new(false),
         fail_input: AtomicBool::new(false),
         fail_take: AtomicBool::new(false),
+        fail_claim: AtomicBool::new(false),
         fail_directory: AtomicBool::new(false),
         overview_gates: Mutex::default(),
         overview_started: Mutex::default(),
@@ -2059,7 +2126,15 @@ fn remote_window_and_picker_render_all_connection_states_and_preserve_local_tabs
                     clients.read_with(&cx, |clients, _| clients.connection("host")) == expected
                 );
                 window
-                    .read_with(&cx, |root, _| assert!(root.current_subjects().is_empty()))
+                    .read_with(&cx, |root, _| {
+                        assert_eq!(
+                            root.current_subjects(),
+                            vec![runner_core::protocol::window::Subject::RemoteChat {
+                                computer: "host".into(),
+                                session: "s".into(),
+                            }]
+                        );
+                    })
                     .unwrap();
                 window
                     .update(&mut cx, |root, _, cx| {
@@ -9564,4 +9639,638 @@ fn remote_unread_push_while_mark_viewed_pending_retries_after_completion() {
         state.apply(model::Update::Overview("host".into(), 42, data.clone()));
         assert!(state.overviews["host"].sessions["s"].status.unread);
     });
+}
+
+#[test]
+fn free_remote_terminal_auto_takes_once_per_uncontrolled_episode_and_never_steals_when_held() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    *fake.controller.lock().unwrap() = TerminalController::None;
+    fake.fail_claim.store(true, Ordering::SeqCst);
+
+    let window = add_window(&mut cx, &store, temp.path(), "free-auto-take");
+    window.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+
+    // Auto-claim uses `remote_claim_control` (`IfFree`), never force `remote_take_control`.
+    // When the claim fails, `REMOTE_CONTROL_FAILED` appears and passive syncs do not loop.
+    assert_eq!(fake.claims.lock().unwrap().len(), 1);
+    assert!(fake.takes.lock().unwrap().is_empty());
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    assert!(visual.debug_bounds("REMOTE_TAKEN_BACK").is_none());
+    assert!(visual.debug_bounds("REMOTE_CONTROL_FAILED").is_some());
+    window
+        .update(&mut visual, |root, _, cx| root.sync_remote_state(cx))
+        .unwrap();
+    visual.run_until_parked();
+    assert_eq!(fake.claims.lock().unwrap().len(), 1);
+    assert!(fake.takes.lock().unwrap().is_empty());
+
+    // Manual retry via **Take control** is the only path that sends force `remote_take_control`.
+    fake.fail_claim.store(false, Ordering::SeqCst);
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.remote_client.take_remote_control("s", cx);
+        })
+        .unwrap();
+    visual.run_until_parked();
+    assert_eq!(fake.takes.lock().unwrap().len(), 1);
+
+    fake.frame_entries.lock().unwrap()[0].recv().unwrap();
+    let mirror = window
+        .read_with(&visual, |root, _| {
+            root.remote_client.workspace().unwrap().terminals["s"]
+                .attachment
+                .terminal
+                .clone()
+        })
+        .unwrap();
+    let (cols, rows) = mirror.size();
+    *fake.controller.lock().unwrap() = TerminalController::Desktop;
+    fake.frame_senders.lock().unwrap()[0]
+        .send(Ok(TerminalFrame::Resized {
+            seq: fake.next_seq(),
+            cols,
+            rows,
+            controller: TerminalController::Desktop,
+        }))
+        .unwrap();
+    for _ in 0..200 {
+        visual.run_until_parked();
+        let settled = mirror.control().desktop()
+            && window
+                .read_with(&visual, |root, _| {
+                    !root.remote_client.workspace().unwrap().terminals["s"].auto_taken
+                })
+                .unwrap();
+        if settled {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(mirror.control().desktop());
+    assert!(visual.debug_bounds("REMOTE_CONTROL_FAILED").is_none());
+    assert!(visual.debug_bounds("REMOTE_TAKEN_BACK").is_none());
+
+    // Deterministic race: client observes `None` and queues automatic `IfFree` claim, but before
+    // the request applies on the host, `Host desktop` or another `Browser` takes ownership.
+    for winner_name in ["Host desktop", "Other laptop"] {
+        let claims_before = fake.claims.lock().unwrap().len();
+        let winner = TerminalController::Browser {
+            channel: 0,
+            name: winner_name.into(),
+        };
+        let hook_winner = winner.clone();
+        *fake.on_claim.lock().unwrap() = Some(Box::new(move |fake| {
+            *fake.controller.lock().unwrap() = hook_winner.clone();
+        }));
+        *fake.controller.lock().unwrap() = TerminalController::None;
+        fake.frame_senders.lock().unwrap()[0]
+            .send(Ok(TerminalFrame::Resized {
+                seq: fake.next_seq(),
+                cols,
+                rows,
+                controller: TerminalController::None,
+            }))
+            .unwrap();
+        for _ in 0..200 {
+            visual.run_until_parked();
+            if fake.claims.lock().unwrap().len() > claims_before
+                && mirror.control().controller == winner
+                && visual.debug_bounds("REMOTE_TAKEN_BACK").is_some()
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(fake.claims.lock().unwrap().len(), claims_before + 1);
+        assert_eq!(fake.controller.lock().unwrap().clone(), winner);
+        assert_eq!(fake.takes.lock().unwrap().len(), 1);
+        assert!(visual.debug_bounds("REMOTE_TAKEN_BACK").is_some());
+        window
+            .read_with(&visual, |root, cx| {
+                assert!(!root.session_is_interactive("s", cx));
+            })
+            .unwrap();
+    }
+
+    // Another client disconnecting returns the terminal to `None` with no contender: auto-claim
+    // succeeds via `IfFree` without sending force `remote_take_control`.
+    let claims_before = fake.claims.lock().unwrap().len();
+    *fake.controller.lock().unwrap() = TerminalController::None;
+    fake.frame_senders.lock().unwrap()[0]
+        .send(Ok(TerminalFrame::Resized {
+            seq: fake.next_seq(),
+            cols,
+            rows,
+            controller: TerminalController::None,
+        }))
+        .unwrap();
+    for _ in 0..200 {
+        if fake.claims.lock().unwrap().len() > claims_before && mirror.control().desktop() {
+            break;
+        }
+        visual.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    visual.run_until_parked();
+    assert_eq!(fake.claims.lock().unwrap().len(), claims_before + 1);
+    assert_eq!(fake.takes.lock().unwrap().len(), 1);
+    assert!(mirror.control().desktop());
+    assert!(visual.debug_bounds("REMOTE_TAKEN_BACK").is_none());
+}
+
+#[test]
+fn duplicate_remote_chat_across_windows_arbitrates_ownership_and_transfers_on_focus() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    {
+        let mut features = fake.features.lock().unwrap();
+        if !features.iter().any(|feature| feature == "markViewed") {
+            features.push("markViewed".into());
+        }
+    }
+    *fake.on_mark_viewed.lock().unwrap() = Some(Box::new(|fake, session| {
+        if let Some(entry) = fake.overview.lock().unwrap().sessions.get_mut(session) {
+            entry.status.unread = false;
+        }
+    }));
+    fake.computers.lock().unwrap().push(Computer {
+        id: "host-b".into(),
+        name: "Office".into(),
+        online: true,
+        paired: true,
+        fingerprint: "host-b-key".into(),
+        ..Default::default()
+    });
+    store.update(&mut cx, |store, cx| {
+        store
+            .remote_clients
+            .update(cx, |state, cx| state.refresh(cx));
+    });
+    cx.run_until_parked();
+
+    let primary = add_window(&mut cx, &store, temp.path(), "remote-dup-primary");
+    let secondary = add_window(&mut cx, &store, temp.path(), "remote-dup-secondary");
+    let other_host = add_window(&mut cx, &store, temp.path(), "remote-other-host");
+
+    primary.update(&mut cx, choose_host).unwrap();
+    secondary.update(&mut cx, choose_host).unwrap();
+    other_host
+        .update(&mut cx, |root, window, cx| {
+            let office = computers()
+                .into_iter()
+                .chain([Computer {
+                    id: "host-b".into(),
+                    name: "Office".into(),
+                    online: true,
+                    paired: true,
+                    fingerprint: "host-b-key".into(),
+                    ..Default::default()
+                }])
+                .find(|c| c.id == "host-b")
+                .unwrap();
+            root.choose_computer(office, false, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let mut vis_other = VisualTestContext::from_window(other_host.into(), &cx);
+    vis_other.update(|window, _| window.activate_window());
+    vis_other.run_until_parked();
+
+    let mut vis_secondary = VisualTestContext::from_window(secondary.into(), &cx);
+    vis_secondary.update(|window, _| window.activate_window());
+    vis_secondary.run_until_parked();
+
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    let mut vis_primary = VisualTestContext::from_window(primary.into(), &cx);
+    vis_primary.update(|window, _| window.activate_window());
+    vis_primary.run_until_parked();
+    vis_secondary.deactivate_window();
+    vis_secondary.run_until_parked();
+    vis_other.deactivate_window();
+    vis_other.run_until_parked();
+
+    // `primary` owns `("host", "s")`; `secondary` detaches and renders `DuplicateSubjectOverlay`;
+    // `other_host` on `("host-b", "s")` is unaffected and remains primary for its own computer.
+    assert!(vis_primary.debug_bounds("DUPLICATE_SUBJECT_CARD").is_none());
+    assert!(vis_secondary
+        .debug_bounds("DUPLICATE_SUBJECT_CARD")
+        .is_some());
+    assert!(vis_other.debug_bounds("DUPLICATE_SUBJECT_CARD").is_none());
+
+    primary
+        .update(&mut vis_primary, |root, window, cx| {
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
+            assert!(root.session_is_interactive("s", cx));
+            root.remote_client.focus_remote_terminal("s", window, cx);
+        })
+        .unwrap();
+    secondary
+        .read_with(&vis_secondary, |root, cx| {
+            assert!(!root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
+            assert!(!root.session_is_interactive("s", cx));
+        })
+        .unwrap();
+
+    fake.input.lock().unwrap().clear();
+    vis_primary.simulate_keystrokes("a");
+    vis_primary.run_until_parked();
+    assert_eq!(
+        fake.input.lock().unwrap().as_slice(),
+        &[("remote:host:s".into(), b"a".to_vec())]
+    );
+
+    // Secondary actions (`stop_chat`, `fork_chat`, `mark_remote_sessions_viewed`) are no-ops.
+    fake.action_requests.lock().unwrap().clear();
+    secondary
+        .update(&mut vis_secondary, |root, window, cx| {
+            root.stop_chat("s", window, cx);
+            root.fork_chat("s", window, cx);
+            root.remote_client.mark_remote_sessions_viewed(cx);
+            assert!(root.fork_confirm.is_none());
+        })
+        .unwrap();
+    vis_secondary.run_until_parked();
+    assert!(fake.action_requests.lock().unwrap().is_empty());
+
+    // Dismissing with Stay here hides the card while keeping the secondary window detached.
+    secondary
+        .update(&mut vis_secondary, |root, _, cx| {
+            root.dismiss_duplicate_chat("s", cx);
+        })
+        .unwrap();
+    vis_secondary.run_until_parked();
+    assert!(vis_secondary
+        .debug_bounds("DUPLICATE_SUBJECT_CARD")
+        .is_none());
+    secondary
+        .read_with(&vis_secondary, |root, _| {
+            assert!(!root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
+        })
+        .unwrap();
+
+    // Focusing `secondary` transfers ownership: `secondary` attaches with `IfFree`, claims free
+    // control via `remote_claim_control` (never `remote_take_control`), and focuses its terminal
+    // automatically so keystrokes route to `secondary` without an extra terminal click.
+    *fake.controller.lock().unwrap() = TerminalController::None;
+    let claims_before = fake.claims.lock().unwrap().len();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    vis_primary.deactivate_window();
+    vis_primary.run_until_parked();
+    vis_secondary.update(|window, _| window.activate_window());
+    for _ in 0..200 {
+        vis_secondary.run_until_parked();
+        let ready = secondary
+            .read_with(&vis_secondary, |root, cx| {
+                root.session_is_interactive("s", cx)
+            })
+            .unwrap();
+        if ready {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    vis_primary.run_until_parked();
+
+    assert!(vis_secondary
+        .debug_bounds("DUPLICATE_SUBJECT_CARD")
+        .is_none());
+    assert!(vis_primary.debug_bounds("DUPLICATE_SUBJECT_CARD").is_some());
+    assert!(!fake.attaches.lock().unwrap().last().unwrap().take_control);
+    assert_eq!(fake.claims.lock().unwrap().len(), claims_before + 1);
+    assert!(fake.takes.lock().unwrap().is_empty());
+    fake.input.lock().unwrap().clear();
+    vis_secondary.simulate_keystrokes("b");
+    vis_primary.simulate_keystrokes("x");
+    vis_secondary.run_until_parked();
+    vis_primary.run_until_parked();
+    assert_eq!(
+        fake.input.lock().unwrap().as_slice(),
+        &[("remote:host:s".into(), b"b".to_vec())]
+    );
+
+    // Switching ownership back to `primary` restores terminal keyboard focus on `primary`
+    // without calling `focus_remote_terminal`, and `secondary` receives no keystrokes.
+    *fake.controller.lock().unwrap() = TerminalController::None;
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    vis_secondary.deactivate_window();
+    vis_secondary.run_until_parked();
+    vis_primary.update(|window, _| window.activate_window());
+    for _ in 0..200 {
+        vis_primary.run_until_parked();
+        let ready = primary
+            .read_with(&vis_primary, |root, cx| {
+                root.session_is_interactive("s", cx)
+            })
+            .unwrap();
+        if ready {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    vis_secondary.run_until_parked();
+    assert!(vis_secondary
+        .debug_bounds("DUPLICATE_SUBJECT_CARD")
+        .is_some());
+    fake.input.lock().unwrap().clear();
+    vis_primary.simulate_keystrokes("c");
+    vis_secondary.simulate_keystrokes("y");
+    vis_primary.run_until_parked();
+    vis_secondary.run_until_parked();
+    assert_eq!(
+        fake.input.lock().unwrap().as_slice(),
+        &[("remote:host:s".into(), b"c".to_vec())]
+    );
+
+    // If another control holds focus in `secondary` when `primary` navigates away, asynchronous
+    // reattachment does not steal focus from that control.
+    let other_control = vis_secondary.update(|window, cx| {
+        let handle = cx.focus_handle();
+        handle.focus(window, cx);
+        handle
+    });
+    primary
+        .update(&mut vis_primary, |root, _, cx| {
+            root.select_remote_item(workspace::Item::Mission("remote-mission".into()), cx);
+            assert!(root.current_subjects().is_empty());
+        })
+        .unwrap();
+    vis_primary.run_until_parked();
+    vis_secondary.run_until_parked();
+    assert!(vis_secondary
+        .debug_bounds("DUPLICATE_SUBJECT_CARD")
+        .is_none());
+    secondary
+        .read_with(&vis_secondary, |root, _| {
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
+        })
+        .unwrap();
+    vis_secondary.update(|window, cx| {
+        assert_eq!(window.focused(cx), Some(other_control));
+    });
+}
+
+#[test]
+fn host_split_after_take_back_attaches_new_panes_with_if_free_and_preserves_host_ownership() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+
+    let window = add_window(&mut cx, &store, temp.path(), "host-split-after-take-back");
+    window.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    assert_eq!(fake.attaches.lock().unwrap().len(), 1);
+    assert!(fake.attaches.lock().unwrap()[0].take_control);
+
+    fake.frame_entries.lock().unwrap()[0].recv().unwrap();
+    let mirror = window
+        .read_with(&visual, |root, _| {
+            root.remote_client.workspace().unwrap().terminals["s"]
+                .attachment
+                .terminal
+                .clone()
+        })
+        .unwrap();
+    assert!(mirror.control().desktop());
+    let (cols, rows) = mirror.size();
+    fake.takes.lock().unwrap().clear();
+    fake.claims.lock().unwrap().clear();
+    fake.input.lock().unwrap().clear();
+
+    // 1. Stale-mirror race (`Host desktop`): `mirror` on `s` STILL says `Desktop`/`You` (its
+    // ownership frame has not arrived yet), while the host has already taken control back and
+    // pushed a Split Right `Overview` adding `s2`. `s2` must attach with `IfFree` (`take_control:
+    // false`) and never steal the tab back.
+    let host_owner = TerminalController::Browser {
+        channel: 0,
+        name: "Host desktop".into(),
+    };
+    *fake.controller.lock().unwrap() = host_owner.clone();
+    let mut data = fake.overview.lock().unwrap().clone();
+    let mut shell = data.sessions["s"].clone();
+    shell.title = "zsh".into();
+    shell.runtime = Some("shell".into());
+    data.sessions.insert("s2".into(), shell.clone());
+    data.tabs[0].panes = serde_json::from_value(serde_json::json!({
+        "split": "column",
+        "sizes": [0.5, 0.5],
+        "a": { "session": "s" },
+        "b": { "session": "s2" }
+    }))
+    .unwrap();
+    fake.set_overview(data.clone());
+    visual.run_until_parked();
+
+    let s2_attach = fake
+        .attaches
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|item| item.session == "s2")
+        .cloned()
+        .expect("s2 should attach with IfFree");
+    assert!(!s2_attach.take_control);
+    assert!(fake.takes.lock().unwrap().is_empty());
+    assert!(fake.claims.lock().unwrap().is_empty());
+    assert_eq!(fake.controller.lock().unwrap().clone(), host_owner);
+    window
+        .read_with(&visual, |root, cx| {
+            assert!(!root.session_is_interactive("s2", cx));
+        })
+        .unwrap();
+
+    // Delayed ownership frame for `s` now arrives: both panes show taken-back and reject input.
+    fake.frame_senders.lock().unwrap()[0]
+        .send(Ok(TerminalFrame::Resized {
+            seq: fake.next_seq(),
+            cols,
+            rows,
+            controller: host_owner.clone(),
+        }))
+        .unwrap();
+    for _ in 0..200 {
+        visual.run_until_parked();
+        if mirror.control().controller == host_owner
+            && visual.debug_bounds("REMOTE_TAKEN_BACK").is_some()
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    window
+        .read_with(&visual, |root, cx| {
+            assert!(!root.session_is_interactive("s", cx));
+            assert!(!root.session_is_interactive("s2", cx));
+        })
+        .unwrap();
+    visual.simulate_keystrokes("x");
+    visual.run_until_parked();
+    assert!(fake.input.lock().unwrap().is_empty());
+
+    // 2. Stale-mirror race (`Other laptop` Browser): make `s` report `Desktop` locally while the
+    // host has already transferred control to another Browser client and split down (`s3`).
+    fake.frame_senders.lock().unwrap()[0]
+        .send(Ok(TerminalFrame::Resized {
+            seq: fake.next_seq(),
+            cols,
+            rows,
+            controller: TerminalController::Desktop,
+        }))
+        .unwrap();
+    for _ in 0..200 {
+        visual.run_until_parked();
+        if mirror.control().desktop() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let other_browser = TerminalController::Browser {
+        channel: 0,
+        name: "Other laptop".into(),
+    };
+    *fake.controller.lock().unwrap() = other_browser.clone();
+    data.sessions.insert("s3".into(), shell.clone());
+    data.tabs[0].panes = serde_json::from_value(serde_json::json!({
+        "split": "column",
+        "sizes": [0.5, 0.5],
+        "a": {
+            "split": "row",
+            "sizes": [0.5, 0.5],
+            "a": { "session": "s" },
+            "b": { "session": "s3" }
+        },
+        "b": { "session": "s2" }
+    }))
+    .unwrap();
+    fake.set_overview(data.clone());
+    visual.run_until_parked();
+
+    let s3_attach = fake
+        .attaches
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|item| item.session == "s3")
+        .cloned()
+        .expect("s3 should attach with IfFree");
+    assert!(!s3_attach.take_control);
+    assert!(fake.takes.lock().unwrap().is_empty());
+    assert!(fake.claims.lock().unwrap().is_empty());
+    assert_eq!(fake.controller.lock().unwrap().clone(), other_browser);
+    window
+        .read_with(&visual, |root, cx| {
+            assert!(!root.session_is_interactive("s3", cx));
+        })
+        .unwrap();
+
+    // 3. Passive split growth when THIS client owns the tab (`Desktop`/`You`) stays usable with `IfFree`.
+    *fake.controller.lock().unwrap() = TerminalController::Desktop;
+    data.sessions.insert("s4".into(), shell.clone());
+    data.tabs[0].panes = serde_json::from_value(serde_json::json!({
+        "split": "column",
+        "sizes": [0.5, 0.5],
+        "a": {
+            "split": "row",
+            "sizes": [0.5, 0.5],
+            "a": { "session": "s" },
+            "b": { "session": "s3" }
+        },
+        "b": {
+            "split": "row",
+            "sizes": [0.5, 0.5],
+            "a": { "session": "s2" },
+            "b": { "session": "s4" }
+        }
+    }))
+    .unwrap();
+    fake.set_overview(data.clone());
+    visual.run_until_parked();
+
+    let s4_attach = fake
+        .attaches
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|item| item.session == "s4")
+        .cloned()
+        .expect("s4 should attach with IfFree");
+    assert!(!s4_attach.take_control);
+    assert!(fake.takes.lock().unwrap().is_empty());
+    window
+        .read_with(&visual, |root, cx| {
+            assert!(root.session_is_interactive("s4", cx));
+        })
+        .unwrap();
+
+    // 4. Passive split growth when free (`Controller::None`) attaches with `IfFree` and auto-claims.
+    *fake.controller.lock().unwrap() = TerminalController::None;
+    let claims_before = fake.claims.lock().unwrap().len();
+    data.sessions.insert("s5".into(), shell);
+    data.tabs[0].panes = serde_json::from_value(serde_json::json!({
+        "split": "column",
+        "sizes": [0.5, 0.5],
+        "a": { "session": "s" },
+        "b": { "session": "s5" }
+    }))
+    .unwrap();
+    fake.set_overview(data);
+    for _ in 0..200 {
+        visual.run_until_parked();
+        let ready = window
+            .read_with(&visual, |root, cx| root.session_is_interactive("s5", cx))
+            .unwrap();
+        if ready {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let s5_attach = fake
+        .attaches
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|item| item.session == "s5")
+        .cloned()
+        .expect("s5 should attach with IfFree");
+    assert!(!s5_attach.take_control);
+    assert_eq!(fake.claims.lock().unwrap().len(), claims_before + 1);
+    assert!(fake.takes.lock().unwrap().is_empty());
+    window
+        .read_with(&visual, |root, cx| {
+            assert!(root.session_is_interactive("s5", cx));
+        })
+        .unwrap();
 }

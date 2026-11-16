@@ -652,7 +652,7 @@ record!(CreateStarterCrewArgs {
     enabled_runtimes
 });
 record!(StartMissionOutput { mission, goal });
-variant!(Subject => Self::Mission(Sample::sample()));
+variant!(Subject => Self::RemoteChat { computer: Sample::sample(), session: Sample::sample() });
 variant!(TurnOutcome => Self::Completed);
 variant!(UnavailableReason => Self::SignIn);
 record!(UpdateCrewInput {
@@ -1281,4 +1281,31 @@ fn onboarding_and_install_protocol_fields_default_on_older_payloads() {
     assert_eq!(legacy_direct.cols, None);
     assert_eq!(legacy_direct.rows, None);
     assert_eq!(legacy_direct.initial_prompt, None);
+}
+
+#[test]
+fn window_subjects_preserve_adjacently_tagged_shapes_across_local_and_remote_variants() {
+    for (subject, expected) in [
+        (
+            Subject::Mission("m1".into()),
+            serde_json::json!({"type": "Mission", "value": "m1"}),
+        ),
+        (
+            Subject::DirectChat("s1".into()),
+            serde_json::json!({"type": "DirectChat", "value": "s1"}),
+        ),
+        (
+            Subject::RemoteChat {
+                computer: "host-a".into(),
+                session: "s1".into(),
+            },
+            serde_json::json!({
+                "type": "RemoteChat",
+                "value": {"computer": "host-a", "session": "s1"}
+            }),
+        ),
+    ] {
+        assert_eq!(serde_json::to_value(&subject).unwrap(), expected);
+        round_trip(subject);
+    }
 }

@@ -51,7 +51,8 @@ fn request_timeout(request: &Request, timeout: Duration) -> Option<Duration> {
         | Request::remote_forget { .. }
         | Request::remote_overview { .. }
         | Request::remote_follow { .. }
-        | Request::remote_take_control { .. } => Some(timeout.max(REMOTE_REQUEST_TIMEOUT)),
+        | Request::remote_take_control { .. }
+        | Request::remote_claim_control { .. } => Some(timeout.max(REMOTE_REQUEST_TIMEOUT)),
         Request::session_fork { .. } => Some(timeout.max(FORK_REQUEST_TIMEOUT)),
         Request::claude_account_action {
             action: ClaudeAccountAction::SignOut { .. },
@@ -1202,6 +1203,12 @@ mod remote_deadline_tests {
                 request: crate::companion::ClientMessage::Overview(
                     crate::companion::OverviewRequest { id: 1 },
                 ),
+            },
+            Request::remote_claim_control {
+                computer: "computer".into(),
+                session: "session".into(),
+                cols: 80,
+                rows: 24,
             },
         ] {
             assert_eq!(

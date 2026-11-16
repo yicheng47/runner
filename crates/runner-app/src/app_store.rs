@@ -36,6 +36,7 @@ impl Global for GlobalAppStore {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StoreRefreshKind {
+    Windows,
     Activity,
     Nodes,
     Missions,
@@ -47,11 +48,10 @@ pub(crate) enum StoreRefreshKind {
 impl StoreRefreshKind {
     pub(crate) fn for_event(event: &AppEvent) -> Option<Self> {
         match event.name.as_str() {
+            "window_focus_map" => Some(Self::Windows),
             "runtime/changed" => Some(Self::Runtimes),
             "onboarding/changed" => Some(Self::Onboarding),
-            "claude_accounts/changed" | "usage/updated" | "window_focus_map" | "session/status" => {
-                Some(Self::Activity)
-            }
+            "claude_accounts/changed" | "usage/updated" | "session/status" => Some(Self::Activity),
             "chat/tab-attention-changed" | "chat/layout-changed" => Some(Self::Nodes),
             "event/appended"
                 if event
@@ -769,6 +769,12 @@ impl AppStore {
     }
 
     pub(crate) fn refresh(&mut self, refresh: StoreRefreshKind, cx: &mut Context<Self>) {
+        if refresh == StoreRefreshKind::Windows {
+            self.window_entries = self.client.window_snapshot().unwrap_or_default();
+            self.revisions.activity = self.revisions.activity.wrapping_add(1);
+            cx.notify();
+            return;
+        }
         if matches!(
             refresh,
             StoreRefreshKind::Onboarding | StoreRefreshKind::All
@@ -1390,6 +1396,10 @@ mod tests {
 
     #[test]
     fn refresh_kinds_preserve_each_data_dependency() {
+        assert_eq!(
+            StoreRefreshKind::for_event(&event("window_focus_map")),
+            Some(StoreRefreshKind::Windows)
+        );
         assert_eq!(
             StoreRefreshKind::for_event(&event("session/status")),
             Some(StoreRefreshKind::Activity)

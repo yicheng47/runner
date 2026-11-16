@@ -23,13 +23,9 @@ impl NativeRoot {
             .session_id
             .as_deref()
             .and_then(|session_id| self.front_page_session(session_id, cx));
-        let secondary = entry.as_ref().map(|entry| {
-            if self.remote_client.is_active() {
-                Default::default()
-            } else {
-                self.cached_chat_secondary_state(&entry.session_id)
-            }
-        });
+        let secondary = entry
+            .as_ref()
+            .map(|entry| self.cached_chat_secondary_state(&entry.session_id));
         let pane_session_for_focus = entry.as_ref().map(|entry| entry.session_id.clone());
         let close_root = cx.entity();
         let header = {
@@ -599,20 +595,21 @@ impl NativeRoot {
             let terminal_style = self.terminal_style(cx);
             let terminal_background =
                 crate::terminal::element::to_hsla(terminal_style.palette.background, 1.);
-            let terminal_surface = if self.remote_client.is_active() {
-                self.remote_client
-                    .render_remote_terminal_content(&session_id, cx)
-            } else if secondary_state.secondary
-                && self
-                    .attached
-                    .get(&session_id)
-                    .is_none_or(|chat| chat.terminal.control().desktop())
+            let terminal_surface = if secondary_state.secondary
+                && (self.remote_client.is_active()
+                    || self
+                        .attached
+                        .get(&session_id)
+                        .is_none_or(|chat| chat.terminal.control().desktop()))
             {
                 div()
                     .absolute()
                     .inset_0()
                     .bg(terminal_background)
                     .into_any_element()
+            } else if self.remote_client.is_active() {
+                self.remote_client
+                    .render_remote_terminal_content(&session_id, cx)
             } else if let Some(chat) = self.attached.get(&session_id) {
                 let terminal = Arc::clone(&chat.terminal);
                 let terminal_interaction = chat.terminal_interaction.clone();

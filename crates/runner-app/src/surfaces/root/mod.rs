@@ -337,6 +337,7 @@ pub(crate) struct NativeRoot {
     pub(crate) usage_anchor: Option<Bounds<Pixels>>,
     pub(crate) usage_installed: Vec<runner_core::protocol::model::Runtime>,
     pub(crate) usage_checked: Option<Vec<runner_core::Runtime>>,
+    pub(crate) usage_enabled: Option<Vec<runner_core::Runtime>>,
     /// Enabled agents with an update dot the sidebar Settings gear.
     pub(crate) agent_updates: Vec<runner_core::protocol::model::Runtime>,
     pub(crate) runtime_navigation_history: Vec<RuntimeLocation>,
