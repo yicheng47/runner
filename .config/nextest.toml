@@ -7,3 +7,9 @@ max-threads = 2
 [[profile.default.overrides]]
 filter = 'package(runner-cli) & (binary(daemon_process) | binary(golden) | binary(hook_process))'
 test-group = 'real-daemon'
+
+# CI retries a failed test once so a timing flake does not fail the run. A test
+# that passes only on its retry is listed as FLAKY in the summary; fix it, the
+# retry is not a fix.
+[profile.ci]
+retries = 1
