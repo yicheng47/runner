@@ -4472,7 +4472,9 @@ fn files_diff_toggle_swaps_changed_tab_in_place_shares_split_mode_and_resets_whe
 
     // Clean file tab has no Diff button.
     h.open("a.txt");
-    h.wait("clean file code", |h| h.has("FILE_CODE"));
+    h.wait("clean file code and uncommitted paths settled", |h| {
+        h.has("FILE_CODE") && h.read(|v| v.has_uncommitted_diff("a.txt") == Some(false))
+    });
     assert!(!h.has("FILE_DIFF_TOGGLE"));
     assert!(!h.read(|v| v.showing_diff()));
 
@@ -4554,10 +4556,13 @@ fn files_diff_toggle_swaps_changed_tab_in_place_shares_split_mode_and_resets_whe
     git(&h.repo, &["checkout", "--", "src/deep/x.rs"]);
     receive_status(&mut h, GitStatus::default());
     h.wait("tab returned to file after changes cleared", |h| {
-        h.has("FILE_CODE") && !h.has("FILE_DIFF_TOGGLE") && !h.has("FILE_DIFF_COLUMN")
+        h.has("FILE_CODE")
+            && h.read(|v| v.has_uncommitted_diff("src/deep/x.rs") == Some(false))
+            && !h.has("FILE_DIFF_TOGGLE")
+            && !h.has("FILE_DIFF_COLUMN")
+            && !h.read(|v| v.showing_diff())
+            && h.read(|v| v.tab_diff_view().is_none())
     });
-    assert!(!h.read(|v| v.showing_diff()));
-    assert!(h.read(|v| v.tab_diff_view()).is_none());
 }
 
 #[test]
@@ -4589,18 +4594,13 @@ fn files_diff_toggle_reflects_working_tree_vs_head_when_staged_edit_is_reverted_
 
     h.open("src/deep/x.rs");
     h.wait(
-        "reverted MM file code loaded and uncommitted paths settled",
+        "reverted MM file code loaded, tab keeps M badge, and Diff button stays hidden",
         |h| {
-            h.has("FILE_CODE") && h.read(|v| v.has_uncommitted_diff("src/deep/x.rs") == Some(false))
+            h.has("FILE_CODE")
+                && h.read(|v| v.has_uncommitted_diff("src/deep/x.rs") == Some(false))
+                && h.has("FILE_TAB_LETTER src/deep/x.rs M")
+                && !h.has("FILE_DIFF_TOGGLE")
         },
-    );
-    assert!(
-        h.has("FILE_TAB_LETTER src/deep/x.rs M"),
-        "tab keeps git status badge while staged index differs"
-    );
-    assert!(
-        !h.has("FILE_DIFF_TOGGLE"),
-        "Diff button stays hidden when working tree matches HEAD"
     );
 
     // Edit the working tree so it now differs from HEAD: Diff button appears and opens cleanly.
@@ -4616,8 +4616,8 @@ fn files_diff_toggle_reflects_working_tree_vs_head_when_staged_edit_is_reverted_
         ),
     );
     h.wait(
-        "Diff button appears once working tree differs from HEAD",
-        |h| h.has("FILE_DIFF_TOGGLE"),
+        "Diff button appears with M badge once working tree differs from HEAD",
+        |h| h.has("FILE_TAB_LETTER src/deep/x.rs M") && h.has("FILE_DIFF_TOGGLE"),
     );
     h.click("FILE_DIFF_TOGGLE");
     h.wait("in-place file diff loaded", |h| {
@@ -4638,8 +4638,14 @@ fn files_diff_toggle_reflects_working_tree_vs_head_when_staged_edit_is_reverted_
         ),
     );
     h.wait(
-        "tab returned to file and Diff button hidden once working tree matches HEAD",
-        |h| h.has("FILE_CODE") && !h.has("FILE_DIFF_TOGGLE") && !h.has("FILE_DIFF_COLUMN"),
+        "tab returned to file, keeps M badge, and Diff button hidden once working tree matches HEAD",
+        |h| {
+            h.has("FILE_CODE")
+                && h.read(|v| v.has_uncommitted_diff("src/deep/x.rs") == Some(false))
+                && h.has("FILE_TAB_LETTER src/deep/x.rs M")
+                && !h.has("FILE_DIFF_TOGGLE")
+                && !h.has("FILE_DIFF_COLUMN")
+                && !h.read(|v| v.showing_diff())
+        },
     );
-    assert!(!h.read(|v| v.showing_diff()));
 }
