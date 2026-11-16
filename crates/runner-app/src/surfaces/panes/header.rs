@@ -253,7 +253,7 @@ impl NativeRoot {
         ))
     }
 
-    fn chat_panel_context(
+    pub(super) fn chat_panel_context(
         &self,
         detail: &DirectSessionEntry,
         surface: PanelSurface,
@@ -618,11 +618,14 @@ impl NativeRoot {
                     .min_h(px(0.))
                     .flex()
                     .flex_col()
-                    .pb(rems(8. / 16.))
+                    .when(files.is_none(), |body| body.pb(rems(8. / 16.)))
                     .child(match (files, content) {
                         (Some(files), _) => files,
                         (None, Some(content)) => div()
                             .id("chat-panel-scroll")
+                            .when(cfg!(test), |el| {
+                                el.debug_selector(|| "CHAT_INFO_SCROLL".into())
+                            })
                             .flex_1()
                             .min_h(px(0.))
                             .overflow_y_scroll()

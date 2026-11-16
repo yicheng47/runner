@@ -3952,6 +3952,44 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
             "{tab}"
         );
     }
+    let panel_bounds = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
+    let info_bounds = visual.debug_bounds("CHAT_INFO_SCROLL").unwrap();
+    assert_eq!(
+        info_bounds.bottom(),
+        panel_bounds.bottom() - px(9.),
+        "Info keeps its 8 px bottom padding inside the 1 px island border"
+    );
+    let panel_ctx = host
+        .read_with(&visual, |root, cx| {
+            root.chat_panel_context(
+                root.active_chat_detail.as_ref().unwrap(),
+                crate::surfaces::side_panel::PanelSurface::Chat,
+                cx,
+            )
+        })
+        .unwrap();
+    let changes_selector: &'static str =
+        Box::leak(format!("CHANGES_VIEW {panel_ctx:?}").into_boxed_str());
+    let files_selector: &'static str =
+        Box::leak(format!("FILES_VIEW {panel_ctx:?}").into_boxed_str());
+
+    click_selector(&mut visual, "PANEL_TAB Changes");
+    let panel_bounds = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
+    let changes_view_bounds = visual.debug_bounds(changes_selector).unwrap();
+    assert_eq!(
+        changes_view_bounds.bottom(),
+        panel_bounds.bottom() - px(1.),
+        "Changes fills to the bottom of the island without an 8 px gap"
+    );
+    click_selector(&mut visual, "PANEL_TAB Files");
+    let panel_bounds = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
+    let files_view_bounds = visual.debug_bounds(files_selector).unwrap();
+    assert_eq!(
+        files_view_bounds.bottom(),
+        panel_bounds.bottom() - px(1.),
+        "Files fills to the bottom of the island without an 8 px gap"
+    );
+    click_selector(&mut visual, "PANEL_TAB Info");
     let unmax_panel_width = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap().size.width;
     click_selector(&mut visual, "SIDE_PANEL_MAXIMIZE");
     assert!(host

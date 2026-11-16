@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash as _, Hasher as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -331,6 +331,7 @@ pub(crate) struct AppStore {
     pub(crate) nodes: Vec<NodeRow>,
     pub(crate) projects: Vec<ProjectRow>,
     pub(crate) missions: Vec<MissionSummary>,
+    pub(crate) mission_sessions: BTreeMap<String, Vec<runner_core::protocol::SessionRow>>,
     pub(crate) session_statuses: BTreeMap<String, runner_core::protocol::status::AgentStatus>,
     pub(crate) session_activity: BTreeMap<String, SessionActivityState>,
     mission_agent_ids: std::collections::BTreeSet<String>,
@@ -721,6 +722,7 @@ impl AppStore {
             nodes: Vec::new(),
             projects: Vec::new(),
             missions: Vec::new(),
+            mission_sessions: BTreeMap::new(),
             session_statuses: BTreeMap::new(),
             session_activity: BTreeMap::new(),
             mission_agent_ids: Default::default(),
@@ -800,8 +802,11 @@ impl AppStore {
                 let _ = weak.update(cx, |this, cx| {
                     match result {
                         Ok(missions) => {
-                            match mission_agent_ids(&core, &missions) {
-                                Ok(ids) => this.mission_agent_ids = ids,
+                            match mission_sessions_and_agent_ids(&core, &missions) {
+                                Ok((ids, sessions)) => {
+                                    this.mission_agent_ids = ids;
+                                    this.mission_sessions = sessions;
+                                }
                                 Err(error) => this.record_error(error.to_string()),
                             }
                             this.missions = missions;
@@ -1029,8 +1034,11 @@ impl AppStore {
     fn refresh_missions_blocking_inner(&mut self) {
         match self.client.mission_list_summary_impl(None) {
             Ok(missions) => {
-                match mission_agent_ids(&self.client, &missions) {
-                    Ok(ids) => self.mission_agent_ids = ids,
+                match mission_sessions_and_agent_ids(&self.client, &missions) {
+                    Ok((ids, sessions)) => {
+                        self.mission_agent_ids = ids;
+                        self.mission_sessions = sessions;
+                    }
                     Err(error) => self.record_error(error.to_string()),
                 }
                 self.missions = missions;
@@ -1038,6 +1046,12 @@ impl AppStore {
             }
             Err(error) => self.record_error(error.to_string()),
         }
+    }
+
+    pub(crate) fn live_terminal_cwd(&self, session_id: &str) -> Option<&Path> {
+        self.terminal_labels
+            .get(session_id)
+            .and_then(|(_, cwd, _)| cwd.as_deref())
     }
 
     pub(crate) fn working_agent_count(&self) -> usize {
@@ -1114,19 +1128,27 @@ impl AppStore {
     }
 }
 
-fn mission_agent_ids(
+type MissionSessionIndex = (
+    BTreeSet<String>,
+    BTreeMap<String, Vec<runner_core::protocol::SessionRow>>,
+);
+
+fn mission_sessions_and_agent_ids(
     client: &DaemonClient,
     missions: &[MissionSummary],
-) -> runner_core::protocol::ClientResult<std::collections::BTreeSet<String>> {
+) -> runner_core::protocol::ClientResult<MissionSessionIndex> {
     let mut ids = std::collections::BTreeSet::new();
+    let mut by_mission = BTreeMap::new();
     for mission in missions {
-        for row in client.session_list(&mission.mission.id)? {
+        let rows = client.session_list(&mission.mission.id)?;
+        for row in &rows {
             if row.runtime != "shell" {
-                ids.insert(row.session.id);
+                ids.insert(row.session.id.clone());
             }
         }
+        by_mission.insert(mission.mission.id.clone(), rows);
     }
-    Ok(ids)
+    Ok((ids, by_mission))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

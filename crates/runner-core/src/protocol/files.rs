@@ -57,6 +57,9 @@ pub struct GitCheckout {
     pub branch: Option<String>,
     /// HEAD's short commit; `None` before the first commit.
     pub commit: Option<String>,
+    /// The repository's worktrees from `git worktree list`, without uncommitted counts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worktrees: Vec<WorktreeEntry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,8 +82,15 @@ pub struct FilesRoot {
     /// when it is the root itself or outside it.
     pub cwd: Option<String>,
     pub source: FilesRootSource,
+    /// Top of the subject's own git checkout, when its working directory is inside git.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_checkout_top: Option<PathBuf>,
+    /// Branch or folder name of a saved checkout that was removed and forgotten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub removed_checkout: Option<String>,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FilesRootOutcome {
@@ -333,6 +343,10 @@ pub struct WorktreeEntry {
     pub kind: WorktreeKind,
     pub locked: bool,
     pub prunable: bool,
+    /// Uncommitted file count from `git status --porcelain=v2 -z`; `None`
+    /// before status runs, or when status fails or the worktree is prunable.
+    #[serde(default)]
+    pub uncommitted: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

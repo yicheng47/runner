@@ -340,7 +340,10 @@ impl MissionWorkspace {
                     .min_h(px(0.))
                     .flex()
                     .flex_col()
-                    .pb(rems(8. / 16.))
+                    .when(
+                        !matches!(shown, Some(PanelViewId::Files | PanelViewId::Changes)),
+                        |body| body.pb(rems(8. / 16.)),
+                    )
                     .child(
                         div()
                             .flex_1()

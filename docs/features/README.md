@@ -6,6 +6,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 
 ## Active
 
+- [1345 — Changes: choose the checkout and the base](./1345-changes-checkout-and-base.md) — #1141's follow-up: a Base row under the branch with a branch picker, Auto by default and remembered per checkout and branch; the branch row as a picker of the repository's worktrees, sharing Files' root; the diff header without its comparison label; and Files and Changes reaching the panel's bottom ([#1345](https://github.com/yicheng47/runner/issues/1345)).
 - [559 — Command palette](./559-command-palette.md) — command mode over the existing keymap and quick-switcher overlay ([#559](https://github.com/yicheng47/runner/issues/559)).
 - [1263 — Remote route hardening](./1263-remote-route-hardening.md) — twenty review findings in the remote control route, fixed in four phases: route robustness and an echo reading, the host's relay loop and flow control, hello inside the handshake with terminal resume, and a leaner data path ([#1263](https://github.com/yicheng47/runner/issues/1263)). Phases 1 and 2 shipped in 0.19.8; phases 3 and 4 remain open.
 - [1171 — First-run setup](./1171-onboarding.md) — on first launch, setup takes the launcher's place: the detected agents with Install for npm-packaged ones as a background task, a coder and reviewer starter crew on different runtimes created by default, and Start your first chat; new databases are no longer seeded with a crew ([#1171](https://github.com/yicheng47/runner/issues/1171)).

@@ -1,7 +1,7 @@
 //! The Changes view's service (#1141): commits since base, changed files,
 //! per-file diffs, working-tree git blob hashing, and viewed marks.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -10,9 +10,9 @@ use std::sync::Mutex;
 use chrono::{DateTime, Utc};
 use runner_core::companion::TerminalBytes;
 use runner_core::protocol::changes::{
-    ChangedFile, ChangesCommits, ChangesDiff, ChangesFiles, ChangesTarget, ChangesTotals,
-    ChangesViewed, CommitSummary, DiffBody, DiffCounts, DiffHunk, DiffOp, ModeChange,
-    CHANGES_VIEWED_EVENT, MAX_COMMITS,
+    ChangedFile, ChangesBranches, ChangesCommits, ChangesDiff, ChangesFiles, ChangesTarget,
+    ChangesTotals, ChangesViewed, CommitSummary, DiffBody, DiffCounts, DiffHunk, DiffOp,
+    ModeChange, RemoteBranches, CHANGES_VIEWED_EVENT, MAX_COMMITS,
 };
 use runner_core::protocol::files::{FileStatus, BINARY_SNIFF_BYTES, MAX_READ_BYTES};
 
@@ -132,8 +132,9 @@ impl ViewedMarks {
 }
 
 /// Lists branch state, resolved base, and commits reachable from `HEAD` since base.
-pub fn changes_commits(core: &AppCore, root: &Path) -> Result<ChangesCommits> {
+pub fn changes_commits(core: &AppCore, root: &Path, base: Option<&str>) -> Result<ChangesCommits> {
     let (git, repo) = resolve_checkout(core, root)?;
+    let worktrees = git.worktrees(&repo.top).unwrap_or_default();
     let branch = try_run_git(
         &git,
         &repo.top,
@@ -149,13 +150,20 @@ pub fn changes_commits(core: &AppCore, root: &Path) -> Result<ChangesCommits> {
     )?
     .map(trimmed_utf8)
     .filter(|s| !s.is_empty()) else {
+        let base_missing = match base {
+            Some(requested) => verify_branch_ref(&git, &repo.top, requested)?.is_none(),
+            None => false,
+        };
         return Ok(ChangesCommits {
             checkout_top: repo.top,
             branch,
             head_commit: None,
             base: None,
+            auto_base: None,
+            base_missing,
             commits: Vec::new(),
             total: 0,
+            worktrees,
         });
     };
 
@@ -174,14 +182,40 @@ pub fn changes_commits(core: &AppCore, root: &Path) -> Result<ChangesCommits> {
     .filter(|s| !s.is_empty())
     .unwrap_or_else(|| short_sha(&head_full));
 
-    let Some((base_name, merge_base)) = resolve_base(&git, &repo.top)? else {
+    let auto = resolve_auto_base(&git, &repo.top)?;
+    let auto_base = auto.as_ref().map(|(name, _)| name.clone());
+    let (used_base, merge_base, base_missing) = match base {
+        None => (
+            auto.as_ref().map(|(name, _)| name.clone()),
+            auto.map(|(_, merge_base)| merge_base),
+            false,
+        ),
+        Some(requested) => match verify_branch_ref(&git, &repo.top, requested)? {
+            Some((short_name, full_ref)) => {
+                let merge_base = try_run_git(&git, &repo.top, &["merge-base", "HEAD", &full_ref])?
+                    .map(trimmed_utf8)
+                    .filter(|s| !s.is_empty());
+                (Some(short_name), merge_base, false)
+            }
+            None => (
+                auto.as_ref().map(|(name, _)| name.clone()),
+                auto.map(|(_, merge_base)| merge_base),
+                true,
+            ),
+        },
+    };
+
+    let Some(merge_base) = merge_base else {
         return Ok(ChangesCommits {
             checkout_top: repo.top,
             branch,
             head_commit: Some(head_short),
-            base: None,
+            base: used_base,
+            auto_base,
+            base_missing,
             commits: Vec::new(),
             total: 0,
+            worktrees,
         });
     };
 
@@ -209,16 +243,104 @@ pub fn changes_commits(core: &AppCore, root: &Path) -> Result<ChangesCommits> {
         checkout_top: repo.top,
         branch,
         head_commit: Some(head_short),
-        base: Some(base_name),
+        base: used_base,
+        auto_base,
+        base_missing,
         commits,
         total,
+        worktrees,
+    })
+}
+
+/// Lists local branches and remote-tracking branches grouped by remote, without `HEAD` symrefs.
+pub fn changes_branches(core: &AppCore, root: &Path) -> Result<ChangesBranches> {
+    let (git, repo) = resolve_checkout(core, root)?;
+    let configured_remotes = list_remotes(&git, &repo.top)?;
+    let mut remotes_by_len = configured_remotes;
+    remotes_by_len.sort_by_key(|b| std::cmp::Reverse(b.len()));
+
+    let raw = run_git(
+        &git,
+        &repo.top,
+        &[
+            "for-each-ref",
+            "--format=%(HEAD)%00%(refname)%00%(symref)%00%(upstream)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )?;
+
+    let mut local = Vec::new();
+    let mut by_remote: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut upstream: Option<String> = None;
+
+    for line in raw.split(|&b| b == b'\n').filter(|line| !line.is_empty()) {
+        let mut parts = line.split(|&b| b == 0);
+        let head = String::from_utf8_lossy(parts.next().unwrap_or_default());
+        let refname = String::from_utf8_lossy(parts.next().unwrap_or_default());
+        let symref = String::from_utf8_lossy(parts.next().unwrap_or_default());
+        let up = String::from_utf8_lossy(parts.next().unwrap_or_default());
+
+        if let Some(short) = refname.strip_prefix("refs/heads/") {
+            if !short.is_empty() {
+                local.push(short.to_owned());
+            }
+            if head.trim() == "*" && !up.is_empty() {
+                upstream = Some(up.into_owned());
+            }
+        } else if let Some(short) = refname.strip_prefix("refs/remotes/") {
+            if !symref.is_empty() {
+                continue;
+            }
+            let matched = remotes_by_len
+                .iter()
+                .find_map(|remote| {
+                    short
+                        .strip_prefix(remote.as_str())
+                        .and_then(|rest| rest.strip_prefix('/'))
+                        .map(|branch| (remote.as_str(), branch))
+                })
+                .or_else(|| short.split_once('/'));
+            let Some((remote, branch_part)) = matched else {
+                continue;
+            };
+            if branch_part.is_empty() || branch_part == "HEAD" {
+                continue;
+            }
+            by_remote
+                .entry(remote.to_owned())
+                .or_default()
+                .push(short.to_owned());
+        }
+    }
+
+    let mut remotes = Vec::with_capacity(by_remote.len());
+    if let Some(origin_branches) = by_remote.remove("origin") {
+        remotes.push(RemoteBranches {
+            remote: "origin".to_owned(),
+            branches: origin_branches,
+        });
+    }
+    for (remote, branches) in by_remote {
+        remotes.push(RemoteBranches { remote, branches });
+    }
+
+    Ok(ChangesBranches {
+        local,
+        remotes,
+        upstream,
     })
 }
 
 /// Lists changed files under `root` for `target`, annotated with viewed marks and totals.
-pub fn changes_files(core: &AppCore, root: &Path, target: &ChangesTarget) -> Result<ChangesFiles> {
+pub fn changes_files(
+    core: &AppCore,
+    root: &Path,
+    target: &ChangesTarget,
+    base: Option<&str>,
+) -> Result<ChangesFiles> {
     let (git, repo) = resolve_checkout(core, root)?;
-    let (_, entries) = collect_changed_entries(&git, &repo, root, target)?;
+    let (_, entries) = collect_changed_entries(&git, &repo, root, target, base)?;
 
     let tracks_changes = target_tracks_changes(target);
     let flags = core.files.changes_viewed.flags_for(
@@ -269,10 +391,11 @@ pub fn changes_diff(
     root: &Path,
     target: &ChangesTarget,
     path: &str,
+    base: Option<&str>,
 ) -> Result<ChangesDiff> {
     let (git, repo) = resolve_checkout(core, root)?;
     let (norm_rel, abs_path) = validate_relative_path(root, path)?;
-    let (ctx, entries) = collect_changed_entries(&git, &repo, root, target)?;
+    let (ctx, entries) = collect_changed_entries(&git, &repo, root, target, base)?;
     let entry = entries
         .into_iter()
         .find(|entry| entry.root_rel_path == norm_rel)
@@ -674,7 +797,7 @@ fn short_sha(full: &str) -> String {
     full.chars().take(7).collect()
 }
 
-fn resolve_base(git: &Git, top: &Path) -> Result<Option<(String, String)>> {
+fn resolve_auto_base(git: &Git, top: &Path) -> Result<Option<(String, String)>> {
     let ref_exists = |full_ref: &str| -> Result<bool> {
         let query = format!("{full_ref}^{{commit}}");
         Ok(try_run_git(git, top, &["rev-parse", "--verify", "--quiet", &query])?.is_some())
@@ -728,10 +851,109 @@ fn resolve_base(git: &Git, top: &Path) -> Result<Option<(String, String)>> {
     Ok(Some((name, merge_base)))
 }
 
-fn has_origin_remote(git: &Git, top: &Path) -> Result<bool> {
+/// Verifies `requested` as a real local (`refs/heads/…`) or remote-tracking
+/// (`refs/remotes/…`) branch ref, refusing tags, commit ids, revision suffixes
+/// and `HEAD` symrefs. Returns `(short_name, full_ref)` when valid.
+fn verify_branch_ref(git: &Git, top: &Path, requested: &str) -> Result<Option<(String, String)>> {
+    if requested.is_empty()
+        || requested.starts_with('-')
+        || requested == "HEAD"
+        || requested.bytes().any(|b| b <= 0x20 || b == 0x7f)
+    {
+        return Ok(None);
+    }
+
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    if let Some(short) = requested.strip_prefix("refs/heads/") {
+        if !short.is_empty() {
+            candidates.push((short.to_owned(), requested.to_owned()));
+        }
+    } else if let Some(short) = requested.strip_prefix("refs/remotes/") {
+        if short.contains('/') && !short.ends_with("/HEAD") {
+            candidates.push((short.to_owned(), requested.to_owned()));
+        }
+    } else if requested.starts_with("refs/") {
+        return Ok(None);
+    } else if requested.contains('/') && !requested.ends_with("/HEAD") {
+        let remotes = list_remotes(git, top)?;
+        let starts_with_remote = remotes.iter().any(|remote| {
+            requested
+                .strip_prefix(remote.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+        });
+        let local_candidate = (requested.to_owned(), format!("refs/heads/{requested}"));
+        let remote_candidate = (requested.to_owned(), format!("refs/remotes/{requested}"));
+        if starts_with_remote {
+            candidates.push(remote_candidate);
+            candidates.push(local_candidate);
+        } else {
+            candidates.push(local_candidate);
+            candidates.push(remote_candidate);
+        }
+    } else if !requested.contains('/') {
+        candidates.push((requested.to_owned(), format!("refs/heads/{requested}")));
+    }
+
+    for (short_name, full_ref) in candidates {
+        let Some(sym) = try_run_git(
+            git,
+            top,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--symbolic-full-name",
+                &full_ref,
+            ],
+        )?
+        else {
+            continue;
+        };
+        if trimmed_utf8(sym) != full_ref {
+            continue;
+        }
+        let commit_query = format!("{full_ref}^{{commit}}");
+        let Some(sha) = try_run_git(
+            git,
+            top,
+            &["rev-parse", "--verify", "--quiet", &commit_query],
+        )?
+        else {
+            continue;
+        };
+        if !trimmed_utf8(sha).is_empty() {
+            return Ok(Some((short_name, full_ref)));
+        }
+    }
+    Ok(None)
+}
+
+fn resolve_branch_merge_base(git: &Git, top: &Path, base: Option<&str>) -> Result<Option<String>> {
+    if let Some(requested) = base
+        && let Some((_, full_ref)) = verify_branch_ref(git, top, requested)?
+    {
+        return Ok(try_run_git(git, top, &["merge-base", "HEAD", &full_ref])?
+            .map(trimmed_utf8)
+            .filter(|s| !s.is_empty()));
+    }
+    Ok(resolve_auto_base(git, top)?.map(|(_, merge_base)| merge_base))
+}
+
+fn list_remotes(git: &Git, top: &Path) -> Result<Vec<String>> {
     let remotes = run_git(git, top, &["remote"])?;
     let text = String::from_utf8_lossy(&remotes);
-    Ok(text.lines().any(|line| line.trim() == "origin"))
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+fn has_origin_remote(git: &Git, top: &Path) -> Result<bool> {
+    Ok(list_remotes(git, top)?
+        .iter()
+        .any(|remote| remote == "origin"))
 }
 
 enum DiffContext {
@@ -771,10 +993,11 @@ fn collect_changed_entries(
     repo: &RepoPaths,
     root: &Path,
     target: &ChangesTarget,
+    base: Option<&str>,
 ) -> Result<(DiffContext, Vec<InternalDiffEntry>)> {
     match target {
         ChangesTarget::Uncommitted => collect_uncommitted_entries(git, repo, root),
-        ChangesTarget::Branch => collect_branch_entries(git, repo, root),
+        ChangesTarget::Branch => collect_branch_entries(git, repo, root, base),
         ChangesTarget::Commit(id) => collect_commit_entries(git, repo, root, id),
     }
 }
@@ -783,6 +1006,7 @@ fn collect_branch_entries(
     git: &Git,
     repo: &RepoPaths,
     root: &Path,
+    base: Option<&str>,
 ) -> Result<(DiffContext, Vec<InternalDiffEntry>)> {
     let Some(head_sha) = try_run_git(
         git,
@@ -800,7 +1024,7 @@ fn collect_branch_entries(
         ));
     };
 
-    let Some((_, merge_base)) = resolve_base(git, &repo.top)? else {
+    let Some(merge_base) = resolve_branch_merge_base(git, &repo.top, base)? else {
         return Ok((
             DiffContext::Commit {
                 parent_sha: head_sha.clone(),

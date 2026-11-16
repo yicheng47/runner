@@ -101,7 +101,7 @@ These keys act while the side panel's Files view has focus and, except for zoom,
 | Action | macOS | Windows / Linux |
 | --- | --- | --- |
 | Select previous / next file or commit; in the diff, move the cursor line | ↑ / ↓ or k / j | ↑ / ↓ or k / j |
-| Move focus between Commits and the changed files | Tab / ⇧Tab | Tab / Shift+Tab |
+| Move focus through the changed files, Commits, Base and the checkout controls | Tab / ⇧Tab | Tab / Shift+Tab |
 | Move focus into the diff | Return | Enter |
 | Return focus from the diff to the list | Esc | Esc |
 | Mark or unmark the selected file as viewed, in the files list | Space | Space |

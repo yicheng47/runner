@@ -6,7 +6,7 @@
 //! [`CHANGES_VIEWED_EVENT`] key by the checkout's top path and paths relative
 //! to that checkout top so windows on different subfolders share marks.
 
-use super::files::FileStatus;
+use super::files::{FileStatus, WorktreeEntry};
 use crate::companion::TerminalBytes;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -51,10 +51,39 @@ pub struct ChangesCommits {
     pub head_commit: Option<String>,
     /// Base ref name (`origin/main`, `origin/master`, local `main`, etc.), if resolved.
     pub base: Option<String>,
+    /// Ref that Auto resolves to, regardless of any chosen base.
+    #[serde(default)]
+    pub auto_base: Option<String>,
+    /// True when a requested base ref was missing or invalid and fell back to Auto.
+    #[serde(default)]
+    pub base_missing: bool,
     /// Commits reachable from `HEAD` and not from `base`, newest first, at most [`MAX_COMMITS`].
     pub commits: Vec<CommitSummary>,
     /// Total commits reachable from `HEAD` and not from `base`, including older ones not returned.
     pub total: usize,
+    /// The repository's worktrees from `git worktree list`, without uncommitted counts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub worktrees: Vec<WorktreeEntry>,
+}
+
+/// One remote's branches as short names (`origin/main`, `upstream/main`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteBranches {
+    pub remote: String,
+    #[serde(default)]
+    pub branches: Vec<String>,
+}
+
+/// Local and remote-tracking branches returned by `changes_branches`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangesBranches {
+    #[serde(default)]
+    pub local: Vec<String>,
+    #[serde(default)]
+    pub remotes: Vec<RemoteBranches>,
+    /// Short upstream ref of the current branch (`origin/feat/x`), if configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
 }
 
 /// Added and removed line counts, or a binary indicator.

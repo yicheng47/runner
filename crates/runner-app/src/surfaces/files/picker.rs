@@ -1,11 +1,34 @@
 //! The root picker's list: Choose folder…, then the repository's worktrees,
 //! then projects and recent folders; and what its field's text means.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use gpui::App;
 use runner_core::protocol::files::{WorktreeEntry, WorktreeKind};
+use runner_core::protocol::SessionStatus;
 
+use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelSurface};
 use crate::text_util::{abbreviate_home, HomePath};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CheckoutSessionKind {
+    Chat,
+    Terminal,
+    MissionSlot(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CheckoutSessionCandidate {
+    pub(crate) cwd: PathBuf,
+    pub(crate) kind: CheckoutSessionKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CheckoutSessionLabel {
+    pub(crate) text: String,
+    pub(crate) is_own: bool,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PickerKind {
@@ -23,6 +46,8 @@ pub(crate) struct PickerItem {
     /// `None` for Choose folder….
     pub(crate) path: Option<PathBuf>,
     pub(crate) current: bool,
+    pub(crate) uncommitted: Option<usize>,
+    pub(crate) session_label: Option<CheckoutSessionLabel>,
 }
 
 pub(crate) fn folder_name(path: &Path) -> String {
@@ -31,9 +56,236 @@ pub(crate) fn folder_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+pub(crate) fn same_checkout_path(a: &Path, b: &Path) -> bool {
+    runner_core::app_paths::same_checkout_path(a, b)
+}
+
+fn normalized_checkout_path(path: &Path) -> PathBuf {
+    runner_core::app_paths::normalize_checkout_path(path)
+}
+
+/// Shortens a checkout's path from the left (`…/feat-645-m4-host-api` for a
+/// linked worktree under `.worktrees/`, or `~/repos/…/runner` when deep).
+pub(crate) fn shorten_checkout_path(path: &Path, home: Option<&Path>) -> String {
+    if path
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .is_some_and(|name| name == ".worktrees")
+        && let Some(leaf) = path.file_name()
+    {
+        return format!("…/{}", leaf.to_string_lossy());
+    }
+    let abbreviated = abbreviate_home(HomePath::Native(path, home)).replace('\\', "/");
+    let parts: Vec<&str> = abbreviated
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    if abbreviated.starts_with("~/") {
+        if parts.len() <= 3 {
+            abbreviated
+        } else {
+            format!("~/{}/…/{}", parts[1], parts[parts.len() - 1])
+        }
+    } else if parts.len() <= 2 {
+        abbreviated
+    } else {
+        format!("…/{}", parts[parts.len() - 1])
+    }
+}
+
+pub(crate) fn own_surface_session_text(surface: PanelSurface) -> String {
+    crate::i18n::text(match surface {
+        PanelSurface::Chat => "changes.session_this_chat",
+        PanelSurface::Terminal => "changes.session_this_terminal",
+        PanelSurface::Mission => "changes.session_this_mission",
+    })
+    .to_owned()
+}
+
+/// Matches running sessions to their deepest containing worktree and builds the
+/// right-hand session label for each worktree path.
+pub(crate) fn checkout_session_labels(
+    surface: PanelSurface,
+    own_checkout_top: Option<&Path>,
+    worktrees: &[WorktreeEntry],
+    candidates: &[CheckoutSessionCandidate],
+) -> BTreeMap<PathBuf, CheckoutSessionLabel> {
+    let live: Vec<(PathBuf, PathBuf)> = worktrees
+        .iter()
+        .filter(|wt| !wt.prunable)
+        .map(|wt| (wt.path.clone(), normalized_checkout_path(&wt.path)))
+        .collect();
+    let own_norm = own_checkout_top.map(normalized_checkout_path);
+
+    let mut buckets: BTreeMap<PathBuf, Vec<&CheckoutSessionKind>> = BTreeMap::new();
+    for candidate in candidates {
+        let cwd_norm = normalized_checkout_path(&candidate.cwd);
+        let matched = live
+            .iter()
+            .filter(|(_, wt_norm)| {
+                runner_core::app_paths::normalized_checkout_starts_with(&cwd_norm, wt_norm)
+            })
+            .max_by_key(|(_, wt_norm)| wt_norm.components().count());
+        if let Some((raw_path, _)) = matched {
+            buckets
+                .entry(raw_path.clone())
+                .or_default()
+                .push(&candidate.kind);
+        }
+    }
+
+    let mut labels = BTreeMap::new();
+    for (raw_path, wt_norm) in &live {
+        if own_norm
+            .as_ref()
+            .is_some_and(|own| runner_core::app_paths::same_normalized_checkout_path(own, wt_norm))
+        {
+            labels.insert(
+                raw_path.clone(),
+                CheckoutSessionLabel {
+                    text: own_surface_session_text(surface),
+                    is_own: true,
+                },
+            );
+            continue;
+        }
+        let Some(entries) = buckets.get(raw_path) else {
+            continue;
+        };
+        let text = match entries.as_slice() {
+            [] => continue,
+            [CheckoutSessionKind::Chat] => crate::i18n::text("changes.session_chat").to_owned(),
+            [CheckoutSessionKind::Terminal] => {
+                crate::i18n::text("changes.session_terminal").to_owned()
+            }
+            [CheckoutSessionKind::MissionSlot(slot)] => {
+                crate::i18n::tf("changes.session_mission_slot", &[("slot", slot.clone())])
+            }
+            many => crate::i18n::tn("changes.session_count", many.len()),
+        };
+        labels.insert(
+            raw_path.clone(),
+            CheckoutSessionLabel {
+                text,
+                is_own: false,
+            },
+        );
+    }
+    labels
+}
+
+pub(crate) fn collect_checkout_session_labels(
+    context: &PanelContext,
+    own_checkout_top: Option<&Path>,
+    worktrees: &[WorktreeEntry],
+    cx: &App,
+) -> BTreeMap<PathBuf, CheckoutSessionLabel> {
+    let store = crate::app_store::global_app_store(cx).read(cx);
+    let project_cwd = |project_id: Option<&str>| -> Option<PathBuf> {
+        let id = project_id?;
+        store
+            .projects
+            .iter()
+            .find(|project| project.id == id && !project.cwd.trim().is_empty())
+            .map(|project| PathBuf::from(&project.cwd))
+    };
+
+    let mut candidates = Vec::new();
+    for entry in &store.sessions {
+        if entry.archived_at.is_some() || entry.status != SessionStatus::Running {
+            continue;
+        }
+        if matches!(&context.subject, PanelSubject::Session(id) if id == &entry.session_id) {
+            continue;
+        }
+        let is_shell = entry.agent_runtime == "shell";
+        let cwd = if is_shell {
+            store
+                .live_terminal_cwd(&entry.session_id)
+                .map(Path::to_path_buf)
+        } else {
+            None
+        }
+        .or_else(|| {
+            entry
+                .cwd
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .map(PathBuf::from)
+        })
+        .or_else(|| project_cwd(entry.project_id.as_deref()));
+
+        if let Some(cwd) = cwd {
+            candidates.push(CheckoutSessionCandidate {
+                cwd,
+                kind: if is_shell {
+                    CheckoutSessionKind::Terminal
+                } else {
+                    CheckoutSessionKind::Chat
+                },
+            });
+        }
+    }
+
+    for summary in &store.missions {
+        if summary.mission.archived_at.is_some() {
+            continue;
+        }
+        if matches!(&context.subject, PanelSubject::Mission(id) if id == &summary.mission.id) {
+            continue;
+        }
+        let Some(rows) = store.mission_sessions.get(&summary.mission.id) else {
+            continue;
+        };
+        let mission_fallback_cwd = summary
+            .mission
+            .cwd
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from)
+            .or_else(|| project_cwd(summary.mission.project_id.as_deref()));
+
+        for row in rows {
+            if row.session.status != SessionStatus::Running {
+                continue;
+            }
+            let is_shell = row.runtime == "shell";
+            let cwd = if is_shell {
+                store
+                    .live_terminal_cwd(&row.session.id)
+                    .map(Path::to_path_buf)
+            } else {
+                None
+            }
+            .or_else(|| {
+                row.session
+                    .cwd
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(PathBuf::from)
+            })
+            .or_else(|| mission_fallback_cwd.clone());
+
+            if let Some(cwd) = cwd {
+                candidates.push(CheckoutSessionCandidate {
+                    cwd,
+                    kind: if is_shell {
+                        CheckoutSessionKind::Terminal
+                    } else {
+                        CheckoutSessionKind::MissionSlot(row.handle.clone())
+                    },
+                });
+            }
+        }
+    }
+
+    checkout_session_labels(context.surface, own_checkout_top, worktrees, &candidates)
+}
+
 pub(crate) struct PickerSources<'a> {
     pub(crate) current: &'a Path,
     pub(crate) worktrees: &'a [WorktreeEntry],
+    pub(crate) session_labels: &'a BTreeMap<PathBuf, CheckoutSessionLabel>,
     pub(crate) recent: &'a [PathBuf],
     /// `(name, folder)`; empty unless the subject is outside a project.
     pub(crate) projects: &'a [(String, PathBuf)],
@@ -44,7 +296,11 @@ pub(crate) struct PickerSources<'a> {
 }
 
 pub(crate) fn picker_items(sources: PickerSources<'_>) -> Vec<PickerItem> {
-    let mut worktrees = sources.worktrees.iter().collect::<Vec<_>>();
+    let mut worktrees = sources
+        .worktrees
+        .iter()
+        .filter(|worktree| !worktree.prunable)
+        .collect::<Vec<_>>();
     worktrees.sort_by_key(|worktree| worktree.kind != WorktreeKind::Main);
     let mut items = vec![PickerItem {
         kind: PickerKind::ChooseFolder,
@@ -52,6 +308,8 @@ pub(crate) fn picker_items(sources: PickerSources<'_>) -> Vec<PickerItem> {
         subtitle: String::new(),
         path: None,
         current: false,
+        uncommitted: None,
+        session_label: None,
     }];
     items.extend(worktrees.into_iter().map(|worktree| {
         let mut subtitle = vec![worktree
@@ -66,12 +324,18 @@ pub(crate) fn picker_items(sources: PickerSources<'_>) -> Vec<PickerItem> {
             kind: PickerKind::Worktree(worktree.kind),
             title: folder_name(&worktree.path),
             subtitle: subtitle.join(" · "),
-            current: worktree.path == sources.current,
+            current: same_checkout_path(&worktree.path, sources.current),
             path: Some(worktree.path.clone()),
+            uncommitted: worktree.uncommitted,
+            session_label: sources.session_labels.get(&worktree.path).cloned(),
         }
     }));
     let listed = |items: &[PickerItem], path: &Path| {
-        items.iter().any(|item| item.path.as_deref() == Some(path))
+        items.iter().any(|item| {
+            item.path
+                .as_deref()
+                .is_some_and(|p| same_checkout_path(p, path))
+        })
     };
     for (name, path) in sources.projects {
         if !listed(&items, path) {
@@ -79,8 +343,10 @@ pub(crate) fn picker_items(sources: PickerSources<'_>) -> Vec<PickerItem> {
                 kind: PickerKind::Project,
                 title: name.clone(),
                 subtitle: abbreviate_home(HomePath::Native(path, sources.home)),
-                current: path == sources.current,
+                current: same_checkout_path(path, sources.current),
                 path: Some(path.clone()),
+                uncommitted: None,
+                session_label: None,
             });
         }
     }
@@ -90,8 +356,10 @@ pub(crate) fn picker_items(sources: PickerSources<'_>) -> Vec<PickerItem> {
                 kind: PickerKind::Recent,
                 title: folder_name(path),
                 subtitle: abbreviate_home(HomePath::Native(path, sources.home)),
-                current: path == sources.current,
+                current: same_checkout_path(path, sources.current),
                 path: Some(path.clone()),
+                uncommitted: None,
+                session_label: None,
             });
         }
     }
@@ -147,6 +415,7 @@ mod tests {
             kind,
             locked: false,
             prunable: false,
+            uncommitted: None,
         }
     }
 
@@ -161,9 +430,11 @@ mod tests {
             worktree("/r/runner/.worktrees/detached", None, WorktreeKind::Linked),
         ];
         let recent = [PathBuf::from("/r/runner"), PathBuf::from("/home/me/notes")];
+        let session_labels = BTreeMap::new();
         picker_items(PickerSources {
             current: Path::new(current),
             worktrees: &worktrees,
+            session_labels: &session_labels,
             recent: &recent,
             projects,
             home: Some(Path::new("/home/me")),

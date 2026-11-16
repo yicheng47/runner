@@ -399,6 +399,8 @@ pub struct AppSettings {
     pub changes_view: bool,
     pub changes_tree_view: bool,
     pub changes_diff_mode: DiffViewMode,
+    #[serde(alias = "changes_bases")]
+    pub changes_bases: BTreeMap<String, String>,
     pub file_icons: crate::file_icons::IconSet,
     /// `None` follows the terminal's Font family.
     pub files_font_family: Option<TerminalFontFamily>,
@@ -472,6 +474,7 @@ impl Default for AppSettings {
             changes_view: true,
             changes_tree_view: false,
             changes_diff_mode: DiffViewMode::Unified,
+            changes_bases: BTreeMap::new(),
             file_icons: Default::default(),
             files_font_family: None,
             files_font_size: None,
@@ -556,6 +559,16 @@ impl AppSettings {
             .map(normalize_terminal_font_size);
         self.last_mission_terminal_ids
             .retain(|mission_id, session_id| !mission_id.is_empty() && !session_id.is_empty());
+        self.changes_bases = std::mem::take(&mut self.changes_bases)
+            .into_iter()
+            .filter(|(key, value)| !key.trim().is_empty() && !value.trim().is_empty())
+            .map(|(key, value)| {
+                (
+                    normalize_changes_base_entry_key(&key),
+                    value.trim().to_owned(),
+                )
+            })
+            .collect();
         self.default_crew_id = self.default_crew_id.trim().to_owned();
         self.default_working_dir = self.default_working_dir.trim().to_owned();
         self.default_runtime = self.default_runtime.trim().to_owned();
@@ -589,6 +602,57 @@ impl AppSettings {
         self.files_font_size.unwrap_or(self.terminal_font_size)
     }
 
+    pub fn changes_base(&self, checkout_top: &Path, branch: Option<&str>) -> Option<&str> {
+        let key = changes_base_key(checkout_top, branch);
+        if let Some(value) = self.changes_bases.get(&key) {
+            return Some(value.as_str());
+        }
+        self.changes_bases.iter().find_map(|(existing, value)| {
+            changes_base_keys_match(&normalize_changes_base_entry_key(existing), &key)
+                .then_some(value.as_str())
+        })
+    }
+
+    pub fn set_changes_base(
+        &mut self,
+        checkout_top: &Path,
+        branch: Option<&str>,
+        base: Option<&str>,
+    ) -> bool {
+        let key = changes_base_key(checkout_top, branch);
+        let stale_keys: Vec<String> = self
+            .changes_bases
+            .keys()
+            .filter(|existing| {
+                existing.as_str() != key
+                    && changes_base_keys_match(&normalize_changes_base_entry_key(existing), &key)
+            })
+            .cloned()
+            .collect();
+        match base.map(str::trim).filter(|b| !b.is_empty()) {
+            None => {
+                let mut removed = self.changes_bases.remove(&key).is_some();
+                for stale in stale_keys {
+                    removed |= self.changes_bases.remove(&stale).is_some();
+                }
+                removed
+            }
+            Some(chosen) => {
+                let mut changed = false;
+                for stale in stale_keys {
+                    changed |= self.changes_bases.remove(&stale).is_some();
+                }
+                match self.changes_bases.get(&key) {
+                    Some(existing) if existing == chosen => changed,
+                    _ => {
+                        self.changes_bases.insert(key, chosen.to_owned());
+                        true
+                    }
+                }
+            }
+        }
+    }
+
     pub fn model_runtimes(&self) -> Vec<Runtime> {
         runner_core::protocol::runtime_metadata::model_discovery_runtimes()
             .into_iter()
@@ -619,6 +683,41 @@ fn normalize_agent_set(values: BTreeSet<String>) -> BTreeSet<String> {
 
 pub fn settings_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join("ui-settings.json")
+}
+
+pub fn changes_base_key(checkout_top: &Path, branch: Option<&str>) -> String {
+    let normalized = runner_core::app_paths::normalize_checkout_path(checkout_top);
+    match branch.map(str::trim).filter(|b| !b.is_empty()) {
+        Some(branch) => format!("{}::{branch}", normalized.to_string_lossy()),
+        None => normalized.to_string_lossy().into_owned(),
+    }
+}
+
+fn normalize_changes_base_entry_key(raw_key: &str) -> String {
+    match raw_key.trim().split_once("::") {
+        Some((top, branch)) => changes_base_key(Path::new(top), Some(branch)),
+        None => changes_base_key(Path::new(raw_key.trim()), None),
+    }
+}
+
+fn changes_base_keys_match(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        match (a.split_once("::"), b.split_once("::")) {
+            (Some((top_a, branch_a)), Some((top_b, branch_b))) => {
+                top_a.eq_ignore_ascii_case(top_b) && branch_a == branch_b
+            }
+            (None, None) => a.eq_ignore_ascii_case(b),
+            _ => false,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 pub fn normalize_zoom(value: f32) -> f32 {
@@ -1702,4 +1801,62 @@ fn changes_diff_mode_defaults_to_unified_and_round_trips_split() {
 
     let unknown: AppSettings = serde_json::from_str(r#"{"changesDiffMode":"future"}"#).unwrap();
     assert_eq!(unknown.changes_diff_mode, DiffViewMode::Unified);
+}
+
+#[test]
+fn changes_bases_keys_by_checkout_and_branch_or_checkout_alone_and_auto_removes() {
+    let temp = tempfile::tempdir().unwrap();
+    let checkout_dir = temp.path().join("repo/.worktrees/feat-child");
+    fs::create_dir_all(&checkout_dir).unwrap();
+    let checkout = checkout_dir.as_path();
+    let canonical = runner_core::app_paths::normalize_checkout_path(checkout);
+    assert_eq!(
+        changes_base_key(checkout, Some("feat/child")),
+        format!("{}::feat/child", canonical.to_string_lossy())
+    );
+    assert_eq!(
+        changes_base_key(checkout, None),
+        canonical.to_string_lossy()
+    );
+
+    let mut settings = AppSettings::default();
+    assert_eq!(settings.changes_base(checkout, Some("feat/child")), None);
+    assert!(settings.set_changes_base(checkout, Some("feat/child"), Some("feat/umbrella")));
+    assert!(!settings.set_changes_base(&canonical, Some("feat/child"), Some("feat/umbrella")));
+    assert!(settings.set_changes_base(checkout, Some("other"), Some("origin/main")));
+    assert!(settings.set_changes_base(checkout, None, Some("upstream/main")));
+
+    assert_eq!(
+        settings.changes_base(&canonical, Some("feat/child")),
+        Some("feat/umbrella")
+    );
+    assert_eq!(
+        settings.changes_base(&canonical, Some("other")),
+        Some("origin/main")
+    );
+    assert_eq!(
+        settings.changes_base(&canonical, None),
+        Some("upstream/main")
+    );
+
+    // Picking Auto (`None`) removes only that branch's entry regardless of path spelling.
+    assert!(settings.set_changes_base(&canonical, Some("feat/child"), None));
+    assert!(!settings.set_changes_base(checkout, Some("feat/child"), None));
+    assert_eq!(settings.changes_base(checkout, Some("feat/child")), None);
+    assert_eq!(
+        settings.changes_base(checkout, Some("other")),
+        Some("origin/main")
+    );
+    assert_eq!(settings.changes_base(checkout, None), Some("upstream/main"));
+
+    // Round-trips JSON and accepts snake_case alias.
+    let saved: AppSettings =
+        serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+    assert_eq!(saved.changes_bases, settings.changes_bases);
+    let aliased: AppSettings =
+        serde_json::from_str(r#"{"changes_bases":{"/repo::feat/x":"feat/u"}}"#).unwrap();
+    assert_eq!(
+        aliased.changes_base(Path::new("/repo"), Some("feat/x")),
+        Some("feat/u")
+    );
 }

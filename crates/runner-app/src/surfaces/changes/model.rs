@@ -1,13 +1,19 @@
-//! Pure selection, grouping, comparison-label and keyboard helpers for Changes (#1141).
+//! Pure selection, grouping, picker and keyboard helpers for Changes (#1141, #1345).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use gpui::Hsla;
 use runner_core::protocol::changes::{
-    ChangedFile, ChangesCommits, ChangesTarget, CommitSummary, ModeChange,
+    ChangedFile, ChangesBranches, ChangesCommits, ChangesTarget, CommitSummary, ModeChange,
 };
-use runner_core::protocol::files::FileStatus;
+use runner_core::protocol::files::{
+    FileStatus, FilesRoot, FilesRootSource, WorktreeEntry, WorktreeKind,
+};
 
+use crate::surfaces::files::picker::{
+    same_checkout_path, shorten_checkout_path, CheckoutSessionLabel,
+};
 use crate::theme;
 
 /// Which row in the Commits section is active.
@@ -35,15 +41,6 @@ pub(crate) enum FocusPlace {
     #[default]
     Files,
     Diff,
-}
-
-impl FocusPlace {
-    pub(crate) fn toggle_list_section(self) -> Self {
-        match self {
-            Self::Commits => Self::Files,
-            Self::Files | Self::Diff => Self::Commits,
-        }
-    }
 }
 
 /// Whether the Commits section includes the `All changes` row.
@@ -197,41 +194,275 @@ pub(crate) fn branch_header_label(commits: &ChangesCommits) -> String {
     }
 }
 
-/// Comparison label shown in the diff header.
-pub(crate) fn comparison_label(target: &SelectedTarget, commits: &ChangesCommits) -> String {
-    match target {
-        SelectedTarget::Branch => {
-            let head = commits
-                .branch
-                .as_deref()
-                .or(commits.head_commit.as_deref())
-                .unwrap_or("HEAD");
-            let base = commits.base.as_deref().unwrap_or("main");
+pub(crate) fn is_viewing_other_checkout(root: &FilesRoot) -> bool {
+    if root.source != FilesRootSource::Saved {
+        return false;
+    }
+    match (&root.git, &root.own_checkout_top) {
+        (Some(git), Some(own_top)) => !same_checkout_path(&git.top, own_top),
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+pub(crate) fn live_worktrees(worktrees: &[WorktreeEntry]) -> Vec<&WorktreeEntry> {
+    worktrees.iter().filter(|wt| !wt.prunable).collect()
+}
+
+pub(crate) fn display_base_ref(base_ref: &str) -> &str {
+    base_ref
+        .strip_prefix("refs/heads/")
+        .or_else(|| base_ref.strip_prefix("refs/remotes/"))
+        .unwrap_or(base_ref)
+}
+
+/// Returns `(chip_text, is_custom_ref)`. When `is_custom_ref` is true, the chip
+/// draws in the primary text color; Auto draws in muted text.
+pub(crate) fn base_chip_label(
+    chosen_base: Option<&str>,
+    commits: Option<&ChangesCommits>,
+) -> (String, bool) {
+    if let Some(chosen) = chosen_base.filter(|b| !b.is_empty())
+        && !commits.is_some_and(|c| c.base_missing)
+    {
+        return (display_base_ref(chosen).to_owned(), true);
+    }
+    let resolved = commits.and_then(|c| c.auto_base.as_deref().or(c.base.as_deref()));
+    match resolved {
+        Some(base) => (
             crate::i18n::tf(
-                "changes.compare_vs",
-                &[("head", head.to_owned()), ("base", base.to_owned())],
-            )
+                "changes.base_auto_resolved",
+                &[("base", display_base_ref(base).to_owned())],
+            ),
+            false,
+        ),
+        None => (
+            crate::i18n::text("changes.base_auto_none").to_owned(),
+            false,
+        ),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BasePickerSection {
+    Auto,
+    Local,
+    Remote(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BasePickerItem {
+    pub(crate) section: BasePickerSection,
+    /// `None` for Auto; `Some(full_ref)` (`refs/heads/…` or `refs/remotes/…`) for a branch.
+    pub(crate) base_ref: Option<String>,
+    pub(crate) label: String,
+    pub(crate) hint: Option<String>,
+    pub(crate) current: bool,
+}
+
+fn canonicalize_legacy_chosen_ref(chosen: &str, branches: &ChangesBranches) -> String {
+    if chosen.starts_with("refs/") {
+        return chosen.to_owned();
+    }
+    let starts_with_remote = branches.remotes.iter().any(|group| {
+        chosen
+            .strip_prefix(group.remote.as_str())
+            .is_some_and(|rest| rest.starts_with('/'))
+    });
+    let has_local = branches.local.iter().any(|b| b == chosen);
+    let has_remote = branches
+        .remotes
+        .iter()
+        .any(|group| group.branches.iter().any(|b| b == chosen));
+    if starts_with_remote && has_remote {
+        format!("refs/remotes/{chosen}")
+    } else if has_local {
+        format!("refs/heads/{chosen}")
+    } else if has_remote {
+        format!("refs/remotes/{chosen}")
+    } else {
+        chosen.to_owned()
+    }
+}
+
+pub(crate) fn build_base_picker_items(
+    chosen_base: Option<&str>,
+    auto_base: Option<&str>,
+    current_branch: Option<&str>,
+    branches: &ChangesBranches,
+    auto_label: &str,
+    none_label: &str,
+) -> Vec<BasePickerItem> {
+    let chosen_canonical = chosen_base
+        .filter(|b| !b.is_empty())
+        .map(|b| canonicalize_legacy_chosen_ref(b, branches));
+    let upstream_canonical = branches
+        .upstream
+        .as_deref()
+        .filter(|u| !u.is_empty())
+        .map(|u| canonicalize_legacy_chosen_ref(u, branches));
+    let mut items = Vec::new();
+    items.push(BasePickerItem {
+        section: BasePickerSection::Auto,
+        base_ref: None,
+        label: auto_label.to_owned(),
+        hint: Some(auto_base.unwrap_or(none_label).to_owned()),
+        current: chosen_canonical.is_none(),
+    });
+    for branch in &branches.local {
+        let full_ref = format!("refs/heads/{branch}");
+        if Some(branch.as_str()) == current_branch
+            || upstream_canonical.as_deref() == Some(full_ref.as_str())
+        {
+            continue;
         }
-        SelectedTarget::Uncommitted => {
-            if commits.head_commit.is_none() {
-                crate::i18n::text("changes.working_tree_unborn").to_owned()
-            } else {
-                crate::i18n::text("changes.working_tree_vs_head").to_owned()
+        items.push(BasePickerItem {
+            section: BasePickerSection::Local,
+            current: chosen_canonical.as_deref() == Some(full_ref.as_str()),
+            base_ref: Some(full_ref),
+            label: branch.clone(),
+            hint: None,
+        });
+    }
+    for group in &branches.remotes {
+        for branch in &group.branches {
+            let full_ref = format!("refs/remotes/{branch}");
+            if upstream_canonical.as_deref() == Some(full_ref.as_str()) {
+                continue;
             }
-        }
-        SelectedTarget::Commit(id) => {
-            let summary = commits.commits.iter().find(|c| &c.id == id);
-            let short = summary
-                .map(|c| c.short_id.as_str())
-                .unwrap_or_else(|| &id[..id.len().min(7)])
-                .to_owned();
-            match summary.map(|c| c.parent_count).unwrap_or(1) {
-                0 => crate::i18n::tf("changes.first_commit", &[("sha", short)]),
-                n if n > 1 => crate::i18n::tf("changes.commit_vs_first_parent", &[("sha", short)]),
-                _ => crate::i18n::tf("changes.commit_vs_parent", &[("sha", short)]),
-            }
+            items.push(BasePickerItem {
+                section: BasePickerSection::Remote(group.remote.clone()),
+                current: chosen_canonical.as_deref() == Some(full_ref.as_str()),
+                base_ref: Some(full_ref),
+                label: branch.clone(),
+                hint: None,
+            });
         }
     }
+    items
+}
+
+pub(crate) fn filter_base_picker_items(items: &[BasePickerItem], query: &str) -> Vec<usize> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return (0..items.len()).collect();
+    }
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            item.label.to_lowercase().contains(&query)
+                || item
+                    .hint
+                    .as_deref()
+                    .is_some_and(|hint| hint.to_lowercase().contains(&query))
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+pub(crate) fn default_base_highlight(
+    items: &[BasePickerItem],
+    visible: &[usize],
+    query: &str,
+) -> usize {
+    if !query.trim().is_empty() {
+        return 0;
+    }
+    visible
+        .iter()
+        .position(|&index| items[index].current)
+        .unwrap_or(0)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CheckoutPickerItem {
+    pub(crate) path: PathBuf,
+    pub(crate) kind: WorktreeKind,
+    pub(crate) branch_label: String,
+    pub(crate) commit: Option<String>,
+    pub(crate) uncommitted: Option<usize>,
+    pub(crate) short_path: String,
+    pub(crate) full_path: String,
+    pub(crate) session_label: Option<CheckoutSessionLabel>,
+    pub(crate) current: bool,
+}
+
+pub(crate) fn build_checkout_picker_items(
+    current_top: &Path,
+    worktrees: &[WorktreeEntry],
+    session_labels: &BTreeMap<PathBuf, CheckoutSessionLabel>,
+    home: Option<&Path>,
+    detached_label: &str,
+) -> Vec<CheckoutPickerItem> {
+    let mut live = live_worktrees(worktrees);
+    live.sort_by(|a, b| {
+        (a.kind != WorktreeKind::Main)
+            .cmp(&(b.kind != WorktreeKind::Main))
+            .then_with(|| {
+                a.branch
+                    .as_deref()
+                    .unwrap_or("\u{ffff}")
+                    .cmp(b.branch.as_deref().unwrap_or("\u{ffff}"))
+            })
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    live.into_iter()
+        .map(|wt| {
+            let branch_label = match (&wt.branch, &wt.commit) {
+                (Some(branch), _) => branch.clone(),
+                (None, Some(sha)) => {
+                    crate::i18n::tf("changes.detached_at", &[("sha", sha.clone())])
+                }
+                (None, None) => detached_label.to_owned(),
+            };
+            CheckoutPickerItem {
+                path: wt.path.clone(),
+                kind: wt.kind,
+                branch_label,
+                commit: wt.commit.clone(),
+                uncommitted: wt.uncommitted,
+                short_path: shorten_checkout_path(&wt.path, home),
+                full_path: wt.path.to_string_lossy().into_owned(),
+                session_label: session_labels.get(&wt.path).cloned(),
+                current: same_checkout_path(&wt.path, current_top),
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn filter_checkout_picker_items(
+    items: &[CheckoutPickerItem],
+    query: &str,
+) -> Vec<usize> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return (0..items.len()).collect();
+    }
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            item.branch_label.to_lowercase().contains(&query)
+                || item.short_path.to_lowercase().contains(&query)
+                || item.full_path.to_lowercase().contains(&query)
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+pub(crate) fn default_checkout_highlight(
+    items: &[CheckoutPickerItem],
+    visible: &[usize],
+    query: &str,
+) -> usize {
+    if !query.trim().is_empty() {
+        return 0;
+    }
+    visible
+        .iter()
+        .position(|&index| items[index].current)
+        .unwrap_or(0)
 }
 
 /// Abbreviates a multi-segment folder path as `first/…/last` when it has three

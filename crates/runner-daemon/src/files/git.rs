@@ -53,7 +53,10 @@ pub fn checkout_top(dir: &Path) -> Option<(PathBuf, String)> {
         if folder.join(".git").exists() {
             parts.reverse();
             let prefix = parts.iter().map(|part| format!("{part}/")).collect();
-            return Some((folder.to_path_buf(), prefix));
+            return Some((
+                runner_core::app_paths::normalize_checkout_path(folder),
+                prefix,
+            ));
         }
         parts.push(folder.file_name()?.to_string_lossy().into_owned());
         folder = folder.parent()?;
@@ -128,7 +131,7 @@ impl Git {
         // Relative to `dir` unless it is elsewhere, as in a linked worktree.
         let common_dir = lines.next().filter(|line| !line.is_empty())?;
         Some(RepoPaths {
-            top: PathBuf::from(top),
+            top: runner_core::app_paths::normalize_checkout_path(Path::new(top)),
             git_dir: PathBuf::from(git_dir),
             common_dir: dir.join(common_dir),
             prefix: prefix.to_owned(),
@@ -247,20 +250,85 @@ impl Git {
     /// first list is refused and retried without it, and later lists run
     /// without it once (Jason, 2026-11-04).
     pub fn worktrees(&self, dir: &Path) -> Result<Vec<WorktreeEntry>> {
+        let normalize = |mut entries: Vec<WorktreeEntry>| {
+            for entry in &mut entries {
+                entry.path = runner_core::app_paths::normalize_checkout_path(&entry.path);
+            }
+            entries
+        };
         let lines = |git: &Self| {
             git.run(dir, &["worktree", "list", "--porcelain"])
-                .map(|stdout| parse_worktrees(&stdout, b'\n'))
+                .map(|stdout| normalize(parse_worktrees(&stdout, b'\n')))
         };
         if self.worktree_list_without_z.load(Ordering::Relaxed) {
             return lines(self);
         }
         match self.run(dir, &["worktree", "list", "--porcelain", "-z"]) {
-            Ok(stdout) => Ok(parse_worktrees(&stdout, b'\0')),
+            Ok(stdout) => Ok(normalize(parse_worktrees(&stdout, b'\0'))),
             Err(error) => {
                 let worktrees = lines(self).map_err(|_| error)?;
                 self.worktree_list_without_z.store(true, Ordering::Relaxed);
                 Ok(worktrees)
             }
+        }
+    }
+
+    /// Counts uncommitted files in `dir` via `git status --porcelain=v2 -z`.
+    pub fn worktree_uncommitted_count(&self, dir: &Path) -> Option<usize> {
+        if !dir.is_dir() {
+            return None;
+        }
+        let stdout = self
+            .run(
+                dir,
+                &[
+                    "--no-optional-locks",
+                    "status",
+                    "--porcelain=v2",
+                    "-z",
+                    "--untracked-files=all",
+                    "--ignored=no",
+                    "--ignore-submodules=dirty",
+                ],
+            )
+            .ok()?;
+        Some(count_uncommitted_porcelain(&stdout))
+    }
+
+    /// Populates `uncommitted` on non-prunable worktrees in parallel.
+    pub fn populate_worktree_uncommitted(&self, entries: &mut [WorktreeEntry]) {
+        let targets: Vec<(usize, PathBuf)> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| !entry.prunable && entry.path.is_dir())
+            .map(|(idx, entry)| (idx, entry.path.clone()))
+            .collect();
+        if targets.is_empty() {
+            return;
+        }
+        if targets.len() == 1 {
+            let (idx, path) = &targets[0];
+            entries[*idx].uncommitted = self.worktree_uncommitted_count(path);
+            return;
+        }
+        let counts: Vec<std::sync::Mutex<Option<usize>>> = (0..targets.len())
+            .map(|_| std::sync::Mutex::new(None))
+            .collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let workers = targets.len().min(8);
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| loop {
+                    let slot = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((_, path)) = targets.get(slot) else {
+                        break;
+                    };
+                    *counts[slot].lock().unwrap() = self.worktree_uncommitted_count(path);
+                });
+            }
+        });
+        for ((idx, _), count) in targets.into_iter().zip(counts) {
+            entries[idx].uncommitted = count.into_inner().unwrap();
         }
     }
 }
@@ -489,6 +557,7 @@ pub fn parse_worktrees(bytes: &[u8], separator: u8) -> Vec<WorktreeEntry> {
                 },
                 locked: false,
                 prunable: false,
+                uncommitted: None,
             });
             continue;
         }
@@ -516,6 +585,45 @@ pub fn parse_worktrees(bytes: &[u8], separator: u8) -> Vec<WorktreeEntry> {
 
 fn short_commit(sha: &str) -> Option<String> {
     (!sha.is_empty() && sha.bytes().any(|byte| byte != b'0')).then(|| sha.chars().take(7).collect())
+}
+
+pub fn count_uncommitted_porcelain(bytes: &[u8]) -> usize {
+    let mut fields = bytes.split(|&b| b == 0).filter(|part| !part.is_empty());
+    let mut paths = std::collections::HashSet::new();
+    while let Some(field) = fields.next() {
+        let field = String::from_utf8_lossy(field);
+        let Some((kind, rest)) = field.split_once(' ') else {
+            continue;
+        };
+        match kind {
+            "1" => {
+                if let [_, _, _, _, _, _, _, path] = rest.splitn(8, ' ').collect::<Vec<_>>()[..] {
+                    paths.insert(path.to_owned());
+                }
+            }
+            "2" => {
+                let _ = fields.next();
+                if let [_, _, _, _, _, _, _, _, path] = rest.splitn(9, ' ').collect::<Vec<_>>()[..]
+                {
+                    paths.insert(path.to_owned());
+                }
+            }
+            "u" => {
+                if let [_, _, _, _, _, _, _, _, _, path] =
+                    rest.splitn(10, ' ').collect::<Vec<_>>()[..]
+                {
+                    if !path.ends_with('/') {
+                        paths.insert(path.to_owned());
+                    }
+                }
+            }
+            "?" if !rest.ends_with('/') => {
+                paths.insert(rest.to_owned());
+            }
+            _ => {}
+        }
+    }
+    paths.len()
 }
 
 #[cfg(test)]
@@ -798,6 +906,7 @@ mod tests {
                 kind: WorktreeKind::Main,
                 locked: false,
                 prunable: false,
+                uncommitted: None,
             },
             WorktreeEntry {
                 path: "/repo/.worktrees/feat with space".into(),
@@ -806,6 +915,7 @@ mod tests {
                 kind: WorktreeKind::Linked,
                 locked: false,
                 prunable: false,
+                uncommitted: None,
             },
             WorktreeEntry {
                 path: "/repo/det".into(),
@@ -814,6 +924,7 @@ mod tests {
                 kind: WorktreeKind::Linked,
                 locked: false,
                 prunable: false,
+                uncommitted: None,
             },
             WorktreeEntry {
                 path: "/repo/lk".into(),
@@ -822,6 +933,7 @@ mod tests {
                 kind: WorktreeKind::Linked,
                 locked: true,
                 prunable: false,
+                uncommitted: None,
             },
             WorktreeEntry {
                 path: "/repo/gone".into(),
@@ -830,6 +942,7 @@ mod tests {
                 kind: WorktreeKind::Linked,
                 locked: false,
                 prunable: true,
+                uncommitted: None,
             },
         ];
         let mut nul = records.join("\0").into_bytes();
