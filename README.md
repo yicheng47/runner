@@ -152,9 +152,9 @@ runner help agents</code></pre>
 
 ## Demo
 
-A quick tour of reusable roles, crew setup, split terminals, and coder/reviewer/QA coordination in a live mission.
+A tour from first launch: setup finds your agents and builds a starter crew, a mission runs in real terminals and asks you a question, you review the change in the side panel, then follow along from your phone.
 
-https://github.com/user-attachments/assets/c2209015-1497-403a-98bd-cdc5502bee47
+https://github.com/user-attachments/assets/13e4d920-a803-47d5-8a99-8078b364bc3e
 
 ## Support Runner
 

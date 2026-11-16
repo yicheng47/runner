@@ -152,9 +152,9 @@ runner help agents</code></pre>
 
 ## 演示
 
-快速展示可复用角色、crew 配置、终端分屏，以及 mission 中 coder、reviewer 和 QA 的协作。
+从第一次打开开始：设置会找到你的 agent 并组建入门 crew，mission 在真实终端里运行并向你提问，你在侧边栏查看改动，还能在手机上继续跟进。
 
-https://github.com/user-attachments/assets/c2209015-1497-403a-98bd-cdc5502bee47
+https://github.com/user-attachments/assets/a45d2440-da17-4be4-8de5-0902f59eb1da
 
 ## 支持 Runner
 
