@@ -1480,7 +1480,6 @@
 "client.take_control" = "获取控制权"
 "client.this_computer" = "本机"
 "client.pin" = "PIN"
-"client.no_controller" = "当前没有电脑控制此终端。获取控制权后即可在此输入。"
 "client.connection_forgotten" = "本机已忘记 · 配对后打开"
 "client.forgotten_title" = "本机已忘记 {computer}"
 "client.forgotten_detail" = "本机已移除保存的访问密钥。输入 {computer} 的 PIN 配对后即可再次打开。"

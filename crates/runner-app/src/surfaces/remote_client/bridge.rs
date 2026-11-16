@@ -11,6 +11,12 @@ impl NativeRoot {
         self.terminal_close_confirm = None;
     }
 
+    fn clear_chat_secondaries(&mut self) {
+        self.chat_secondaries.clear();
+        self.dismissed_duplicate_chats.clear();
+        self.remote_client.set_secondaries(HashSet::new());
+    }
+
     pub(super) fn choose_computer(
         &mut self,
         computer: Computer,
@@ -49,10 +55,13 @@ impl NativeRoot {
             .visit_computer(computer, &self.window_label, window, cx)
         {
             self.clear_remote_transients();
+            self.clear_chat_secondaries();
             self.command_palette
                 .update(cx, |palette, cx| palette.close_for_target_change(cx));
             self.mission_workspace
                 .update(cx, |workspace, cx| workspace.release_window(cx));
+            let subjects = self.current_subjects();
+            self.remote_client.record_reported_subjects(subjects);
             self.report_current_subjects(cx);
             self.sync_remote_state(cx);
         }
@@ -60,6 +69,7 @@ impl NativeRoot {
 
     pub(crate) fn return_to_this_computer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_remote_transients();
+        self.clear_chat_secondaries();
         self.command_palette
             .update(cx, |palette, cx| palette.close_for_target_change(cx));
         self.remote_client.return_to_this_computer(window, cx);
@@ -92,6 +102,15 @@ impl NativeRoot {
         if self.remote_client.connection_marker() != connection {
             self.maximized_panes.clear();
         }
+        if self.remote_client.is_active() {
+            let subjects = self.current_subjects();
+            if self.remote_client.update_reported_subjects(&subjects) {
+                self.report_current_subjects(cx);
+            }
+            self.refresh_chat_secondaries(cx);
+            self.remote_client.attach_remote_panes(cx);
+            self.remote_client.reconcile_auto_take(cx);
+        }
         self.remote_client
             .refresh_remote_palette(&self.command_palette, cx);
         if self.window_active && self.remote_unobstructed() {
@@ -99,7 +118,7 @@ impl NativeRoot {
         }
     }
 
-    fn remote_unobstructed(&self) -> bool {
+    pub(crate) fn remote_unobstructed(&self) -> bool {
         !self.remote_client.ui.picker_open && self.start_chat_modal.is_none()
     }
 

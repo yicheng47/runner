@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub enum Subject {
     Mission(String),
     DirectChat(String),
+    RemoteChat { computer: String, session: String },
 }
 
 /// One window's row in the registry. `focused_at` is the tiebreak that

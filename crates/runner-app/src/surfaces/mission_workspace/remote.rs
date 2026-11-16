@@ -362,6 +362,7 @@ impl MissionWorkspace {
         cx.defer(move |cx| {
             let _ = shell.update(cx, |shell, cx| {
                 shell.remote_client.attach_remote_panes(cx);
+                shell.remote_client.reconcile_auto_take(cx);
                 shell.remote_client.mark_remote_sessions_viewed(cx);
                 cx.notify();
             });

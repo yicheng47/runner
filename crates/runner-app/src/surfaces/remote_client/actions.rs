@@ -241,10 +241,18 @@ impl RemoteClient {
         let client = self.workspace.as_ref()?.front_page.clone();
         let action =
             self.prepare_action(client, format!("layout:{}", draft.id), &["layout"], cx)?;
-        self.workspace
-            .as_mut()?
-            .layout_hints
-            .insert(draft.id.clone(), draft.clone());
+        let remote = self.workspace.as_mut()?;
+        let existing: std::collections::HashSet<String> = remote
+            .layouts
+            .get(&draft.id)
+            .map(|layout| layout.all_session_ids().into_iter().collect())
+            .unwrap_or_default();
+        for id in draft.all_session_ids() {
+            if !existing.contains(&id) {
+                remote.take_sessions.insert(id);
+            }
+        }
+        remote.layout_hints.insert(draft.id.clone(), draft.clone());
         Some(action)
     }
     pub(crate) fn prepare_shell_input(&self, input: &mut ShellStart) -> Option<ShellPreparation> {

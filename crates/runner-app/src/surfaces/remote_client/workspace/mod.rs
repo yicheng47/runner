@@ -27,8 +27,10 @@ pub(crate) enum Item {
 
 pub(super) struct RemotePane {
     _lifetime: transport::AttachmentLifetime,
+    pub(super) transport: Arc<transport::RemoteTransport>,
     pub(super) attachment: AttachedChat,
     control_failed: bool,
+    pub(super) auto_taken: bool,
 }
 
 pub(crate) struct RemoteWindow {
@@ -72,6 +74,8 @@ pub(crate) struct RemoteWindow {
     pub(crate) activate_session: Option<String>,
     pub(crate) activate_placement: Option<(String, Option<String>)>,
     pub(crate) reopen_sessions: HashSet<String>,
+    pub(in crate::surfaces::remote_client) opened_tabs: HashSet<String>,
+    pub(in crate::surfaces::remote_client) take_sessions: HashSet<String>,
     pub(crate) activate_tab: Option<String>,
     pub(crate) activate_mission: Option<String>,
     /// Tabs in the order they were shown, the most recent last.
@@ -79,6 +83,10 @@ pub(crate) struct RemoteWindow {
     pub(crate) landed_at: Option<std::time::Instant>,
     pub(crate) form_generation: u64,
     pub(super) terminals: HashMap<String, RemotePane>,
+    pub(super) secondaries: HashSet<String>,
+    pub(super) reported_subjects: Vec<runner_core::protocol::window::Subject>,
+    pub(crate) window_handle: gpui::AnyWindowHandle,
+    pub(crate) dropped_terminal_focuses: Vec<FocusHandle>,
     recovery: HashSet<String>,
     terminal_epoch: u64,
     pair_epoch: u64,
@@ -99,6 +107,37 @@ impl Drop for RemoteWindow {
 }
 
 impl RemoteWindow {
+    pub(super) fn tab_held_elsewhere(&self, tab_id: &str) -> bool {
+        use runner_core::protocol::terminal::TerminalController;
+        self.layouts.get(tab_id).is_some_and(|layout| {
+            layout.all_session_ids().iter().any(|id| {
+                self.terminals.get(id).is_some_and(|pane| {
+                    matches!(
+                        pane.attachment.terminal.control().controller,
+                        TerminalController::Browser { .. }
+                    )
+                })
+            })
+        })
+    }
+
+    pub(super) fn prune_opened_tabs(&mut self) {
+        let active_tab = match self.active.as_ref() {
+            Some(Item::Tab(tab_id)) => Some(tab_id.as_str()),
+            _ => None,
+        };
+        self.opened_tabs.retain(|tab_id| {
+            active_tab == Some(tab_id.as_str())
+                || self.layouts.get(tab_id).is_some_and(|layout| {
+                    layout.all_session_ids().iter().any(|id| {
+                        self.terminals.contains_key(id)
+                            || self.pending.contains_key(id)
+                            || self.recovery.contains(id)
+                    })
+                })
+        });
+    }
+
     fn visible_sessions(&self, _overview: &Overview, cx: &App) -> Vec<String> {
         match self.active.as_ref() {
             Some(Item::Mission(_)) => self.mission_workspace.read(cx).remote_visible_sessions(),
@@ -325,6 +364,7 @@ impl RemoteClient {
                                 .terminal_updates
                                 .clone()
                                 .update(cx, |_, cx| cx.emit(id));
+                            root.remote_client.reconcile_auto_take(cx);
                             cx.notify();
                         }
                     })
@@ -417,12 +457,18 @@ impl RemoteClient {
             activate_session: None,
             activate_placement: None,
             reopen_sessions: HashSet::new(),
+            opened_tabs: HashSet::new(),
+            take_sessions: HashSet::new(),
             activate_tab: None,
             activate_mission: None,
             viewed_tabs: Vec::new(),
             landed_at: None,
             form_generation: 0,
             terminals: HashMap::new(),
+            secondaries: HashSet::new(),
+            reported_subjects: Vec::new(),
+            window_handle: window.window_handle(),
+            dropped_terminal_focuses: Vec::new(),
             recovery: HashSet::new(),
             terminal_epoch: clients.read(cx).terminal_epoch,
             pair_epoch,
@@ -477,5 +523,123 @@ impl RemoteClient {
             Some(crate::surfaces::remote_client::RemoteItem::Mission(_))
         )
         .then(|| remote.mission_workspace.clone())
+    }
+
+    pub(crate) fn computer_id(&self) -> Option<&str> {
+        self.workspace
+            .as_ref()
+            .map(|remote| remote.computer.id.as_str())
+    }
+
+    pub(crate) fn active_tab_layout(&self) -> Option<&PaneLayout> {
+        let remote = self.workspace.as_ref()?;
+        let Some(Item::Tab(id)) = remote.active.as_ref() else {
+            return None;
+        };
+        remote.layouts.get(id)
+    }
+
+    pub(crate) fn current_subjects(&self) -> Vec<runner_core::protocol::window::Subject> {
+        let Some(remote) = self.workspace.as_ref() else {
+            return Vec::new();
+        };
+        let Some(Item::Tab(tab_id)) = remote.active.as_ref() else {
+            return Vec::new();
+        };
+        let Some(layout) = remote.layouts.get(tab_id) else {
+            return Vec::new();
+        };
+        let computer = remote.computer.id.clone();
+        layout
+            .root
+            .leaves()
+            .into_iter()
+            .filter_map(|leaf| leaf.session_id.clone())
+            .map(
+                |session| runner_core::protocol::window::Subject::RemoteChat {
+                    computer: computer.clone(),
+                    session,
+                },
+            )
+            .collect()
+    }
+
+    pub(crate) fn set_secondaries(&mut self, secondaries: HashSet<String>) {
+        if let Some(remote) = self.workspace.as_mut() {
+            for id in &secondaries {
+                remote.take_sessions.remove(id);
+            }
+            remote.secondaries = secondaries;
+        }
+    }
+
+    pub(crate) fn update_reported_subjects(
+        &mut self,
+        subjects: &[runner_core::protocol::window::Subject],
+    ) -> bool {
+        let Some(remote) = self.workspace.as_mut() else {
+            return false;
+        };
+        if remote.reported_subjects == subjects {
+            return false;
+        }
+        remote.reported_subjects = subjects.to_vec();
+        true
+    }
+
+    pub(crate) fn record_reported_subjects(
+        &mut self,
+        subjects: Vec<runner_core::protocol::window::Subject>,
+    ) {
+        if let Some(remote) = self.workspace.as_mut() {
+            remote.reported_subjects = subjects;
+        }
+    }
+
+    pub(crate) fn release_demoted_terminal_focus(
+        &mut self,
+        secondaries: &HashMap<String, String>,
+        focused: &FocusHandle,
+    ) -> bool {
+        let Some(remote) = self.workspace.as_mut() else {
+            return false;
+        };
+        let demoted = secondaries.keys().any(|id| {
+            remote
+                .terminals
+                .get(id)
+                .is_some_and(|pane| &pane.attachment.terminal_focus == focused)
+        });
+        if demoted && !remote.dropped_terminal_focuses.contains(focused) {
+            remote.dropped_terminal_focuses.push(focused.clone());
+        }
+        demoted
+    }
+
+    pub(crate) fn allows_auto_terminal_focus(&self, focused: Option<&FocusHandle>) -> bool {
+        if self.ui.picker_open || self.ui.pair.is_some() {
+            return false;
+        }
+        let Some(remote) = self.workspace.as_ref() else {
+            return false;
+        };
+        if remote.project_picker.is_some() || remote.delete_project.is_some() {
+            return false;
+        }
+        focused.is_none_or(|handle| remote.dropped_terminal_focuses.contains(handle))
+    }
+
+    pub(crate) fn focus_terminal_and_clear_dropped(
+        &mut self,
+        session_id: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(remote) = self.workspace.as_mut() {
+            if let Some(pane) = remote.terminals.get(session_id) {
+                pane.attachment.terminal_focus.focus(window, cx);
+                remote.dropped_terminal_focuses.clear();
+            }
+        }
     }
 }

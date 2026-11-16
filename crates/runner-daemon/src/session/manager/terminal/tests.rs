@@ -2926,3 +2926,184 @@ fn moving_a_pane_adopts_its_destination_without_old_tab_teardown_releasing_it() 
         core.sessions.drain_terminal_workers();
     }
 }
+
+#[test]
+fn split_tab_if_free_claims_and_resizes_free_or_same_channel_panes_without_stealing() {
+    use runner_core::companion::Controller;
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    prepare_control_tab(&core, &["left", "right"], &[]);
+    core.sessions
+        .browser_resize("left", 1, "First", 90, 28, true, false, &core.db)
+        .unwrap();
+    core.sessions.release_browser_channel(1);
+    assert_eq!(
+        core.sessions.browser_controller("left", 2),
+        Controller::None
+    );
+    assert_eq!(
+        core.sessions.browser_controller("right", 2),
+        Controller::None
+    );
+
+    // Reconnecting with IfFree claims the free split tab and resizes every pane.
+    core.sessions
+        .browser_resize("left", 2, "Reconnected", 104, 31, false, false, &core.db)
+        .unwrap();
+    core.sessions
+        .browser_resize("right", 2, "Reconnected", 72, 39, false, false, &core.db)
+        .unwrap();
+    assert_eq!(core.sessions.browser_controller("left", 2), Controller::You);
+    assert_eq!(
+        core.sessions.browser_controller("right", 2),
+        Controller::You
+    );
+    assert_eq!(
+        core.sessions.terminal_model("left").unwrap().size(),
+        (104, 31)
+    );
+    assert_eq!(
+        core.sessions.terminal_model("right").unwrap().size(),
+        (72, 39)
+    );
+
+    // If one pane is None while a sibling is already owned by this same channel, IfFree claims it
+    // instead of leaving it uncontrolled, while another channel or Desktop is never stolen from.
+    core.sessions.release_browser("right", 2);
+    assert_eq!(
+        core.sessions.browser_controller("right", 2),
+        Controller::None
+    );
+    core.sessions
+        .browser_resize("right", 3, "Other", 60, 20, false, false, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.browser_controller("right", 2),
+        Controller::None
+    );
+    assert_eq!(core.sessions.browser_controller("left", 2), Controller::You);
+
+    core.sessions
+        .browser_resize("right", 2, "Reconnected", 76, 41, false, false, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.browser_controller("right", 2),
+        Controller::You
+    );
+    assert_eq!(
+        core.sessions.terminal_model("right").unwrap().size(),
+        (76, 41)
+    );
+
+    core.sessions
+        .take_back_terminal("left", 110, 42, &core.db)
+        .unwrap();
+    core.sessions
+        .browser_resize("right", 2, "Reconnected", 60, 20, false, false, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.browser_controller("left", 2),
+        Controller::Desktop
+    );
+    assert_eq!(
+        core.sessions.browser_controller("right", 2),
+        Controller::Desktop
+    );
+
+    // Passive split growth: when channel 2 owns the tab, adding a new pane inherits channel 2 and
+    // IfFree resizes it; when Desktop owns the tab, adding a new pane inherits Desktop and IfFree
+    // preserves Desktop ownership and size.
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    let tab_id = crate::repo::node::find_for_session(&core.db.get().unwrap(), "left")
+        .unwrap()
+        .unwrap()
+        .id;
+    core.sessions
+        .prepare_unlisted_terminal("split-client-owned", (80, 24), &core.db, &events)
+        .unwrap();
+    core.sessions
+        .browser_resize("left", 2, "Reconnected", 104, 31, true, false, &core.db)
+        .unwrap();
+    crate::ops::node::node_tab_upsert(
+        &core,
+        runner_core::protocol::node::NodeTabUpsertInput {
+            id: tab_id.clone(),
+            parent_id: None,
+            name: "Split".into(),
+            layout: serde_json::json!({ "slots": ["left", "right", "split-client-owned"] })
+                .to_string(),
+        },
+    )
+    .unwrap();
+    core.sessions
+        .browser_resize(
+            "split-client-owned",
+            2,
+            "Reconnected",
+            88,
+            34,
+            false,
+            false,
+            &core.db,
+        )
+        .unwrap();
+    assert_eq!(
+        core.sessions.browser_controller("split-client-owned", 2),
+        Controller::You
+    );
+    assert_eq!(
+        core.sessions
+            .terminal_model("split-client-owned")
+            .unwrap()
+            .size(),
+        (88, 34)
+    );
+
+    core.sessions
+        .take_back_terminal("left", 112, 40, &core.db)
+        .unwrap();
+    core.sessions
+        .prepare_unlisted_terminal("split-desktop-owned", (96, 28), &core.db, &events)
+        .unwrap();
+    crate::ops::node::node_tab_upsert(
+        &core,
+        runner_core::protocol::node::NodeTabUpsertInput {
+            id: tab_id,
+            parent_id: None,
+            name: "Split".into(),
+            layout: serde_json::json!({
+                "slots": ["left", "right", "split-client-owned", "split-desktop-owned"]
+            })
+            .to_string(),
+        },
+    )
+    .unwrap();
+    core.sessions
+        .browser_resize(
+            "split-desktop-owned",
+            2,
+            "Reconnected",
+            64,
+            22,
+            false,
+            false,
+            &core.db,
+        )
+        .unwrap();
+    assert_eq!(
+        core.sessions.browser_controller("left", 2),
+        Controller::Desktop
+    );
+    assert_eq!(
+        core.sessions.browser_controller("split-desktop-owned", 2),
+        Controller::Desktop
+    );
+    assert_eq!(
+        core.sessions
+            .terminal_model("split-desktop-owned")
+            .unwrap()
+            .size(),
+        (96, 28)
+    );
+    core.sessions.drain_terminal_workers();
+}

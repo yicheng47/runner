@@ -16,6 +16,7 @@ impl NativeRoot {
         let store = self.app_store.read(cx);
         if store.daemon_disconnected || store.revisions.restart != self.store_revisions.restart {
             self.usage_checked = None;
+            self.usage_enabled = None;
         }
         if !store.daemon_disconnected
             && self.usage_checked.as_ref() != Some(&checked)
@@ -23,8 +24,13 @@ impl NativeRoot {
         {
             self.usage_checked = Some(checked);
         }
-        if core.usage_set_enabled(enabled).unwrap_or(false) {
-            cx.notify();
+        if !store.daemon_disconnected && self.usage_enabled.as_ref() != Some(&enabled) {
+            if let Ok(changed) = core.usage_set_enabled(enabled.clone()) {
+                self.usage_enabled = Some(enabled);
+                if changed {
+                    cx.notify();
+                }
+            }
         }
         let revisions = self.app_store.read(cx).revisions;
         let previous = self.store_revisions;

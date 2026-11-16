@@ -1038,10 +1038,7 @@ pub(crate) fn open(tag: &str, cx: &mut App) {
             }
 
             if target.is_some() && root.remote_client.is_active() {
-                root.remote_client.remember_remote_selection();
-                root.remote_client.disconnect();
-                root.remote_client.ui.picker_open = false;
-                cx.notify();
+                root.return_to_this_computer(window, cx);
             }
             match target {
                 Some(Target::Chat(id)) => {

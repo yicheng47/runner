@@ -78,6 +78,7 @@ struct Stream {
     assembling: Option<TerminalSnapshot>,
     complete: bool,
     requested: bool,
+    resync_pending: usize,
     closed: bool,
     listeners: BTreeMap<u64, Arc<Queue>>,
     waiting: Vec<oneshot::Sender<Result<TerminalAttachment>>>,
@@ -113,6 +114,7 @@ impl Terminals {
                 assembling: None,
                 complete: false,
                 requested: false,
+                resync_pending: 0,
                 closed: false,
                 listeners: BTreeMap::new(),
                 waiting: Vec::new(),
@@ -124,6 +126,16 @@ impl Terminals {
         }
         stream.waiting.push(reply);
         if stream.closed {
+            stream.deliver(handle);
+            return Ok(());
+        }
+        if !stream.requested
+            && stream.assembling.is_none()
+            && stream.replay_valid
+            && !stream.config.take_control
+            && stream.resync_pending > 0
+        {
+            stream.resync_pending -= 1;
             stream.deliver(handle);
             return Ok(());
         }
@@ -153,6 +165,7 @@ impl Terminals {
         stream.request = handle.next_id();
         stream.assembling = None;
         stream.complete = false;
+        stream.resync_pending = 0;
         session.queue(c::ClientMessage::Attach(c::AttachRequest {
             id: stream.request,
             session: target,
@@ -166,6 +179,74 @@ impl Terminals {
             history: None,
         }))
     }
+    pub fn claim(
+        &mut self,
+        target: String,
+        cols: u16,
+        rows: u16,
+        reply: oneshot::Sender<runner_core::protocol::ClientResult<serde_json::Value>>,
+        session: &mut route::Session,
+        handle: &route::Handle,
+    ) {
+        let Some(stream) = self.streams.get_mut(&target) else {
+            let _ = reply.send(Err("Remote terminal is not attached.".into()));
+            return;
+        };
+        if stream.closed {
+            let _ = reply.send(Err("Remote terminal closed".into()));
+            return;
+        }
+        let (cols, rows) = c::ViewportRequest {
+            id: 0,
+            session: String::new(),
+            cols,
+            rows,
+        }
+        .clamped_size();
+        stream.config.cols = cols;
+        stream.config.rows = rows;
+        if stream.requested || stream.assembling.is_some() {
+            let _ = reply.send(Ok(serde_json::Value::Null));
+            return;
+        }
+        if stream.replay_valid && stream.controller != TerminalController::None {
+            if stream.controller == TerminalController::Desktop {
+                let id = handle.next_id();
+                session.request(
+                    c::ClientMessage::Viewport(c::ViewportRequest {
+                        id,
+                        session: target,
+                        cols,
+                        rows,
+                    }),
+                    reply,
+                );
+            } else {
+                let _ = reply.send(Ok(serde_json::Value::Null));
+            }
+            return;
+        }
+        let id = handle.next_id();
+        stream.requested = true;
+        stream.request = id;
+        stream.assembling = None;
+        stream.complete = false;
+        stream.resync_pending = 0;
+        session.request(
+            c::ClientMessage::Attach(c::AttachRequest {
+                id,
+                session: target,
+                cols,
+                rows,
+                control: c::ControlMode::IfFree,
+                history: None,
+            }),
+            reply,
+        );
+        if !session.has_pending(id) {
+            stream.requested = false;
+        }
+    }
     pub fn reattach(&mut self, session: &mut route::Session, handle: &route::Handle) -> Result<()> {
         for (target, stream) in &mut self.streams {
             if stream.closed {
@@ -175,6 +256,7 @@ impl Terminals {
             stream.request = handle.next_id();
             stream.assembling = None;
             stream.complete = false;
+            stream.resync_pending = 0;
             session.queue(c::ClientMessage::Attach(c::AttachRequest {
                 id: stream.request,
                 session: target.clone(),
@@ -201,6 +283,7 @@ impl Terminals {
             if let Some(queue) = stream.listeners.remove(&subscriber) {
                 queue.close();
             }
+            stream.resync_pending = stream.resync_pending.min(stream.listeners.len());
             if stream.listeners.is_empty() && stream.waiting.is_empty() {
                 self.streams.remove(target);
             }
@@ -243,6 +326,7 @@ impl Terminals {
         for stream in self.streams.values_mut() {
             stream.assembling = None;
             stream.complete = false;
+            stream.resync_pending = 0;
             if !stream.closed {
                 stream.replay_valid = false;
             }
@@ -312,6 +396,7 @@ impl Terminals {
                         return Err("Remote snapshot size does not match".into());
                     }
                     snapshot.controller = controller.clone();
+                    let resync_listeners = stream.listeners.len();
                     for queue in stream.listeners.values() {
                         queue.push(TerminalFrame::Resync);
                     }
@@ -323,6 +408,7 @@ impl Terminals {
                     stream.replay_valid = true;
                     stream.complete = false;
                     stream.requested = false;
+                    stream.resync_pending = resync_listeners;
                     stream.deliver(handle);
                 } else if stream.assembling.is_some() {
                     return Err("Resize interrupted a remote snapshot".into());

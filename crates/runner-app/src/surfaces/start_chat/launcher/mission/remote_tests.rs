@@ -313,6 +313,7 @@ fn new_tab_uses_the_hosts_opening_tab_project_and_picker_close_restores_navigati
         .read_with(&cx, |root, cx| assert_eq!(root.active_project_id(cx), None))
         .unwrap();
 
+    fake.queue_result("catalog", Ok(catalog()));
     for item in [RemoteItem::Roles, RemoteItem::Crews] {
         fake.queue_result("catalog", Ok(catalog()));
         window

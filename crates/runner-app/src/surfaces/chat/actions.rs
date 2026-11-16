@@ -16,10 +16,10 @@ impl NativeRoot {
             return;
         }
         let remote = self.front_page_client(cx).is_remote();
+        if self.chat_secondary_state(session_id, cx).secondary {
+            return;
+        }
         if !remote {
-            if self.chat_secondary_state(session_id, cx).secondary {
-                return;
-            }
             if !self.stopping_sessions.insert(session_id.to_owned()) {
                 return;
             }

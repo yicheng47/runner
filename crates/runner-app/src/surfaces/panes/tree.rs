@@ -232,8 +232,7 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> Option<Entity<PopoverMenu>> {
         let session_id = &entry.session_id;
-        let secondary =
-            self.remote_client.is_local() && self.cached_chat_secondary_state(session_id).secondary;
+        let secondary = self.cached_chat_secondary_state(session_id).secondary;
         let pinned = self.front_page_sidebar().read(cx).tab_pinned(tab_id, cx);
         let client = self.front_page_client(cx);
         let actions = pane_menu_actions(
@@ -336,8 +335,7 @@ impl NativeRoot {
         else {
             return;
         };
-        let secondary =
-            self.remote_client.is_local() && self.cached_chat_secondary_state(session_id).secondary;
+        let secondary = self.cached_chat_secondary_state(session_id).secondary;
         let pinned = self.front_page_sidebar().read(cx).tab_pinned(&tab_id, cx);
         let client = self.front_page_client(cx);
         let actions = pane_menu_actions(
@@ -391,6 +389,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.cached_chat_secondary_state(session_id).secondary {
+            return;
+        }
         let Some(entry) = self.front_page_session(session_id, cx) else {
             return;
         };

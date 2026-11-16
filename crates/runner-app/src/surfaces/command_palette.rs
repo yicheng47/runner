@@ -536,6 +536,10 @@ impl CommandPaletteState {
         cx.notify();
     }
 
+    pub(crate) fn is_open(&self) -> bool {
+        self.open
+    }
+
     pub(crate) fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.open {
             return;

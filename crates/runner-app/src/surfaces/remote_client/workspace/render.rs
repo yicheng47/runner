@@ -231,9 +231,25 @@ impl RemoteClient {
         let copy_terminal = terminal.clone();
         let paste_terminal = terminal.clone();
         let input = pane.attachment.terminal_input.clone();
-        let take = cx.weak_entity();
-        let take_id = id.to_owned();
-        if !controlled {
+        let no_controller = terminal.control().controller
+            == runner_core::protocol::terminal::TerminalController::None;
+        let take_button = || {
+            let take = cx.weak_entity();
+            let take_id = id.to_owned();
+            Button::new(
+                SharedString::from(format!("take-remote-{id}")),
+                crate::i18n::text("client.take_control"),
+            )
+            .size(ButtonSize::Sm)
+            .variant(ButtonVariant::Secondary)
+            .disabled(!connected)
+            .on_press(move |_, cx| {
+                let _ = take.update(cx, |root, cx| {
+                    root.remote_client.take_remote_control(&take_id, cx)
+                });
+            })
+        };
+        if !controlled && !no_controller {
             let owner_name =
                 match &terminal.control().controller {
                     runner_core::protocol::terminal::TerminalController::Browser {
@@ -251,40 +267,33 @@ impl RemoteClient {
                     .py_2()
                     .bg(theme::panel())
                     .text_size(theme::text_meta())
-                    .child(div().flex_1().min_w_0().child(
-                        if terminal.control().controller
-                            == runner_core::protocol::terminal::TerminalController::None
-                        {
-                            crate::i18n::text("client.no_controller").to_string()
-                        } else {
-                            label("client.taken_back", &owner_name)
-                        },
-                    ))
                     .child(
-                        Button::new(
-                            SharedString::from(format!("take-remote-{id}")),
-                            crate::i18n::text("client.take_control"),
-                        )
-                        .size(ButtonSize::Sm)
-                        .variant(ButtonVariant::Secondary)
-                        .disabled(!connected)
-                        .on_press(move |_, cx| {
-                            let _ = take.update(cx, |root, cx| {
-                                root.remote_client.take_remote_control(&take_id, cx)
-                            });
-                        }),
-                    ),
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(label("client.taken_back", &owner_name)),
+                    )
+                    .child(take_button()),
             );
         }
         if pane.control_failed {
             surface = surface.child(
                 div()
                     .debug_selector(|| "REMOTE_CONTROL_FAILED".into())
+                    .flex()
+                    .items_center()
+                    .gap_3()
                     .px_3()
                     .py_2()
                     .text_size(theme::text_meta())
                     .text_color(theme::danger())
-                    .child(crate::i18n::text("client.take_control_failed")),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(crate::i18n::text("client.take_control_failed")),
+                    )
+                    .children((!controlled && no_controller).then(take_button)),
             );
         }
         let interactive = connected && controlled && running;
@@ -348,24 +357,46 @@ impl RemoteClient {
         cx: &mut Context<NativeRoot>,
     ) {
         self.mark_remote_sessions_viewed(cx);
+        self.request_remote_control(id, true, cx);
+    }
+
+    pub(in crate::surfaces::remote_client) fn claim_remote_control_if_free(
+        &mut self,
+        id: &str,
+        cx: &mut Context<NativeRoot>,
+    ) {
+        self.request_remote_control(id, false, cx);
+    }
+
+    fn request_remote_control(&mut self, id: &str, force_take: bool, cx: &mut Context<NativeRoot>) {
         let Some(remote) = self.workspace.as_mut() else {
             return;
         };
+        let fallback_size = remote.sizes.get(id).copied();
         let Some(pane) = remote.terminals.get_mut(id) else {
             return;
         };
         let terminal = pane.attachment.terminal.clone();
+        let transport = pane.transport.clone();
         let (cols, rows) = pane
             .attachment
             .terminal_interaction
             .read(cx)
             .pane_size
             .map(|size| (size.cols, size.rows))
+            .or(fallback_size)
             .unwrap_or_else(|| terminal.size());
         let epoch = remote.epoch;
+        pane.auto_taken = true;
         pane.control_failed = false;
         let taking = terminal.clone();
-        let task = cx.background_spawn(async move { taking.take_back(cols, rows) });
+        let task = cx.background_spawn(async move {
+            if force_take {
+                taking.take_back(cols, rows)
+            } else {
+                transport.claim_if_free(cols, rows)
+            }
+        });
         let id = id.to_owned();
         cx.spawn(async move |weak, cx| {
             let result = task.await;

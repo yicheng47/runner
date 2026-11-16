@@ -83,7 +83,13 @@ impl WindowRegistry {
 
     pub fn set_viewed_session(&self, label: &str, session_id: Option<&str>) {
         if let Some(entry) = self.entries.lock().unwrap().get_mut(label) {
-            entry.viewed_session_id = session_id.map(str::to_owned);
+            entry.viewed_session_id = session_id
+                .filter(|id| {
+                    entry
+                        .subjects
+                        .contains(&Subject::DirectChat((*id).to_owned()))
+                })
+                .map(str::to_owned);
         }
     }
 
@@ -431,5 +437,63 @@ mod tests {
             json,
             serde_json::json!({ "type": "DirectChat", "value": "s1" })
         );
+        let json = serde_json::to_value(Subject::RemoteChat {
+            computer: "host".into(),
+            session: "s1".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "RemoteChat",
+                "value": { "computer": "host", "session": "s1" }
+            })
+        );
+    }
+
+    #[test]
+    fn remote_chat_arbitrates_per_computer_and_stays_out_of_local_viewed_sessions() {
+        let reg = WindowRegistry::new();
+        let host_a = Subject::RemoteChat {
+            computer: "host-a".into(),
+            session: "shared-id".into(),
+        };
+        let host_b = Subject::RemoteChat {
+            computer: "host-b".into(),
+            session: "shared-id".into(),
+        };
+        let local = Subject::DirectChat("shared-id".into());
+
+        reg.register_at("main", ts(300));
+        reg.register_at("window-a", ts(200));
+        reg.register_at("window-b", ts(400));
+
+        reg.set_subjects("main", vec![host_a.clone()]);
+        reg.set_viewed_session("main", Some("shared-id"));
+        reg.mark_focused_at("main", ts(300));
+
+        reg.set_subjects("window-a", vec![host_a.clone()]);
+        reg.set_subjects("window-b", vec![host_b.clone()]);
+        reg.mark_focused_at("window-b", ts(400));
+
+        assert_eq!(reg.primary_for(&host_a), Some("main".into()));
+        assert_eq!(reg.primary_for(&host_b), Some("window-b".into()));
+        assert_eq!(reg.primary_for(&local), None);
+        assert!(!reg.any_focused_displaying(&["shared-id".into()]));
+        assert!(reg.focused_direct_sessions("main").is_empty());
+
+        reg.mark_focused_at("window-a", ts(500));
+        assert_eq!(reg.primary_for(&host_a), Some("window-a".into()));
+
+        reg.set_subjects("main", vec![local.clone()]);
+        reg.set_viewed_session("main", Some("shared-id"));
+        reg.mark_focused_at("main", ts(600));
+        assert_eq!(reg.primary_for(&local), Some("main".into()));
+        assert_eq!(reg.primary_for(&host_a), Some("window-a".into()));
+        assert!(reg.any_focused_displaying(&["shared-id".into()]));
+
+        reg.set_subjects("main", vec![host_a.clone()]);
+        assert!(!reg.any_focused_displaying(&["shared-id".into()]));
+        assert!(reg.focused_direct_sessions("main").is_empty());
     }
 }

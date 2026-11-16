@@ -26,6 +26,8 @@ impl RemoteClient {
             remote.terminals.clear();
             remote.pending.clear();
             remote.recovery.clear();
+            remote.opened_tabs.clear();
+            remote.take_sessions.clear();
             remote.errors.clear();
             remote.pair_epoch = pair_epoch;
             remote.attachment_generation = remote.attachment_generation.wrapping_add(1);
@@ -41,6 +43,7 @@ impl RemoteClient {
             }
             remote.recovery.extend(remote.terminals.keys().cloned());
             remote.recovery.extend(remote.pending.keys().cloned());
+            remote.take_sessions.clear();
             remote.terminals.clear();
             remote.pending.clear();
             remote.errors.clear();
@@ -68,6 +71,8 @@ impl RemoteClient {
             remote.terminals.clear();
             remote.pending.clear();
             remote.recovery.clear();
+            remote.opened_tabs.clear();
+            remote.take_sessions.clear();
             remote.errors.clear();
             remote.attachment_generation = remote.attachment_generation.wrapping_add(1);
         }
@@ -89,6 +94,12 @@ impl RemoteClient {
             remote
                 .layouts
                 .retain(|id, _| overview.tabs.iter().any(|tab| &tab.id == id));
+            remote
+                .opened_tabs
+                .retain(|id| overview.tabs.iter().any(|tab| &tab.id == id));
+            remote
+                .take_sessions
+                .retain(|id| overview.sessions.contains_key(id));
             for tab in &overview.tabs {
                 let layout = crate::surfaces::front_page::model::reconcile_tab(
                     tab,
@@ -132,28 +143,29 @@ impl RemoteClient {
                 .collect::<Vec<_>>();
             for id in live {
                 remote.reopen_sessions.remove(&id);
+                remote.take_sessions.insert(id.clone());
                 remote.terminals.remove(&id);
                 remote.pending.remove(&id);
                 remote.recovery.remove(&id);
             }
         }
-        if let Some(session) = &remote.activate_session {
+        if let Some(session) = remote.activate_session.clone() {
             let destination = if let Some((tab, pane)) = &remote.activate_placement {
                 remote
                     .layouts
                     .get(tab)
                     .filter(|layout| match pane {
                         Some(pane) => layout.root.leaves().iter().any(|leaf| {
-                            &leaf.id == pane && leaf.session_id.as_ref() == Some(session)
+                            &leaf.id == pane && leaf.session_id.as_deref() == Some(session.as_str())
                         }),
-                        None => layout.drawer_shells().contains(session),
+                        None => layout.drawer_shells().contains(&session),
                     })
                     .map(|_| tab.clone())
             } else {
                 remote
                     .layouts
                     .iter()
-                    .find(|(_, layout)| layout.all_session_ids().contains(session))
+                    .find(|(_, layout)| layout.all_session_ids().contains(&session))
                     .map(|(id, _)| id.clone())
             };
             if let Some(id) = destination {
@@ -162,11 +174,12 @@ impl RemoteClient {
                     if let Some(pane) = pane {
                         layout.focus_pane(pane);
                     } else {
-                        layout.activate_drawer_shell(session);
+                        layout.activate_drawer_shell(&session);
                         layout.set_drawer_open(true);
                     }
                 }
                 remote.active = Some(Item::Tab(id));
+                remote.take_sessions.insert(session);
                 remote.activate_session = None;
                 remote.activate_placement = None;
             }
@@ -223,6 +236,35 @@ impl RemoteClient {
             }
         }
         if let Some(Item::Tab(id)) = &remote.active {
+            if connection == Connection::Connected {
+                if let Some(layout) = remote.layouts.get(id) {
+                    if remote.opened_tabs.insert(id.clone()) {
+                        let mut initial_ids = layout.session_ids();
+                        if layout.drawer_open() {
+                            if let Some(shell) = layout.active_drawer_shell() {
+                                initial_ids.push(shell.into());
+                            }
+                        }
+                        let overview = clients.read(cx).overviews.get(&remote.computer.id);
+                        for session_id in initial_ids {
+                            let is_running = overview
+                                .and_then(|overview| overview.sessions.get(&session_id))
+                                .is_some_and(|session| {
+                                    !matches!(
+                                        session.status.status.effective(),
+                                        Status::Stopped | Status::Error
+                                    )
+                                });
+                            if is_running
+                                && !remote.recovery.contains(&session_id)
+                                && !remote.secondaries.contains(&session_id)
+                            {
+                                remote.take_sessions.insert(session_id);
+                            }
+                        }
+                    }
+                }
+            }
             if remote.viewed_tabs.last() != Some(id) {
                 remote
                     .viewed_tabs
@@ -248,6 +290,7 @@ impl RemoteClient {
             remote.closing_layouts.clear();
             remote.layout_hints.clear();
             remote.reopen_sessions.clear();
+            remote.take_sessions.clear();
             remote.activate_session = None;
             remote.activate_placement = None;
             remote.activate_tab = None;
@@ -261,6 +304,10 @@ impl RemoteClient {
         }
         if connection == Connection::Connected && remote.connection != connection {
             remote.errors.clear();
+            for pane in remote.terminals.values_mut() {
+                pane.auto_taken = false;
+                pane.control_failed = false;
+            }
         }
         remote.connection = connection;
         let disconnected_computer =
@@ -333,7 +380,6 @@ impl RemoteClient {
         }
         self.ensure_remote_library(cx);
         self.load_remote_metadata(cx);
-        self.attach_remote_panes(cx);
         cx.notify();
         connection != Connection::Connected
     }
@@ -381,10 +427,12 @@ impl RemoteClient {
         if let Some(remote) = self.workspace.as_mut() {
             if remote.active.as_ref() != Some(&item) {
                 changed = true;
+                remote.prune_opened_tabs();
                 remote.form_generation = remote.form_generation.wrapping_add(1);
                 remote.navigation_generation = remote.navigation_generation.wrapping_add(1);
                 remote.activate_session = None;
                 remote.activate_placement = None;
+                remote.take_sessions.clear();
                 remote.activate_tab = None;
                 remote.activate_mission = None;
                 for (id, hint) in &mut remote.layout_hints {
@@ -396,6 +444,9 @@ impl RemoteClient {
                 remote.action_error = None;
             }
             remote.active = Some(item);
+            if changed {
+                remote.prune_opened_tabs();
+            }
             remote.errors.clear();
         }
         changed
@@ -425,6 +476,7 @@ impl RemoteClient {
         }
         let computer_id = remote.computer.id.clone();
         let front_page = remote.front_page.clone();
+        let is_tab = matches!(remote.active, Some(Item::Tab(_)));
         let sessions: Vec<(String, u64)> = {
             let state = clients.read(cx);
             let Some(overview) = state.overviews.get(&computer_id) else {
@@ -433,6 +485,7 @@ impl RemoteClient {
             remote
                 .visible_sessions(overview, cx)
                 .into_iter()
+                .filter(|id| !(is_tab && remote.secondaries.contains(id)))
                 .filter(|id| {
                     overview.sessions.get(id).is_some_and(|session| {
                         super::super::model::ClientState::session_needs_viewed_ack(&session.status)
@@ -553,10 +606,22 @@ impl RemoteClient {
             return;
         };
         let overview = clients.read(cx).overviews.get(&remote.computer.id).cloned();
+        let is_tab = matches!(remote.active, Some(Item::Tab(_)));
+        let mut secondary_visible = HashSet::new();
         let ids = overview
             .as_ref()
             .map(|overview| remote.visible_sessions(overview, cx))
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|id| {
+                if is_tab && remote.secondaries.contains(id) {
+                    secondary_visible.insert(id.clone());
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect::<Vec<_>>();
         let running = overview
             .as_ref()
             .map(|overview| {
@@ -577,11 +642,12 @@ impl RemoteClient {
             .as_ref()
             .map(|overview| remote.open_sessions(overview))
             .unwrap_or_default();
-        let retained = if remote.connection == Connection::Connected {
+        let mut retained = if remote.connection == Connection::Connected {
             open.clone()
         } else {
             HashSet::new()
         };
+        retained.retain(|id| !secondary_visible.contains(id));
         // A hidden chat dropped only because the route is down recovers
         // without taking control, as a visible one does.
         let dropped = remote
@@ -592,10 +658,21 @@ impl RemoteClient {
             .cloned()
             .collect::<Vec<_>>();
         remote.recovery.extend(dropped);
+        if remote.connection == Connection::Connected {
+            remote.recovery.extend(secondary_visible);
+        }
         if overview.is_some() {
             remote
                 .recovery
                 .retain(|id| ids.contains(id) || open.contains(id));
+        }
+        for (id, pane) in &remote.terminals {
+            if !ids.contains(id) && !retained.contains(id) {
+                let focus = pane.attachment.terminal_focus.clone();
+                if !remote.dropped_terminal_focuses.contains(&focus) {
+                    remote.dropped_terminal_focuses.push(focus);
+                }
+            }
         }
         remote
             .terminals
@@ -604,6 +681,7 @@ impl RemoteClient {
             .pending
             .retain(|id, _| (ids.contains(id) && running.contains(id)) || retained.contains(id));
         remote.errors.retain(|id| running.contains(id));
+        remote.prune_opened_tabs();
         if remote.connection != Connection::Connected {
             return;
         }
@@ -618,6 +696,11 @@ impl RemoteClient {
             let Some(&(cols, rows)) = remote.sizes.get(&id) else {
                 continue;
             };
+            let take_control = if is_tab {
+                remote.take_sessions.remove(&id) && !remote.recovery.contains(&id)
+            } else {
+                !remote.recovery.contains(&id)
+            };
             let request = Arc::new(());
             remote.pending.insert(id.clone(), request.clone());
             let config = RemoteTerminal {
@@ -625,7 +708,7 @@ impl RemoteClient {
                 session: id.clone(),
                 cols,
                 rows,
-                take_control: !remote.recovery.contains(&id),
+                take_control,
             };
             let address = config.address();
             let title = overview
@@ -633,12 +716,13 @@ impl RemoteClient {
                 .and_then(|overview| overview.sessions.get(&id))
                 .map(|session| session.title.clone())
                 .unwrap_or_default();
-            let (client, lifetime) = transport::RemoteTransport::client(
+            let (client, lifetime, transport) = transport::RemoteTransport::client_with_handle(
                 self.app_store.read(cx).client.clone(),
                 config,
                 title,
                 remote.connected.clone(),
             );
+            let window_handle = remote.window_handle;
             let epoch = remote.epoch;
             let attachment_generation = remote.attachment_generation;
             let wake = remote.wake.clone();
@@ -654,98 +738,197 @@ impl RemoteClient {
             });
             cx.spawn(async move |weak, cx| {
                 let result = task.await;
-                let _ = weak.update(cx, |root, cx| {
-                    let style = root.terminal_style(cx);
-                    let settings = root.app_store.read(cx).settings.clone();
-                    let Some(remote) = root.remote_client.workspace.as_mut().filter(|remote| {
-                        remote.epoch == epoch
-                            && remote.attachment_generation == attachment_generation
-                    }) else {
-                        return;
-                    };
-                    if !remote
-                        .pending
-                        .get(&id)
-                        .is_some_and(|pending| Arc::ptr_eq(pending, &request))
-                    {
-                        return;
-                    }
-                    remote.pending.remove(&id);
-                    let clients = state(&root.app_store, cx);
-                    let wanted = clients
-                        .read(cx)
-                        .overviews
-                        .get(&remote.computer.id)
-                        .is_some_and(|overview| {
-                            (remote.visible_sessions(overview, cx).contains(&id)
-                                && overview.sessions.get(&id).is_some_and(|session| {
-                                    !matches!(
-                                        session.status.status.effective(),
-                                        Status::Stopped | Status::Error
-                                    )
-                                }))
-                                || (remote.connection == Connection::Connected
-                                    && remote.open_sessions(overview).contains(&id))
-                        });
-                    if !wanted {
-                        return;
-                    }
-                    match result {
-                        Ok(terminal) => {
-                            let input_address =
-                                runner_core::remote::terminal_address(&remote.computer.id, &id);
-                            let input_id = id.clone();
-                            let input_terminal = terminal.clone();
-                            let attachment = AttachedChat::new(
-                                terminal,
-                                &style,
-                                &settings,
-                                cx,
-                                move |root, result, cx| {
-                                    if let Err(error) = result {
-                                        let current = root
-                                            .remote_client
-                                            .workspace
-                                            .as_ref()
-                                            .is_some_and(|remote| {
-                                                remote.epoch == epoch
-                                                    && remote.attachment_generation
-                                                        == attachment_generation
-                                                    && remote.terminals.get(&input_id).is_some_and(
-                                                        |pane| {
-                                                            Arc::ptr_eq(
-                                                                &pane.attachment.terminal,
-                                                                &input_terminal,
-                                                            )
-                                                        },
-                                                    )
-                                            });
-                                        if current {
-                                            root.remote_client.report_remote_input_error(
-                                                &input_address,
-                                                error,
-                                                cx,
-                                            );
-                                        }
-                                    }
-                                },
-                            );
-                            let pane = RemotePane {
-                                _lifetime: lifetime,
-                                attachment,
-                                control_failed: false,
-                            };
-                            remote.recovery.remove(&id);
-                            remote.terminals.insert(id.clone(), pane);
-                        }
-                        Err(_) => {
-                            remote.errors.insert(id.clone());
-                        }
-                    }
-                    cx.notify();
+                let mut result = Some(result);
+                let updated = window_handle.update(cx, |_, window, cx| {
+                    let _ = weak.update(cx, |root, cx| {
+                        let result = result.take().unwrap();
+                        Self::finish_attach_remote_pane(
+                            root,
+                            &id,
+                            epoch,
+                            attachment_generation,
+                            &request,
+                            lifetime,
+                            transport,
+                            result,
+                            Some(window),
+                            cx,
+                        );
+                    });
                 });
+                if updated.is_err() {
+                    if let Some(result) = result.take() {
+                        let _ = weak.update(cx, |root, _cx| {
+                            let Some(remote) = root.remote_client.workspace.as_mut() else {
+                                return;
+                            };
+                            if remote.epoch == epoch
+                                && remote.attachment_generation == attachment_generation
+                                && remote
+                                    .pending
+                                    .get(&id)
+                                    .is_some_and(|pending| Arc::ptr_eq(pending, &request))
+                            {
+                                remote.pending.remove(&id);
+                                if result.is_err() {
+                                    remote.errors.insert(id.clone());
+                                }
+                            }
+                        });
+                    }
+                }
             })
             .detach();
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_attach_remote_pane(
+        root: &mut NativeRoot,
+        id: &str,
+        epoch: u64,
+        attachment_generation: u64,
+        request: &Arc<()>,
+        lifetime: transport::AttachmentLifetime,
+        transport: Arc<transport::RemoteTransport>,
+        result: anyhow::Result<Arc<TerminalMirror>>,
+        window: Option<&mut Window>,
+        cx: &mut Context<NativeRoot>,
+    ) {
+        let style = root.terminal_style(cx);
+        let settings = root.app_store.read(cx).settings.clone();
+        let Some(remote) = root.remote_client.workspace.as_mut().filter(|remote| {
+            remote.epoch == epoch && remote.attachment_generation == attachment_generation
+        }) else {
+            return;
+        };
+        if !remote
+            .pending
+            .get(id)
+            .is_some_and(|pending| Arc::ptr_eq(pending, request))
+        {
+            return;
+        }
+        remote.pending.remove(id);
+        let clients = state(&root.app_store, cx);
+        let secondary_in_active_tab =
+            matches!(remote.active, Some(Item::Tab(_))) && remote.secondaries.contains(id);
+        let wanted = !secondary_in_active_tab
+            && clients
+                .read(cx)
+                .overviews
+                .get(&remote.computer.id)
+                .is_some_and(|overview| {
+                    (remote
+                        .visible_sessions(overview, cx)
+                        .iter()
+                        .any(|visible| visible == id)
+                        && overview.sessions.get(id).is_some_and(|session| {
+                            !matches!(
+                                session.status.status.effective(),
+                                Status::Stopped | Status::Error
+                            )
+                        }))
+                        || (remote.connection == Connection::Connected
+                            && remote.open_sessions(overview).contains(id))
+                });
+        if !wanted {
+            return;
+        }
+        match result {
+            Ok(terminal) => {
+                let input_address = runner_core::remote::terminal_address(&remote.computer.id, id);
+                let input_id = id.to_owned();
+                let input_terminal = terminal.clone();
+                let attachment =
+                    AttachedChat::new(terminal, &style, &settings, cx, move |root, result, cx| {
+                        if let Err(error) = result {
+                            let current =
+                                root.remote_client.workspace.as_ref().is_some_and(|remote| {
+                                    remote.epoch == epoch
+                                        && remote.attachment_generation == attachment_generation
+                                        && remote.terminals.get(&input_id).is_some_and(|pane| {
+                                            Arc::ptr_eq(&pane.attachment.terminal, &input_terminal)
+                                        })
+                                });
+                            if current {
+                                root.remote_client.report_remote_input_error(
+                                    &input_address,
+                                    error,
+                                    cx,
+                                );
+                            }
+                        }
+                    });
+                let pane = RemotePane {
+                    _lifetime: lifetime,
+                    transport,
+                    attachment,
+                    control_failed: false,
+                    auto_taken: false,
+                };
+                remote.recovery.remove(id);
+                remote.terminals.insert(id.to_owned(), pane);
+                if let Some(window) = window {
+                    root.restore_remote_terminal_focus_if_eligible(id, window, cx);
+                }
+            }
+            Err(_) => {
+                remote.errors.insert(id.to_owned());
+            }
+        }
+        root.remote_client.reconcile_auto_take(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn reconcile_auto_take(&mut self, cx: &mut Context<NativeRoot>) {
+        use runner_core::protocol::terminal::TerminalController;
+        let clients = state(&self.app_store, cx);
+        let Some(remote) = self.workspace.as_mut() else {
+            return;
+        };
+        for pane in remote.terminals.values_mut() {
+            let control = pane.attachment.terminal.control();
+            if control.controller != TerminalController::None {
+                pane.auto_taken = false;
+            }
+            if control.desktop() {
+                pane.control_failed = false;
+            }
+        }
+        if remote.connection != Connection::Connected {
+            return;
+        }
+        let Some(overview) = clients.read(cx).overviews.get(&remote.computer.id).cloned() else {
+            return;
+        };
+        let is_tab = matches!(remote.active, Some(Item::Tab(_)));
+        if let Some(Item::Tab(tab_id)) = remote.active.as_ref() {
+            if remote.tab_held_elsewhere(tab_id) {
+                return;
+            }
+        }
+        let to_take = remote
+            .visible_sessions(&overview, cx)
+            .into_iter()
+            .filter(|id| !(is_tab && remote.secondaries.contains(id)))
+            .filter(|id| {
+                overview.sessions.get(id).is_some_and(|session| {
+                    !matches!(
+                        session.status.status.effective(),
+                        Status::Stopped | Status::Error
+                    )
+                })
+            })
+            .filter(|id| {
+                remote.terminals.get(id).is_some_and(|pane| {
+                    pane.attachment.terminal.control().controller == TerminalController::None
+                        && !pane.auto_taken
+                })
+            })
+            .collect::<Vec<_>>();
+        for id in to_take {
+            self.claim_remote_control_if_free(&id, cx);
         }
     }
 }

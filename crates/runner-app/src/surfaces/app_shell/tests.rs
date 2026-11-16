@@ -942,36 +942,56 @@ fn sidebar_footer_fits_weekly_values_and_settings_in_one_row() {
                 assert!(usage.left() >= footer.left());
                 assert!(usage.right() <= gear.left());
                 assert!(gear.right() <= footer.right());
+                assert!(usage.right() <= host_button.left());
                 assert!(usage.size.width <= px(176. * zoom + 1.));
                 if width >= app_settings::SIDEBAR_DEFAULT {
                     assert!(gear.left() - usage.right() >= px(8. * zoom - 1.));
-                }
-                let entries = [
-                    "SIDEBAR_USAGE_ENTRY_codex",
-                    "SIDEBAR_USAGE_ENTRY_claude-code",
-                ]
-                .map(|id| visual.debug_bounds(id).unwrap());
-                assert!(
-                    (entries[0].left() - usage.left() - px(6. * zoom + 1.)).abs() <= px(0.5),
-                    "{width} {zoom}: {usage:?} {entries:?}"
-                );
-                assert!(
-                    (entries[1].left() - entries[0].right() - px(8. * zoom)).abs() <= px(0.5),
-                    "{width} {zoom}: {entries:?}"
-                );
-                for pair in entries.windows(2) {
+                    assert!(visual.debug_bounds("SIDEBAR_USAGE_OVERFLOW").is_none());
+                    let entries = [
+                        "SIDEBAR_USAGE_ENTRY_codex",
+                        "SIDEBAR_USAGE_ENTRY_claude-code",
+                    ]
+                    .map(|id| visual.debug_bounds(id).unwrap());
                     assert!(
-                        pair[0].right() <= pair[1].left(),
-                        "{width} {zoom}: {pair:?}"
+                        (entries[0].left() - usage.left() - px(6. * zoom + 1.)).abs() <= px(0.5),
+                        "{width} {zoom}: {usage:?} {entries:?}"
+                    );
+                    assert!(
+                        (entries[1].left() - entries[0].right() - px(8. * zoom)).abs() <= px(0.5),
+                        "{width} {zoom}: {entries:?}"
+                    );
+                    for pair in entries.windows(2) {
+                        assert!(
+                            pair[0].right() <= pair[1].left(),
+                            "{width} {zoom}: {pair:?}"
+                        );
+                    }
+                    let last = visual
+                        .debug_bounds("SIDEBAR_USAGE_VALUE_claude-code")
+                        .unwrap();
+                    assert!(
+                        last.right() <= usage.right() - px(6. * zoom - 0.5),
+                        "{width} {zoom}: {usage:?} {last:?}"
+                    );
+                } else {
+                    let codex = visual.debug_bounds("SIDEBAR_USAGE_ENTRY_codex").unwrap();
+                    let overflow = visual.debug_bounds("SIDEBAR_USAGE_OVERFLOW").unwrap();
+                    assert!(visual
+                        .debug_bounds("SIDEBAR_USAGE_ENTRY_claude-code")
+                        .is_none());
+                    assert!(
+                        (codex.left() - usage.left() - px(6. * zoom + 1.)).abs() <= px(0.5),
+                        "{width} {zoom}: {usage:?} {codex:?}"
+                    );
+                    assert!(
+                        (overflow.left() - codex.right() - px(8. * zoom)).abs() <= px(0.5),
+                        "{width} {zoom}: {codex:?} {overflow:?}"
+                    );
+                    assert!(
+                        overflow.right() <= usage.right() - px(6. * zoom - 0.5),
+                        "{width} {zoom}: {usage:?} {overflow:?}"
                     );
                 }
-                let last = visual
-                    .debug_bounds("SIDEBAR_USAGE_VALUE_claude-code")
-                    .unwrap();
-                assert!(
-                    last.right() <= usage.right() - px(6. * zoom - 0.5),
-                    "{width} {zoom}: {usage:?} {last:?}"
-                );
                 visual.simulate_mouse_move(usage.center(), None, gpui::Modifiers::default());
                 visual.run_until_parked();
                 assert_eq!(visual.debug_bounds("SIDEBAR_USAGE"), Some(usage));

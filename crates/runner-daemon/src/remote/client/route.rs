@@ -96,6 +96,12 @@ pub(super) enum Command {
         c::ClientMessage,
         oneshot::Sender<runner_core::protocol::ClientResult<serde_json::Value>>,
     ),
+    Claim {
+        session: String,
+        cols: u16,
+        rows: u16,
+        reply: oneshot::Sender<runner_core::protocol::ClientResult<serde_json::Value>>,
+    },
     Follow(u64, bool),
     Attach(RemoteTerminal, oneshot::Sender<Result<TerminalAttachment>>),
     Detach(String, u64),
@@ -157,6 +163,9 @@ impl Handle {
             }
             Command::Attach(config, _) => {
                 self.viewports.lock().unwrap().remove(&config.session);
+            }
+            Command::Claim { session, .. } => {
+                self.viewports.lock().unwrap().remove(session);
             }
             _ => {}
         }
@@ -731,7 +740,7 @@ impl Session {
         }
         None
     }
-    fn request(
+    pub(super) fn request(
         &mut self,
         message: c::ClientMessage,
         reply: oneshot::Sender<runner_core::protocol::ClientResult<serde_json::Value>>,
@@ -761,6 +770,10 @@ impl Session {
                 let _ = reply.send(Err(e.into()));
             }
         }
+    }
+
+    pub(super) fn has_pending(&self, id: u64) -> bool {
+        self.pending.contains_key(&id)
     }
 }
 impl Drop for Session {
@@ -814,6 +827,9 @@ async fn run(
                     match command {
                         Command::Request(message, reply) => {
                             terminals.viewport(&message);
+                            let _ = reply.send(Err(error.message.clone().into()));
+                        }
+                        Command::Claim { reply, .. } => {
                             let _ = reply.send(Err(error.message.clone().into()));
                         }
                         Command::Attach(_, reply) => {
@@ -936,6 +952,9 @@ async fn run(
                         last_use = Instant::now();
                         match command.ok_or("Remote channel closed")? {
                             Command::Request(message, reply) => { terminals.viewport(&message); session.request(message, reply); },
+                            Command::Claim { session: target, cols, rows, reply } => {
+                                terminals.claim(target, cols, rows, reply, &mut session, &handle);
+                            }
                             Command::Follow(owner, follow) => {
                                 if follow {
                                     if followers.insert(owner) { session.overview(handle.next_id())?; }
@@ -1024,6 +1043,10 @@ async fn run(
             match command {
                 Command::Request(message, reply) => {
                     terminals.viewport(&message);
+                    let _ =
+                        reply.send(Err("Remote route dropped; request was not replayed.".into()));
+                }
+                Command::Claim { reply, .. } => {
                     let _ =
                         reply.send(Err("Remote route dropped; request was not replayed.".into()));
                 }
