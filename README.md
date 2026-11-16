@@ -36,9 +36,9 @@
 </p>
 
 <p align="center">
-  <a href="#features">Features</a>
-  ·
   <a href="#demo">Demo</a>
+  ·
+  <a href="#features">Features</a>
   ·
   <a href="#supported-agents">Agents</a>
   ·
@@ -56,6 +56,12 @@
 Linux support is in beta from Runner 0.18.2, with signed `.deb` and tarball packages for ARM64 and x86_64 and in-app updates. It has been tried on an Ubuntu 26.04 ARM64 virtual machine; native hardware, x86_64 and other distributions are not yet verified. See [Linux build and install instructions](docs/arch/linux.md) and [validation status](docs/tests/archive/823-linux-support.md).
 
 Runner brings CLI coding agents together in reusable crews, with real terminals and a shared mission feed. Your sessions and history stay on your machine.
+
+## Demo
+
+A tour from first launch: setup finds your agents and builds a starter crew, a mission runs in real terminals and asks you a question, you review the change in the side panel, then follow along from your phone.
+
+https://github.com/user-attachments/assets/13e4d920-a803-47d5-8a99-8078b364bc3e
 
 ## Features
 
@@ -149,12 +155,6 @@ runner help agents</code></pre>
 - **Desktop notifications** — Get notified when an agent needs input, finishes a turn or fails, and click to open its chat or mission. Choose events in **Settings → Notifications**.
 - **Projects** — Bind a working directory once; chats and missions started in it inherit the cwd and group in the sidebar.
 - **Light and dark** — Runner Light and Runner, plus Catppuccin, Rosé Pine, Tokyo Night, Gruvbox and Solarized, picking a theme for each mode that sets the app and terminal colours together. Claude Code follows the switch live.
-
-## Demo
-
-A tour from first launch: setup finds your agents and builds a starter crew, a mission runs in real terminals and asks you a question, you review the change in the side panel, then follow along from your phone.
-
-https://github.com/user-attachments/assets/13e4d920-a803-47d5-8a99-8078b364bc3e
 
 ## Support Runner
 

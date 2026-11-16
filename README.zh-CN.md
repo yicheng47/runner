@@ -36,9 +36,9 @@
 </p>
 
 <p align="center">
-  <a href="#功能">功能</a>
-  ·
   <a href="#演示">演示</a>
+  ·
+  <a href="#功能">功能</a>
   ·
   <a href="#支持的-agent">Agent</a>
   ·
@@ -56,6 +56,12 @@
 Linux 支持自 Runner 0.18.2 起进入 beta：提供 ARM64 和 x86_64 的签名 `.deb` 与 tarball 包，并支持应用内更新。目前已在 Ubuntu 26.04 ARM64 虚拟机上试用，原生硬件、x86_64 和其他发行版尚未验证。请参阅 [Linux 构建与安装说明](docs/arch/linux.md) 和 [验证状态](docs/tests/archive/823-linux-support.md)。
 
 Runner 让命令行编码 agent 通过可复用的 crew、真实终端和共享 mission feed 一起工作。会话和历史记录都保存在你的机器上。
+
+## 演示
+
+从第一次打开开始：设置会找到你的 agent 并组建入门 crew，mission 在真实终端里运行并向你提问，你在侧边栏查看改动，还能在手机上继续跟进。
+
+https://github.com/user-attachments/assets/a45d2440-da17-4be4-8de5-0902f59eb1da
 
 ## 功能
 
@@ -149,12 +155,6 @@ runner help agents</code></pre>
 - **桌面通知** — agent 需要输入、完成一轮回复或失败时收到通知，点击即可打开对应的 chat 或 mission。在 **Settings → Notifications** 中选择通知事件。
 - **项目** — 绑定一次工作目录；在项目里发起的 chat 和 mission 会继承它的 cwd，并在侧边栏里归在一起。
 - **浅色与深色** — Runner Light 与 Runner，外加 Catppuccin、Rosé Pine、Tokyo Night、Gruvbox 与 Solarized，为每种模式选择一个主题即可同时设置应用和终端配色。Claude Code 会实时跟着切换。
-
-## 演示
-
-从第一次打开开始：设置会找到你的 agent 并组建入门 crew，mission 在真实终端里运行并向你提问，你在侧边栏查看改动，还能在手机上继续跟进。
-
-https://github.com/user-attachments/assets/a45d2440-da17-4be4-8de5-0902f59eb1da
 
 ## 支持 Runner
 
