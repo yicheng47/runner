@@ -1,9 +1,9 @@
 # 1141 — Git changes view
 
-> Tracking issue: [#1141](https://github.com/yicheng47/runner/issues/1141). Scheduling and priority live on the issue and in the [roadmap](../roadmap.md). Platforms: macOS, Windows and Linux.
-> Status: spec agreed by Jason on 2026-11-13, with the [decisions](#decisions-settled-with-this-spec) below; All changes added on 2026-11-15. m1 merged in [#1314](https://github.com/yicheng47/runner/pull/1314); m2 merged in [#1339](https://github.com/yicheng47/runner/pull/1339); m3 is next. The boards match this spec.
+> Tracking issue: [#1141](https://github.com/yicheng47/runner/issues/1141). Scheduling and priority live on the issue and in the [roadmap](../../roadmap.md). Platforms: macOS, Windows and Linux.
+> Status: spec agreed by Jason on 2026-11-13, with the [decisions](#decisions-settled-with-this-spec) below; All changes added on 2026-11-15. m1 merged in [#1314](https://github.com/yicheng47/runner/pull/1314); m2 merged in [#1339](https://github.com/yicheng47/runner/pull/1339); m3 merged in [#1343](https://github.com/yicheng47/runner/pull/1343), and the view shipped in 0.20.0. The boards match this spec.
 > Design: `runner/desktop/specs/1141-git-changes.pen` in `yeelinks_design`, revision `3d9bd0d`. Boards: `H5T5Lj` (where the file list sits, screen `D4i2wZ`), `EqrNQ` (from Files to the diff, screen `pCdt6`), `B38Ah` (keyboard map, table `TU4G7`), `Xc2TS` (Split with the panel maximized, screen `tv7xO`) and `o98BJ` (viewed files, screen `TjFT3`).
-> Builds on: [#634](./archive/634-file-preview.md), whose side panel, `runnerd` file service, watcher, status letters, code view and highlighter this reuses. Related: [#1293](https://github.com/yicheng47/runner/issues/1293) (line comments and review to the agent, the next stage), [#1072](https://github.com/yicheng47/runner/issues/1072) (side panel views).
+> Builds on: [#634](634-file-preview.md), whose side panel, `runnerd` file service, watcher, status letters, code view and highlighter this reuses. Related: [#1293](https://github.com/yicheng47/runner/issues/1293) (line comments and review to the agent, the next stage), [#1072](https://github.com/yicheng47/runner/issues/1072) (side panel views).
 
 ## Motivation
 
@@ -103,7 +103,7 @@ The Surfaces card gets a Changes row with its key `C`, on by default. Turning it
 
 ### Where it runs
 
-`runnerd` does everything that touches git, as for #634 ([Where the work runs](../impls/archive/634-file-preview/plan.md#where-the-work-runs)). Every request names a root and paths inside it, which `runnerd` refuses outside the root. The app draws the list and the diff, pairs Split's lines, and highlights both sides. Git runs through the login-shell PATH, with `--no-color`, `--no-ext-diff`, no pager and `core.quotePath=false`, and with `-z` wherever paths are listed.
+`runnerd` does everything that touches git, as for #634 ([Where the work runs](../../impls/archive/634-file-preview/plan.md#where-the-work-runs)). Every request names a root and paths inside it, which `runnerd` refuses outside the root. The app draws the list and the diff, pairs Split's lines, and highlights both sides. Git runs through the login-shell PATH, with `--no-color`, `--no-ext-diff`, no pager and `core.quotePath=false`, and with `-z` wherever paths are listed.
 
 New requests, all slow, beside #634's `files_*`:
 
@@ -173,11 +173,11 @@ The agy trio's `qa` runs these on macOS and Windows, and on Linux when a Linux m
 7. **Files' Diff button** shows only for a changed file and toggles in place; Unified or Split is shared with Changes. Reason: new entry point (m3).
 8. **Edge placeholders** for binary, over-10 MB, CRLF-only and conflicted files, on Windows with `core.autocrlf=true`. Reason: platform-specific diff display.
 
-Selected regression cases: [WS-FILES-05](../tests/regression/workspace.md) (panel width, which Changes shares), [WS-PANE-07](../tests/regression/workspace.md) (pane maximize, whose shortcut the panel now shares) and [SET-PANEL-01](../tests/regression/settings.md) (the Surfaces card gains a row).
+Selected regression cases: [WS-FILES-05](../../tests/regression/workspace.md) (panel width, which Changes shares), [WS-PANE-07](../../tests/regression/workspace.md) (pane maximize, whose shortcut the panel now shares) and [SET-PANEL-01](../../tests/regression/settings.md) (the Surfaces card gains a row).
 
 ## Guide pages
 
-[Chats and windows](../guide/guides/chats-and-windows.md) (a new "Review changes in the side panel" section, the Diff button under reading a file, maximizing the panel, and the Surfaces row), [Missions](../guide/concepts/missions.md) (Changes in the mission side panel) and [Keyboard shortcuts](../guide/reference/keyboard-shortcuts.md) (the Changes keys and the panel's maximize).
+[Chats and windows](../../guide/guides/chats-and-windows.md) (a new "Review changes in the side panel" section, the Diff button under reading a file, maximizing the panel, and the Surfaces row), [Missions](../../guide/concepts/missions.md) (Changes in the mission side panel) and [Keyboard shortcuts](../../guide/reference/keyboard-shortcuts.md) (the Changes keys and the panel's maximize).
 
 ## Decisions settled with this spec
 
