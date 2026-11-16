@@ -1423,3 +1423,40 @@ fn git_metadata_events_refresh_status_for_local_base_remote_refs_and_worktrees()
         GitStatus::default()
     );
 }
+
+#[test]
+fn removing_watched_root_emits_changed_and_marks_root_missing() {
+    let fixture = repo();
+    let root = fixture.path();
+    let wt = root.join(".worktrees/wt-watched");
+    git(
+        root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            ".worktrees/wt-watched",
+            "-b",
+            "feat/watched",
+        ],
+    );
+
+    let (files, mut rx) = service();
+    let _ = watch_ready(&files, &mut rx, &wt);
+    std::fs::remove_dir_all(&wt).unwrap();
+
+    // Even while `wt` is still subscribed, missing/delete-pending checks treat it as gone.
+    assert!(super::fs::check_root(&wt).is_err());
+    let own_missing = super::root::resolve(files.git().as_ref(), None, Some(&wt)).unwrap();
+    assert_eq!(
+        own_missing.outcome,
+        FilesRootOutcome::Missing { path: wt.clone() }
+    );
+    let saved_missing = super::root::resolve(files.git().as_ref(), Some(&wt), Some(root)).unwrap();
+    assert!(saved_missing.forget_saved);
+
+    let event = next_event(&mut rx, &wt, FILES_CHANGED_EVENT);
+    assert_eq!(event.payload["folders"], serde_json::json!([""]));
+    assert!(events_during(&mut rx, &wt, Duration::from_millis(400)).is_empty());
+    files.unwatch(1, &wt);
+}

@@ -779,7 +779,10 @@ impl ChangesView {
         cx: &mut Context<Self>,
     ) {
         let old_removed_other: Option<String> = match &self.body {
-            Body::Root(old) if is_viewing_other_checkout(&old.root) && !old.root.path.is_dir() => {
+            Body::Root(old)
+                if is_viewing_other_checkout(&old.root)
+                    && !runner_core::app_paths::is_existing_dir(&old.root.path) =>
+            {
                 Some(
                     old.commits
                         .as_ref()
@@ -969,7 +972,7 @@ impl ChangesView {
             .then(|| self.watched_git_root().map(Path::to_path_buf))
             .flatten();
         if let Some(root) = &wanted
-            && !root.is_dir()
+            && !runner_core::app_paths::is_existing_dir(root)
         {
             self.unwatch(cx);
             self.resolve(cx);
@@ -1043,9 +1046,12 @@ impl ChangesView {
     // ── Snapshot & diff loading ────────────────────────────────────────
 
     fn recover_from_root_error(&mut self, msg: &str, cx: &mut Context<Self>) -> bool {
-        let root_missing = matches!(&self.body, Body::Root(state) if !state.root.path.is_dir())
-            || msg.contains("is not an existing folder");
+        let root_missing = matches!(
+            &self.body,
+            Body::Root(state) if !runner_core::app_paths::is_existing_dir(&state.root.path)
+        ) || msg.contains("is not an existing folder");
         if root_missing {
+            self.unwatch(cx);
             self.resolve(cx);
             return true;
         }

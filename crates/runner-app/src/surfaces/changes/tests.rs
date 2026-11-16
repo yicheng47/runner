@@ -1257,32 +1257,149 @@ fn removing_root_after_load_transitions_to_missing_when_shown_or_reopened() {
         store.refresh(crate::app_store::StoreRefreshKind::All, cx);
     });
 
-    // 1. Removed while shown -> watcher refresh resolves to Missing and clears stale list/diff.
-    h.show(Some(mission_ctx("m-live")));
-    h.wait("m-live diff", |h| {
-        h.has("CHANGES_DIFF_CODE") && h.has("CHANGES_ROW src/lib.rs")
-    });
-    std::fs::remove_dir_all(&wt_live).unwrap();
-    let view = h.view();
-    view.update(&mut h.visual, |v, cx| {
-        v.receive(
-            crate::surfaces::files::FilesEvent::Changed(
-                runner_core::protocol::files::FilesChanged {
-                    root: wt_live.clone(),
-                    paths: Vec::new(),
-                    folders: vec!["".into()],
-                },
-            ),
-            cx,
+    let events = h
+        .store
+        .read_with(&h.visual, |store, _| store.test_core.events.clone());
+    let wait_for_event =
+        |h: &mut Harness,
+         sent: &mut tokio::sync::broadcast::Receiver<runner_daemon::events::AppEvent>,
+         root: &Path,
+         desc: &str,
+         pred: &dyn Fn(&runner_daemon::events::AppEvent) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while Instant::now() < deadline {
+                h.visual.run_until_parked();
+                loop {
+                    match sent.try_recv() {
+                        Ok(event) if pred(&event) => return,
+                        Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                        Err(_) => break,
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("timed out waiting for {desc} on {}", root.display());
+        };
+    let open_and_await_watcher = |h: &mut Harness, mission_id: &str, root: &Path, label: &str| {
+        use runner_core::protocol::files::{
+            FilesChanged, FilesStatusChanged, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
+        };
+        let mut sent = events.subscribe();
+        h.show(Some(mission_ctx(mission_id)));
+        wait_for_event(h, &mut sent, root, "initial FILES_STATUS_EVENT", &|event| {
+            event.name == FILES_STATUS_EVENT
+                && serde_json::from_value::<FilesStatusChanged>(event.payload.clone()).is_ok_and(
+                    |update| runner_core::app_paths::same_checkout_path(&update.root, root),
+                )
+        });
+        h.wait(label, |h| {
+            h.has("CHANGES_DIFF_CODE") && h.has("CHANGES_ROW src/lib.rs")
+        });
+
+        // Write a sentinel file and wait for both the OS watcher change event and
+        // a status snapshot listing `.watch-ready` (in either order, since polling
+        // emits Status before Changed).
+        std::fs::write(root.join(".watch-ready"), "ready\n").unwrap();
+        let mut saw_changed = false;
+        let mut saw_status = false;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline && !(saw_changed && saw_status) {
+            h.visual.run_until_parked();
+            loop {
+                match sent.try_recv() {
+                    Ok(event) if event.name == FILES_CHANGED_EVENT => {
+                        if serde_json::from_value::<FilesChanged>(event.payload).is_ok_and(
+                            |changed| {
+                                runner_core::app_paths::same_checkout_path(&changed.root, root)
+                                    && (changed.paths.iter().any(|path| path == ".watch-ready")
+                                        || (changed.paths.is_empty() && changed.folders == [""]))
+                            },
+                        ) {
+                            saw_changed = true;
+                        }
+                    }
+                    Ok(event) if event.name == FILES_STATUS_EVENT => {
+                        if serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(
+                            |update| {
+                                runner_core::app_paths::same_checkout_path(&update.root, root)
+                                    && update
+                                        .status
+                                        .entries
+                                        .iter()
+                                        .any(|entry| entry.path == ".watch-ready")
+                            },
+                        ) {
+                            saw_status = true;
+                        }
+                    }
+                    Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                    Err(_) => break,
+                }
+            }
+            if !(saw_changed && saw_status) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        assert!(
+            saw_changed && saw_status,
+            "timed out waiting for sentinel readiness on {} (saw_changed={saw_changed}, saw_status={saw_status})",
+            root.display()
         );
-    });
+        h.settle();
+        h.wait(label, |h| {
+            h.has("CHANGES_DIFF_CODE") && h.has("CHANGES_ROW src/lib.rs")
+        });
+        assert!(
+            h.store
+                .read_with(&h.visual, |store, _| store.test_core.files.watched_roots())
+                .iter()
+                .any(|watched| runner_core::app_paths::same_checkout_path(watched, root)),
+            "watcher must stay subscribed to {}",
+            root.display()
+        );
+        while !matches!(
+            sent.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty
+                | tokio::sync::broadcast::error::TryRecvError::Closed)
+        ) {}
+        sent
+    };
+
+    // 1. Removed while shown -> production watcher detects removal, emits FILES_CHANGED_EVENT,
+    // unwatches the gone root, and resolves Changes to Missing while clearing stale list/diff.
+    let mut sent_live = open_and_await_watcher(&mut h, "m-live", &wt_live, "m-live diff");
+    std::fs::remove_dir_all(&wt_live).unwrap();
     h.wait("m-live missing screen", |h| h.has("CHANGES_MISSING"));
     assert!(!h.has("CHANGES_DIFF_CODE"));
     assert!(!h.has("CHANGES_ROW src/lib.rs"));
+    wait_for_event(
+        &mut h,
+        &mut sent_live,
+        &wt_live,
+        "removal FILES_CHANGED_EVENT",
+        &|event| {
+            event.name == runner_core::protocol::files::FILES_CHANGED_EVENT
+                && serde_json::from_value::<runner_core::protocol::files::FilesChanged>(
+                    event.payload.clone(),
+                )
+                .is_ok_and(|changed| {
+                    runner_core::app_paths::same_checkout_path(&changed.root, &wt_live)
+                        && changed.folders == [""]
+                        && changed.paths.is_empty()
+                })
+        },
+    );
+    h.wait("m-live unwatches removed root", |h| {
+        let watched = h
+            .store
+            .read_with(&h.visual, |store, _| store.test_core.files.watched_roots());
+        !watched
+            .iter()
+            .any(|root| runner_core::app_paths::same_checkout_path(root, &wt_live))
+    });
 
     // 2. Removed while shown -> target switch (`select_target`) resolves to Missing and clears stale UI.
-    h.show(Some(mission_ctx("m-target")));
-    h.wait("m-target diff", |h| h.has("CHANGES_DIFF_CODE"));
+    let _sent_target = open_and_await_watcher(&mut h, "m-target", &wt_target, "m-target diff");
     std::fs::remove_dir_all(&wt_target).unwrap();
     let target_view = h.view();
     target_view.update(&mut h.visual, |v, cx| {
@@ -1297,8 +1414,7 @@ fn removing_root_after_load_transitions_to_missing_when_shown_or_reopened() {
     assert!(!h.has("CHANGES_ROW src/lib.rs"));
 
     // 3. Removed while hidden -> reopening resolves to Missing instead of keeping stale RootChanges.
-    h.show(Some(mission_ctx("m-hidden")));
-    h.wait("m-hidden diff", |h| h.has("CHANGES_DIFF_CODE"));
+    let _sent_hidden = open_and_await_watcher(&mut h, "m-hidden", &wt_hidden, "m-hidden diff");
     h.show(None);
     std::fs::remove_dir_all(&wt_hidden).unwrap();
     h.show(Some(mission_ctx("m-hidden")));

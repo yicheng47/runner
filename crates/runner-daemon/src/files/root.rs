@@ -1,6 +1,5 @@
 //! Where a subject's Files view starts.
 
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use runner_core::protocol::files::{
@@ -27,8 +26,8 @@ pub fn resolve(git: Option<&Git>, saved: Option<&Path>, own: Option<&Path>) -> R
     let mut forget_saved = false;
     let mut forgotten_saved: Option<&Path> = None;
     if let Some(saved) = saved {
-        match std::fs::metadata(saved) {
-            Ok(metadata) if metadata.is_dir() => {
+        match runner_core::app_paths::check_existing_dir(saved) {
+            Ok(true) => {
                 return Ok(Resolved {
                     outcome: FilesRootOutcome::Root(describe(
                         git,
@@ -40,13 +39,7 @@ pub fn resolve(git: Option<&Git>, saved: Option<&Path>, own: Option<&Path>) -> R
                     forget_saved,
                 });
             }
-            Ok(_) => {
-                forget_saved = true;
-                forgotten_saved = Some(saved);
-            }
-            Err(error)
-                if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) =>
-            {
+            Ok(false) => {
                 forget_saved = true;
                 forgotten_saved = Some(saved);
             }
@@ -55,7 +48,7 @@ pub fn resolve(git: Option<&Git>, saved: Option<&Path>, own: Option<&Path>) -> R
     }
     let outcome = match own {
         None => FilesRootOutcome::ChooseFolder,
-        Some(cwd) if !cwd.is_dir() => FilesRootOutcome::Missing {
+        Some(cwd) if !runner_core::app_paths::is_existing_dir(cwd) => FilesRootOutcome::Missing {
             path: cwd.to_path_buf(),
         },
         Some(cwd) => FilesRootOutcome::Root(describe(
@@ -131,14 +124,14 @@ fn removed_checkout_name(saved: &Path, worktrees: Option<&[WorktreeEntry]>) -> S
 }
 
 fn containing_top(worktrees: &[WorktreeEntry], dir: &Path) -> Option<PathBuf> {
-    if !dir.exists() {
+    if !runner_core::app_paths::is_existing_dir(dir) {
         return None;
     }
     let dir = runner_core::app_paths::normalize_checkout_path(dir);
     worktrees
         .iter()
         .filter_map(|worktree| {
-            if !worktree.path.exists() {
+            if !runner_core::app_paths::is_existing_dir(&worktree.path) {
                 return None;
             }
             let top = runner_core::app_paths::normalize_checkout_path(&worktree.path);
@@ -151,14 +144,14 @@ fn containing_top(worktrees: &[WorktreeEntry], dir: &Path) -> Option<PathBuf> {
 
 /// The worktree whose folder holds `dir` most closely.
 fn containing(worktrees: Vec<WorktreeEntry>, dir: &Path) -> Option<GitCheckout> {
-    if !dir.exists() {
+    if !runner_core::app_paths::is_existing_dir(dir) {
         return None;
     }
     let dir = runner_core::app_paths::normalize_checkout_path(dir);
     let (_, chosen_top, chosen) = worktrees
         .iter()
         .filter_map(|worktree| {
-            if !worktree.path.exists() {
+            if !runner_core::app_paths::is_existing_dir(&worktree.path) {
                 return None;
             }
             let top = runner_core::app_paths::normalize_checkout_path(&worktree.path);
@@ -327,6 +320,37 @@ mod tests {
         let error = super::resolve(Some(&fixture.git), Some(&looping), Some(fixture.path()))
             .expect_err("neither forgotten nor replaced by the own checkout");
         assert!(error.to_string().contains("loop"), "{error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_saved_root_with_denied_permissions_stays_saved_with_its_error() {
+        struct RestoreAcl(PathBuf);
+        impl Drop for RestoreAcl {
+            fn drop(&mut self) {
+                let _ = std::process::Command::new("icacls")
+                    .arg(&self.0)
+                    .args(["/remove:d", "*S-1-1-0"])
+                    .status();
+            }
+        }
+
+        let fixture = repo();
+        let locked = fixture.path().join("locked");
+        let saved = locked.join("saved");
+        std::fs::create_dir_all(&saved).unwrap();
+        let _guard = RestoreAcl(locked.clone());
+        let status = std::process::Command::new("icacls")
+            .arg(&locked)
+            .args(["/deny", "*S-1-1-0:(OI)(CI)(RX)"])
+            .status()
+            .unwrap();
+        assert!(status.success(), "icacls deny failed: {status}");
+
+        let error = super::resolve(Some(&fixture.git), Some(&saved), Some(fixture.path()))
+            .expect_err("permission denied must stay saved with an error");
+        let saved_str = saved.to_string_lossy();
+        assert!(error.to_string().contains(saved_str.as_ref()), "{error}");
     }
 
     #[test]

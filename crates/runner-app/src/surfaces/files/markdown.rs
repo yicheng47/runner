@@ -394,6 +394,95 @@ impl Page {
         }
     }
 
+    /// Whether row continuation and rendered row text match `other`, keeping
+    /// existing row/offset selection coordinates valid.
+    pub(crate) fn matches_text(&self, other: &Page) -> bool {
+        self.rows.len() == other.rows.len()
+            && self.rows.iter().zip(&other.rows).all(|(left, right)| {
+                left.continues() == right.continues() && left.text() == right.text()
+            })
+    }
+
+    /// Whether every rendered row (styles, links, markers, code highlights,
+    /// layout spacing, and images) matches `other`.
+    pub(crate) fn same_rendered(&self, other: &Page) -> bool {
+        if self.rows.len() != other.rows.len() {
+            return false;
+        }
+        let mut last_code: Option<(*const CodeBlock, *const CodeBlock)> = None;
+        self.rows.iter().zip(&other.rows).all(|(left, right)| {
+            let Row {
+                kind: left_kind,
+                top: left_top,
+                indent: left_indent,
+                quotes: left_quotes,
+                marker: left_marker,
+            } = left;
+            let Row {
+                kind: right_kind,
+                top: right_top,
+                indent: right_indent,
+                quotes: right_quotes,
+                marker: right_marker,
+            } = right;
+            if left_top.to_bits() != right_top.to_bits()
+                || left_indent != right_indent
+                || left_quotes != right_quotes
+                || left_marker != right_marker
+            {
+                return false;
+            }
+            match (left_kind, right_kind) {
+                (RowKind::Heading(la, ia), RowKind::Heading(lb, ib)) => la == lb && ia == ib,
+                (RowKind::Paragraph(ia), RowKind::Paragraph(ib)) => ia == ib,
+                (RowKind::Image(ia), RowKind::Image(ib)) => ia == ib,
+                (
+                    RowKind::Code {
+                        code: a,
+                        line: la,
+                        bytes: ba,
+                    },
+                    RowKind::Code {
+                        code: b,
+                        line: lb,
+                        bytes: bb,
+                    },
+                ) => {
+                    if la != lb || ba != bb {
+                        return false;
+                    }
+                    let pair = (Arc::as_ptr(a), Arc::as_ptr(b));
+                    if Arc::ptr_eq(a, b) || last_code == Some(pair) {
+                        return true;
+                    }
+                    let same =
+                        a.document.text() == b.document.text() && a.highlights == b.highlights;
+                    if same {
+                        last_code = Some(pair);
+                    }
+                    same
+                }
+                (
+                    RowKind::TableRow {
+                        alignments: aa,
+                        cells: ca,
+                        head: ha,
+                        last: la,
+                    },
+                    RowKind::TableRow {
+                        alignments: ab,
+                        cells: cb,
+                        head: hb,
+                        last: lb,
+                    },
+                ) => ha == hb && la == lb && ca == cb && (Arc::ptr_eq(aa, ab) || aa == ab),
+                (RowKind::Rule, RowKind::Rule) => true,
+                (RowKind::Html(ha), RowKind::Html(hb)) => ha == hb,
+                _ => false,
+            }
+        })
+    }
+
     /// Every local image the page shows, by its path from the root.
     pub(crate) fn images(&self) -> Vec<String> {
         let mut found: Vec<String> = Vec::new();
@@ -956,19 +1045,31 @@ impl MarkdownView {
         self.open_link = Some(open_link);
     }
 
-    /// The file read again: the scroll stays at the row it was on, and a
-    /// selection, which names places in the old text, goes.
+    #[cfg(test)]
+    pub(crate) fn images(&self) -> &HashMap<String, Arc<gpui::Image>> {
+        &self.images
+    }
+
+    /// The file read again: if the full rendered page and decoded images are
+    /// identical nothing changes; otherwise the new page renders, scroll stays
+    /// at the row it was on, and selection clears only when row text changes.
     pub(crate) fn set_page(
         &mut self,
         page: Arc<Page>,
         images: HashMap<String, Arc<gpui::Image>>,
         cx: &mut Context<Self>,
     ) {
+        let same_text = self.page.matches_text(&page);
+        if same_text && self.page.same_rendered(&page) && same_images(&self.images, &images) {
+            return;
+        }
         let old = self.page.rows.len();
         let top = self.list.logical_scroll_top();
         self.page = page;
         self.images = images;
-        self.selection = None;
+        if !same_text {
+            self.selection = None;
+        }
         let count = self.page.rows.len();
         self.list.splice(0..old, count);
         if count > 0 {
@@ -1087,6 +1188,19 @@ impl MarkdownView {
     pub(crate) fn path(&self) -> &str {
         &self.path
     }
+}
+
+fn same_images(
+    left: &HashMap<String, Arc<gpui::Image>>,
+    right: &HashMap<String, Arc<gpui::Image>>,
+) -> bool {
+    left.len() == right.len()
+        && left.iter().all(|(key, left_img)| {
+            right.get(key).is_some_and(|right_img| {
+                Arc::ptr_eq(left_img, right_img)
+                    || (left_img.format == right_img.format && left_img.bytes == right_img.bytes)
+            })
+        })
 }
 
 /// Whether the press that ends in a click moved, as a drag that selects

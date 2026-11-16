@@ -2896,6 +2896,178 @@ fn a_selection_left_elsewhere_does_not_block_clicking_a_linked_image() {
     });
 }
 
+#[test]
+fn an_unchanged_change_event_during_markdown_drag_preserves_selection_and_copy() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::create_dir_all(h.repo.join("docs")).unwrap();
+    std::fs::write(
+        h.repo.join("docs/a.svg"),
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect width="80" height="40"/></svg>"#,
+    )
+    .unwrap();
+    std::fs::write(
+        h.repo.join("DRAG.md"),
+        "First paragraph here.\n\n![A](docs/a.svg)\n\nSecond paragraph here.\n",
+    )
+    .unwrap();
+    h.open("DRAG.md");
+    h.wait("the page", |h| h.has("FILE_MD_IMAGE"));
+    let root = h.read(|view| view.root().unwrap().path.clone());
+    let view = h.view();
+    let emit_changed = |h: &mut Harness| {
+        view.update(&mut h.visual, |view, cx| {
+            view.receive(
+                FilesEvent::Changed(runner_core::protocol::files::FilesChanged {
+                    root: root.clone(),
+                    folders: vec![String::new()],
+                    paths: vec!["DRAG.md".into()],
+                }),
+                cx,
+            );
+        });
+        h.settle();
+    };
+
+    let first = h.visual.debug_bounds("FILE_MD_TEXT 0").unwrap();
+    let start = gpui::point(first.left() + px(1.), first.center().y);
+    let end = gpui::point(first.left() + px(96.), first.center().y);
+    h.visual
+        .simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+    h.visual
+        .simulate_mouse_move(end, Some(gpui::MouseButton::Left), Modifiers::default());
+    h.settle();
+
+    // A watcher flush arriving mid-drag for the untouched file must not drop selection.
+    emit_changed(&mut h);
+    h.visual
+        .simulate_mouse_up(end, gpui::MouseButton::Left, Modifiers::default());
+    h.settle();
+
+    let page = h.read(|view| view.rendered_view()).unwrap();
+    let selected = page.read_with(&h.visual, |page, _| page.selected_text());
+    let selected_text = selected.expect("selected text after mid-drag unchanged change event");
+    assert!(!selected_text.is_empty());
+
+    // A second unchanged reload after mouse-up must still preserve selection for copy.
+    emit_changed(&mut h);
+    h.visual.simulate_keystrokes(&primary("c"));
+    h.settle();
+    assert_eq!(
+        h.visual
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some(selected_text.as_str())
+    );
+
+    // Direct `set_page` keeps selection when page text matches and clears it when text changes.
+    let (same_page, images) = page.read_with(&h.visual, |page, _| {
+        (page.page().clone(), page.images().clone())
+    });
+    page.update(&mut h.visual, |page, cx| {
+        page.set_page(same_page, images.clone(), cx)
+    });
+    assert_eq!(
+        page.read_with(&h.visual, |page, _| page.selected_text()),
+        Some(selected_text)
+    );
+    let edited = Arc::new(super::markdown::Page::parse(
+        "Different content.\n",
+        "DRAG.md",
+    ));
+    page.update(&mut h.visual, |page, cx| page.set_page(edited, images, cx));
+    assert_eq!(
+        page.read_with(&h.visual, |page, _| page.selected_text()),
+        None
+    );
+}
+
+#[test]
+fn a_link_target_or_formatting_edit_updates_page_while_preserving_selection() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(
+        h.repo.join("EDIT.md"),
+        "[site](https://old.example)\n\n- [ ] Plain task\n",
+    )
+    .unwrap();
+    h.open("EDIT.md");
+    h.wait("initial markdown", |h| {
+        h.has("FILE_MD_TEXT 0") && h.has("FILE_MD_TASK")
+    });
+    let root = h.read(|view| view.root().unwrap().path.clone());
+    let view = h.view();
+    let emit_changed = |h: &mut Harness| {
+        view.update(&mut h.visual, |view, cx| {
+            view.receive(
+                FilesEvent::Changed(runner_core::protocol::files::FilesChanged {
+                    root: root.clone(),
+                    folders: vec![String::new()],
+                    paths: vec!["EDIT.md".into()],
+                }),
+                cx,
+            );
+        });
+        h.settle();
+    };
+
+    let link_bounds = h.visual.debug_bounds("FILE_MD_TEXT 0").unwrap();
+    let from = gpui::point(link_bounds.left() + px(1.), link_bounds.center().y);
+    let to = gpui::point(link_bounds.left() + px(24.), link_bounds.center().y);
+    h.visual
+        .simulate_mouse_down(from, gpui::MouseButton::Left, Modifiers::default());
+    h.visual
+        .simulate_mouse_move(to, Some(gpui::MouseButton::Left), Modifiers::default());
+    h.settle();
+    h.visual
+        .simulate_mouse_up(to, gpui::MouseButton::Left, Modifiers::default());
+    h.settle();
+    let page = h.read(|view| view.rendered_view()).unwrap();
+    let selected = page
+        .read_with(&h.visual, |page, _| page.selected_text())
+        .expect("selected text before edits");
+
+    // 1. Same-label link destination edit updates the link target while keeping selection.
+    std::fs::write(
+        h.repo.join("EDIT.md"),
+        "[site](https://new.example)\n\n- [ ] Plain task\n",
+    )
+    .unwrap();
+    emit_changed(&mut h);
+    assert_eq!(
+        page.read_with(&h.visual, |page, _| page.selected_text()),
+        Some(selected.clone())
+    );
+
+    // 2. Formatting and task-checkbox edits with matching row text render while keeping selection.
+    std::fs::write(
+        h.repo.join("EDIT.md"),
+        "[site](https://new.example)\n\n- [x] **Plain** task\n",
+    )
+    .unwrap();
+    emit_changed(&mut h);
+    h.wait("updated task checkbox", |h| h.has("FILE_MD_TASK_DONE"));
+    assert_eq!(
+        page.read_with(&h.visual, |page, _| page.selected_text()),
+        Some(selected)
+    );
+    let has_strong = page.read_with(&h.visual, |page, _| {
+        matches!(
+            &page.page().rows[1].kind,
+            super::markdown::RowKind::Paragraph(inline)
+                if inline.styles.iter().any(|(_, style)| style.strong)
+        )
+    });
+    assert!(has_strong, "bold formatting must render on updated row");
+
+    let link_bounds = h.visual.debug_bounds("FILE_MD_TEXT 0").unwrap();
+    h.visual.simulate_click(
+        gpui::point(link_bounds.left() + px(12.), link_bounds.center().y),
+        Modifiers::default(),
+    );
+    h.settle();
+    assert_eq!(h.read(|view| view.opened_urls()), ["https://new.example"]);
+}
+
 // ── Settings → Side panel → Files ──────────────────────────────────────
 
 impl Harness {

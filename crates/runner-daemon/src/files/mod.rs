@@ -468,7 +468,7 @@ pub fn set_root(
 /// The recent folders that still exist, newest first.
 pub fn recent_folders(core: &crate::AppCore) -> Result<Vec<PathBuf>> {
     let mut folders = crate::db::files_recent_folders(&core.db)?;
-    folders.retain(|folder| folder.is_dir());
+    folders.retain(|folder| runner_core::app_paths::is_existing_dir(folder));
     Ok(folders)
 }
 
