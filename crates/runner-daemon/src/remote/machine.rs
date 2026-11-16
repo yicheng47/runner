@@ -7,6 +7,10 @@ use chrono::{DateTime, Duration, Utc};
 use runner_core::remote::{self, *};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub(super) const IDLE_PING_SECS: i64 = 10;
+pub(super) const PONG_TIMEOUT_SECS: i64 = 5;
+pub(super) const PROBE_TIMEOUT_SECS: i64 = 3;
+
 // Trust-save completions outlive the remote task, so its generation cannot restart at zero.
 static PAIRING_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -59,6 +63,7 @@ pub enum Input {
     },
     Text(String),
     Frame,
+    Probe,
     Deadline,
 }
 #[derive(Debug)]
@@ -67,6 +72,7 @@ pub enum Effect {
     Start(StartRequest),
     Poll(PollRequest),
     Connect,
+    Ping,
     Close,
     Store,
     Save,
@@ -104,10 +110,20 @@ pub struct Machine {
     attempt: u32,
     welcome_at: Option<DateTime<Utc>>,
     last_frame: Option<DateTime<Utc>>,
+    awaiting_pong: bool,
     poll_attempt: u32,
     pub shutting_down: bool,
 }
 impl Machine {
+    #[cfg(test)]
+    pub(super) fn mark_connected_for_test(&mut self, now: DateTime<Utc>) {
+        self.status.state = RemoteState::Connected { since: now };
+        self.welcome_at = Some(now);
+        self.last_frame = Some(now);
+        self.awaiting_pong = false;
+        self.deadline = Some(now + Duration::seconds(IDLE_PING_SECS));
+    }
+
     pub fn set_identity(&mut self, identity: Option<Identity>) {
         self.identity = identity;
         self.fingerprint.take();
@@ -190,7 +206,7 @@ impl Machine {
             }
             effects.push(Effect::Log(format!("remote: {}", failure.message)));
         }
-        if matches!(input, Input::Started(_) | Input::Deadline)
+        if matches!(input, Input::Started(_) | Input::Deadline | Input::Probe)
             && self.start_deadline().is_some_and(|at| now >= at)
         {
             let host = reqwest::Url::parse(&self.status.origin)
@@ -345,6 +361,7 @@ impl Machine {
                         if paused {
                             self.pairing_generation = next_pairing_generation();
                             self.status.state = RemoteState::Paused;
+                            self.awaiting_pong = false;
                             self.deadline = (!s.activated).then_some(s.claim_expires_at);
                             effects.push(Effect::Close);
                         } else {
@@ -576,6 +593,7 @@ impl Machine {
                     self.deadline = Some(at);
                     self.welcome_at = None;
                     self.last_frame = None;
+                    self.awaiting_pong = false;
                     self.bound_claim_deadline();
                 }
             }
@@ -598,7 +616,8 @@ impl Machine {
                 self.status.last_error = None;
                 self.welcome_at = Some(now);
                 self.last_frame = Some(now);
-                self.deadline = Some(now + Duration::seconds(75));
+                self.awaiting_pong = false;
+                self.deadline = Some(now + Duration::seconds(IDLE_PING_SECS));
                 effects.push(Effect::Save);
             }
             Input::Text(text) => {
@@ -623,9 +642,30 @@ impl Machine {
             Input::Frame => {
                 self.last_frame = Some(now);
                 if matches!(self.status.state, RemoteState::Connected { .. }) {
-                    self.deadline = Some(now + Duration::seconds(75));
+                    self.awaiting_pong = false;
+                    self.deadline = Some(now + Duration::seconds(IDLE_PING_SECS));
                 }
             }
+            Input::Probe => match self.status.state {
+                RemoteState::Connected { .. } => {
+                    if self.awaiting_pong && self.deadline.is_some_and(|at| now >= at) {
+                        return self.step(Input::Failure(Failure::network()), now, rng);
+                    }
+                    let probe_at = now + Duration::seconds(PROBE_TIMEOUT_SECS);
+                    self.deadline = Some(
+                        self.deadline
+                            .filter(|_| self.awaiting_pong)
+                            .map_or(probe_at, |at| at.min(probe_at)),
+                    );
+                    self.awaiting_pong = true;
+                    effects.push(Effect::Ping);
+                }
+                RemoteState::Reconnecting { .. } => {
+                    self.attempt = 0;
+                    self.connect(now, &mut effects);
+                }
+                _ => {}
+            },
             Input::Deadline => match self.status.state {
                 RemoteState::Enrolling { .. } => {
                     if self
@@ -643,8 +683,16 @@ impl Machine {
                 }
                 RemoteState::Confirming { .. } => self.expire(&mut effects),
                 RemoteState::Reconnecting { .. } => self.connect(now, &mut effects),
-                RemoteState::Connecting { .. } | RemoteState::Connected { .. } => {
+                RemoteState::Connecting { .. } => {
                     return self.step(Input::Failure(Failure::network()), now, rng)
+                }
+                RemoteState::Connected { .. } => {
+                    if self.awaiting_pong {
+                        return self.step(Input::Failure(Failure::network()), now, rng);
+                    }
+                    self.awaiting_pong = true;
+                    self.deadline = Some(now + Duration::seconds(PONG_TIMEOUT_SECS));
+                    effects.push(Effect::Ping);
                 }
                 _ => {
                     if let Some(e) = &self.enrollment {
@@ -679,6 +727,7 @@ impl Machine {
         self.status.state = RemoteState::Connecting {
             attempt: self.attempt,
         };
+        self.awaiting_pong = false;
         self.deadline = Some(now + Duration::seconds(10));
         self.bound_claim_deadline();
         effects.push(Effect::Connect);
@@ -696,6 +745,7 @@ impl Machine {
     fn stop(&mut self, reason: StopReason, effects: &mut Vec<Effect>) {
         self.status.state = RemoteState::Stopped { reason };
         self.deadline = None;
+        self.awaiting_pong = false;
         self.enrollment = None;
         effects.push(Effect::Close);
         if let Some(s) = &mut self.saved {
@@ -723,6 +773,7 @@ impl Machine {
         self.attempt = 0;
         self.welcome_at = None;
         self.last_frame = None;
+        self.awaiting_pong = false;
     }
     fn logout(&mut self, effects: &mut Vec<Effect>) {
         self.pairing_generation = next_pairing_generation();
@@ -962,12 +1013,34 @@ mod tests {
         approve(&mut m);
         assert_eq!(m.deadline, Some(now() + Duration::seconds(10)));
         welcome(&mut m, now());
-        assert_eq!(m.deadline, Some(now() + Duration::seconds(75)));
-        m.step(Input::Frame, now() + Duration::seconds(25), &mut || 0)
+        assert_eq!(m.deadline, Some(now() + Duration::seconds(IDLE_PING_SECS)));
+        let (effects, _) = m
+            .step(Input::Frame, now() + Duration::seconds(6), &mut || 0)
             .unwrap();
-        assert_eq!(m.deadline, Some(now() + Duration::seconds(100)));
-        m.step(Input::Deadline, now() + Duration::seconds(100), &mut || 0)
+        assert!(effects.is_empty());
+        assert_eq!(
+            m.deadline,
+            Some(now() + Duration::seconds(6 + IDLE_PING_SECS))
+        );
+        let (effects, _) = m
+            .step(
+                Input::Deadline,
+                now() + Duration::seconds(6 + IDLE_PING_SECS),
+                &mut || 0,
+            )
             .unwrap();
+        assert!(matches!(effects.as_slice(), [Effect::Ping]));
+        assert!(matches!(m.status.state, RemoteState::Connected { .. }));
+        assert_eq!(
+            m.deadline,
+            Some(now() + Duration::seconds(6 + IDLE_PING_SECS + PONG_TIMEOUT_SECS))
+        );
+        m.step(
+            Input::Deadline,
+            now() + Duration::seconds(6 + IDLE_PING_SECS + PONG_TIMEOUT_SECS),
+            &mut || 0,
+        )
+        .unwrap();
         assert!(matches!(m.status.state, RemoteState::Reconnecting { .. }));
         let key = m.identity.as_ref().unwrap().key.0.clone();
         command(&mut m, Command::Pause(true), now());
@@ -1247,5 +1320,97 @@ mod review_tests {
             assert!(effects.iter().any(|e| matches!(e, Effect::Delete(_))));
             assert!(!effects.iter().any(|e| matches!(e, Effect::SignOut { .. })));
         }
+    }
+
+    #[test]
+    fn idle_ping_pong_refresh_wake_probe_and_reconnecting_wakeup() {
+        let t0 = super::tests::now();
+        let mut m = super::tests::begin(false);
+        assert!(m.step(Input::Probe, t0, &mut || 0).unwrap().0.is_empty());
+        super::tests::approve(&mut m);
+        m.step(
+            Input::Welcome {
+                host_id: "7383920468475904".into(),
+                name: "Mac Studio".into(),
+                account: Account {
+                    username: "jason".into(),
+                    display_name: "Jason".into(),
+                },
+            },
+            t0,
+            &mut || 0,
+        )
+        .unwrap();
+
+        for secs in [4, 8, 15, 22] {
+            let (effects, deadline) = m
+                .step(Input::Frame, t0 + Duration::seconds(secs), &mut || 0)
+                .unwrap();
+            assert!(effects.is_empty());
+            assert_eq!(
+                deadline,
+                Some(t0 + Duration::seconds(secs + IDLE_PING_SECS))
+            );
+        }
+
+        let idle_at = t0 + Duration::seconds(22 + IDLE_PING_SECS);
+        let (effects, deadline) = m.step(Input::Deadline, idle_at, &mut || 0).unwrap();
+        assert!(matches!(effects.as_slice(), [Effect::Ping]));
+        assert_eq!(
+            deadline,
+            Some(idle_at + Duration::seconds(PONG_TIMEOUT_SECS))
+        );
+
+        let pong_at = idle_at + Duration::seconds(2);
+        let (effects, deadline) = m.step(Input::Frame, pong_at, &mut || 0).unwrap();
+        assert!(effects.is_empty());
+        assert!(matches!(m.status.state, RemoteState::Connected { .. }));
+        assert_eq!(deadline, Some(pong_at + Duration::seconds(IDLE_PING_SECS)));
+
+        let probe_at = pong_at + Duration::seconds(1);
+        let (effects, deadline) = m.step(Input::Probe, probe_at, &mut || 0).unwrap();
+        assert!(matches!(effects.as_slice(), [Effect::Ping]));
+        assert_eq!(
+            deadline,
+            Some(probe_at + Duration::seconds(PROBE_TIMEOUT_SECS))
+        );
+
+        let reply_at = probe_at + Duration::seconds(1);
+        let (effects, deadline) = m
+            .step(
+                Input::Text(r#"{"type":"channelClosed","channel":9}"#.into()),
+                reply_at,
+                &mut || 0,
+            )
+            .unwrap();
+        assert!(effects.is_empty());
+        assert_eq!(deadline, Some(reply_at + Duration::seconds(IDLE_PING_SECS)));
+
+        let next_probe = reply_at + Duration::seconds(2);
+        let (effects, deadline) = m.step(Input::Probe, next_probe, &mut || 0).unwrap();
+        assert!(matches!(effects.as_slice(), [Effect::Ping]));
+        let fail_at = deadline.unwrap();
+        let (effects, _) = m.step(Input::Deadline, fail_at, &mut || 50_000).unwrap();
+        assert!(effects.iter().any(|e| matches!(e, Effect::Close)));
+        assert!(matches!(m.status.state, RemoteState::Reconnecting { .. }));
+
+        m.attempt = 5;
+        m.deadline = Some(fail_at + Duration::seconds(45));
+        let wake_at = fail_at + Duration::seconds(3);
+        let (effects, deadline) = m.step(Input::Probe, wake_at, &mut || 0).unwrap();
+        assert!(matches!(effects.as_slice(), [Effect::Connect]));
+        assert!(matches!(
+            m.status.state,
+            RemoteState::Connecting { attempt: 0 }
+        ));
+        assert_eq!(deadline, Some(wake_at + Duration::seconds(10)));
+
+        super::tests::command(&mut m, Command::Pause(true), wake_at);
+        assert!(m
+            .step(Input::Probe, wake_at, &mut || 0)
+            .unwrap()
+            .0
+            .is_empty());
+        assert!(matches!(m.status.state, RemoteState::Paused));
     }
 }

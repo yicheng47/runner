@@ -166,7 +166,7 @@ When a channel has no credit or room in that FIFO, that channel's terminal outpu
 
 The host also bounds what it accepts: a channel's queue of incoming frames is capped at 1 MiB, counting 64 bytes per frame on top of its length (`channels.rs`, `feed`), and a message over 1 MiB ends the channel. A misbehaving client can hurt only its own channel.
 
-The host splits the relay socket: one writer task owns the sink and takes channel frames, `closeChannel` and automatic-pong flushes through a bounded 64-item queue. It feeds the ready batch and flushes once, with a separate 10-second deadline for each feed and the final flush. Channel data leaves room for all 16 revoke closes and a rejected opening’s frame/close pair in that queue. The remote loop keeps reading and applying commands while that writer waits. Channel events wait for writer capacity above that control headroom, preserving each channel’s final-frame/close order. A frame queued before a channel closes is harmless because relay channel numbers are not reused on a connection. Trust and status are published after commands, handshakes, trust-write completions and channel openings/closings, rather than per data frame; the machine caches its identity’s fingerprint and invalidates it when the identity changes.
+The host splits the relay socket: one writer task owns the sink and takes channel frames, `closeChannel`, outbound pings and automatic-pong flushes through a bounded 64-item queue. It feeds the ready batch and flushes once, with a separate 10-second deadline for each feed and the final flush. Channel data leaves room for all 16 revoke closes, a rejected opening’s frame/close pair, a pong flush and an outbound ping in that queue. The remote loop keeps reading and applying commands while that writer waits. Channel events wait for writer capacity above that control headroom, preserving each channel’s final-frame/close order. A frame queued before a channel closes is harmless because relay channel numbers are not reused on a connection. Trust and status are published after commands, handshakes, trust-write completions and channel openings/closings, rather than per data frame; the machine caches its identity’s fingerprint and invalidates it when the identity changes.
 
 Code: `channel/records.rs`: `queue` and `next_frame` split and pace outgoing messages; `receive` reassembles and checks incoming ones; `handled` grants credit back. The constants are in `channel/mod.rs`.
 
@@ -297,7 +297,7 @@ These are empty while a terminal is quiet, and set the latency while it is not:
 
 ### Noticing a dead route
 
-The client's route ends with `Remote route timed out` after 15 seconds without any received WebSocket message, taking the existing reconnect path. A host with `ping` receives a companion ping every 5 seconds. For older hosts, the client sends a WebSocket ping to the relay every 5 seconds instead; its pong covers the client's network leg. This liveness deadline is separate from latency: an unanswered companion ping still counts only as a 10,000 ms sample and never changes a route by itself. Tungstenite answers relay pings automatically; neither end sends a second explicit pong. The host flushes the automatic pong with its existing 10-second write limit. The relay drops a client socket after 60 seconds without traffic. The host is bounded: its remote loop treats 75 seconds without a frame from the relay, which pings every 25, as a lost connection and reconnects.
+The client's route ends with `Remote route timed out` after 15 seconds without any received WebSocket message, taking the existing reconnect path. A host with `ping` receives a companion ping every 5 seconds. For older hosts, the client sends a WebSocket ping to the relay every 5 seconds instead; its pong covers the client's network leg. This liveness deadline is separate from latency: an unanswered companion ping still counts only as a 10,000 ms sample and never changes a route by itself. Tungstenite answers relay pings automatically; neither end sends a second explicit pong. The host flushes the automatic pong with its existing 10-second write limit. The relay drops a client socket after 60 seconds without traffic. On `/relay/host`, every received WebSocket frame (`Text`, `Binary`, `Ping`, `Pong`) counts as liveness; after 10 seconds of silence while `Connected`, the host queues an outbound WebSocket `Ping` through its writer and allows 5 seconds for a frame back, bounding silent drops at 15 seconds ahead of the relay's 25-second ping and 60-second idle close. On system wake, wall-versus-monotonic suspend gaps or debounced OS network changes (`SCDynamicStore` and `IORegisterForSystemPower` on macOS, `NotifyIpInterfaceChange`/`NotifyUnicastIpAddressChange`/`NotifyRouteChange2` and power resume callbacks on Windows, nonblocking `NETLINK_ROUTE` on Linux), a `Connected` host probes at once with a `Ping` and a 3-second deadline, while a `Reconnecting` host resets stale backoff and connects immediately.
 
 ### The numbers in one place
 
@@ -310,7 +310,7 @@ The client's route ends with `Remote route timed out` after 15 seconds without a
 | Initial payload credit, grant threshold | 512 KiB; 64 KiB of payload or handled frame cost | `channel/mod.rs`, `records.rs` |
 | In-flight data-frame budget | 768 KiB, frame length plus 64 bytes per frame | `channel/mod.rs`, `MAX_IN_FLIGHT` |
 | Host terminal pacing | >128 KiB unacknowledged and oldest frame ≥500 ms | `channel/mod.rs`, `PACING_WINDOW`, `PACING_DELAY`; `records.rs`, `output_paced` |
-| Host writer queue, write deadline | 64 items (18 reserved for control), 10 s per feed/flush | `remote/mod.rs`, `WRITER_CAPACITY`, `Relay` |
+| Host writer queue, write deadline | 64 items (20 reserved for control), 10 s per feed/flush | `remote/mod.rs`, `WRITER_CAPACITY`, `Relay` |
 | Pending resize | newest viewport per terminal | `remote/client/route.rs`, `Handle::viewport` |
 | Terminal queue before resync | 1 MiB, host and client | `companion/mod.rs`, `Queue::push`; `remote/client/terminal.rs` |
 | Relay queue per channel and direction | 1 MiB | `relay/channels.go`, `maxQueuedBytes` |
@@ -323,7 +323,7 @@ The client's route ends with `Remote route timed out` after 15 seconds without a
 | Idle route close | 60 s | `route.rs`, `run` |
 | Client reconnect | random 0.5–1, 1–2, 2–4, 4–8, 8–16, then 15–30 s; `Retry-After` unchanged | `route.rs`, `run` |
 | Host reconnect after a relay restart | random 1–10 s | `remote/machine.rs` |
-| Host relay deadline | 75 s after the last frame | `remote/machine.rs` |
+| Host relay liveness | 10 s idle before `Ping`, 5 s pong deadline (15 s total); 3 s probe on wake/network change (300 ms debounce) | `remote/machine.rs`, `remote/liveness.rs` |
 | Relay ping, idle | 25 s, 60 s | `relay/host.go`, `DefaultTiming` |
 | Remote reprint hold | 32 KiB in 100 ms; release after 80 ms quiet, 500 ms or 2 MiB | `runner-terminal/src/terminal.rs` |
 

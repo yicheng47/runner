@@ -1,5 +1,6 @@
 mod channels;
 mod client;
+mod liveness;
 mod machine;
 mod persistence;
 pub mod store;
@@ -31,6 +32,7 @@ struct Inbox {
     commands: Mutex<mpsc::Receiver<Envelope>>,
     trust_writes: std::sync::OnceLock<Arc<channels::TrustWrites>>,
     companion: Arc<std::sync::OnceLock<Arc<dyn crate::companion::core::Core>>>,
+    signal: Arc<liveness::Trigger>,
 }
 pub enum Reply {
     Status(Box<RemoteStatus>),
@@ -48,6 +50,8 @@ pub struct RemoteHandle {
     stopped: watch::Receiver<bool>,
     #[cfg(test)]
     restarts: watch::Receiver<u32>,
+    #[cfg(test)]
+    signal: Arc<liveness::Trigger>,
 }
 impl Default for RemoteHandle {
     fn default() -> Self {
@@ -64,6 +68,8 @@ impl Default for RemoteHandle {
             stopped,
             #[cfg(test)]
             restarts: watch::channel(0).1,
+            #[cfg(test)]
+            signal: Default::default(),
         }
     }
 }
@@ -309,10 +315,12 @@ fn spawn_with_clock(
         trust: trust_tx,
     };
     let companion = Arc::new(std::sync::OnceLock::new());
+    let signal = Arc::new(liveness::Trigger::default());
     let rx = Arc::new(Inbox {
         companion: companion.clone(),
         commands: Mutex::new(rx),
         trust_writes: std::sync::OnceLock::new(),
+        signal: signal.clone(),
     });
     let cancel = CancellationToken::new();
     let stop = cancel.clone();
@@ -394,6 +402,8 @@ fn spawn_with_clock(
         stopped,
         #[cfg(test)]
         restarts,
+        #[cfg(test)]
+        signal,
     }
 }
 
@@ -517,10 +527,35 @@ async fn run(
     }
     let mut pending_start: Option<oneshot::Sender<Result<Reply, String>>> = None;
     let mut channels: Option<channels::Channels> = None;
+    let mut watcher =
+        liveness::Watcher::new_with_trigger(inbox.signal.clone(), clock.native_watch());
+    let mut last_clock: Option<(chrono::DateTime<Utc>, tokio::time::Instant)> = None;
     publish(&machine, &events, &status_tx);
     loop {
+        let watch_clock = matches!(
+            machine.status.state,
+            remote::RemoteState::Connected { .. } | remote::RemoteState::Reconnecting { .. }
+        );
+        let wait_wall = clock.now();
+        let wait_mono = clock.monotonic();
+        if watch_clock {
+            if let Some((prev_wall, prev_mono)) = last_clock {
+                if liveness::wall_gap_jumped(prev_wall, wait_wall, prev_mono, wait_mono, true) {
+                    watcher.fire();
+                }
+            }
+        } else {
+            last_clock = None;
+        }
+        let clock_tick = async {
+            if watch_clock {
+                tokio::time::sleep(liveness::CLOCK_CHECK_INTERVAL).await;
+            } else {
+                std::future::pending().await
+            }
+        };
         let deadline = machine.deadline.map(|at| {
-            at.signed_duration_since(clock.now())
+            at.signed_duration_since(wait_wall)
                 .to_std()
                 .unwrap_or_default()
         });
@@ -544,37 +579,30 @@ async fn run(
                 None => std::future::pending().await,
             }
         };
-        let (input, reply) = tokio::select! {
-            _ = cancel.cancelled() => (Input::Command(Command::Shutdown), None),
-            envelope = rx.recv() => {
-                let Some(e) = envelope else { close(&mut socket).await; return Ok(()); };
-                (Input::Command(e.command), Some(e.reply))
-            }
-            _ = delay => (Input::Deadline, None),
-            _ = async { match task { Some(task) => { let _ = task.await; }, None => std::future::pending().await } } => (Input::Failure(transport::Failure::network()), None),
-            _ = async { match &writer { Some(tx) => { let _ = tx.reserve_many(CONTROL_HEADROOM + 1).await; }, None => std::future::pending().await } }, if !writer_ready => continue,
+        enum Wake {
+            Step(Input, Option<oneshot::Sender<Result<Reply, String>>>),
+            Trust(channels::Completion),
+            Channel(channels::Event),
+            Continue,
+            Closed,
+        }
+        let wake = tokio::select! {
+            _ = cancel.cancelled() => Wake::Step(Input::Command(Command::Shutdown), None),
+            envelope = rx.recv() => match envelope {
+                Some(e) => Wake::Step(Input::Command(e.command), Some(e.reply)),
+                None => Wake::Closed,
+            },
+            _ = delay => Wake::Step(Input::Deadline, None),
+            _ = watcher.next() => Wake::Step(Input::Probe, None),
+            _ = clock_tick => Wake::Continue,
+            _ = async { match task { Some(task) => { let _ = task.await; }, None => std::future::pending().await } } => Wake::Step(Input::Failure(transport::Failure::network()), None),
+            _ = async { match &writer { Some(tx) => { let _ = tx.reserve_many(CONTROL_HEADROOM + 1).await; }, None => std::future::pending().await } }, if !writer_ready => Wake::Continue,
             completion = async {
                 match trust_writes.get() { Some(writes) => writes.next().await, None => std::future::pending().await }
-            } => {
-                trust_writes.get().unwrap().complete(completion, channels.as_mut(), &mut machine, &root, &events);
-                if let Some(routes) = &channels { routes.sync(&mut machine); }
-                publish(&machine, &events, &status_tx);
-                continue;
-            },
+            } => Wake::Trust(completion),
             event = async {
                 match &mut channels { Some(routes) => routes.next().await, None => std::future::pending().await }
-            }, if writer_ready => {
-                let changed = !matches!(event, channels::Event::Send { .. });
-                let output = channels.as_mut().unwrap().handle(event, &mut machine, &root, &clock, &events);
-                if changed {
-                    channels.as_ref().unwrap().sync(&mut machine);
-                    publish(&machine, &events, &status_tx);
-                }
-                match output.map(|frame| send_frames(&socket, [frame])) {
-                    Some(Err(f)) => (Input::Failure(f), None),
-                    _ => continue,
-                }
-            },
+            }, if writer_ready => Wake::Channel(event),
             frame = read => {
                 let input = match frame {
                     Some(Ok(Message::Text(text))) => {
@@ -606,6 +634,7 @@ async fn run(
                         if let Some(writer) = &writer { let _ = writer.try_send(Write::Flush); }
                         Input::Frame
                     },
+                    Some(Ok(Message::Pong(_))) => Input::Frame,
                     Some(Ok(Message::Binary(bytes))) => {
                         let mut input = Input::Frame;
                         if let (Some(routes), Some((id, frame))) = (&mut channels, runner_core::companion::channel::unwrap(&bytes)) {
@@ -620,15 +649,61 @@ async fn run(
                     Some(Ok(_)) => Input::Frame,
                     _ => Input::Failure(transport::Failure::network()),
                 };
-                (input, None)
+                Wake::Step(input, None)
             }
         };
-        let changed = !matches!(&input, Input::Frame);
+        let after_wall = clock.now();
+        let after_mono = clock.monotonic();
+        if watch_clock {
+            if liveness::clock_jumped(wait_wall, after_wall, wait_mono, after_mono, true) {
+                watcher.fire();
+            }
+            last_clock = Some((after_wall, after_mono));
+        }
+        let (input, reply) = match wake {
+            Wake::Closed => {
+                close(&mut socket).await;
+                return Ok(());
+            }
+            Wake::Continue => continue,
+            Wake::Trust(completion) => {
+                trust_writes.get().unwrap().complete(
+                    completion,
+                    channels.as_mut(),
+                    &mut machine,
+                    &root,
+                    &events,
+                );
+                if let Some(routes) = &channels {
+                    routes.sync(&mut machine);
+                }
+                publish(&machine, &events, &status_tx);
+                continue;
+            }
+            Wake::Channel(event) => {
+                let changed = !matches!(event, channels::Event::Send { .. });
+                let output =
+                    channels
+                        .as_mut()
+                        .unwrap()
+                        .handle(event, &mut machine, &root, &clock, &events);
+                if changed {
+                    channels.as_ref().unwrap().sync(&mut machine);
+                    publish(&machine, &events, &status_tx);
+                }
+                match output.map(|frame| send_frames(&socket, [frame])) {
+                    Some(Err(f)) => (Input::Failure(f), None),
+                    _ => continue,
+                }
+            }
+            Wake::Step(input, reply) => (input, reply),
+        };
+        let quiet_frame = matches!(&input, Input::Frame);
         #[cfg(test)]
         if let Input::Command(Command::TestSocket(test)) = input {
             socket = Some(Relay::new(*test.0));
-            machine.status.state = remote::RemoteState::Connected { since: clock.now() };
-            machine.deadline = Some(clock.now() + chrono::Duration::seconds(75));
+            machine.mark_connected_for_test(clock.now());
+            last_clock = None;
             if let Some(reply) = reply {
                 let _ = reply.send(Ok(Reply::Status(Box::new(machine.status.clone()))));
             }
@@ -688,7 +763,8 @@ async fn run(
                 return Err(error.into());
             }
         };
-        let changed = changed || !effects.is_empty();
+        let only_ping = matches!(effects.as_slice(), [Effect::Ping]);
+        let changed = (!quiet_frame && !only_ping) || (!effects.is_empty() && !only_ping);
         let frames = channels::transition(&mut channels, &mut machine, &effects, revoke.as_deref());
         if !frames.is_empty() {
             if let Err(failure) = send_frames(&socket, frames) {
@@ -744,6 +820,9 @@ async fn run(
                 device.connected = false;
             }
         }
+        let changed = changed
+            || (only_ping
+                && !matches!(machine.status.state, remote::RemoteState::Connected { .. }));
         if changed {
             publish(&machine, &events, &status_tx);
         }
@@ -884,6 +963,9 @@ async fn perform(
                     Some(Input::Failure(transport::Failure::protocol()))
                 }
             }
+            Effect::Ping => send_frames(socket, [Message::Ping(Vec::new().into())])
+                .err()
+                .map(Input::Failure),
             Effect::Close => {
                 close(socket).await;
                 None
@@ -991,7 +1073,7 @@ async fn perform(
     Ok(outcome)
 }
 const WRITER_CAPACITY: usize = 64;
-const CONTROL_HEADROOM: usize = channels::MAX_CHANNELS + 2;
+const CONTROL_HEADROOM: usize = channels::MAX_CHANNELS + 4;
 
 enum Write {
     Frame(Message),
@@ -1077,6 +1159,8 @@ mod tests;
 struct Clock {
     #[cfg(test)]
     wall: Option<Arc<std::sync::Mutex<chrono::DateTime<Utc>>>>,
+    #[cfg(test)]
+    disable_native_watch: bool,
 }
 impl Clock {
     fn now(&self) -> chrono::DateTime<Utc> {
@@ -1085,5 +1169,15 @@ impl Clock {
             return *wall.lock().unwrap();
         }
         Utc::now()
+    }
+    fn monotonic(&self) -> tokio::time::Instant {
+        tokio::time::Instant::now()
+    }
+    fn native_watch(&self) -> bool {
+        #[cfg(test)]
+        if self.disable_native_watch {
+            return false;
+        }
+        true
     }
 }
