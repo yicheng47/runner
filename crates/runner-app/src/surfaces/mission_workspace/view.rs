@@ -685,12 +685,14 @@ impl MissionWorkspace {
                     .cursor_pointer()
                     .hover(|caption| caption.text_color(theme::text()))
                     .on_click(cx.listener(move |_, _, window, cx| {
-                        if let Some(shell) = shell.upgrade() {
-                            let session = session.clone();
-                            shell.update(cx, |shell, cx| {
+                        // A remote open syncs this workspace, which is leased during the click.
+                        let shell = shell.clone();
+                        let session = session.clone();
+                        window.defer(cx, move |window, cx| {
+                            let _ = shell.update(cx, |shell, cx| {
                                 shell.open_chat_session(&session, window, cx);
                             });
-                        }
+                        });
                     }))
             })
             .into_any_element()

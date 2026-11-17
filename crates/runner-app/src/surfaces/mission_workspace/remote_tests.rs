@@ -1561,6 +1561,44 @@ fn the_remote_header_reads_and_toggles_a_linked_missions_group_pin() {
 }
 
 #[test]
+fn clicking_the_remote_linked_chat_opens_its_tab() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (_temp, cx, window, _store, fake) = setup();
+    let mut data = overview();
+    data.tabs[0].panes = runner_core::companion::Pane::Leaf {
+        session: Some("chat".into()),
+    };
+    data.missions[0].linked_chat = Some(runner_core::companion::LinkedChat {
+        session_id: "chat".into(),
+        title: "Chat".into(),
+        archived: false,
+        reports: true,
+    });
+    let chat = data.sessions["member"].clone();
+    data.sessions.insert("chat".into(), chat);
+    fake.set_overview(data);
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    let chip = visual
+        .debug_bounds("MISSION_LINKED_CHAT")
+        .expect("the header shows the linked chat");
+    visual.simulate_click(chip.center(), Default::default());
+    visual.run_until_parked();
+
+    window
+        .read_with(&visual, |root, _| {
+            assert!(
+                root.remote_client.active_item() == Some(&RemoteItem::Tab("remote-tab".into())),
+                "the linked chat's tab is selected"
+            );
+        })
+        .unwrap();
+}
+
+#[test]
 fn remote_zero_role_mission_does_not_flash_no_roles_or_no_events_before_feed_loads() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     for with_events in [true, false] {
