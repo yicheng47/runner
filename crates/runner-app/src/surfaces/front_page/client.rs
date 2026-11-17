@@ -275,6 +275,7 @@ impl FrontPageClient {
                         speed,
                         project_id: project,
                         cwd,
+                        worktree: None,
                         scope: Some(scope),
                         cols: Some(size.0),
                         rows: Some(size.1),
@@ -444,6 +445,7 @@ impl FrontPageClient {
                     cwd,
                     Some(size.0),
                     Some(size.1),
+                    None,
                 )
                 .map(|s| s.id);
         }
@@ -1062,6 +1064,7 @@ impl FrontPageClient {
                         title,
                         goal_override: goal,
                         cwd,
+                        worktree: None,
                         started_by_session_id: None,
                         no_report: false,
                     },

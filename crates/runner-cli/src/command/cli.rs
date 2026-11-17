@@ -46,6 +46,11 @@ pub(super) enum Command {
         #[command(subcommand)]
         command: ProjectCommand,
     },
+    /// Manage git worktrees.
+    Worktree {
+        #[command(subcommand)]
+        command: WorktreeCommand,
+    },
     /// Manage reusable agent roles.
     Role {
         #[command(subcommand)]
@@ -128,6 +133,44 @@ pub(super) enum ProjectCommand {
         /// Allow deletion when the project has running members.
         #[arg(long)]
         force: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub(super) enum WorktreeCommand {
+    /// Create or reuse a linked git worktree under .worktrees/.
+    Create {
+        /// Branch name for the worktree.
+        branch: String,
+        /// Project ID or exact name whose directory holds the repository.
+        #[arg(long, conflicts_with = "cwd")]
+        project: Option<String>,
+        /// Directory inside the repository; defaults to the current directory.
+        #[arg(long, conflicts_with = "project")]
+        cwd: Option<PathBuf>,
+        /// Base ref for a new branch; defaults to origin/HEAD or the main checkout's HEAD.
+        #[arg(long)]
+        base: Option<String>,
+    },
+    /// List worktrees in the repository.
+    List {
+        /// Project ID or exact name whose repository to inspect.
+        #[arg(long, conflicts_with = "cwd")]
+        project: Option<String>,
+        /// Directory inside the repository; defaults to the current directory.
+        #[arg(long, conflicts_with = "project")]
+        cwd: Option<PathBuf>,
+    },
+    /// Remove a linked git worktree under .worktrees/.
+    Remove {
+        /// Branch name or path of the worktree to remove.
+        target: String,
+        /// Project ID or exact name whose repository holds the worktree.
+        #[arg(long, conflicts_with = "cwd")]
+        project: Option<String>,
+        /// Directory inside the repository; defaults to the current directory.
+        #[arg(long, conflicts_with = "project")]
+        cwd: Option<PathBuf>,
     },
 }
 
@@ -324,6 +367,12 @@ pub(super) enum MissionCommand {
         /// Mission directory; defaults to the current directory.
         #[arg(long, conflicts_with = "project")]
         cwd: Option<PathBuf>,
+        /// Create or reuse a linked git worktree for the mission.
+        #[arg(long)]
+        worktree: Option<String>,
+        /// Base ref for a new worktree branch; requires --worktree.
+        #[arg(long, requires = "worktree")]
+        base: Option<String>,
         /// Link the mission to this chat without typing reports into it.
         #[arg(long)]
         no_report: bool,
@@ -447,6 +496,12 @@ pub(super) enum ChatCommand {
         /// Chat directory; defaults to the current directory.
         #[arg(long, conflicts_with = "project")]
         cwd: Option<PathBuf>,
+        /// Create or reuse a linked git worktree for the chat.
+        #[arg(long)]
+        worktree: Option<String>,
+        /// Base ref for a new worktree branch; requires --worktree.
+        #[arg(long, requires = "worktree")]
+        base: Option<String>,
     },
 }
 

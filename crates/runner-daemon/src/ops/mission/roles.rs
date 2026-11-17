@@ -179,6 +179,11 @@ fn add_checked(
     if let Some(body) = &first_turn {
         super::ensure_first_turn_fits(&handle, body)?;
     }
+    crate::ops::session::restore_missing_worktree_for_cwd(
+        state,
+        mission.cwd.as_deref(),
+        mission.project_id.as_deref(),
+    )?;
     crate::daemon::block_on(super::ensure_mission_router_mounted(state, &mission.id))?;
     let router = state
         .routers

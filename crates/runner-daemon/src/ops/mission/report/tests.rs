@@ -248,6 +248,7 @@ impl Fixture {
                 title: "Reported".into(),
                 goal_override: None,
                 cwd: Some("/tmp".into()),
+                worktree: None,
                 started_by_session_id: chat.map(str::to_owned),
                 no_report,
             },

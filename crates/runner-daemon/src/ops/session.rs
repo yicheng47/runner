@@ -464,22 +464,77 @@ pub fn session_archive(state: &AppCore, session_id: &str) -> Result<()> {
 /// Emits a `session/updated` app event after the flip — the same
 /// channel `session_rename` / `session_pin` use — so the sidebar's
 /// CHAT list picks the restored row back up without a refresh.
+pub(crate) fn restore_missing_worktree_for_cwd(
+    state: &AppCore,
+    cwd: Option<&str>,
+    project_id: Option<&str>,
+) -> Result<()> {
+    let Some(cwd) = cwd.map(str::trim).filter(|path| !path.is_empty()) else {
+        return Ok(());
+    };
+    let project_cwd = match project_id {
+        Some(id) => {
+            let conn = state.db.get()?;
+            repo::project::get(&conn, id)?.map(|project| std::path::PathBuf::from(project.cwd))
+        }
+        None => None,
+    };
+    state
+        .files
+        .restore_if_missing(std::path::Path::new(cwd), project_cwd.as_deref())?;
+    Ok(())
+}
+
+fn effective_session_cwd_and_project(
+    conn: &rusqlite::Connection,
+    row: &repo::session::SessionRowDb,
+) -> Result<(Option<String>, Option<String>, bool)> {
+    let mission = match row.mission_id.as_deref() {
+        Some(id) => repo::mission::get(conn, id)?,
+        None => None,
+    };
+    let mission_archived = mission.as_ref().is_some_and(|m| m.archived_at.is_some());
+    let cwd = row
+        .cwd
+        .clone()
+        .or_else(|| mission.as_ref().and_then(|m| m.cwd.clone()));
+    let project_id = row
+        .project_id
+        .clone()
+        .or_else(|| mission.as_ref().and_then(|m| m.project_id.clone()));
+    Ok((cwd, project_id, mission_archived))
+}
+
 pub fn session_unarchive(state: &AppCore, session_id: &str) -> Result<()> {
-    let conn = state.db.get()?;
-    let updated = repo::session::unarchive_direct(&conn, session_id)?;
-    if updated == 0 {
-        // Split the no-op (already-active direct chat) from the two
-        // refusals the scoped UPDATE can't distinguish.
-        match repo::session::get_row(&conn, session_id)? {
-            None => {
-                return Err(Error::msg(format!("session not found: {session_id}")));
+    {
+        let _reg_guard = state.files.worktree_gate().read();
+        let preflight = {
+            let conn = state.db.get()?;
+            match repo::session::get_row(&conn, session_id)? {
+                None => {
+                    return Err(Error::msg(format!("session not found: {session_id}")));
+                }
+                Some(row) if row.mission_id.is_some() || row.slot_id.is_some() => {
+                    return Err(Error::msg(format!(
+                        "session {session_id} is mission-scoped; only direct chats can be unarchived"
+                    )));
+                }
+                Some(row) => row,
             }
-            Some(row) if row.mission_id.is_some() || row.slot_id.is_some() => {
-                return Err(Error::msg(format!(
-                    "session {session_id} is mission-scoped; only direct chats can be unarchived"
-                )));
-            }
-            Some(_) => {}
+        };
+        if preflight.archived_at.is_some() {
+            restore_missing_worktree_for_cwd(
+                state,
+                preflight.cwd.as_deref(),
+                preflight.project_id.as_deref(),
+            )?;
+        }
+        #[cfg(test)]
+        state.files.worktree_gate().fire_before_registration();
+        let conn = state.db.get()?;
+        let updated = repo::session::unarchive_direct(&conn, session_id)?;
+        if updated == 0 && repo::session::get_row(&conn, session_id)?.is_none() {
+            return Err(Error::msg(format!("session not found: {session_id}")));
         }
     }
     state.events.emit(
@@ -790,6 +845,28 @@ pub fn session_resume(
     // size before falling back to 80×24. Logged so a garbled-pane report
     // can be traced back to its resume geometry.
     log::info!("session_resume: session={session_id} cols={cols:?} rows={rows:?}");
+    let restore_target = {
+        let conn = state.db.get()?;
+        if let Some(row) = repo::session::get_row(&conn, session_id)? {
+            if row.archived_at.is_none() && row.status != SessionStatus::Running {
+                let (cwd, project_id, mission_archived) =
+                    effective_session_cwd_and_project(&conn, &row)?;
+                if !mission_archived {
+                    Some((cwd, project_id))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    if let Some((cwd, project_id)) = restore_target {
+        restore_missing_worktree_for_cwd(state, cwd.as_deref(), project_id.as_deref())
+            .map_err(|e| e.context("session_resume"))?;
+    }
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let spawned = state
         .sessions
@@ -831,6 +908,24 @@ pub fn session_restart(
         .routers
         .get(mission_id)
         .ok_or_else(|| Error::msg("mission router is not mounted"))?;
+    let restore_target = {
+        let conn = state.db.get()?;
+        if row.archived_at.is_none() {
+            let (cwd, project_id, mission_archived) =
+                effective_session_cwd_and_project(&conn, &row)?;
+            if !mission_archived {
+                Some((cwd, project_id))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    if let Some((cwd, project_id)) = restore_target {
+        restore_missing_worktree_for_cwd(state, cwd.as_deref(), project_id.as_deref())
+            .map_err(|e| e.context("session_restart"))?;
+    }
     let spawned = state
         .sessions
         .restart(
@@ -876,10 +971,11 @@ pub fn session_fork(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
+    let reg_guard = state.files.worktree_gate().read();
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let spawned = state
         .sessions
-        .spawn_fork(
+        .spawn_fork_with_hooks(
             source_session_id,
             title,
             cols,
@@ -887,6 +983,11 @@ pub fn session_fork(
             &state.app_data_dir,
             state.db.clone(),
             emitter,
+            || {
+                #[cfg(test)]
+                state.files.worktree_gate().fire_before_registration();
+            },
+            move || drop(reg_guard),
         )
         .map_err(|error| error.context("session_fork"))?;
     log::info!(
@@ -922,6 +1023,32 @@ pub fn session_resume_on_launch(
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
     log::info!("session_resume: session={session_id} cols={cols:?} rows={rows:?} automatic=true");
+    let missing_worktree_cwd = {
+        let conn = state.db.get()?;
+        if let Some(row) = repo::session::get_row(&conn, session_id)? {
+            let (cwd, project_id, _) = effective_session_cwd_and_project(&conn, &row)?;
+            let project_cwd = match project_id.as_deref() {
+                Some(id) => repo::project::get(&conn, id)?.map(|p| std::path::PathBuf::from(p.cwd)),
+                None => None,
+            };
+            cwd.filter(|cwd| {
+                !cwd.trim().is_empty()
+                    && state
+                        .files
+                        .is_missing_worktree_path(std::path::Path::new(cwd), project_cwd.as_deref())
+            })
+        } else {
+            None
+        }
+    };
+    if let Some(missing_cwd) = missing_worktree_cwd {
+        if let Ok(conn) = state.db.get() {
+            let _ = repo::session::finish_resume_on_launch(&conn, session_id);
+        }
+        let error = Error::msg(format!("working directory does not exist: {missing_cwd}"));
+        log::warn!("session_resume: automatic resume of {session_id} failed: {error}");
+        return Err(error.context("session_resume"));
+    }
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let result = state.sessions.resume_on_launch(
         session_id,
@@ -981,6 +1108,7 @@ pub(crate) fn resolve_direct_start(
 
 /// Working-directory precedence is explicit `cwd`, project cwd, then the
 /// role's own `working_dir`.
+#[cfg(test)]
 pub(crate) fn resolve_direct_start_in(
     conn: &rusqlite::Connection,
     role_id: &str,
@@ -993,6 +1121,49 @@ pub(crate) fn resolve_direct_start_in(
         ProjectScope::Infer | ProjectScope::Root => cwd.or_else(|| role.working_dir.clone()),
     };
     let (project_id, cwd) = project::resolve_scope(conn, scope, cwd)?;
+    Ok((role, project_id, cwd))
+}
+
+fn resolve_direct_start_in_with_worktree(
+    state: &AppCore,
+    role_id: &str,
+    scope: &ProjectScope,
+    cwd: Option<String>,
+    worktree: Option<runner_core::protocol::WorktreeSpec>,
+) -> Result<(Role, Option<String>, Option<String>)> {
+    let (role, explicit_project_cwd) = {
+        let conn = state.db.get()?;
+        let role = role::get(&conn, role_id)?;
+        let project_cwd = match scope {
+            ProjectScope::Project(id) => Some(project::get(&conn, id)?.cwd),
+            ProjectScope::Infer | ProjectScope::Root => None,
+        };
+        (role, project_cwd)
+    };
+    let mut cwd = match scope {
+        ProjectScope::Project(_) => cwd,
+        ProjectScope::Infer | ProjectScope::Root => cwd.or_else(|| role.working_dir.clone()),
+    };
+    if let Some(spec) = worktree {
+        let explicit_dir = match scope {
+            ProjectScope::Project(_) => cwd.as_deref(),
+            ProjectScope::Infer | ProjectScope::Root => cwd
+                .as_deref()
+                .filter(|dir| role.working_dir.as_deref() != Some(*dir)),
+        };
+        let base_dir = crate::files::worktree::resolve_worktree_base_dir(
+            explicit_dir,
+            explicit_project_cwd.as_deref(),
+            role.working_dir.as_deref(),
+        )?;
+        let created = state
+            .files
+            .worktree_create(base_dir, &spec.branch, spec.base.as_deref())?;
+        cwd = Some(created.path.to_string_lossy().into_owned());
+    }
+    let conn = state.db.get()?;
+    let (project_id, cwd) =
+        project::resolve_scope_with_git(&conn, state.files.git().as_ref(), scope, cwd)?;
     Ok((role, project_id, cwd))
 }
 
@@ -1018,6 +1189,7 @@ pub fn session_start_direct_impl_with_speed(
         speed,
         ProjectScope::or_infer(project_id),
         cwd,
+        None,
         cols,
         rows,
         None,
@@ -1034,14 +1206,16 @@ fn session_start_direct_impl_with_speed_and_prompt(
     speed: Option<CodexSpeed>,
     scope: ProjectScope,
     cwd: Option<String>,
+    worktree: Option<runner_core::protocol::WorktreeSpec>,
     cols: Option<u16>,
     rows: Option<u16>,
     initial_prompt: Option<String>,
 ) -> Result<StartDirectSessionOutput> {
-    let (role, project_id, cwd) = {
-        let conn = state.db.get()?;
-        resolve_direct_start_in(&conn, &role_id, &scope, cwd)?
-    };
+    let reg_guard = state.files.worktree_gate().read();
+    let (role, project_id, cwd) =
+        resolve_direct_start_in_with_worktree(state, &role_id, &scope, cwd, worktree)?;
+    #[cfg(test)]
+    state.files.worktree_gate().fire_before_registration();
     spawn_direct_chat_with_prompt(
         state,
         &role,
@@ -1054,6 +1228,7 @@ fn session_start_direct_impl_with_speed_and_prompt(
         cols,
         rows,
         initial_prompt,
+        move || drop(reg_guard),
     )
 }
 
@@ -1070,13 +1245,14 @@ fn spawn_direct_chat_with_prompt(
     cols: Option<u16>,
     rows: Option<u16>,
     initial_prompt: Option<String>,
+    after_row_insert: impl FnOnce(),
 ) -> Result<StartDirectSessionOutput> {
     let first_turn =
         crate::router::prompt::compose_direct_first_turn(role.system_prompt.as_deref());
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let session = state
         .sessions
-        .spawn_direct_with_speed_and_prompt(
+        .spawn_direct_with_speed_and_prompt_after_insert(
             role,
             runtime.as_deref(),
             model.as_deref(),
@@ -1091,6 +1267,7 @@ fn spawn_direct_chat_with_prompt(
             emitter,
             first_turn,
             initial_prompt,
+            after_row_insert,
         )
         .map_err(|e| e.context("session_start_direct"))?;
     crate::ops::onboarding::mark_completed_on_activity(state)?;
@@ -1132,7 +1309,7 @@ pub fn session_start_direct_with_speed(
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
     Ok(session_start_direct_impl_with_speed_and_prompt(
-        state, role_id, runtime, model, effort, speed, scope, cwd, cols, rows, None,
+        state, role_id, runtime, model, effort, speed, scope, cwd, None, cols, rows, None,
     )?
     .session)
 }
@@ -1164,7 +1341,7 @@ pub fn session_start_runtime_with_speed(
     speed: Option<CodexSpeed>,
 ) -> Result<StartDirectSessionOutput> {
     session_start_runtime_with_speed_and_prompt(
-        state, runtime, scope, cwd, cols, rows, model, effort, speed, None,
+        state, runtime, scope, cwd, None, cols, rows, model, effort, speed, None,
     )
 }
 
@@ -1174,6 +1351,7 @@ fn session_start_runtime_with_speed_and_prompt(
     runtime: &str,
     scope: ProjectScope,
     cwd: Option<String>,
+    worktree: Option<runner_core::protocol::WorktreeSpec>,
     cols: Option<u16>,
     rows: Option<u16>,
     model: Option<String>,
@@ -1181,18 +1359,22 @@ fn session_start_runtime_with_speed_and_prompt(
     speed: Option<CodexSpeed>,
     initial_prompt: Option<String>,
 ) -> Result<StartDirectSessionOutput> {
-    let (project_id, cwd) = {
-        let conn = state.db.get()?;
-        project::resolve_scope(&conn, &scope, cwd)?
-    };
     let mut role = runtime_direct_role(runtime, None, model.as_deref(), effort.as_deref())?;
     if crate::runtimes::for_key(runtime).capabilities().codex_speed {
         role.codex_speed = speed;
     }
+    let reg_guard = state.files.worktree_gate().read();
+    let cwd = resolve_worktree_before_start(state, &scope, cwd, worktree)?;
+    let (project_id, cwd) = {
+        let conn = state.db.get()?;
+        project::resolve_scope_with_git(&conn, state.files.git().as_ref(), &scope, cwd)?
+    };
+    #[cfg(test)]
+    state.files.worktree_gate().fire_before_registration();
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let spawned = state
         .sessions
-        .spawn_runtime_direct_with_prompt(
+        .spawn_runtime_direct_with_prompt_after_insert(
             &role,
             project_id.as_deref(),
             cwd.as_deref(),
@@ -1202,6 +1384,7 @@ fn session_start_runtime_with_speed_and_prompt(
             state.db.clone(),
             emitter,
             initial_prompt,
+            move || drop(reg_guard),
         )
         .map_err(|e| e.context("session_start_runtime"))?;
     if role.runtime != Runtime::Shell.key() {
@@ -1253,6 +1436,33 @@ fn windows_shell_command(path: &str, comspec: String) -> String {
 
 /// Spawn the user's configured login shell for a caller that may pass only a
 /// directory: without `project_id`, the project is inferred from `cwd`.
+fn resolve_worktree_before_start(
+    state: &AppCore,
+    scope: &ProjectScope,
+    cwd: Option<String>,
+    worktree: Option<runner_core::protocol::WorktreeSpec>,
+) -> Result<Option<String>> {
+    let explicit_project_cwd = match scope {
+        ProjectScope::Project(id) => {
+            let conn = state.db.get()?;
+            Some(project::get(&conn, id)?.cwd)
+        }
+        ProjectScope::Infer | ProjectScope::Root => None,
+    };
+    let Some(spec) = worktree else {
+        return Ok(cwd);
+    };
+    let base_dir = crate::files::worktree::resolve_worktree_base_dir(
+        cwd.as_deref(),
+        explicit_project_cwd.as_deref(),
+        None,
+    )?;
+    let created = state
+        .files
+        .worktree_create(base_dir, &spec.branch, spec.base.as_deref())?;
+    Ok(Some(created.path.to_string_lossy().into_owned()))
+}
+
 pub fn session_start_shell(
     state: &AppCore,
     project_id: Option<String>,
@@ -1260,7 +1470,14 @@ pub fn session_start_shell(
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SpawnedSession> {
-    session_start_shell_in(state, ProjectScope::or_infer(project_id), cwd, cols, rows)
+    session_start_shell_in(
+        state,
+        ProjectScope::or_infer(project_id),
+        cwd,
+        cols,
+        rows,
+        None,
+    )
 }
 
 /// Spawn the user's configured login shell as a runtime-only direct session
@@ -1272,17 +1489,22 @@ pub fn session_start_shell_in(
     cwd: Option<String>,
     cols: Option<u16>,
     rows: Option<u16>,
+    worktree: Option<runner_core::protocol::WorktreeSpec>,
 ) -> Result<SpawnedSession> {
-    let (project_id, cwd) = {
-        let conn = state.db.get()?;
-        project::resolve_scope(&conn, &scope, cwd)?
-    };
     let command = resolve_shell_command(std::env::var("SHELL").ok())?;
     let role = runtime_direct_role(Runtime::Shell.key(), Some(&command), None, None)?;
+    let reg_guard = state.files.worktree_gate().read();
+    let cwd = resolve_worktree_before_start(state, &scope, cwd, worktree)?;
+    let (project_id, cwd) = {
+        let conn = state.db.get()?;
+        project::resolve_scope_with_git(&conn, state.files.git().as_ref(), &scope, cwd)?
+    };
+    #[cfg(test)]
+    state.files.worktree_gate().fire_before_registration();
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let spawned = state
         .sessions
-        .spawn_runtime_direct(
+        .spawn_runtime_direct_after_insert(
             &role,
             project_id.as_deref(),
             cwd.as_deref(),
@@ -1291,6 +1513,7 @@ pub fn session_start_shell_in(
             &state.app_data_dir,
             state.db.clone(),
             emitter,
+            move || drop(reg_guard),
         )
         .map_err(|e| Error::msg(format!("session_start_shell: {e}")))?;
     state.events.emit(
@@ -1409,6 +1632,7 @@ pub fn session_start_chat(
             args.speed,
             scope,
             args.cwd,
+            args.worktree,
             args.cols,
             args.rows,
             args.initial_prompt,
@@ -1418,6 +1642,7 @@ pub fn session_start_chat(
             runtime.key(),
             scope,
             args.cwd,
+            args.worktree,
             args.cols,
             args.rows,
             args.model,

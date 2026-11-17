@@ -63,20 +63,40 @@ pub use runner_core::protocol::project::ProjectScope;
 
 /// Decide the project and working directory of a new session or mission.
 /// `Root` never consults the directory.
+#[cfg(test)]
 pub(crate) fn resolve_scope(
     conn: &rusqlite::Connection,
     scope: &ProjectScope,
     cwd: Option<String>,
 ) -> Result<(Option<String>, Option<String>)> {
+    resolve_scope_with_git(conn, None, scope, cwd)
+}
+
+pub(crate) fn resolve_scope_with_git(
+    conn: &rusqlite::Connection,
+    git: Option<&crate::files::git::Git>,
+    scope: &ProjectScope,
+    cwd: Option<String>,
+) -> Result<(Option<String>, Option<String>)> {
     match scope {
-        ProjectScope::Infer => resolve_cwd(conn, None, cwd),
+        ProjectScope::Infer => resolve_cwd_with_git(conn, git, None, cwd),
         ProjectScope::Root => Ok((None, cwd)),
-        ProjectScope::Project(project_id) => resolve_cwd(conn, Some(project_id), cwd),
+        ProjectScope::Project(project_id) => resolve_cwd_with_git(conn, git, Some(project_id), cwd),
     }
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_cwd(
     conn: &rusqlite::Connection,
+    project_id: Option<&str>,
+    cwd: Option<String>,
+) -> Result<(Option<String>, Option<String>)> {
+    resolve_cwd_with_git(conn, None, project_id, cwd)
+}
+
+pub(crate) fn resolve_cwd_with_git(
+    conn: &rusqlite::Connection,
+    git: Option<&crate::files::git::Git>,
     project_id: Option<&str>,
     cwd: Option<String>,
 ) -> Result<(Option<String>, Option<String>)> {
@@ -84,13 +104,21 @@ pub(crate) fn resolve_cwd(
         let project = get(conn, project_id)?;
         return Ok((Some(project.id), cwd.or(Some(project.cwd))));
     }
-    let project_id = cwd
+    let mut project = cwd
         .as_deref()
         .map(|cwd| repo::project::find_for_path(conn, cwd))
         .transpose()?
-        .flatten()
-        .map(|project| project.id);
-    Ok((project_id, cwd))
+        .flatten();
+    if project.is_none() {
+        if let (Some(git), Some(cwd_str)) = (git, cwd.as_deref()) {
+            if let Some(main_checkout) =
+                crate::files::worktree::linked_main_checkout(git, std::path::Path::new(cwd_str))
+            {
+                project = repo::project::find_for_path(conn, &main_checkout.to_string_lossy())?;
+            }
+        }
+    }
+    Ok((project.map(|project| project.id), cwd))
 }
 
 pub fn project_list(state: &AppCore) -> Result<Vec<ProjectRow>> {

@@ -27,6 +27,7 @@ mod role;
 mod session;
 mod shared;
 mod status;
+mod worktree;
 
 use ask::*;
 use chat::*;
@@ -42,6 +43,7 @@ use role::*;
 use session::*;
 use shared::*;
 use status::*;
+use worktree::*;
 
 pub fn run(cli: Cli) -> i32 {
     if let Command::Remote { command } = &cli.command {
@@ -382,6 +384,7 @@ async fn run_connected(
         Command::Remote { .. } | Command::Daemon { .. } | Command::Hook { .. } => unreachable!(),
         Command::Status => unreachable!(),
         Command::Project { command } => run_project(client, command).await,
+        Command::Worktree { command } => run_worktree(client, command).await,
         Command::Role { command } => run_role(client, command).await,
         Command::Crew { command } => run_crew(client, command).await,
         Command::Mission { command } => run_mission(client, command, context, session).await,

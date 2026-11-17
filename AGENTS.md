@@ -99,7 +99,7 @@ For larger work, write a short problem brief with the evidence, proposed scope a
 
 ## Worktrees
 
-The checkout at the repository root stays on `main`. Every branch of work gets its own linked worktree under `.worktrees/`, named after the branch with its slashes flattened: `fix/659-session-start-status` lives in `.worktrees/fix-659-session-start-status`. Create it with `git worktree add .worktrees/<flattened-branch> -b <branch> origin/main` and remove it with `git worktree remove` once the branch has merged. Because the directory name is the branch name, an editor window's title says which work it holds, and either name can be derived from the other.
+The checkout at the repository root stays on `main`. Every branch of work gets its own linked worktree under `.worktrees/`, named after the branch with its slashes flattened: `fix/659-session-start-status` lives in `.worktrees/fix-659-session-start-status`. Create it with `runner worktree create <branch>` (or `git worktree add .worktrees/<flattened-branch> -b <branch> origin/main`) and remove it with `runner worktree remove <branch>` (or `git worktree remove`) once the branch has merged. Because the directory name is the branch name, an editor window's title says which work it holds, and either name can be derived from the other.
 
 `.worktrees/` is ignored, and nesting is safe in the ways that matter: `git clean -xfd` skips a nested worktree and reports it as a skipped repository, so removing one takes a deliberate `-ff`; the workspace members in `Cargo.toml` are explicit paths, so a nested checkout is never part of a build; and ripgrep honours the ignore, so a search from the root checkout does not cross into another branch's copy.
 
@@ -147,7 +147,7 @@ A crew is a trio, a coder, a reviewer and `qa`, for a change that needs live che
 
 An explicit merge request includes GitHub's configured automatic deletion of the merged remote branch and the [post-mission cleanup](#post-mission-cleanup); neither needs a separate confirmation (Jason, 2026-11-09).
 
-A mission runs in its worktree. Before starting it, create the worktree as described under Worktrees and commit the brief on its branch; then start the mission with the worktree as its directory, `runner mission start --crew <crew> --title <title> --cwd <repo>/.worktrees/<flattened-branch> …`, not `--project runner`. Every slot's agent and shell then start in the worktree instead of the root checkout, the mission still lands under the runner project because the project is inferred from the directory, and the brief names the same path.
+A mission runs in its worktree. Before starting it, create the worktree with `runner worktree create <branch>` (or as described under Worktrees) and commit the brief on its branch; then start the mission with `runner mission start --crew <crew> --title <title> --worktree <branch> …` (or `--cwd <repo>/.worktrees/<flattened-branch> …`), not `--project runner`. Every slot's agent and shell then start in the worktree instead of the root checkout, the mission still lands under the runner project because the project is inferred from the directory, and the brief names the same path.
 
 A program that runs on an umbrella branch, such as #645's `feat/645-runnerd`, creates each mission's worktree from the umbrella instead of `origin/main` and opens the mission's PR against the umbrella. The umbrella follows `main` by merging `main` in between missions and reaches `main` as one PR when the program's gate passes; see the program's plan in `docs/impls/`.
 
@@ -158,7 +158,7 @@ A mission's pull request is a clean history on top of `main` (or of the umbrella
 An agent that merges a pull request runs the post-mission cleanup as part of the merge, without asking again (Jason, 2026-11-09). When Jason merges one directly, the cleanup waits for a request. It covers two local steps, in this order, once `gh pr view` shows the PR merged. Neither adds a commit to `main`. A worktree with uncommitted changes stops the cleanup and is reported instead: never force its removal.
 
 1. **Archive the missions.** For every mission that worked on the branch, including a qa-only or reviewer-only one, stop it if a session is still live (`runner mission stop <id>`), then `runner mission archive <id>`.
-2. **Remove the worktree and branches.** `git worktree remove .worktrees/<flattened-branch>`, then delete the local branch. GitHub deletes the remote branch on merge; delete it by hand only if it is still there.
+2. **Remove the worktree and branches.** `runner worktree remove <branch>` (or `git worktree remove .worktrees/<flattened-branch>`), then delete the local branch. GitHub deletes the remote branch on merge; delete it by hand only if it is still there.
 
 The mission's brief, test record and spec stay where they are until the next release's docs sweep.
 

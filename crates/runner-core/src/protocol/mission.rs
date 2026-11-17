@@ -34,6 +34,9 @@ pub struct StartMissionInput {
     /// An explicit value overrides the project's bound cwd.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Optional git worktree to create (or reuse) before starting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<super::worktree::WorktreeSpec>,
     /// The caller's `RUNNER_SESSION_ID`. A direct agent chat is recorded as
     /// the starter and linked; any other session is ignored (#748).
     #[serde(default)]
@@ -53,6 +56,8 @@ pub struct MissionStart {
     pub title: String,
     pub goal_override: Option<String>,
     pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<super::worktree::WorktreeSpec>,
     #[serde(default)]
     pub started_by_session_id: Option<String>,
     #[serde(default)]
@@ -67,6 +72,7 @@ impl From<StartMissionInput> for MissionStart {
             title: input.title,
             goal_override: input.goal_override,
             cwd: input.cwd,
+            worktree: input.worktree,
             started_by_session_id: input.started_by_session_id,
             no_report: input.no_report,
         }

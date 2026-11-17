@@ -10,6 +10,9 @@ pub enum View {
     Status,
     ProjectList,
     Project,
+    WorktreeCreate,
+    WorktreeList,
+    WorktreeRemove,
     RoleList,
     Role,
     CrewList,
@@ -48,13 +51,20 @@ fn machine_lines(
     if json {
         Some(vec![response.raw_json.clone()])
     } else if quiet {
-        Some(if matches!(view, View::RoleChange(_)) {
-            vec![response.value["handle"]
+        Some(match view {
+            View::RoleChange(_) => vec![response.value["handle"]
                 .as_str()
                 .unwrap_or_default()
-                .to_owned()]
-        } else {
-            ids(&response.value)
+                .to_owned()],
+            View::WorktreeCreate | View::WorktreeRemove => vec![response.value["path"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()],
+            View::WorktreeList => array(response.value.get("worktrees").unwrap_or(&Value::Null))
+                .iter()
+                .filter_map(|row| row.get("path").and_then(Value::as_str).map(str::to_owned))
+                .collect(),
+            _ => ids(&response.value),
         })
     } else {
         None
@@ -85,6 +95,9 @@ fn render_default(view: View, value: &Value) -> Vec<String> {
         View::Status => render_status(value),
         View::ProjectList => render_project_list(value),
         View::Project => render_project(value),
+        View::WorktreeCreate => vec![text(value.get("path"))],
+        View::WorktreeList => render_worktree_list(value),
+        View::WorktreeRemove => vec![format!("Removed worktree {}", text(value.get("path")))],
         View::RoleList => render_role_list(value),
         View::Role => render_role(value),
         View::CrewList => render_crew_list(value),
@@ -123,6 +136,42 @@ fn render_project(value: &Value) -> Vec<String> {
         ("ID", value.get("id")),
         ("PATH", value.get("cwd")),
     ])
+}
+
+fn render_worktree_list(value: &Value) -> Vec<String> {
+    let rows = array(value.get("worktrees").unwrap_or(&Value::Null))
+        .iter()
+        .map(|row| {
+            let branch = row
+                .get("branch")
+                .and_then(Value::as_str)
+                .unwrap_or("(detached)");
+            let managed = if row.get("managed").and_then(Value::as_bool).unwrap_or(false) {
+                "managed"
+            } else {
+                "-"
+            };
+            let locked = row.get("locked").and_then(Value::as_bool).unwrap_or(false);
+            let prunable = row
+                .get("prunable")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let state = match (locked, prunable) {
+                (true, true) => "locked, prunable",
+                (true, false) => "locked",
+                (false, true) => "prunable",
+                (false, false) => "ok",
+            };
+            vec![
+                branch.to_owned(),
+                cell(row.get("kind")),
+                managed.to_owned(),
+                state.to_owned(),
+                text(row.get("path")),
+            ]
+        })
+        .collect();
+    table(&["BRANCH", "KIND", "RUNNER", "STATE", "PATH"], rows)
 }
 
 fn render_role_list(value: &Value) -> Vec<String> {
@@ -1471,6 +1520,84 @@ mod role_change_tests {
         assert_eq!(
             machine_lines(&response, false, true, View::SessionShow).unwrap(),
             vec!["session"]
+        );
+    }
+
+    #[test]
+    fn worktree_views_print_path_table_and_removal() {
+        let created = serde_json::json!({
+            "path": "/repo/.worktrees/feat-x",
+            "branch": "feat/x",
+            "main_checkout": "/repo",
+            "created": true,
+        });
+        assert_eq!(
+            render_default(View::WorktreeCreate, &created),
+            vec!["/repo/.worktrees/feat-x"]
+        );
+        assert_eq!(
+            machine_lines(
+                &ToolResponse {
+                    raw_json: created.to_string(),
+                    value: created.clone()
+                },
+                false,
+                true,
+                View::WorktreeCreate
+            )
+            .unwrap(),
+            vec!["/repo/.worktrees/feat-x"]
+        );
+
+        let listed = serde_json::json!({
+            "main_checkout": "/repo",
+            "worktrees": [
+                {
+                    "path": "/repo",
+                    "branch": "main",
+                    "commit": "abc1234",
+                    "kind": "main",
+                    "locked": false,
+                    "prunable": false,
+                    "managed": false
+                },
+                {
+                    "path": "/repo/.worktrees/feat-x",
+                    "branch": "feat/x",
+                    "commit": "abc1234",
+                    "kind": "linked",
+                    "locked": false,
+                    "prunable": false,
+                    "managed": true
+                },
+                {
+                    "path": "/outside/wt",
+                    "branch": null,
+                    "commit": "abc1234",
+                    "kind": "linked",
+                    "locked": true,
+                    "prunable": true,
+                    "managed": false
+                }
+            ]
+        });
+        assert_eq!(
+            render_default(View::WorktreeList, &listed),
+            vec![
+                "BRANCH      KIND    RUNNER   STATE             PATH",
+                "main        main    -        ok                /repo",
+                "feat/x      linked  managed  ok                /repo/.worktrees/feat-x",
+                "(detached)  linked  -        locked, prunable  /outside/wt",
+            ]
+        );
+
+        let removed = serde_json::json!({
+            "path": "/repo/.worktrees/feat-x",
+            "branch": "feat/x"
+        });
+        assert_eq!(
+            render_default(View::WorktreeRemove, &removed),
+            vec!["Removed worktree /repo/.worktrees/feat-x"]
         );
     }
 }

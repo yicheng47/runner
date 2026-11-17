@@ -41,8 +41,8 @@ RESERVED FOR #562
 
 #[cfg(test)]
 pub const AGENT_TOP_LEVEL_COMMANDS: &[&str] = &[
-    "status", "project", "role", "crew", "mission", "chat", "session", "msg", "signal", "ask",
-    "call", "help", "daemon",
+    "status", "project", "worktree", "role", "crew", "mission", "chat", "session", "msg", "signal",
+    "ask", "call", "help", "daemon",
 ];
 
 pub const AGENT_GUIDE: &str = r#"runner — version-matched guide for agents
@@ -50,6 +50,7 @@ pub const AGENT_GUIDE: &str = r#"runner — version-matched guide for agents
 DISCOVER
   runner status
   runner project --help
+  runner worktree --help
   runner role --help
   runner crew --help
   runner mission --help

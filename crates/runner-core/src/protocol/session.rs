@@ -162,6 +162,9 @@ pub struct StartDirectSessionArgs {
     /// Optional working-directory override.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Optional git worktree to create (or reuse) before starting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<super::worktree::WorktreeSpec>,
     /// Optional project scope for membership and cwd inference.
     #[serde(default)]
     pub scope: Option<super::project::ProjectScope>,

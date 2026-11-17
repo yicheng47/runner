@@ -413,6 +413,7 @@ impl Daemon {
                 Some(self.root.path().to_string_lossy().into()),
                 Some(80),
                 Some(24),
+                None,
             )
             .unwrap();
         let pool = runner_daemon::db::open_pool(&self.launch.paths.app_data_dir.join("runner.db"))

@@ -12,6 +12,8 @@ pub(super) async fn run_chat(
         speed,
         project,
         cwd,
+        worktree,
+        base,
     } = command;
     let role_id = match role {
         Some(role) => Some(resolve_role(client, role).await?.id),
@@ -38,6 +40,12 @@ pub(super) async fn run_chat(
         "project_id": project_id,
         "cwd": cwd,
     });
+    if let Some(branch) = worktree {
+        args["worktree"] = json!({
+            "branch": branch,
+            "base": base,
+        });
+    }
     insert_speed(&mut args, "speed", *speed);
     call(client, "session_start_direct", args).await
 }

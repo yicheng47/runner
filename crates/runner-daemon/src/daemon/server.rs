@@ -1585,6 +1585,7 @@ mod tests {
             Some(root.path().to_string_lossy().into_owned()),
             Some(80),
             Some(24),
+            None,
         )
         .unwrap();
         #[cfg(unix)]
@@ -1738,6 +1739,7 @@ mod tests {
                     title: "Tracked".into(),
                     goal_override: None,
                     cwd: Some(root.path().to_string_lossy().into_owned()),
+                    worktree: None,
                     started_by_session_id: None,
                     no_report: false,
                 },

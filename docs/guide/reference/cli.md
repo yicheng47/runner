@@ -30,6 +30,10 @@ Every public `runner` command and option below comes from the CLI shipped with t
 - [runner project create](#runner-project-create)
 - [runner project rename](#runner-project-rename)
 - [runner project delete](#runner-project-delete)
+- [runner worktree](#runner-worktree)
+- [runner worktree create](#runner-worktree-create)
+- [runner worktree list](#runner-worktree-list)
+- [runner worktree remove](#runner-worktree-remove)
 - [runner role](#runner-role)
 - [runner role list](#runner-role-list)
 - [runner role show](#runner-role-show)
@@ -121,6 +125,7 @@ runner — version-matched guide for agents
 DISCOVER
   runner status
   runner project --help
+  runner worktree --help
   runner role --help
   runner crew --help
   runner mission --help
@@ -228,20 +233,21 @@ Operate Runner missions, crews, roles, projects, and chats.
 Usage: runner [OPTIONS] <COMMAND>
 
 Commands:
-  remote   Connect this computer to your remote access account
-  daemon   Inspect or stop the local daemon
-  status   Check whether Runner is running
-  project  Manage projects
-  role     Manage reusable agent roles
-  crew     Manage crews and their slots
-  mission  Manage crew missions
-  chat     Start direct chats
-  session  Inspect and manage sessions
-  msg      Post to or read a mission log
-  signal   Emit a typed signal
-  ask      Ask the person at the app
-  call     Call any registered socket tool
-  help     Print the command reference
+  remote    Connect this computer to your remote access account
+  daemon    Inspect or stop the local daemon
+  status    Check whether Runner is running
+  project   Manage projects
+  worktree  Manage git worktrees
+  role      Manage reusable agent roles
+  crew      Manage crews and their slots
+  mission   Manage crew missions
+  chat      Start direct chats
+  session   Inspect and manage sessions
+  msg       Post to or read a mission log
+  signal    Emit a typed signal
+  ask       Ask the person at the app
+  call      Call any registered socket tool
+  help      Print the command reference
 
 Options:
       --json     Print the tool result as exact JSON
@@ -582,6 +588,76 @@ Options:
       --json   Print the tool result as exact JSON
   -q           Print only result IDs
   -h, --help   Print help
+```
+
+## runner worktree
+
+```text
+Manage git worktrees
+
+Usage: runner worktree [OPTIONS] <COMMAND>
+
+Commands:
+  create  Create or reuse a linked git worktree under .worktrees/
+  list    List worktrees in the repository
+  remove  Remove a linked git worktree under .worktrees/
+
+Options:
+      --json  Print the tool result as exact JSON
+  -q          Print only result IDs
+  -h, --help  Print help
+```
+
+## runner worktree create
+
+```text
+Create or reuse a linked git worktree under .worktrees/
+
+Usage: runner worktree create [OPTIONS] <BRANCH>
+
+Arguments:
+  <BRANCH>  Branch name for the worktree
+
+Options:
+      --json               Print the tool result as exact JSON
+      --project <PROJECT>  Project ID or exact name whose directory holds the repository
+      --cwd <CWD>          Directory inside the repository; defaults to the current directory
+  -q                       Print only result IDs
+      --base <BASE>        Base ref for a new branch; defaults to origin/HEAD or the main checkout's HEAD
+  -h, --help               Print help
+```
+
+## runner worktree list
+
+```text
+List worktrees in the repository
+
+Usage: runner worktree list [OPTIONS]
+
+Options:
+      --json               Print the tool result as exact JSON
+      --project <PROJECT>  Project ID or exact name whose repository to inspect
+      --cwd <CWD>          Directory inside the repository; defaults to the current directory
+  -q                       Print only result IDs
+  -h, --help               Print help
+```
+
+## runner worktree remove
+
+```text
+Remove a linked git worktree under .worktrees/
+
+Usage: runner worktree remove [OPTIONS] <TARGET>
+
+Arguments:
+  <TARGET>  Branch name or path of the worktree to remove
+
+Options:
+      --json               Print the tool result as exact JSON
+      --project <PROJECT>  Project ID or exact name whose repository holds the worktree
+      --cwd <CWD>          Directory inside the repository; defaults to the current directory
+  -q                       Print only result IDs
+  -h, --help               Print help
 ```
 
 ## runner role
@@ -962,6 +1038,8 @@ Options:
       --title <TITLE>          Mission title
       --project <PROJECT>      Project ID or exact name whose directory the mission uses
       --cwd <CWD>              Mission directory; defaults to the current directory
+      --worktree <WORKTREE>    Create or reuse a linked git worktree for the mission
+      --base <BASE>            Base ref for a new worktree branch; requires --worktree
       --no-report              Link the mission to this chat without typing reports into it
   -h, --help                   Print help
 ```
@@ -1242,15 +1320,17 @@ Arguments:
   [ROLE]
 
 Options:
-      --json               Print the tool result as exact JSON
-      --runtime <RUNTIME>  Start a role-free chat with this runtime
-      --model <MODEL>      Model override
-  -q                       Print only result IDs
-      --effort <EFFORT>    Reasoning effort override
-      --speed <SPEED>      Codex Speed override: inherit, standard, or fast [possible values: inherit, standard, fast]
-      --project <PROJECT>  Project ID or exact name whose directory the chat uses
-      --cwd <CWD>          Chat directory; defaults to the current directory
-  -h, --help               Print help
+      --json                 Print the tool result as exact JSON
+      --runtime <RUNTIME>    Start a role-free chat with this runtime
+      --model <MODEL>        Model override
+  -q                         Print only result IDs
+      --effort <EFFORT>      Reasoning effort override
+      --speed <SPEED>        Codex Speed override: inherit, standard, or fast [possible values: inherit, standard, fast]
+      --project <PROJECT>    Project ID or exact name whose directory the chat uses
+      --cwd <CWD>            Chat directory; defaults to the current directory
+      --worktree <WORKTREE>  Create or reuse a linked git worktree for the chat
+      --base <BASE>          Base ref for a new worktree branch; requires --worktree
+  -h, --help                 Print help
 ```
 
 ## runner session
