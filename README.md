@@ -168,7 +168,7 @@ If Runner is useful to you, consider supporting its ongoing development and main
 - Join the [Runner Discord](https://discord.gg/6BrfZdHKNf) for questions, workflows, bug reports and contribution discussions.
 - Bugs and feature requests: [GitHub Issues](https://github.com/yicheng47/runner/issues).
 - Thanks to [LINUX DO](https://linux.do) for providing a community for discussion and sharing open-source projects.
-- 中文用户可以扫码加入 Runner 微信用户群。群二维码 7 天过期，如果扫码提示失效，请[提一个 issue](https://github.com/yicheng47/runner/issues/new) 提醒我更新。
+- Scan the QR code below to join the Runner WeChat group for setup help, workflows and feedback. Updated on 2026-11-17; group QR codes expire after 7 days. If it has expired, [open an issue](https://github.com/yicheng47/runner/issues/new) so I can refresh it.
 
 <img src="assets/wechat_group_qr.png" alt="Runner 微信用户群二维码" width="200" />
 

@@ -168,7 +168,7 @@ runner help agents</code></pre>
 - 加入 [Runner Discord](https://discord.gg/6BrfZdHKNf)，交流使用问题、工作流、Bug 和代码贡献。
 - Bug 和功能建议：[GitHub Issues](https://github.com/yicheng47/runner/issues)。
 - 感谢 [LINUX DO](https://linux.do) 社区提供交流与开源推广平台。
-- 扫码加入 Runner 微信用户群。群二维码 7 天过期，如果扫码提示失效，请[提一个 issue](https://github.com/yicheng47/runner/issues/new) 提醒我更新。
+- 扫码加入 Runner 微信用户群，交流使用问题、工作流和反馈。二维码于 2026-11-17 更新，7 天后过期；如果扫码提示失效，请[提一个 issue](https://github.com/yicheng47/runner/issues/new) 提醒我更新。
 
 <img src="assets/wechat_group_qr.png" alt="Runner 微信用户群二维码" width="200" />
 
