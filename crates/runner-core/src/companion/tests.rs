@@ -1275,3 +1275,116 @@ fn mission_link_actions_validate_fields_and_preserve_id_mapping() {
         }
     }
 }
+
+#[test]
+fn overview_checkout_round_trips_older_omission_and_forward_unknowns() {
+    use crate::protocol::files::WorktreeKind;
+    use crate::protocol::worktree::{MissingWorktreeBranchState, WorktreeCheckout};
+    use std::path::PathBuf;
+
+    let cases = [
+        (
+            WorktreeCheckout::Git {
+                top: PathBuf::from("/Users/dev/repo"),
+                main_checkout: PathBuf::from("/Users/dev/repo"),
+                kind: WorktreeKind::Main,
+                managed: false,
+                branch: Some("main".into()),
+                commit: Some("abc1234".into()),
+                missing: false,
+                missing_branch: None,
+                candidate_branches: Vec::new(),
+            },
+            None,
+        ),
+        (
+            WorktreeCheckout::Git {
+                top: PathBuf::from(r"C:\Users\dev\repo\.worktrees\feat-win"),
+                main_checkout: PathBuf::from(r"C:\Users\dev\repo"),
+                kind: WorktreeKind::Linked,
+                managed: true,
+                branch: Some("feat/win".into()),
+                commit: Some("deadbee".into()),
+                missing: false,
+                missing_branch: None,
+                candidate_branches: Vec::new(),
+            },
+            Some("origin/main".to_owned()),
+        ),
+        (
+            WorktreeCheckout::Git {
+                top: PathBuf::from("/Users/dev/repo/.worktrees/feat-ambig"),
+                main_checkout: PathBuf::from("/Users/dev/repo"),
+                kind: WorktreeKind::Linked,
+                managed: true,
+                branch: None,
+                commit: None,
+                missing: true,
+                missing_branch: Some(MissingWorktreeBranchState::Ambiguous),
+                candidate_branches: vec!["feat/a".into(), "feat-a".into()],
+            },
+            None,
+        ),
+        (WorktreeCheckout::Plain { missing: false }, None),
+    ];
+
+    for (proto, auto_base) in cases {
+        let wire = Checkout::from_protocol(&proto, auto_base.clone());
+        let json = serde_json::to_value(&wire).unwrap();
+        let decoded: Checkout = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, wire);
+        assert_eq!(decoded.to_protocol(), Some((proto, auto_base)));
+    }
+
+    // Older hosts omitting checkout & Mission.cwd decode cleanly with None.
+    let old_session: Session = serde_json::from_value(json!({
+        "kind": "chat",
+        "title": "Old",
+        "runtime": "codex",
+        "cwd": "/Users/dev/repo",
+        "status": "idle",
+        "reason": null,
+        "unread": false
+    }))
+    .unwrap();
+    assert_eq!(old_session.checkout, None);
+
+    let old_mission: Mission = serde_json::from_value(json!({
+        "id": "m1",
+        "project": null,
+        "title": "Old mission",
+        "crew": "Duo",
+        "state": "running",
+        "pinned": false,
+        "members": [],
+        "asks": [],
+        "shells": []
+    }))
+    .unwrap();
+    assert_eq!(old_mission.cwd, None);
+    assert_eq!(old_mission.checkout, None);
+
+    // Unknown status / enum values degrade gracefully without breaking Overview decode.
+    let future_unknown_status: Checkout = serde_json::from_value(json!({
+        "status": "futureWorkspace",
+        "futureField": 42
+    }))
+    .unwrap();
+    assert!(matches!(future_unknown_status, Checkout::Unknown(_)));
+    assert_eq!(future_unknown_status.to_protocol(), None);
+    assert_eq!(
+        serde_json::to_value(&future_unknown_status).unwrap(),
+        json!({"status": "futureWorkspace", "futureField": 42})
+    );
+
+    let future_unknown_kind: Checkout = serde_json::from_value(json!({
+        "status": "git",
+        "top": "/tmp/x",
+        "mainCheckout": "/tmp/x",
+        "kind": "futureKind",
+        "managed": false,
+        "missingBranch": "futureBranchState"
+    }))
+    .unwrap();
+    assert_eq!(future_unknown_kind.to_protocol(), None);
+}

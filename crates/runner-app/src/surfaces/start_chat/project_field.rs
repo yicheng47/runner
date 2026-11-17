@@ -167,6 +167,28 @@ impl ProjectField {
         self.follow(directory, cx);
     }
 
+    pub(crate) fn follow_external_repo(
+        &mut self,
+        main_checkout: &str,
+        directory: &str,
+        cx: &mut App,
+    ) {
+        if self.locked || directory.trim().is_empty() || main_checkout.trim().is_empty() {
+            return;
+        }
+        if deepest_folder_of(
+            self.choices.iter().map(|choice| choice.path.as_str()),
+            directory.trim(),
+            self.local,
+        )
+        .is_some()
+        {
+            return;
+        }
+        self.committed_directory.clear();
+        self.follow(main_checkout, cx);
+    }
+
     /// A remote computer's projects arrive after the launcher opens.
     pub(crate) fn set_choices(&mut self, choices: Vec<ProjectChoice>, cx: &mut App) {
         if self.choices == choices {

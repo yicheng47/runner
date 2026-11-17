@@ -386,7 +386,19 @@ pub fn call_daemon(
         "session_start_direct" => response(client.session_start_chat(parse(args)?)),
         "mission_stop" => response(client.mission_stop_impl(argument(&args, "id")?)),
         "mission_archive" => response(client.mission_archive_impl(argument(&args, "id")?)),
-        "mission_unarchive" => response(client.mission_unarchive_impl(argument(&args, "id")?)),
+        "mission_unarchive" => {
+            let restore_in_main = args
+                .get("restore_in_main")
+                .map(|value| serde_json::from_value::<bool>(value.clone()))
+                .transpose()
+                .map_err(|_| {
+                    ClientError::Refused(
+                        "invalid argument restore_in_main: expected boolean".into(),
+                    )
+                })?
+                .unwrap_or(false);
+            response(client.mission_unarchive_impl(argument(&args, "id")?, restore_in_main))
+        }
         "mission_read_cursor" => response(client.mission_read_cursor(
             &argument::<String>(&args, "mission_id")?,
             &argument::<String>(&args, "handle")?,
@@ -394,7 +406,22 @@ pub fn call_daemon(
         "mission_post" => response(client.mission_post_impl(parse(args)?)),
         "mission_signal" => response(client.mission_signal_impl(parse(args)?)),
         "session_resume" => {
-            response(client.session_resume(&argument::<String>(&args, "session_id")?, None, None))
+            let restore_in_main = args
+                .get("restore_in_main")
+                .map(|value| serde_json::from_value::<bool>(value.clone()))
+                .transpose()
+                .map_err(|_| {
+                    ClientError::Refused(
+                        "invalid argument restore_in_main: expected boolean".into(),
+                    )
+                })?
+                .unwrap_or(false);
+            response(client.session_resume(
+                &argument::<String>(&args, "session_id")?,
+                None,
+                None,
+                restore_in_main,
+            ))
         }
         "session_restart" => {
             response(client.session_restart(&argument::<String>(&args, "session_id")?, None, None))

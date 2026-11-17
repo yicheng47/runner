@@ -190,6 +190,7 @@ impl NativeRoot {
                     speed: None,
                     project: None,
                     cwd: None,
+                    worktree: None,
                     size: (INITIAL_COLS, INITIAL_ROWS),
                     initial_prompt: None,
                 },

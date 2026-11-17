@@ -31,6 +31,7 @@ pub(crate) struct ShellStart {
     pub(crate) pane: Option<String>,
     pub(crate) project: Option<String>,
     pub(crate) cwd: Option<String>,
+    pub(crate) worktree: Option<runner_core::protocol::worktree::WorktreeSpec>,
     pub(crate) size: (u16, u16),
 }
 
@@ -176,7 +177,7 @@ impl WorkspaceAction {
                 session
             } else {
                 let session = client
-                    .start_shell(input.project, input.cwd, input.size)
+                    .start_shell(input.project, input.cwd, input.worktree, input.size)
                     .map_err(|error| error.to_string())?;
                 if remote_target {
                     if let Some(pane) = input.pane {
@@ -523,6 +524,7 @@ impl NativeRoot {
             draft,
             pane,
             cwd,
+            worktree: None,
             size,
         };
         let Some((action, operation)) = WorkspaceAction::shell(self, input, cx) else {

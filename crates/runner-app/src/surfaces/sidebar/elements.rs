@@ -100,7 +100,9 @@ pub(crate) fn sidebar_item_row_with(
         let title = item.title.clone();
         move || format!("SIDEBAR_ITEM_TITLE:{title}")
     });
+    let has_subtitle = subtitle.is_some();
     sidebar_row_shell(id.clone(), item.selected, false, bordered)
+        .when(has_subtitle, |row| row.min_h(rems(44. / 16.)))
         .children(item.pinned.then(|| {
             div()
                 .debug_selector(move || format!("SIDEBAR_PIN {pin_id}"))
@@ -116,6 +118,7 @@ pub(crate) fn sidebar_item_row_with(
                     .flex_1()
                     .flex()
                     .flex_col()
+                    .gap(rems(2. / 16.))
                     .child(title)
                     .child(subtitle),
             ),

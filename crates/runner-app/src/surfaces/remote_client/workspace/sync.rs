@@ -95,6 +95,12 @@ impl RemoteClient {
                 .layouts
                 .retain(|id, _| overview.tabs.iter().any(|tab| &tab.id == id));
             remote
+                .chat_info_tabs
+                .retain(|id| remote.layouts.contains_key(id));
+            remote
+                .panel_chat_by_tab
+                .retain(|id, _| remote.layouts.contains_key(id));
+            remote
                 .opened_tabs
                 .retain(|id| overview.tabs.iter().any(|tab| &tab.id == id));
             remote

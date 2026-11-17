@@ -5346,3 +5346,146 @@ fn mission_rail_retains_widened_width_across_surfaces_closes_and_divider_drag() 
     host.update(&mut visual, |_, window, _| window.remove_window())
         .unwrap();
 }
+
+#[test]
+fn mission_rail_info_shows_branch_row_only_for_linked_worktree() {
+    use std::process::Command;
+
+    let (temp, mut cx, host, _fake) = suspended_mission_test();
+    let repo = temp.path().join("mission-info-repo");
+    let wt = repo.join(".worktrees").join("feat-rail");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "core.autocrlf", "false"][..],
+    ] {
+        assert!(Command::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .status()
+            .unwrap()
+            .success());
+    }
+    std::fs::write(repo.join("lib.rs"), "pub fn m() {}\n").unwrap();
+    for args in [
+        &["add", "-A"][..],
+        &[
+            "-c",
+            "user.name=Runner",
+            "-c",
+            "user.email=runner@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ][..],
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feat/rail",
+            wt.to_str().unwrap(),
+            "main",
+        ][..],
+    ] {
+        assert!(Command::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .status()
+            .unwrap()
+            .success());
+    }
+    let repo_canon = repo.canonicalize().unwrap();
+    let wt_canon = wt.canonicalize().unwrap();
+
+    host.update(&mut cx, |root, window, cx| {
+        root.app_store.update(cx, |store, cx| {
+            store.settings.mission_rail_open = true;
+            store
+                .test_core
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE missions SET cwd = ?1, files_root = ?1 WHERE id = 'test-mission'",
+                    [repo_canon.to_string_lossy().as_ref()],
+                )
+                .unwrap();
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+        });
+        root.open_mission("test-mission".into(), window, cx);
+    })
+    .unwrap();
+
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                ready: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !ready(visual) {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::yield_now();
+            visual.run_until_parked();
+        }
+    };
+
+    host.update(&mut visual, |root, _, cx| {
+        root.mission_workspace.update(cx, |workspace, cx| {
+            workspace.rail_surfaces.open.open(PanelViewId::Info);
+            cx.notify();
+        });
+    })
+    .unwrap();
+    wait(&mut visual, "main mission checkout resolved", &|v| {
+        host.read_with(v, |root, cx| {
+            root.app_store
+                .read(cx)
+                .worktree_checkout_for(repo_canon.to_string_lossy().as_ref(), None)
+                .is_some()
+        })
+        .unwrap()
+            && v.debug_bounds("MISSION_META_ID").is_some()
+    });
+    assert!(visual.debug_bounds("MISSION_META_BRANCH").is_none());
+
+    host.update(&mut visual, |root, window, cx| {
+        root.app_store.update(cx, |store, cx| {
+            store
+                .test_core
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "INSERT INTO missions (id, crew_id, title, status, cwd, files_root, started_at)
+                     VALUES ('wt-mission', (SELECT crew_id FROM missions WHERE id = 'test-mission'), 'WT Mission', 'completed', ?1, ?1, '2026-11-17T00:00:00Z')",
+                    [wt_canon.to_string_lossy().as_ref()],
+                )
+                .unwrap();
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+        });
+        root.open_mission("wt-mission".into(), window, cx);
+        root.mission_workspace.update(cx, |workspace, cx| {
+            workspace.rail_surfaces.open.open(PanelViewId::Info);
+            cx.notify();
+        });
+    })
+    .unwrap();
+    wait(&mut visual, "linked worktree mission branch row", &|v| {
+        v.debug_bounds("MISSION_META_BRANCH").is_some()
+            && v.debug_bounds("INFO_WORKTREE_MARKER Worktree · from main")
+                .is_some()
+    });
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}

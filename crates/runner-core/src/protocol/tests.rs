@@ -1440,6 +1440,73 @@ fn onboarding_and_install_protocol_fields_default_on_older_payloads() {
         legacy_shell,
         Request::session_start_shell_in { worktree: None, .. }
     ));
+
+    let legacy_session_unarchive: Request = serde_json::from_value(serde_json::json!({
+        "session_unarchive": { "session_id": "s1" }
+    }))
+    .unwrap();
+    assert!(matches!(
+        legacy_session_unarchive,
+        Request::session_unarchive {
+            restore_in_main: None,
+            ..
+        }
+    ));
+
+    let legacy_mission_unarchive: Request = serde_json::from_value(serde_json::json!({
+        "mission_unarchive": { "id": "m1" }
+    }))
+    .unwrap();
+    assert!(matches!(
+        legacy_mission_unarchive,
+        Request::mission_unarchive {
+            restore_in_main: None,
+            ..
+        }
+    ));
+
+    let legacy_mission_unarchive_impl: Request = serde_json::from_value(serde_json::json!({
+        "mission_unarchive_impl": { "id": "m1" }
+    }))
+    .unwrap();
+    assert!(matches!(
+        legacy_mission_unarchive_impl,
+        Request::mission_unarchive_impl {
+            restore_in_main: None,
+            ..
+        }
+    ));
+
+    let legacy_session_resume: Request = serde_json::from_value(serde_json::json!({
+        "session_resume": { "session_id": "s1", "cols": 80, "rows": 24 }
+    }))
+    .unwrap();
+    assert!(matches!(
+        legacy_session_resume,
+        Request::session_resume {
+            restore_in_main: None,
+            ..
+        }
+    ));
+
+    round_trip(Request::session_unarchive {
+        session_id: "s1".into(),
+        restore_in_main: Some(true),
+    });
+    round_trip(Request::mission_unarchive {
+        id: "m1".into(),
+        restore_in_main: Some(true),
+    });
+    round_trip(Request::mission_unarchive_impl {
+        id: "m1".into(),
+        restore_in_main: Some(true),
+    });
+    round_trip(Request::session_resume {
+        session_id: "s1".into(),
+        cols: Some(80),
+        rows: Some(24),
+        restore_in_main: Some(true),
+    });
 }
 
 #[test]

@@ -134,7 +134,7 @@ fn required_updates_mark_only_agents_and_defer_agent_and_role_launch_intents() {
         let launcher = page.unwrap();
         harness.act(|root, window, cx| {
                 launcher.update(cx, |view, _| view.pending = Some(Choice::Chat(key.clone())));
-                root.launch_from_launcher(launcher.clone(), Some(key.clone()), None, ProjectScope::Root, None, false, window, cx);
+                root.launch_from_launcher(launcher.clone(), Some(key.clone()), None, ProjectScope::Root, None, None, false, window, cx);
                 assert!(!root.launcher_start_pending(cx));
                 assert!(launcher.read(cx).pane.is_some());
                 assert!(root.agent_update.is_none());
@@ -196,6 +196,7 @@ fn non_updatable_gated_launch_offers_open_settings_and_never_starts_target_updat
             None,
             ProjectScope::Root,
             None,
+            None,
             false,
             window,
             cx,
@@ -250,6 +251,7 @@ fn a_gated_pane_launches_after_success_without_replacing_new_work_or_focus() {
             Some(EntryKey::Agent("codex".into())),
             None,
             ProjectScope::Root,
+            None,
             None,
             false,
             window,
@@ -334,6 +336,7 @@ fn shared_update_queues_both_panes_behind_the_tabs_active_start() {
                 Some(EntryKey::Agent("codex".into())),
                 Some(pane),
                 ProjectScope::Root,
+                None,
                 None,
                 false,
                 window,
@@ -675,6 +678,7 @@ fn requests_have_no_form_overrides_and_directory_change_wins_over_role_directory
             &key,
             Some("project".into()),
             Some("/shown".into()),
+            None,
             (90, 30),
             None,
         );
@@ -2623,6 +2627,7 @@ fn failed_and_version_gated_starts_preserve_sample_prompt_until_spawn_succeeds()
                 None,
                 ProjectScope::Root,
                 Some("/tmp/demo-app".into()),
+                None,
                 false,
                 window,
                 cx,
@@ -2644,6 +2649,7 @@ fn failed_and_version_gated_starts_preserve_sample_prompt_until_spawn_succeeds()
                 None,
                 ProjectScope::Root,
                 Some("/tmp/demo-app".into()),
+                None,
                 false,
                 window,
                 cx,
@@ -2707,6 +2713,7 @@ fn failed_and_version_gated_starts_preserve_sample_prompt_until_spawn_succeeds()
                 None,
                 ProjectScope::Root,
                 Some("/tmp/demo-app".into()),
+                None,
                 false,
                 window,
                 cx,
@@ -2763,4 +2770,835 @@ fn failed_and_version_gated_starts_preserve_sample_prompt_until_spawn_succeeds()
             assert_eq!(launcher.read(cx).sample_prompt_text_for_test(cx), None);
         });
     }
+}
+
+fn init_launcher_git_repo(dir: &std::path::Path) {
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("run git");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "core.autocrlf", "false"]);
+    std::fs::create_dir_all(dir.join("apps/web")).unwrap();
+    std::fs::write(dir.join("apps/web/index.ts"), "export const x = 1;\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "init"]);
+}
+
+#[test]
+fn launcher_checkout_control_visibility_folder_coupling_and_subfolder_switch() {
+    let tmp = tempfile::Builder::new()
+        .prefix("1213-m2-launcher-checkout-")
+        .tempdir()
+        .unwrap();
+    let repo = tmp.path().join("repo");
+    let plain = tmp.path().join("plain");
+    let wt_existing = tmp.path().join("wt-existing");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&plain).unwrap();
+    init_launcher_git_repo(&repo);
+    let add = std::process::Command::new("git")
+        .current_dir(&repo)
+        .args([
+            "worktree",
+            "add",
+            "-b",
+            "feat/existing",
+            wt_existing.to_str().unwrap(),
+            "main",
+        ])
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.com")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.com")
+        .output()
+        .unwrap();
+    assert!(add.status.success());
+
+    let mut harness = modal_harness(1200., 900., Vec::new(), Vec::new(), ChatMode::Runtime);
+    let mut page = None;
+    let plain_str = plain.to_string_lossy().into_owned();
+    let repo_sub_str = repo.join("apps/web").to_string_lossy().into_owned();
+    harness.act(|root, window, cx| {
+        root.start_chat_modal = None;
+        root.open_launcher_page(ProjectScope::Root, Step::Start, false, window, cx);
+        let launcher = root.render_launcher(None, true, window, cx);
+        launcher.update(cx, |view, cx| view.set_cwd_for_test(&plain_str, cx));
+        page = Some(launcher);
+    });
+    let launcher = page.unwrap();
+    // Plain folder: no Checkout control.
+    assert!(harness.bounds("LAUNCHER_CHECKOUT").is_none());
+
+    // Git repo subfolder: Checkout control appears once `runnerd` answers.
+    harness.act(|_, _, cx| {
+        launcher.update(cx, |view, cx| view.set_cwd_for_test(&repo_sub_str, cx));
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| launcher.read(cx).has_checkout())
+                && h.bounds("LAUNCHER_CHECKOUT").is_some()
+        },
+        "launcher checkout control for git repo",
+    );
+
+    // Clicking Checkout opens menu listing checkouts + New worktree….
+    let btn = harness.bounds("LAUNCHER_CHECKOUT").unwrap();
+    harness
+        .visual
+        .simulate_click(btn.center(), gpui::Modifiers::default());
+    harness.wait(
+        |h| {
+            h.bounds("LAUNCHER_CHECKOUT_PICKER").is_some()
+                && h.bounds("LAUNCHER_CHECKOUT_NEW_WORKTREE").is_some()
+                && h.bounds("LAUNCHER_CHECKOUT_PICKER_ITEM 1 feat/existing")
+                    .is_some()
+        },
+        "checkout picker items",
+    );
+
+    // Selecting `feat/existing` rewrites `cwd` preserving `apps/web`.
+    let existing_item = harness
+        .bounds("LAUNCHER_CHECKOUT_PICKER_ITEM 1 feat/existing")
+        .unwrap();
+    harness
+        .visual
+        .simulate_click(existing_item.center(), gpui::Modifiers::default());
+    harness.wait(
+        |h| {
+            let expected =
+                runner_core::app_paths::normalize_checkout_path(&wt_existing.join("apps/web"));
+            h.read_root(|_, cx| {
+                let cwd = launcher.read(cx).cwd.read(cx).text().to_owned();
+                runner_core::app_paths::normalize_checkout_path(std::path::Path::new(&cwd))
+                    == expected
+            })
+        },
+        "cwd rewritten to selected checkout subfolder",
+    );
+
+    // Switching back to plain folder hides Checkout control.
+    harness.act(|_, _, cx| {
+        launcher.update(cx, |view, cx| view.set_cwd_for_test(&plain_str, cx));
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| !launcher.read(cx).has_checkout())
+                && h.bounds("LAUNCHER_CHECKOUT").is_none()
+        },
+        "checkout control hidden for plain folder",
+    );
+}
+
+#[test]
+fn launcher_new_worktree_form_validation_hint_states_and_launch_requests() {
+    use runner_core::protocol::worktree::{WorktreeNameCheck, WorktreeSpec};
+    use runner_core::protocol::{ClientError, ClientResult, Request, Response, SpawnedSession};
+    use std::sync::{Arc, Mutex};
+
+    const WORKTREE_ERROR: &str = "git worktree add failed in test";
+
+    struct CaptureStartTransport {
+        inner: runner_daemon::daemon::InProcessTransport,
+        chat_worktrees: Arc<Mutex<Vec<Option<WorktreeSpec>>>>,
+        shell_worktrees: Arc<Mutex<Vec<Option<WorktreeSpec>>>>,
+        mission_worktrees: Arc<Mutex<Vec<Option<WorktreeSpec>>>>,
+    }
+    impl runner_core::protocol::Transport for CaptureStartTransport {
+        fn call(&self, request: Request) -> ClientResult<Response> {
+            match &request {
+                Request::runtime_catalog {} => {
+                    let mut runtime = RuntimeCatalogEntry::for_runtime(Runtime::Codex).unwrap();
+                    runtime.available = true;
+                    return Ok(Response::runtime_catalog(Ok(vec![runtime])));
+                }
+                Request::session_start_chat { args } => {
+                    self.chat_worktrees
+                        .lock()
+                        .unwrap()
+                        .push(args.worktree.clone());
+                    return Ok(Response::session_start_chat(Err(ClientError::msg(
+                        WORKTREE_ERROR,
+                    ))));
+                }
+                Request::session_start_shell_in { worktree, .. } => {
+                    self.shell_worktrees.lock().unwrap().push(worktree.clone());
+                    return Ok(Response::session_start_shell_in(Ok(SpawnedSession {
+                        id: "sh1".into(),
+                        mission_id: None,
+                        role_id: None,
+                        handle: "sh1".into(),
+                        pid: None,
+                    })));
+                }
+                Request::mission_start_impl_with_size { input, .. } => {
+                    self.mission_worktrees
+                        .lock()
+                        .unwrap()
+                        .push(input.worktree.clone());
+                    return Ok(Response::mission_start_impl_with_size(Err(
+                        ClientError::msg("mission worktree add failed in test"),
+                    )));
+                }
+                _ => {}
+            }
+            self.inner.call(request)
+        }
+
+        fn subscribe(&self) -> Box<dyn runner_core::protocol::EventSubscription> {
+            self.inner.subscribe()
+        }
+    }
+
+    let tmp = tempfile::Builder::new()
+        .prefix("1213-m2-launcher-newwt-")
+        .tempdir()
+        .unwrap();
+    let repo = tmp.path().join("repo");
+    let wt_checked = tmp.path().join("wt-checked");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_launcher_git_repo(&repo);
+    for args in [
+        vec!["branch", "feat/existing", "main"],
+        vec![
+            "worktree",
+            "add",
+            "-b",
+            "feat/checked-out",
+            wt_checked.to_str().unwrap(),
+            "main",
+        ],
+    ] {
+        let out = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(&args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+
+    let chat_worktrees = Arc::new(Mutex::new(Vec::new()));
+    let shell_worktrees = Arc::new(Mutex::new(Vec::new()));
+    let mission_worktrees = Arc::new(Mutex::new(Vec::new()));
+    let mut harness = modal_harness(1200., 900., Vec::new(), Vec::new(), ChatMode::Runtime);
+    let mut page = None;
+    let repo_str = repo.to_string_lossy().into_owned();
+    harness.act(|root, window, cx| {
+        root.start_chat_modal = None;
+        root.app_store.update(cx, |store, _| {
+            store.client =
+                runner_core::protocol::DaemonClient::new(Arc::new(CaptureStartTransport {
+                    inner: runner_daemon::daemon::InProcessTransport(store.test_core.clone()),
+                    chat_worktrees: chat_worktrees.clone(),
+                    shell_worktrees: shell_worktrees.clone(),
+                    mission_worktrees: mission_worktrees.clone(),
+                }));
+        });
+        root.open_launcher_page(ProjectScope::Root, Step::Start, false, window, cx);
+        let launcher = root.render_launcher(None, true, window, cx);
+        launcher.update(cx, |view, cx| view.set_cwd_for_test(&repo_str, cx));
+        page = Some(launcher);
+    });
+    let launcher = page.unwrap();
+    harness.wait(
+        |h| h.bounds("LAUNCHER_CHECKOUT").is_some(),
+        "checkout button visible",
+    );
+
+    let btn = harness.bounds("LAUNCHER_CHECKOUT").unwrap();
+    harness
+        .visual
+        .simulate_click(btn.center(), gpui::Modifiers::default());
+    harness.wait(
+        |h| h.bounds("LAUNCHER_CHECKOUT_NEW_WORKTREE").is_some(),
+        "New worktree menu item visible",
+    );
+    let new_wt_btn = harness.bounds("LAUNCHER_CHECKOUT_NEW_WORKTREE").unwrap();
+    harness
+        .visual
+        .simulate_click(new_wt_btn.center(), gpui::Modifiers::default());
+    harness.wait(
+        |h| {
+            h.bounds("LAUNCHER_NEW_WORKTREE").is_some()
+                && h.read_root(|_, cx| {
+                    launcher
+                        .read(cx)
+                        .new_worktree_base_label_for_test()
+                        .is_some()
+                })
+        },
+        "New worktree form and base default resolved",
+    );
+
+    // Empty branch field: start list blocked, Enter does nothing.
+    harness.visual.simulate_keystrokes("enter");
+    harness.visual.run_until_parked();
+    assert!(chat_worktrees.lock().unwrap().is_empty());
+
+    // Live check -> NewBranch
+    harness.act(|_, _, cx| {
+        launcher.update(cx, |view, cx| {
+            view.set_new_worktree_branch_for_test("feat/new-one", cx);
+        });
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                matches!(
+                    launcher.read(cx).new_worktree_check_state(),
+                    Some(WorktreeNameCheck::NewBranch { .. })
+                )
+            })
+        },
+        "NewBranch check state",
+    );
+
+    // Live check -> ExistingBranch
+    harness.act(|_, _, cx| {
+        launcher.update(cx, |view, cx| {
+            view.set_new_worktree_branch_for_test("feat/existing", cx);
+        });
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                matches!(
+                    launcher.read(cx).new_worktree_check_state(),
+                    Some(WorktreeNameCheck::ExistingBranch { .. })
+                )
+            })
+        },
+        "ExistingBranch check state",
+    );
+
+    // Live check -> AlreadyCheckedOut
+    harness.act(|_, _, cx| {
+        launcher.update(cx, |view, cx| {
+            view.set_new_worktree_branch_for_test("feat/checked-out", cx);
+        });
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                matches!(
+                    launcher.read(cx).new_worktree_check_state(),
+                    Some(WorktreeNameCheck::AlreadyCheckedOut { .. })
+                )
+            })
+        },
+        "AlreadyCheckedOut check state",
+    );
+
+    // Live check -> Invalid blocks start
+    harness.act(|_, _, cx| {
+        launcher.update(cx, |view, cx| {
+            view.set_new_worktree_branch_for_test("bad branch name..", cx);
+        });
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                matches!(
+                    launcher.read(cx).new_worktree_check_state(),
+                    Some(WorktreeNameCheck::Invalid { .. })
+                )
+            })
+        },
+        "Invalid check state",
+    );
+    let row0 = harness.bounds("LAUNCHER_ROW:0").unwrap();
+    harness
+        .visual
+        .simulate_click(row0.center(), gpui::Modifiers::default());
+    harness.visual.run_until_parked();
+    assert!(chat_worktrees.lock().unwrap().is_empty());
+
+    // Valid new branch -> click start row passes WorktreeSpec and failed create stays open with error.
+    harness.act(|_, _, cx| {
+        launcher.update(cx, |view, cx| {
+            view.set_new_worktree_branch_for_test("feat/deliver-1", cx);
+        });
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                matches!(
+                    launcher.read(cx).new_worktree_check_state(),
+                    Some(WorktreeNameCheck::NewBranch { .. })
+                )
+            })
+        },
+        "valid NewBranch check before launch",
+    );
+    let row0 = harness.bounds("LAUNCHER_ROW:0").unwrap();
+    harness
+        .visual
+        .simulate_click(row0.center(), gpui::Modifiers::default());
+    harness.wait(
+        |h| {
+            !chat_worktrees.lock().unwrap().is_empty()
+                && h.read_root(|_, cx| launcher.read(cx).error.as_deref() == Some(WORKTREE_ERROR))
+                && h.bounds("LAUNCHER_NEW_WORKTREE").is_some()
+        },
+        "chat launch attempted with worktree and failure shown on launcher",
+    );
+    assert_eq!(
+        chat_worktrees.lock().unwrap().as_slice(),
+        &[Some(WorktreeSpec {
+            branch: "feat/deliver-1".into(),
+            base: Some("main".into()),
+        })]
+    );
+
+    // Changing directory discards New worktree form.
+    harness.act(|_, _, cx| {
+        launcher.update(cx, |view, cx| view.set_cwd_for_test(&repo_str, cx));
+    });
+    harness.wait(
+        |h| h.read_root(|_, cx| !launcher.read(cx).new_worktree_is_open()),
+        "changing directory leaves New worktree mode",
+    );
+}
+
+#[test]
+fn new_worktree_cross_form_generation_drops_stale_check_and_tracks_default_base() {
+    use runner_core::protocol::worktree::{WorktreeNameCheck, WorktreeSpec};
+    use runner_core::protocol::{ClientResult, Request, Response};
+
+    struct StaleInvalidOnCommand {
+        inner: runner_daemon::daemon::InProcessTransport,
+        force_invalid: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl runner_core::protocol::Transport for StaleInvalidOnCommand {
+        fn call(&self, request: Request) -> ClientResult<Response> {
+            if let Request::worktree_check { ref branch, .. } = request
+                && branch == "feat/delayed"
+                && self
+                    .force_invalid
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Ok(Response::worktree_check(Ok(WorktreeNameCheck::Invalid {
+                    reason: "stale check result".into(),
+                })));
+            }
+            self.inner.call(request)
+        }
+        fn subscribe(&self) -> Box<dyn runner_core::protocol::EventSubscription> {
+            self.inner.subscribe()
+        }
+    }
+
+    let temp = tempfile::Builder::new()
+        .prefix("1213-m2-r4-r5-")
+        .tempdir()
+        .unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let run_git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@e")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@e")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("README.md"), "init\n").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "init"]);
+    run_git(&repo, &["branch", "release"]);
+    let repo_str = repo.to_string_lossy().into_owned();
+    let force_invalid = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let mut harness = modal_harness(1200., 900., Vec::new(), Vec::new(), ChatMode::Runtime);
+    let mut page = None;
+    harness.act(|root, window, cx| {
+        root.start_chat_modal = None;
+        let core = root.app_store.read(cx).test_core.clone();
+        root.app_store.update(cx, |store, _| {
+            store.client =
+                runner_core::protocol::DaemonClient::new(Arc::new(StaleInvalidOnCommand {
+                    inner: runner_daemon::daemon::InProcessTransport(core),
+                    force_invalid: force_invalid.clone(),
+                }));
+        });
+        root.open_launcher_page(ProjectScope::Root, Step::Start, false, window, cx);
+        let launcher = root.render_launcher(None, true, window, cx);
+        launcher.update(cx, |view, cx| view.set_cwd_for_test(&repo_str, cx));
+        page = Some(launcher);
+    });
+    let launcher = page.unwrap();
+    harness.wait(
+        |h| h.read_root(|_, cx| launcher.read(cx).has_checkout()),
+        "repo checkout loaded",
+    );
+
+    // 1. R4: open form 1, wait for real worktree_default_base ("main"), then suspend form 1's
+    // Invalid worktree_check reply right before applying.
+    let mut check_gate_1 = None;
+    harness.act(|_, window, cx| {
+        launcher.update(cx, |view, cx| view.enter_new_worktree(window, cx));
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                launcher.read(cx).new_worktree_default_base_for_test() == Some("main")
+            })
+        },
+        "form 1 worktree_default_base completed on main",
+    );
+    harness.act(|_, _, cx| {
+        launcher.update(cx, |view, cx| {
+            check_gate_1 = Some(view.stage_worktree_check_gate_for_test());
+            force_invalid.store(true, std::sync::atomic::Ordering::SeqCst);
+            view.set_new_worktree_branch_for_test("feat/delayed", cx);
+        });
+    });
+    let check_gate_1 = check_gate_1.unwrap();
+    harness.wait(
+        |_| check_gate_1.is_entered(),
+        "form 1 worktree_check entered apply gate",
+    );
+
+    // Exit form 1 while its Invalid reply is still parked.
+    harness.act(|_, window, cx| {
+        launcher.update(cx, |view, cx| view.exit_new_worktree(window, cx));
+    });
+
+    // 2. R5: open form 2 on "main", switch the repo's default to "release" while the SAME form 2
+    // stays open, then type "feat/delayed" -> default_base and worktree_spec both update to "release".
+    let mut default_gate_2 = None;
+    harness.act(|_, window, cx| {
+        launcher.update(cx, |view, cx| {
+            default_gate_2 = Some(view.stage_default_base_gate_for_test());
+            view.enter_new_worktree(window, cx);
+        });
+    });
+    let default_gate_2 = default_gate_2.unwrap();
+    harness.wait(
+        |_| default_gate_2.is_entered(),
+        "form 2 default_base entered gate",
+    );
+    let default_applied_2 = default_gate_2.release();
+    harness.wait(
+        |_| default_applied_2.is_applied(),
+        "form 2 default_base applied main",
+    );
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                launcher.read(cx).new_worktree_default_base_for_test() == Some("main")
+            })
+        },
+        "form 2 initial default_base recorded main",
+    );
+
+    // Change repo default while the SAME form 2 stays open.
+    run_git(&repo, &["switch", "-q", "release"]);
+    harness.act(|_, _, cx| {
+        launcher.update(cx, |view, cx| {
+            view.set_new_worktree_branch_for_test("feat/delayed", cx)
+        });
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                let view = launcher.read(cx);
+                view.new_worktree_default_base_for_test() == Some("release")
+                    && matches!(
+                        view.new_worktree_check_state(),
+                        Some(WorktreeNameCheck::NewBranch { base, .. }) if base == "release"
+                    )
+            })
+        },
+        "same form picked up switched default base release",
+    );
+
+    // 3. Release form 1's delayed Invalid callback and wait until it completes against ChatLauncher.
+    let applied_1 = check_gate_1.release();
+    harness.wait(
+        |_| applied_1.is_applied(),
+        "stale form 1 callback completed and dropped",
+    );
+    harness.act(|_, _, cx| {
+        let view = launcher.read(cx);
+        assert!(view.new_worktree_allows_start());
+        assert_eq!(view.new_worktree_default_base_for_test(), Some("release"));
+        assert_eq!(
+            view.new_worktree_base_label_for_test().as_deref(),
+            Some("release")
+        );
+        assert_eq!(
+            view.new_worktree_check_state().map(
+                |c| matches!(c, WorktreeNameCheck::NewBranch { base, .. } if base == "release")
+            ),
+            Some(true)
+        );
+        assert_eq!(
+            view.worktree_spec(),
+            Some(WorktreeSpec {
+                branch: "feat/delayed".into(),
+                base: Some("release".into()),
+            })
+        );
+    });
+}
+
+#[test]
+fn launcher_pickers_drop_stale_replies_across_picker_and_repo_switches() {
+    let temp = tempfile::Builder::new()
+        .prefix("1213-m2-r9-")
+        .tempdir()
+        .unwrap();
+    let run_git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@e")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@e")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    let setup_repo = |name: &str, branch: &str, extra_branch: &str| {
+        let dir = temp.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        run_git(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("README.md"), format!("{name}\n")).unwrap();
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "init"]);
+        run_git(&dir, &["branch", extra_branch]);
+        let wt = dir.join(".worktrees").join(branch.replace('/', "-"));
+        run_git(
+            &dir,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                branch,
+                wt.to_str().unwrap(),
+                "main",
+            ],
+        );
+        dir.to_string_lossy().into_owned()
+    };
+
+    let repo_a = setup_repo("repo-a", "feat/wt-a", "branch-a");
+    let repo_b = setup_repo("repo-b", "feat/wt-b", "branch-b");
+
+    let mut harness = modal_harness(1200., 900., Vec::new(), Vec::new(), ChatMode::Runtime);
+    let mut page = None;
+    harness.act(|root, window, cx| {
+        root.start_chat_modal = None;
+        root.open_launcher_page(ProjectScope::Root, Step::Start, false, window, cx);
+        let launcher = root.render_launcher(None, true, window, cx);
+        launcher.update(cx, |view, cx| view.set_cwd_for_test(&repo_a, cx));
+        page = Some(launcher);
+    });
+    let launcher = page.unwrap();
+    harness.wait(
+        |h| h.read_root(|_, cx| launcher.read(cx).has_checkout()),
+        "repo-a checkout loaded",
+    );
+
+    // 1. Checkout picker: suspend repo-a's files_worktrees reply, switch to repo-b and open Checkout,
+    // wait for feat/wt-b, then release repo-a's callback and confirm feat/wt-a does not clobber repo-b.
+    let mut gate_ckpt_a = None;
+    harness.act(|_, window, cx| {
+        launcher.update(cx, |view, cx| {
+            gate_ckpt_a = Some(view.stage_checkout_picker_gate_for_test());
+            view.toggle_checkout_picker(window, cx);
+        });
+    });
+    let gate_ckpt_a = gate_ckpt_a.unwrap();
+    harness.wait(
+        |_| gate_ckpt_a.is_entered(),
+        "repo-a checkout picker entered apply gate",
+    );
+
+    harness.act(|_, window, cx| {
+        launcher.update(cx, |view, cx| {
+            view.toggle_checkout_picker(window, cx);
+            view.set_cwd_for_test(&repo_b, cx);
+        });
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                matches!(
+                    launcher.read(cx).checkout,
+                    Some(WorktreeCheckout::Git { ref top, .. })
+                        if runner_core::app_paths::same_checkout_path(
+                            top,
+                            std::path::Path::new(&repo_b),
+                        )
+                )
+            })
+        },
+        "switched to repo-b checkout",
+    );
+    harness.act(|_, window, cx| {
+        launcher.update(cx, |view, cx| view.toggle_checkout_picker(window, cx));
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                launcher
+                    .read(cx)
+                    .checkout_picker_labels_for_test()
+                    .is_some_and(|items| items.iter().any(|b| b == "feat/wt-b"))
+            })
+        },
+        "repo-b checkout picker loaded feat/wt-b",
+    );
+
+    let applied_ckpt_a = gate_ckpt_a.release();
+    harness.wait(
+        |_| applied_ckpt_a.is_applied(),
+        "stale repo-a checkout picker callback completed and dropped",
+    );
+    harness.act(|_, _, cx| {
+        let items = launcher.read(cx).checkout_picker_labels_for_test().unwrap();
+        assert!(
+            items.iter().any(|b| b == "feat/wt-b"),
+            "missing feat/wt-b: {items:?}"
+        );
+        assert!(
+            !items.iter().any(|b| b == "feat/wt-a"),
+            "stale repo-a worktree clobbered repo-b picker: {items:?}"
+        );
+    });
+
+    // 2. Base picker: suspend repo-b's changes_branches reply, exit & switch to repo-a, reopen New worktree
+    // and Base picker on repo-a, then release repo-b's callback and confirm branch-b does not clobber repo-a.
+    harness.act(|_, window, cx| {
+        launcher.update(cx, |view, cx| {
+            view.toggle_checkout_picker(window, cx);
+            view.enter_new_worktree(window, cx);
+        });
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                launcher
+                    .read(cx)
+                    .new_worktree_default_base_for_test()
+                    .is_some()
+            })
+        },
+        "repo-b new worktree default base ready",
+    );
+    let mut gate_base_b = None;
+    harness.act(|_, window, cx| {
+        launcher.update(cx, |view, cx| {
+            gate_base_b = Some(view.stage_base_picker_gate_for_test());
+            view.toggle_base_picker_for_test(window, cx);
+        });
+    });
+    let gate_base_b = gate_base_b.unwrap();
+    harness.wait(
+        |_| gate_base_b.is_entered(),
+        "repo-b base picker entered apply gate",
+    );
+
+    harness.act(|_, window, cx| {
+        launcher.update(cx, |view, cx| {
+            view.exit_new_worktree(window, cx);
+            view.set_cwd_for_test(&repo_a, cx);
+        });
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                matches!(
+                    launcher.read(cx).checkout,
+                    Some(WorktreeCheckout::Git { ref top, .. })
+                        if runner_core::app_paths::same_checkout_path(
+                            top,
+                            std::path::Path::new(&repo_a),
+                        )
+                )
+            })
+        },
+        "switched back to repo-a checkout",
+    );
+    harness.act(|_, window, cx| {
+        launcher.update(cx, |view, cx| view.enter_new_worktree(window, cx));
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                launcher
+                    .read(cx)
+                    .new_worktree_default_base_for_test()
+                    .is_some()
+            })
+        },
+        "repo-a new worktree default base ready",
+    );
+    harness.act(|_, window, cx| {
+        launcher.update(cx, |view, cx| view.toggle_base_picker_for_test(window, cx));
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                launcher
+                    .read(cx)
+                    .base_picker_labels_for_test()
+                    .is_some_and(|items| items.iter().any(|l| l == "branch-a"))
+            })
+        },
+        "repo-a base picker loaded branch-a",
+    );
+
+    let applied_base_b = gate_base_b.release();
+    harness.wait(
+        |_| applied_base_b.is_applied(),
+        "stale repo-b base picker callback completed and dropped",
+    );
+    harness.act(|_, _, cx| {
+        let items = launcher.read(cx).base_picker_labels_for_test().unwrap();
+        assert!(
+            items.iter().any(|l| l == "branch-a"),
+            "missing branch-a: {items:?}"
+        );
+        assert!(
+            !items.iter().any(|l| l == "branch-b"),
+            "stale repo-b branch clobbered repo-a base picker: {items:?}"
+        );
+    });
 }

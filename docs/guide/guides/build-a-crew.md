@@ -30,7 +30,7 @@ Team conventions apply to every member in a mission. Role prompts describe respo
 
 Start the mission with a specific outcome, the working directory, checks to run, and any permission to commit, push or publish. For example: “Add a regression test for the reported parsing bug, fix it, and have the reviewer verify both. Leave the changes uncommitted.”
 
-Runner does not isolate working directories automatically. If the team should work in a Git worktree, create it before launch and select its path. Avoid assigning overlapping edits to several workers without a clear owner.
+Each mission shares one directory across its members. To isolate a run from your main checkout, select an existing Git worktree or choose **New worktree…** in the launcher’s **Checkout** control (or `--worktree` in the CLI) rather than setting up a worktree by hand; inside a shared checkout, still avoid assigning overlapping edits to several workers without a clear owner.
 
 ## Use the examples
 

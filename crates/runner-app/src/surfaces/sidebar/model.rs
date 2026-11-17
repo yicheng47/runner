@@ -94,6 +94,15 @@ impl Sidebar {
             true
         });
     }
+    pub(super) fn remote_computer_id(&self) -> Option<&str> {
+        match &self.front_page.target {
+            crate::surfaces::front_page::FrontPageTarget::Remote { computer, .. } => {
+                Some(computer.as_str())
+            }
+            crate::surfaces::front_page::FrontPageTarget::Local => None,
+        }
+    }
+
     pub(super) fn remote_overview(&self, cx: &App) -> Option<runner_core::companion::Overview> {
         let crate::surfaces::front_page::FrontPageTarget::Remote { computer, .. } =
             &self.front_page.target
@@ -254,7 +263,7 @@ impl Sidebar {
                             title: mission.title.clone(),
                             running: mission.state == MissionState::Running,
                             project_id: mission.project.clone(),
-                            cwd: None,
+                            cwd: mission.cwd.clone(),
                             archived_at: None,
                             linked_chat: mission.linked_chat.clone().map(|chat| {
                                 runner_core::protocol::LinkedChat {

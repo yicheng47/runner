@@ -66,6 +66,36 @@ impl RemoteClient {
         remote.layouts.get_mut(id)
     }
 
+    pub(crate) fn chat_info_is_open(&self) -> bool {
+        self.workspace.as_ref().is_some_and(|remote| {
+            matches!(&remote.active, Some(Item::Tab(id)) if remote.chat_info_tabs.contains(id))
+        })
+    }
+
+    pub(crate) fn set_chat_info_open(&mut self, open: bool) {
+        let Some(remote) = self.workspace.as_mut() else {
+            return;
+        };
+        let Some(Item::Tab(id)) = &remote.active else {
+            return;
+        };
+        if open {
+            remote.chat_info_tabs.insert(id.clone());
+        } else {
+            remote.chat_info_tabs.remove(id);
+        }
+    }
+
+    pub(crate) fn panel_chat_for(&self, tab: &str) -> Option<&String> {
+        self.workspace.as_ref()?.panel_chat_by_tab.get(tab)
+    }
+
+    pub(crate) fn remember_panel_chat(&mut self, tab: String, session: String) {
+        if let Some(remote) = self.workspace.as_mut() {
+            remote.panel_chat_by_tab.insert(tab, session);
+        }
+    }
+
     pub(crate) fn pane_bounds_mut(&mut self) -> Option<&mut HashMap<PaneKey, gpui::Size<Pixels>>> {
         self.workspace
             .as_mut()

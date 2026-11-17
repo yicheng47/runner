@@ -325,6 +325,12 @@ pub(crate) struct MissionRenameModal {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct MissionRestoreFallback {
+    pub(crate) slot_session_id: Option<String>,
+    pub(crate) prompt: crate::surfaces::worktree_restore::RestoreFallbackPrompt,
+}
+
+#[derive(Clone, Debug)]
 struct DeliveryBlocked {
     unread_count: usize,
     reason: Option<String>,
@@ -389,10 +395,11 @@ pub(crate) struct MissionWorkspace {
     composer_posting: bool,
     composer_anchor: Option<Bounds<Pixels>>,
     _composer_subscription: Subscription,
-    loading: bool,
+    pub(crate) loading: bool,
     loading_overlay_visible: bool,
     error: Option<crate::i18n::Text>,
     warning: Option<crate::i18n::Text>,
+    pub(crate) restore_fallback: Option<MissionRestoreFallback>,
     active_tab: MissionTab,
     open_tabs: Vec<String>,
     last_measured_terminal_size: Option<CachedTerminalSize>,

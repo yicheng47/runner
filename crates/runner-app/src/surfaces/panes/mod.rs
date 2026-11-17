@@ -12,6 +12,7 @@ mod tree;
 pub(crate) use dialogs::{single_chat_with_missions_confirm_copy, tab_with_missions_confirm_copy};
 pub(crate) use drawer::*;
 use panel::*;
+pub(crate) use panel::{ensure_info_branch_row, info_worktree_marker, remote_info_branch_row};
 use start::*;
 
 use super::*;

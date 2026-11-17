@@ -27,6 +27,8 @@ pub(crate) mod start_chat;
 mod terminal_attachment;
 pub(crate) mod update_ui;
 pub(crate) mod windowing;
+pub(crate) mod worktree_pickers;
+pub(crate) mod worktree_restore;
 
 pub(crate) use app_shell::AppRoute;
 pub(crate) use command_palette::CommandPaletteState;

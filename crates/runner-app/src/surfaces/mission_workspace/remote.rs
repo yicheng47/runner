@@ -597,7 +597,10 @@ impl MissionPresentation {
                 MissionState::Running => MissionStatus::Running,
                 MissionState::Stopped | MissionState::Unrecognized(_) => MissionStatus::Completed,
             },
-            cwd: members.iter().find_map(|member| member.session.cwd.clone()),
+            cwd: mission
+                .cwd
+                .clone()
+                .or_else(|| members.iter().find_map(|member| member.session.cwd.clone())),
             project_id: mission.project.clone(),
             started_at: None,
             archived: false,

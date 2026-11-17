@@ -12,7 +12,7 @@ For a crew mission, Runner starts a session per slot and delivers the goal to ev
 
 An **Empty mission** starts without sessions. Empty missions are available on this computer; a remote mission requires a crew. Add a role from the mission and give it a task. Each joins as a member and receives the shared mission context. The person controlling the mission can add or remove any member while it runs. Removing a member stops its session but keeps the mission's history.
 
-The mission's working directory is shared by its members when supplied. Runner does not make branches, worktrees or copies of your repository. Set up any isolation you need before launch and describe it in the goal.
+By default, a mission’s members share the folder you choose at launch. In a Git repository, use the launcher’s **Checkout** control to stay in the main checkout, pick an existing worktree, or choose **New worktree…** (entering a branch and base branch) to create a linked worktree under `.worktrees/` for that mission—or pass `--worktree <branch>` in the CLI. Members inside the same mission still share that checkout, so use separate missions or worktrees when you want teams isolated from each other.
 
 ## Feed and terminals
 
@@ -53,7 +53,7 @@ The **Bypass** and **Status hooks** switches in **Settings → Agents → Launch
 
 - **Stop a slot** to halt just that agent. **Resume** continues its saved conversation; **Restart** starts that mission slot with a fresh conversation.
 - **Stop the mission** to halt its members. **Resume** resumes stopped sessions.
-- **Archive** stops active members and removes the mission from active lists. Its feed remains available under **Settings → Archived**. **Restore** reopens it with all members stopped. Use **Resume** to continue their saved conversations. The feed records each reopen.
+- **Archive** stops active members and removes the mission from active lists; if archiving leaves a Runner-managed `.worktrees/` folder with no other active chats or missions, the confirmation offers to remove the clean folder while keeping its branch. Its feed remains available under **Settings → Archived**. **Restore** reopens it with all members stopped (offering **Restore in main checkout** if a missing worktree’s branch is gone or ambiguous, noting that a Claude chat starts without its history). Use **Resume** to continue their saved conversations. The feed records each reopen.
 
 While a mission is paused, its unread-response green dot is hidden in the sidebar and collapsed groups. Unread responses remain saved, and the dot returns after resuming if any remain unread. Viewing a role's session still marks that session's response as read while paused. Error and approval indicators keep their usual behavior.
 

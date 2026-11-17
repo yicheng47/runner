@@ -722,6 +722,38 @@ impl MissionWorkspace {
                 .into_any_element(),
             );
         }
+        if let Some(fallback) = self
+            .restore_fallback
+            .as_ref()
+            .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+        {
+            let restore_workspace = cx.entity();
+            let dismiss_workspace = cx.entity();
+            let slot_session_id = fallback.slot_session_id.clone();
+            let busy = self.resuming
+                || slot_session_id
+                    .as_deref()
+                    .is_some_and(|id| self.slot_actions.contains(id));
+            notices.push(
+                crate::surfaces::worktree_restore::render_restore_fallback_banner(
+                    "mission",
+                    &fallback.prompt,
+                    busy,
+                    move |window, cx| {
+                        let slot_id = slot_session_id.clone();
+                        restore_workspace.update(cx, |this, cx| {
+                            this.confirm_mission_restore_in_main(slot_id, window, cx);
+                        });
+                    },
+                    move |_, cx| {
+                        dismiss_workspace.update(cx, |this, cx| {
+                            this.restore_fallback = None;
+                            cx.notify();
+                        });
+                    },
+                ),
+            );
+        }
         if let Some(warning) = self
             .warning
             .clone()

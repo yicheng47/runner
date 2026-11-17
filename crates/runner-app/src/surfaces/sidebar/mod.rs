@@ -9,6 +9,7 @@ mod link;
 mod link_picker;
 #[cfg(test)]
 mod link_tests;
+mod location;
 mod logic;
 mod menus;
 mod model;
@@ -20,6 +21,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 mod view;
+mod worktree_archive;
 
 use elements::sidebar_tab_target;
 
@@ -32,6 +34,12 @@ pub(crate) use elements::{
     session_label_live, sidebar_section_header, SidebarItemView,
 };
 pub(crate) use logic::AttentionState;
+#[cfg(test)]
+pub(crate) use worktree_archive::WorktreeRemoveState;
+pub(crate) use worktree_archive::{
+    checked_worktrees_to_remove, render_worktree_remove_options, WorktreeCleanScope,
+    WorktreeRemoveOption, WorktreeToRemove,
+};
 
 use super::*;
 use crate::surfaces::front_page::model::{

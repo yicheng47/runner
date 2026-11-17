@@ -40,6 +40,73 @@ pub(crate) fn core(
     }
 }
 
+pub(crate) struct StagedReplyGate {
+    entered: Arc<std::sync::atomic::AtomicBool>,
+    release: futures::channel::oneshot::Receiver<()>,
+    applied: Arc<std::sync::atomic::AtomicBool>,
+}
+
+pub(crate) struct StagedReplyHandle {
+    entered: Arc<std::sync::atomic::AtomicBool>,
+    release: futures::channel::oneshot::Sender<()>,
+    applied: Arc<std::sync::atomic::AtomicBool>,
+}
+
+pub(crate) struct StagedAppliedMonitor(Arc<std::sync::atomic::AtomicBool>);
+
+impl StagedAppliedMonitor {
+    pub(crate) fn is_applied(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+pub(crate) struct AppliedAck(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for AppliedAck {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+impl StagedReplyGate {
+    pub(crate) fn pair() -> (Self, StagedReplyHandle) {
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let applied = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (release_tx, release_rx) = futures::channel::oneshot::channel();
+        (
+            Self {
+                entered: entered.clone(),
+                release: release_rx,
+                applied: applied.clone(),
+            },
+            StagedReplyHandle {
+                entered,
+                release: release_tx,
+                applied,
+            },
+        )
+    }
+
+    pub(crate) async fn wait(self) -> AppliedAck {
+        self.entered
+            .store(true, std::sync::atomic::Ordering::Release);
+        let _ = self.release.await;
+        AppliedAck(self.applied)
+    }
+}
+
+impl StagedReplyHandle {
+    pub(crate) fn is_entered(&self) -> bool {
+        self.entered.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn release(self) -> StagedAppliedMonitor {
+        let monitor = StagedAppliedMonitor(self.applied);
+        let _ = self.release.send(());
+        monitor
+    }
+}
+
 /// GPUI drops globals after entities, so by then the store's tasks are
 /// cancelled and queued. `#[gpui::test]` drains that queue; a plain `#[test]`
 /// app never does, and each queued task would hold its core's SQLite pool open

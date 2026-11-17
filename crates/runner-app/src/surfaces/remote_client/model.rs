@@ -138,10 +138,109 @@ impl Drop for Follow {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HostWorktreeEntry {
+    pub(crate) checkout: runner_core::protocol::worktree::WorktreeCheckout,
+    pub(crate) auto_base: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct HostWorktreeCache {
+    revision: u64,
+    sessions: HashMap<String, HostWorktreeEntry>,
+    missions: HashMap<String, HostWorktreeEntry>,
+    by_cwd: HashMap<String, HostWorktreeEntry>,
+}
+
+pub(crate) fn host_path_leaf(path: &str) -> Option<&str> {
+    path.trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .find(|part| !part.is_empty())
+}
+
+pub(crate) fn looks_like_windows_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':') || path.contains('\\')
+}
+
+pub(crate) fn normalize_remote_host_path(path: &str) -> String {
+    let windows = looks_like_windows_path(path);
+    if !windows {
+        let mut parts: Vec<&str> = Vec::new();
+        let absolute = path.starts_with('/');
+        for part in path.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    if !matches!(parts.last(), None | Some(&"..")) {
+                        parts.pop();
+                    } else if !absolute {
+                        parts.push("..");
+                    }
+                }
+                _ => parts.push(part),
+            }
+        }
+        if absolute {
+            format!("/{}", parts.join("/"))
+        } else if parts.is_empty() {
+            ".".to_owned()
+        } else {
+            parts.join("/")
+        }
+    } else {
+        let converted = path.replace('\\', "/");
+        let trimmed = converted.strip_prefix("//?/").unwrap_or(&converted);
+        let unc = trimmed.starts_with("//");
+        let rest = trimmed.trim_start_matches('/');
+        let mut segments = rest.split('/');
+        let first = segments.next().unwrap_or_default();
+        let has_drive = first.len() == 2
+            && first.as_bytes()[0].is_ascii_alphabetic()
+            && first.as_bytes()[1] == b':';
+        let mut out: Vec<String> = Vec::new();
+        let drive_prefix = if has_drive {
+            Some(first.to_ascii_lowercase())
+        } else {
+            if !first.is_empty() && first != "." {
+                out.push(first.to_ascii_lowercase());
+            }
+            None
+        };
+        for part in segments {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    if !out.is_empty() && out.last().map(String::as_str) != Some("..") {
+                        out.pop();
+                    }
+                }
+                _ => out.push(part.to_ascii_lowercase()),
+            }
+        }
+        if let Some(drive) = drive_prefix {
+            if out.is_empty() {
+                format!("{drive}/")
+            } else {
+                format!("{drive}/{}", out.join("/"))
+            }
+        } else if unc {
+            format!("//{}", out.join("/"))
+        } else if trimmed.starts_with('/') {
+            format!("/{}", out.join("/"))
+        } else if out.is_empty() {
+            ".".to_owned()
+        } else {
+            out.join("/")
+        }
+    }
+}
+
 pub(crate) struct ClientState {
     pub(crate) computers: Vec<Computer>,
     pub(crate) overviews: HashMap<String, Overview>,
     pub(crate) overview_revisions: HashMap<String, u64>,
+    pub(crate) host_worktrees: HashMap<String, HostWorktreeCache>,
     data_revisions: HashMap<String, u64>,
     status_epochs: HashMap<(String, String), u64>,
     connection_revisions: HashMap<String, u64>,
@@ -243,6 +342,7 @@ impl ClientState {
             overviews: HashMap::new(),
             status_epochs: HashMap::new(),
             overview_revisions: HashMap::new(),
+            host_worktrees: HashMap::new(),
             data_revisions: HashMap::new(),
             connection_revisions: HashMap::new(),
             loads: HashMap::new(),
@@ -455,7 +555,110 @@ impl ClientState {
             .retain(|computer| connections.get(computer) == Some(&Connection::Connected));
         self.latencies
             .retain(|computer, _| connections.get(computer) == Some(&Connection::Connected));
+        self.sync_remote_worktrees();
         self.sync_attention_follows();
+    }
+
+    pub(crate) fn remote_session_checkout(
+        &self,
+        computer: &str,
+        session_id: &str,
+        cwd: Option<&str>,
+    ) -> Option<&HostWorktreeEntry> {
+        if self.connection(computer) != Connection::Connected {
+            return None;
+        }
+        let cache = self.host_worktrees.get(computer)?;
+        cache.sessions.get(session_id).or_else(|| {
+            let cwd = cwd.map(str::trim).filter(|c| !c.is_empty())?;
+            cache.by_cwd.get(&normalize_remote_host_path(cwd))
+        })
+    }
+
+    pub(crate) fn remote_mission_checkout(
+        &self,
+        computer: &str,
+        mission_id: &str,
+        cwd: Option<&str>,
+    ) -> Option<&HostWorktreeEntry> {
+        if self.connection(computer) != Connection::Connected {
+            return None;
+        }
+        let cache = self.host_worktrees.get(computer)?;
+        cache.missions.get(mission_id).or_else(|| {
+            let cwd = cwd.map(str::trim).filter(|c| !c.is_empty())?;
+            cache.by_cwd.get(&normalize_remote_host_path(cwd))
+        })
+    }
+
+    fn sync_remote_worktrees(&mut self) {
+        self.host_worktrees.retain(|computer, _| {
+            self.connections.get(computer) == Some(&Connection::Connected)
+                && self.overviews.contains_key(computer)
+        });
+        for (computer, overview) in &self.overviews {
+            if self.connections.get(computer) != Some(&Connection::Connected) {
+                continue;
+            }
+            let revision = self.overview_revisions.get(computer).copied().unwrap_or(0);
+            if self
+                .host_worktrees
+                .get(computer)
+                .is_some_and(|cache| cache.revision == revision)
+            {
+                continue;
+            }
+            let mut cache = HostWorktreeCache {
+                revision,
+                sessions: HashMap::new(),
+                missions: HashMap::new(),
+                by_cwd: HashMap::new(),
+            };
+            for (id, session) in &overview.sessions {
+                if let Some((checkout, auto_base)) =
+                    session.checkout.as_ref().and_then(|c| c.to_protocol())
+                {
+                    let entry = HostWorktreeEntry {
+                        checkout,
+                        auto_base,
+                    };
+                    if let Some(cwd) = session
+                        .cwd
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|c| !c.is_empty())
+                    {
+                        cache
+                            .by_cwd
+                            .insert(normalize_remote_host_path(cwd), entry.clone());
+                    }
+                    cache.sessions.insert(id.clone(), entry);
+                }
+            }
+            for mission in &overview.missions {
+                if let Some((checkout, auto_base)) =
+                    mission.checkout.as_ref().and_then(|c| c.to_protocol())
+                {
+                    let entry = HostWorktreeEntry {
+                        checkout,
+                        auto_base,
+                    };
+                    if let Some(cwd) = mission
+                        .cwd
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|c| !c.is_empty())
+                    {
+                        cache
+                            .by_cwd
+                            .entry(normalize_remote_host_path(cwd))
+                            .or_insert_with(|| entry.clone());
+                    }
+                    cache.missions.insert(mission.id.clone(), entry);
+                }
+            }
+            self.host_worktrees.insert(computer.clone(), cache);
+        }
     }
     fn load_data_is_current(&self, computer: &str, generation: u64) -> bool {
         self.loads.get(computer).is_some_and(|load| {
@@ -536,6 +739,7 @@ impl ClientState {
                     *connection = Connection::Reconnecting;
                 }
             }
+            self.sync_remote_worktrees();
             return;
         }
         if event.name == "remote/status" {
@@ -561,6 +765,7 @@ impl ClientState {
                     }
                 }
             }
+            self.sync_remote_worktrees();
             return;
         }
         let Some(computer) = event
@@ -656,6 +861,7 @@ impl ClientState {
             }
             _ => {}
         }
+        self.sync_remote_worktrees();
     }
 
     pub(crate) fn session_needs_viewed_ack(status: &SessionStatus) -> bool {
@@ -713,6 +919,7 @@ impl ClientState {
                 .or_default() += 1;
             self.record_overview_status_epochs(computer, &overview);
             self.overviews.insert(computer.to_owned(), overview);
+            self.sync_remote_worktrees();
             cx.notify();
             return;
         }

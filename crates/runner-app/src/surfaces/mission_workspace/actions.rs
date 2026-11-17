@@ -347,10 +347,21 @@ impl MissionWorkspace {
         cx.notify();
     }
 
-    pub(super) fn act_on_slot(
+    pub(crate) fn act_on_slot(
         &mut self,
         session_id: &str,
         action: SessionControlKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.act_on_slot_with_restore(session_id, action, false, window, cx);
+    }
+
+    pub(super) fn act_on_slot_with_restore(
+        &mut self,
+        session_id: &str,
+        action: SessionControlKind,
+        restore_in_main: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -385,6 +396,18 @@ impl MissionWorkspace {
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
+        if action == SessionControlKind::Resume {
+            self.restore_fallback = None;
+        }
+        let slot_cwd = self
+            .members()
+            .iter()
+            .find(|member| member.session.id == session_id)
+            .and_then(|member| member.session.cwd.clone())
+            .or_else(|| self.mission_view().and_then(|mission| mission.cwd.clone()));
+        let mission_project_id = self
+            .mission_view()
+            .and_then(|mission| mission.project_id.clone());
         self.slot_actions.insert(session_id.to_owned());
         let generation = self.generation;
         if !remote && action != SessionControlKind::Stop {
@@ -411,7 +434,14 @@ impl MissionWorkspace {
         let task = cx.background_spawn(async move {
             let result = match action {
                 SessionControlKind::Stop => client.stop(&task_target).map(|()| Vec::new()),
-                SessionControlKind::Resume => client.resume(&task_target, size).map(|id| vec![id]),
+                SessionControlKind::Resume => client
+                    .resume_session_with_options(
+                        &task_target,
+                        size,
+                        false,
+                        restore_in_main && !remote,
+                    )
+                    .map(|id| vec![id]),
                 SessionControlKind::Restart => {
                     client.restart(&task_target, size).map(|id| vec![id])
                 }
@@ -421,10 +451,22 @@ impl MissionWorkspace {
                 .as_ref()
                 .err()
                 .and_then(|error| error.version_gate.clone());
-            (result.map_err(|error| error.to_string()), gate)
+            let fallback = if !remote && !restore_in_main && action == SessionControlKind::Resume {
+                result.as_ref().err().and_then(|error| {
+                    crate::surfaces::worktree_restore::classify_restore_failure(
+                        client.local_daemon(),
+                        slot_cwd.as_deref(),
+                        mission_project_id.as_deref(),
+                        &error.message,
+                    )
+                })
+            } else {
+                None
+            };
+            (result.map_err(|error| error.to_string()), gate, fallback)
         });
         cx.spawn_in(window, async move |weak, cx| {
-            let (result, gate) = task.await;
+            let (result, gate, fallback) = task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
                 let Some(result) = this.complete_mission_action_observed(
                     operation,
@@ -458,7 +500,13 @@ impl MissionWorkspace {
                 this.slot_actions.remove(&target);
                 if let Err(error) = result {
                     this.transitions.remove(&target);
-                    if !is_concurrent_resume_error(&error) {
+                    if let Some(prompt) = fallback {
+                        this.restore_fallback = Some(MissionRestoreFallback {
+                            slot_session_id: Some(target.clone()),
+                            prompt,
+                        });
+                        this.error = None;
+                    } else if !is_concurrent_resume_error(&error) {
                         this.error = Some(action_failure(
                             match action {
                                 SessionControlKind::Stop => {
@@ -598,7 +646,37 @@ impl MissionWorkspace {
         .detach();
     }
 
-    pub(super) fn resume_open_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn resume_open_mission(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.resume_open_mission_inner(false, window, cx);
+    }
+
+    pub(crate) fn confirm_mission_restore_in_main(
+        &mut self,
+        slot_session_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.restore_fallback = None;
+        match slot_session_id {
+            Some(session_id) => {
+                self.act_on_slot_with_restore(
+                    &session_id,
+                    SessionControlKind::Resume,
+                    true,
+                    window,
+                    cx,
+                );
+            }
+            None => self.resume_open_mission_inner(true, window, cx),
+        }
+    }
+
+    fn resume_open_mission_inner(
+        &mut self,
+        restore_in_main: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
@@ -622,6 +700,19 @@ impl MissionWorkspace {
         if !remote && stopped.is_empty() {
             return;
         }
+        self.restore_fallback = None;
+        let mission_project_id = self
+            .mission_view()
+            .and_then(|mission| mission.project_id.clone());
+        let fallback_cwd = self
+            .mission_view()
+            .and_then(|mission| mission.cwd.clone())
+            .or_else(|| {
+                self.members()
+                    .iter()
+                    .find(|session| stopped.contains(&session.session.id))
+                    .and_then(|session| session.session.cwd.clone())
+            });
         let size = self.current_mission_terminal_size(window, cx);
         let Some(operation) = self.prepare_mission_action("resumeMission", "resumeMission".into())
         else {
@@ -644,15 +735,35 @@ impl MissionWorkspace {
         let client = self.client.clone();
         let resume_id = mission_id.clone();
         let task = cx.background_spawn(async move {
-            let result = client.resume_mission_state(resume_id, size);
+            let result = client.resume_mission_state_with_options(
+                resume_id,
+                size,
+                restore_in_main && !remote,
+            );
             let gate = result
                 .as_ref()
                 .err()
                 .and_then(|error| error.version_gate.clone());
-            (result.map_err(|error| error.to_string()), gate)
+            let failure_text = match &result {
+                Ok(output) => output.error.as_deref(),
+                Err(error) => Some(error.message.as_str()),
+            };
+            let fallback = if !remote && !restore_in_main {
+                failure_text.and_then(|err| {
+                    crate::surfaces::worktree_restore::classify_restore_failure(
+                        client.local_daemon(),
+                        fallback_cwd.as_deref(),
+                        mission_project_id.as_deref(),
+                        err,
+                    )
+                })
+            } else {
+                None
+            };
+            (result.map_err(|error| error.to_string()), gate, fallback)
         });
         cx.spawn_in(window, async move |weak, cx| {
-            let (result, gate) = task.await;
+            let (result, gate, fallback) = task.await;
             let _ = weak.update_in(cx, |this, window, cx| {
                 let Some(result) = this.complete_mission_action_observed(
                     operation,
@@ -701,24 +812,44 @@ impl MissionWorkspace {
                             }
                         }
                         if let Some(error) = output.error {
-                            this.error = Some(action_failure(
-                                crate::i18n::message("action.resume_mission"),
-                                error,
-                            ));
+                            if let Some(prompt) = fallback {
+                                this.restore_fallback = Some(MissionRestoreFallback {
+                                    slot_session_id: None,
+                                    prompt,
+                                });
+                                this.error = None;
+                            } else {
+                                this.error = Some(action_failure(
+                                    crate::i18n::message("action.resume_mission"),
+                                    error,
+                                ));
+                            }
                         } else {
                             this.error = None;
+                            this.restore_fallback = None;
                         }
                         this.sync_mission_copy_entities(cx);
                         if let Err(error) = this.ensure_mission_terminals_attached(window, cx) {
                             this.error = Some(error.to_string().into());
                         }
+                        if restore_in_main {
+                            this.refresh_open_mission(window, cx);
+                        }
                         this.refresh_store(StoreRefreshKind::All, cx);
                     }
                     Err(error) => {
-                        this.error = Some(action_failure(
-                            crate::i18n::message("action.resume_mission"),
-                            error,
-                        ));
+                        if let Some(prompt) = fallback {
+                            this.restore_fallback = Some(MissionRestoreFallback {
+                                slot_session_id: None,
+                                prompt,
+                            });
+                            this.error = None;
+                        } else {
+                            this.error = Some(action_failure(
+                                crate::i18n::message("action.resume_mission"),
+                                error,
+                            ));
+                        }
                     }
                 }
                 this.focus_active_mission_terminal(window, cx);
@@ -733,6 +864,18 @@ impl MissionWorkspace {
             return;
         };
         if self.lifecycle_busy() || self.secondary_state(cx).secondary {
+            return;
+        }
+        if !self.client.is_remote()
+            && let Some(shell) = self.shell.upgrade()
+            && !shell
+                .read(cx)
+                .emptied_managed_worktrees(&[], std::slice::from_ref(&mission_id), cx)
+                .is_empty()
+        {
+            shell.update(cx, |root, cx| {
+                root.request_archive_mission(mission_id, window, cx);
+            });
             return;
         }
         let Some(operation) = self.prepare_mission_action("archive", "archive".into()) else {

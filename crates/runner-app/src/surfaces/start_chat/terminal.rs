@@ -128,6 +128,7 @@ impl NativeRoot {
             pane: Some(draft.focused_pane_id.clone()),
             project: scope.project_id().map(str::to_owned),
             cwd,
+            worktree: None,
             size,
         };
         self.launch_workspace_shell(input, window, cx, move |this, result, window, cx| {
@@ -348,6 +349,7 @@ impl NativeRoot {
             pane: Some(pane_id.clone()),
             project: scope.project_id().map(str::to_owned),
             cwd,
+            worktree: None,
             size: initial_size,
         };
         self.launch_workspace_shell(input, window, cx, move |this, result, window, cx| {

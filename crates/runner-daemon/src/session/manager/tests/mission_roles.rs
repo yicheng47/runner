@@ -92,7 +92,7 @@ fn added_slot_records_overrides_resumes_restarts_and_removal_stops_it() {
     assert_eq!(slot.runtime_override.as_deref(), Some("codex"));
     core.db.get().unwrap().execute("UPDATE roles SET system_prompt='EDITED_BRIEF',model='edited-model',effort='medium' WHERE id='added'",[]).unwrap();
     manager.kill(&change.session_id).unwrap();
-    crate::ops::session::session_resume(&core, &change.session_id, None, None).unwrap();
+    crate::ops::session::session_resume(&core, &change.session_id, None, None, false).unwrap();
     let resumed = crate::repo::session::get_row(&core.db.get().unwrap(), &change.session_id)
         .unwrap()
         .unwrap();
@@ -114,7 +114,7 @@ fn added_slot_records_overrides_resumes_restarts_and_removal_stops_it() {
         .unwrap();
     assert!(removed.archived_at.is_none());
     assert_eq!(removed.status, crate::model::SessionStatus::Stopped);
-    let error = crate::ops::session::session_resume(&core, &change.session_id, None, None)
+    let error = crate::ops::session::session_resume(&core, &change.session_id, None, None, false)
         .unwrap_err()
         .to_string();
     assert!(
@@ -181,7 +181,7 @@ fn run_worker_lifecycle(core: &AppCore, restart: bool) -> Result<SpawnedSession>
     if restart {
         crate::ops::session::session_restart(core, "worker", None, None)
     } else {
-        crate::ops::session::session_resume(core, "worker", None, None)
+        crate::ops::session::session_resume(core, "worker", None, None, false)
     }
 }
 

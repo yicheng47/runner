@@ -1124,8 +1124,14 @@ pub fn mission_resume_with_size(
         }
     }
     mission_resume_with(state, id, |state, session_id| {
-        crate::ops::session::session_resume(state, session_id, size.map(|s| s.0), size.map(|s| s.1))
-            .map(|_| ())
+        crate::ops::session::session_resume(
+            state,
+            session_id,
+            size.map(|s| s.0),
+            size.map(|s| s.1),
+            false,
+        )
+        .map(|_| ())
     })
 }
 
@@ -1251,24 +1257,66 @@ fn close_mission_drawer_shells(state: &AppCore, mission_id: &str) -> Result<()> 
     Ok(())
 }
 
-pub async fn mission_unarchive_impl(state: &AppCore, id: String) -> Result<Mission> {
+pub async fn mission_unarchive_impl(
+    state: &AppCore,
+    id: String,
+    restore_in_main: bool,
+) -> Result<Mission> {
     let mission = {
-        let _reg_guard = state.files.worktree_gate().read();
+        let _write_guard = restore_in_main.then(|| state.files.worktree_gate().write());
+        let _read_guard = (!restore_in_main).then(|| state.files.worktree_gate().read());
         let preflight = {
             let conn = state.db.get()?;
             repo::mission::get(&conn, &id)?
         };
-        if let Some(mission) = preflight.filter(|mission| mission.archived_at.is_some()) {
-            crate::ops::session::restore_missing_worktree_for_cwd(
-                state,
-                mission.cwd.as_deref(),
-                mission.project_id.as_deref(),
-            )?;
-        }
+        let (new_mission_cwd, new_session_cwds, _slot_claims) = if let Some(mission) =
+            preflight.filter(|mission| mission.archived_at.is_some())
+        {
+            if restore_in_main {
+                let (session_rows, slot_claims) = {
+                    let conn = state.db.get()?;
+                    crate::ops::session::acquire_mission_relocation_claims(state, &conn, &id, None)?
+                };
+                let mission_target = crate::ops::session::restore_main_checkout_for_cwd(
+                    state,
+                    mission.cwd.as_deref(),
+                    mission.project_id.as_deref(),
+                    None,
+                )?;
+                let mut session_targets = Vec::new();
+                let extra_hint = mission_target.as_deref().or(mission.cwd.as_deref());
+                for slot in session_rows {
+                    if let Some(target) = crate::ops::session::restore_main_checkout_for_cwd(
+                        state,
+                        slot.cwd.as_deref(),
+                        slot.project_id.as_deref().or(mission.project_id.as_deref()),
+                        extra_hint,
+                    )? {
+                        session_targets.push((slot.id, target));
+                    }
+                }
+                (mission_target, session_targets, slot_claims)
+            } else {
+                crate::ops::session::restore_missing_worktree_for_cwd(
+                    state,
+                    mission.cwd.as_deref(),
+                    mission.project_id.as_deref(),
+                )?;
+                (None, Vec::new(), Vec::new())
+            }
+        } else {
+            (None, Vec::new(), Vec::new())
+        };
         #[cfg(test)]
         state.files.worktree_gate().fire_before_registration();
         let mut conn = state.db.get()?;
         let tx = conn.transaction()?;
+        if let Some(ref cwd) = new_mission_cwd {
+            repo::mission::set_cwd(&tx, &id, cwd)?;
+        }
+        for (sid, cwd) in new_session_cwds {
+            repo::session::set_cwd(&tx, &sid, &cwd)?;
+        }
         let reopened = repo::mission::unarchive(&tx, &id)? == 1;
         let mission = get(&tx, &id)?;
         repo::node::ensure_mission_node(&tx, &id, mission.project_id.as_deref())?;
@@ -1293,8 +1341,12 @@ pub async fn mission_unarchive_impl(state: &AppCore, id: String) -> Result<Missi
 /// Emits `mission/changed` after the flip — the sidebar's MISSION list
 /// listens on that channel, so the restored row reappears without a
 /// manual refresh.
-pub async fn mission_unarchive(state: &AppCore, id: String) -> Result<Mission> {
-    let mission = mission_unarchive_impl(state, id).await?;
+pub async fn mission_unarchive(
+    state: &AppCore,
+    id: String,
+    restore_in_main: bool,
+) -> Result<Mission> {
+    let mission = mission_unarchive_impl(state, id, restore_in_main).await?;
     state.events.emit("mission/changed", &());
     Ok(mission)
 }

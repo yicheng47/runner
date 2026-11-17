@@ -329,6 +329,9 @@ impl NativeRoot {
         let session_ids = archive_targets_for_chats(session_ids, self.tabs.tabs());
         if session_ids.len() > chat_count
             || !self.linked_missions_for_chats(&session_ids, cx).is_empty()
+            || !self
+                .emptied_managed_worktrees(&session_ids, &[], cx)
+                .is_empty()
         {
             self.request_archive_all(None, session_ids, ArchiveAllSource::Chat, window, cx);
         } else {
@@ -351,6 +354,25 @@ impl NativeRoot {
         session_ids: Vec<String>,
         source: ArchiveAllSource,
         pane_close: Option<PendingPaneClose>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.archive_workspace_sessions_with_worktrees(
+            session_ids,
+            source,
+            pane_close,
+            Vec::new(),
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn archive_workspace_sessions_with_worktrees(
+        &mut self,
+        session_ids: Vec<String>,
+        source: ArchiveAllSource,
+        pane_close: Option<PendingPaneClose>,
+        worktree_removals: Vec<WorktreeToRemove>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -430,6 +452,9 @@ impl NativeRoot {
                     Ok(done) => (done.removed, done.archived_missions, done.error),
                     Err(error) => (Vec::new(), Vec::new(), Some(error)),
                 };
+                let should_remove_worktrees = error.is_none()
+                    && (!removed.is_empty() || !archived_missions.is_empty())
+                    && !worktree_removals.is_empty();
                 let root = cx.entity();
                 window.defer(cx, move |window, cx| {
                     root.update(cx, |root, cx| {
@@ -449,8 +474,64 @@ impl NativeRoot {
                         if restore_focus && refreshed {
                             root.settle_active_tab(window, cx);
                         }
+                        if should_remove_worktrees {
+                            root.remove_checked_worktrees(worktree_removals, cx);
+                        }
                     });
                 });
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn execute_archive_mission(
+        &mut self,
+        mission_id: &str,
+        worktree_removals: Vec<WorktreeToRemove>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.front_page_client(cx).is_remote() {
+            return;
+        }
+        let mission_id = mission_id.to_owned();
+        if self.sidebar.read(cx).mission_archiving(&mission_id) {
+            return;
+        }
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_mission_archiving(mission_id.clone(), true, cx);
+        });
+        let client = self.front_page_client(cx);
+        let archive_id = mission_id.clone();
+        let task = cx.background_spawn(async move {
+            client
+                .archive_mission_state(archive_id)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = task.await;
+            let _ = weak.update_in(cx, |root, window, cx| {
+                root.sidebar.update(cx, |sidebar, cx| {
+                    sidebar.set_mission_archiving(mission_id.clone(), false, cx);
+                });
+                match result {
+                    Ok(()) => {
+                        root.update_app_settings(cx, true, |settings| {
+                            settings.last_mission_terminal_ids.remove(&mission_id);
+                            true
+                        });
+                        root.leave_archived_mission(&mission_id, Some(false), true, window, cx);
+                        root.refresh_store(StoreRefreshKind::All, cx);
+                        if !worktree_removals.is_empty() {
+                            root.remove_checked_worktrees(worktree_removals, cx);
+                        }
+                    }
+                    Err(error) => {
+                        root.error = Some(error.into());
+                    }
+                }
+                cx.notify();
             });
         })
         .detach();

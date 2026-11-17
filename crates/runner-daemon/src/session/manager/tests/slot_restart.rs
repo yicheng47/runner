@@ -22,7 +22,7 @@ async fn restored_mission_remounts_without_spawning_then_resumes_and_rearchives(
     assert!(core.buses.get(mission_id).is_none());
     let mut events = core.events.subscribe();
 
-    let reopened = mission::mission_unarchive(&core, mission_id.clone())
+    let reopened = mission::mission_unarchive(&core, mission_id.clone(), false)
         .await
         .unwrap();
     assert_eq!(reopened.status, MissionStatus::Running);
@@ -47,7 +47,7 @@ async fn restored_mission_remounts_without_spawning_then_resumes_and_rearchives(
         std::iter::from_fn(|| events.try_recv().ok()).any(|event| event.name == "mission/changed")
     );
 
-    mission::mission_unarchive_impl(&core, mission_id.clone())
+    mission::mission_unarchive_impl(&core, mission_id.clone(), false)
         .await
         .unwrap();
     let log = mission::read_events(app_data.path(), &pool.get().unwrap(), mission_id).unwrap();
@@ -73,7 +73,7 @@ async fn restored_mission_remounts_without_spawning_then_resumes_and_rearchives(
         &spec.args[..2],
         &["resume", before.agent_session_key.as_deref().unwrap()]
     );
-    mission::mission_unarchive_impl(&core, mission_id.clone())
+    mission::mission_unarchive_impl(&core, mission_id.clone(), false)
         .await
         .unwrap();
     assert_eq!(fake.spawn_count(), 1);

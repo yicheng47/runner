@@ -152,7 +152,7 @@ impl MissionWorkspace {
             let id = if let Some(id) = existing {
                 id
             } else {
-                let id = client.start_shell(mission.project_id, cwd, size)?;
+                let id = client.start_shell(mission.project_id, cwd, None, size)?;
                 if let Some(stage) = &stage {
                     *stage.lock().unwrap() = Some(id.clone());
                 }

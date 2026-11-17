@@ -2876,3 +2876,421 @@ async fn overview_waits_for_newer_status_revision_before_publishing_clean_status
     assert!(seen_status_false && seen_overview_false);
     assert!(adapter.next(false).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn files_events_schedule_overview_without_marking_statuses_dirty_and_watch_cleans_up() {
+    use runner_core::protocol::files::{FILES_CHANGED_EVENT, FILES_STATUS_EVENT};
+
+    let fake = Arc::new(Fake::default());
+    let mut adapter = Adapter::new(fake.clone(), 1, String::new()).unwrap();
+
+    // Non-root files/changed does not schedule overview or mark statuses dirty.
+    fake.events.emit(
+        FILES_CHANGED_EVENT,
+        &serde_json::json!({"folders": ["src"]}),
+    );
+    adapter.changed().await.unwrap();
+    assert!(adapter.overview_due.is_none());
+    assert!(!adapter.status_dirty);
+
+    // files/status schedules overview without touching status worker.
+    fake.events
+        .emit(FILES_STATUS_EVENT, &serde_json::json!({"root": "/tmp/r"}));
+    adapter.changed().await.unwrap();
+    assert!(adapter.overview_due.is_some());
+    assert!(!adapter.status_dirty);
+    adapter.overview_due = None;
+
+    // Root files/changed ([""]) schedules overview too.
+    fake.events
+        .emit(FILES_CHANGED_EVENT, &serde_json::json!({"folders": [""]}));
+    adapter.changed().await.unwrap();
+    assert!(adapter.overview_due.is_some());
+    assert!(!adapter.status_dirty);
+
+    // Real DaemonCore channel watches non-missing git roots in overview and releases watches on drop.
+    let temp = tempfile::Builder::new()
+        .prefix("1213-m2-comp-watch-")
+        .tempdir()
+        .unwrap();
+    let repo_dir = temp.path().join("repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    let status = std::process::Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(&repo_dir)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    std::fs::write(repo_dir.join("a.txt"), "hi\n").unwrap();
+    assert!(std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(&repo_dir)
+        .status()
+        .unwrap()
+        .success());
+    assert!(std::process::Command::new("git")
+        .args(["commit", "-q", "-m", "init"])
+        .env("GIT_AUTHOR_NAME", "T")
+        .env("GIT_AUTHOR_EMAIL", "t@e")
+        .env("GIT_COMMITTER_NAME", "T")
+        .env("GIT_COMMITTER_EMAIL", "t@e")
+        .current_dir(&repo_dir)
+        .status()
+        .unwrap()
+        .success());
+
+    let core = Arc::new(crate::test_support::test_core_in(temp.path().into()));
+    let backend = Arc::new(super::core::DaemonCore(Arc::downgrade(&core)));
+    let repo_str = repo_dir.to_string_lossy().into_owned();
+    let norm_repo = runner_core::app_paths::normalize_checkout_path(&repo_dir);
+    backend.sync_overview_watches(99, vec![norm_repo.clone()], vec![]);
+    assert!(core.files.watched_roots().contains(&norm_repo));
+    backend.release_channel(99);
+    assert!(core.files.watched_roots().is_empty());
+    let _ = repo_str;
+}
+
+fn init_worktree_git_repo(repo_dir: &std::path::Path, branch: &str) -> std::path::PathBuf {
+    let run_git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@e")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@e")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    std::fs::create_dir_all(repo_dir).unwrap();
+    run_git(repo_dir, &["init", "-q", "-b", "main"]);
+    run_git(repo_dir, &["config", "core.autocrlf", "false"]);
+    std::fs::write(repo_dir.join("README.md"), "base\n").unwrap();
+    run_git(repo_dir, &["add", "-A"]);
+    run_git(repo_dir, &["commit", "-q", "-m", "init"]);
+    let leaf = branch.replace('/', "-");
+    let wt = repo_dir.join(".worktrees").join(leaf);
+    run_git(
+        repo_dir,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            branch,
+            wt.to_str().unwrap(),
+            "main",
+        ],
+    );
+    wt
+}
+
+fn seed_worktree_tab_session(
+    core: &crate::AppCore,
+    repo_dir: &std::path::Path,
+    wt_dir: &std::path::Path,
+) {
+    let conn = core.db.get().unwrap();
+    let project = crate::repo::project::create(&conn, "Repo", repo_dir.to_str().unwrap()).unwrap();
+    crate::test_support::insert_test_role(&conn, "role", "coder", "codex", "codex");
+    let wt_str = runner_core::app_paths::normalize_checkout_path(wt_dir)
+        .to_string_lossy()
+        .into_owned();
+    let mut s = crate::repo::session::SessionRowDb::new_running("s-wt".into());
+    s.status = crate::model::SessionStatus::Stopped;
+    s.role_id = Some("role".into());
+    s.agent_runtime = Some("codex".into());
+    s.project_id = Some(project.id.clone());
+    s.cwd = Some(wt_str);
+    s.title = Some("WT Chat".into());
+    crate::repo::session::insert(&conn, &s).unwrap();
+    let project_node = crate::repo::node::ensure_project_node(&conn, &project.id).unwrap();
+    let layout = serde_json::json!({"preset": "single", "slots": ["s-wt"], "sizes": {}});
+    crate::repo::node::create_tab(
+        &conn,
+        Some(&project_node.id),
+        "WT Tab",
+        0,
+        &layout.to_string(),
+    )
+    .unwrap();
+}
+
+async fn pump_adapter_message(adapter: &mut Adapter) -> HostMessage {
+    loop {
+        if let Some(bytes) = adapter.next(false).await.unwrap() {
+            return serde_json::from_slice(&bytes).unwrap();
+        }
+        adapter.changed().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn disconnect_during_delayed_overview_watch_registration_releases_all_watches() {
+    let temp = tempfile::Builder::new()
+        .prefix("1213-m2-comp-r7-")
+        .tempdir()
+        .unwrap();
+    let repo_dir = temp.path().join("repo");
+    let wt = init_worktree_git_repo(&repo_dir, "feat/r7");
+    let core = Arc::new(crate::test_support::test_core_in(temp.path().into()));
+    seed_worktree_tab_session(&core, &repo_dir, &wt);
+
+    struct DelayedWatchCore {
+        inner: super::core::DaemonCore,
+        core: Arc<crate::AppCore>,
+        entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        released: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        watched_during_sync: std::sync::atomic::AtomicUsize,
+    }
+    impl Core for DelayedWatchCore {
+        fn overview(&self) -> core::Result<Overview> {
+            self.inner.overview()
+        }
+        fn statuses(&self) -> core::Result<BTreeMap<String, SessionStatus>> {
+            self.inner.statuses()
+        }
+        fn subscribe(&self) -> core::Result<broadcast::Receiver<crate::events::AppEvent>> {
+            self.inner.subscribe()
+        }
+        fn attach(
+            self: Arc<Self>,
+            session: &str,
+            history: usize,
+            channel: u64,
+        ) -> core::Result<super::core::Attachment> {
+            Arc::new(super::core::DaemonCore(Arc::downgrade(&self.core)))
+                .attach(session, history, channel)
+        }
+        fn resize(
+            &self,
+            session: &str,
+            channel: u64,
+            name: &str,
+            size: (u16, u16),
+            control: Control,
+        ) -> core::Result<()> {
+            self.inner.resize(session, channel, name, size, control)
+        }
+        fn input(&self, session: &str, channel: u64, bytes: &[u8]) -> core::Result<()> {
+            self.inner.input(session, channel, bytes)
+        }
+        fn detach(&self, session: &str, subscriber: u64, channel: u64, release: bool) {
+            self.inner.detach(session, subscriber, channel, release)
+        }
+        fn closed_reason(&self, session: &str) -> ClosedReason {
+            self.inner.closed_reason(session)
+        }
+        fn release_channel(&self, channel: u64) {
+            self.inner.release_channel(channel);
+            if let Some(tx) = self.released.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+        }
+        fn sync_overview_watches(
+            &self,
+            channel: u64,
+            to_watch: Vec<std::path::PathBuf>,
+            to_unwatch: Vec<std::path::PathBuf>,
+        ) {
+            if let Some(tx) = self.entered.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            if let Some(rx) = self.release.lock().unwrap().take() {
+                let _ = rx.recv();
+            }
+            self.inner
+                .sync_overview_watches(channel, to_watch, to_unwatch);
+            self.watched_during_sync
+                .store(self.core.files.watched_roots().len(), Ordering::SeqCst);
+        }
+    }
+
+    let (entered_tx, mut entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (released_tx, released_rx) = tokio::sync::oneshot::channel();
+    let delayed = Arc::new(DelayedWatchCore {
+        inner: super::core::DaemonCore(Arc::downgrade(&core)),
+        core: core.clone(),
+        entered: Mutex::new(Some(entered_tx)),
+        release: Mutex::new(Some(release_rx)),
+        released: Mutex::new(Some(released_tx)),
+        watched_during_sync: Default::default(),
+    });
+    let mut adapter = Adapter::new(delayed.clone(), 42, String::new()).unwrap();
+    adapter
+        .request(serde_json::from_str::<ClientMessage>(r#"{"id":1,"type":"overview"}"#).unwrap())
+        .await
+        .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            tokio::select! {
+                _ = &mut entered_rx => break,
+                _ = pump_adapter_message(&mut adapter) => {}
+            }
+        }
+    })
+    .await
+    .expect("overview worker reached sync_overview_watches");
+
+    // Disconnect while watch registration is paused inside spawn_blocking.
+    drop(adapter);
+    assert_eq!(core.files.watched_roots().len(), 0);
+
+    release_tx.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), released_rx)
+        .await
+        .expect("channel lease released after overview worker finished")
+        .unwrap();
+    assert_eq!(
+        delayed.watched_during_sync.load(Ordering::SeqCst),
+        2,
+        "overview worker must subscribe both main and worktree roots before Lease drops"
+    );
+    assert!(
+        core.files.watched_roots().is_empty(),
+        "disconnect during delayed watch registration must not leak watches"
+    );
+}
+
+#[tokio::test]
+async fn quiet_companion_tracks_missing_worktree_removal_and_external_recreation_without_synthetic_events(
+) {
+    use runner_core::protocol::files::{FilesStatusChanged, FILES_STATUS_EVENT};
+
+    let temp = tempfile::Builder::new()
+        .prefix("1213-m2-comp-r8-")
+        .tempdir()
+        .unwrap();
+    let repo_dir = temp.path().join("repo");
+    let wt = init_worktree_git_repo(&repo_dir, "feat/r8");
+    let core = Arc::new(crate::test_support::test_core_in(temp.path().into()));
+    seed_worktree_tab_session(&core, &repo_dir, &wt);
+    let norm_repo = runner_core::app_paths::normalize_checkout_path(&repo_dir);
+    let norm_wt = runner_core::app_paths::normalize_checkout_path(&wt);
+
+    let mut events = core.events.subscribe();
+    let backend = Arc::new(super::core::DaemonCore(Arc::downgrade(&core)));
+    let mut adapter = Adapter::new(backend, 77, String::new()).unwrap();
+    adapter
+        .request(serde_json::from_str::<ClientMessage>(r#"{"id":1,"type":"overview"}"#).unwrap())
+        .await
+        .unwrap();
+
+    let mut saw_initial_reply = false;
+    let mut saw_repo_watch = false;
+    let mut saw_wt_watch = false;
+    tokio::time::timeout(Duration::from_secs(15), async {
+        while !(saw_initial_reply && saw_repo_watch && saw_wt_watch) {
+            tokio::select! {
+                msg = pump_adapter_message(&mut adapter) => {
+                    if let HostMessage::Result(reply) = msg
+                        && reply.id == 1
+                    {
+                        let ov: Overview = serde_json::from_value(reply.result).unwrap();
+                        assert!(matches!(
+                            ov.sessions["s-wt"].checkout.as_ref(),
+                            Some(Checkout::Git { missing: false, branch: Some(b), .. }) if b == "feat/r8"
+                        ));
+                        saw_initial_reply = true;
+                    }
+                }
+                event = events.recv() => {
+                    if let Ok(event) = event
+                        && event.name == FILES_STATUS_EVENT
+                        && let Ok(changed) = serde_json::from_value::<FilesStatusChanged>(event.payload)
+                    {
+                        if runner_core::app_paths::same_normalized_checkout_path(&changed.root, &norm_repo) {
+                            saw_repo_watch = true;
+                        }
+                        if runner_core::app_paths::same_normalized_checkout_path(&changed.root, &norm_wt) {
+                            saw_wt_watch = true;
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("initial overview reply and both watches armed");
+
+    // 1. Remove the worktree externally -> overview transitions to missing: true while keeping main_checkout watched.
+    let remove = std::process::Command::new("git")
+        .args(["worktree", "remove", ".worktrees/feat-r8"])
+        .current_dir(&repo_dir)
+        .output()
+        .unwrap();
+    assert!(
+        remove.status.success(),
+        "git worktree remove failed: {}",
+        String::from_utf8_lossy(&remove.stderr)
+    );
+
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let HostMessage::Overview(ov) = pump_adapter_message(&mut adapter).await
+                && matches!(
+                    ov.sessions["s-wt"].checkout.as_ref(),
+                    Some(Checkout::Git {
+                        missing: true,
+                        branch: Some(b),
+                        missing_branch: Some(MissingBranchState::Surviving),
+                        ..
+                    }) if b == "feat/r8"
+                )
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("missing overview pushed without synthetic Runner event");
+    let watched_while_missing = core.files.watched_roots();
+    assert!(
+        watched_while_missing.contains(&norm_repo),
+        "main_checkout watch must remain while worktree is missing: {watched_while_missing:?}"
+    );
+    assert!(
+        !watched_while_missing.contains(&norm_wt),
+        "missing worktree path must not stay watched: {watched_while_missing:?}"
+    );
+
+    // 2. Recreate the worktree externally -> surviving main_checkout watch refreshes overview back to live.
+    let add = std::process::Command::new("git")
+        .args(["worktree", "add", "-q", ".worktrees/feat-r8", "feat/r8"])
+        .current_dir(&repo_dir)
+        .output()
+        .unwrap();
+    assert!(
+        add.status.success(),
+        "git worktree add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let HostMessage::Overview(ov) = pump_adapter_message(&mut adapter).await
+                && matches!(
+                    ov.sessions["s-wt"].checkout.as_ref(),
+                    Some(Checkout::Git { missing: false, branch: Some(b), .. }) if b == "feat/r8"
+                )
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("recreated worktree refreshed overview automatically via main_checkout watch");
+    assert!(core.files.watched_roots().contains(&norm_wt));
+
+    drop(adapter);
+    assert!(core.files.watched_roots().is_empty());
+}

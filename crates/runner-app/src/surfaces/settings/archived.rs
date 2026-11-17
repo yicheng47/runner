@@ -15,8 +15,11 @@ use runner_app::ui::{
 use runner_core::protocol::model::Mission;
 use runner_core::protocol::session::DirectSessionEntry;
 
-use crate::app_store::AppStore;
+use crate::app_store::{AppStore, StoreRefreshKind};
 use crate::chat_icon::ChatIcon;
+use crate::surfaces::worktree_restore::{
+    classify_restore_failure, render_restore_fallback_banner, RestoreFallbackPrompt,
+};
 use crate::theme;
 use crate::NativeRoot;
 
@@ -51,9 +54,16 @@ struct ArchivedItem {
     kind: ArchivedKind,
     runtime: Option<String>,
     id: String,
+    project_id: Option<String>,
     title: String,
     cwd: Option<String>,
     archived_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug)]
+struct ArchivedRestoreFallback {
+    item: ArchivedItem,
+    prompt: RestoreFallbackPrompt,
 }
 
 impl ArchivedItem {
@@ -74,6 +84,7 @@ pub(crate) struct ArchivedPane {
     search: Entity<TextField>,
     filter: ArchivedFilter,
     restoring: HashSet<(ArchivedKind, String)>,
+    restore_fallback: Option<ArchivedRestoreFallback>,
     confirm: ConfirmDialogState,
     confirm_overlay: Entity<ArchivedConfirmOverlay>,
     _subscriptions: Vec<Subscription>,
@@ -115,6 +126,7 @@ impl ArchivedPane {
             search,
             filter: ArchivedFilter::All,
             restoring: HashSet::new(),
+            restore_fallback: None,
             confirm: ConfirmDialogState::Closed,
             confirm_overlay,
             _subscriptions: vec![search_subscription],
@@ -132,6 +144,7 @@ impl ArchivedPane {
         self.loading = true;
         self.items = None;
         self.error = None;
+        self.restore_fallback = None;
         let core = self.app_store.read(cx).client.clone();
         let task = cx.background_spawn(async move {
             let missions = core
@@ -216,6 +229,15 @@ impl ArchivedPane {
     }
 
     fn restore(&mut self, item: ArchivedItem, cx: &mut Context<Self>) {
+        self.restore_with_options(item, false, cx);
+    }
+
+    fn restore_with_options(
+        &mut self,
+        item: ArchivedItem,
+        restore_in_main: bool,
+        cx: &mut Context<Self>,
+    ) {
         let key = (item.kind, item.id.clone());
         if !self.restoring.insert(key.clone()) {
             return;
@@ -224,17 +246,32 @@ impl ArchivedPane {
             items.retain(|row| (row.kind, row.id.as_str()) != (key.0, key.1.as_str()));
         }
         self.error = None;
+        self.restore_fallback = None;
         let core = self.app_store.read(cx).client.clone();
         let task_item = item.clone();
         let task = cx.background_spawn(async move {
-            match task_item.kind {
+            let result = match task_item.kind {
                 ArchivedKind::Mission => core
-                    .mission_unarchive(task_item.id)
-                    .map(|_| ())
-                    .map_err(|error| error.to_string()),
-                ArchivedKind::Chat => core
-                    .session_unarchive(&task_item.id)
-                    .map_err(|error| error.to_string()),
+                    .mission_unarchive(task_item.id.clone(), restore_in_main)
+                    .map(|_| ()),
+                ArchivedKind::Chat => core.session_unarchive(&task_item.id, restore_in_main),
+            };
+            match result {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    let raw = error.to_string();
+                    let fallback = (!restore_in_main)
+                        .then(|| {
+                            classify_restore_failure(
+                                &core,
+                                task_item.cwd.as_deref(),
+                                task_item.project_id.as_deref(),
+                                &raw,
+                            )
+                        })
+                        .flatten();
+                    Err((raw, fallback))
+                }
             }
         });
         cx.spawn(async move |weak, cx| {
@@ -248,9 +285,21 @@ impl ArchivedPane {
                                 (row.kind, row.id.as_str()) != (item.kind, item.id.as_str())
                             });
                         }
+                        this.app_store.update(cx, |store, cx| {
+                            store.refresh(StoreRefreshKind::All, cx);
+                            store.sync_worktree_checkouts(cx);
+                        });
                     }
-                    Err(error) => {
-                        this.error = Some(error);
+                    Err((error, fallback)) => {
+                        if let Some(prompt) = fallback {
+                            this.restore_fallback = Some(ArchivedRestoreFallback {
+                                item: item.clone(),
+                                prompt,
+                            });
+                            this.error = None;
+                        } else {
+                            this.error = Some(error);
+                        }
                         let items = this.items.get_or_insert_default();
                         items.retain(|row| {
                             (row.kind, row.id.as_str()) != (item.kind, item.id.as_str())
@@ -291,6 +340,7 @@ impl ArchivedPane {
             return;
         };
         self.error = None;
+        self.restore_fallback = None;
         let core = self.app_store.read(cx).client.clone();
         let task = cx.background_spawn(async move {
             let mut failed = Vec::new();
@@ -590,6 +640,41 @@ impl Render for ArchivedPane {
                         runner_app::ui::notice_banner(error, runner_app::ui::Tone::Danger)
                     }),
             )
+            .children(
+                self.restore_fallback
+                    .as_ref()
+                    .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+                    .map(|fallback| {
+                        let restore_pane = cx.entity();
+                        let dismiss_pane = cx.entity();
+                        let busy = self
+                            .restoring
+                            .contains(&(fallback.item.kind, fallback.item.id.clone()));
+                        div()
+                            .rounded(rems(8. / 16.))
+                            .overflow_hidden()
+                            .border_1()
+                            .border_color(gpui::rgb(0x4a2226))
+                            .child(render_restore_fallback_banner(
+                                "archived",
+                                &fallback.prompt,
+                                busy,
+                                move |_, cx| {
+                                    restore_pane.update(cx, |this, cx| {
+                                        if let Some(fb) = this.restore_fallback.take() {
+                                            this.restore_with_options(fb.item, true, cx);
+                                        }
+                                    });
+                                },
+                                move |_, cx| {
+                                    dismiss_pane.update(cx, |this, cx| {
+                                        this.restore_fallback = None;
+                                        cx.notify();
+                                    });
+                                },
+                            ))
+                    }),
+            )
             .children(content)
     }
 }
@@ -667,6 +752,7 @@ fn merge_archived_items(missions: &[Mission], chats: &[DirectSessionEntry]) -> V
                 kind: ArchivedKind::Mission,
                 runtime: None,
                 id: mission.id.clone(),
+                project_id: mission.project_id.clone(),
                 title: mission.title.clone(),
                 cwd: mission.cwd.clone(),
                 archived_at,
@@ -677,6 +763,7 @@ fn merge_archived_items(missions: &[Mission], chats: &[DirectSessionEntry]) -> V
                 kind: ArchivedKind::Chat,
                 runtime: Some(chat.agent_runtime.clone()),
                 id: chat.session_id.clone(),
+                project_id: chat.project_id.clone(),
                 title: chat_title(chat),
                 cwd: chat.cwd.clone(),
                 archived_at,
@@ -903,5 +990,255 @@ mod tests {
         });
         let now = Local::now();
         assert!(!format_timestamp(now.with_timezone(&Utc), now).is_empty());
+    }
+
+    struct ArchivedHost(Entity<ArchivedPane>);
+
+    impl Render for ArchivedHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .p_6()
+                .bg(theme::bg())
+                .child(self.0.clone())
+        }
+    }
+
+    fn git_cmd(dir: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git command");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn archived_restore_fallback_handles_gone_and_ambiguous_branches() {
+        let mut cx = gpui::TestAppContext::single();
+        let cx = &mut cx;
+        let temp = tempfile::Builder::new()
+            .prefix("1213-m2-arch-restore-")
+            .tempdir()
+            .unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(repo.join("apps/web")).unwrap();
+        git_cmd(&repo, &["init", "-b", "main"]);
+        git_cmd(&repo, &["config", "user.name", "Runner Test"]);
+        git_cmd(&repo, &["config", "user.email", "test@runner.local"]);
+        std::fs::write(repo.join("apps/web/index.ts"), "export {};\n").unwrap();
+        git_cmd(&repo, &["add", "."]);
+        git_cmd(&repo, &["commit", "-m", "initial"]);
+
+        let wt_gone = repo.join(".worktrees/gone-branch");
+        let wt_ambig = repo.join(".worktrees/feat-dup");
+        git_cmd(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feat/gone-branch",
+                wt_gone.to_str().unwrap(),
+            ],
+        );
+        git_cmd(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feat/dup",
+                wt_ambig.to_str().unwrap(),
+            ],
+        );
+        git_cmd(&repo, &["branch", "feat-dup", "main"]);
+
+        std::fs::remove_dir_all(&wt_gone).unwrap();
+        std::fs::remove_dir_all(&wt_ambig).unwrap();
+        git_cmd(&repo, &["worktree", "prune"]);
+        git_cmd(&repo, &["branch", "-D", "feat/gone-branch"]);
+
+        let store = crate::app_store::test_lifecycle_store(cx, temp.path());
+        let core = store.read_with(cx, |store, _| store.test_core.clone());
+        let project = runner_daemon::repo::project::create(
+            &core.db.get().unwrap(),
+            "RestoreRepo",
+            &repo.to_string_lossy(),
+        )
+        .unwrap();
+        {
+            let conn = core.db.get().unwrap();
+            let gone_sub = wt_gone.join("apps/web");
+            conn.execute_batch(
+                "INSERT INTO crews (id, name, created_at, updated_at)
+                 VALUES ('crew', 'Crew', '2026-11-17T00:00:00Z', '2026-11-17T00:00:00Z');",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO sessions(id,title,status,agent_runtime,agent_command,project_id,cwd,archived_at)
+                 VALUES ('c-gone','Gone chat','stopped','claude-code','claude',?1,?2,'2026-11-17T00:01:00Z')",
+                [project.id.as_str(), gone_sub.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO missions(id,crew_id,project_id,title,status,cwd,started_at,archived_at)
+                 VALUES ('m-ambig','crew',?1,'Ambiguous mission','completed',?2,'2026-11-17T00:00:00Z','2026-11-17T00:02:00Z')",
+                [project.id.as_str(), wt_ambig.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        }
+
+        let shell = cx.add_window(|window, cx| {
+            NativeRoot::new(
+                "arch-restore".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            )
+        });
+        let shell_weak = shell.entity(cx).unwrap().downgrade();
+        let pane_win = cx.add_window(|_, cx| {
+            let pane = cx.new(|cx| ArchivedPane::new(shell_weak, store.clone(), cx));
+            pane.update(cx, |pane, cx| pane.refresh(cx));
+            ArchivedHost(pane)
+        });
+        let pane = pane_win.read_with(cx, |host, _| host.0.clone()).unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(pane_win.into(), cx);
+
+        fn wait_until(
+            visual: &gpui::VisualTestContext,
+            label: &str,
+            mut pred: impl FnMut() -> bool,
+        ) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                visual.run_until_parked();
+                if pred() {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {label}"
+                );
+                std::thread::yield_now();
+            }
+        }
+
+        wait_until(&visual, "archived items loaded", || {
+            pane.read_with(&visual, |p, _| {
+                p.items.as_ref().is_some_and(|i| i.len() == 2)
+            })
+        });
+
+        // 1. Gone branch on archived Claude chat: offers Restore in main checkout + history warning.
+        let gone_item = pane.read_with(&visual, |p, _| {
+            p.items
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|item| item.id == "c-gone")
+                .unwrap()
+                .clone()
+        });
+        pane.update(&mut visual, |p, cx| p.restore(gone_item, cx));
+        wait_until(&visual, "gone fallback banner", || {
+            pane.read_with(&visual, |p, _| p.restore_fallback.is_some())
+        });
+        let gone_msg = pane.read_with(&visual, |p, _| {
+            p.restore_fallback
+                .as_ref()
+                .unwrap()
+                .prompt
+                .message
+                .resolve()
+        });
+        assert!(gone_msg.contains("no longer exists"), "{gone_msg}");
+        assert!(
+            gone_msg.to_lowercase().contains("without its history"),
+            "{gone_msg}"
+        );
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("RESTORE_FALLBACK_BANNER").is_some());
+        assert!(visual.debug_bounds("RESTORE_IN_MAIN_BUTTON").is_some());
+
+        pane.update(&mut visual, |p, cx| {
+            let fb = p.restore_fallback.take().unwrap();
+            p.restore_with_options(fb.item, true, cx);
+        });
+        wait_until(&visual, "c-gone restored into main/apps/web", || {
+            let row = runner_daemon::repo::session::get_row(&core.db.get().unwrap(), "c-gone")
+                .unwrap()
+                .unwrap();
+            row.archived_at.is_none()
+        });
+        let restored_chat =
+            runner_daemon::repo::session::get_row(&core.db.get().unwrap(), "c-gone")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            runner_core::app_paths::normalize_checkout_path(std::path::Path::new(
+                restored_chat.cwd.as_deref().unwrap()
+            )),
+            runner_core::app_paths::normalize_checkout_path(&repo.join("apps/web"))
+        );
+
+        // 2. Ambiguous branch on archived mission: lists candidate branches and restores to main root.
+        let ambig_item = pane.read_with(&visual, |p, _| {
+            p.items
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|item| item.id == "m-ambig")
+                .unwrap()
+                .clone()
+        });
+        pane.update(&mut visual, |p, cx| p.restore(ambig_item, cx));
+        wait_until(&visual, "ambiguous fallback banner", || {
+            pane.read_with(&visual, |p, _| p.restore_fallback.is_some())
+        });
+        let ambig_msg = pane.read_with(&visual, |p, _| {
+            p.restore_fallback
+                .as_ref()
+                .unwrap()
+                .prompt
+                .message
+                .resolve()
+        });
+        assert!(ambig_msg.contains("feat/dup"), "{ambig_msg}");
+        assert!(ambig_msg.contains("feat-dup"), "{ambig_msg}");
+        assert!(
+            ambig_msg.to_lowercase().contains("without its history"),
+            "{ambig_msg}"
+        );
+
+        pane.update(&mut visual, |p, cx| {
+            let fb = p.restore_fallback.take().unwrap();
+            p.restore_with_options(fb.item, true, cx);
+        });
+        wait_until(&visual, "m-ambig restored into main root", || {
+            let mission = runner_daemon::repo::mission::get(&core.db.get().unwrap(), "m-ambig")
+                .unwrap()
+                .unwrap();
+            mission.archived_at.is_none()
+        });
+        let restored_mission =
+            runner_daemon::repo::mission::get(&core.db.get().unwrap(), "m-ambig")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            runner_core::app_paths::normalize_checkout_path(std::path::Path::new(
+                restored_mission.cwd.as_deref().unwrap()
+            )),
+            runner_core::app_paths::normalize_checkout_path(&repo)
+        );
     }
 }

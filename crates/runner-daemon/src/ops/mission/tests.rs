@@ -1437,7 +1437,9 @@ async fn restore_log_failure_keeps_mission_archived_without_a_sidebar_node() {
     std::fs::rename(log.path(), log.path().with_extension("saved")).unwrap();
     std::fs::create_dir(log.path()).unwrap();
 
-    assert!(mission_unarchive_impl(&state, id.clone()).await.is_err());
+    assert!(mission_unarchive_impl(&state, id.clone(), false)
+        .await
+        .is_err());
     let conn = state.db.get().unwrap();
     let after = get(&conn, &id).unwrap();
     assert_eq!(after.status, MissionStatus::Completed);
@@ -1470,7 +1472,9 @@ async fn restore_repairs_legacy_completed_unarchived_missions() {
             [&id],
         )
         .unwrap();
-    let reopened = mission_unarchive_impl(&state, id.clone()).await.unwrap();
+    let reopened = mission_unarchive_impl(&state, id.clone(), false)
+        .await
+        .unwrap();
     assert_eq!(reopened.status, MissionStatus::Running);
     assert!(state.routers.get(&id).is_some());
     assert!(state.buses.get(&id).is_some());

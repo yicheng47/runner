@@ -851,6 +851,14 @@ fn resolve_auto_base(git: &Git, top: &Path) -> Result<Option<(String, String)>> 
     Ok(Some((name, merge_base)))
 }
 
+pub(crate) fn worktree_auto_base(files: &super::FilesService, top: &Path) -> Option<String> {
+    let git = files.git()?;
+    resolve_auto_base(&git, top)
+        .ok()
+        .flatten()
+        .map(|(name, _)| name)
+}
+
 /// Verifies `requested` as a real local (`refs/heads/…`) or remote-tracking
 /// (`refs/remotes/…`) branch ref, refusing tags, commit ids, revision suffixes
 /// and `HEAD` symrefs. Returns `(short_name, full_ref)` when valid.

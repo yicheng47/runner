@@ -349,6 +349,13 @@ pub fn set_files_root(conn: &Connection, id: &str, root: Option<&str>) -> rusqli
     )
 }
 
+pub fn set_cwd(conn: &Connection, id: &str, cwd: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE missions SET cwd = ?2 WHERE id = ?1",
+        rusqlite::params![id, cwd],
+    )
+}
+
 pub fn set_title(conn: &Connection, id: &str, title: &str) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE missions SET title = ?1 WHERE id = ?2",

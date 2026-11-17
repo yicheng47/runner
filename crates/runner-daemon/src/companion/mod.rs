@@ -12,7 +12,8 @@ use runner_core::{
     },
 };
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
@@ -394,6 +395,7 @@ struct OverviewSnapshot {
     overview: Overview,
     statuses: BTreeMap<String, SessionStatus>,
     status_revision: u64,
+    watched_roots: BTreeSet<PathBuf>,
 }
 struct PendingOverview {
     overview: Overview,
@@ -448,6 +450,7 @@ pub struct Adapter {
     overview_broadcast: bool,
     overview_hash: Option<u64>,
     pending_overview: Option<PendingOverview>,
+    watched_roots: BTreeSet<PathBuf>,
     status_work: Option<tokio::task::JoinHandle<core::Result<BTreeMap<String, SessionStatus>>>>,
     status_dirty: bool,
     status_revision: u64,
@@ -499,6 +502,7 @@ impl Adapter {
             overview_broadcast: false,
             overview_hash: None,
             pending_overview: None,
+            watched_roots: BTreeSet::new(),
             status_work: None,
             status_dirty: false,
             status_revision: 0,
@@ -587,14 +591,31 @@ impl Adapter {
         if self.overview_work.is_none() {
             let core = self.core.clone();
             let status_epoch = self.status_epoch.clone();
+            let prev_watched = self.watched_roots.clone();
+            let channel = self.channel;
+            let lease = self.lease.clone();
             self.overview_work = Some(tokio::task::spawn_blocking(move || {
+                let _lease = lease;
                 let status_revision = status_epoch.load(Ordering::Acquire);
                 let overview = core.overview()?;
+                let watched_roots = overview_watch_roots(&overview);
+                let to_watch = watched_roots
+                    .difference(&prev_watched)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let to_unwatch = prev_watched
+                    .difference(&watched_roots)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !to_watch.is_empty() || !to_unwatch.is_empty() {
+                    core.sync_overview_watches(channel, to_watch, to_unwatch);
+                }
                 let statuses = core.statuses()?;
                 Ok(OverviewSnapshot {
                     overview,
                     statuses,
                     status_revision,
+                    watched_roots,
                 })
             }));
         }
@@ -733,7 +754,7 @@ impl Adapter {
     fn handle_event(&mut self, event: crate::events::AppEvent) {
         if event.name == "session/clipboard" {
             self.clipboard(&event.payload);
-        } else if relevant(event.name) {
+        } else if relevant_event(&event) {
             if matches!(event.name, "session/exit" | "session/archived") {
                 if let Some(session) = event.payload.get("session_id").and_then(|id| id.as_str()) {
                     if let Some(stream) =
@@ -753,8 +774,10 @@ impl Adapter {
             if event.name == "event/appended" {
                 self.feed_changes();
             }
-            self.mark_status_dirty();
-            self.start_statuses();
+            if !event.name.starts_with("files/") {
+                self.mark_status_dirty();
+                self.start_statuses();
+            }
         }
     }
     fn handle_lagged(&mut self) {
@@ -1292,7 +1315,8 @@ impl Adapter {
                 let waiters = std::mem::take(&mut self.overview_waiters);
                 let broadcast = std::mem::take(&mut self.overview_broadcast);
                 match result.unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed.", None))) {
-                    Ok(OverviewSnapshot { overview, statuses, status_revision }) => {
+                    Ok(OverviewSnapshot { overview, statuses, status_revision, watched_roots }) => {
+                        self.watched_roots = watched_roots;
                         self.drain_events()?;
                         if self.status_revision == status_revision {
                             self.status_changes(statuses)?;
@@ -1401,7 +1425,46 @@ fn overview_hash(overview: &Overview) -> Result<u64, &'static str> {
     Ok(hash.finish())
 }
 
-fn relevant(name: &str) -> bool {
+fn overview_watch_roots(overview: &Overview) -> BTreeSet<PathBuf> {
+    let mut roots = BTreeSet::new();
+    for checkout in overview
+        .missions
+        .iter()
+        .filter_map(|mission| mission.checkout.as_ref())
+        .chain(
+            overview
+                .sessions
+                .values()
+                .filter_map(|session| session.checkout.as_ref()),
+        )
+    {
+        if let Checkout::Git {
+            top,
+            main_checkout,
+            missing,
+            ..
+        } = checkout
+        {
+            if !*missing {
+                roots.insert(PathBuf::from(top));
+            }
+            roots.insert(PathBuf::from(main_checkout));
+        }
+    }
+    roots
+}
+
+fn relevant_event(event: &AppEvent) -> bool {
+    if event.name == runner_core::protocol::files::FILES_STATUS_EVENT {
+        return true;
+    }
+    if event.name == runner_core::protocol::files::FILES_CHANGED_EVENT {
+        return event
+            .payload
+            .get("folders")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|folders| folders.iter().any(|folder| folder.as_str() == Some("")));
+    }
     [
         "session/",
         "chat/",
@@ -1413,7 +1476,7 @@ fn relevant(name: &str) -> bool {
         "terminal/palette",
     ]
     .iter()
-    .any(|prefix| name.starts_with(prefix))
+    .any(|prefix| event.name.starts_with(prefix))
 }
 
 #[cfg(test)]

@@ -350,6 +350,7 @@ impl NativeRoot {
         match self.ensure_active_tab_attached(window, cx) {
             Ok(()) => {
                 self.chat_error = None;
+                self.chat_restore_fallback = None;
                 self.remember_active_role(cx);
                 self.sync_active_chat_detail(cx);
                 self.mark_active_tab_viewed(window, cx);
@@ -369,6 +370,7 @@ impl NativeRoot {
             if let Some(layout) = self.front_page_layout_mut() {
                 layout.focus_pane(pane_id);
             }
+            let _ = self.panel_session_id(cx);
             self.remote_client.mark_remote_sessions_viewed(cx);
             cx.notify();
             return;
@@ -565,6 +567,7 @@ impl NativeRoot {
         ) {
             Ok(true) => {
                 self.chat_error = None;
+                self.chat_restore_fallback = None;
                 cx.stop_propagation();
                 cx.notify();
             }
@@ -658,6 +661,34 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.resume_chat_with_restore(pane_id, session_id, false, window, cx);
+    }
+
+    pub(crate) fn dismiss_chat_restore_fallback(&mut self, cx: &mut Context<Self>) {
+        if self.chat_restore_fallback.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn confirm_chat_restore_in_main(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(fallback) = self.chat_restore_fallback.take() else {
+            return;
+        };
+        self.resume_chat_with_restore(&fallback.pane_id, &fallback.session_id, true, window, cx);
+    }
+
+    fn resume_chat_with_restore(
+        &mut self,
+        pane_id: &str,
+        session_id: &str,
+        restore_in_main: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let remote = self.front_page_client(cx).is_remote();
         if self.chat_secondary_state(session_id, cx).secondary {
             return;
@@ -699,6 +730,7 @@ impl NativeRoot {
                 cx,
             );
             self.chat_error = None;
+            self.chat_restore_fallback = None;
             self.app_store.update(cx, |store, store_cx| {
                 store.remove_session_activity(session_id, store_cx)
             });
@@ -709,20 +741,45 @@ impl NativeRoot {
         else {
             return;
         };
+        let fallback_meta = self
+            .front_page_session(session_id, cx)
+            .map(|session| (session.cwd.clone(), session.project_id.clone()));
         let core = operation.client.clone();
+        let pane_owned = pane_id.to_owned();
         let target = session_id.to_owned();
         let resume_target = target.clone();
         let resume = cx.background_spawn(async move {
-            let result = core.resume(&resume_target, size);
+            let result = core.resume_session_with_options(
+                &resume_target,
+                size,
+                false,
+                restore_in_main && !remote,
+            );
             let gate = result
                 .as_ref()
                 .err()
                 .and_then(|error| error.version_gate.clone());
-            (result.map_err(|error| error.to_string()), gate)
+            let fallback = if !remote && !restore_in_main {
+                result.as_ref().err().and_then(|error| {
+                    let (cwd, project_id) = fallback_meta
+                        .as_ref()
+                        .map(|(cwd, pid)| (cwd.as_deref(), pid.as_deref()))
+                        .unwrap_or((None, None));
+                    crate::surfaces::worktree_restore::classify_restore_failure(
+                        core.local_daemon(),
+                        cwd,
+                        project_id,
+                        &error.message,
+                    )
+                })
+            } else {
+                None
+            };
+            (result.map_err(|error| error.to_string()), gate, fallback)
         });
         let origin_epoch = self.remote_client.ui.epoch;
         cx.spawn_in(window, async move |weak, cx| {
-            let (result, gate) = resume.await;
+            let (result, gate, fallback) = resume.await;
             let _ = weak.update_in(cx, |this, window, cx| {
                 let Some(result) = WorkspaceAction::complete_observed(
                     this,
@@ -754,7 +811,14 @@ impl NativeRoot {
                 }
                 match result {
                     Ok(()) => {
+                        this.chat_restore_fallback = None;
                         this.refresh_sessions(cx);
+                        if restore_in_main {
+                            this.app_store.update(cx, |store, cx| {
+                                store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+                                store.sync_worktree_checkouts(cx);
+                            });
+                        }
                         if let Err(error) = this.ensure_attached(layout, &target, window, cx) {
                             this.chat_transitions.remove(&target);
                             this.chat_error = Some(error.to_string().into());
@@ -763,7 +827,17 @@ impl NativeRoot {
                     }
                     Err(error) => {
                         this.chat_transitions.remove(&target);
-                        this.chat_error = Some(error.into());
+                        if let Some(prompt) = fallback {
+                            this.chat_restore_fallback =
+                                Some(crate::surfaces::root::ChatRestoreFallback {
+                                    pane_id: pane_owned,
+                                    session_id: target.clone(),
+                                    prompt,
+                                });
+                            this.chat_error = None;
+                        } else {
+                            this.chat_error = Some(error.into());
+                        }
                         this.refresh_sessions(cx);
                         this.sync_active_chat_detail(cx);
                         if this.route == AppRoute::Chat
@@ -827,6 +901,7 @@ impl NativeRoot {
                 cx,
             );
             self.chat_error = None;
+            self.chat_restore_fallback = None;
             self.session_exit_codes.remove(session_id);
         }
         let Some(operation) =

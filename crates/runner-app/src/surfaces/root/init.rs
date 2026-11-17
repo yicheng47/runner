@@ -339,6 +339,7 @@ impl NativeRoot {
             next_chat_transition_generation: 0,
             session_exit_codes: HashMap::new(),
             chat_error: None,
+            chat_restore_fallback: None,
             daemon_retrying: false,
             chat_warning: None,
             active_chat_detail,
@@ -354,6 +355,8 @@ impl NativeRoot {
             _pane_rename_focus_subscription: None,
             _pane_close_focus_subscription: None,
             terminal_close_confirm: None,
+            #[cfg(test)]
+            archive_check_gates: std::collections::VecDeque::new(),
             pending_pane_closes: HashMap::new(),
             pending_tab_close: None,
             tab_landed_at: None,

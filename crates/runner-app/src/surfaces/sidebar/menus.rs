@@ -471,6 +471,22 @@ impl Sidebar {
                 if self.archiving_missions.contains(&mission_id) {
                     return;
                 }
+                if !self.front_page.is_remote()
+                    && !super::worktree_archive::emptied_managed_worktrees_for_archive(
+                        self.app_store.read(cx),
+                        &[],
+                        std::slice::from_ref(&mission_id),
+                    )
+                    .is_empty()
+                    && let Some(shell) = self.shell.upgrade()
+                {
+                    window.defer(cx, move |window, cx| {
+                        shell.update(cx, |root, cx| {
+                            root.request_archive_mission(mission_id, window, cx)
+                        });
+                    });
+                    return;
+                }
                 let archive_id = mission_id.clone();
                 let operation = move |client: crate::surfaces::front_page::FrontPageClient| {
                     client.archive_mission_state(archive_id).map(drop)
