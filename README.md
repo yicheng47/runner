@@ -38,6 +38,8 @@
 <p align="center">
   <a href="#demo">Demo</a>
   ·
+  <a href="#mobile">Mobile</a>
+  ·
   <a href="#features">Features</a>
   ·
   <a href="#supported-agents">Agents</a>
@@ -63,93 +65,22 @@ A tour from first launch: setup finds your agents and builds a starter crew, a m
 
 https://github.com/user-attachments/assets/13e4d920-a803-47d5-8a99-8078b364bc3e
 
+## Mobile
+
+**Runner for iOS** is available via public TestFlight: [Join on TestFlight →](https://testflight.apple.com/join/CRdfZzmS)
+
+Use your iPhone to follow live terminals, start chats and missions, and answer your crew on a paired computer. Remote control as a whole is still in private beta—the relay server is in private beta and currently available in mainland China only, while Tailscale support for users outside mainland China is under development. To join the private beta, [sign up for the waitlist on the official website →](https://runnersh.dev/beta/)
+
 ## Features
 
-<table>
-  <tr>
-    <td width="50%" valign="middle">
-      <a href="assets/crews.png"><img src="assets/crews.png" alt="Crew detail page with coder and reviewer slots, per-slot overrides and shared team conventions" width="100%" /></a>
-    </td>
-    <td width="50%" valign="middle">
-      <h3>Reusable crews</h3>
-      <p>Compose saved roles into a crew and define shared team conventions. Review each slot's agent and model, adjust overrides, then launch a mission with the same team whenever you need it.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="middle">
-      <a href="assets/mission_feed.png"><img src="assets/mission_feed.png" alt="A mission feed with the goal and the coder's review handoff to the reviewer, beside the crew's session cards" width="100%" /></a>
-    </td>
-    <td width="50%" valign="middle">
-      <h3>Missions and coordination</h3>
-      <p>Each mission gives every crew slot a live terminal and a shared feed where agents coordinate and bring questions to you. Stop, resume or restart one slot without touching the rest. <a href="./docs/arch/arch.md">Architecture →</a></p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="middle">
-      <a href="assets/mission-link-reports.png"><img src="assets/mission-link-reports.png" alt="A Claude Code chat receiving two [runner] reports and answering each, with both missions grouped under it in the sidebar" width="100%" /></a>
-    </td>
-    <td width="50%" valign="middle">
-      <h3>Missions report back to their chat</h3>
-      <p>A mission started from a chat links to it and groups under it in the sidebar, so the agent can end its turn instead of watching. When the mission needs you, fails or settles, Runner types one line into the chat and the agent reads what happened. Drag in a mission started elsewhere to link it too. <a href="./docs/guide/concepts/missions.md#linked-chat-and-reports">Linked chat and reports →</a></p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="middle">
-      <a href="assets/remote_control.png"><img src="assets/remote_control.png" alt="The sidebar footer's host button open, listing this Mac first and the other computers on the same account" width="100%" /></a>
-    </td>
-    <td width="50%" valign="middle">
-      <h3>Remote control</h3>
-      <p>Pick another computer in the sidebar to use its live terminals, start chats and missions, and answer your crew. Connections are encrypted end to end. <a href="./docs/guide/guides/remote-access.md">Remote access guide →</a></p>
-      <p><strong>Private beta:</strong> invite-only, currently available in mainland China.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="middle">
-      <a href="assets/mission_terminal.png"><img src="assets/mission_terminal.png" alt="A mission slot's own terminal: the coder's Claude Code session, beside the crew's session cards" width="100%" /></a>
-    </td>
-    <td width="50%" valign="middle">
-      <h3>Real terminals</h3>
-      <p>Each agent keeps its own TUI in a real PTY on a GPU-drawn <code>alacritty_terminal</code> grid, with mouse reporting, IME input (Pinyin included), file-path paste and click-to-open, and a shell drawer beneath every mission.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="middle">
-      <a href="assets/chat_split.png"><img src="assets/chat_split.png" alt="One tab split four ways: Codex, Claude Code, Grok and pi, each pane in its own island" width="100%" /></a>
-    </td>
-    <td width="50%" valign="middle">
-      <h3>Split tabs and windows</h3>
-      <p>Split a tab as far as the window allows, drag panes to reorder, group tabs into folders, and open more windows with <code>⇧⌘N</code> or <code>Ctrl+Shift+N</code>.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="middle">
-      <a href="assets/files_view.png"><img src="assets/files_view.png" alt="A Claude Code chat beside the side panel's Files view: the worktree's tree with its git status and a file open in a tab" width="100%" /></a>
-    </td>
-    <td width="50%" valign="middle">
-      <h3>Files beside your agents</h3>
-      <p>The side panel's Files view shows the checkout an agent works in, with its git status, so you can read what changed without leaving Runner: highlighted code, rendered Markdown and a file finder on <code>⇧⌘O</code>. ⌘-click a path in a terminal to open it at that line. Files stay read-only; editing stays with your agent and editor. <a href="./docs/guide/guides/chats-and-windows.md#browse-files-in-the-side-panel">Files guide →</a></p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="middle">
-      <pre><code>runner crew list
-runner mission start \
-  --crew "Pair coding crew" \
-  --title "Fix the login bug" \
-  --goal-file brief.md
-runner mission feed &lt;mission-id&gt; --follow
-runner help agents</code></pre>
-    </td>
-    <td width="50%" valign="middle">
-      <a name="runner-cli"></a>
-      <h3>The <code>runner</code> CLI</h3>
-      <p>Your agents, scripts and terminal can start chats, launch crews and follow missions with the <code>runner</code> command, even with the app closed. Add <code>--json</code> for machine-readable output. Runner installs a skill for detected agents so they can drive it too. <a href="./docs/guide/guides/drive-runner-from-agents.md">CLI guide →</a></p>
-    </td>
-  </tr>
-</table>
-
-**Also included:**
-
+- **Reusable crews** — Compose saved roles into a crew, define shared team conventions, adjust per-slot agent and model overrides, and launch a mission with the same team whenever you need it.
+- **Missions and coordination** — Each mission gives every crew slot a live terminal and a shared feed where agents coordinate and bring questions to you. Stop, resume or restart one slot without touching the rest. [Architecture →](./docs/arch/arch.md)
+- **Missions report back to their chat** — A mission started from a chat links to it and groups under it in the sidebar, so the agent can end its turn instead of watching. When the mission needs you, fails or settles, Runner types one line into the chat and the agent reads what happened. [Linked chat and reports →](./docs/guide/concepts/missions.md#linked-chat-and-reports)
+- **Remote control** — Switch to another computer in the sidebar or connect from your iPhone to use its live terminals, start chats and missions, and answer your crew with end-to-end encryption. Remote control is currently in private beta because the relay server is in private beta for mainland China only; Tailscale support for outside mainland China is in development. [Join the beta waitlist →](https://runnersh.dev/beta/) · [Remote access guide →](./docs/guide/guides/remote-access.md)
+- **Real terminals** — Each agent keeps its own TUI in a real PTY on a GPU-drawn `alacritty_terminal` grid, with mouse reporting, IME input (Pinyin included), file-path paste and click-to-open, and a shell drawer beneath every mission.
+- **Split tabs and windows** — Split a tab as far as the window allows, drag panes to reorder, group tabs into folders, and open more windows with `⇧⌘N` or `Ctrl+Shift+N`.
+- **Files beside your agents** — Read the checkout an agent works in and its git status in the side panel without leaving Runner: highlighted code, rendered Markdown, a file finder on `⇧⌘O`, and `⌘`-click on terminal paths. [Files guide →](./docs/guide/guides/chats-and-windows.md#browse-files-in-the-side-panel)
+- <a id="runner-cli"></a>**The `runner` CLI** — Your agents, scripts and terminal can start chats, launch crews and follow missions with the `runner` command, even with the app closed (`--json` supported). Runner installs a skill for detected agents so they can drive it too. [CLI guide →](./docs/guide/guides/drive-runner-from-agents.md)
 - **Agents keep working when Runner is closed** — Sessions live in `runnerd`, Runner's background service. Quit the app, or let it crash, and reopen it to the same live terminals; stopped agents resume their own conversations on the next launch.
 - **MCP servers and skills in one place** — **Settings → MCP** and **Settings → Skills** list each agent's own config and switch entries off per agent, changing only the entry you touched.
 - **Desktop notifications** — Get notified when an agent needs input, finishes a turn or fails, and click to open its chat or mission. Choose events in **Settings → Notifications**.
