@@ -36,7 +36,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Mission start failed' }
 runner mission feed $mission --follow --json
 ```
 
-Replace the crew name, title and directory with yours. `--goal-file -` reads standard input; a file path avoids shell-specific input-redirection differences. Use `--project "My app"` instead of `--cwd` when the project already names the folder. Setup creates the **Pair coding** starter crew unless opted out; if no crews exist yet, omitting `--crew` prints how to create one.
+Replace the crew name, title and directory with yours. `--goal-file -` reads standard input; a file path avoids shell-specific input-redirection differences. Use `--project "My app"` instead of `--cwd` when the project already names the folder. Pass `--worktree <branch>` (with optional `--base <ref>`) on `runner mission start` or `runner chat start` to create or reuse a linked worktree under `.worktrees/` for that launch, or manage them separately with `runner worktree create|list|remove` (see [CLI reference](../reference/cli.md#runner-worktree)). Setup creates the **Pair coding** starter crew unless opted out; if no crews exist yet, omitting `--crew` prints how to create one.
 
 The follower displays new events until the mission ends or all its sessions exit. Pressing **Ctrl+C** ends your follower; it does not stop the mission. Leave it running in one terminal and use another for commands.
 

@@ -36,7 +36,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Mission start failed' }
 runner mission feed $mission --follow --json
 ```
 
-将小队名、标题和目录替换为自己的值。`--goal-file -` 从标准输入读取；使用文件路径可避免不同 Shell 的输入重定向差异。如果项目已指定文件夹，可用 `--project "My app"` 替代 `--cwd`。若未在首次引导中取消勾选，引导会创建 **Pair coding** 起步小队；如果尚未存在任何小队，省略 `--crew` 时会提示如何创建。
+将小队名、标题和目录替换为自己的值。`--goal-file -` 从标准输入读取；使用文件路径可避免不同 Shell 的输入重定向差异。如果项目已指定文件夹，可用 `--project "My app"` 替代 `--cwd`。在 `runner mission start` 或 `runner chat start` 时传入 `--worktree <branch>`（可选 `--base <ref>`），可在 `.worktrees/` 下为本次启动创建或复用链接工作树；也可以通过 `runner worktree create|list|remove` 单独管理工作树（见 [CLI 参考](../reference/cli.md#runner-worktree)）。若未在首次引导中取消勾选，引导会创建 **Pair coding** 起步小队；如果尚未存在任何小队，省略 `--crew` 时会提示如何创建。
 
 跟随命令会显示新事件，直到任务结束或所有会话退出。按 **Ctrl+C** 只结束跟随，不会停止任务。可以在一个终端中保持跟随，另开终端运行其他命令。
 

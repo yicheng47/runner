@@ -8,6 +8,8 @@ pub mod fs;
 pub mod git;
 pub mod root;
 pub mod watch;
+pub mod worktree;
+pub(crate) use worktree::{worktree_checkout, worktree_remove};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -176,6 +178,8 @@ pub struct FilesService {
     worktree_list_without_z: Arc<AtomicBool>,
     status_runs: Arc<StatusRuns>,
     watches: Mutex<HashMap<PathBuf, Watched>>,
+    worktree_locks: Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>,
+    pub(crate) worktree_gate: worktree::WorktreeGate,
     pub(crate) changes_viewed: changes::ViewedMarks,
     /// Holds the next [`Self::prepare_watch`]: it reports on the first and
     /// waits on the second.
@@ -200,6 +204,8 @@ impl FilesService {
             worktree_list_without_z: Default::default(),
             status_runs: Default::default(),
             watches: Default::default(),
+            worktree_locks: Default::default(),
+            worktree_gate: Default::default(),
             changes_viewed: Default::default(),
             #[cfg(test)]
             watch_gate: Default::default(),
@@ -549,3 +555,5 @@ pub(crate) mod fixture {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod worktree_tests;

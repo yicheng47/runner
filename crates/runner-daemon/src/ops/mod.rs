@@ -37,5 +37,7 @@ pub mod window;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod worktree_tests;
 
 pub mod runtime_tasks;

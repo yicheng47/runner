@@ -28,6 +28,7 @@ pub mod terminal;
 pub mod usage;
 pub mod window;
 pub mod wire;
+pub mod worktree;
 pub use api::{Request, Response};
 pub use client::*;
 pub use crew::*;
@@ -47,6 +48,7 @@ pub use slot::*;
 pub use status::*;
 pub use usage::*;
 pub use window::*;
+pub use worktree::*;
 
 pub fn double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where

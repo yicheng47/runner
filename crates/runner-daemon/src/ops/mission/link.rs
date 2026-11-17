@@ -237,6 +237,7 @@ mod tests {
                     title: "Linked".into(),
                     goal_override: None,
                     cwd: Some("/tmp".into()),
+                    worktree: None,
                     started_by_session_id: starter.map(str::to_owned),
                     no_report,
                 },

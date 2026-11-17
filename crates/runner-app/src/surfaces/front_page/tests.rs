@@ -504,6 +504,7 @@ fn local_workspace_mutations_keep_daemon_requests_arguments_and_errors() {
                 speed: Some(CodexSpeed::Fast),
                 project_id: None,
                 cwd: Some("/work".into()),
+                worktree: None,
                 scope: Some(ProjectScope::Root),
                 cols: Some(101),
                 rows: Some(37),
@@ -528,6 +529,7 @@ fn local_workspace_mutations_keep_daemon_requests_arguments_and_errors() {
                 speed: None,
                 project_id: None,
                 cwd: Some("/work".into()),
+                worktree: None,
                 scope: Some(ProjectScope::Root),
                 cols: Some(101),
                 rows: Some(37),
@@ -542,6 +544,7 @@ fn local_workspace_mutations_keep_daemon_requests_arguments_and_errors() {
             cwd: Some("/work".into()),
             cols: Some(99),
             rows: Some(31),
+            worktree: None,
         }
     );
     dispatch!(
@@ -619,6 +622,7 @@ fn local_workspace_mutations_keep_daemon_requests_arguments_and_errors() {
                 title: "Mission".into(),
                 goal_override: Some("Goal".into()),
                 cwd: Some("/work".into()),
+                worktree: None,
                 started_by_session_id: None,
                 no_report: false,
             },

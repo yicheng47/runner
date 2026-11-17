@@ -22,9 +22,9 @@ On Windows, use an absolute Windows path such as `C:\Users\you\src\my-app`. Quot
 
 ## Directory and grouping
 
-From a shell, a chat or mission started inside a registered project's directory is associated with that project automatically. `--project` explicitly selects a project and its directory; `--cwd` supplies a launch directory instead. These two flags cannot be combined. The CLI's directory defaults to the shell's current directory, so check where you are before starting a mission.
+From a shell, a chat, terminal or mission started inside a registered project's directory—or in a linked Git worktree whose main checkout matches that project, including worktrees created outside the project folder—is associated with that project automatically (a worktree with its own registered project keeps that project instead). `--project` explicitly selects a project and its directory; `--cwd` supplies a launch directory instead. These two flags cannot be combined. The CLI's directory defaults to the shell's current directory, so check where you are before starting a mission.
 
-A project is a directory association, not a sandbox or an isolated Git checkout. Several sessions can edit the same files. To work in a separate worktree, create that worktree first and launch with its path.
+A project is a directory association, not a sandbox or an isolated Git checkout. Several sessions can edit the same files. To work in an isolated worktree, pass `--worktree <branch>` (with optional `--base <ref>`) to `runner chat start` or `runner mission start`, or manage worktrees under `.worktrees/` with `runner worktree`. See [CLI reference](../reference/cli.md#runner-worktree) for worktree commands.
 
 Moving an existing mission into another project changes its sidebar grouping; it does not move repository files or change a running process's directory.
 

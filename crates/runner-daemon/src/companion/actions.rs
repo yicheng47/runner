@@ -659,6 +659,7 @@ impl DaemonCore {
                     cwd,
                     Some(cols),
                     Some(rows),
+                    None,
                 )
                 .map(session_result)
                 .map_err(launch_failed)
@@ -874,6 +875,7 @@ impl DaemonCore {
                         title,
                         goal_override: goal,
                         cwd,
+                        worktree: None,
                         started_by_session_id: None,
                         no_report: false,
                     },

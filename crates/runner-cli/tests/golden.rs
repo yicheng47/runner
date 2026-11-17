@@ -196,7 +196,25 @@ impl Fixture {
     }
 
     fn start(&mut self) {
+        self.start_with_path(false);
+    }
+
+    fn start_with_path(&mut self, include_git: bool) {
         let stderr = std::fs::File::create(self.directory.as_path().join("daemon-stderr")).unwrap();
+        let path_env = if include_git {
+            let mut dirs = vec![self.data.join("bin")];
+            if let Some(git) = std::env::var("PATH")
+                .ok()
+                .and_then(|p| runner_core::protocol::runtime_paths::find_executable("git", &p))
+            {
+                if let Some(parent) = git.parent() {
+                    dirs.push(parent.to_path_buf());
+                }
+            }
+            std::env::join_paths(dirs).unwrap()
+        } else {
+            self.data.join("bin").into_os_string()
+        };
         let mut cmd = Command::new(&self.daemon);
         cmd.args(["--app-data-dir"])
             .arg(&self.data)
@@ -209,7 +227,7 @@ impl Fixture {
             .arg("--mcp-endpoint")
             .arg(&self.mcp.0)
             .arg("--isolated")
-            .env("PATH", self.data.join("bin"))
+            .env("PATH", path_env)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(stderr);
@@ -430,6 +448,9 @@ cli_cases! {
     project_create => vec!["project", "create", "New", "--path", "."],
     project_rename => vec!["project", "rename", "Runner", "Renamed"],
     project_delete => vec!["project", "delete", "Runner", "--force"],
+    worktree_create => vec!["worktree", "create", "feat/x"],
+    worktree_list => vec!["worktree", "list"],
+    worktree_remove => vec!["worktree", "remove", "feat/x"],
     role_list => vec!["role", "list"],
     role_show => vec!["role", "show", "coder"],
     role_create => vec!["role", "create", "new", "--runtime", "codex"],
@@ -735,6 +756,7 @@ offline_goldens! {
     remote_revoke => vec!["remote", "revoke", "--help"],
     remote_reset_identity => vec!["remote", "reset-identity", "--help"],
     project => vec!["project", "--help"],
+    worktree => vec!["worktree", "--help"],
     role => vec!["role", "--help"],
     crew => vec!["crew", "--help"],
     mission => vec!["mission", "--help"],
@@ -750,6 +772,9 @@ offline_goldens! {
     project_create => vec!["project", "create", "--help"],
     project_rename => vec!["project", "rename", "--help"],
     project_delete => vec!["project", "delete", "--help"],
+    worktree_create => vec!["worktree", "create", "--help"],
+    worktree_list => vec!["worktree", "list", "--help"],
+    worktree_remove => vec!["worktree", "remove", "--help"],
     role_list => vec!["role", "list", "--help"],
     role_show => vec!["role", "show", "--help"],
     role_create => vec!["role", "create", "--help"],
@@ -878,7 +903,7 @@ fn render_case(case: &Case) -> String {
         conn.execute("UPDATE missions SET linked_session_id = ?1, report_to_chat = 0 WHERE id = 'mission-running'", [SESSION]).unwrap();
     }
     if case.running {
-        fixture.start();
+        fixture.start_with_path(!help && case.args.first().copied() == Some("worktree"));
     }
     let mut result = String::new();
     record(&mut result, &fixture, &case.args, case.inside, case.running);

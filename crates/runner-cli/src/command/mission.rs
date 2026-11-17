@@ -73,6 +73,8 @@ pub(super) async fn run_mission(
             title,
             project,
             cwd,
+            worktree,
+            base,
             no_report,
         } => {
             let crew = match crew {
@@ -100,20 +102,22 @@ pub(super) async fn run_mission(
             } else {
                 None
             };
-            call(
-                client,
-                "mission_start",
-                json!({
-                    "crew_id": crew.map(|crew| crew.id),
-                    "project_id": project_id,
-                    "title": title,
-                    "goal_override": goal,
-                    "cwd": cwd,
-                    "started_by_session_id": session,
-                    "no_report": no_report,
-                }),
-            )
-            .await
+            let mut body = json!({
+                "crew_id": crew.map(|crew| crew.id),
+                "project_id": project_id,
+                "title": title,
+                "goal_override": goal,
+                "cwd": cwd,
+                "started_by_session_id": session,
+                "no_report": no_report,
+            });
+            if let Some(branch) = worktree {
+                body["worktree"] = json!({
+                    "branch": branch,
+                    "base": base,
+                });
+            }
+            call(client, "mission_start", body).await
         }
         MissionCommand::AddRole {
             mission,

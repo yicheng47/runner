@@ -397,6 +397,7 @@ record!(MissionStart {
     title,
     goal_override,
     cwd,
+    worktree,
     started_by_session_id,
     no_report
 });
@@ -631,6 +632,7 @@ record!(StartDirectSessionArgs {
     speed,
     project_id,
     cwd,
+    worktree,
     scope,
     cols,
     rows,
@@ -736,6 +738,49 @@ record!(WindowEntry {
     focused
 });
 variant!(WorkDetail => Self::UsingTools);
+impl Sample for files::WorktreeKind {
+    fn sample() -> Self {
+        Self::Linked
+    }
+}
+record!(WorktreeSpec { branch, base });
+record!(WorktreeDefaultBase {
+    branch,
+    main_checkout
+});
+variant!(WorktreeNameCheck => Self::NewBranch { base: Sample::sample(), path: Sample::sample() });
+record!(WorktreeItem {
+    path,
+    branch,
+    commit,
+    kind,
+    locked,
+    prunable,
+    managed
+});
+record!(WorktreeList {
+    main_checkout,
+    worktrees
+});
+record!(WorktreeCreated {
+    path,
+    branch,
+    main_checkout,
+    created
+});
+record!(WorktreeRemoved { path, branch });
+variant!(MissingWorktreeBranchState => Self::Surviving);
+variant!(WorktreeCheckout => Self::Git {
+    top: Sample::sample(),
+    main_checkout: Sample::sample(),
+    kind: files::WorktreeKind::sample(),
+    managed: Sample::sample(),
+    branch: Sample::sample(),
+    commit: Sample::sample(),
+    missing: Sample::sample(),
+    missing_branch: Sample::sample(),
+    candidate_branches: Sample::sample(),
+});
 #[test]
 fn a_full_file_index_of_the_costliest_paths_fits_a_frame() {
     for piece in ["\u{1}", "\"", "\\", "a"] {
@@ -1369,9 +1414,32 @@ fn onboarding_and_install_protocol_fields_default_on_older_payloads() {
     let legacy_direct: StartDirectSessionArgs =
         serde_json::from_value(serde_json::json!({"runtime": "codex"})).unwrap();
     assert_eq!(legacy_direct.scope, None);
+    assert_eq!(legacy_direct.worktree, None);
     assert_eq!(legacy_direct.cols, None);
     assert_eq!(legacy_direct.rows, None);
     assert_eq!(legacy_direct.initial_prompt, None);
+
+    let legacy_mission_input: StartMissionInput = serde_json::from_value(serde_json::json!({
+        "crew_id": "c1",
+        "title": "legacy mission"
+    }))
+    .unwrap();
+    assert_eq!(legacy_mission_input.worktree, None);
+    assert_eq!(MissionStart::from(legacy_mission_input).worktree, None);
+
+    let legacy_shell: Request = serde_json::from_value(serde_json::json!({
+        "session_start_shell_in": {
+            "scope": "Infer",
+            "cwd": null,
+            "cols": null,
+            "rows": null
+        }
+    }))
+    .unwrap();
+    assert!(matches!(
+        legacy_shell,
+        Request::session_start_shell_in { worktree: None, .. }
+    ));
 }
 
 #[test]

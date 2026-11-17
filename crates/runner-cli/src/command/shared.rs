@@ -72,6 +72,11 @@ pub(super) fn output_view(command: &Command) -> output::View {
             | ProjectCommand::Rename { .. } => View::Project,
             ProjectCommand::Delete { .. } => View::Confirmation("Deleted project"),
         },
+        Command::Worktree { command } => match command {
+            WorktreeCommand::Create { .. } => View::WorktreeCreate,
+            WorktreeCommand::List { .. } => View::WorktreeList,
+            WorktreeCommand::Remove { .. } => View::WorktreeRemove,
+        },
         Command::Role { command } => match command {
             RoleCommand::List => View::RoleList,
             RoleCommand::Show { .. } | RoleCommand::Create { .. } | RoleCommand::Update { .. } => {

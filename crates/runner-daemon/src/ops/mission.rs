@@ -169,7 +169,16 @@ pub fn start(
     app_data_dir: &Path,
     input: impl Into<MissionStart>,
 ) -> Result<StartMissionOutput> {
-    let input = input.into();
+    start_with_files(conn, app_data_dir, None, input)
+}
+
+pub(crate) fn start_with_files(
+    conn: &mut Connection,
+    app_data_dir: &Path,
+    files: Option<&crate::files::FilesService>,
+    input: impl Into<MissionStart>,
+) -> Result<StartMissionOutput> {
+    let mut input = input.into();
     let title = input.title.trim().to_string();
     if title.is_empty() {
         return Err(Error::msg("mission title must not be empty"));
@@ -177,7 +186,47 @@ pub fn start(
     if let Some(g) = input.goal_override.as_deref() {
         validate_mission_goal(g)?;
     }
-    let (project_id, cwd) = project::resolve_scope(conn, &input.scope, input.cwd)?;
+
+    if let Some(crew_id) = input.crew_id.as_deref() {
+        let crew = crew::get(conn, crew_id)?;
+        let slots = slot::list(conn, &crew.id)?;
+        if slots.is_empty() {
+            return Err(Error::msg(format!(
+                "crew {} has no slots; cannot start mission",
+                crew.name
+            )));
+        }
+    }
+    let explicit_project_cwd = match &input.scope {
+        runner_core::protocol::ProjectScope::Project(id) => Some(project::get(conn, id)?.cwd),
+        runner_core::protocol::ProjectScope::Infer | runner_core::protocol::ProjectScope::Root => {
+            None
+        }
+    };
+
+    let owned_files;
+    let files = match files {
+        Some(f) => f,
+        None => {
+            owned_files = crate::files::FilesService::default();
+            &owned_files
+        }
+    };
+    if let Some(spec) = input.worktree.take() {
+        let base_dir = crate::files::worktree::resolve_worktree_base_dir(
+            input.cwd.as_deref(),
+            explicit_project_cwd.as_deref(),
+            None,
+        )?;
+        let created = files.worktree_create(base_dir, &spec.branch, spec.base.as_deref())?;
+        input.cwd = Some(created.path.to_string_lossy().into_owned());
+    }
+
+    let git = files.git();
+    let (project_id, cwd) =
+        project::resolve_scope_with_git(conn, git.as_ref(), &input.scope, input.cwd)?;
+    #[cfg(test)]
+    files.worktree_gate().fire_before_registration();
 
     // Validate crew exists and is launchable.
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -629,8 +678,9 @@ pub async fn mission_start_impl_with_size(
 
     let was_completed = crate::db::is_onboarding_completed(&state.db).unwrap_or(false);
     let out = {
+        let _reg_guard = state.files.worktree_gate().read();
         let mut conn = state.db.get()?;
-        start(&mut conn, &state.app_data_dir, input)?
+        start_with_files(&mut conn, &state.app_data_dir, Some(&state.files), input)?
     };
     if !was_completed {
         state.events.emit("onboarding/changed", &());
@@ -1054,6 +1104,25 @@ pub fn mission_resume_with_size(
     id: &str,
     size: Option<(u16, u16)>,
 ) -> Result<ResumeMissionOutput> {
+    let candidates = crate::ops::session::session_list(state, id)?;
+    if candidates.is_empty()
+        || candidates
+            .iter()
+            .any(|c| !matches!(c.session.status, SessionStatus::Running))
+    {
+        if let Some(mission) = {
+            let conn = state.db.get()?;
+            repo::mission::get(&conn, id)?
+        } {
+            if mission.archived_at.is_none() {
+                crate::ops::session::restore_missing_worktree_for_cwd(
+                    state,
+                    mission.cwd.as_deref(),
+                    mission.project_id.as_deref(),
+                )?;
+            }
+        }
+    }
     mission_resume_with(state, id, |state, session_id| {
         crate::ops::session::session_resume(state, session_id, size.map(|s| s.0), size.map(|s| s.1))
             .map(|_| ())
@@ -1184,6 +1253,20 @@ fn close_mission_drawer_shells(state: &AppCore, mission_id: &str) -> Result<()> 
 
 pub async fn mission_unarchive_impl(state: &AppCore, id: String) -> Result<Mission> {
     let mission = {
+        let _reg_guard = state.files.worktree_gate().read();
+        let preflight = {
+            let conn = state.db.get()?;
+            repo::mission::get(&conn, &id)?
+        };
+        if let Some(mission) = preflight.filter(|mission| mission.archived_at.is_some()) {
+            crate::ops::session::restore_missing_worktree_for_cwd(
+                state,
+                mission.cwd.as_deref(),
+                mission.project_id.as_deref(),
+            )?;
+        }
+        #[cfg(test)]
+        state.files.worktree_gate().fire_before_registration();
         let mut conn = state.db.get()?;
         let tx = conn.transaction()?;
         let reopened = repo::mission::unarchive(&tx, &id)? == 1;

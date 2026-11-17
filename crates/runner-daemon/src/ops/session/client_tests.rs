@@ -538,7 +538,7 @@ fn root_scoped_shell_stays_unfiled_inside_a_project() {
     let cwd = project_with_nested_cwd(&handler, temp.path());
 
     let spawned =
-        session::session_start_shell_in(&handler, ProjectScope::Root, Some(cwd), None, None)
+        session::session_start_shell_in(&handler, ProjectScope::Root, Some(cwd), None, None, None)
             .unwrap();
 
     assert_root_row_and_tab(&handler, &spawned.id);
@@ -829,6 +829,7 @@ fn direct_chat_and_mission_mark_onboarding_completed_while_shell_does_not() {
         Some(temp.path().to_string_lossy().into_owned()),
         None,
         None,
+        None,
     )
     .unwrap();
     assert!(!crate::db::is_onboarding_completed(&handler.db).unwrap());
@@ -879,6 +880,7 @@ fn direct_chat_and_mission_mark_onboarding_completed_while_shell_does_not() {
             title: "First mission".into(),
             goal_override: Some("Check status".into()),
             cwd: Some(temp.path().to_string_lossy().into_owned()),
+            worktree: None,
             started_by_session_id: None,
             no_report: false,
         },

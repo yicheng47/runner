@@ -33,6 +33,32 @@ impl SessionManager {
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
     ) -> Result<SpawnedSession> {
+        self.spawn_fork_with_hooks(
+            source_session_id,
+            title,
+            cols,
+            rows,
+            app_data_dir,
+            pool,
+            events,
+            || {},
+            || {},
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn spawn_fork_with_hooks(
+        self: &Arc<Self>,
+        source_session_id: &str,
+        title: Option<String>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+        before_row_insert: impl FnOnce(),
+        after_row_insert: impl FnOnce(),
+    ) -> Result<SpawnedSession> {
         let fork_started_at = Instant::now();
         let source = {
             let conn = pool.get()?;
@@ -190,6 +216,7 @@ impl SessionManager {
             router::runtime::ForkPlan::Direct(plan) => plan.assigned_key.clone(),
             router::runtime::ForkPlan::Headless { .. } => None,
         };
+        before_row_insert();
         self.report_key(
             &session_id,
             PersistKey {
@@ -218,6 +245,7 @@ impl SessionManager {
                 Ok(true)
             },
         )?;
+        after_row_insert();
         events.updated(&SessionUpdatedEvent {
             session_id: session_id.clone(),
             mission_id: None,

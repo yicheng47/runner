@@ -83,6 +83,7 @@ impl Caller for RecordingClient {
             "mission_get" | "mission_status" | "crew_get" | "role_get" => {
                 json!({"id": "object-id"})
             }
+            "project_get" => json!({"id": "project-id", "cwd": "/tmp/project"}),
             _ => json!({"id": "changed-id"}),
         };
         response(value)
@@ -1477,6 +1478,23 @@ async fn every_remote_command_builds_the_expected_tool_calls_without_a_socket() 
             vec!["project_list", "project_delete"],
             json!({"id": "project-id", "force": true}),
         ),
+        (
+            vec![
+                "worktree", "create", "feat/wt", "--cwd", "./x/../y", "--base", "main",
+            ],
+            vec!["worktree_create"],
+            json!({"dir": nested_cwd, "branch": "feat/wt", "base": "main"}),
+        ),
+        (
+            vec!["worktree", "list", "--project", "Runner"],
+            vec!["project_list", "project_get", "worktree_list"],
+            json!({"dir": "/tmp/project"}),
+        ),
+        (
+            vec!["worktree", "remove", "feat/wt", "--cwd", "./x/../y"],
+            vec!["worktree_remove"],
+            json!({"dir": nested_cwd, "target": "feat/wt"}),
+        ),
         (vec!["role", "list"], vec!["role_list"], json!({})),
         (
             vec!["role", "show", "coder"],
@@ -1569,6 +1587,33 @@ async fn every_remote_command_builds_the_expected_tool_calls_without_a_socket() 
                 "cwd": nested_cwd,
                 "started_by_session_id": null,
                 "no_report": false,
+            }),
+        ),
+        (
+            vec![
+                "mission",
+                "start",
+                "--crew",
+                "Peer",
+                "--title",
+                "CLI",
+                "--cwd",
+                "./x/../y",
+                "--worktree",
+                "feat/wt",
+                "--base",
+                "main",
+            ],
+            vec!["crew_list", "mission_start"],
+            json!({
+                "crew_id": "crew-id",
+                "project_id": null,
+                "title": "CLI",
+                "goal_override": null,
+                "cwd": nested_cwd,
+                "started_by_session_id": null,
+                "no_report": false,
+                "worktree": {"branch": "feat/wt", "base": "main"},
             }),
         ),
         (
@@ -1720,6 +1765,30 @@ async fn every_remote_command_builds_the_expected_tool_calls_without_a_socket() 
                 "effort": null,
                 "project_id": "project-id",
                 "cwd": null,
+            }),
+        ),
+        (
+            vec![
+                "chat",
+                "start",
+                "--runtime",
+                "codex",
+                "--project",
+                "Runner",
+                "--worktree",
+                "feat/wt",
+                "--base",
+                "main",
+            ],
+            vec!["project_list", "session_start_direct"],
+            json!({
+                "role_id": null,
+                "runtime": "codex",
+                "model": null,
+                "effort": null,
+                "project_id": "project-id",
+                "cwd": null,
+                "worktree": {"branch": "feat/wt", "base": "main"},
             }),
         ),
         (
@@ -1894,6 +1963,9 @@ async fn every_remote_command_builds_the_expected_tool_calls_without_a_socket() 
         "project_create_checked",
         "project_rename",
         "project_delete_checked",
+        "worktree_create",
+        "worktree_list",
+        "worktree_remove",
         "mission_list",
         "mission_get",
         "mission_list_summary_impl",
@@ -1937,6 +2009,9 @@ fn every_command_leaf_parses_without_a_socket() {
         &["project", "create", "Runner", "--path", "."],
         &["project", "rename", "Runner", "New"],
         &["project", "delete", "Runner", "--force"],
+        &["worktree", "create", "feat/x"],
+        &["worktree", "list"],
+        &["worktree", "remove", "feat/x"],
         &["role", "list"],
         &["role", "show", "coder"],
         &["role", "create", "coder", "--runtime", "codex"],
@@ -2113,4 +2188,105 @@ async fn mission_start_without_crew_explains_setup_when_no_crews_exist() {
         error.message
     );
     assert!(error.message.contains("setup"), "{}", error.message);
+}
+
+#[test]
+fn base_requires_worktree_on_chat_and_mission_start() {
+    assert!(Cli::try_parse_from([
+        "runner",
+        "chat",
+        "start",
+        "--runtime",
+        "codex",
+        "--base",
+        "main"
+    ])
+    .is_err());
+    assert!(
+        Cli::try_parse_from(["runner", "mission", "start", "--title", "t", "--base", "main"])
+            .is_err()
+    );
+    assert!(Cli::try_parse_from([
+        "runner",
+        "chat",
+        "start",
+        "--runtime",
+        "codex",
+        "--worktree",
+        "feat/x",
+        "--base",
+        "main"
+    ])
+    .is_ok());
+    assert!(Cli::try_parse_from([
+        "runner",
+        "mission",
+        "start",
+        "--title",
+        "t",
+        "--worktree",
+        "feat/x",
+        "--base",
+        "main"
+    ])
+    .is_ok());
+}
+
+#[tokio::test]
+async fn worktree_remove_preserves_relative_branch_names_and_resolves_deleted_absolute_targets() {
+    let cwd = absolute_path(Path::new(".")).unwrap();
+    let rel_cli =
+        Cli::try_parse_from(["runner", "worktree", "remove", "crates/runner-cli"]).unwrap();
+    let rel_client = SequenceClient::new(vec![(
+        "worktree_remove",
+        Ok(json!({
+            "path": "/tmp/1213-m1-wt",
+            "branch": "crates/runner-cli",
+        })),
+    )]);
+    run_connected(&rel_client, &rel_cli, &BusContext::OffBus, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        *rel_client.calls.lock().unwrap(),
+        vec![(
+            "worktree_remove".to_string(),
+            json!({ "dir": cwd, "target": "crates/runner-cli" }),
+        )]
+    );
+
+    #[cfg(unix)]
+    let root = tempfile::Builder::new()
+        .prefix("1213-m1-cli-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    #[cfg(windows)]
+    let root = tempfile::Builder::new()
+        .prefix("1213-m1-cli-")
+        .tempdir()
+        .unwrap();
+    let worktrees_dir = root.path().join(".worktrees");
+    std::fs::create_dir_all(&worktrees_dir).unwrap();
+    let missing_target = worktrees_dir.join("deleted-branch");
+    let missing_str = missing_target.to_string_lossy().into_owned();
+    let expected_dir = absolute_path(&worktrees_dir).unwrap();
+
+    let abs_cli = Cli::try_parse_from(["runner", "worktree", "remove", &missing_str]).unwrap();
+    let abs_client = SequenceClient::new(vec![(
+        "worktree_remove",
+        Ok(json!({
+            "path": missing_str.clone(),
+            "branch": Value::Null,
+        })),
+    )]);
+    run_connected(&abs_client, &abs_cli, &BusContext::OffBus, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        *abs_client.calls.lock().unwrap(),
+        vec![(
+            "worktree_remove".to_string(),
+            json!({ "dir": expected_dir, "target": missing_str }),
+        )]
+    );
 }

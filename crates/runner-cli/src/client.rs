@@ -306,6 +306,30 @@ pub fn call_daemon(
         )),
         "project_list" => response(client.project_list()),
         "project_get" => response(client.project_get(&argument::<String>(&args, "id")?)),
+        "worktree_default_base" => {
+            response(client.worktree_default_base(&argument::<std::path::PathBuf>(&args, "dir")?))
+        }
+        "worktree_check" => response(client.worktree_check(
+            &argument::<std::path::PathBuf>(&args, "dir")?,
+            &argument::<String>(&args, "branch")?,
+            argument::<Option<String>>(&args, "base")?.as_deref(),
+        )),
+        "worktree_create" => response(client.worktree_create(
+            &argument::<std::path::PathBuf>(&args, "dir")?,
+            &argument::<String>(&args, "branch")?,
+            argument::<Option<String>>(&args, "base")?.as_deref(),
+        )),
+        "worktree_list" => {
+            response(client.worktree_list(&argument::<std::path::PathBuf>(&args, "dir")?))
+        }
+        "worktree_remove" => response(client.worktree_remove(
+            &argument::<std::path::PathBuf>(&args, "dir")?,
+            &argument::<String>(&args, "target")?,
+        )),
+        "worktree_checkout" => response(client.worktree_checkout(
+            &argument::<std::path::PathBuf>(&args, "cwd")?,
+            argument::<Option<String>>(&args, "project_id")?.as_deref(),
+        )),
         "project_create" => response(
             client.project_create_checked(argument(&args, "name")?, argument(&args, "cwd")?),
         ),
