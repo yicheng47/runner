@@ -32,7 +32,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero.png" alt="Runner start page — one launcher for your recent agents and roles, a terminal or a crew mission" width="100%" />
+  <img src="assets/mission_feed.png" alt="Runner mission workspace — a shared mission feed with @coder handing off to @reviewer alongside live crew session cards" width="100%" />
 </p>
 
 <p align="center">

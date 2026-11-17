@@ -32,7 +32,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero.png" alt="Runner 起始页 — 一个启动器启动最近用过的 agent 和角色、终端或 crew mission" width="100%" />
+  <img src="assets/mission_feed.png" alt="Runner mission 工作区 — 共享 mission feed 中 @coder 将改动移交给 @reviewer，右侧是实时 crew 会话卡片" width="100%" />
 </p>
 
 <p align="center">
