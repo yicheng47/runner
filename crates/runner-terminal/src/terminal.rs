@@ -1112,6 +1112,14 @@ impl TerminalMirror {
         self.clear_selection();
         self.client.input(&self.session_id, bytes)
     }
+    pub fn send_key_bytes(
+        &self,
+        bytes: &[u8],
+        kind: crate::mappings::InputKind,
+    ) -> std::result::Result<(), ClientError> {
+        self.observe_input(&InputEvent::Key { kind });
+        self.write_typed_bytes(bytes)
+    }
     pub fn send_key(
         &self,
         key: &str,
@@ -1121,13 +1129,10 @@ impl TerminalMirror {
         key_char: Option<&str>,
     ) -> std::result::Result<bool, ClientError> {
         let mode = *self.term.lock_unfair().mode();
-        let input = InputEvent::Key {
-            kind: crate::mappings::classify_key(mode, key, ctrl, alt, shift, key_char),
-        };
+        let kind = crate::mappings::classify_key(mode, key, ctrl, alt, shift, key_char);
         match crate::mappings::encode_key(key, ctrl, alt, shift, key_char, mode) {
             Some(bytes) => {
-                self.observe_input(&input);
-                self.write_typed_bytes(&bytes)?;
+                self.send_key_bytes(&bytes, kind)?;
                 Ok(true)
             }
             None => Ok(false),

@@ -1,7 +1,12 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use gpui::{App, Bounds, Context, EntityInputHandler, Keystroke, Pixels, UTF16Selection, Window};
+use gpui::{
+    App, Bounds, ClipboardItem, Context, ElementInputHandler, Entity, EntityInputHandler,
+    InputHandler, Keystroke, Modifiers, Pixels, Point, TextInputConfiguration, UTF16Selection,
+    Window,
+};
+use runner_terminal::mappings::InputKind;
 use runner_terminal::terminal::TerminalMirror;
 use serde::{Deserialize, Serialize};
 
@@ -117,6 +122,33 @@ pub enum TerminalKeyRoute {
     Raw,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MacOsEditingKey {
+    pub bytes: &'static [u8],
+    pub kind: InputKind,
+}
+
+pub fn macos_editing_key(keystroke: &Keystroke) -> Option<MacOsEditingKey> {
+    if !cfg!(target_os = "macos") || keystroke.modifiers != Modifiers::command() {
+        return None;
+    }
+    match keystroke.key.as_str() {
+        "left" => Some(MacOsEditingKey {
+            bytes: b"\x01",
+            kind: InputKind::Navigate,
+        }),
+        "right" => Some(MacOsEditingKey {
+            bytes: b"\x05",
+            kind: InputKind::Navigate,
+        }),
+        "backspace" => Some(MacOsEditingKey {
+            bytes: b"\x15",
+            kind: InputKind::Edit,
+        }),
+        _ => None,
+    }
+}
+
 pub fn terminal_key_route(
     composing: bool,
     keystroke: &Keystroke,
@@ -127,7 +159,9 @@ pub fn terminal_key_route(
         .key_char
         .as_deref()
         .is_some_and(|text| !text.is_empty() && text.chars().all(|c| !c.is_control()));
-    if modifiers.platform {
+    if !composing && macos_editing_key(keystroke).is_some() {
+        TerminalKeyRoute::Raw
+    } else if modifiers.platform {
         TerminalKeyRoute::AppShortcut
     } else if composing {
         TerminalKeyRoute::Ime
@@ -311,6 +345,10 @@ impl TerminalInput {
         self.write_result.take()
     }
 
+    pub fn apple_press_and_hold_enabled(&self) -> bool {
+        false
+    }
+
     pub fn commit_text(&mut self, text: &str) -> runner_core::protocol::ClientResult<()> {
         self.composition.clear();
         self.session.set_composing(false);
@@ -421,12 +459,145 @@ impl EntityInputHandler for TerminalInput {
     }
 }
 
+/// Bridges [`TerminalInput`] to gpui's [`InputHandler`] so macOS key repeats
+/// are delivered instead of AppKit's press-and-hold accent picker.
+pub struct TerminalInputHandler(ElementInputHandler<TerminalInput>);
+
+impl TerminalInputHandler {
+    pub fn new(bounds: Bounds<Pixels>, input: Entity<TerminalInput>) -> Self {
+        Self(ElementInputHandler::new(bounds, input))
+    }
+}
+
+impl InputHandler for TerminalInputHandler {
+    fn selected_text_range(
+        &mut self,
+        ignore_disabled_input: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<UTF16Selection> {
+        self.0
+            .selected_text_range(ignore_disabled_input, window, cx)
+    }
+
+    fn marked_text_range(&mut self, window: &mut Window, cx: &mut App) -> Option<Range<usize>> {
+        self.0.marked_text_range(window, cx)
+    }
+
+    fn text_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<String> {
+        self.0
+            .text_for_range(range_utf16, adjusted_range, window, cx)
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        replacement_range: Option<Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.0
+            .replace_text_in_range(replacement_range, text, window, cx)
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        new_selected_range: Option<Range<usize>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.0
+            .replace_and_mark_text_in_range(range_utf16, new_text, new_selected_range, window, cx)
+    }
+
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut App) {
+        self.0.unmark_text(window, cx)
+    }
+
+    fn paste(&mut self, item: ClipboardItem, window: &mut Window, cx: &mut App) {
+        self.0.paste(item, window, cx)
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Bounds<Pixels>> {
+        self.0.bounds_for_range(range_utf16, window, cx)
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        point: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<usize> {
+        self.0.character_index_for_point(point, window, cx)
+    }
+
+    fn set_selected_text_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.0.set_selected_text_range(range_utf16, window, cx)
+    }
+
+    fn element_bounds(&mut self, window: &mut Window, cx: &mut App) -> Option<Bounds<Pixels>> {
+        self.0.element_bounds(window, cx)
+    }
+
+    fn text_length_utf16(&mut self, window: &mut Window, cx: &mut App) -> Option<usize> {
+        self.0.text_length_utf16(window, cx)
+    }
+
+    fn apple_press_and_hold_enabled(&mut self) -> bool {
+        false
+    }
+
+    fn accepts_text_input(&mut self, window: &mut Window, cx: &mut App) -> bool {
+        self.0.accepts_text_input(window, cx)
+    }
+
+    fn text_input_editable_range(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Range<usize>> {
+        self.0.text_input_editable_range(window, cx)
+    }
+
+    fn prefers_ime_for_printable_keys(&mut self, window: &mut Window, cx: &mut App) -> bool {
+        self.0.prefers_ime_for_printable_keys(window, cx)
+    }
+
+    fn text_input_configuration(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> TextInputConfiguration {
+        self.0.text_input_configuration(window, cx)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        swallows_option_copy, terminal_key_route, typed_text, OptionAsMeta, TerminalKeyRoute,
+        macos_editing_key, swallows_option_copy, terminal_key_route, typed_text, MacOsEditingKey,
+        OptionAsMeta, TerminalInput, TerminalInputHandler, TerminalKeyRoute,
     };
-    use gpui::Keystroke;
+    use gpui::{px, size, AppContext as _, Bounds, InputHandler as _, Keystroke, TestAppContext};
+    use runner_terminal::mappings::InputKind;
 
     #[test]
     fn automatic_uses_meta_only_for_us_and_abc_layouts() {
@@ -541,5 +712,134 @@ mod tests {
         assert_eq!(typed_text("\u{a0}"), " ");
         assert_eq!(typed_text("@"), "@");
         assert_eq!(typed_text("a\u{a0}b"), "a\u{a0}b");
+    }
+
+    #[test]
+    fn macos_editing_keys_map_exact_chords_only() {
+        for (chord, expected) in [
+            (
+                "cmd-left",
+                MacOsEditingKey {
+                    bytes: b"\x01",
+                    kind: InputKind::Navigate,
+                },
+            ),
+            (
+                "cmd-right",
+                MacOsEditingKey {
+                    bytes: b"\x05",
+                    kind: InputKind::Navigate,
+                },
+            ),
+            (
+                "cmd-backspace",
+                MacOsEditingKey {
+                    bytes: b"\x15",
+                    kind: InputKind::Edit,
+                },
+            ),
+        ] {
+            let key = Keystroke::parse(chord).unwrap();
+            assert_eq!(
+                macos_editing_key(&key),
+                cfg!(target_os = "macos").then_some(expected),
+                "{chord}",
+            );
+        }
+        for chord in [
+            "shift-cmd-left",
+            "alt-cmd-left",
+            "ctrl-cmd-left",
+            "fn-cmd-left",
+            "shift-cmd-right",
+            "shift-cmd-backspace",
+            "cmd-delete",
+            "cmd-a",
+            "cmd-e",
+            "cmd-u",
+            "left",
+            "ctrl-left",
+        ] {
+            assert_eq!(
+                macos_editing_key(&Keystroke::parse(chord).unwrap()),
+                None,
+                "{chord}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn terminal_input_disables_apple_press_and_hold(cx: &mut TestAppContext) {
+        use runner_core::protocol::terminal::{
+            TerminalAttachment, TerminalController, TerminalFrame, TerminalSnapshot,
+            TerminalSubscription,
+        };
+        use runner_core::protocol::{
+            ClientError, DaemonClient, EventSubscription, Request, Response, Transport,
+        };
+        use runner_terminal::terminal::TerminalMirror;
+        use std::sync::Arc;
+
+        struct Stub;
+        struct Closed;
+        impl TerminalSubscription for Closed {
+            fn recv(&mut self) -> Result<TerminalFrame, ClientError> {
+                Err(ClientError::msg("closed"))
+            }
+            fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+                Arc::new(|| {})
+            }
+        }
+        impl Transport for Stub {
+            fn call(&self, _: Request) -> Result<Response, ClientError> {
+                Err(ClientError::msg("unexpected"))
+            }
+            fn subscribe(&self) -> Box<dyn EventSubscription> {
+                unreachable!()
+            }
+            fn attach(&self, _: &str) -> Result<TerminalAttachment, ClientError> {
+                Ok(TerminalAttachment {
+                    subscriber_id: 1,
+                    snapshot: TerminalSnapshot {
+                        seq: 0,
+                        activity: None,
+                        cols: 10,
+                        rows: 2,
+                        controller: TerminalController::Desktop,
+                        bytes: Vec::new(),
+                        unfinished_len: 0,
+                        preceding_char: None,
+                    },
+                    frames: Box::new(Closed),
+                })
+            }
+            fn input(&self, _: &str, _: &[u8]) -> Result<(), ClientError> {
+                Ok(())
+            }
+        }
+
+        let terminal = TerminalMirror::attach(
+            DaemonClient::new(Arc::new(Stub)),
+            "ime".into(),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        let window = cx.add_window(|_, _| gpui::Empty);
+        window
+            .update(cx, |_, window, cx| {
+                let input = cx.new(|_| TerminalInput::new(terminal));
+                assert!(!input.read(cx).apple_press_and_hold_enabled());
+                let mut handler = TerminalInputHandler::new(
+                    Bounds::new(Default::default(), size(px(10.), px(10.))),
+                    input,
+                );
+                assert!(!handler.apple_press_and_hold_enabled());
+                assert!(handler.prefers_ime_for_printable_keys(window, cx));
+                handler.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
+                assert_eq!(handler.marked_text_range(window, cx), Some(0..2));
+                handler.unmark_text(window, cx);
+                assert_eq!(handler.marked_text_range(window, cx), None);
+            })
+            .unwrap();
     }
 }

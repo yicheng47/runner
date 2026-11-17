@@ -56,7 +56,19 @@ On Windows and Linux, **Settings → Keyboard shortcuts → Ctrl keys in termina
 
 With Terminal first, Ctrl+. sends a plain period in legacy terminal programs. Programs that enable Kitty keyboard disambiguation receive Ctrl+. as a distinct key.
 
-Copy with a selection, paste and zoom work in a terminal in both modes. The setting takes effect immediately. macOS has no such setting, because ⌘ shortcuts never reach a terminal.
+Copy with a selection, paste and zoom work in a terminal in both modes. The setting takes effect immediately. macOS has no such setting because Runner shortcuts use ⌘ rather than Control, so bare Control keys already reach the terminal; on macOS only the three line-editing chords below reach a terminal when no Runner shortcut uses them.
+
+## macOS terminal editing keys
+
+When a terminal pane has focus on macOS (chat pane, terminal tab, mission slot, mission drawer or remote terminal), these standard macOS line-editing chords send control bytes to the terminal:
+
+| Action | macOS | Sends |
+| --- | --- | --- |
+| Move to start of line | ⌘← | `^A` (`\x01`) |
+| Move to end of line | ⌘→ | `^E` (`\x05`) |
+| Delete to start of line | ⌘⌫ | `^U` (`\x15`) |
+
+If you bind a Runner shortcut to one of these chords in **Settings → Keyboard shortcuts**, that shortcut wins over the terminal key. Other `⌘` chords continue to route to Runner.
 
 ## Find in terminal
 
