@@ -19,14 +19,14 @@ use alacritty_terminal::term::{point_to_viewport, viewport_to_point, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use gpui::{
     fill, outline, point, px, relative, size, AnyTooltip, AnyView, App, Bounds, ClipboardItem,
-    ContentMask, Context, CursorStyle, DispatchPhase, Element, ElementInputHandler, Entity,
-    FocusHandle, Font, FontFallbacks, GlobalElementId, Hitbox, HitboxBehavior, Hsla,
-    InspectorElementId, IntoElement, LayoutId, MouseButton as GpuiMouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, ShapedLine,
-    SharedString, Style, Task, TextAlign, TextRun, UnderlineStyle, Window,
+    ContentMask, Context, CursorStyle, DispatchPhase, Element, Entity, FocusHandle, Font,
+    FontFallbacks, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
+    LayoutId, MouseButton as GpuiMouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, ScrollDelta, ScrollWheelEvent, ShapedLine, SharedString, Style, Task, TextAlign,
+    TextRun, UnderlineStyle, Window,
 };
 
-use runner_app::terminal_ime::TerminalInput;
+use runner_app::terminal_ime::{TerminalInput, TerminalInputHandler};
 use runner_app::terminal_resize::{
     size_push_verdict, terminal_grid_size, SizePushVerdict, TerminalGridSize,
 };
@@ -1761,7 +1761,7 @@ impl Element for TerminalElement {
         });
         window.handle_input(
             &self.focus_handle,
-            ElementInputHandler::new(input_bounds, self.input.clone()),
+            TerminalInputHandler::new(input_bounds, self.input.clone()),
             cx,
         );
         let cursor_style = if prepaint.hovered_link.is_some() && prepaint.link_modifier_held {
@@ -2712,5 +2712,55 @@ mod tests {
         assert_eq!(autoscroll_amount(bounds, point(px(20.), px(110.))), -4);
         assert_eq!(autoscroll_amount(bounds, point(px(20.), px(220.))), -15);
         assert_eq!(autoscroll_amount(bounds, point(px(20.), px(500.))), -15);
+    }
+
+    #[test]
+    fn focused_terminal_element_routes_input_through_terminal_input_handler() {
+        use gpui::EntityInputHandler as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(RecordingRuntime::default());
+        let core = test_core(temp.path(), Arc::clone(&runtime));
+        let role = probe_role(&core);
+        let left_terminal = spawn_terminal(&core, &runtime, &role, temp.path());
+        let right_terminal = spawn_terminal(&core, &runtime, &role, temp.path());
+        let session_id = left_terminal.session_id().to_owned();
+        let mut cx = TestAppContext::single();
+        let left = wheel_pane(&mut cx, &left_terminal);
+        let right = wheel_pane(&mut cx, &right_terminal);
+        let focus = left.focus.clone();
+        let input = left.input.clone();
+        let window = cx.add_window(|_, _| WheelHost {
+            left,
+            right,
+            left_interactive: true,
+            right_interactive: true,
+            right_scrollable: true,
+            font_size: 14.,
+            gap: 20.,
+            line_height_factor: crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
+            copy_on_select: false,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(700.), px(300.)));
+        visual.update(|window, cx| focus.focus(window, cx));
+        visual.refresh().unwrap();
+
+        // Typing reaches TerminalElement's registered TerminalInputHandler, while IME composition still works.
+        visual.simulate_input("k");
+        visual.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                assert!(!input.apple_press_and_hold_enabled());
+                input.replace_and_mark_text_in_range(None, "ni", Some(2..2), window, cx);
+                assert_eq!(input.marked_text_range(window, cx), Some(0..2));
+                input.unmark_text(window, cx);
+                assert_eq!(input.marked_text_range(window, cx), None);
+            });
+        });
+
+        runtime.wait_for_writes(2);
+        let writes = runtime.writes.lock().unwrap();
+        assert_eq!(writes[0], (session_id.clone(), b"k".to_vec()));
+        assert_eq!(writes[1], (session_id, b"ni".to_vec()));
     }
 }

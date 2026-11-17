@@ -35,6 +35,15 @@ fn routing_sends_printable_text_only_through_the_input_handler() {
         ("alt-b", TerminalKeyRoute::Raw),
         ("fn-f1", TerminalKeyRoute::Raw),
         ("cmd-t", TerminalKeyRoute::AppShortcut),
+        ("cmd-k", TerminalKeyRoute::AppShortcut),
+        ("cmd-c", TerminalKeyRoute::AppShortcut),
+        ("cmd-v", TerminalKeyRoute::AppShortcut),
+        ("shift-cmd-left", TerminalKeyRoute::AppShortcut),
+        ("alt-cmd-left", TerminalKeyRoute::AppShortcut),
+        ("ctrl-cmd-left", TerminalKeyRoute::AppShortcut),
+        ("fn-cmd-left", TerminalKeyRoute::AppShortcut),
+        ("shift-cmd-backspace", TerminalKeyRoute::AppShortcut),
+        ("cmd-delete", TerminalKeyRoute::AppShortcut),
         ("enter", TerminalKeyRoute::Raw),
         ("left", TerminalKeyRoute::Raw),
     ] {
@@ -42,6 +51,30 @@ fn routing_sends_printable_text_only_through_the_input_handler() {
             terminal_key_route(false, &Keystroke::parse(key).unwrap(), true),
             expected,
             "{key}",
+        );
+    }
+}
+
+#[test]
+fn macos_editing_chords_route_raw_only_on_macos_outside_composition() {
+    let expected = if cfg!(target_os = "macos") {
+        TerminalKeyRoute::Raw
+    } else {
+        TerminalKeyRoute::AppShortcut
+    };
+    for key in ["cmd-left", "cmd-right", "cmd-backspace"] {
+        let keystroke = Keystroke::parse(key).unwrap();
+        for option_is_meta in [false, true] {
+            assert_eq!(
+                terminal_key_route(false, &keystroke, option_is_meta),
+                expected,
+                "{key} option_is_meta={option_is_meta}",
+            );
+        }
+        assert_eq!(
+            terminal_key_route(true, &keystroke, true),
+            TerminalKeyRoute::AppShortcut,
+            "{key} while composing",
         );
     }
 }

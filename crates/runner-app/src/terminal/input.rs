@@ -19,13 +19,18 @@ pub(crate) fn handle_key(
     if terminal_ime::terminal_key_route(composing, key, option_is_meta) != TerminalKeyRoute::Raw {
         return Ok(false);
     }
-    let sent = terminal.send_key(
-        &key.key,
-        key.modifiers.control,
-        key.modifiers.alt,
-        key.modifiers.shift,
-        key.key_char.as_deref(),
-    )?;
+    let sent = if let Some(editing) = terminal_ime::macos_editing_key(key) {
+        terminal.send_key_bytes(editing.bytes, editing.kind)?;
+        true
+    } else {
+        terminal.send_key(
+            &key.key,
+            key.modifiers.control,
+            key.modifiers.alt,
+            key.modifiers.shift,
+            key.key_char.as_deref(),
+        )?
+    };
     if sent {
         terminal.scroll_to_bottom();
         cx.stop_propagation();
@@ -85,6 +90,7 @@ mod tests {
         inputs: Mutex<Vec<Vec<u8>>>,
         observed: Mutex<Vec<runner_core::protocol::terminal::InputEvent>>,
         fail: AtomicBool,
+        controller: Mutex<Option<TerminalController>>,
     }
     struct Frames;
     impl TerminalSubscription for Frames {
@@ -119,7 +125,12 @@ mod tests {
                     activity: None,
                     cols: 10,
                     rows: 2,
-                    controller: TerminalController::Desktop,
+                    controller: self
+                        .controller
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or(TerminalController::Desktop),
                     bytes: b"first\r\nsecond\r\nthird\r\nfourth\x1b[?2004h".to_vec(),
                     unfinished_len: 0,
                     preceding_char: None,
@@ -389,5 +400,172 @@ mod tests {
                 assert!(host.inputs.lock().unwrap().is_empty());
             }
         });
+    }
+
+    #[gpui::test]
+    fn macos_editing_chords_send_control_bytes_or_yield_to_user_overrides(cx: &mut TestAppContext) {
+        use crate::keymap::{self, KeymapOverrides, TerminalCtrlKeys};
+        use runner_core::protocol::terminal::{InputEvent, InputKind};
+
+        let (host, terminal) = fixture();
+        let window = cx.add_window(|_, cx| ShortcutTerminal {
+            terminal: terminal.clone(),
+            root_focus: cx.focus_handle(),
+            terminal_focus: cx.focus_handle(),
+            switches: 0,
+        });
+        cx.update(|cx| {
+            keymap::install_bindings(
+                cx,
+                &KeymapOverrides::new(),
+                TerminalCtrlKeys::RunnerFirst,
+                false,
+            )
+        });
+        window
+            .update(cx, |view, window, cx| view.terminal_focus.focus(window, cx))
+            .unwrap();
+        cx.run_until_parked();
+
+        // Chords write the exact control bytes across primary, alt screen, and kitty modes.
+        for (seq, output) in [
+            (1, b"".as_slice()),
+            (2, b"\x1b[?1049h\x1b[?1h\x1b[>1u".as_slice()),
+        ] {
+            if !output.is_empty() {
+                terminal.test_feed(seq, output);
+            }
+            for (chord, expected_bytes, expected_kind) in [
+                ("cmd-left", b"\x01".as_slice(), InputKind::Navigate),
+                ("cmd-right", b"\x05".as_slice(), InputKind::Navigate),
+                ("cmd-backspace", b"\x15".as_slice(), InputKind::Edit),
+            ] {
+                host.inputs.lock().unwrap().clear();
+                host.observed.lock().unwrap().clear();
+                terminal.scroll_local(1);
+                terminal.start_selection(
+                    SelectionType::Simple,
+                    Point::new(Line(0), Column(0)),
+                    Side::Left,
+                );
+                terminal.update_selection(Point::new(Line(0), Column(3)), Side::Right);
+
+                cx.simulate_keystrokes(window.into(), chord);
+                cx.run_until_parked();
+
+                if cfg!(target_os = "macos") {
+                    assert_eq!(
+                        *host.inputs.lock().unwrap(),
+                        [expected_bytes.to_vec()],
+                        "{chord} seq={seq}"
+                    );
+                    assert_eq!(
+                        *host.observed.lock().unwrap(),
+                        [InputEvent::Key {
+                            kind: expected_kind
+                        }],
+                        "{chord} seq={seq}"
+                    );
+                    assert_eq!(terminal.scroll_state().display_offset, 0, "{chord}");
+                    assert!(terminal.selection_text().is_none(), "{chord}");
+                } else {
+                    assert!(host.inputs.lock().unwrap().is_empty(), "{chord}");
+                    assert!(host.observed.lock().unwrap().is_empty(), "{chord}");
+                    if seq == 1 {
+                        assert!(terminal.scroll_state().display_offset > 0, "{chord}");
+                    }
+                }
+            }
+        }
+        terminal.test_feed(3, b"\x1b[?1049l\x1b[?1l\x1b[<u");
+
+        // Other cmd chords and modified variants still route to the app, not the terminal.
+        let default_switch =
+            keymap::binding_strings(&keymap::entry("switch-sidebar-view").unwrap().default)[0]
+                .clone();
+        for chord in [
+            default_switch.as_str(),
+            "cmd-.",
+            "cmd-k",
+            "shift-cmd-left",
+            "alt-cmd-right",
+            "ctrl-cmd-backspace",
+        ] {
+            host.inputs.lock().unwrap().clear();
+            let switches = window.read_with(cx, |view, _| view.switches).unwrap();
+            cx.simulate_keystrokes(window.into(), chord);
+            cx.run_until_parked();
+            assert!(host.inputs.lock().unwrap().is_empty(), "{chord}");
+            if chord == default_switch {
+                window
+                    .read_with(cx, |view, _| assert_eq!(view.switches, switches + 1))
+                    .unwrap();
+            }
+        }
+
+        // A Runner shortcut rebound to any of these chords wins over the terminal key.
+        for chord in ["cmd-left", "cmd-right", "cmd-backspace"] {
+            let override_combo =
+                keymap::combo_from_keystroke(&Keystroke::parse(chord).unwrap()).unwrap();
+            let overrides =
+                KeymapOverrides::from([("switch-sidebar-view".into(), Some(override_combo))]);
+            cx.update(|cx| {
+                keymap::install_bindings(cx, &overrides, TerminalCtrlKeys::RunnerFirst, false)
+            });
+            host.inputs.lock().unwrap().clear();
+            host.observed.lock().unwrap().clear();
+            let switches = window.read_with(cx, |view, _| view.switches).unwrap();
+            cx.simulate_keystrokes(window.into(), chord);
+            cx.run_until_parked();
+            window
+                .read_with(cx, |view, _| assert_eq!(view.switches, switches + 1))
+                .unwrap();
+            assert!(host.inputs.lock().unwrap().is_empty(), "{chord}");
+            assert!(host.observed.lock().unwrap().is_empty(), "{chord}");
+        }
+
+        // Write errors propagate without scrolling, and non-desktop control suppresses writes.
+        #[cfg(target_os = "macos")]
+        {
+            terminal.scroll_local(1);
+            assert!(terminal.scroll_state().display_offset > 0);
+            host.fail.store(true, Ordering::Relaxed);
+            cx.update(|cx| {
+                let err = handle_key(
+                    &terminal,
+                    false,
+                    &Keystroke::parse("cmd-backspace").unwrap(),
+                    false,
+                    cx,
+                );
+                assert!(err.is_err());
+                assert!(terminal.scroll_state().display_offset > 0);
+            });
+
+            let non_desktop_host = Arc::new(Host {
+                controller: Mutex::new(Some(TerminalController::None)),
+                ..Default::default()
+            });
+            let non_desktop = TerminalMirror::attach(
+                DaemonClient::new(non_desktop_host.clone()),
+                "shared-input-none".into(),
+                Arc::new(|| {}),
+            )
+            .unwrap();
+            cx.update(|cx| {
+                for chord in ["cmd-left", "cmd-right", "cmd-backspace"] {
+                    assert!(handle_key(
+                        &non_desktop,
+                        false,
+                        &Keystroke::parse(chord).unwrap(),
+                        false,
+                        cx
+                    )
+                    .unwrap());
+                }
+            });
+            assert!(non_desktop_host.inputs.lock().unwrap().is_empty());
+            assert!(non_desktop_host.observed.lock().unwrap().is_empty());
+        }
     }
 }
