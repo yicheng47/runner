@@ -495,6 +495,100 @@ fn confirmation_and_unsent_detection_hold_for_a_working_target() {
     f.backlog(2);
     f.after(Duration::from_secs(10 * 60));
     assert_eq!(f.notices(), 1, "a leftover notice is never retyped over");
+    assert!(f.warnings().is_empty(), "a mid-turn retry is not a stall");
+}
+
+#[test]
+fn an_unverified_mid_turn_notice_is_resubmitted_at_idle_without_stacking_text() {
+    let mut f = Fixture::new();
+    f.readiness(DeliveryReadiness::Working);
+    f.port.0.lock().unwrap().sticky = true;
+    f.backlog(1);
+    f.after(SUBMIT_DELAY);
+    f.port.0.lock().unwrap().unknown = true;
+    f.after(dispatch::CONFIRM_WINDOW);
+    assert_eq!(
+        f.writes().len(),
+        2,
+        "unknown input gets no immediate extra Enter"
+    );
+    f.port.0.lock().unwrap().unknown = false;
+    f.readiness(DeliveryReadiness::Unsent);
+    f.backlog(2);
+    f.after(Duration::from_secs(60));
+    assert_eq!(f.writes().len(), 2, "the leftover holds the new message");
+    f.port.0.lock().unwrap().sticky = false;
+    f.readiness(DeliveryReadiness::Ready { idle: true });
+    f.session(SessionDeliveryEvent::Idle);
+    assert_eq!(f.writes()[2..], ["\r"]);
+    f.after(dispatch::CONFIRM_WINDOW);
+    assert_eq!(f.port.0.lock().unwrap().confirmed, 1);
+    assert_eq!(f.notices(), 1);
+    assert_eq!(f.block_reason(), None);
+    assert!(f.warnings().is_empty());
+}
+
+#[test]
+fn a_mid_turn_leftover_starts_its_warning_backoff_only_at_the_next_idle() {
+    for event in [
+        SessionDeliveryEvent::Idle,
+        SessionDeliveryEvent::SilenceIdle,
+    ] {
+        let mut f = Fixture::new();
+        f.readiness(DeliveryReadiness::Working);
+        f.port.0.lock().unwrap().sticky = true;
+        f.backlog(1);
+        f.after(SUBMIT_DELAY);
+        f.after(dispatch::CONFIRM_WINDOW);
+        f.after(dispatch::CONFIRM_WINDOW);
+        f.readiness(DeliveryReadiness::Unsent);
+        // Cursor input prevents resubmission but leaves ownership of the notice intact.
+        f.port.0.lock().unwrap().revision += 1;
+        f.backlog(2);
+        for _ in 0..3 {
+            f.after(Duration::from_secs(10 * 60));
+            assert!(f.warnings().is_empty(), "{event:?}");
+        }
+        assert_eq!(f.block_reason().as_deref(), Some("unsubmitted"));
+        assert_eq!(f.notices(), 1);
+        f.session(event);
+        f.after(Duration::from_secs(119));
+        assert!(f.warnings().is_empty(), "{event:?}");
+        f.after(Duration::from_secs(1));
+        assert_eq!(
+            f.warnings(),
+            ["delivery to @worker is held: its inbox notice is still unsubmitted in its terminal"],
+            "{event:?}"
+        );
+        f.session(event);
+        f.after(Duration::from_secs(300));
+        assert_eq!(f.warnings().len(), 1, "{event:?}: warn once per hold");
+    }
+}
+
+#[test]
+fn unread_mail_after_an_unverified_mid_turn_attempt_gets_confirmed_idle_delivery() {
+    let mut f = Fixture::new();
+    f.readiness(DeliveryReadiness::Working);
+    f.backlog(1);
+    f.after(SUBMIT_DELAY);
+    f.port.0.lock().unwrap().unknown = true;
+    f.after(dispatch::CONFIRM_WINDOW);
+    assert_eq!(f.port.0.lock().unwrap().confirmed, 0);
+    f.after(Duration::from_secs(120));
+    assert_eq!(
+        f.notices(),
+        1,
+        "an old backlog is not retyped while working"
+    );
+    f.port.0.lock().unwrap().unknown = false;
+    f.readiness(DeliveryReadiness::Ready { idle: true });
+    f.session(SessionDeliveryEvent::Idle);
+    assert_eq!(f.notices(), 2);
+    f.after(SUBMIT_DELAY);
+    f.after(dispatch::CONFIRM_WINDOW);
+    assert_eq!(f.port.0.lock().unwrap().confirmed, 1);
+    assert!(f.warnings().is_empty());
 }
 
 #[test]

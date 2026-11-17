@@ -285,16 +285,20 @@ impl SessionState {
                 _ => R::Drafting,
             };
         }
+        // Preserve Claude Code's existing queueing during a synthetic Busy, but every newly
+        // qualifying runtime must keep its unconfirmed-submit hold.
+        if self.model.unconfirmed_busy()
+            && (report || self.delivery_runtime != Runtime::ClaudeCode.key())
+        {
+            return R::Unconfirmed;
+        }
         let idle = self.model.activity() == Some(SessionActivityState::Idle);
         if !idle
             && !report
             && runner_core::protocol::runtime_metadata::for_key(&self.delivery_runtime)
-                .queues_input_mid_turn()
+                .accepts_input_mid_turn()
         {
             return R::Working;
-        }
-        if self.model.unconfirmed_busy() {
-            return R::Unconfirmed;
         }
         R::Ready { idle }
     }
