@@ -773,6 +773,21 @@ fn wants_text_presentation(c: char, wide: bool, zerowidth: Option<&[char]>) -> b
     !wide && !c.is_ascii() && !zerowidth.is_some_and(|zw| zw.contains(&'\u{fe0f}'))
 }
 
+/// The text shaped for a cell, or `None` when the cell draws nothing.
+/// alacritty stores `'\t'` in the blank cell where a tab starts, keeping any
+/// underline color, hyperlink or combining mark. Shaping a tab lays it out to
+/// the font's tab stops instead of one cell and pushes what follows off the
+/// grid (#1356), so it is shaped as a space.
+fn cell_text(c: char, zerowidth: Option<&[char]>) -> Option<String> {
+    let c = if c == '\t' { ' ' } else { c };
+    if c == ' ' && zerowidth.is_none() {
+        return None;
+    }
+    let mut text = String::from(c);
+    text.extend(zerowidth.into_iter().flatten());
+    Some(text)
+}
+
 fn text_presentation_font(base: &Font) -> Font {
     let symbols = runner_app::platform_fonts::TERMINAL_SYMBOL_FALLBACKS;
     if symbols.is_empty() {
@@ -1357,11 +1372,10 @@ impl Element for TerminalElement {
                     }
                 }
 
-                if cell.flags.contains(Flags::HIDDEN)
-                    || (cell.c == ' ' && cell.zerowidth().is_none())
-                {
-                    continue;
-                }
+                let text = match cell_text(cell.c, cell.zerowidth()) {
+                    Some(text) if !cell.flags.contains(Flags::HIDDEN) => text,
+                    _ => continue,
+                };
 
                 let link_underlined = hovered_link
                     .as_ref()
@@ -1463,11 +1477,6 @@ impl Element for TerminalElement {
                     None
                 };
 
-                let mut text = String::new();
-                text.push(cell.c);
-                if let Some(zw) = cell.zerowidth() {
-                    text.extend(zw.iter());
-                }
                 let run = TextRun {
                     len: text.len(),
                     font: cell_font,
@@ -1521,7 +1530,7 @@ impl Element for TerminalElement {
                                 }
                                 _ => span.runs.push(run.clone()),
                             }
-                            span.text.push(cell.c);
+                            span.text.push_str(&text);
                             true
                         }
                         _ => false,
@@ -1820,9 +1829,10 @@ mod tests {
     use runner_terminal::terminal::TerminalMirror;
 
     use super::{
-        accumulate_scroll, autoscroll_amount, cell_and_side, link_modifier, point_for_viewport,
-        push_match_cell, text_presentation_font, viewport_cell, wants_text_presentation,
-        TerminalElement, TerminalGeometry, TerminalInput, TerminalInteraction, TerminalStyle,
+        accumulate_scroll, autoscroll_amount, cell_and_side, cell_text, link_modifier,
+        point_for_viewport, push_match_cell, text_presentation_font, viewport_cell,
+        wants_text_presentation, TerminalElement, TerminalGeometry, TerminalInput,
+        TerminalInteraction, TerminalStyle,
     };
     use alacritty_terminal::term::TermMode;
     use runner_terminal::mappings::encode_scroll;
@@ -2621,6 +2631,34 @@ mod tests {
         ));
         assert!(!wants_text_presentation('\u{1f680}', true, None));
         assert!(!wants_text_presentation('a', false, None));
+    }
+
+    #[test]
+    fn a_tab_cell_left_behind_a_redraw_never_shapes_a_tab() {
+        // Each tab leaves `'\t'` in column 2, and the redraw fills columns
+        // 3-7 without overwriting it. The second and third keep a colored
+        // underline and a combining mark on the tab cell.
+        for (bytes, tab_cell) in [
+            (&b"ab\t\rab\x1b[Ccdefg"[..], None),
+            (
+                b"ab\x1b[4;58;5;1m \x1b[0m\r\x1b[2C\t\r\x1b[3Ccdefg",
+                Some(" "),
+            ),
+            (b"ab\t\rab\x1b[C\xcc\x81cdefg", Some(" \u{301}")),
+        ] {
+            let term = runner_terminal::replay::replay_bytes(20, 2, bytes);
+            let row = &term.grid()[alacritty_terminal::index::Line(0)];
+            assert_eq!(row[Column(2)].c, '\t');
+            let texts = (0..8)
+                .map(|col| cell_text(row[Column(col)].c, row[Column(col)].zerowidth()))
+                .collect::<Vec<_>>();
+            assert_eq!(texts[2].as_deref(), tab_cell);
+            let letters = [0, 1, 3, 4, 5, 6, 7]
+                .map(|col| texts[col].as_deref().unwrap())
+                .concat();
+            assert_eq!(letters, "abcdefg");
+            assert!(texts.iter().flatten().all(|text| !text.contains('\t')));
+        }
     }
 
     #[test]
