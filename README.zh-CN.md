@@ -53,9 +53,7 @@
   <a href="./CONTRIBUTING.md">参与贡献</a>
 </p>
 
-> Alpha · 原生支持 macOS（Apple Silicon 和 Intel）和 Windows（x64），Linux（ARM64、x86_64）处于 beta 阶段。
-
-Linux 支持自 Runner 0.18.2 起进入 beta：提供 ARM64 和 x86_64 的签名 `.deb` 与 tarball 包，并支持应用内更新。目前已在 Ubuntu 26.04 ARM64 虚拟机上试用，原生硬件、x86_64 和其他发行版尚未验证。请参阅 [Linux 构建与安装说明](docs/arch/linux.md) 和 [验证状态](docs/tests/archive/823-linux-support.md)。
+> 原生支持 macOS（Apple Silicon 和 Intel）和 Windows（x64），Linux（ARM64、x86_64）处于 beta 阶段。
 
 Runner 让命令行编码 agent 通过可复用的 crew、真实终端和共享 mission feed 一起工作。会话和历史记录都保存在你的机器上。
 
@@ -72,6 +70,14 @@ https://github.com/user-attachments/assets/a45d2440-da17-4be4-8de5-0902f59eb1da
 在 iPhone 上查看已配对电脑的实时终端、发起 chat 和 mission，随时回复你的 crew。
 
 > **需要内测资格：** 仅安装 TestFlight 应用目前还无法直接使用——登录并连接电脑需要已获邀请的内测账号，因为中继服务器仍处于内测阶段（目前仅面向中国大陆，海外地区的 Tailscale 支持正在开发中）。[前往官方网站加入内测候补名单 →](https://runnersh.dev/zh-CN/beta/)
+
+<p align="center">
+  <img src="assets/ios-sessions-0.1.0.png" alt="Runner iOS 版的项目概览，展示会话和嵌套的 mission" width="250" />
+  &nbsp;&nbsp;
+  <img src="assets/ios-mission-feed-0.1.0.png" alt="Runner iOS 版的 mission feed，展示等待你回答的 crew 问题" width="250" />
+  &nbsp;&nbsp;
+  <img src="assets/ios-terminal-0.1.0.png" alt="Runner iOS 版的实时 agent 终端与快捷按键" width="250" />
+</p>
 
 ## 功能
 

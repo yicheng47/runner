@@ -53,9 +53,7 @@
   <a href="./CONTRIBUTING.md">Contributing</a>
 </p>
 
-> Alpha · Native macOS (Apple Silicon and Intel) and Windows (x64), with Linux (ARM64, x86_64) in beta.
-
-Linux support is in beta from Runner 0.18.2, with signed `.deb` and tarball packages for ARM64 and x86_64 and in-app updates. It has been tried on an Ubuntu 26.04 ARM64 virtual machine; native hardware, x86_64 and other distributions are not yet verified. See [Linux build and install instructions](docs/arch/linux.md) and [validation status](docs/tests/archive/823-linux-support.md).
+> Native macOS (Apple Silicon and Intel) and Windows (x64), with Linux (ARM64, x86_64) in beta.
 
 Runner brings CLI coding agents together in reusable crews, with real terminals and a shared mission feed. Your sessions and history stay on your machine.
 
@@ -72,6 +70,14 @@ https://github.com/user-attachments/assets/13e4d920-a803-47d5-8a99-8078b364bc3e
 Use your iPhone to follow live terminals, start chats and missions, and answer your crew on a paired computer.
 
 > **Requires private beta access:** Installing the TestFlight app alone cannot be used yet—signing in and connecting to your computer requires an invited private-beta account, as the relay server is still in private beta (currently available in mainland China only; Tailscale support for users outside mainland China is under development). [Join the private beta waitlist on the official website →](https://runnersh.dev/beta/)
+
+<p align="center">
+  <img src="assets/ios-sessions-0.1.0.png" alt="Runner for iOS project overview showing sessions and a nested mission" width="250" />
+  &nbsp;&nbsp;
+  <img src="assets/ios-mission-feed-0.1.0.png" alt="Runner for iOS mission feed with a crew question awaiting your answer" width="250" />
+  &nbsp;&nbsp;
+  <img src="assets/ios-terminal-0.1.0.png" alt="Runner for iOS live agent terminal with keyboard controls" width="250" />
+</p>
 
 ## Features
 
