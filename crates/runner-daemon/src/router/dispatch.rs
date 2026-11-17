@@ -66,6 +66,7 @@ struct Subscriber {
     input_cleared: bool,
     nudged: bool,
     hold: Option<Hold>,
+    mid_turn: bool,
 }
 
 pub(crate) struct Dispatcher {
@@ -130,6 +131,7 @@ impl Dispatcher {
                     input_cleared: false,
                     nudged: false,
                     hold: None,
+                    mid_turn: false,
                 });
         }
         let mut reconcile = now >= self.redelivery;
@@ -165,6 +167,19 @@ impl Dispatcher {
                     .values_mut()
                     .filter(|s| s.session_id == session_id)
                 {
+                    if matches!(
+                        event,
+                        SessionDeliveryEvent::Idle | SessionDeliveryEvent::SilenceIdle
+                    ) && std::mem::take(&mut subscriber.mid_turn)
+                    {
+                        if let Some(hold) = subscriber
+                            .hold
+                            .as_mut()
+                            .filter(|hold| hold.reason == DeliveryReadiness::Unsent)
+                        {
+                            hold.since = now;
+                        }
+                    }
                     match event {
                         SessionDeliveryEvent::Idle => {
                             reconcile = true;
@@ -188,6 +203,7 @@ impl Dispatcher {
                                 router.injector.finish_delivery(&session_id, attempt.token);
                             }
                             subscriber.unsent = None;
+                            subscriber.mid_turn = false;
                             subscriber.pause_check = None;
                             subscriber.input_cleared = false;
                             subscriber.nudged = false;
@@ -566,6 +582,7 @@ impl Dispatcher {
                                     subscriber.wanted = false;
                                     subscriber.unsent = None;
                                     subscriber.last_attempt = Some(now);
+                                    subscriber.mid_turn = readiness == DeliveryReadiness::Working;
                                     subscriber.attempt = Some(Attempt {
                                         token,
                                         deadline: now + SUBMIT_DELAY,
@@ -669,8 +686,10 @@ impl Dispatcher {
                 });
             }
         }
+        // An ignored mid-turn notice may wait for the turn to end before it can submit.
+        let mid_turn = subscriber.mid_turn;
         let Some(hold) = subscriber.hold.as_mut().filter(|hold| {
-            !hold.warned
+            !(hold.warned || (hold.reason == DeliveryReadiness::Unsent && mid_turn))
                 && unread > 0
                 && now.saturating_duration_since(hold.since) >= REDELIVERY_BACKOFF
         }) else {

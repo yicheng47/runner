@@ -807,7 +807,9 @@ fn an_ignored_delivery_enter_is_resubmitted_at_turn_end_instead_of_holding_as_a_
         advance(crate::router::dispatch::CONFIRM_WINDOW);
         assert!(matches!(
             readiness(Duration::ZERO),
-            DeliveryReadiness::Ready { .. } | DeliveryReadiness::Unconfirmed
+            DeliveryReadiness::Ready { .. }
+                | DeliveryReadiness::Working
+                | DeliveryReadiness::Unconfirmed
         ));
         fixture
             .manager
@@ -1651,8 +1653,6 @@ fn a_return_that_starts_no_turn_frees_the_member_for_its_queued_notice() {
             );
         }
         advance_to(3);
-        // Claude Code queues input typed while it is busy, so its notice goes at once; Codex
-        // waits for the Busy to clear.
         let mid_turn = runtime == Runtime::ClaudeCode;
         assert_eq!(
             crate::session::clock::at(at(3), 0, || fixture.manager.delivery_readiness("session")),
@@ -1663,6 +1663,14 @@ fn a_return_that_starts_no_turn_frees_the_member_for_its_queued_notice() {
             },
             "{runtime:?}"
         );
+        if runtime == Runtime::Codex {
+            assert_eq!(
+                crate::session::clock::at(at(3), 0, || {
+                    fixture.manager.reserve_delivery("session").unwrap()
+                }),
+                DeliveryReservation::Unavailable
+            );
+        }
         crate::session::clock::at(at(3), 0, || fixture.queue("hello"));
         // The local Enter's input-clear grace ends half a second later.
         advance_to(4);
@@ -1699,6 +1707,53 @@ fn a_return_that_starts_no_turn_frees_the_member_for_its_queued_notice() {
             "{runtime:?}"
         );
     }
+}
+
+#[test]
+fn a_real_codex_turn_releases_the_unconfirmed_notice_before_the_idle_timeout() {
+    use crate::router::DeliveryReadiness;
+
+    let fixture = StartupFixture::new();
+    let _output = fixture.launch("codex", false, Instant::now());
+    fixture.event(Runtime::Codex, AgentEvent::StartupReady);
+    let start = *fixture.now.lock().unwrap();
+    let events = Capture::default();
+    crate::session::clock::at(start, 0, || {
+        fixture
+            .manager
+            .inject_direct_stdin("session", b"\r", &events)
+            .unwrap();
+    });
+    let now = start + Duration::from_secs(3);
+    *fixture.now.lock().unwrap() = now;
+    crate::session::clock::at(now, 0, || {
+        assert_eq!(
+            fixture.manager.delivery_readiness("session"),
+            DeliveryReadiness::Unconfirmed
+        );
+        fixture.queue("during a real turn");
+    });
+    assert_eq!(fixture.fake.inputs.lock().unwrap().len(), 1);
+    crate::session::clock::at(now, 0, || {
+        fixture.event(Runtime::Codex, AgentEvent::TurnStarted);
+        assert_eq!(
+            fixture.manager.delivery_readiness("session"),
+            DeliveryReadiness::Working
+        );
+        let DeliveryReservation::Ready(token) =
+            fixture.manager.reserve_delivery("session").unwrap()
+        else {
+            panic!("a confirmed Codex turn must accept mid-turn input");
+        };
+        fixture.manager.finish_delivery("session", token);
+    });
+    let now = now + Duration::from_secs(1);
+    *fixture.now.lock().unwrap() = now;
+    crate::session::clock::at(now, 0, || fixture.drive());
+    let inputs = fixture.fake.inputs.lock().unwrap();
+    assert_eq!(inputs.len(), 2, "{inputs:?}");
+    assert!(matches!(&inputs[1], FakeInput::Bytes { bytes, .. }
+        if String::from_utf8_lossy(bytes).contains("new messages")));
 }
 
 #[test]
@@ -1855,7 +1910,7 @@ fn output_after_a_return_leaves_an_output_only_session_to_its_idle_detector() {
 }
 
 #[test]
-fn only_a_working_claude_member_is_deliverable_and_every_hold_still_blocks_it() {
+fn working_qualifying_members_are_deliverable_and_every_hold_still_blocks_them() {
     use crate::router::DeliveryReadiness as R;
     use crate::session::state::agent::AgentEvent;
     let working = |runtime: Runtime| {
@@ -1868,7 +1923,7 @@ fn only_a_working_claude_member_is_deliverable_and_every_hold_still_blocks_it() 
     let readiness = |fixture: &StartupFixture| fixture.manager.delivery_readiness("session");
     for (runtime, expected, reservable) in [
         (Runtime::ClaudeCode, R::Working, true),
-        (Runtime::Codex, R::Ready { idle: false }, false),
+        (Runtime::Codex, R::Working, true),
     ] {
         let (fixture, _output) = working(runtime);
         assert_eq!(
@@ -1902,39 +1957,47 @@ fn only_a_working_claude_member_is_deliverable_and_every_hold_still_blocks_it() 
             readiness(&fixture)
         );
 
-        let (fixture, _output) = working(runtime);
-        let now = Instant::now();
-        fixture
-            .manager
-            .session_state("session")
-            .unwrap()
-            .lock()
-            .unwrap()
-            .model
-            .apply(
-                SessionEvent::TestObserved(crate::session::state::ObservedInput {
-                    state: runner_terminal::input_state::InputState::Drafting,
-                    since: now,
-                    composer_visible: true,
-                }),
-                crate::session::clock::state_now(),
+        for (input, expected) in [
+            (
+                runner_terminal::input_state::InputState::Drafting,
+                R::Drafting,
+            ),
+            (runner_terminal::input_state::InputState::Unsent, R::Unsent),
+        ] {
+            let (fixture, _output) = working(runtime);
+            let now = Instant::now();
+            fixture
+                .manager
+                .session_state("session")
+                .unwrap()
+                .lock()
+                .unwrap()
+                .model
+                .apply(
+                    SessionEvent::TestObserved(crate::session::state::ObservedInput {
+                        state: input,
+                        since: now,
+                        composer_visible: true,
+                    }),
+                    crate::session::clock::state_now(),
+                );
+            fixture
+                .manager
+                .session_state("session")
+                .unwrap()
+                .lock()
+                .unwrap()
+                .model
+                .apply(
+                    SessionEvent::TestInputAt(Some(now)),
+                    crate::session::clock::state_now(),
+                );
+            assert_eq!(
+                crate::session::clock::at(now + Duration::from_secs(5), 0, || readiness(&fixture)),
+                expected,
+                "{runtime:?}"
             );
-        fixture
-            .manager
-            .session_state("session")
-            .unwrap()
-            .lock()
-            .unwrap()
-            .model
-            .apply(
-                SessionEvent::TestInputAt(Some(now)),
-                crate::session::clock::state_now(),
-            );
-        assert_eq!(
-            crate::session::clock::at(now + Duration::from_secs(5), 0, || readiness(&fixture)),
-            R::Drafting,
-            "{runtime:?}"
-        );
+        }
 
         let (fixture, _output) = working(runtime);
         fixture.manager.publish_model_event(
