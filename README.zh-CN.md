@@ -67,9 +67,11 @@ https://github.com/user-attachments/assets/a45d2440-da17-4be4-8de5-0902f59eb1da
 
 ## 移动端
 
-**Runner iOS 版**已开放公开 TestFlight 测试：[通过 TestFlight 加入 →](https://testflight.apple.com/join/CRdfZzmS)
+**Runner iOS 版**已开放公开 TestFlight：[通过 TestFlight 加入 →](https://testflight.apple.com/join/CRdfZzmS)
 
-在 iPhone 上查看已配对电脑的实时终端、发起 chat 和 mission，随时回复你的 crew。远程控制功能整体仍处于内测阶段——中继服务器目前处于内测中且仅面向中国大陆，海外地区的 Tailscale 支持正在开发中。如需参与内测，请[前往官方网站加入候补名单 →](https://runnersh.dev/zh-CN/beta/)
+在 iPhone 上查看已配对电脑的实时终端、发起 chat 和 mission，随时回复你的 crew。
+
+> **需要内测资格：** 仅安装 TestFlight 应用目前还无法直接使用——登录并连接电脑需要已获邀请的内测账号，因为中继服务器仍处于内测阶段（目前仅面向中国大陆，海外地区的 Tailscale 支持正在开发中）。[前往官方网站加入内测候补名单 →](https://runnersh.dev/zh-CN/beta/)
 
 ## 功能
 

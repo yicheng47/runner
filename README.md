@@ -67,9 +67,11 @@ https://github.com/user-attachments/assets/13e4d920-a803-47d5-8a99-8078b364bc3e
 
 ## Mobile
 
-**Runner for iOS** is available via public TestFlight: [Join on TestFlight →](https://testflight.apple.com/join/CRdfZzmS)
+**Runner for iOS** is on public TestFlight: [Join on TestFlight →](https://testflight.apple.com/join/CRdfZzmS)
 
-Use your iPhone to follow live terminals, start chats and missions, and answer your crew on a paired computer. Remote control as a whole is still in private beta—the relay server is in private beta and currently available in mainland China only, while Tailscale support for users outside mainland China is under development. To join the private beta, [sign up for the waitlist on the official website →](https://runnersh.dev/beta/)
+Use your iPhone to follow live terminals, start chats and missions, and answer your crew on a paired computer.
+
+> **Requires private beta access:** Installing the TestFlight app alone cannot be used yet—signing in and connecting to your computer requires an invited private-beta account, as the relay server is still in private beta (currently available in mainland China only; Tailscale support for users outside mainland China is under development). [Join the private beta waitlist on the official website →](https://runnersh.dev/beta/)
 
 ## Features
 
