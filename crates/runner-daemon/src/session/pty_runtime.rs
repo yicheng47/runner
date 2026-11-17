@@ -30,8 +30,8 @@ use super::process::{kill_process, ProcessTree};
 #[cfg(unix)]
 use super::process::{process_command_line, reap_descendants, wait_for_process_exit_until};
 use super::runtime::{
-    OutputStream, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession, SessionActivityState,
-    SessionRuntime, SessionStatus, SpawnSpec,
+    BoundInput, OutputStream, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession,
+    SessionActivityState, SessionRuntime, SessionStatus, SpawnSpec,
 };
 use crate::session::state::{CTRL_C_INTERRUPT, ESCAPE_INTERRUPT};
 
@@ -459,6 +459,14 @@ impl SessionRuntime for PtyRuntime {
     fn send_key(&self, session: &RuntimeSession, key: &str) -> RuntimeResult<()> {
         let bytes = translate_key(key)?;
         write_to(self, &session.session_id, &bytes)
+    }
+
+    fn bind_input(&self, session: &RuntimeSession) -> Option<BoundInput> {
+        let handle = lookup(self, &session.session_id).ok()?;
+        let session_id = session.session_id.clone();
+        Some(Box::new(move |bytes| {
+            write_handle(&handle, &session_id, bytes)
+        }))
     }
 
     fn resize(&self, session: &RuntimeSession, cols: u16, rows: u16) -> RuntimeResult<()> {
@@ -1253,6 +1261,10 @@ fn lookup(runtime: &PtyRuntime, session_id: &str) -> RuntimeResult<Arc<SessionHa
 
 fn write_to(runtime: &PtyRuntime, session_id: &str, bytes: &[u8]) -> RuntimeResult<()> {
     let handle = lookup(runtime, session_id)?;
+    write_handle(&handle, session_id, bytes)
+}
+
+fn write_handle(handle: &SessionHandle, session_id: &str, bytes: &[u8]) -> RuntimeResult<()> {
     let mut writer = handle.writer.lock().expect("writer poisoned");
     let writer = writer
         .as_mut()

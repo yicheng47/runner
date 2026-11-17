@@ -599,6 +599,7 @@ impl SessionManager {
                 runtime_session: rt_session.clone(),
                 rollout_capture: rollout_capture.clone(),
                 forwarder: None,
+                input: Default::default(),
                 stop: output.stop_flag(),
             },
             None,

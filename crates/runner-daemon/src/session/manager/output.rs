@@ -1,7 +1,8 @@
+use super::input_writer::Written;
 use super::*;
 use crate::session::pty_runtime::interrupt_key;
 pub(crate) use crate::session::state::LocalInputClass;
-use crate::session::state::CTRL_C_INTERRUPT;
+use crate::session::state::{InputCheckpoint, CTRL_C_INTERRUPT};
 use rusqlite::OptionalExtension;
 
 // Match alacritty's read budget while bounding a single terminal-lock hold.
@@ -635,8 +636,84 @@ impl SessionManager {
     /// keystrokes that might trigger an early submit on the first
     /// `\n`.
     pub fn inject_stdin(&self, session_id: &str, bytes: &[u8]) -> Result<()> {
-        let rt_session = self.live_runtime_session(session_id)?;
-        self.write_stdin(session_id, &rt_session, bytes)
+        let written = self.live_input_writer(session_id)?.push(bytes)?.wait()?;
+        self.report_overdue(session_id, written);
+        if bytes == b"\r" {
+            self.capture_codex_session_key(session_id);
+        }
+        Ok(())
+    }
+
+    /// A terminal's reply to a query from its program. A released terminal's late reply is
+    /// dropped, so it cannot reach a terminal installed after it.
+    pub(super) fn inject_reply(
+        &self,
+        session_id: &str,
+        terminal: &Arc<runner_terminal::terminal::TerminalModel>,
+        bytes: &[u8],
+    ) -> Result<()> {
+        let write = {
+            let state = self
+                .session_state(session_id)
+                .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+            let state = state.lock().unwrap();
+            if !state
+                .terminal
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, terminal))
+            {
+                return Err(Error::msg(format!("terminal released: {session_id}")));
+            }
+            let handle = state
+                .handle
+                .as_ref()
+                .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+            self.input_writer(handle).push(bytes)?
+        };
+        let written = write.wait()?;
+        self.report_overdue(session_id, written);
+        Ok(())
+    }
+
+    /// An overdue write stands, so its caller carries on as if it were written, but the person
+    /// learns that the session stopped reading its input.
+    pub(super) fn report_overdue(&self, session_id: &str, written: Written) {
+        let Written::Overdue(message) = written else {
+            return;
+        };
+        if let Some(events) = self.runtime_events.read().unwrap().as_ref() {
+            events.emit(
+                "session/input-error",
+                &serde_json::json!({ "session_id": session_id, "message": message }),
+            );
+        }
+    }
+
+    fn live_input_writer(&self, session_id: &str) -> Result<Arc<input_writer::InputWriter>> {
+        let state = self
+            .session_state(session_id)
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+        let state = state.lock().unwrap();
+        state
+            .handle
+            .as_ref()
+            .map(|handle| self.input_writer(handle))
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))
+    }
+
+    /// Undo what a dropped input changed in the model and no later event has changed since.
+    fn roll_back_input(
+        session: &Mutex<SessionState>,
+        before: InputCheckpoint,
+        after: InputCheckpoint,
+    ) {
+        session.lock().unwrap().model.apply(
+            SessionEvent::InputWriteFailed {
+                before: Box::new(before),
+                after: Box::new(after),
+            },
+            crate::session::clock::state_now(),
+        );
     }
 
     /// Return whether a live PTY has handed control to a foreground process
@@ -665,10 +742,10 @@ impl SessionManager {
         {
             return Ok(false);
         }
-        let Some(rt_session) = session
+        let Some(input) = session
             .handle
             .as_ref()
-            .map(|handle| handle.runtime_session.clone())
+            .map(|handle| self.input_writer(handle))
         else {
             return Ok(false);
         };
@@ -685,8 +762,10 @@ impl SessionManager {
                 terminal.track_delivery_input(text);
             }
         }
-        self.write_stdin_bytes(&rt_session, bytes)?;
+        let write = input.push(bytes);
         drop(delivery);
+        let written = write?.wait()?;
+        self.report_overdue(session_id, written);
         if bytes == b"\r" {
             self.capture_codex_session_key(session_id);
         }
@@ -704,6 +783,24 @@ impl SessionManager {
             bytes,
             events,
             DIRECT_INPUT_GATE_TIMEOUT,
+            None,
+        )
+    }
+
+    /// Input from the session's terminal input worker, on that worker's thread. Input from a
+    /// worker the session has since retired is refused, so it cannot reach a later handle.
+    pub(super) fn inject_terminal_input(
+        &self,
+        session_id: &str,
+        bytes: &[u8],
+        events: &dyn SessionEvents,
+    ) -> Result<()> {
+        self.inject_direct_stdin_with_wait_timeout(
+            session_id,
+            bytes,
+            events,
+            DIRECT_INPUT_GATE_TIMEOUT,
+            Some(thread::current().id()),
         )
     }
 
@@ -713,6 +810,7 @@ impl SessionManager {
         bytes: &[u8],
         events: &dyn SessionEvents,
         wait_timeout: Duration,
+        worker: Option<thread::ThreadId>,
     ) -> Result<()> {
         let submitted = bytes == b"\r";
         let input_class = classify_local_input(bytes);
@@ -759,12 +857,20 @@ impl SessionManager {
             )));
         }
 
-        let outcome = (|| {
+        let queued = (|| {
             let mut session = session.lock().unwrap();
-            let rt_session = session
+            if worker.is_some_and(|worker| {
+                session
+                    .terminal_input_worker
+                    .as_ref()
+                    .is_none_or(|current| current.thread().id() != worker)
+            }) {
+                return Err(Error::msg(format!("terminal input closed: {session_id}")));
+            }
+            let input = session
                 .handle
                 .as_ref()
-                .map(|handle| handle.runtime_session.clone())
+                .map(|handle| self.input_writer(handle))
                 .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
             let previous = session.model.input_checkpoint();
             let mission_status_sink = session.mission_status_sink.clone();
@@ -790,24 +896,60 @@ impl SessionManager {
             let input_cleared = effects
                 .input_cleared
                 .then_some(router::SessionDeliveryEvent::ReadinessChanged);
-            if let Err(error) = self.write_stdin_bytes(&rt_session, bytes) {
-                session.model.apply(
-                    SessionEvent::InputWriteFailed(previous),
-                    crate::session::clock::state_now(),
-                );
-                return Err(error);
-            }
+            let applied = session.model.input_checkpoint();
+            let write = match input.push(bytes) {
+                Ok(write) => write,
+                Err(error) => {
+                    session.model.apply(
+                        SessionEvent::InputWriteFailed {
+                            before: Box::new(previous),
+                            after: Box::new(applied),
+                        },
+                        crate::session::clock::state_now(),
+                    );
+                    return Err(error);
+                }
+            };
             Ok((
-                transition,
-                mission_status_sink,
-                mission_scoped,
-                input_cleared,
+                write,
+                previous,
+                applied,
+                (
+                    transition,
+                    mission_status_sink,
+                    mission_scoped,
+                    input_cleared,
+                ),
             ))
         })();
+        // The ticket stays unserved until the write settles, so delivery still sees this input
+        // pending, but nothing holds the gate or the session while the bytes are written.
+        drop(delivery);
+        let mut dropped = None;
+        let outcome = queued.and_then(|(write, previous, applied, effects)| match write.wait() {
+            Ok(Written::Done) => Ok(effects),
+            // The bytes arrive once the agent reads again, so the input stands.
+            Ok(Written::Overdue(message)) => {
+                events.input_error(session_id, &message);
+                Ok(effects)
+            }
+            Err(error) => {
+                dropped = Some((previous, applied));
+                Err(error)
+            }
+        });
 
-        delivery.next_served = delivery.next_served.wrapping_add(1);
-        delivery.skip_cancelled_tickets();
-        let input_queue_drained = delivery.next_served == delivery.next_ticket;
+        let mut delivery = gate.state.lock().unwrap();
+        let current = delivery.generation == generation;
+        // A stopped or replaced process has a model the input never touched.
+        if let Some((previous, applied)) = dropped.filter(|_| current) {
+            Self::roll_back_input(&session, previous, applied);
+        }
+        if current {
+            delivery.next_served = delivery.next_served.wrapping_add(1);
+            delivery.skip_cancelled_tickets();
+        }
+        let input_queue_drained = current && delivery.next_served == delivery.next_ticket;
         let successful_clear = outcome
             .as_ref()
             .is_ok_and(|(_, _, _, input_cleared)| input_cleared.is_some());
@@ -842,39 +984,6 @@ impl SessionManager {
         Ok(())
     }
 
-    fn write_stdin(
-        &self,
-        session_id: &str,
-        rt_session: &RuntimeSession,
-        bytes: &[u8],
-    ) -> Result<()> {
-        self.write_stdin_bytes(rt_session, bytes)?;
-        if bytes == b"\r" {
-            self.capture_codex_session_key(session_id);
-        }
-        Ok(())
-    }
-
-    pub(super) fn write_stdin_bytes(
-        &self,
-        rt_session: &RuntimeSession,
-        bytes: &[u8],
-    ) -> Result<()> {
-        // ASCII CR (0x0D) is what claude-code's TUI editor reads as
-        // "Enter" — bare-byte writes that just contain `\r` map to
-        // `send_key("Enter")`. Everything else routes as a literal
-        // byte stream.
-        if bytes == b"\r" {
-            self.runtime
-                .send_key(rt_session, "Enter")
-                .map_err(Into::into)
-        } else {
-            self.runtime
-                .send_bytes(rt_session, bytes)
-                .map_err(Into::into)
-        }
-    }
-
     fn capture_codex_session_key(&self, session_id: &str) {
         if let Some(ctx) = self.rollout_capture_context(session_id) {
             self.spawn_rollout_capture_if_unkeyed(session_id, &ctx);
@@ -891,35 +1000,33 @@ impl SessionManager {
     /// keeps the same constant — fake runtimes complete instantly so
     /// the wait is harmless.
     pub fn inject_paste(&self, session_id: &str, payload: &[u8]) -> Result<()> {
-        let rt_session = self.live_runtime_session(session_id)?;
-        self.runtime.send_bytes(&rt_session, payload)?;
+        // One writer for both halves, so the Enter cannot reach a process started after the paste.
+        let input = self.live_input_writer(session_id)?;
+        let written = input.push(payload)?.wait()?;
+        self.report_overdue(session_id, written);
         std::thread::sleep(std::time::Duration::from_millis(120));
-        let result = match self.session_state(session_id) {
-            Some(session) => {
-                let mut session = session.lock().unwrap();
-                let result = self
-                    .runtime
-                    .send_key(&rt_session, "Enter")
-                    .map_err(Into::into);
-                if result.is_ok() {
-                    session.model.apply(
-                        SessionEvent::ArmCompletion,
-                        crate::session::clock::state_now(),
-                    );
-                }
-                result
-            }
-            _ => self
-                .runtime
-                .send_key(&rt_session, "Enter")
-                .map_err(Into::into),
+        let session = self
+            .session_state(session_id)
+            .ok_or_else(|| Error::msg(format!("session not found: {session_id}")))?;
+        let (write, previous, armed) = {
+            let mut state = session.lock().unwrap();
+            let write = input.push(b"\r")?;
+            let previous = state.model.input_checkpoint();
+            state.model.apply(
+                SessionEvent::ArmCompletion,
+                crate::session::clock::state_now(),
+            );
+            (write, previous, state.model.input_checkpoint())
         };
-        if result.is_ok() {
-            if let Some(ctx) = self.rollout_capture_context(session_id) {
-                self.spawn_rollout_capture_if_unkeyed(session_id, &ctx);
+        match write.wait() {
+            Ok(written) => self.report_overdue(session_id, written),
+            Err(error) => {
+                Self::roll_back_input(&session, previous, armed);
+                return Err(error);
             }
         }
-        result
+        self.capture_codex_session_key(session_id);
+        Ok(())
     }
 
     /// Resize the session's pane. The frontend calls this after the GPUI
@@ -1153,8 +1260,11 @@ impl SessionManager {
     }
 
     pub fn forget_session_state(&self, session_id: &str) {
-        let _control = self.terminal_control.lock().unwrap();
-        if let Some(state) = self.raw_session_state(session_id) {
+        let workers = {
+            let _control = self.terminal_control.lock().unwrap();
+            let Some(state) = self.raw_session_state(session_id) else {
+                return;
+            };
             let mut state = state.lock().unwrap();
             if state.handle.is_some() {
                 return;
@@ -1164,12 +1274,12 @@ impl SessionManager {
             state.last_requested_size = None;
             state.last_requested_size_dirty = false;
             state.pending_resize = None;
-            drop(state);
-            // Worker callbacks acquire the session lock. Finish them before a new
-            // terminal can install, even when a reader still holds the old model.
-            for worker in workers {
-                let _ = worker.join();
-            }
+            workers
+        };
+        // A terminal can install while these finish: a retired input worker's input and a
+        // released terminal's replies are refused.
+        for worker in workers {
+            let _ = worker.join();
         }
         self.prune_empty_session_state(session_id);
     }

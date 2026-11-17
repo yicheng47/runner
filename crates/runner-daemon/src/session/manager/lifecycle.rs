@@ -263,6 +263,7 @@ impl SessionManager {
         };
         let control = self.terminal_control.lock().unwrap();
         let mut exited = false;
+        let mut workers = Vec::new();
         // Update tasks retain output until dismissal or their success timeout.
         if let Some(state) = self.session_state(session_id) {
             let gate = state.lock().unwrap().delivery_gate.clone();
@@ -280,7 +281,7 @@ impl SessionManager {
                 delivery.cancelled_tickets.clear();
                 gate.ready.notify_all();
                 state.handle = None;
-                let workers = if retain_terminal {
+                workers = if retain_terminal {
                     state.finish_companion_terminals();
                     state.terminal_input = None;
                     for (_, queue) in state.subscribers.drain(..) {
@@ -295,15 +296,15 @@ impl SessionManager {
                     crate::session::clock::state_now(),
                 );
                 state.mission_status_sink = None;
-                drop(state);
-                drop(delivery);
-                for worker in workers {
-                    let _ = worker.join();
-                }
                 exited = true;
             }
         }
         drop(control);
+        // A handle can install while these finish: a retired input worker's input and a
+        // released terminal's replies are refused.
+        for worker in workers {
+            let _ = worker.join();
+        }
         if exited {
             self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Exited);
         }

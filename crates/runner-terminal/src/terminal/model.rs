@@ -78,12 +78,13 @@ impl TerminalModel {
             .collect()
     }
 
-    /// Serialize the revision and row checks through the write with native input observations.
+    /// Serialize the revision and row checks with native input observations until `write` has
+    /// committed the Enter. `write` returns `None` to decline it, which leaves the tracker as it was.
     pub fn with_unchanged_input<T>(
         &self,
         revision: u64,
         probe: &crate::delivery_probe::InputProbe,
-        write: impl FnOnce() -> T,
+        write: impl FnOnce() -> Option<T>,
     ) -> Option<T> {
         let mut tracker = self.input_tracker.lock().unwrap();
         if tracker.reset_guard() != revision
@@ -92,12 +93,9 @@ impl TerminalModel {
         {
             return None;
         }
-        {
-            let term = self.term.lock_unfair();
-            tracker.track_delivery_submit(Instant::now(), &term);
-        }
-        let result = write();
-        drop(tracker);
+        let result = write()?;
+        let term = self.term.lock_unfair();
+        tracker.track_delivery_submit(Instant::now(), &term);
         Some(result)
     }
 
@@ -1047,11 +1045,14 @@ mod delivery_tests {
         model.track_delivery_input(text);
         model.feed_output(2, text.as_bytes());
         let revision = model.input_reset_guard();
-        assert_eq!(model.with_unchanged_input(revision, &blind, || ()), None);
+        assert_eq!(
+            model.with_unchanged_input(revision, &blind, || Some(())),
+            None
+        );
         model.track_delivery_submit();
         model.feed_output(3, format!("\r> {text}").as_bytes());
         assert_eq!(
-            model.with_unchanged_input(revision, &blind, || ()),
+            model.with_unchanged_input(revision, &blind, || Some(())),
             Some(())
         );
         model.observe_input(&InputEvent::Key {
@@ -1062,7 +1063,10 @@ mod delivery_tests {
             .lock()
             .unwrap()
             .unsent_notice(&model.term.lock()));
-        assert_eq!(model.with_unchanged_input(revision, &blind, || ()), None);
+        assert_eq!(
+            model.with_unchanged_input(revision, &blind, || Some(())),
+            None
+        );
         let workers = model.take_workers();
         drop(model);
         for worker in workers {
@@ -1106,6 +1110,7 @@ mod delivery_tests {
                 started.recv_timeout(Duration::from_secs(2)).unwrap();
                 assert!(finished.try_recv().is_err());
                 host.entered.store(true, Ordering::SeqCst);
+                Some(())
             }),
             Some(())
         );

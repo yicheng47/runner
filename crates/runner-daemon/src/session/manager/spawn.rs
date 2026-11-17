@@ -43,6 +43,7 @@ impl SessionManager {
                 runtime_session: rt_session.clone(),
                 rollout_capture: None,
                 forwarder: None,
+                input: Default::default(),
                 stop: Arc::clone(&stop),
             },
             None,

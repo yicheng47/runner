@@ -233,6 +233,17 @@ impl FakeRuntime {
         self.spawns.lock().unwrap().len()
     }
 
+    /// Blocks the next `send_bytes` or `send_key`; returns its start signal and its release.
+    fn block_next_write(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (entered, started) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        *self.write_gate.lock().unwrap() = Some(RuntimeGate {
+            entered,
+            release: released,
+        });
+        (started, release)
+    }
+
     fn fail_stop_for(&self, session_id: &str) {
         self.stop_failures
             .lock()
@@ -345,7 +356,8 @@ impl SessionRuntime for FakeRuntime {
     }
 
     fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
-        if let Some(gate) = self.write_gate.lock().unwrap().take() {
+        let gate = self.write_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
             let _ = gate.entered.send(());
             let _ = gate.release.recv();
         }
@@ -357,6 +369,11 @@ impl SessionRuntime for FakeRuntime {
     }
 
     fn send_key(&self, session: &RuntimeSession, key: &str) -> RuntimeResult<()> {
+        let gate = self.write_gate.lock().unwrap().take();
+        if let Some(gate) = gate {
+            let _ = gate.entered.send(());
+            let _ = gate.release.recv();
+        }
         self.inputs.lock().unwrap().push(FakeInput::Key {
             session_id: session.session_id.clone(),
             key: key.to_string(),
@@ -405,6 +422,7 @@ struct Capture {
     status: Mutex<Vec<SessionActivityEvent>>,
     activity: Mutex<Vec<RoleActivityEvent>>,
     warning: Mutex<Vec<WarningEvent>>,
+    input_errors: Mutex<Vec<(String, String)>>,
 }
 
 impl SessionEvents for Capture {
@@ -448,6 +466,12 @@ impl SessionEvents for Capture {
     }
     fn warning(&self, ev: &WarningEvent) {
         self.warning.lock().unwrap().push(ev.clone());
+    }
+    fn input_error(&self, id: &str, message: &str) {
+        self.input_errors
+            .lock()
+            .unwrap()
+            .push((id.to_owned(), message.to_owned()));
     }
 }
 
@@ -520,6 +544,32 @@ fn capture_for(manager: &Arc<SessionManager>) -> Arc<Capture> {
 
 fn capture() -> Arc<Capture> {
     Arc::new(Capture::default())
+}
+
+/// Whether the channel holds an input error for `session_id` saying its input is still waiting.
+fn reported_overdue(
+    events: &mut tokio::sync::broadcast::Receiver<crate::events::AppEvent>,
+    session_id: &str,
+) -> bool {
+    while let Ok(event) = events.try_recv() {
+        if event.name == "session/input-error"
+            && event.payload["session_id"] == session_id
+            && event.payload["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("arrives if the session reads again"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+fn eventually(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !done() {
+        assert!(Instant::now() < deadline, "{what}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 fn wait_for_session_status_event(
@@ -633,6 +683,7 @@ fn install_test_session_handle(manager: &SessionManager, session_id: &str) {
         },
         rollout_capture: None,
         forwarder: None,
+        input: Default::default(),
         stop: Arc::new(AtomicBool::new(false)),
     });
 }

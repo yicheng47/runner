@@ -1594,7 +1594,14 @@ fn a_failed_write_withdraws_the_busy_it_armed() {
     let before = model.status().clone();
     let checkpoint = model.input_checkpoint();
     submit(&mut model, start);
-    model.apply(SessionEvent::InputWriteFailed(checkpoint), start);
+    let after = model.input_checkpoint();
+    model.apply(
+        SessionEvent::InputWriteFailed {
+            before: Box::new(checkpoint),
+            after: Box::new(after),
+        },
+        start,
+    );
     assert_eq!(model.activity(), IDLE);
     assert_eq!(model.status(), &before);
     assert!(!model.submit_busy_due(later(start, SUBMIT_TURN_START_WINDOW).monotonic));
@@ -1699,6 +1706,68 @@ fn a_second_return_restarts_the_wait_while_no_turn_has_shown() {
 }
 
 #[test]
+fn a_failed_write_withdraws_only_what_its_input_still_holds() {
+    let start = now();
+    let typed = |model: &mut SessionModel, class, submitted, at| {
+        let before = model.input_checkpoint();
+        model.apply(SessionEvent::Input { class, submitted }, at);
+        (before, model.input_checkpoint())
+    };
+
+    // Viewing the session while the write waits stays viewed.
+    let mut model = hook_idle(start);
+    model.apply(SessionEvent::Unread { viewed: false }, start);
+    let (before, after) = typed(&mut model, Some(LocalInputClass::ClearPending), true, start);
+    model.apply(SessionEvent::Viewed, start);
+    model.apply(
+        SessionEvent::InputWriteFailed {
+            before: Box::new(before),
+            after: Box::new(after),
+        },
+        start,
+    );
+    assert_eq!(model.activity(), IDLE);
+    assert!(model.status().unread_since.is_none());
+    assert!(!model.completion_armed());
+    assert!(!model.submit_busy_due(later(start, SUBMIT_TURN_START_WINDOW).monotonic));
+
+    // A submit dropped after the agent confirmed a real turn leaves that turn and its completion
+    // standing, though they match what the submit had set.
+    let mut model = hook_idle(start);
+    let (before, after) = typed(&mut model, Some(LocalInputClass::ClearPending), true, start);
+    let working = later(start, Duration::from_secs(1));
+    observe(&mut model, hook(Activity::Working), working);
+    assert_eq!(model.activity(), BUSY);
+    model.apply(
+        SessionEvent::InputWriteFailed {
+            before: Box::new(before),
+            after: Box::new(after),
+        },
+        working,
+    );
+    assert_eq!(model.activity(), BUSY);
+    assert_eq!(model.status().observation.activity, Activity::Working);
+    assert!(model.completion_armed());
+
+    // A draft dropped while the agent reported a turn of its own leaves that turn standing.
+    let mut model = hook_idle(start);
+    let (before, after) = typed(&mut model, Some(LocalInputClass::SetPending), false, start);
+    assert!(model.local_input_pending());
+    let working = later(start, Duration::from_secs(1));
+    observe(&mut model, hook(Activity::Working), working);
+    model.apply(
+        SessionEvent::InputWriteFailed {
+            before: Box::new(before),
+            after: Box::new(after),
+        },
+        working,
+    );
+    assert_eq!(model.activity(), BUSY);
+    assert_eq!(model.status().observation.activity, Activity::Working);
+    assert!(!model.local_input_pending());
+}
+
+#[test]
 fn a_failed_second_write_keeps_the_first_deadline() {
     let start = now();
     let second = later(start, Duration::from_millis(9_900));
@@ -1708,7 +1777,14 @@ fn a_failed_second_write_keeps_the_first_deadline() {
     let checkpoint = model.input_checkpoint();
     submit(&mut model, second);
     assert!(!model.submit_busy_due(first_due.monotonic));
-    model.apply(SessionEvent::InputWriteFailed(checkpoint), second);
+    let after = model.input_checkpoint();
+    model.apply(
+        SessionEvent::InputWriteFailed {
+            before: Box::new(checkpoint),
+            after: Box::new(after),
+        },
+        second,
+    );
     assert_eq!(model.activity(), BUSY, "the first submit still stands");
     assert!(model.submit_busy_due(first_due.monotonic));
     assert!(expire(&mut model, first_due).publication.is_some());

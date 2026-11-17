@@ -267,14 +267,20 @@ impl SessionManager {
         let Some(terminal) = session.terminal.clone() else {
             return Ok(false);
         };
-        let runtime_session = handle.runtime_session.clone();
+        let input = self.input_writer(handle);
         drop(session);
-        terminal
-            .with_unchanged_input(snapshot.input_revision.1, probe, || {
-                self.write_stdin_bytes(&runtime_session, b"\r")
-            })
-            .transpose()
-            .map(|written| written.is_some())
+        // Only an idle writer takes the Enter, so it reaches the PTY while the checked input still
+        // holds; a busy one leaves the resubmit to a later turn of delivery.
+        let write = terminal.with_unchanged_input(snapshot.input_revision.1, probe, || {
+            input.push_when_idle(b"\r").transpose()
+        });
+        drop(delivery);
+        let Some(write) = write else {
+            return Ok(false);
+        };
+        let written = write?.wait()?;
+        self.report_overdue(session_id, written);
+        Ok(true)
     }
 
     pub fn confirm_delivery(&self, session_id: &str, snapshot: &router::DeliverySnapshot) {

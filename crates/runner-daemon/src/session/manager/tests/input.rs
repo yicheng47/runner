@@ -575,3 +575,373 @@ fn observed_drafting_to_idle_emits_input_cleared() {
 // a portable-pty master now assert on FakeRuntime's captured
 // pastes / keys / bytes_writes directly — faster and free of
 // shell-timing flakes.
+
+fn direct_chat(
+    mgr: &Arc<SessionManager>,
+    pool: &Arc<DbPool>,
+    cap: &Arc<Capture>,
+    role: &Role,
+) -> String {
+    mgr.spawn_direct(
+        role,
+        None,
+        None,
+        None,
+        None,
+        Some(fixture_tmp_dir().to_str().unwrap()),
+        None,
+        None,
+        fixture_tmp_dir(),
+        Arc::clone(pool),
+        Arc::clone(cap) as Arc<dyn SessionEvents>,
+        None,
+    )
+    .unwrap()
+    .id
+}
+
+fn input_role(pool: &DbPool) -> Role {
+    let role = role("/bin/cat", &[]);
+    insert_role_row(&pool.get().unwrap(), &role);
+    role
+}
+
+fn written(fake: &FakeRuntime, session_id: &str) -> Vec<Vec<u8>> {
+    fake.bytes_writes()
+        .into_iter()
+        .filter(|(id, _)| id == session_id)
+        .map(|(_, bytes)| bytes)
+        .collect()
+}
+
+#[test]
+fn every_input_path_writes_through_one_ordered_stream() {
+    let pool = pool_with_schema();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture_for(&mgr);
+    let role = input_role(&pool);
+    let id = direct_chat(&mgr, &pool, &cap, &role);
+    fake.push_status(0, SessionActivityState::Idle);
+    wait_for_session_status_event(&cap, &id, SessionActivityState::Idle);
+    let before = fake.inputs.lock().unwrap().len();
+
+    let token = match mgr.reserve_delivery(&id).unwrap() {
+        router::DeliveryReservation::Ready(token) => token,
+        other => panic!("expected a delivery reservation, got {other:?}"),
+    };
+    assert!(mgr.inject_reserved(&id, token, b"[inbox]").unwrap());
+    assert!(mgr.inject_reserved(&id, token, b"\r").unwrap());
+    mgr.finish_delivery(&id, token);
+
+    // Typing blocks in the PTY; a reply and a paste queue behind it from their own threads.
+    let (started, release) = fake.block_next_write();
+    let typing = {
+        let (mgr, cap, id) = (Arc::clone(&mgr), Arc::clone(&cap), id.clone());
+        std::thread::spawn(move || mgr.inject_direct_stdin(&id, b"typed", cap.as_ref()))
+    };
+    started.recv_timeout(Duration::from_secs(30)).unwrap();
+    let reply = {
+        let (mgr, id) = (Arc::clone(&mgr), id.clone());
+        std::thread::spawn(move || mgr.inject_stdin(&id, b"\x1b[?1u"))
+    };
+    mgr.wait_for_queued_input(&id, 1);
+    let paste = {
+        let (mgr, id) = (Arc::clone(&mgr), id.clone());
+        std::thread::spawn(move || mgr.inject_paste(&id, b"pasted"))
+    };
+    mgr.wait_for_queued_input(&id, 2);
+    release.send(()).unwrap();
+    typing.join().unwrap().unwrap();
+    reply.join().unwrap().unwrap();
+    paste.join().unwrap().unwrap();
+
+    let bytes = |bytes: &[u8]| FakeInput::Bytes {
+        session_id: id.clone(),
+        bytes: bytes.to_vec(),
+    };
+    let enter = || FakeInput::Key {
+        session_id: id.clone(),
+        key: "Enter".into(),
+    };
+    assert_eq!(
+        fake.inputs.lock().unwrap()[before..],
+        [
+            bytes(b"[inbox]"),
+            enter(),
+            bytes(b"typed"),
+            bytes(b"\x1b[?1u"),
+            bytes(b"pasted"),
+            enter(),
+        ]
+    );
+    mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn a_session_that_stops_reading_fails_its_typing_promptly_while_others_keep_working() {
+    let pool = pool_with_schema();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture_for(&mgr);
+    let role = input_role(&pool);
+    let stuck = direct_chat(&mgr, &pool, &cap, &role);
+    let healthy = direct_chat(&mgr, &pool, &cap, &role);
+    mgr.desktop_input(&healthy, b"first").unwrap();
+    eventually("the healthy session's first input is written", || {
+        written(&fake, &healthy) == [b"first"]
+    });
+
+    // Only the stuck session's writer, started after this, gets the short deadline.
+    mgr.set_input_deadline(Duration::from_millis(200));
+    let (started, release) = fake.block_next_write();
+    mgr.desktop_input(&stuck, b"blocked").unwrap();
+    started.recv_timeout(Duration::from_secs(30)).unwrap();
+
+    let _ = mgr.agent_status(&stuck);
+    assert!(mgr.status_snapshot().contains_key(&stuck));
+    assert!(mgr.delivery_snapshot(&stuck).is_some());
+    mgr.desktop_input(&healthy, b"second").unwrap();
+    eventually("the healthy session keeps taking input", || {
+        written(&fake, &healthy) == [&b"first"[..], b"second"]
+    });
+
+    let stalls = || {
+        cap.input_errors
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(id, message)| id == &stuck && message.contains("stopped reading its input"))
+            .count()
+    };
+    eventually("the blocked write fails at its deadline", || stalls() == 1);
+    mgr.desktop_input(&stuck, b"refused").unwrap();
+    eventually("input behind an overdue write is refused", || stalls() == 2);
+
+    release.send(()).unwrap();
+    mgr.wait_for_idle_input(&stuck);
+    mgr.desktop_input(&stuck, b"recovered").unwrap();
+    eventually("the session takes input once it reads again", || {
+        written(&fake, &stuck) == [&b"blocked"[..], b"recovered"]
+    });
+    mgr.kill(&stuck).unwrap();
+    mgr.kill(&healthy).unwrap();
+}
+
+#[test]
+fn only_the_sessions_own_input_worker_and_terminal_write_to_it() {
+    let pool = pool_with_schema();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture_for(&mgr);
+    let role = input_role(&pool);
+    let id = direct_chat(&mgr, &pool, &cap, &role);
+
+    let stray = mgr
+        .inject_terminal_input(&id, b"stray", cap.as_ref())
+        .unwrap_err();
+    assert!(
+        stray.to_string().contains("terminal input closed"),
+        "{stray}"
+    );
+    mgr.desktop_input(&id, b"typed").unwrap();
+    eventually("the input worker's input is written", || {
+        written(&fake, &id) == [b"typed"]
+    });
+
+    let events = Arc::clone(&cap) as Arc<dyn SessionEvents>;
+    let released = mgr.create_terminal(&id, 80, 24, &pool, &events).unwrap();
+    let stale = mgr.inject_reply(&id, &released, b"stale").unwrap_err();
+    assert!(stale.to_string().contains("terminal released"), "{stale}");
+    mgr.inject_reply(&id, &mgr.terminal_model(&id).unwrap(), b"reply")
+        .unwrap();
+    assert_eq!(written(&fake, &id), [&b"typed"[..], b"reply"]);
+    for worker in released.stop_workers() {
+        worker.join().unwrap();
+    }
+    mgr.kill(&id).unwrap();
+}
+
+fn enters(fake: &FakeRuntime, session_id: &str) -> usize {
+    fake.keys()
+        .iter()
+        .filter(|(id, key)| id == session_id && key == "Enter")
+        .count()
+}
+
+#[test]
+fn an_overdue_write_stands_instead_of_being_undone_or_delivered_again() {
+    let pool = pool_with_schema();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    mgr.set_input_deadline(Duration::from_millis(200));
+    let events = crate::events::EventChannel::new();
+    let mut seen = events.subscribe();
+    mgr.set_runtime_events(events);
+    let cap = capture_for(&mgr);
+    let role = input_role(&pool);
+    let delivered = direct_chat(&mgr, &pool, &cap, &role);
+    let typed = direct_chat(&mgr, &pool, &cap, &role);
+    for (index, id) in [&delivered, &typed].into_iter().enumerate() {
+        fake.push_status(index, SessionActivityState::Idle);
+        wait_for_session_status_event(&cap, id, SessionActivityState::Idle);
+    }
+
+    // A delivery body whose write outlives its deadline reports as typed, so the router does
+    // not finish the delivery as failed and type the notice again.
+    let token = match mgr.reserve_delivery(&delivered).unwrap() {
+        router::DeliveryReservation::Ready(token) => token,
+        other => panic!("expected a delivery reservation, got {other:?}"),
+    };
+    let (started, release) = fake.block_next_write();
+    assert!(mgr.inject_reserved(&delivered, token, b"[inbox]").unwrap());
+    started.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(reported_overdue(&mut seen, &delivered));
+    mgr.finish_delivery(&delivered, token);
+    release.send(()).unwrap();
+    mgr.wait_for_idle_input(&delivered);
+    assert_eq!(written(&fake, &delivered), [b"[inbox]"]);
+
+    // A submitted Enter whose write outlives its deadline keeps the turn it started, says it is
+    // still waiting, and lands once when the agent reads again.
+    let (started, release) = fake.block_next_write();
+    mgr.desktop_input(&typed, b"\r").unwrap();
+    started.recv_timeout(Duration::from_secs(30)).unwrap();
+    eventually("the overdue Enter is reported as still waiting", || {
+        cap.input_errors
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(id, message)| {
+                id == &typed && message.contains("arrives if the session reads again")
+            })
+    });
+    assert_eq!(
+        mgr.activity_snapshot().get(&typed),
+        Some(&SessionActivityState::Busy)
+    );
+    assert!(mgr.take_completion_armed(std::slice::from_ref(&typed)));
+    release.send(()).unwrap();
+    mgr.wait_for_idle_input(&typed);
+    assert_eq!(enters(&fake, &typed), 1);
+    mgr.kill(&delivered).unwrap();
+    mgr.kill(&typed).unwrap();
+}
+
+#[test]
+fn a_resubmit_enter_is_not_queued_behind_earlier_input() {
+    let pool = pool_with_schema();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture_for(&mgr);
+    let role = input_role(&pool);
+    let id = direct_chat(&mgr, &pool, &cap, &role);
+    let before = mgr.delivery_snapshot(&id).unwrap().rows;
+    let body = "[inbox] 1 new messages — run `runner msg read` to view.";
+    fake.push_output(0, format!("> {body}").as_bytes());
+    eventually("the notice shows in the composer", || {
+        mgr.delivery_snapshot(&id)
+            .unwrap()
+            .rows
+            .iter()
+            .any(|row| row.contains(body))
+    });
+    let snapshot = mgr.delivery_snapshot(&id).unwrap();
+    let mut probe = runner_terminal::delivery_probe::InputProbe::new(before, body);
+    probe.locate(&snapshot.rows);
+    assert_eq!(
+        probe.state(&snapshot.rows),
+        runner_terminal::delivery_probe::ProbeState::Present
+    );
+
+    // Behind a write the agent is not draining, the checked composer could change before the
+    // Enter lands, so the resubmit is left to a later delivery turn.
+    let (started, release) = fake.block_next_write();
+    let reply = {
+        let (mgr, id) = (Arc::clone(&mgr), id.clone());
+        std::thread::spawn(move || mgr.inject_stdin(&id, b"\x1b[?1u"))
+    };
+    started.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(!mgr.resubmit(&id, &snapshot, &probe).unwrap());
+    release.send(()).unwrap();
+    reply.join().unwrap().unwrap();
+    mgr.wait_for_idle_input(&id);
+    assert_eq!(enters(&fake, &id), 0);
+
+    assert!(mgr.resubmit(&id, &snapshot, &probe).unwrap());
+    assert_eq!(enters(&fake, &id), 1);
+    mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn typing_beyond_the_input_limit_is_refused_at_once_from_desktop_and_browser() {
+    let pool = pool_with_schema();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture_for(&mgr);
+    let role = input_role(&pool);
+    let id = direct_chat(&mgr, &pool, &cap, &role);
+    let large = vec![b'x'; super::input_writer::INPUT_QUEUE_LIMIT];
+
+    let (started, release) = fake.block_next_write();
+    mgr.desktop_input(&id, b"blocked").unwrap();
+    started.recv_timeout(Duration::from_secs(30)).unwrap();
+    let desktop = mgr.desktop_input(&id, &large).unwrap_err();
+    assert!(desktop.to_string().contains("is full"), "{desktop}");
+    let pool_arc = Arc::clone(&pool);
+    mgr.browser_resize(&id, 7, "Phone", 80, 24, true, false, &pool_arc)
+        .unwrap();
+    let browser = mgr.browser_input(&id, 7, &large).unwrap_err();
+    assert!(browser.to_string().contains("is full"), "{browser}");
+
+    release.send(()).unwrap();
+    mgr.wait_for_idle_input(&id);
+    mgr.browser_input(&id, 7, b"after").unwrap();
+    eventually("input is taken again once the write returns", || {
+        written(&fake, &id) == [&b"blocked"[..], b"after"]
+    });
+    mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn a_dropped_input_leaves_a_stopped_session_as_the_stop_left_it() {
+    let pool = pool_with_schema();
+    let fake = fake_runtime();
+    let mgr = mgr_with_fake(None, Arc::clone(&fake));
+    let cap = capture_for(&mgr);
+    let role = input_role(&pool);
+    let id = direct_chat(&mgr, &pool, &cap, &role);
+    // A stopped chat's state leaves the map, so read the one the input worker rolls back into.
+    let state = mgr.session_state(&id).unwrap();
+    let pending = || state.lock().unwrap().model.local_input_pending();
+    mgr.desktop_input(&id, b"draft").unwrap();
+    eventually("the draft is written", || written(&fake, &id) == [b"draft"]);
+    assert!(pending());
+
+    // The Enter that clears the draft waits behind a reply the agent is not draining.
+    let (started, release) = fake.block_next_write();
+    let reply = {
+        let (mgr, id) = (Arc::clone(&mgr), id.clone());
+        std::thread::spawn(move || mgr.inject_stdin(&id, b"\x1b[?1u"))
+    };
+    started.recv_timeout(Duration::from_secs(30)).unwrap();
+    mgr.desktop_input(&id, b"\r").unwrap();
+    mgr.wait_for_queued_input(&id, 1);
+    mgr.kill(&id).unwrap();
+    eventually("the dropped Enter reports", || {
+        cap.input_errors
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(session, message)| {
+                session == &id && message.contains("stopped before its input was written")
+            })
+    });
+    assert!(
+        !pending(),
+        "the stop cleared the draft and the dropped Enter leaves that"
+    );
+    release.send(()).unwrap();
+    assert!(reply.join().unwrap().is_err());
+    assert_eq!(enters(&fake, &id), 0);
+}
