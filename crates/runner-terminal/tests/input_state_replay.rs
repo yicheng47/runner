@@ -232,6 +232,369 @@ fn native_submit_during_reprobe_releases_at_a_new_empty_composer() {
 }
 
 #[test]
+fn submit_before_echo_with_scrolled_transcript_and_pinned_composer_releases_1381() {
+    let wrapped = "QA1377-WORK-TURN: Run python3 /tmp/runner-qa-1377/mission/working.py. \
+        Handle any inbox notification during the turn, read and ACK it once as instructed, \
+        then finish with WORK-DONE-QA1377. No other work.";
+    for cols in [40, 78] {
+        for empty in ["Ask Codex to do anything", ""] {
+            for text in [wrapped, "hi"] {
+                for pasted in [false, true] {
+                    for submitted_row in [4, 6] {
+                        let start = Instant::now();
+                        let mut term = new_term(cols, 10);
+                        feed(
+                            &mut term,
+                            format!(
+                                "\x1b[2;1HWorked for 18s\
+                                 \x1b[4;1H› [inbox] 1 new messages — run `runner msg read` to view.\
+                                 \x1b[9;1H› \x1b[2m{empty}\x1b[22m\x1b[9;3H"
+                            )
+                            .as_bytes(),
+                        );
+                        let mut tracker = InputTracker::new(start);
+                        let mut state = tracker.initial_observation(start).state;
+                        if pasted {
+                            tracker.observe_input(
+                                &InputEvent::Paste { text: text.into() },
+                                start,
+                                &term,
+                            );
+                        } else {
+                            for character in text.chars() {
+                                tracker.observe_input(
+                                    &InputEvent::Key {
+                                        kind: InputKind::Content {
+                                            text: character.to_string(),
+                                        },
+                                    },
+                                    start,
+                                    &term,
+                                );
+                            }
+                        }
+                        if let Some(observation) = tracker.observe_input(
+                            &InputEvent::Key {
+                                kind: InputKind::Submit,
+                            },
+                            start,
+                            &term,
+                        ) {
+                            state = observation.state;
+                        }
+                        let head = text
+                            .chars()
+                            .take(usize::from(cols).saturating_sub(2))
+                            .collect::<String>();
+                        feed(
+                            &mut term,
+                            format!(
+                                "\x1b[2J\x1b[1;1H› [inbox] 1 new messages — run `runner msg read` to view.\
+                                 \x1b[{submitted_row};1H› {head}\
+                                 \x1b[7;1H• Working (0s • esc to interrupt)\
+                                 \x1b[9;1H› \x1b[2m{empty}\x1b[22m\x1b[9;3H"
+                            )
+                            .as_bytes(),
+                        );
+                        if let Some(observation) =
+                            tracker.observe_output(start + Duration::from_millis(20), &term)
+                        {
+                            state = observation.state;
+                        }
+                        assert_eq!(
+                            state, InputState::Idle,
+                            "cols={cols} empty={empty:?} text={text:?} pasted={pasted} row={submitted_row}"
+                        );
+                        assert!(tracker
+                            .recheck_delivery(start + Duration::from_secs(30), &term)
+                            .is_none());
+
+                        tracker.observe_input(
+                            &InputEvent::Key {
+                                kind: InputKind::Content {
+                                    text: "draft".into(),
+                                },
+                            },
+                            start + Duration::from_secs(31),
+                            &term,
+                        );
+                        feed(&mut term, "\x1b[9;1H\x1b[K› draft\x1b[9;8H".as_bytes());
+                        assert_eq!(
+                            tracker
+                                .observe_output(start + Duration::from_secs(31), &term)
+                                .unwrap()
+                                .state,
+                            InputState::Drafting
+                        );
+                        feed(
+                            &mut term,
+                            format!("\x1b[9;1H\x1b[K› \x1b[2m{empty}\x1b[22m\x1b[9;3H").as_bytes(),
+                        );
+                        assert_eq!(
+                            tracker
+                                .observe_output(start + Duration::from_secs(32), &term)
+                                .unwrap()
+                                .state,
+                            InputState::Idle
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn wrapped_draft_with_nearby_scrolled_transcript_keeps_cursor_composer_empty_form_1381() {
+    let start = Instant::now();
+    let mut term = new_term(40, 10);
+    feed(
+        &mut term,
+        "\x1b[5;1H› earlier transcript prompt\
+         \x1b[9;1H› \x1b[2mAsk Codex to do anything\x1b[22m\x1b[9;3H"
+            .as_bytes(),
+    );
+    let mut tracker = InputTracker::new(start);
+    tracker.initial_observation(start);
+    tracker.observe_input(
+        &InputEvent::Paste {
+            text: "first wrapped draft line that scrolls the screen\nand a continuation\nand third\nand fourth"
+                .into(),
+        },
+        start,
+        &term,
+    );
+    feed(
+        &mut term,
+        "\x1b[2J\x1b[2;1H› earlier transcript prompt\
+         \x1b[6;1H› first wrapped draft line that scrolls\
+         \x1b[7;1H  the screen\
+         \x1b[8;1H  and a continuation\
+         \x1b[9;1H  and fourth\x1b[9;13H"
+            .as_bytes(),
+    );
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(10), &term)
+            .unwrap()
+            .state,
+        InputState::Drafting
+    );
+    tracker.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Submit,
+        },
+        start + Duration::from_millis(20),
+        &term,
+    );
+    feed(
+        &mut term,
+        "\x1b[2J\x1b[1;1H› earlier transcript prompt\
+         \x1b[3;1H› first wrapped draft line that scrolls\
+         \x1b[9;1H› \x1b[2mAsk Codex to do anything\x1b[22m\x1b[9;3H"
+            .as_bytes(),
+    );
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(30), &term)
+            .unwrap()
+            .state,
+        InputState::Idle
+    );
+}
+
+#[test]
+fn delivery_submit_before_echo_with_pinned_composer_marks_delivery_held_and_releases_1381() {
+    let start = Instant::now();
+    let mut term = new_term(78, 10);
+    feed(
+        &mut term,
+        "\x1b[3;1H› prior user prompt\
+         \x1b[9;1H› \x1b[2mAsk Codex to do anything\x1b[22m\x1b[9;3H"
+            .as_bytes(),
+    );
+    let mut tracker = InputTracker::new(start);
+    tracker.initial_observation(start);
+    let notice = "[inbox] 1 new messages — run `runner msg read` to view.";
+    tracker.track_delivery_input(notice, start, &term);
+    tracker.track_delivery_submit(start + Duration::from_millis(10), &term);
+    feed(
+        &mut term,
+        format!(
+            "\x1b[2J\x1b[1;1H› prior user prompt\
+             \x1b[5;1H› {notice}\
+             \x1b[9;1H› \x1b[2mAsk Codex to do anything\x1b[22m\x1b[9;3H"
+        )
+        .as_bytes(),
+    );
+    assert!(tracker
+        .observe_output(start + Duration::from_millis(20), &term)
+        .is_none());
+    assert_eq!(tracker.latest_observation().state, InputState::Idle);
+    assert!(tracker.delivery_held());
+}
+
+#[test]
+fn reprobe_submit_before_echo_with_pinned_composer_and_scrolled_history_releases_1381() {
+    let start = Instant::now();
+    let mut term = new_term(78, 10);
+    feed(
+        &mut term,
+        "\x1b[3;1H› [inbox] 1 new messages — run `runner msg read` to view.\
+         \x1b[9;1H› \x1b[2mAsk Codex to do anything\x1b[22m\x1b[9;3H"
+            .as_bytes(),
+    );
+    let mut tracker = InputTracker::new(start);
+    tracker.initial_observation(start);
+    let submit = InputEvent::Key {
+        kind: InputKind::Submit,
+    };
+
+    tracker.observe_input(
+        &InputEvent::Paste {
+            text: "first".into(),
+        },
+        start,
+        &term,
+    );
+    feed(&mut term, "\x1b[9;1H\x1b[K› first\x1b[9;8H".as_bytes());
+    tracker.observe_output(start + Duration::from_millis(5), &term);
+    tracker.observe_input(&submit, start + Duration::from_millis(10), &term);
+
+    // Before the first submit's empty composer renders, a second wrapped prompt is pasted and
+    // submitted, and the next frame shows the pinned empty composer back on row 9.
+    feed(
+        &mut term,
+        "\x1b[9;1H\x1b[K› \x1b[2mReview this repository\x1b[22m\x1b[9;3H".as_bytes(),
+    );
+    tracker.observe_input(
+        &InputEvent::Paste {
+            text: "second multiline prompt\nwith continuation".into(),
+        },
+        start + Duration::from_millis(15),
+        &term,
+    );
+    tracker.observe_input(&submit, start + Duration::from_millis(20), &term);
+    feed(
+        &mut term,
+        "\x1b[2J\x1b[1;1H› [inbox] 1 new messages — run `runner msg read` to view.\
+         \x1b[3;1H› first\
+         \x1b[5;1H› second multiline prompt\
+         \x1b[6;1H  with continuation\
+         \x1b[9;1H› \x1b[2mReview this repository\x1b[22m\x1b[9;3H"
+            .as_bytes(),
+    );
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(30), &term)
+            .unwrap()
+            .state,
+        InputState::Idle
+    );
+}
+
+#[test]
+fn history_only_redraw_before_rejected_submit_echo_preserves_pending_probe_1381() {
+    for history_frame in [
+        "\x1b[2J\x1b[1;1H› prior user prompt\x1b[9;1H› \x1b[2mAsk Codex to do anything\x1b[22m\x1b[9;3H",
+        "\x1b[2J\x1b[1;1H› prior user prompt\x1b[4;1H› unrelated streamed prompt\x1b[9;1H› \x1b[2mAsk Codex to do anything\x1b[22m\x1b[9;3H",
+    ] {
+        for reprobe in [false, true] {
+            let start = Instant::now();
+            let mut term = new_term(78, 10);
+            feed(
+                &mut term,
+                "\x1b[3;1H› prior user prompt\
+                 \x1b[9;1H› \x1b[2mAsk Codex to do anything\x1b[22m\x1b[9;3H"
+                    .as_bytes(),
+            );
+            let mut tracker = InputTracker::new(start);
+            tracker.initial_observation(start);
+            let submit = InputEvent::Key {
+                kind: InputKind::Submit,
+            };
+
+            if reprobe {
+                tracker.observe_input(&InputEvent::Paste { text: "old".into() }, start, &term);
+                feed(&mut term, "\x1b[9;1H\x1b[K› old\x1b[9;6H".as_bytes());
+                tracker.observe_output(start + Duration::from_millis(2), &term);
+                tracker.observe_input(&submit, start + Duration::from_millis(4), &term);
+                feed(
+                    &mut term,
+                    "\x1b[9;1H\x1b[K› \x1b[2mAsk Codex to do anything\x1b[22m\x1b[9;3H"
+                        .as_bytes(),
+                );
+            }
+
+            tracker.observe_input(
+                &InputEvent::Paste {
+                    text: "new line one\nnew line two".into(),
+                },
+                start + Duration::from_millis(5),
+                &term,
+            );
+            tracker.observe_input(&submit, start + Duration::from_millis(6), &term);
+
+            // Only transcript history redraws before the pasted draft reaches the composer.
+            feed(&mut term, history_frame.as_bytes());
+            tracker.observe_output(start + Duration::from_millis(10), &term);
+
+            // The paste echoes next with Return rejected, leaving the draft in the composer.
+            feed(
+                &mut term,
+                "\x1b[9;1H\x1b[K› new line one\x1b[10;1H  new line two\x1b[10;15H".as_bytes(),
+            );
+            tracker.observe_output(start + Duration::from_millis(20), &term);
+            tracker.recheck_delivery(start + Duration::from_secs(30), &term);
+            assert_eq!(
+                tracker.latest_observation().state,
+                InputState::Drafting,
+                "reprobe={reprobe} history_frame={history_frame:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn collapsed_paste_submit_with_pinned_composer_ignores_scrolled_paste_and_releases_on_new_one_1381()
+{
+    let start = Instant::now();
+    let mut term = new_term(78, 10);
+    feed(
+        &mut term,
+        "\x1b[3;1H❯ [Pasted text #1 +19 lines]\
+         \x1b[9;1H❯ \x1b[2mTry a task\x1b[22m\x1b[9;3H"
+            .as_bytes(),
+    );
+    let mut tracker = InputTracker::new(start);
+    tracker.initial_observation(start);
+    tracker.track_delivery_input("line one\nline two", start, &term);
+    tracker.track_delivery_submit(start + Duration::from_millis(2), &term);
+
+    // Scrolling the prior collapsed paste alone does not satisfy the pending delivery probe.
+    feed(
+        &mut term,
+        "\x1b[2J\x1b[1;1H❯ [Pasted text #1 +19 lines]\
+         \x1b[9;1H❯ \x1b[2mTry a task\x1b[22m\x1b[9;3H"
+            .as_bytes(),
+    );
+    tracker.observe_output(start + Duration::from_millis(8), &term);
+    assert!(!tracker.delivery_held());
+
+    // Rendering the new collapsed paste in transcript while restoring the pinned composer does.
+    feed(
+        &mut term,
+        "\x1b[2J\x1b[1;1H❯ [Pasted text #1 +19 lines]\
+         \x1b[5;1H❯ [Pasted text #2 +1 lines]\
+         \x1b[9;1H❯ \x1b[2mTry a task\x1b[22m\x1b[9;3H"
+            .as_bytes(),
+    );
+    tracker.observe_output(start + Duration::from_millis(16), &term);
+    assert_eq!(tracker.latest_observation().state, InputState::Idle);
+    assert!(tracker.delivery_held());
+}
+
+#[test]
 fn a_rejected_multiline_submit_holds_with_the_cursor_on_a_blank_continuation() {
     let start = Instant::now();
     let mut term = new_term(80, 10);

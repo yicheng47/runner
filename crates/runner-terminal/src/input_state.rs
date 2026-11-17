@@ -47,6 +47,7 @@ struct Probe {
     typed: String,
     rows_before: Vec<String>,
     styles_before: Vec<Vec<CellStyle>>,
+    cursor: Option<(usize, usize)>,
     started: Instant,
     weak_match: bool,
     submitted: Option<SubmitOrigin>,
@@ -283,13 +284,7 @@ impl InputTracker {
                     TrackerState::Idle
                 } else {
                     let rows_after = visible_rows(term);
-                    match locate_echo(
-                        &probe.rows_before,
-                        &rows_after,
-                        &probe.typed,
-                        probe.weak_match,
-                        term.columns(),
-                    ) {
+                    match locate_probe_echo(&probe, &rows_after, term) {
                         Some(matched) => {
                             let placeholder_style = probe_placeholder_style(&probe, &matched, term);
                             let composer = Composer {
@@ -324,13 +319,7 @@ impl InputTracker {
                 mut composer,
             } => {
                 let rows_after = visible_rows(term);
-                if let Some(matched) = locate_echo(
-                    &probe.rows_before,
-                    &rows_after,
-                    &probe.typed,
-                    probe.weak_match,
-                    term.columns(),
-                ) {
+                if let Some(matched) = locate_probe_echo(&probe, &rows_after, term) {
                     let before = &probe.rows_before[matched.before_row];
                     if composer_text_is_empty(before, &matched.prefix, &composer.empty_forms)
                         && !composer.empty_forms.contains(before)
@@ -689,11 +678,17 @@ fn visible_row_styles<T>(term: &Term<T>) -> Vec<Vec<CellStyle>> {
         .collect()
 }
 
+fn cursor_position<T>(term: &Term<T>) -> Option<(usize, usize)> {
+    let cursor = term.grid().cursor.point;
+    Some((usize::try_from(cursor.line.0).ok()?, cursor.column.0))
+}
+
 fn new_probe<T>(text: &str, pasted: bool, now: Instant, term: &Term<T>) -> Probe {
     Probe {
         typed: probe_text(text),
         rows_before: visible_rows(term),
         styles_before: visible_row_styles(term),
+        cursor: cursor_position(term),
         started: now,
         weak_match: pasted && weak_paste_match(text),
         submitted: None,
@@ -760,6 +755,20 @@ fn probe_placeholder_style<T>(
     placeholder.filter(|style| Some(*style) != draft)
 }
 
+fn locate_probe_echo<T>(probe: &Probe, after: &[String], term: &Term<T>) -> Option<EchoMatch> {
+    let submitted_cursor = probe.submitted.and_then(|_| cursor_position(term));
+    locate_echo_with_cursors(
+        &probe.rows_before,
+        after,
+        &probe.typed,
+        probe.weak_match,
+        term.columns(),
+        probe.cursor,
+        submitted_cursor,
+    )
+}
+
+#[cfg(test)]
 fn locate_echo(
     before: &[String],
     after: &[String],
@@ -767,6 +776,61 @@ fn locate_echo(
     weak_match: bool,
     columns: usize,
 ) -> Option<EchoMatch> {
+    locate_echo_with_cursors(before, after, typed, weak_match, columns, None, None)
+}
+
+fn count_row(rows: &[String], target: &str) -> usize {
+    rows.iter().filter(|row| row.as_str() == target).count()
+}
+
+fn looks_like_collapsed_paste(remainder: &str) -> bool {
+    let trimmed = remainder.trim();
+    trimmed.starts_with('[')
+        && trimmed.ends_with(']')
+        && trimmed.to_ascii_lowercase().contains("pasted")
+}
+
+fn submitted_transcript_matches(
+    text: &str,
+    prefix: &str,
+    typed: &str,
+    kind: EchoMatchKind,
+    weak_match: bool,
+    columns: usize,
+) -> bool {
+    if kind != EchoMatchKind::Weak {
+        return true;
+    }
+    let remainder = text[prefix.len()..].trim_end();
+    if weak_match && looks_like_collapsed_paste(remainder) {
+        return true;
+    }
+    let stem = remainder.strip_suffix('…').unwrap_or(remainder).trim_end();
+    let max_cell_fit = columns.saturating_sub(prefix.width() + 1).max(1);
+    let min_wrapped_width = typed
+        .split_whitespace()
+        .next()
+        .map_or(1, UnicodeWidthStr::width)
+        .min(max_cell_fit);
+    stem.width() >= min_wrapped_width && typed.starts_with(stem)
+}
+
+fn locate_echo_with_cursors(
+    before: &[String],
+    after: &[String],
+    typed: &str,
+    weak_match: bool,
+    columns: usize,
+    cursor_before: Option<(usize, usize)>,
+    submitted_cursor: Option<(usize, usize)>,
+) -> Option<EchoMatch> {
+    let prompt_at_cursor_before = |prefix: &str| {
+        let (line, col) = cursor_before?;
+        let text = before.get(line)?;
+        ((text.starts_with(prefix) || text.trim_end() == prefix.trim_end())
+            && col >= prefix.width())
+        .then_some(line)
+    };
     after
         .iter()
         .enumerate()
@@ -775,22 +839,36 @@ fn locate_echo(
             before
                 .iter()
                 .enumerate()
-                .filter(move |(before_row, before)| after.get(*before_row) != Some(*before))
-                .filter_map(move |(before_row, before)| {
-                    match_prompt_prefix(before, text, typed, weak_match, columns).map(
-                        |(prefix, kind)| EchoMatch {
-                            row,
-                            before_row,
-                            empty_before: before.trim_end() == prefix.trim_end(),
-                            prefix,
-                            kind,
-                        },
-                    )
+                .filter_map(move |(before_row, before_text)| {
+                    let before_changed = after.get(before_row) != Some(before_text);
+                    let (prefix, kind) =
+                        match_prompt_prefix(before_text, text, typed, weak_match, columns)?;
+                    let cursor_prompt = prompt_at_cursor_before(&prefix);
+                    if cursor_prompt.is_some_and(|cursor_row| cursor_row != before_row) {
+                        return None;
+                    }
+                    // A submit resolved in one frame leaves a pinned bottom composer back at its
+                    // pre-input row while moving the submitted prompt into transcript history.
+                    let cleared_at_cursor = !before_changed
+                        && cursor_prompt == Some(before_row)
+                        && submitted_cursor == Some((before_row, prefix.width()))
+                        && count_row(after, text) > count_row(before, text)
+                        && submitted_transcript_matches(
+                            text, &prefix, typed, kind, weak_match, columns,
+                        );
+                    (before_changed || cleared_at_cursor).then_some(EchoMatch {
+                        row,
+                        before_row,
+                        empty_before: before_text.trim_end() == prefix.trim_end(),
+                        prefix,
+                        kind,
+                    })
                 })
         })
         .min_by_key(|matched| {
             (
                 matched.kind,
+                prompt_at_cursor_before(&matched.prefix) != Some(matched.before_row),
                 matched.row != matched.before_row,
                 !matched.empty_before,
                 matched.prefix.chars().count(),
