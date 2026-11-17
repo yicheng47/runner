@@ -257,6 +257,9 @@ impl From<RuntimeError> for crate::error::Error {
 
 pub type RuntimeResult<T> = std::result::Result<T, RuntimeError>;
 
+/// Writes input to one process of a session, never to a later process that reuses its id.
+pub type BoundInput = Box<dyn FnMut(&[u8]) -> RuntimeResult<()> + Send>;
+
 /// The session runtime trait. Frontend operations never touch this — they
 /// go through `SessionManager`, which in turn delegates
 /// to a `dyn SessionRuntime` for the per-session PTY work.
@@ -289,6 +292,12 @@ pub trait SessionRuntime: Send + Sync {
     /// sequences. Caller is responsible for using a supported key
     /// name.
     fn send_key(&self, session: &RuntimeSession, key: &str) -> RuntimeResult<()>;
+
+    /// Input bound to the session's current process, for the manager's queued writes. A runtime
+    /// returning `None` takes them through `send_bytes`, and a bare `\r` through `send_key("Enter")`.
+    fn bind_input(&self, _session: &RuntimeSession) -> Option<BoundInput> {
+        None
+    }
 
     /// Frontend resize event. The runtime is expected to debounce
     /// internally if multiple `resize` calls land back-to-back.

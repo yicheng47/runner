@@ -1334,3 +1334,350 @@ async fn adapter_serves_overview_terminal_and_input_over_the_encrypted_channel()
     relay.flush(1, &mut browser);
     assert_eq!(relay.message(1, &mut browser).await["id"], 5);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pty_that_stops_reading_its_input_stalls_only_that_sessions_input_1377() {
+    use crate::companion::core::DaemonCore;
+    use crate::session::runtime::{
+        OutputStream, RuntimeOutput, RuntimeResult, RuntimeSession, SessionRuntime, SessionStatus,
+        SpawnSpec,
+    };
+    use std::sync::{Condvar, Mutex as StdMutex};
+
+    /// Writes to `block_session` block until released, as when its agent stops reading its tty.
+    #[derive(Default)]
+    struct BlockingStdinRuntime {
+        spawns: StdMutex<Vec<(String, Option<std::sync::mpsc::Sender<RuntimeOutput>>)>>,
+        block_session: StdMutex<Option<String>>,
+        written: StdMutex<Vec<(String, Vec<u8>)>>,
+        entered_write: tokio::sync::Notify,
+        release_write: (StdMutex<bool>, Condvar),
+    }
+
+    impl BlockingStdinRuntime {
+        fn release(&self) {
+            *self.release_write.0.lock().unwrap() = true;
+            self.release_write.1.notify_all();
+        }
+
+        fn wrote(&self, session: &str, bytes: &[u8]) -> bool {
+            self.written
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(id, written)| id == session && written == bytes)
+        }
+    }
+
+    impl SessionRuntime for BlockingStdinRuntime {
+        fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(RuntimeOutput::Stream(b"\x1b[?2004h".to_vec()));
+            let session = RuntimeSession {
+                runtime: "fake".into(),
+                session_id: spec.session_id.clone(),
+            };
+            self.spawns
+                .lock()
+                .unwrap()
+                .push((spec.session_id, Some(tx)));
+            Ok((session, OutputStream::new(rx, Default::default())))
+        }
+
+        fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
+            for (id, tx) in self.spawns.lock().unwrap().iter_mut() {
+                if id == &session.session_id {
+                    tx.take();
+                }
+            }
+            Ok(())
+        }
+
+        fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
+            let blocked = self
+                .block_session
+                .lock()
+                .unwrap()
+                .as_deref()
+                .is_some_and(|blocked| blocked == session.session_id);
+            if blocked {
+                let mut released = self.release_write.0.lock().unwrap();
+                if !*released {
+                    self.entered_write.notify_waiters();
+                }
+                while !*released {
+                    released = self.release_write.1.wait(released).unwrap();
+                }
+            }
+            self.written
+                .lock()
+                .unwrap()
+                .push((session.session_id.clone(), bytes.to_vec()));
+            Ok(())
+        }
+
+        fn send_key(&self, _: &RuntimeSession, _: &str) -> RuntimeResult<()> {
+            Ok(())
+        }
+
+        fn resize(&self, _: &RuntimeSession, _: u16, _: u16) -> RuntimeResult<()> {
+            Ok(())
+        }
+
+        fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
+            Ok(Some(SessionStatus {
+                alive: false,
+                exit_code: Some(0),
+                ..Default::default()
+            }))
+        }
+    }
+
+    /// The next frame on `id`; channel 22 stays live and may push frames of its own meanwhile.
+    async fn frame_on(relay: &mut Relay, id: u32) -> Vec<u8> {
+        loop {
+            if let Message::Binary(bytes) = relay.output().await {
+                let (channel, frame) = channel::unwrap(&bytes).unwrap();
+                if channel == id {
+                    return frame.to_vec();
+                }
+            }
+        }
+    }
+
+    async fn recv_until_id(
+        relay: &mut Relay,
+        channel_id: u32,
+        browser: &mut Records,
+        id: u64,
+    ) -> Value {
+        loop {
+            let msg = relay.message(channel_id, browser).await;
+            relay.flush(channel_id, browser);
+            if msg["id"].as_u64() == Some(id) {
+                return msg;
+            }
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut core = crate::test_support::test_core_in(temp.path().join("app-data"));
+    core.db = Arc::new(crate::db::open_pool(&temp.path().join("runner.db")).unwrap());
+    core.usage = Arc::new(crate::usage::UsageService::without_fetch());
+    let runtime = Arc::new(BlockingStdinRuntime::default());
+    struct ReleaseOnDrop(Arc<BlockingStdinRuntime>);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+    let _release_guard = ReleaseOnDrop(runtime.clone());
+    core.sessions = crate::session::SessionManager::new(
+        core.runtime_shell_env.clone(),
+        core.runtime_discovery.clone(),
+        runtime.clone(),
+    );
+    let deadline = Duration::from_millis(300);
+    core.sessions.set_input_deadline(deadline);
+    core.sessions.set_runtime_events(core.events.clone());
+    {
+        let conn = core.db.get().unwrap();
+        crate::test_support::insert_test_role(&conn, "role-codex", "coder", "codex", "codex");
+    }
+    let core = Arc::new(core);
+    let mut events = core.events.subscribe();
+
+    let cwd = Some(temp.path().to_string_lossy().into_owned());
+    let start = || {
+        crate::ops::session::session_start_direct_impl_with_speed(
+            &core,
+            "role-codex".into(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            cwd.clone(),
+            Some(80),
+            Some(24),
+        )
+        .unwrap()
+        .session
+        .id
+    };
+    let wedged = start();
+    let healthy = start();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !core.sessions.session_live(&wedged) || !core.sessions.session_live(&healthy) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("both sessions become live");
+
+    let mut relay = Relay::with_core(Arc::new(DaemonCore(Arc::downgrade(&core))));
+    let (mut ch22, host_public) = relay.pair_finish(22, "012345").await;
+    assert_eq!(
+        relay.hello_as(22, &mut ch22, "desktop").await["type"],
+        "welcome"
+    );
+    let attach = serde_json::json!({
+        "type": "attach",
+        "id": 1,
+        "session": wedged,
+        "cols": 80,
+        "rows": 24,
+        "control": "take",
+        "history": 3
+    });
+    ch22.queue(serde_json::to_vec(&attach).unwrap()).unwrap();
+    relay.flush(22, &mut ch22);
+    assert_eq!(
+        recv_until_id(&mut relay, 22, &mut ch22, 1).await["type"],
+        "result"
+    );
+
+    // Remote typing reaches the wedged session's PTY, which stops draining it.
+    let ch22_instance = relay.routes.as_ref().unwrap().entries[&22].instance;
+    let entered = runtime.entered_write.notified();
+    *runtime.block_session.lock().unwrap() = Some(wedged.clone());
+    core.sessions
+        .browser_input(&wedged, ch22_instance, b"hello")
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), entered)
+        .await
+        .expect("the wedged session's write blocks in the PTY");
+
+    // Channel 22 keeps serving: more input for the wedged session, then a Ping.
+    let input = serde_json::json!({
+        "type": "input",
+        "id": 4,
+        "session": wedged,
+        "data": "eA=="
+    });
+    ch22.queue(serde_json::to_vec(&input).unwrap()).unwrap();
+    relay.flush(22, &mut ch22);
+    ch22.queue(br#"{"type":"ping","id":5}"#.to_vec()).unwrap();
+    relay.flush(22, &mut ch22);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (mut input_reply, mut pong) = (false, false);
+        while !input_reply || !pong {
+            let msg = relay.message(22, &mut ch22).await;
+            relay.flush(22, &mut ch22);
+            input_reply |= msg["id"].as_u64() == Some(4) && msg["type"] == "result";
+            pong |= msg["id"].as_u64() == Some(5) && msg["type"] == "pong";
+        }
+    })
+    .await
+    .expect("channel 22 answers its Input and Ping while the write is blocked");
+
+    // A reconnect gets its Welcome, whose initialization reads every session's status.
+    let (connecting, connect) = BrowserConnect::start(
+        NoiseKeys {
+            private: &[22; 32],
+            fixed_ephemeral: None,
+        },
+        &host_public,
+    )
+    .unwrap();
+    relay.open(23);
+    relay.feed(23, &connect);
+    let accept = frame_on(&mut relay, 23).await;
+    let mut ch23 = Records::new(connecting.accept(&accept).unwrap());
+    let hello =
+        serde_json::json!({"type":"hello","versions":[1],"client":"desktop","build":"test"});
+    ch23.queue(serde_json::to_vec(&hello).unwrap()).unwrap();
+    relay.flush(23, &mut ch23);
+    let welcome = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let frame = frame_on(&mut relay, 23).await;
+            if let Some(bytes) = ch23.receive(&frame).unwrap() {
+                ch23.handled();
+                return serde_json::from_slice::<Value>(&bytes).unwrap();
+            }
+        }
+    })
+    .await
+    .expect("channel 23 gets its Welcome while the write is blocked");
+    assert_eq!(welcome["type"], "welcome");
+
+    // The app's status reads and focus marks complete.
+    let mut calls = tokio::task::JoinSet::new();
+    let status_core = core.clone();
+    calls.spawn_blocking(move || {
+        crate::ops::session::session_status_snapshot(&status_core).unwrap();
+    });
+    let counts_core = core.clone();
+    calls.spawn_blocking(move || {
+        crate::ops::session::live_session_counts(&counts_core).unwrap();
+    });
+    let viewed_core = core.clone();
+    let viewed = wedged.clone();
+    calls.spawn_blocking(move || {
+        crate::ops::node::mark_direct_sessions_viewed(&viewed_core, &[viewed]).unwrap();
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(call) = calls.join_next().await {
+            call.unwrap();
+        }
+    })
+    .await
+    .expect("status snapshot, live counts and viewed marks complete");
+
+    // Closing a channel releases its terminal control, and other sessions keep taking input.
+    relay.routes.as_mut().unwrap().closed(23);
+    let healthy_core = core.clone();
+    let healthy_id = healthy.clone();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(move || {
+            healthy_core.sessions.desktop_input(&healthy_id, b"ls\n")
+        }),
+    )
+    .await
+    .expect("desktop input to a healthy session is not held up")
+    .unwrap()
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !runtime.wrote(&healthy, b"ls\n") {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the healthy session's input is written");
+
+    // At the deadline the blocked typing reports, as a visible input error, that it is still
+    // waiting, and further input to the wedged session is refused.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.name == "session/input-error"
+                && event.payload["session_id"] == wedged.as_str()
+                && event.payload["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("arrives if the session reads again"))
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the wedged session's typing reports once its write is overdue");
+    let refused = core.sessions.inject_stdin(&wedged, b"y").unwrap_err();
+    assert!(refused.to_string().contains("was dropped"), "{refused}");
+
+    // Once the agent reads again, the session takes input.
+    runtime.release();
+    let idle_core = core.clone();
+    let idle_id = wedged.clone();
+    tokio::task::spawn_blocking(move || idle_core.sessions.wait_for_idle_input(&idle_id))
+        .await
+        .unwrap();
+    core.sessions.inject_stdin(&wedged, b"z").unwrap();
+    assert!(runtime.wrote(&wedged, b"hello") && runtime.wrote(&wedged, b"z"));
+    assert!(!runtime.wrote(&wedged, b"y"));
+
+    relay.routes.as_mut().unwrap().closed(22);
+    crate::ops::session::session_stop(&core, &wedged).unwrap();
+    crate::ops::session::session_stop(&core, &healthy).unwrap();
+}

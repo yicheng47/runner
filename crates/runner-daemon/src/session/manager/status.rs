@@ -283,6 +283,7 @@ impl SessionManager {
             },
             rollout_capture: None,
             forwarder: None,
+            input: Default::default(),
             stop: Default::default(),
         });
     }

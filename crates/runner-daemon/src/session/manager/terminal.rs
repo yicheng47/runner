@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
-use std::sync::mpsc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::{mpsc, OnceLock};
 
 use runner_core::protocol::terminal::{
     TerminalAttachment, TerminalFrame, TerminalMetadata, TerminalPalette, TerminalSubscription,
@@ -141,6 +142,32 @@ impl TerminalSubscription for Frames {
     }
 }
 
+/// Input waiting for a session's terminal input worker, bounded like the PTY input behind it.
+pub(super) struct TerminalInput {
+    tx: mpsc::Sender<Vec<u8>>,
+    queued: Arc<AtomicUsize>,
+}
+impl TerminalInput {
+    fn new(tx: mpsc::Sender<Vec<u8>>) -> Self {
+        Self {
+            tx,
+            queued: Arc::default(),
+        }
+    }
+    /// Senders hold terminal control, so the check and the count cannot interleave.
+    fn send(&self, id: &str, bytes: &[u8]) -> Result<()> {
+        let queued = self.queued.load(Ordering::Acquire);
+        if queued > 0 && queued + bytes.len() > super::input_writer::INPUT_QUEUE_LIMIT {
+            return Err(Error::msg(format!("input queue of session {id} is full")));
+        }
+        self.queued.fetch_add(bytes.len(), Ordering::AcqRel);
+        self.tx.send(bytes.to_vec()).map_err(|_| {
+            self.queued.fetch_sub(bytes.len(), Ordering::AcqRel);
+            Error::msg(format!("terminal input worker stopped: {id}"))
+        })
+    }
+}
+
 pub struct CompanionTerminal {
     state: Weak<Mutex<SessionState>>,
     history: usize,
@@ -240,21 +267,28 @@ struct Host {
     events: Arc<dyn SessionEvents>,
     agent: bool,
     started_at: TerminalStartedAt,
+    model: OnceLock<Weak<TerminalModel>>,
 }
 impl TerminalHost for Host {
+    // Only the session's input worker calls this, on its own thread.
     fn write_input(&self, id: &str, bytes: &[u8]) -> HostResult<()> {
         let manager = self
             .manager
             .upgrade()
             .ok_or_else(|| Error::msg("session manager stopped"))?;
-        Ok(manager.inject_direct_stdin(id, bytes, self.events.as_ref())?)
+        Ok(manager.inject_terminal_input(id, bytes, self.events.as_ref())?)
     }
     fn write_reply(&self, id: &str, bytes: &[u8]) -> HostResult<()> {
         let manager = self
             .manager
             .upgrade()
             .ok_or_else(|| Error::msg("session manager stopped"))?;
-        Ok(manager.inject_stdin(id, bytes)?)
+        let model = self
+            .model
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| Error::msg("terminal released"))?;
+        Ok(manager.inject_reply(id, &model, bytes)?)
     }
     fn report_input_state(&self, id: &str, observation: InputObservation) {
         if let Some(manager) = self.manager.upgrade() {
@@ -405,9 +439,10 @@ impl SessionManager {
             events: Arc::clone(events),
             agent: binding.agent,
             started_at: Arc::clone(&started_at),
+            model: OnceLock::new(),
         });
         let model = TerminalModel::new(
-            host,
+            Arc::clone(&host) as Arc<dyn TerminalHost>,
             id.to_owned(),
             cols,
             rows,
@@ -424,6 +459,7 @@ impl SessionManager {
             },
         )
         .map_err(|error| Error::msg(error.to_string()))?;
+        let _ = host.model.set(Arc::downgrade(&model));
         model.set_palette(*self.terminal_palette.lock().unwrap());
         Ok((model, started_at))
     }
@@ -606,7 +642,7 @@ impl SessionManager {
             .unwrap()
             .lock()
             .unwrap()
-            .terminal_input = Some(tx);
+            .terminal_input = Some(TerminalInput::new(tx));
         rx
     }
 
@@ -721,16 +757,17 @@ impl SessionManager {
             .terminal_input
             .as_ref()
             .ok_or_else(|| Error::msg(format!("terminal input unavailable: {id}")))?
-            .send(bytes.to_vec())
-            .map_err(|_| Error::msg(format!("terminal input worker stopped: {id}")))
+            .send(id, bytes)
     }
     pub(super) fn start_terminal_input(
         &self,
         id: &str,
         model: Arc<TerminalModel>,
         events: Arc<dyn SessionEvents>,
-    ) -> (mpsc::Sender<Vec<u8>>, thread::JoinHandle<()>) {
+    ) -> (TerminalInput, thread::JoinHandle<()>) {
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let input = TerminalInput::new(tx);
+        let queued = Arc::clone(&input.queued);
         let id = id.to_owned();
         let worker = thread::Builder::new()
             .name(format!("native-term-input-{id}"))
@@ -739,10 +776,11 @@ impl SessionManager {
                     if let Err(error) = model.write_input(&bytes) {
                         events.input_error(&id, &error.to_string());
                     }
+                    queued.fetch_sub(bytes.len(), Ordering::AcqRel);
                 }
             })
             .expect("spawn terminal input thread");
-        (tx, worker)
+        (input, worker)
     }
     pub(super) fn push_frame(state: &mut SessionState, frame: TerminalFrame) {
         state

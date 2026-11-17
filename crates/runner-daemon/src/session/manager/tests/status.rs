@@ -269,6 +269,7 @@ fn direct_input_gate_timeout_is_bounded_and_does_not_pin_the_queue() {
         },
         rollout_capture: None,
         forwarder: None,
+        input: Default::default(),
         stop: Arc::new(AtomicBool::new(false)),
     });
     gate.state.lock().unwrap().in_flight = true;
@@ -276,7 +277,7 @@ fn direct_input_gate_timeout_is_bounded_and_does_not_pin_the_queue() {
     let budget = Duration::from_millis(20);
     let started = Instant::now();
     let error = mgr
-        .inject_direct_stdin_with_wait_timeout(session_id, b"x", cap.as_ref(), budget)
+        .inject_direct_stdin_with_wait_timeout(session_id, b"x", cap.as_ref(), budget, None)
         .unwrap_err();
     assert!(matches!(
         error,
@@ -291,8 +292,14 @@ fn direct_input_gate_timeout_is_bounded_and_does_not_pin_the_queue() {
     );
 
     mgr.finish_delivery(session_id, 0);
-    mgr.inject_direct_stdin_with_wait_timeout(session_id, b"after-timeout", cap.as_ref(), budget)
-        .unwrap();
+    mgr.inject_direct_stdin_with_wait_timeout(
+        session_id,
+        b"after-timeout",
+        cap.as_ref(),
+        budget,
+        None,
+    )
+    .unwrap();
     assert_eq!(
         fake.bytes_writes(),
         vec![(session_id.to_string(), b"after-timeout".to_vec())]

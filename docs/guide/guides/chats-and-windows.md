@@ -82,6 +82,8 @@ Programs in a pane, such as Neovim, Helix or tmux, can copy text to your clipboa
 
 For shell splits, Runner follows the shell's reported working directory. It installs that reporting for zsh and bash on macOS. Windows shells without their own directory-reporting prompt use the original launch directory for a split, even after `cd`.
 
+When the program in a pane stops reading its input, Runner shows an error after about five seconds that the session stopped reading its input. The input it was sending at that moment is still waiting and reaches the program once the program reads again, so do not type or paste it a second time. Other input sent while the program is not reading is refused with an error and never arrives; send it again once the program responds. Mission notices that Runner types into the session follow the same rule. Other panes, windows and sessions keep working, and the session's status stays current. A large paste sent while earlier input is still waiting can also be refused, with an error that the session's input queue is full.
+
 ## Find in a terminal
 
 Press **⌘F** / **Ctrl+Shift+F** in a chat pane, a terminal, a mission slot or a mission drawer terminal to open the find bar over the terminal’s top-right corner; the terminal keeps its size. Text selected in the terminal fills the query, and pressing the shortcut again while the bar is open selects the query. Each pane has its own find bar, which keeps its query until you close it. On Windows and Linux, **Ctrl+F** still reaches the shell.

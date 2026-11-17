@@ -111,6 +111,7 @@ impl StartupFixture {
                 runtime_session,
                 rollout_capture: None,
                 forwarder: None,
+                input: Default::default(),
                 stop: output.stop_flag(),
             },
             Some(ForwarderEmitCtx {
@@ -724,6 +725,39 @@ fn resized_unsubmitted_input_waits_for_composer_output_after_a_successful_local_
     for worker in workers {
         worker.join().unwrap();
     }
+}
+
+#[test]
+fn a_routed_notice_whose_write_is_overdue_is_reported_and_typed_once() {
+    let fixture = StartupFixture::new();
+    fixture
+        .manager
+        .set_input_deadline(Duration::from_millis(200));
+    let events = crate::events::EventChannel::new();
+    let mut seen = events.subscribe();
+    fixture.manager.set_runtime_events(events);
+    let _output = fixture.launch("codex", false, Instant::now());
+    fixture.event(Runtime::Codex, AgentEvent::StartupReady);
+
+    // The router types the notice into a session that stopped reading; its write runs past the
+    // deadline, the router hears it as typed, and the person hears the session is not reading.
+    let (started, release) = fixture.fake.block_next_write();
+    fixture.queue("first");
+    started.try_recv().expect("the router typed the notice");
+    assert!(reported_overdue(&mut seen, "session"));
+
+    // Once the agent reads again the notice lands, the router's Enter follows, and nothing types
+    // the notice a second time.
+    release.send(()).unwrap();
+    fixture.manager.wait_for_idle_input("session");
+    fixture.submitted();
+    let notices = fixture
+        .fake
+        .bytes_writes()
+        .into_iter()
+        .filter(|(_, bytes)| String::from_utf8_lossy(bytes).contains("new message"))
+        .count();
+    assert_eq!(notices, 1);
 }
 
 #[test]
@@ -1564,6 +1598,7 @@ fn generated_submit_cannot_publish_over_a_newer_composition_observation() {
                 .with_unchanged_input(terminal.input_reset_guard(), &probe, || {
                     host.start.lock().unwrap().take().unwrap().send(()).unwrap();
                     attempted.recv_timeout(Duration::from_secs(2)).unwrap();
+                    Some(())
                 })
                 .is_some());
         } else {

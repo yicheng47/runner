@@ -174,7 +174,12 @@ pub(crate) enum SessionEvent {
     },
     #[cfg(test)]
     DraftInput(Option<LocalInputClass>),
-    InputWriteFailed(InputCheckpoint),
+    /// An input's bytes never reached the PTY. `after` is where the input left the model; what a
+    /// later event has changed since keeps that change.
+    InputWriteFailed {
+        before: Box<InputCheckpoint>,
+        after: Box<InputCheckpoint>,
+    },
     Composer {
         observation: InputObservation,
         live: bool,
@@ -209,7 +214,7 @@ pub(crate) struct Effects {
 }
 
 /// A busy that rests on a submit or a delivery alone, until the agent shows a turn.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct SubmitBusy {
     since: Instant,
     /// The busy it armed; any later change of activity supersedes it.
@@ -219,10 +224,11 @@ struct SubmitBusy {
     completion: bool,
 }
 
+/// The model fields an input changes.
 pub(crate) struct InputCheckpoint {
     activity: Option<SessionActivityState>,
     submit_busy: Option<SubmitBusy>,
-    status: AgentStatus,
+    observation: AgentObservation,
     suppression: bool,
     pending: bool,
     input_at: Option<Instant>,
@@ -361,7 +367,7 @@ impl SessionModel {
         InputCheckpoint {
             activity: self.activity,
             submit_busy: self.submit_busy.clone(),
-            status: self.status.clone(),
+            observation: self.status.observation.clone(),
             suppression: self.suppress_local_input_busy,
             pending: self.local_input_pending,
             input_at: self.last_local_input_at,
@@ -748,15 +754,50 @@ impl SessionModel {
             SessionEvent::DraftInput(class) => {
                 effects.input_cleared = self.draft_input(class, now.monotonic)
             }
-            SessionEvent::InputWriteFailed(previous) => {
-                self.activity = previous.activity;
-                self.submit_busy = previous.submit_busy;
-                self.status = previous.status;
-                self.suppress_local_input_busy = previous.suppression;
-                self.local_input_pending = previous.pending;
-                self.last_local_input_at = previous.input_at;
-                self.activity_revision = previous.revision;
-                self.completion_armed = previous.completion;
+            SessionEvent::InputWriteFailed { before, after } => {
+                let before = *before;
+                fn undo<T: PartialEq>(field: &mut T, before: T, after: &T) {
+                    if field == after {
+                        *field = before;
+                    }
+                }
+                // Its draft marks go unless a later event changed them.
+                undo(
+                    &mut self.suppress_local_input_busy,
+                    before.suppression,
+                    &after.suppression,
+                );
+                undo(
+                    &mut self.local_input_pending,
+                    before.pending,
+                    &after.pending,
+                );
+                undo(
+                    &mut self.last_local_input_at,
+                    before.input_at,
+                    &after.input_at,
+                );
+                // Every later activity report advances the revision, even one that agrees with
+                // the input's busy, and then owns the turn.
+                if self.activity_revision == after.revision {
+                    undo(&mut self.activity, before.activity, &after.activity);
+                    undo(
+                        &mut self.submit_busy,
+                        before.submit_busy,
+                        &after.submit_busy,
+                    );
+                    undo(
+                        &mut self.status.observation,
+                        before.observation,
+                        &after.observation,
+                    );
+                    undo(
+                        &mut self.completion_armed,
+                        before.completion,
+                        &after.completion,
+                    );
+                    self.activity_revision = before.revision;
+                }
             }
             SessionEvent::Composer { observation, live } => {
                 if !live {

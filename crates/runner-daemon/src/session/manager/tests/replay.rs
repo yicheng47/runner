@@ -287,6 +287,7 @@ fn install_replay_handle(
         },
         rollout_capture: None,
         forwarder: None,
+        input: Default::default(),
         stop: Arc::new(AtomicBool::new(false)),
     };
     let sink = ForwarderEmitCtx {

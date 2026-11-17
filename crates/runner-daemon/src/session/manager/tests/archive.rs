@@ -187,6 +187,54 @@ fn archive_restore_resumes_first_chunk_with_fresh_terminal_and_color_replies() {
 }
 
 #[test]
+fn input_queued_for_a_stopped_process_never_reaches_the_resumed_one() {
+    let data = tempfile::tempdir().unwrap();
+    let fake = fake_runtime();
+    let core = core_with_fake(data.path(), fake.clone());
+    let id = spawn(&core, "trae");
+    let (started, release) = fake.block_next_write();
+    let in_flight = {
+        let (sessions, id) = (Arc::clone(&core.sessions), id.clone());
+        std::thread::spawn(move || sessions.inject_stdin(&id, b"in-flight"))
+    };
+    started.recv_timeout(Duration::from_secs(30)).unwrap();
+    let stale = {
+        let (sessions, id) = (Arc::clone(&core.sessions), id.clone());
+        std::thread::spawn(move || sessions.inject_stdin(&id, b"stale"))
+    };
+    core.sessions.wait_for_queued_input(&id, 1);
+
+    session_stop(&core, &id).unwrap();
+    let error = stale.join().unwrap().unwrap_err().to_string();
+    assert!(
+        error.contains("stopped before its input was written"),
+        "{error}"
+    );
+    assert!(
+        in_flight.join().unwrap().is_err(),
+        "a stop releases the blocked write's caller at once"
+    );
+
+    session_resume(&core, &id, None, None).unwrap();
+    core.sessions.inject_stdin(&id, b"fresh").unwrap();
+    release.send(()).unwrap();
+    let written = || -> Vec<Vec<u8>> {
+        fake.bytes_writes()
+            .into_iter()
+            .filter(|(session, _)| session == &id)
+            .map(|(_, bytes)| bytes)
+            .collect()
+    };
+    eventually("the stopped process's blocked write returns", || {
+        written().contains(&b"in-flight".to_vec())
+    });
+    assert!(written().contains(&b"fresh".to_vec()));
+    assert!(!written().contains(&b"stale".to_vec()));
+    session_stop(&core, &id).unwrap();
+    core.sessions.drain_terminal_workers();
+}
+
+#[test]
 fn ordinary_stop_resume_keeps_sequence_terminal_and_single_input_worker() {
     let data = tempfile::tempdir().unwrap();
     let fake = fake_runtime();
@@ -547,6 +595,7 @@ fn forget_cannot_split_terminal_and_live_handle_installation() {
                 runtime_session,
                 rollout_capture: None,
                 forwarder: None,
+                input: Default::default(),
                 stop: stream.stop_flag(),
             },
             None,

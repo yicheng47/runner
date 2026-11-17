@@ -2233,7 +2233,7 @@ fn browser_input_uses_the_terminal_queue_and_the_desktop_input_observation() {
         .unwrap()
         .lock()
         .unwrap()
-        .terminal_input = Some(input);
+        .terminal_input = Some(super::TerminalInput::new(input));
     let model = core.sessions.terminal_model(&spawned.id).unwrap();
     let backend = DaemonCore(Arc::downgrade(&core));
     core.sessions
