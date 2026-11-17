@@ -113,7 +113,11 @@ https://github.com/user-attachments/assets/a45d2440-da17-4be4-8de5-0902f59eb1da
 
 ## 支持的 Agent
 
-Runner 集成了 **Codex、Claude Code、Antigravity CLI、GitHub Copilot CLI、pi、Cursor、Grok Build 和 OpenCode v2**。**TRAE CLI** 可按需启用。各 agent 的功能和平台支持有所不同。
+**一级支持：** Claude Code、Codex、Antigravity CLI、Grok Build 和 pi。Runner 针对这些 agent 开发和测试。
+
+**社区支持：** GitHub Copilot CLI、Cursor、OpenCode v2 和 TRAE CLI（按需启用）。它们可以运行聊天和任务，Runner 依靠使用者发现问题，遇到故障请[提交 issue](https://github.com/yicheng47/runner/issues/new)。
+
+各 agent 的功能和平台支持有所不同。
 
 [Agent 安装、功能对比与平台说明 →](./docs/guide/reference/supported-agents.md)
 
