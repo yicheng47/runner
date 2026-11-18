@@ -21,12 +21,52 @@ impl MissionWorkspace {
         let MissionTab::Session(session_id) = &self.active_tab else {
             return;
         };
-        if let Err(error) = self
-            .core(cx)
-            .mark_direct_sessions_viewed(std::slice::from_ref(session_id))
-        {
-            self.error = Some(error.to_string().into());
+        self.pending_mark_viewed_session = Some(session_id.clone());
+        if !self.mark_viewed_in_flight {
+            self.start_next_mark_viewed(cx);
         }
+    }
+
+    fn start_next_mark_viewed(&mut self, cx: &mut Context<Self>) {
+        if !self.active || self.presentation.is_remote() {
+            self.pending_mark_viewed_session = None;
+            self.mark_viewed_task = None;
+            return;
+        }
+        let Some(session_id) = self.pending_mark_viewed_session.take() else {
+            self.mark_viewed_task = None;
+            return;
+        };
+        self.mark_viewed_in_flight = true;
+        let core = self.core(cx).clone();
+        let bg = cx.background_spawn(async move {
+            core.mark_direct_sessions_viewed(std::slice::from_ref(&session_id))
+        });
+        self.mark_viewed_task = Some(cx.spawn(async move |weak, cx| {
+            let result = bg.await;
+            let _ = weak.update(cx, |this, cx| {
+                if let Err(error) = result {
+                    this.error = Some(error.to_string().into());
+                    cx.notify();
+                }
+                this.mark_viewed_in_flight = false;
+                this.start_next_mark_viewed(cx);
+            });
+        }));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_test_active_mission_session(
+        &mut self,
+        mission: runner_core::protocol::model::Mission,
+        session_id: &str,
+    ) {
+        self.active = true;
+        self.loading = false;
+        self.secondary = false;
+        self.mission_id = Some(mission.id.clone());
+        self.mission = Some(mission);
+        self.active_tab = MissionTab::Session(session_id.to_owned());
     }
 
     pub(crate) fn focus_status_session(

@@ -19,12 +19,11 @@ impl Global for WindowLayoutCheckpoint {}
 pub(crate) fn collect_window_layout(
     cx: &mut App,
 ) -> (window_state::WindowLayout, Vec<LiveWindowState>) {
-    let core = global_app_store(cx).read(cx).client.clone();
-    let focused_at = core
-        .window_snapshot()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|entry| (entry.label, entry.focused_at.timestamp_micros()))
+    let focused_at = global_app_store(cx)
+        .read(cx)
+        .window_entries
+        .iter()
+        .map(|entry| (entry.label.clone(), entry.focused_at.timestamp_micros()))
         .collect::<HashMap<_, _>>();
     let mut windows = cx
         .windows()

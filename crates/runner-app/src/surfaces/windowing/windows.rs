@@ -403,6 +403,7 @@ mod open_tests {
     fn window_subscribes_before_its_first_reports_so_no_reconnect_is_lost() {
         let mut fixture = Fixture::with_runnerd_down();
         fixture.open_main();
+        fixture.cx.run_until_parked();
         // A reconnect before the last subscription reaches a later report;
         // one after it reaches the listener.
         let log = fixture.log.lock().unwrap().clone();

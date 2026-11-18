@@ -318,6 +318,7 @@ pub(crate) struct SettingsState {
     content_scrollbar: Entity<Scrollbar>,
     command_install_activity: Option<CommandInstallActivity>,
     command_install_error: Option<(CommandInstallActivity, PathBuf, String)>,
+    command_install_task: Option<gpui::Task<()>>,
     save_generation: u64,
     _subscriptions: Vec<Subscription>,
 }
@@ -592,6 +593,7 @@ impl SettingsState {
             content_scrollbar,
             command_install_activity: None,
             command_install_error: None,
+            command_install_task: None,
             save_generation: 0,
             _subscriptions: vec![
                 font_subscription,
@@ -1154,14 +1156,15 @@ impl NativeRoot {
         }
     }
 
-    fn set_runner_skill_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+    pub(crate) fn set_runner_skill_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if !self.update_app_settings(cx, true, |settings| {
             update_if_changed(&mut settings.runner_skill_enabled, enabled)
         }) {
             return;
         }
-        self.app_store
-            .update(cx, |store, _| store.initialize_skill_defaults());
+        self.app_store.update(cx, |store, store_cx| {
+            store.schedule_skill_defaults_reconcile(store_cx);
+        });
         cx.notify();
     }
 
@@ -1184,14 +1187,11 @@ impl NativeRoot {
         if self.settings_page.command_install_activity.is_some() {
             return;
         }
-        let (inputs, integration, target) = {
+        let (action_ctx, fallback_target) = {
             let store = self.app_store.read(cx);
-            let Some(inputs) = store.command_install_inputs(false) else {
+            if store.home_dir.is_none() || store.command_install_integration().is_none() {
                 return;
-            };
-            let Some(integration) = store.command_install_integration() else {
-                return;
-            };
+            }
             let target = if activity == CommandInstallActivity::Uninstall {
                 store
                     .runner_command_status()
@@ -1199,8 +1199,10 @@ impl NativeRoot {
             } else {
                 store.command_action_target().cloned()
             }
-            .unwrap_or_else(|| inputs.sidecar.clone());
-            (inputs, integration, target)
+            .unwrap_or_else(|| {
+                runner_core::protocol::agent_skill::sidecar_path(&store.app_data_dir)
+            });
+            (store.command_action_context(), target)
         };
         self.update_app_settings(cx, true, crate::app_store::mark_command_install_initialized);
         self.settings_page.command_install_activity = Some(activity);
@@ -1209,28 +1211,32 @@ impl NativeRoot {
             CommandInstallActivity::Install => crate::app_store::UserCommandAction::Install,
             CommandInstallActivity::Uninstall => crate::app_store::UserCommandAction::Uninstall,
         };
-        let client = self.core(cx).clone();
         let task = cx.background_spawn(async move {
-            crate::app_store::run_user_command_action(&client, &inputs, action, integration)
+            crate::app_store::run_user_command_action_serialized(&action_ctx, action)
         });
-        cx.spawn(async move |weak, cx| {
-            let result = task.await;
+        self.settings_page.command_install_task = Some(cx.spawn(async move |weak, cx| {
+            let outcome = task.await;
             let _ = weak.update(cx, |this, cx| {
                 this.settings_page.command_install_activity = None;
-                this.app_store
-                    .update(cx, |store, _| store.refresh_runner_command_status());
-                match result {
-                    Ok(CommandActionOutcome::Cancelled) => {}
-                    Ok(_) => this.settings_page.command_install_error = None,
-                    Err(error) => {
-                        this.settings_page.command_install_error =
-                            Some((activity, target, error.to_string()));
+                this.settings_page.command_install_task = None;
+                if let Some((result, snapshot)) = outcome {
+                    this.app_store.update(cx, |store, store_cx| {
+                        if store.apply_command_default(snapshot) {
+                            store_cx.notify();
+                        }
+                    });
+                    match result {
+                        Ok(CommandActionOutcome::Cancelled) => {}
+                        Ok(_) => this.settings_page.command_install_error = None,
+                        Err(error) => {
+                            this.settings_page.command_install_error =
+                                Some((activity, fallback_target, error.to_string()));
+                        }
                     }
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        }));
         cx.notify();
     }
 

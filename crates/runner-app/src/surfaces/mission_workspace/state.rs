@@ -283,6 +283,9 @@ impl MissionWorkspace {
             rename_modal: None,
             mission_id_copy,
             session_key_copies: HashMap::new(),
+            mark_viewed_in_flight: false,
+            pending_mark_viewed_session: None,
+            mark_viewed_task: None,
             _store_subscription: cx.observe_in(&app_store, window, |this, _, window, cx| {
                 this.handle_app_store_update(cx);
                 this.schedule_mission_grid_hint(window, cx);
@@ -320,6 +323,7 @@ impl MissionWorkspace {
             self.rail_maximized = false;
         }
         self.mission_id = Some(mission_id);
+        self.pending_mark_viewed_session = None;
         self.attached.clear();
         self.mission_node_id = None;
         self.layout = MissionLayout::default();
@@ -382,6 +386,9 @@ impl MissionWorkspace {
 
     pub(crate) fn release_window(&mut self, cx: &mut Context<Self>) {
         self.active = false;
+        self.mark_viewed_in_flight = false;
+        self.pending_mark_viewed_session = None;
+        self.mark_viewed_task = None;
         self.rail_files.release(cx);
         if self.presentation.release_feed() {
             self.generation += 1;

@@ -396,6 +396,7 @@ pub(crate) struct NativeRoot {
     pub(crate) _project_cwd_subscription: Option<Subscription>,
     pub(crate) _updater_subscription: Subscription,
     pub(crate) _store_subscription: Subscription,
+    pub(crate) _focus_map_tasks: Option<[gpui::Task<()>; 2]>,
     pub(crate) _event_tasks: [gpui::Task<()>; 4],
 }
 

@@ -1,5 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
+use gpui::{AppContext as _, Context};
 use runner_core::protocol::agent_skill::{self, SkillRootState};
 use runner_core::protocol::model::Runtime;
 use runner_core::protocol::DaemonClient;
@@ -10,6 +13,12 @@ use super::AppStore;
 pub(crate) struct RunnerSkillStatus {
     pub(crate) detected: bool,
     pub(crate) foreign: Option<PathBuf>,
+}
+
+pub(super) struct SkillReconcileOutcome {
+    pub(super) seq: u64,
+    pub(super) enabled: bool,
+    pub(super) status: RunnerSkillStatus,
 }
 
 impl AppStore {
@@ -32,34 +41,120 @@ impl AppStore {
         self.runner_skill_status = skill_status(&self.client, home, debug, &expected, &available);
     }
     pub(crate) fn initialize_skill_defaults(&mut self) {
-        let Some(home) = self.home_dir.clone() else {
-            self.runner_skill_status = RunnerSkillStatus::default();
-            return;
+        self.desired_skill_enabled
+            .store(self.settings.runner_skill_enabled, Ordering::Release);
+        let outcome = reconcile_skill_defaults_serialized(
+            &self.client,
+            self.home_dir.as_deref(),
+            &self.app_data_dir,
+            &self.desired_skill_enabled,
+            &self.skill_status_seq,
+            &self.skill_reconcile_lock,
+        );
+        self.apply_skill_reconcile_outcome(outcome);
+    }
+    pub(super) fn apply_skill_reconcile_outcome(&mut self, outcome: SkillReconcileOutcome) -> bool {
+        if outcome.seq >= self.applied_skill_status_seq
+            && self.settings.runner_skill_enabled == outcome.enabled
+        {
+            self.applied_skill_status_seq = outcome.seq;
+            self.runner_skill_status = outcome.status;
+            return true;
+        }
+        false
+    }
+    pub(crate) fn schedule_skill_defaults_reconcile(&mut self, cx: &mut Context<Self>) {
+        self.desired_skill_enabled
+            .store(self.settings.runner_skill_enabled, Ordering::Release);
+        let client = self.client.clone();
+        let home = self.home_dir.clone();
+        let app_data_dir = self.app_data_dir.clone();
+        let desired = Arc::clone(&self.desired_skill_enabled);
+        let seq = Arc::clone(&self.skill_status_seq);
+        let lock = Arc::clone(&self.skill_reconcile_lock);
+        let bg = cx.background_spawn(async move {
+            reconcile_skill_defaults_serialized(
+                &client,
+                home.as_deref(),
+                &app_data_dir,
+                &desired,
+                &seq,
+                &lock,
+            )
+        });
+        self.skill_reconcile_task = Some(cx.spawn(async move |weak, cx| {
+            let outcome = bg.await;
+            let _ = weak.update(cx, |store, cx| {
+                if store.apply_skill_reconcile_outcome(outcome) {
+                    cx.notify();
+                }
+            });
+        }));
+    }
+}
+
+pub(super) fn reconcile_skill_defaults_serialized(
+    client: &DaemonClient,
+    home: Option<&Path>,
+    app_data_dir: &Path,
+    desired_enabled: &AtomicBool,
+    seq_counter: &AtomicU64,
+    lock: &Mutex<()>,
+) -> SkillReconcileOutcome {
+    let Some(home) = home else {
+        let _guard = lock.lock().unwrap();
+        let seq = seq_counter.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        return SkillReconcileOutcome {
+            seq,
+            enabled: desired_enabled.load(Ordering::Acquire),
+            status: RunnerSkillStatus::default(),
         };
-        let debug = cfg!(debug_assertions);
-        if !self.settings.runner_skill_enabled {
-            if let Err(error) = self.client.agent_skill_remove(&home, debug) {
+    };
+    let debug = cfg!(debug_assertions);
+    if !desired_enabled.load(Ordering::Acquire) {
+        let _guard = lock.lock().unwrap();
+        if !desired_enabled.load(Ordering::Acquire) {
+            if let Err(error) = client.agent_skill_remove(home, debug) {
                 eprintln!("Runner skill removal failed: {error}");
             }
         }
-        let catalog = match self.client.runtime_catalog() {
-            Ok(catalog) => catalog,
-            Err(error) => {
-                eprintln!("Runner skill defaults failed: {error}");
-                self.runner_skill_status = RunnerSkillStatus::default();
-                return;
-            }
-        };
-        let content = agent_skill::render(debug, &agent_skill::sidecar_path(&self.app_data_dir));
-        let available = catalog
-            .iter()
-            .filter(|entry| entry.available)
-            .map(|entry| entry.name)
-            .collect::<Vec<_>>();
-        if self.settings.runner_skill_enabled {
-            reconcile_skill_roots(&self.client, &home, debug, &content, &available);
+    }
+    let catalog = match client.runtime_catalog() {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            eprintln!("Runner skill defaults failed: {error}");
+            let _guard = lock.lock().unwrap();
+            let seq = seq_counter.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+            return SkillReconcileOutcome {
+                seq,
+                enabled: desired_enabled.load(Ordering::Acquire),
+                status: RunnerSkillStatus::default(),
+            };
         }
-        self.runner_skill_status = skill_status(&self.client, &home, debug, &content, &available);
+    };
+    let content = agent_skill::render(debug, &agent_skill::sidecar_path(app_data_dir));
+    let available = catalog
+        .iter()
+        .filter(|entry| entry.available)
+        .map(|entry| entry.name)
+        .collect::<Vec<_>>();
+    let _guard = lock.lock().unwrap();
+    loop {
+        let enabled = desired_enabled.load(Ordering::Acquire);
+        if enabled {
+            reconcile_skill_roots(client, home, debug, &content, &available);
+        } else if let Err(error) = client.agent_skill_remove(home, debug) {
+            eprintln!("Runner skill removal failed: {error}");
+        }
+        let status = skill_status(client, home, debug, &content, &available);
+        if desired_enabled.load(Ordering::Acquire) == enabled {
+            let seq = seq_counter.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+            return SkillReconcileOutcome {
+                seq,
+                enabled,
+                status,
+            };
+        }
     }
 }
 
@@ -131,7 +226,7 @@ impl super::AppStore {
 mod tests {
     use super::*;
     use crate::app_store::AppStore;
-    use gpui::{AppContext as _, TestAppContext};
+    use gpui::TestAppContext;
     use runner_daemon::{db, session, shell_path, AppCore};
     use std::fs;
     use std::sync::{Arc, RwLock};

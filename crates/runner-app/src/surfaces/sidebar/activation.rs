@@ -141,23 +141,10 @@ impl NativeRoot {
         let member_ids = layout.session_ids();
         let viewed_session_id = layout.focused_session_id().map(str::to_owned);
         if !window.is_window_active() {
-            self.report_current_subjects(cx);
-            let _ = self.core(cx).mark_blurred(&self.window_label);
+            self.report_current_subjects_and_focus(Some(false), None, cx);
             return;
         }
-        match self.core(cx).node_mark_viewed(
-            &self.window_label,
-            &tab_id,
-            member_ids,
-            viewed_session_id.as_deref(),
-        ) {
-            Ok(Some(updated)) => {
-                self.app_store
-                    .update(cx, |store, store_cx| store.replace_node(updated, store_cx));
-            }
-            Ok(None) => {}
-            Err(error) => self.error = Some(error.to_string().into()),
-        }
+        self.enqueue_tab_viewed(tab_id, member_ids, viewed_session_id, cx);
     }
 
     pub(crate) fn sync_active_project_from_active_tab(&mut self, cx: &mut Context<Self>) {

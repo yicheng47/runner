@@ -434,6 +434,9 @@ pub(crate) struct MissionWorkspace {
     pub(crate) rename_modal: Option<MissionRenameModal>,
     mission_id_copy: Entity<CopyValueButton>,
     session_key_copies: HashMap<String, Entity<CopyValueButton>>,
+    mark_viewed_in_flight: bool,
+    pending_mark_viewed_session: Option<String>,
+    mark_viewed_task: Option<gpui::Task<()>>,
     _store_subscription: Subscription,
 }
 
