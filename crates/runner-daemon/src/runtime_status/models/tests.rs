@@ -628,10 +628,26 @@ fn discovery_catalog_golden() {
 
 #[test]
 #[cfg(unix)]
-fn model_discovery_skips_opencode_below_minimum_without_spawning_serve() {
+fn model_discovery_reprobes_replaced_opencode_and_skips_v1_serve() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
-    let v1 = dir.path().join("opencode");
+    let binary = dir.path().join("opencode");
+    std::fs::write(&binary, "#!/bin/sh\necho '2.0.29'\n").unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let command = binary.to_str().unwrap();
+    let mut state = crate::shell_path::DiscoveryState::startup(None, None);
+    state.versions.record_override_probe(
+        Runtime::OpenCode,
+        command.into(),
+        super::super::versions::executable_fingerprint(command),
+        Some("2.0.29".into()),
+    );
+    assert_eq!(
+        state.versions.installed(Runtime::OpenCode, command),
+        Some("2.0.29")
+    );
+
+    let v1 = dir.path().join("opencode.v1");
     std::fs::write(
         &v1,
         r#"#!/bin/sh
@@ -639,20 +655,23 @@ if [ "$1" = "--version" ]; then
   echo "1.19.5"
   exit 0
 fi
-echo "unexpected:$*" >> "$(dirname "$0")/unexpected"
+echo "unexpected:$*" >> "${0%/*}/unexpected"
 exit 1
 "#,
     )
     .unwrap();
     std::fs::set_permissions(&v1, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let pool = Arc::new(crate::db::open_pool(&dir.path().join("runner.db")).unwrap());
+    std::fs::rename(&v1, &binary).unwrap();
+    let pool = Arc::new(crate::db::open_fixture_pool(&dir.path().join("runner.db")).unwrap());
     let env = Arc::new(std::sync::RwLock::new(LoginShellEnv {
         path: Some(dir.path().display().to_string()),
-        vars: Default::default(),
+        vars: [(
+            crate::runtime_status::TEST_ISOLATE_PATH_ENV.into(),
+            "1".into(),
+        )]
+        .into(),
     }));
-    let discovery = Arc::new(std::sync::RwLock::new(
-        crate::shell_path::DiscoveryState::startup(None, None),
-    ));
+    let discovery = Arc::new(std::sync::RwLock::new(state));
     request(
         &pool,
         &env,
@@ -663,6 +682,10 @@ exit 1
     );
     assert!(!dir.path().join("unexpected").exists());
     let guard = discovery.read().unwrap();
+    assert_eq!(
+        guard.versions.installed(Runtime::OpenCode, command),
+        Some("1.19.5")
+    );
     let entry = guard.models.runtimes.get(&Runtime::OpenCode).unwrap();
     assert!(!entry.in_flight);
     assert!(entry.last_attempt.is_none());

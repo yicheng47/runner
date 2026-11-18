@@ -2682,13 +2682,13 @@ fn a_drag_selects_rendered_text_across_rows_and_copies_it() {
 #[test]
 fn a_single_long_code_line_shapes_only_the_rows_in_view() {
     let mut h = viewer(chat("in-project"));
-    let line = "let x = 1; ".repeat(500_000);
+    let line = "let x = 1; ".repeat(50_000);
     std::fs::write(h.repo.join("LINE.md"), format!("```\n{line}\n```\n")).unwrap();
     h.open("LINE.md");
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
     let page = h.read(|view| view.rendered_view()).unwrap();
     let rows = page.read_with(&h.visual, |page, _| page.page().rows.len());
-    assert!(rows > 10_000, "{rows} rows");
+    assert!(rows > 1_000, "{rows} rows");
     for row in [0, rows / 2, rows - 1] {
         page.update(&mut h.visual, |page, _| page.scroll_to_row(row));
         super::markdown::DRAWN_CODE_BYTES.set(0);

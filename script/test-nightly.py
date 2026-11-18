@@ -421,7 +421,9 @@ class NightlyTests(unittest.TestCase):
                 download = next(step for step in JOBS['publish']['steps'] if step.get('with', {}).get('pattern') == prefix + '-*')
                 self.assertTrue(download['with']['merge-multiple'])
                 if name == 'build-linux':
-                    self.assertEqual(job['container'], 'ubuntu:22.04')
+                    container = job['container']
+                    image = container['image'] if isinstance(container, dict) else container
+                    self.assertEqual(image, 'ubuntu:22.04')
                     continue
                 self.assertIn('${{ needs.prepare.outputs.short_sha }}', upload['with']['path'])
 

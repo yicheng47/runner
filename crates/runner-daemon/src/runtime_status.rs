@@ -565,28 +565,29 @@ pub fn refresh_background_discovery(
         model_runtimes,
         crate::shell_path::resolve_login_shell_env,
     )
+    .map(|worker| worker.is_some())
 }
 
-pub(crate) fn refresh_background_discovery_with(
+fn refresh_background_discovery_with(
     events: EventChannel,
     pool: Arc<DbPool>,
     shell_env: SharedShellEnv,
     discovery: SharedDiscoveryState,
     model_runtimes: Vec<Runtime>,
     resolve_env: impl FnOnce() -> DiscoveryResult + Send + 'static,
-) -> Result<bool> {
+) -> Result<Option<std::thread::JoinHandle<()>>> {
     {
         let mut state = discovery
             .write()
             .map_err(|_| Error::msg("runtime discovery lock poisoned"))?;
         if state.checking {
-            return Ok(false);
+            return Ok(None);
         }
         state.checking = true;
         state.versions.clear_probes();
     }
     events.emit("runtime/changed", &());
-    std::thread::spawn(move || {
+    Ok(Some(std::thread::spawn(move || {
         run_background_discovery_with(
             events,
             pool,
@@ -596,8 +597,7 @@ pub(crate) fn refresh_background_discovery_with(
             model_runtimes,
             resolve_env,
         );
-    });
-    Ok(true)
+    })))
 }
 
 fn log_runtime_paths(pool: &DbPool, shell_env: &SharedShellEnv) {
@@ -1104,188 +1104,60 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn refresh_clears_cached_v2_probe_and_skips_v1_model_serve() {
+    fn refresh_clears_cached_version_before_discovery_runs() {
         let dir = tempfile::tempdir().unwrap();
-        let mode_file = dir.path().join("mode");
-        let serve_called = dir.path().join("serve.called");
-        let bin = dir.path().join("opencode");
-        let write_wrapper = || {
-            let script = format!(
-                "#!/bin/sh\nmode=$(cat '{mode}')\nif [ \"$1\" = --version ]; then\n  if [ \"$mode\" = v2 ]; then\n    echo '2.0.29'\n  else\n    echo '1.19.5'\n  fi\n  exit 0\nfi\nif [ \"$1\" = serve ]; then\n  touch '{serve}'\n  printf '%s' '{{\"providers\":[]}}'\n  exit 0\nfi\nexit 1\n",
-                mode = mode_file.display(),
-                serve = serve_called.display(),
-            );
-            std::fs::write(&bin, script).unwrap();
-            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        };
-        std::fs::write(&mode_file, "v2").unwrap();
-        write_wrapper();
-
-        let pool = Arc::new(crate::db::open_pool(&dir.path().join("runner.db")).unwrap());
+        let bin = executable(dir.path(), "opencode");
+        let command = bin.to_str().unwrap();
+        let pool = Arc::new(crate::db::open_fixture_pool(&dir.path().join("runner.db")).unwrap());
         let shell_env = Arc::new(RwLock::new(LoginShellEnv::default()));
-        let discovery = Arc::new(RwLock::new(DiscoveryState::startup(None, None)));
-        let events = EventChannel::new();
-        let path_env = dir.path().to_str().unwrap().to_owned();
-        let discovery_result = move || DiscoveryResult {
-            shell: Some("/bin/zsh".into()),
-            outcome: DiscoveryOutcome::Ok,
-            duration_ms: 1,
-            env: LoginShellEnv {
-                path: Some(path_env.clone()),
-                vars: Default::default(),
-            },
-        };
-
-        run_background_discovery_with(
-            events.clone(),
-            Arc::clone(&pool),
-            Arc::clone(&shell_env),
-            Arc::clone(&discovery),
-            true,
-            vec![Runtime::OpenCode],
-            discovery_result.clone(),
-        );
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while discovery
-            .read()
-            .unwrap()
-            .versions
-            .installed(Runtime::OpenCode, bin.to_str().unwrap())
-            != Some("2.0.29")
-            || discovery
-                .read()
-                .unwrap()
-                .versions
-                .has_in_flight_async(Runtime::OpenCode)
-            || discovery
-                .read()
-                .unwrap()
-                .models
-                .is_in_flight(Runtime::OpenCode)
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "initial probe timed out"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-
-        // 1) Unchanged-metadata wrapper flipped to v1 -> Refresh must wipe cached v2 BEFORE models::request runs.
-        std::fs::write(&mode_file, "v1").unwrap();
-        let _ = std::fs::remove_file(&serve_called);
-        assert!(refresh_background_discovery_with(
-            events.clone(),
-            Arc::clone(&pool),
-            Arc::clone(&shell_env),
-            Arc::clone(&discovery),
-            vec![Runtime::OpenCode],
-            discovery_result.clone(),
-        )
-        .unwrap());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while discovery.read().unwrap().checking
-            || discovery
-                .read()
-                .unwrap()
-                .versions
-                .has_in_flight_async(Runtime::OpenCode)
-            || discovery
-                .read()
-                .unwrap()
-                .models
-                .is_in_flight(Runtime::OpenCode)
-            || discovery
-                .read()
-                .unwrap()
-                .versions
-                .installed(Runtime::OpenCode, bin.to_str().unwrap())
-                != Some("1.19.5")
-        {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "refresh probe timed out"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(
-            !serve_called.exists(),
-            "Refresh must not spawn opencode v1 serve --stdio using stale cached v2 probe"
-        );
-        let status = status_list(&pool, &shell_env, &discovery).unwrap();
-        let row = status
-            .runtimes
-            .iter()
-            .find(|runtime| runtime.name == Runtime::OpenCode)
-            .unwrap();
-        assert_eq!(row.state, RuntimeRowState::NotFound);
-        assert!(row.below_minimum);
-        assert_eq!(row.installed_version.as_deref(), Some("1.19.5"));
-
-        // 2) Flip back to v2, Refresh cleanly discovers 2.0.29, then atomically replace binary on disk with v1.
-        std::fs::write(&mode_file, "v2").unwrap();
-        assert!(refresh_background_discovery_with(
-            events.clone(),
-            Arc::clone(&pool),
-            Arc::clone(&shell_env),
-            Arc::clone(&discovery),
-            vec![Runtime::OpenCode],
-            discovery_result.clone(),
-        )
-        .unwrap());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while discovery.read().unwrap().checking
-            || discovery
-                .read()
-                .unwrap()
-                .versions
-                .has_in_flight_async(Runtime::OpenCode)
-            || discovery
-                .read()
-                .unwrap()
-                .models
-                .is_in_flight(Runtime::OpenCode)
-            || discovery
-                .read()
-                .unwrap()
-                .versions
-                .installed(Runtime::OpenCode, bin.to_str().unwrap())
-                != Some("2.0.29")
-        {
-            assert!(std::time::Instant::now() < deadline, "v2 restore timed out");
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-
-        let _ = std::fs::remove_file(&serve_called);
-        let tmp = dir.path().join("opencode.v1");
-        std::fs::write(
-            &tmp,
-            format!(
-                "#!/bin/sh\nif [ \"$1\" = --version ]; then echo '1.19.5'; exit 0; fi\nif [ \"$1\" = serve ]; then touch '{}'; fi\nexit 1\n",
-                serve_called.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::fs::rename(&tmp, &bin).unwrap();
-        models::request(
-            &pool,
-            &shell_env,
-            &discovery,
-            &events,
-            &[Runtime::OpenCode],
-            true,
-        );
-        assert!(
-            !serve_called.exists(),
-            "same-path binary swap must invalidate probe before models::request runs"
+        let discovery = completed_discovery();
+        discovery.write().unwrap().versions.record_override_probe(
+            Runtime::OpenCode,
+            command.into(),
+            versions::executable_fingerprint(command),
+            Some("2.0.29".into()),
         );
         assert_eq!(
             discovery
                 .read()
                 .unwrap()
                 .versions
-                .installed(Runtime::OpenCode, bin.to_str().unwrap()),
-            Some("1.19.5")
+                .probed(Runtime::OpenCode, command),
+            Some(Some("2.0.29"))
         );
+
+        let (release, wait) = std::sync::mpsc::channel();
+        let worker = refresh_background_discovery_with(
+            EventChannel::new(),
+            pool,
+            shell_env,
+            Arc::clone(&discovery),
+            vec![Runtime::OpenCode],
+            move || {
+                let _ = wait.recv();
+                DiscoveryResult {
+                    shell: None,
+                    outcome: DiscoveryOutcome::Ok,
+                    duration_ms: 0,
+                    env: LoginShellEnv {
+                        path: None,
+                        vars: [(TEST_ISOLATE_PATH_ENV.into(), "1".into())].into(),
+                    },
+                }
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            discovery
+                .read()
+                .unwrap()
+                .versions
+                .probed(Runtime::OpenCode, command),
+            None
+        );
+        release.send(()).unwrap();
+        worker.join().unwrap();
     }
 }

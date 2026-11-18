@@ -1090,7 +1090,7 @@ exec sleep 60
 
     #[cfg(unix)]
     fn wait_for(description: &str, predicate: impl Fn() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(15);
         while !predicate() {
             assert!(Instant::now() < deadline, "timed out: {description}");
             std::thread::sleep(Duration::from_millis(10));

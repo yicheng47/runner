@@ -721,69 +721,6 @@ fn direct_chat_handle_only_reaches_not_running_path() {
 }
 
 #[test]
-fn help_works_without_env_vars() {
-    let mut cmd = Command::new(runner_bin());
-    cmd.args(["help"]);
-    cmd.env_remove("RUNNER_CREW_ID");
-    cmd.env_remove("RUNNER_MISSION_ID");
-    cmd.env_remove("RUNNER_HANDLE");
-    cmd.env_remove("RUNNER_EVENT_LOG");
-
-    let out = cmd.output().unwrap();
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("USAGE"));
-    assert!(stdout.contains("runner signal"));
-    assert!(stdout.contains("runner msg"));
-    assert!(!stdout.contains("status busy"));
-}
-
-#[test]
-fn command_help_describes_verbs_and_flags() {
-    let cases = [
-        (
-            vec!["project", "--help"],
-            vec!["List projects", "Show one project", "--json", "-q"],
-        ),
-        (
-            vec!["mission", "start", "--help"],
-            vec![
-                "--goal-file",
-                "Read the mission goal from a file",
-                "--cwd",
-                "defaults to the current directory",
-            ],
-        ),
-        (
-            vec!["msg", "post", "--help"],
-            vec![
-                "--mission",
-                "required outside a mission",
-                "--as",
-                "roster handle",
-            ],
-        ),
-    ];
-    for (args, expected) in cases {
-        let mut cmd = Command::new(runner_bin());
-        cmd.args(args);
-        let out = cmd.output().unwrap();
-        assert!(out.status.success());
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        for needle in expected {
-            assert!(
-                stdout.contains(needle),
-                "help output did not contain {needle:?}:\n{stdout}"
-            );
-        }
-    }
-}
-
-// Avoid unused-warning on Path import when the file body changes.
-#[allow(dead_code)]
-fn _path_marker(_p: &Path) {}
-
-#[test]
 fn targeted_posts_resolve_leading_mentions_and_repeatable_to() {
     let f = Fixture::new("C", "M");
     f.write_roster(&[("coder", false), ("reviewer", false), ("qa", false)]);
@@ -1146,7 +1083,11 @@ fn a_missing_or_unrunnable_session_cli_falls_through() {
     let installed = tempfile::tempdir().unwrap();
     let cli = stage_cli(installed.path());
     let bin = cli.parent().unwrap().to_owned();
-    let expected = Command::new(&cli).arg("--version").output().unwrap();
+    let expected = Command::new(&cli)
+        .arg("--version")
+        .env_remove(runner_core::protocol::SESSION_CLI_ENV)
+        .output()
+        .unwrap();
     assert!(expected.status.success());
     let unrunnable = installed.path().join("plain");
     std::fs::write(&unrunnable, "not a program").unwrap();

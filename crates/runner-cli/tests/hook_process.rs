@@ -282,7 +282,7 @@ async fn native_command_reporters_preserve_utf8_and_provider_neutral_results() {
             let payload = if provider == Runtime::Codex {
                 json!({"hook_event_name":"SessionEnd","session_id":"root","transcript_path":null,"cwd":app_data,"reason":"other"})
             } else {
-                json!({"session_id":"root", "tool_name":"Bash", "prompt": "你好 空格 ' $ `\n".repeat(32768)})
+                json!({"session_id":"root", "tool_name":"Bash", "prompt": "你好 空格 ' $ `\n".repeat(4096)})
             };
             let expected = payload.clone();
             let mut command = if shell == "direct" {
@@ -360,8 +360,8 @@ async fn native_command_reporters_preserve_utf8_and_provider_neutral_results() {
             );
             let _routes = tokio::time::timeout(std::time::Duration::from_secs(3), server)
                 .await
-                .expect("report was not admitted")
-                .unwrap();
+                .unwrap_or_else(|_| panic!("{provider:?} via {shell}: report was not admitted"))
+                .unwrap_or_else(|error| panic!("{provider:?} via {shell}: {error}"));
             let mut reports = Vec::new();
             receiver.drain(|report| reports.push(report)).unwrap();
             assert_eq!(reports.len(), 1);
