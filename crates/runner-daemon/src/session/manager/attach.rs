@@ -11,7 +11,40 @@ impl SessionManager {
         events: &Arc<dyn SessionEvents>,
     ) {
         let (cols, rows) = initial_size.expect("spawn size must be resolved before handle install");
-        let mut control = self.terminal_control.lock().unwrap();
+        let mut rev = self
+            .control_group_revision
+            .load(std::sync::atomic::Ordering::Acquire);
+        let (binding, mut control_group) = {
+            #[cfg(test)]
+            self.run_install_checkout_hook(session_id);
+            let conn = pool.get().expect("checkout db before handle install");
+            let binding = super::terminal::session_terminal_binding(&conn, session_id)
+                .expect("read session terminal binding before handle install");
+            let group = Self::control_group_on_conn(&conn, session_id)
+                .expect("read terminal control group before handle install");
+            (binding, group)
+        };
+        #[cfg(test)]
+        self.run_after_install_snapshot_hook(session_id);
+        let mut control = loop {
+            let control = self.terminal_control.lock().unwrap();
+            if self
+                .control_group_revision
+                .load(std::sync::atomic::Ordering::Acquire)
+                == rev
+            {
+                break control;
+            }
+            drop(control);
+            rev = self
+                .control_group_revision
+                .load(std::sync::atomic::Ordering::Acquire);
+            let conn = pool
+                .get()
+                .expect("checkout db to refresh terminal control group");
+            control_group = Self::control_group_on_conn(&conn, session_id)
+                .expect("refresh terminal control group before handle install");
+        };
         let prepared = self.session_state(session_id).and_then(|state| {
             let state = state.lock().unwrap();
             state
@@ -27,18 +60,16 @@ impl SessionManager {
         });
         let (terminal, terminal_started_at) = match prepared {
             Some((terminal, started_at)) => {
-                self.rebind_terminal_session(session_id, &terminal, &started_at, pool)
-                    .expect("rebind session terminal model");
+                self.rebind_terminal_session_from_binding(&terminal, &started_at, binding);
                 (terminal, started_at)
             }
             None => self
-                .create_terminal_with_started_at(session_id, cols, rows, pool, events)
+                .create_terminal_from_binding(session_id, cols, rows, binding, pool, events)
                 .expect("create session terminal model"),
         };
         let previous_worker = {
-            let controller = self
-                .inherited_controller(session_id, pool, &mut control)
-                .expect("read terminal control group before handle install");
+            let controller =
+                self.inherited_controller_for_group(session_id, control_group, &mut control);
             let state = self.session_state_or_insert(session_id);
             let mut state = state.lock().unwrap();
             if state
@@ -70,26 +101,29 @@ impl SessionManager {
         if let Some(worker) = previous_worker {
             let _ = worker.join();
         }
-        let spawned = self.install_handle_state(
-            session_id,
-            handle,
-            mission_status_sink,
-            initial_size,
-            |cols, rows| match pool.get() {
-                Ok(conn) => match crate::repo::session::update_last_size(&conn, session_id, cols, rows) {
-                    Ok(_) => true,
-                    Err(error) => {
-                        log::warn!("resize persistence after handle install failed: session={session_id} {cols}x{rows}: {error}");
-                        false
+        let (spawned, pending_persist) =
+            self.install_handle_state(session_id, handle, mission_status_sink, initial_size);
+        drop(control);
+        if let Some(work) = pending_persist {
+            work.run(|cols, rows, is_current| match pool.get() {
+                Ok(conn) => {
+                    if !is_current() {
+                        return false;
                     }
-                },
+                    match crate::repo::session::update_last_size(&conn, session_id, cols, rows) {
+                        Ok(_) => true,
+                        Err(error) => {
+                            log::warn!("resize persistence after handle install failed: session={session_id} {cols}x{rows}: {error}");
+                            false
+                        }
+                    }
+                }
                 Err(error) => {
                     log::warn!("resize persistence after handle install pool checkout failed: session={session_id} {cols}x{rows}: {error}");
                     false
                 }
-            },
-        );
-        drop(control);
+            });
+        }
         self.publish_handle_install(&spawned, events.as_ref());
     }
 
@@ -104,14 +138,12 @@ impl SessionManager {
         events: &dyn SessionEvents,
     ) {
         let control = self.terminal_control.lock().unwrap();
-        let spawned = self.install_handle_state(
-            session_id,
-            handle,
-            mission_status_sink,
-            initial_size,
-            persist_size,
-        );
+        let (spawned, pending_persist) =
+            self.install_handle_state(session_id, handle, mission_status_sink, initial_size);
         drop(control);
+        if let Some(work) = pending_persist {
+            work.run(|cols, rows, _| persist_size(cols, rows));
+        }
         self.publish_handle_install(&spawned, events);
     }
 
@@ -121,46 +153,45 @@ impl SessionManager {
         handle: SessionHandle,
         mission_status_sink: Option<ForwarderEmitCtx>,
         initial_size: Option<(u16, u16)>,
-        persist_size: impl FnOnce(u16, u16) -> bool,
-    ) -> SessionSpawnedEvent {
+    ) -> (SessionSpawnedEvent, Option<PendingResizePersist>) {
         let initial_size = initial_size.expect("spawn size must be resolved before handle install");
         let mission_id = handle.mission_id.clone();
         let mut terminal_size = initial_size;
         let state = self.session_state_or_insert(session_id);
         let gate = state.lock().unwrap().delivery_gate.clone();
-        {
+        let (output_seq, pending_persist) = {
             let mut delivery = gate.state.lock().unwrap();
-            let mut state = state.lock().unwrap();
+            let mut state_guard = state.lock().unwrap();
             delivery.generation = delivery.generation.wrapping_add(1);
             delivery.in_flight = false;
             delivery.next_ticket = 0;
             delivery.next_served = 0;
             delivery.cancelled_tickets.clear();
             gate.ready.notify_all();
-            state.pending_spawn = false;
-            state.delivery_runtime = handle
+            state_guard.pending_spawn = false;
+            state_guard.delivery_runtime = handle
                 .startup
                 .as_ref()
                 .filter(|startup| !startup.reports_only)
                 .map(|startup| startup.runtime.clone())
                 .unwrap_or_default();
             if let Some(startup) = &handle.startup {
-                state.model.set_program_status_authority(
+                state_guard.model.set_program_status_authority(
                     crate::runtimes::for_key(&startup.runtime)
                         .status_semantics()
                         .program_status_authority,
                 );
             }
-            state.handle = Some(handle);
-            state
+            state_guard.handle = Some(handle);
+            state_guard
                 .model
                 .apply(SessionEvent::Attached, super::super::clock::state_now());
-            state.mission_status_sink = mission_status_sink;
-            state.killed = false;
+            state_guard.mission_status_sink = mission_status_sink;
+            state_guard.killed = false;
 
-            let requested_size = state.last_requested_size;
+            let requested_size = state_guard.last_requested_size;
             if let Some((cols, rows)) = requested_size.filter(|size| *size != initial_size) {
-                let rt_session = state
+                let rt_session = state_guard
                     .handle
                     .as_ref()
                     .expect("handle was just installed")
@@ -180,27 +211,30 @@ impl SessionManager {
                     ),
                 }
             }
-            if state.last_requested_size_dirty {
-                if let Some((cols, rows)) = state.last_requested_size {
-                    // This spawn/resume thread owns the state lock so a
-                    // newer resize cannot be overwritten by this dirty size.
-                    if persist_size(cols, rows) {
-                        state.last_requested_size_dirty = false;
-                    }
-                }
-            }
-            state.pending_resize = None;
-            if let Some(terminal) = &state.terminal {
+            let stamp = state_guard.bump_resize_stamp();
+            let pending_persist = if state_guard.last_requested_size_dirty {
+                state_guard.last_requested_size.map(|(cols, rows)| {
+                    state_guard.prepare_resize_persist(&state, cols, rows, stamp)
+                })
+            } else {
+                None
+            };
+            state_guard.pending_resize = None;
+            if let Some(terminal) = &state_guard.terminal {
                 terminal.resize(terminal_size.0, terminal_size.1);
             }
-        }
-        SessionSpawnedEvent {
-            session_id: session_id.to_owned(),
-            mission_id,
-            cols: terminal_size.0,
-            rows: terminal_size.1,
-            output_seq: state.lock().unwrap().output_seq,
-        }
+            (state_guard.output_seq, pending_persist)
+        };
+        (
+            SessionSpawnedEvent {
+                session_id: session_id.to_owned(),
+                mission_id,
+                cols: terminal_size.0,
+                rows: terminal_size.1,
+                output_seq,
+            },
+            pending_persist,
+        )
     }
 
     fn publish_handle_install(&self, spawned: &SessionSpawnedEvent, events: &dyn SessionEvents) {

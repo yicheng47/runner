@@ -1454,3 +1454,158 @@ fn activation_and_focus_return_advance_viewed_and_emit_invalidation() {
     );
     assert_eq!(drain_attention_count(&mut rx), 1);
 }
+
+#[test]
+fn viewed_completion_counts_and_companion_terminal_release_db_before_session_locks_1377() {
+    use crate::companion::core::{Core as _, DaemonCore};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    static SQL_TRACE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    fn bump_sql_trace(_: &str) {
+        SQL_TRACE_COUNT.fetch_add(1, Ordering::AcqRel);
+    }
+
+    // `test_core()` uses a 1-connection pool (`open_in_memory`), so `try_get().is_some()` while a
+    // caller blocks on `wedged`'s SessionState proves zero DB connections remain checked out.
+    let state = Arc::new(test_core());
+    let tab = create_tab(&state, &["wedged"]);
+    let events: Arc<dyn crate::session::manager::SessionEvents> = Arc::new(state.session_events());
+    state
+        .sessions
+        .prepare_unlisted_terminal("wedged", (80, 24), &state.db, &events)
+        .unwrap();
+    repo::node::record_completion(&state.db.get().unwrap(), &tab.id, false, Utc::now()).unwrap();
+    repo::session_attention::record_completion(&state.db.get().unwrap(), "wedged", false, 100)
+        .unwrap();
+
+    let (unlock_tx, holder) = state.sessions.lock_session_state_for_test("wedged");
+
+    // 1. mark_direct_sessions_viewed commits Immediate tx and drops conn before mark_status_viewed.
+    let (viewed_done_tx, viewed_done_rx) = std::sync::mpsc::channel();
+    let viewed_state = Arc::clone(&state);
+    let viewed_worker = std::thread::spawn(move || {
+        mark_direct_sessions_viewed(&viewed_state, &["wedged".into()]).unwrap();
+        let _ = viewed_done_tx.send(());
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(mut conn) = state.db.try_get() {
+            let committed = repo::node::get(&conn, &tab.id)
+                .unwrap()
+                .unwrap()
+                .last_viewed_at
+                .is_some();
+            if committed {
+                // Verify SQLite's writer lock is also free.
+                let tx = conn
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .expect("Immediate write lock must not be pinned while SessionState is held");
+                tx.commit().unwrap();
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "mark_direct_sessions_viewed did not commit and release DbPool before SessionState"
+        );
+        std::thread::yield_now();
+    }
+    assert!(viewed_done_rx.try_recv().is_err());
+
+    // 2. record_session_completion drops its runtime-lookup conn before take_completion_armed.
+    {
+        let mut conn = state.db.get().unwrap();
+        conn.trace(Some(bump_sql_trace));
+    }
+    let baseline = SQL_TRACE_COUNT.load(Ordering::Acquire);
+    let completion_state = Arc::clone(&state);
+    let (comp_done_tx, comp_done_rx) = std::sync::mpsc::channel();
+    let comp_worker = std::thread::spawn(move || {
+        record_session_completion(
+            &completion_state.db,
+            &completion_state.sessions,
+            &completion_state.windows,
+            &completion_state.events,
+            "wedged",
+        )
+        .unwrap();
+        let _ = comp_done_tx.send(());
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if SQL_TRACE_COUNT.load(Ordering::Acquire) > baseline && state.db.try_get().is_some() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "record_session_completion did not drop DbPool conn before SessionState"
+        );
+        std::thread::yield_now();
+    }
+    assert!(comp_done_rx.try_recv().is_err());
+
+    // 3. DaemonCore::terminal drops its row-lookup conn before session_live(wedged).
+    let baseline = SQL_TRACE_COUNT.load(Ordering::Acquire);
+    let daemon_core = DaemonCore(Arc::downgrade(&state));
+    let (term_done_tx, term_done_rx) = std::sync::mpsc::channel();
+    let term_worker = std::thread::spawn(move || {
+        let _ = daemon_core.input("wedged", 1, b"x");
+        let _ = term_done_tx.send(());
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if SQL_TRACE_COUNT.load(Ordering::Acquire) > baseline && state.db.try_get().is_some() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "DaemonCore::terminal did not drop DbPool conn before session_live"
+        );
+        std::thread::yield_now();
+    }
+    assert!(term_done_rx.try_recv().is_err());
+
+    // 4. live_session_counts snapshots live_session_ids() before checking out DbPool, so a caller
+    // holding SessionState can still check out DbPool without deadlocking.
+    let scan_baseline = state.sessions.live_session_scan_count();
+    let sql_baseline = SQL_TRACE_COUNT.load(Ordering::Acquire);
+    let counts_state = Arc::clone(&state);
+    let (counts_done_tx, counts_done_rx) = std::sync::mpsc::channel();
+    let counts_worker = std::thread::spawn(move || {
+        let counts = crate::ops::session::live_session_counts(&counts_state).unwrap();
+        let _ = counts_done_tx.send(counts);
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while state.sessions.live_session_scan_count() == scan_baseline {
+        assert!(
+            Instant::now() < deadline,
+            "live_session_counts did not reach live_session_ids scan"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        SQL_TRACE_COUNT.load(Ordering::Acquire),
+        sql_baseline,
+        "live_session_counts must not query SQLite before live_session_ids completes"
+    );
+    assert!(
+        state.db.try_get().is_some(),
+        "DbPool must remain free while live_session_counts waits on wedged SessionState"
+    );
+    assert!(counts_done_rx.try_recv().is_err());
+    {
+        let mut conn = state.db.get().unwrap();
+        conn.trace(None);
+    }
+
+    let _ = unlock_tx.send(());
+    holder.join().unwrap();
+    viewed_worker.join().unwrap();
+    comp_worker.join().unwrap();
+    term_worker.join().unwrap();
+    counts_done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    counts_worker.join().unwrap();
+    state.sessions.drain_terminal_workers();
+}

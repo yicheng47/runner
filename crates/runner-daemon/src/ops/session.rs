@@ -141,8 +141,9 @@ pub fn session_activity_snapshot(state: &AppCore) -> BTreeMap<String, SessionAct
 /// each session row's runtime. A process without a row, such as a CLI
 /// update in Settings → Agents, is not a session and is not counted.
 pub fn live_session_counts(state: &AppCore) -> Result<HashMap<Runtime, usize>> {
+    let live_ids = state.sessions.live_session_ids();
     let conn = state.db.get()?;
-    count_by_runtime(&conn, &state.sessions.live_session_ids())
+    count_by_runtime(&conn, &live_ids)
 }
 
 fn count_by_runtime(
@@ -445,6 +446,7 @@ pub fn session_archive(state: &AppCore, session_id: &str) -> Result<()> {
     }
     repo::node::remove_session(&tx, session_id)?;
     tx.commit()?;
+    drop(conn);
     state.sessions.forget_session_state(session_id);
     state.session_events().archived(&SessionUpdatedEvent {
         session_id: session_id.to_owned(),

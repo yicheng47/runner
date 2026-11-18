@@ -2418,3 +2418,158 @@ fn running_ids_filters_status_and_archive() {
         "only non-archived running rows, ordered by started_at"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mission_archive_and_log_ops_release_db_pool_before_router_unregister_and_flock_1377() {
+    use fs2::FileExt as _;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    static MISSION_SQL_COUNT: AtomicUsize = AtomicUsize::new(0);
+    fn bump_mission_sql(_: &str) {
+        MISSION_SQL_COUNT.fetch_add(1, Ordering::AcqRel);
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let state = Arc::new(crate::test_support::test_core_in(tmp.path().to_owned()));
+    let (crew_id, mission_id) = {
+        let mut conn = state.db.get().unwrap();
+        let crew_id = seed_crew(&conn, "C1377");
+        add_role(&mut conn, &crew_id, "lead");
+        let out = start(
+            &mut conn,
+            &state.app_data_dir,
+            StartMissionInput {
+                project_id: None,
+                crew_id: Some(crew_id.clone()),
+                title: "m1377".into(),
+                goal_override: Some("g".into()),
+                cwd: None,
+                worktree: None,
+                started_by_session_id: None,
+                no_report: false,
+            },
+        )
+        .unwrap();
+        conn.trace(Some(bump_mission_sql));
+        (crew_id, out.mission.id)
+    };
+
+    // 1. Hold exclusive flock on events.ndjson; verify mission_post_impl, mission_feed, and
+    // mission_list_summary_impl drop their DbPool checkout before waiting on EventLog::open.
+    let mission_dir = event_log::mission_dir(&state.app_data_dir, Some(&crew_id), &mission_id);
+    let (_stage_guard, mut stage_rx) = super::LogOpenStageProbeGuard::install(mission_dir.clone());
+    let log_path = mission_dir.join("events.ndjson");
+    let locked_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&log_path)
+        .unwrap();
+    locked_file.lock_exclusive().unwrap();
+
+    let post_state = Arc::clone(&state);
+    let post_mission = mission_id.clone();
+    let post_task = tokio::task::spawn_blocking(move || {
+        crate::daemon::block_on(mission_post_impl(
+            &post_state,
+            PostMessageInput {
+                mission_id: post_mission,
+                from: None,
+                to: Default::default(),
+                text: "hello".into(),
+            },
+        ))
+        .unwrap()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), stage_rx.recv())
+        .await
+        .expect("mission_post_impl reached EventLog::open stage")
+        .expect("stage probe open");
+    assert!(
+        state.db.try_get().is_some(),
+        "mission_post_impl must drop DbPool conn before EventLog::open flock"
+    );
+    assert!(!post_task.is_finished());
+
+    let feed_state = Arc::clone(&state);
+    let feed_mission = mission_id.clone();
+    let feed_task = tokio::task::spawn_blocking(move || {
+        super::feed::mission_feed(
+            &feed_state,
+            runner_core::protocol::mission::MissionFeedArgs {
+                mission_id: feed_mission,
+                since_offset: None,
+                order: Default::default(),
+                limit: None,
+            },
+        )
+        .unwrap()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), stage_rx.recv())
+        .await
+        .expect("mission_feed reached EventLog::open stage")
+        .expect("stage probe open");
+    assert!(
+        state.db.try_get().is_some(),
+        "mission_feed must drop DbPool conn before EventLog::open flock"
+    );
+    assert!(!feed_task.is_finished());
+
+    let summary_state = Arc::clone(&state);
+    let summary_crew = crew_id.clone();
+    let summary_task = tokio::task::spawn_blocking(move || {
+        crate::daemon::block_on(mission_list_summary_impl(
+            &summary_state,
+            Some(summary_crew),
+        ))
+        .unwrap()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), stage_rx.recv())
+        .await
+        .expect("summaries reached EventLog::open stage")
+        .expect("stage probe open");
+    assert!(
+        state.db.try_get().is_some(),
+        "summaries must drop DbPool conn before EventLog::open flock"
+    );
+    assert!(!summary_task.is_finished());
+
+    locked_file.unlock().unwrap();
+    drop(locked_file);
+    post_task.await.unwrap();
+    feed_task.await.unwrap();
+    summary_task.await.unwrap();
+
+    // 2. Hold RouterRegistry lock so mission_archive_impl blocks at routers.unregister; verify
+    // stop() committed and dropped its DbPool connection beforehand.
+    let (unlock_routers, router_holder) = state.routers.lock_for_test();
+    let archive_state = Arc::clone(&state);
+    let archive_mission = mission_id.clone();
+    let archive_task = tokio::task::spawn_blocking(move || {
+        crate::daemon::block_on(mission_archive_impl(&archive_state, archive_mission)).unwrap()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(conn) = state.db.try_get() {
+                if get(&conn, &mission_id).unwrap().status == MissionStatus::Completed {
+                    return;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect(
+        "mission_archive_impl must commit stop() and drop DbPool conn before routers.unregister",
+    );
+    assert!(!archive_task.is_finished());
+
+    let _ = unlock_routers.send(());
+    router_holder.join().unwrap();
+    let archived = archive_task.await.unwrap();
+    assert_eq!(archived.status, MissionStatus::Completed);
+    {
+        let mut conn = state.db.get().unwrap();
+        conn.trace(None);
+    }
+}

@@ -976,6 +976,22 @@ impl RouterRegistry {
         self.routers.lock().unwrap().get(mission_id).cloned()
     }
 
+    #[cfg(test)]
+    pub(crate) fn lock_for_test(
+        self: &Arc<Self>,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let registry = Arc::clone(self);
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (unlock_tx, unlock_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = registry.routers.lock().unwrap();
+            let _ = locked_tx.send(());
+            let _ = unlock_rx.recv();
+        });
+        locked_rx.recv().unwrap();
+        (unlock_tx, holder)
+    }
+
     /// A person stopped `session_id`; if it is an interrupted member, its mark clears.
     pub(crate) fn clear_interruption(&self, session_id: &str) -> Result<()> {
         let routers: Vec<_> = self.routers.lock().unwrap().values().cloned().collect();

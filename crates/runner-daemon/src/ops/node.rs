@@ -162,6 +162,8 @@ pub fn node_mission_layout_set(state: &AppCore, node_id: &str, layout: String) -
     repo::node::set_layout(&tx, node_id, &layout)?;
     let row = repo::node::get(&tx, node_id)?.ok_or_else(|| Error::msg("node disappeared"))?;
     tx.commit()?;
+    drop(conn);
+    state.sessions.note_control_layout_changed();
     emit_layout_changed(state);
     emit_unlinked(state, unlinked);
     Ok(row)
@@ -561,12 +563,14 @@ pub(crate) fn record_session_completion(
     events: &EventChannel,
     session_id: &str,
 ) -> Result<()> {
-    let mut conn = db.get()?;
-    if repo::session::effective_runtime(&conn, session_id)?
-        .as_deref()
-        .and_then(Runtime::parse)
-        .is_some_and(Runtime::is_shell)
-    {
+    let is_shell = {
+        let conn = db.get()?;
+        repo::session::effective_runtime(&conn, session_id)?
+            .as_deref()
+            .and_then(Runtime::parse)
+            .is_some_and(Runtime::is_shell)
+    };
+    if is_shell {
         return Ok(());
     }
     if !sessions.take_completion_armed(&[session_id.to_owned()]) {
@@ -574,26 +578,30 @@ pub(crate) fn record_session_completion(
     }
     let viewed = windows.any_focused_displaying(&[session_id.to_owned()]);
     sessions.record_unread(session_id, viewed);
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    repo::session_attention::record_completion(
-        &tx,
-        session_id,
-        viewed,
-        Utc::now().timestamp_millis(),
-    )?;
-    repo::node::ensure_active_sessions(&tx)?;
-    let Some(tab) = repo::node::find_for_session(&tx, session_id)? else {
+    let updated_tab = {
+        let mut conn = db.get()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        repo::session_attention::record_completion(
+            &tx,
+            session_id,
+            viewed,
+            Utc::now().timestamp_millis(),
+        )?;
+        repo::node::ensure_active_sessions(&tx)?;
+        let Some(tab) = repo::node::find_for_session(&tx, session_id)? else {
+            tx.commit()?;
+            return Ok(());
+        };
+        let viewed =
+            viewed && !repo::session_attention::any_unread(&tx, &repo::node::session_ids(&tab))?;
+        let row = repo::node::record_completion(&tx, &tab.id, viewed, Utc::now())?;
         tx.commit()?;
-        return Ok(());
+        row.map(|_| tab.id)
     };
-    let viewed =
-        viewed && !repo::session_attention::any_unread(&tx, &repo::node::session_ids(&tab))?;
-    let row = repo::node::record_completion(&tx, &tab.id, viewed, Utc::now())?;
-    tx.commit()?;
-    if row.is_some() {
+    if let Some(tab_id) = updated_tab {
         events.emit(
             ATTENTION_CHANGED_EVENT,
-            &serde_json::json!({ "tab_id": tab.id }),
+            &serde_json::json!({ "tab_id": tab_id }),
         );
     }
     Ok(())
@@ -603,30 +611,33 @@ pub fn mark_direct_sessions_viewed(state: &AppCore, session_ids: &[String]) -> R
     if session_ids.is_empty() {
         return Ok(());
     }
-    let mut conn = state.db.get()?;
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    repo::node::ensure_active_sessions(&tx)?;
-    let mut tab_ids = Vec::new();
-    for session_id in session_ids {
-        if let Some(tab) = repo::node::find_for_session(&tx, session_id)? {
-            if !tab_ids.contains(&tab.id) {
-                tab_ids.push(tab.id);
+    let tab_ids = {
+        let mut conn = state.db.get()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        repo::node::ensure_active_sessions(&tx)?;
+        let mut tab_ids = Vec::new();
+        for session_id in session_ids {
+            if let Some(tab) = repo::node::find_for_session(&tx, session_id)? {
+                if !tab_ids.contains(&tab.id) {
+                    tab_ids.push(tab.id);
+                }
             }
         }
-    }
-    let now = Utc::now();
-    for session_id in session_ids {
-        repo::session_attention::mark_viewed(&tx, session_id, &now.to_rfc3339())?;
-    }
-    for tab_id in &tab_ids {
-        if let Some(tab) = repo::node::get(&tx, tab_id)? {
-            if !repo::session_attention::any_unread(&tx, &repo::node::session_ids(&tab))? {
-                repo::node::mark_viewed(&tx, tab_id, now)?;
+        let now = Utc::now();
+        for session_id in session_ids {
+            repo::session_attention::mark_viewed(&tx, session_id, &now.to_rfc3339())?;
+        }
+        for tab_id in &tab_ids {
+            if let Some(tab) = repo::node::get(&tx, tab_id)? {
+                if !repo::session_attention::any_unread(&tx, &repo::node::session_ids(&tab))? {
+                    repo::node::mark_viewed(&tx, tab_id, now)?;
+                }
             }
         }
-    }
+        tx.commit()?;
+        tab_ids
+    };
     state.sessions.mark_status_viewed(session_ids);
-    tx.commit()?;
     state.events.emit(
         ATTENTION_CHANGED_EVENT,
         &serde_json::json!({ "tab_ids": tab_ids, "session_ids": session_ids }),

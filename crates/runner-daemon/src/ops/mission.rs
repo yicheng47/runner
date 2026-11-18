@@ -436,8 +436,14 @@ pub fn mission_events_replay(
     state: &AppCore,
     mission_id: &str,
 ) -> Result<Vec<runner_core::model::Event>> {
-    let conn = state.db.get()?;
-    read_events(&state.app_data_dir, &conn, mission_id)
+    let mission_dir = {
+        let conn = state.db.get()?;
+        let mission = get(&conn, mission_id)?;
+        event_log::mission_dir(&state.app_data_dir, mission.crew_id.as_deref(), mission_id)
+    };
+    let log = EventLog::open(&mission_dir)?;
+    let (entries, _skipped) = log.read_from_lossy(0)?;
+    Ok(entries.into_iter().map(|e| e.event).collect())
 }
 
 fn validate_roster_handle(
@@ -464,7 +470,7 @@ pub async fn mission_signal_impl(
     if input.signal_type == "ask_lead" {
         return Err(Error::msg(runner_core::model::ASK_LEAD_REMOVED_HINT));
     }
-    let (mission, from) = {
+    let (mission, from, roster_handles) = {
         let conn = state.db.get()?;
         let mission = get(&conn, &input.mission_id)?;
         validate_roster_handle(&conn, &state.app_data_dir, &mission, input.from.as_deref())?;
@@ -497,7 +503,18 @@ pub async fn mission_signal_impl(
             }
             "human".to_owned()
         };
-        (mission, from)
+        let roster_handles = if input.signal_type == "human_said" {
+            Some(
+                roster::load(&conn, &state.app_data_dir, &mission)?
+                    .slots
+                    .into_iter()
+                    .map(|member| member.slot.slot_handle)
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
+        (mission, from, roster_handles)
     };
     if !matches!(mission.status, MissionStatus::Running) {
         return Err(Error::msg(format!(
@@ -506,17 +523,8 @@ pub async fn mission_signal_impl(
         )));
     }
 
-    let mission_dir =
-        event_log::mission_dir(&state.app_data_dir, mission.crew_id.as_deref(), &mission.id);
-    let log = EventLog::open(&mission_dir)?;
     let mut payload = input.payload;
-    if input.signal_type == "human_said" {
-        let conn = state.db.get()?;
-        let roster = roster::load(&conn, &state.app_data_dir, &mission)?.slots;
-        let handles = roster
-            .iter()
-            .map(|member| member.slot.slot_handle.clone())
-            .collect::<Vec<_>>();
+    if let Some(handles) = roster_handles {
         let explicit: runner_core::Recipients = serde_json::from_value(payload["target"].clone())?;
         let resolved = runner_core::addressing::resolve(
             payload["text"].as_str().unwrap_or_default(),
@@ -528,6 +536,10 @@ pub async fn mission_signal_impl(
             .ok_or_else(|| Error::msg("person signal payload must be an object"))?;
         object.insert("target".into(), serde_json::to_value(resolved.recipients)?);
     }
+
+    let mission_dir =
+        event_log::mission_dir(&state.app_data_dir, mission.crew_id.as_deref(), &mission.id);
+    let log = EventLog::open(&mission_dir)?;
     if input.signal_type == "human_response" && from == "human" {
         let question_id = payload["question_id"]
             .as_str()
@@ -582,11 +594,11 @@ fn resolve_pending_question(log: &EventLog, question_id: &str) -> Result<String>
     }))
 }
 
-fn post_message(
+fn prepare_post_message(
     app_data_dir: &Path,
     conn: &Connection,
     input: PostMessageInput,
-) -> Result<runner_core::model::Event> {
+) -> Result<(std::path::PathBuf, EventDraft)> {
     let text = input.text.trim().to_string();
     if text.is_empty() {
         return Err(Error::msg("mission message text must not be empty"));
@@ -610,7 +622,6 @@ fn post_message(
     let resolved = runner_core::addressing::resolve(&text, input.to.as_slice(), &handles)?;
 
     let mission_dir = event_log::mission_dir(app_data_dir, mission.crew_id.as_deref(), &mission.id);
-    let log = EventLog::open(&mission_dir)?;
     let mut draft = EventDraft::message(
         mission.crew_id.as_deref(),
         mission.id,
@@ -619,16 +630,32 @@ fn post_message(
         resolved.text,
     );
     draft.to = resolved.recipients;
-    let event = log.append(draft)?;
-    Ok(event)
+    Ok((mission_dir, draft))
+}
+
+#[cfg(test)]
+fn post_message(
+    app_data_dir: &Path,
+    conn: &Connection,
+    input: PostMessageInput,
+) -> Result<runner_core::model::Event> {
+    let (mission_dir, draft) = prepare_post_message(app_data_dir, conn, input)?;
+    let log = EventLog::open(&mission_dir)?;
+    Ok(log.append(draft)?)
 }
 
 pub async fn mission_post_impl(
     state: &AppCore,
     input: PostMessageInput,
 ) -> Result<runner_core::model::Event> {
-    let conn = state.db.get()?;
-    post_message(&state.app_data_dir, &conn, input)
+    let (mission_dir, draft) = {
+        let conn = state.db.get()?;
+        prepare_post_message(&state.app_data_dir, &conn, input)?
+    };
+    #[cfg(test)]
+    note_log_open_stage(&mission_dir);
+    let log = EventLog::open(&mission_dir)?;
+    Ok(log.append(draft)?)
 }
 
 pub async fn mission_start_impl(
@@ -1231,8 +1258,10 @@ pub async fn mission_rename_impl(state: &AppCore, id: String, title: String) -> 
 pub async fn mission_archive_impl(state: &AppCore, id: String) -> Result<Mission> {
     close_mission_drawer_shells(state, &id)?;
     state.sessions.kill_all_for_mission(&id)?;
-    let mut conn = state.db.get()?;
-    let mission = stop(&mut conn, &state.app_data_dir, &id)?;
+    let mission = {
+        let mut conn = state.db.get()?;
+        stop(&mut conn, &state.app_data_dir, &id)?
+    };
     state.buses.unmount(&id);
     state.routers.unregister(&id);
     Ok(mission)
@@ -1554,50 +1583,52 @@ pub async fn mission_list_linked(state: &AppCore, session_id: &str) -> Result<Ve
 
 fn summaries(state: &AppCore, missions: Vec<Mission>) -> Result<Vec<MissionSummary>> {
     let statuses = crate::ops::session::session_status_snapshot(state)?;
-    let conn = state.db.get()?;
+    let db_rows = {
+        let conn = state.db.get()?;
+        let mut rows = Vec::with_capacity(missions.len());
+        for m in missions {
+            let crew_name = m
+                .crew_id
+                .as_deref()
+                .and_then(|id| crew::get(&conn, id).ok())
+                .map(|crew| crew.name);
+            let sessions = match super::session::list_for_mission(&conn, &state.app_data_dir, &m.id)
+            {
+                Ok(sessions) => sessions,
+                Err(error) => {
+                    log::warn!("mission {} summary unavailable: {error}; skipping", m.id);
+                    continue;
+                }
+            };
+            let all_sessions_live = all_mission_sessions_live(&conn, &m.id).unwrap_or(false);
+            rows.push((m, crew_name, sessions, all_sessions_live));
+        }
+        rows
+    };
 
-    let mut summaries = Vec::with_capacity(missions.len());
-    for m in missions {
-        let crew_name = m
-            .crew_id
-            .as_deref()
-            .and_then(|id| crew::get(&conn, id).ok())
-            .map(|crew| crew.name);
-        let sessions = match super::session::list_for_mission(&conn, &state.app_data_dir, &m.id) {
-            Ok(sessions) => sessions,
-            Err(error) => {
-                log::warn!("mission {} summary unavailable: {error}; skipping", m.id);
-                continue;
-            }
-        };
-        // Live router is authoritative when mounted. For unmounted
-        // missions — terminal status, or orphan `running` rows after a
-        // restart — fall back to a log scan so the badge stays accurate
-        // until the workspace remounts the router. Past missions
-        // typically resolve to 0 too (every ask was answered or the
-        // human walked away) but the scan still surfaces genuinely
-        // abandoned cards from a prior run.
+    let mut summaries = Vec::with_capacity(db_rows.len());
+    for (m, crew_name, sessions, all_sessions_live) in db_rows {
         let pending_ask_count = match state.routers.get(&m.id) {
             Some(router) => router.pending_ask_count(),
             None => {
                 let mission_dir =
                     event_log::mission_dir(&state.app_data_dir, m.crew_id.as_deref(), &m.id);
+                #[cfg(test)]
+                note_log_open_stage(&mission_dir);
                 count_pending_asks_from_log(&mission_dir)
             }
         };
-        // The same query feeds both projections: `any_session_live`
-        // preserves the existing paused/no-live behavior, while
-        // `activity` overlays busy/idle only for live mission slots.
         let live_handles: Vec<_> = sessions
             .iter()
             .filter(|session| session.session.status == SessionStatus::Running)
             .map(|session| session.handle.clone())
             .collect();
         let any_session_live = !live_handles.is_empty();
-        let all_sessions_live = all_mission_sessions_live(&conn, &m.id).unwrap_or(false);
         let activity = if any_session_live {
             let mission_dir =
                 event_log::mission_dir(&state.app_data_dir, m.crew_id.as_deref(), &m.id);
+            #[cfg(test)]
+            note_log_open_stage(&mission_dir);
             mission_activity_from_log(&mission_dir, &live_handles)
         } else {
             None
@@ -1636,6 +1667,54 @@ fn summaries(state: &AppCore, missions: Vec<Mission>) -> Result<Vec<MissionSumma
         });
     }
     Ok(summaries)
+}
+
+#[cfg(test)]
+static LOG_OPEN_STAGE_PROBES: std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<std::path::PathBuf, tokio::sync::mpsc::UnboundedSender<()>>,
+    >,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(test)]
+pub(super) fn note_log_open_stage(mission_dir: &std::path::Path) {
+    if let Some(tx) = LOG_OPEN_STAGE_PROBES
+        .lock()
+        .unwrap()
+        .get(mission_dir)
+        .cloned()
+    {
+        let _ = tx.send(());
+    }
+}
+
+#[cfg(test)]
+pub(super) struct LogOpenStageProbeGuard {
+    mission_dir: std::path::PathBuf,
+}
+
+#[cfg(test)]
+impl LogOpenStageProbeGuard {
+    pub(super) fn install(
+        mission_dir: std::path::PathBuf,
+    ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<()>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        LOG_OPEN_STAGE_PROBES
+            .lock()
+            .unwrap()
+            .insert(mission_dir.clone(), tx);
+        (Self { mission_dir }, rx)
+    }
+}
+
+#[cfg(test)]
+impl Drop for LogOpenStageProbeGuard {
+    fn drop(&mut self) {
+        LOG_OPEN_STAGE_PROBES
+            .lock()
+            .unwrap()
+            .remove(&self.mission_dir);
+    }
 }
 
 #[cfg(test)]

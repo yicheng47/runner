@@ -216,11 +216,20 @@ impl SessionManager {
             .iter()
             .map(|(id, session)| (id.clone(), Arc::clone(session)))
             .collect();
+        #[cfg(test)]
+        self.live_session_scan_count
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         sessions
             .into_iter()
             .filter(|(_, session)| session.lock().unwrap().handle.is_some())
             .map(|(id, _)| id)
             .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn live_session_scan_count(&self) -> usize {
+        self.live_session_scan_count
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn session_live(&self, session_id: &str) -> bool {
@@ -499,6 +508,7 @@ impl SessionManager {
     pub(super) fn release_resume_claim(&self, session_id: &str) {
         if let Some(state) = self.session_state(session_id) {
             state.lock().unwrap().resuming = false;
+            Self::rearm_deferred_resize_after_rollback(session_id, &state);
         }
         self.prune_empty_session_state(session_id);
     }
@@ -521,6 +531,7 @@ impl SessionManager {
     pub(super) fn clear_killed(&self, session_id: &str) {
         if let Some(state) = self.session_state(session_id) {
             state.lock().unwrap().killed = false;
+            Self::rearm_deferred_resize_after_rollback(session_id, &state);
         }
         self.prune_empty_session_state(session_id);
     }

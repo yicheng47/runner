@@ -356,7 +356,7 @@ impl TerminalHost for Host {
     }
 }
 
-struct SessionTerminalBinding {
+pub(super) struct SessionTerminalBinding {
     runtime: Option<Runtime>,
     agent: bool,
     cwd: Option<String>,
@@ -364,7 +364,7 @@ struct SessionTerminalBinding {
     started_at: Option<String>,
 }
 
-fn session_terminal_binding(
+pub(super) fn session_terminal_binding(
     conn: &rusqlite::Connection,
     id: &str,
 ) -> Result<SessionTerminalBinding> {
@@ -404,11 +404,31 @@ impl SessionManager {
         pool: &DbPool,
         events: &Arc<dyn SessionEvents>,
     ) -> Result<()> {
+        let mut rev = self.control_group_revision.load(Ordering::Acquire);
+        let (binding, mut control_group) = {
+            #[cfg(test)]
+            self.run_install_checkout_hook(id);
+            let conn = pool.get()?;
+            let binding = session_terminal_binding(&conn, id)?;
+            let group = Self::control_group_on_conn(&conn, id)?;
+            (binding, group)
+        };
+        #[cfg(test)]
+        self.run_after_install_snapshot_hook(id);
         let (model, started_at) =
-            self.create_terminal_with_started_at(id, size.0, size.1, pool, events)?;
+            self.create_terminal_from_binding(id, size.0, size.1, binding, pool, events)?;
         let (input, worker) = self.start_terminal_input(id, Arc::clone(&model), Arc::clone(events));
-        let mut control = self.terminal_control.lock().unwrap();
-        let controller = self.inherited_controller(id, pool, &mut control)?;
+        let mut control = loop {
+            let control = self.terminal_control.lock().unwrap();
+            if self.control_group_revision.load(Ordering::Acquire) == rev {
+                break control;
+            }
+            drop(control);
+            rev = self.control_group_revision.load(Ordering::Acquire);
+            let conn = pool.get()?;
+            control_group = Self::control_group_on_conn(&conn, id)?;
+        };
+        let controller = self.inherited_controller_for_group(id, control_group, &mut control);
         let state = self.session_state_or_insert(id);
         let mut state = state.lock().unwrap();
         state.finish_companion_terminals();
@@ -435,6 +455,7 @@ impl SessionManager {
         self.create_terminal_with_started_at(id, cols, rows, pool, events)
             .map(|(model, _)| model)
     }
+    #[cfg(test)]
     pub(super) fn create_terminal_with_started_at(
         self: &Arc<Self>,
         id: &str,
@@ -443,9 +464,21 @@ impl SessionManager {
         pool: &DbPool,
         events: &Arc<dyn SessionEvents>,
     ) -> Result<(Arc<TerminalModel>, TerminalStartedAt)> {
-        let conn = pool.get()?;
-        let binding = session_terminal_binding(&conn, id)?;
-        drop(conn);
+        let binding = {
+            let conn = pool.get()?;
+            session_terminal_binding(&conn, id)?
+        };
+        self.create_terminal_from_binding(id, cols, rows, binding, pool, events)
+    }
+    pub(super) fn create_terminal_from_binding(
+        self: &Arc<Self>,
+        id: &str,
+        cols: u16,
+        rows: u16,
+        binding: SessionTerminalBinding,
+        pool: &DbPool,
+        events: &Arc<dyn SessionEvents>,
+    ) -> Result<(Arc<TerminalModel>, TerminalStartedAt)> {
         let started_at = Arc::new(Mutex::new(binding.started_at));
         let program_status_authority = binding.runtime.is_some_and(|runtime| {
             crate::runtimes::adapter(runtime)
@@ -487,6 +520,7 @@ impl SessionManager {
         model.set_palette(*self.terminal_palette.lock().unwrap());
         Ok((model, started_at))
     }
+    #[cfg(test)]
     pub(super) fn rebind_terminal_session(
         &self,
         id: &str,
@@ -494,15 +528,24 @@ impl SessionManager {
         started_at: &TerminalStartedAt,
         pool: &DbPool,
     ) -> Result<()> {
-        let conn = pool.get()?;
-        let binding = session_terminal_binding(&conn, id)?;
-        drop(conn);
+        let binding = {
+            let conn = pool.get()?;
+            session_terminal_binding(&conn, id)?
+        };
+        self.rebind_terminal_session_from_binding(terminal, started_at, binding);
+        Ok(())
+    }
+    pub(super) fn rebind_terminal_session_from_binding(
+        &self,
+        terminal: &TerminalModel,
+        started_at: &TerminalStartedAt,
+        binding: SessionTerminalBinding,
+    ) {
         let started_at = Arc::clone(started_at);
         let next_started_at = binding.started_at;
         terminal.sync_session_title(binding.initial_title, move || {
             *started_at.lock().unwrap() = next_started_at;
         });
-        Ok(())
     }
     pub(crate) fn apply_provider_title(&self, update: ProviderTitleUpdate<'_>) -> Result<bool> {
         let attached = self.session_state(update.session_id).and_then(|state| {
@@ -822,22 +865,29 @@ impl SessionManager {
         // The sender also adopts the accepted size from the ordered frame stream.
         self.resize(id, cols, rows, pool)
     }
-    fn control_group(&self, id: &str, pool: &DbPool) -> Result<(String, Vec<String>)> {
-        let conn = pool.get()?;
-        let tab = crate::repo::node::find_for_session(&conn, id)?;
+    pub(super) fn control_group_on_conn(
+        conn: &rusqlite::Connection,
+        id: &str,
+    ) -> Result<(String, Vec<String>)> {
+        let tab = crate::repo::node::find_for_session(conn, id)?;
         Ok(match tab {
             Some(tab) => (tab.id.clone(), crate::repo::node::session_ids(&tab)),
             None => (format!("session:{id}"), vec![id.to_owned()]),
         })
     }
 
-    pub(super) fn inherited_controller(
+    fn control_group(&self, id: &str, pool: &DbPool) -> Result<(String, Vec<String>)> {
+        let conn = pool.get()?;
+        Self::control_group_on_conn(&conn, id)
+    }
+
+    pub(super) fn inherited_controller_for_group(
         &self,
         id: &str,
-        pool: &DbPool,
+        group_snapshot: (String, Vec<String>),
         control: &mut ControlState,
-    ) -> Result<Controller> {
-        let (group, ids) = self.control_group(id, pool)?;
+    ) -> Controller {
+        let (group, ids) = group_snapshot;
         let controller = control.groups.entry(group).or_insert_with(|| {
             ids.iter()
                 .filter(|other| other.as_str() != id)
@@ -851,11 +901,17 @@ impl SessionManager {
                 })
                 .unwrap_or_default()
         });
-        Ok(controller.clone())
+        controller.clone()
+    }
+
+    pub(crate) fn note_control_layout_changed(&self) {
+        let _control = self.terminal_control.lock().unwrap();
+        self.control_group_revision.fetch_add(1, Ordering::AcqRel);
     }
 
     pub(crate) fn reconcile_tab_control(&self, tab_id: &str, pool: &DbPool) -> Result<()> {
         let mut control = self.terminal_control.lock().unwrap();
+        self.control_group_revision.fetch_add(1, Ordering::AcqRel);
         let conn = pool.get()?;
         let Some(tab) = crate::repo::node::get(&conn, tab_id)? else {
             return Ok(());
