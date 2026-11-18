@@ -1034,13 +1034,14 @@ impl SessionManager {
     /// the spawn-time grid regardless of how big the visible grid
     /// is.
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16, pool: &Arc<DbPool>) -> Result<()> {
-        let _control = self.terminal_control.lock().unwrap();
+        let mut control = self.terminal_control.lock().unwrap();
         self.resize_controlled(
             session_id,
             cols,
             rows,
             pool,
             terminal::ResizeControl::Desktop,
+            &mut control,
         )
     }
     pub(super) fn resize_controlled(
@@ -1050,6 +1051,7 @@ impl SessionManager {
         rows: u16,
         pool: &Arc<DbPool>,
         control: terminal::ResizeControl,
+        control_state: &mut terminal::ControlState,
     ) -> Result<()> {
         let state = self.session_state_or_insert(session_id);
         let settle_ms = self
@@ -1064,6 +1066,7 @@ impl SessionManager {
                 .map(|model| model.size())
                 .or(session.last_requested_size);
             let applied = control.apply(&mut session.controller);
+            control_state.record_session_controller(session_id, &session.controller);
             let size_changed = previous_size != Some((cols, rows));
             let controller_changed = session.controller != previous_controller;
             log::debug!(

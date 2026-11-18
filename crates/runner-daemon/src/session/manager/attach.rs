@@ -52,7 +52,7 @@ impl SessionManager {
                 }
             }
             state.last_exit_was_killed = false;
-            state.controller = controller;
+            control.set_session_controller(session_id, &mut state, controller);
             state.terminal = Some(terminal);
             state.terminal_started_at = Some(terminal_started_at);
             if state.terminal_input.is_none() {

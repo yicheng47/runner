@@ -2352,6 +2352,10 @@ async fn companion_next(
             if let Some(bytes) = adapter.next(true).await.unwrap() {
                 return serde_json::from_slice(&bytes).unwrap();
             }
+            if adapter.has_terminal_work() {
+                adapter.changed().await.unwrap();
+                continue;
+            }
             tokio::task::yield_now().await;
         }
     })
@@ -3105,5 +3109,58 @@ fn split_tab_if_free_claims_and_resizes_free_or_same_channel_panes_without_steal
             .size(),
         (96, 28)
     );
+    core.sessions.drain_terminal_workers();
+}
+
+#[test]
+fn release_browser_channel_touches_only_sessions_owned_by_that_channel_1377() {
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    for id in ["wedged", "ch1-owned", "ch2-owned"] {
+        core.sessions
+            .prepare_unlisted_terminal(id, (80, 24), &core.db, &events)
+            .unwrap();
+    }
+    core.sessions
+        .browser_resize("ch1-owned", 1, "Phone", 80, 24, true, false, &core.db)
+        .unwrap();
+    core.sessions
+        .browser_resize("ch2-owned", 2, "Tablet", 80, 24, true, false, &core.db)
+        .unwrap();
+
+    // Hold `wedged`'s SessionState lock on another thread for the entire channel release check.
+    let wedged_state = core.sessions.session_state("wedged").unwrap();
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let (unlock_tx, unlock_rx) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let _guard = wedged_state.lock().unwrap();
+        locked_tx.send(()).unwrap();
+        let _ = unlock_rx.recv();
+    });
+    locked_rx.recv().unwrap();
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let sessions = core.sessions.clone();
+    std::thread::spawn(move || {
+        sessions.release_browser_channel(99);
+        sessions.release_browser_channel(1);
+        let _ = done_tx.send(());
+    });
+    done_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("release_browser_channel must not lock unrelated wedged SessionState");
+
+    assert_eq!(
+        core.sessions.browser_controller("ch1-owned", 1),
+        runner_core::companion::Controller::None
+    );
+    assert_eq!(
+        core.sessions.browser_controller("ch2-owned", 2),
+        runner_core::companion::Controller::You
+    );
+
+    let _ = unlock_tx.send(());
+    holder.join().unwrap();
     core.sessions.drain_terminal_workers();
 }

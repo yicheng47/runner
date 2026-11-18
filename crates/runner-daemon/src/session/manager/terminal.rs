@@ -43,7 +43,30 @@ impl Controller {
 pub(super) struct ControlState {
     attachments: HashMap<(u64, String, u64), String>,
     groups: HashMap<String, Controller>,
+    sessions: HashMap<String, u64>,
     compositions: HashMap<String, u64>,
+}
+impl ControlState {
+    pub(super) fn set_session_controller(
+        &mut self,
+        session: &str,
+        state: &mut SessionState,
+        controller: Controller,
+    ) {
+        self.record_session_controller(session, &controller);
+        state.controller = controller;
+    }
+
+    pub(super) fn record_session_controller(&mut self, session: &str, controller: &Controller) {
+        match controller {
+            Controller::Browser { channel, .. } => {
+                self.sessions.insert(session.to_owned(), *channel);
+            }
+            Controller::Desktop | Controller::None => {
+                self.sessions.remove(session);
+            }
+        }
+    }
 }
 
 pub(super) enum ResizeControl {
@@ -371,6 +394,7 @@ fn session_terminal_binding(
 
 impl SessionManager {
     pub fn discard_unlisted_terminal(&self, id: &str) {
+        self.terminal_control.lock().unwrap().sessions.remove(id);
         self.sessions.lock().unwrap().remove(id);
     }
     pub fn prepare_unlisted_terminal(
@@ -392,7 +416,7 @@ impl SessionManager {
             queue.close();
         }
         state.last_exit_was_killed = false;
-        state.controller = controller;
+        control.set_session_controller(id, &mut state, controller);
         state.terminal = Some(model);
         state.terminal_started_at = Some(started_at);
         state.terminal_input = Some(input);
@@ -860,7 +884,7 @@ impl SessionManager {
             if state.terminal_input.is_none() || state.controller == *controller {
                 continue;
             }
-            state.controller = controller.clone();
+            control.set_session_controller(id, &mut state, controller.clone());
             Self::push_controller(&mut state);
             drop(state);
             self.clear_composition(id, control);
@@ -912,6 +936,19 @@ impl SessionManager {
     ) -> Result<()> {
         let mut attachments = self.terminal_control.lock().unwrap();
         let (group, _) = self.control_group(id, pool)?;
+        if subscriber != 0
+            && attachments
+                .attachments
+                .keys()
+                .any(|(owner, member, existing)| {
+                    *owner == channel && member == id && *existing > subscriber
+                })
+        {
+            return Ok(());
+        }
+        attachments.attachments.retain(|(owner, member, prev), _| {
+            !(*owner == channel && member == id && *prev < subscriber)
+        });
         attachments
             .attachments
             .insert((channel, id.to_owned(), subscriber), group);
@@ -955,7 +992,7 @@ impl SessionManager {
                 .keys()
                 .any(|(owner, member, _)| *owner == channel && member == id)
         {
-            self.release_browser_locked(id, channel);
+            self.release_browser_locked(id, channel, &mut attachments);
         }
         if attachments
             .attachments
@@ -969,7 +1006,7 @@ impl SessionManager {
             attachments.groups.insert(group, Controller::None);
         }
         for id in ids {
-            self.release_browser_locked(&id, channel);
+            self.release_browser_locked(&id, channel, &mut attachments);
         }
         Ok(())
     }
@@ -985,7 +1022,7 @@ impl SessionManager {
         let (group, ids) = self.control_group(id, pool)?;
         control.groups.insert(group, Controller::Desktop);
         self.set_group_controller(&ids, id, &Controller::Desktop, &mut control);
-        self.resize_controlled(id, cols, rows, pool, ResizeControl::TakeBack)
+        self.resize_controlled(id, cols, rows, pool, ResizeControl::TakeBack, &mut control)
     }
     #[allow(clippy::too_many_arguments)]
     pub fn browser_resize(
@@ -1055,37 +1092,47 @@ impl SessionManager {
                 take,
                 viewport,
             },
+            &mut control,
         )
     }
     #[cfg(test)]
     pub fn release_browser(&self, id: &str, channel: u64) {
-        let _control = self.terminal_control.lock().unwrap();
-        self.release_browser_locked(id, channel);
+        let mut control = self.terminal_control.lock().unwrap();
+        self.release_browser_locked(id, channel, &mut control);
     }
-    fn release_browser_locked(&self, id: &str, channel: u64) {
+    fn release_browser_locked(&self, id: &str, channel: u64, control: &mut ControlState) {
         if let Some(state) = self.session_state(id) {
             let mut state = state.lock().unwrap();
             if matches!(state.controller, Controller::Browser { channel: owner, .. } if owner == channel)
             {
-                state.controller = Controller::None;
+                control.set_session_controller(id, &mut state, Controller::None);
                 Self::push_controller(&mut state);
+            } else if control.sessions.get(id) == Some(&channel) {
+                control.sessions.remove(id);
             }
+        } else if control.sessions.get(id) == Some(&channel) {
+            control.sessions.remove(id);
         }
     }
     pub fn release_browser_channel(&self, channel: u64) {
-        let mut attachments = self.terminal_control.lock().unwrap();
-        attachments
+        let mut control = self.terminal_control.lock().unwrap();
+        control
             .attachments
             .retain(|(owner, _, _), _| *owner != channel);
-        for controller in attachments.groups.values_mut() {
+        for controller in control.groups.values_mut() {
             if matches!(controller, Controller::Browser { channel: owner, .. } if *owner == channel)
             {
                 *controller = Controller::None;
             }
         }
-        let ids: Vec<_> = self.sessions.lock().unwrap().keys().cloned().collect();
+        let ids: Vec<_> = control
+            .sessions
+            .iter()
+            .filter(|(_, owner)| **owner == channel)
+            .map(|(id, _)| id.clone())
+            .collect();
         for id in ids {
-            self.release_browser_locked(&id, channel);
+            self.release_browser_locked(&id, channel, &mut control);
         }
     }
     pub fn terminal_was_stopped(&self, id: &str) -> bool {

@@ -294,6 +294,8 @@ async fn next(adapter: &mut Adapter) -> serde_json::Value {
                 || adapter.output_due.is_some()
                 || adapter.overview_due.is_some()
                 || adapter.action_work.is_some()
+                || adapter.mission_write_work.is_some()
+                || !adapter.terminal_work.is_empty()
                 || !adapter.forks.is_empty(),
             "no pending message"
         );
@@ -324,6 +326,9 @@ async fn next_stopped(adapter: &mut Adapter, session: &str) {
 }
 async fn attach(adapter: &mut Adapter, session: &str) {
     adapter.request(request(serde_json::json!({"type":"attach","id":1,"session":session,"cols":80,"rows":24,"control":"take","history":2}))).await.unwrap();
+    while !adapter.terminal_work.is_empty() {
+        adapter.changed().await.unwrap();
+    }
     assert_eq!(next(adapter).await["type"], "result");
 }
 fn quiet(adapter: &mut Adapter) {
@@ -375,7 +380,13 @@ async fn overview_matches_the_golden_and_unserved_requests_remain_unknown() {
         assert_eq!(reply["id"], i);
     }
     drop(adapter);
-    assert_eq!(*fake.released.lock().unwrap(), [7]);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while fake.released.lock().unwrap().as_slice() != [7] {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
 }
 #[tokio::test(start_paused = true)]
 async fn overview_coalesces_and_delivers_the_final_change_and_status() {
@@ -563,13 +574,23 @@ async fn slow_actions_and_follows_keep_terminals_live_and_preserve_request_order
             adapter.request(request(queued)).await.unwrap();
         }
         assert!(adapter.requests.len() <= 3 && adapter.actions.len() <= 1);
+        let mut ids = std::collections::BTreeSet::new();
         adapter
             .request(request(
                 serde_json::json!({"type":"input","id":999,"session":"a","data":"eA=="}),
             ))
             .await
             .unwrap();
-        assert_eq!(next(&mut adapter).await["id"], 999);
+        loop {
+            let reply = next(&mut adapter).await;
+            assert_eq!(reply["type"], "result");
+            let id = reply["id"].as_u64().unwrap();
+            if id == 999 {
+                break;
+            }
+            ids.insert(id);
+        }
+        assert!(!ids.contains(&100));
         assert_eq!(fake.input.lock().unwrap()[0].1, b"x");
         adapter.streams[0]
             .queue
@@ -579,10 +600,16 @@ async fn slow_actions_and_follows_keep_terminals_live_and_preserve_request_order
                 seq: 11,
                 bytes: b"live output".to_vec(),
             });
-        assert_eq!(next(&mut adapter).await["type"], "output");
+        loop {
+            let msg = next(&mut adapter).await;
+            if msg["type"] == "output" {
+                break;
+            }
+            assert_eq!(msg["type"], "result");
+            ids.insert(msg["id"].as_u64().unwrap());
+        }
         release.send(()).unwrap();
-        let mut ids = std::collections::BTreeSet::new();
-        for _ in 100..104 {
+        while ids.len() < 4 {
             let reply = next(&mut adapter).await;
             assert_eq!(reply["type"], "result");
             ids.insert(reply["id"].as_u64().unwrap());
@@ -3292,5 +3319,330 @@ async fn quiet_companion_tracks_missing_worktree_removal_and_external_recreation
     assert!(core.files.watched_roots().contains(&norm_wt));
 
     drop(adapter);
-    assert!(core.files.watched_roots().is_empty());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !core.files.watched_roots().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("offloaded Lease::drop releases companion watches");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replacement_stream_delayed_cleanup_after_detach_releases_control_1377() {
+    type NonReleaseGate = (
+        tokio::sync::oneshot::Sender<u64>,
+        std::sync::mpsc::Receiver<()>,
+        tokio::sync::oneshot::Sender<u64>,
+    );
+    struct GatedDetachCore {
+        app: crate::AppCore,
+        non_release_gate: Mutex<Option<NonReleaseGate>>,
+    }
+
+    impl Core for GatedDetachCore {
+        fn overview(&self) -> core::Result<Overview> {
+            Ok(Overview {
+                projects: vec![],
+                tabs: vec![],
+                missions: vec![],
+                sessions: BTreeMap::new(),
+                sidebar: None,
+                terminal_palette: None,
+            })
+        }
+        fn statuses(&self) -> core::Result<BTreeMap<String, SessionStatus>> {
+            Ok(BTreeMap::new())
+        }
+        fn subscribe(&self) -> core::Result<broadcast::Receiver<AppEvent>> {
+            Ok(self.app.events.subscribe())
+        }
+        fn attach(
+            self: Arc<Self>,
+            session: &str,
+            history: usize,
+            channel: u64,
+        ) -> core::Result<core::Attachment> {
+            let (terminal, source) = self
+                .app
+                .sessions
+                .attach_companion_terminal(session, history)
+                .map_err(core::failed)?;
+            self.app
+                .sessions
+                .browser_attached(session, terminal.subscriber_id, channel, &self.app.db)
+                .map_err(core::failed)?;
+            let session = session.to_owned();
+            let app = self.app.clone();
+            Ok(core::Attachment {
+                terminal,
+                resync: Arc::new(move || {
+                    let attachment = source.attach().map_err(core::failed)?;
+                    app.sessions
+                        .browser_attached(&session, attachment.subscriber_id, channel, &app.db)
+                        .map_err(core::failed)?;
+                    Ok(attachment)
+                }),
+            })
+        }
+        fn resize(
+            &self,
+            session: &str,
+            channel: u64,
+            name: &str,
+            size: (u16, u16),
+            control: Control,
+        ) -> core::Result<()> {
+            self.app
+                .sessions
+                .browser_resize(
+                    session,
+                    channel,
+                    name,
+                    size.0,
+                    size.1,
+                    matches!(control, Control::Take),
+                    matches!(control, Control::Viewport),
+                    &self.app.db,
+                )
+                .map_err(core::failed)
+        }
+        fn input(&self, session: &str, channel: u64, bytes: &[u8]) -> core::Result<()> {
+            self.app
+                .sessions
+                .browser_input(session, channel, bytes)
+                .map_err(core::failed)
+        }
+        fn detach(&self, session: &str, subscriber: u64, channel: u64, release: bool) {
+            let done = if !release {
+                if let Some((entered, allow, finished)) =
+                    self.non_release_gate.lock().unwrap().take()
+                {
+                    let _ = entered.send(subscriber);
+                    let _ = allow.recv();
+                    Some(finished)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            self.app.sessions.detach_terminal(session, subscriber);
+            self.app
+                .sessions
+                .browser_detached(session, subscriber, channel, release, &self.app.db)
+                .unwrap();
+            if let Some(finished) = done {
+                let _ = finished.send(subscriber);
+            }
+        }
+        fn closed_reason(&self, _: &str) -> ClosedReason {
+            ClosedReason::Unknown
+        }
+        fn release_channel(&self, channel: u64) {
+            self.app.sessions.release_browser_channel(channel);
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let app = crate::test_support::test_core_in(root.path().to_owned());
+    let events: Arc<dyn crate::session::manager::SessionEvents> = Arc::new(app.session_events());
+    app.sessions
+        .prepare_unlisted_terminal("s1", (80, 24), &app.db, &events)
+        .unwrap();
+    let _rx = app.sessions.record_terminal_input("s1");
+
+    let gated = Arc::new(GatedDetachCore {
+        app: app.clone(),
+        non_release_gate: Mutex::new(None),
+    });
+    let mut adapter = Adapter::new(gated.clone(), 1, "Browser".into()).unwrap();
+
+    // 1. Re-Attach replacement where old `release=false` cleanup finishes AFTER new `release=true` Detach.
+    adapter
+        .request(request(serde_json::json!({
+            "type": "attach",
+            "id": 1,
+            "session": "s1",
+            "cols": 80,
+            "rows": 24,
+            "control": "take",
+            "history": 10
+        })))
+        .await
+        .unwrap();
+    while !adapter.terminal_work.is_empty() {
+        adapter.changed().await.unwrap();
+    }
+    assert_eq!(next(&mut adapter).await["id"], 1);
+    assert_eq!(app.sessions.browser_controller("s1", 1), Controller::You);
+    // Drain initial snapshot + resized chunks from first attach.
+    assert_eq!(next(&mut adapter).await["type"], "snapshot");
+    assert_eq!(next(&mut adapter).await["type"], "resized");
+
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (allow_tx, allow_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    *gated.non_release_gate.lock().unwrap() = Some((entered_tx, allow_rx, done_tx));
+
+    adapter
+        .request(request(serde_json::json!({
+            "type": "attach",
+            "id": 2,
+            "session": "s1",
+            "cols": 90,
+            "rows": 26,
+            "control": "take",
+            "history": 10
+        })))
+        .await
+        .unwrap();
+    while !adapter.terminal_work.is_empty() {
+        adapter.changed().await.unwrap();
+    }
+    assert_eq!(next(&mut adapter).await["id"], 2);
+    let old_sub = tokio::time::timeout(Duration::from_secs(5), entered_rx)
+        .await
+        .expect("old subscriber release=false cleanup started")
+        .unwrap();
+    assert_eq!(next(&mut adapter).await["type"], "snapshot");
+    assert_eq!(next(&mut adapter).await["type"], "resized");
+
+    adapter
+        .request(request(serde_json::json!({
+            "type": "detach",
+            "id": 3,
+            "session": "s1"
+        })))
+        .await
+        .unwrap();
+    while !adapter.terminal_work.is_empty() {
+        adapter.changed().await.unwrap();
+    }
+    assert_eq!(next(&mut adapter).await["id"], 3);
+    assert_eq!(
+        app.sessions.browser_controller("s1", 1),
+        Controller::None,
+        "explicit detach must release control before delayed replacement cleanup finishes"
+    );
+
+    allow_tx.send(()).unwrap();
+    let finished_sub = tokio::time::timeout(Duration::from_secs(5), done_rx)
+        .await
+        .expect("old subscriber release=false cleanup finished")
+        .unwrap();
+    assert_eq!(finished_sub, old_sub);
+    assert_eq!(
+        app.sessions.browser_controller("s1", 1),
+        Controller::None,
+        "control must stay None on still-open channel after delayed release=false cleanup completes"
+    );
+
+    // 2. Resync replacement where old `release=false` cleanup finishes AFTER new `release=true` Detach.
+    adapter
+        .request(request(serde_json::json!({
+            "type": "attach",
+            "id": 4,
+            "session": "s1",
+            "cols": 84,
+            "rows": 25,
+            "control": "take",
+            "history": 10
+        })))
+        .await
+        .unwrap();
+    while !adapter.terminal_work.is_empty() {
+        adapter.changed().await.unwrap();
+    }
+    assert_eq!(next(&mut adapter).await["id"], 4);
+    assert_eq!(next(&mut adapter).await["type"], "snapshot");
+    assert_eq!(next(&mut adapter).await["type"], "resized");
+    assert_eq!(app.sessions.browser_controller("s1", 1), Controller::You);
+
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (allow_tx, allow_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    *gated.non_release_gate.lock().unwrap() = Some((entered_tx, allow_rx, done_tx));
+
+    adapter
+        .streams
+        .front()
+        .unwrap()
+        .queue
+        .lock()
+        .unwrap()
+        .push(TerminalFrame::Resync);
+    assert_eq!(next(&mut adapter).await["type"], "snapshot");
+    let old_resync_sub = tokio::time::timeout(Duration::from_secs(5), entered_rx)
+        .await
+        .expect("resync replaced subscriber release=false cleanup started")
+        .unwrap();
+    assert_eq!(next(&mut adapter).await["type"], "resized");
+
+    adapter
+        .request(request(serde_json::json!({
+            "type": "detach",
+            "id": 5,
+            "session": "s1"
+        })))
+        .await
+        .unwrap();
+    while !adapter.terminal_work.is_empty() {
+        adapter.changed().await.unwrap();
+    }
+    assert_eq!(next(&mut adapter).await["id"], 5);
+    assert_eq!(app.sessions.browser_controller("s1", 1), Controller::None);
+
+    allow_tx.send(()).unwrap();
+    let finished_resync_sub = tokio::time::timeout(Duration::from_secs(5), done_rx)
+        .await
+        .expect("resync replaced subscriber release=false cleanup finished")
+        .unwrap();
+    assert_eq!(finished_resync_sub, old_resync_sub);
+    assert_eq!(
+        app.sessions.browser_controller("s1", 1),
+        Controller::None,
+        "resync replacement cleanup finishing late must keep controller=None on open channel"
+    );
+
+    drop(adapter);
+    app.sessions.drain_terminal_workers();
+}
+
+#[test]
+fn cleanup_dropped_by_a_shutting_down_blocking_pool_still_runs_its_nested_cleanup() {
+    struct Nested(std::sync::mpsc::Sender<()>);
+    impl Drop for Nested {
+        fn drop(&mut self) {
+            let done = self.0.clone();
+            offload_cleanup(move || {
+                let _ = done.send(());
+            });
+        }
+    }
+    struct Outer(Option<Nested>);
+    impl Drop for Outer {
+        fn drop(&mut self) {
+            let nested = self.0.take();
+            offload_cleanup(move || drop(nested));
+        }
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (done_tx, done) = std::sync::mpsc::channel();
+    drop(runtime.spawn_blocking(move || {
+        entered_tx.send(()).unwrap();
+        let _ = released.recv();
+        Outer(Some(Nested(done_tx)))
+    }));
+    entered.recv().unwrap();
+    runtime.shutdown_timeout(Duration::ZERO);
+    release.send(()).unwrap();
+    assert!(
+        done.recv_timeout(Duration::from_secs(10)).is_ok(),
+        "a cleanup dropped unrun during pool shutdown must neither deadlock nor be lost"
+    );
 }

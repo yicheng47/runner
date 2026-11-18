@@ -87,6 +87,8 @@ pub(super) struct Channels {
     rx: mpsc::Receiver<Event>,
     pub writes: Arc<TrustWrites>,
     companion: Arc<std::sync::OnceLock<Arc<dyn crate::companion::core::Core>>>,
+    initialize_slots: Arc<Semaphore>,
+    initialize_timeout: Duration,
     pub(super) features: Vec<&'static str>,
 }
 
@@ -289,8 +291,14 @@ impl Channels {
             rx,
             writes,
             companion,
+            initialize_slots: Arc::new(Semaphore::new(MAX_CHANNELS)),
+            initialize_timeout: crate::companion::INITIALIZE_TIMEOUT,
             features: crate::companion::FEATURES.to_vec(),
         }
+    }
+    #[cfg(test)]
+    pub(super) fn set_initialize_timeout(&mut self, timeout: Duration) {
+        self.initialize_timeout = timeout;
     }
     pub fn open(&mut self, id: u32, machine: &Machine) -> Result<(), Reject> {
         if id == 0 || self.entries.contains_key(&id) {
@@ -316,11 +324,22 @@ impl Channels {
             features: self.features.iter().map(|name| (*name).into()).collect(),
         };
         let companion = self.companion.clone();
+        let initialize_slots = self.initialize_slots.clone();
+        let initialize_timeout = self.initialize_timeout;
         let task = tokio::spawn(async move {
-            let result =
-                AssertUnwindSafe(serve(id, instance, rx, &tx, deadline, welcome, companion))
-                    .catch_unwind()
-                    .await;
+            let result = AssertUnwindSafe(serve(
+                id,
+                instance,
+                rx,
+                &tx,
+                deadline,
+                initialize_timeout,
+                welcome,
+                companion,
+                initialize_slots,
+            ))
+            .catch_unwind()
+            .await;
             let reason = match result {
                 Ok(Ok(())) => "closed",
                 Ok(Err(reason)) => reason,
@@ -691,14 +710,17 @@ async fn send(
     .map_err(|_| "route closed")
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve(
     id: u32,
     instance: u64,
     mut input: mpsc::UnboundedReceiver<QueuedFrame>,
     tx: &mpsc::Sender<Event>,
     deadline: Instant,
+    initialize_timeout: Duration,
     welcome: companion::Welcome,
     core: Arc<std::sync::OnceLock<Arc<dyn crate::companion::core::Core>>>,
+    initialize_slots: Arc<Semaphore>,
 ) -> Result<(), &'static str> {
     let handshake = async {
         loop {
@@ -811,10 +833,15 @@ async fn serve(
                         .await
                         .map_err(|_| "route closed")?;
                         let core = core.get().ok_or("core unavailable")?;
+                        let permit = initialize_slots
+                            .clone()
+                            .try_acquire_owned()
+                            .map_err(|_| "core unavailable")?;
                         let mut serving =
                             crate::companion::Adapter::new(core.clone(), instance, name.clone())
                                 .map_err(|_| "core unavailable")?;
-                        serving.initialize().await?;
+                        serving.set_initialize_timeout(initialize_timeout);
+                        serving.initialize_with_permit(Some(permit)).await?;
                         adapter = Some(serving);
                         Some(companion::HostMessage::Welcome(welcome.clone()))
                     }

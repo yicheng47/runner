@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,9 +11,10 @@ use runner_core::protocol::terminal::{TerminalAttachment, TerminalFrame, Termina
 use runner_core::protocol::wire::{self, Binary, Frame};
 use runner_core::protocol::{ClientError, Request, Response};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+use crate::companion::offload_cleanup;
 use crate::ipc::{IpcListener, IpcStream};
 use crate::AppCore;
 
@@ -447,6 +448,46 @@ impl Drop for Connected {
         self.core.usage.client_disconnected();
     }
 }
+const MAX_CONNECTION_IN_FLIGHT_REQUESTS: usize = 8;
+const MAX_CONNECTION_QUEUED_REQUESTS: usize = 64;
+
+#[derive(Clone, Copy)]
+struct ConnectionRequestLimits {
+    max_in_flight: usize,
+    max_queued: usize,
+}
+impl Default for ConnectionRequestLimits {
+    fn default() -> Self {
+        Self {
+            max_in_flight: MAX_CONNECTION_IN_FLIGHT_REQUESTS,
+            max_queued: MAX_CONNECTION_QUEUED_REQUESTS,
+        }
+    }
+}
+
+struct DetachedAttachments {
+    sessions: Arc<crate::session::SessionManager>,
+    cancels: Vec<Arc<dyn Fn() + Send + Sync>>,
+    detached: Vec<(String, u64)>,
+    resyncing: Vec<Box<dyn TerminalSubscription>>,
+}
+impl DetachedAttachments {
+    fn is_empty(&self) -> bool {
+        self.cancels.is_empty() && self.detached.is_empty() && self.resyncing.is_empty()
+    }
+    fn run(self) {
+        for cancel in self.cancels {
+            cancel();
+        }
+        for (session, subscriber) in self.detached {
+            if subscriber != 0 {
+                self.sessions.detach_terminal(&session, subscriber);
+            }
+        }
+        drop(self.resyncing);
+    }
+}
+
 struct Attachments {
     core: AppCore,
     ids: Mutex<HashMap<u64, (String, u64)>>,
@@ -454,31 +495,124 @@ struct Attachments {
     resyncing: Mutex<HashMap<u64, Box<dyn TerminalSubscription>>>,
 }
 impl Attachments {
+    fn replace_pending(&self, id: u64, session: String) -> DetachedAttachments {
+        let detached_item = {
+            let mut ids = self.ids.lock().unwrap();
+            ids.insert(id, (session, 0))
+        };
+        let cancel_item = {
+            let mut remote = self.remote.lock().unwrap();
+            remote.remove(&id)
+        };
+        let resync_item = {
+            let mut resyncing = self.resyncing.lock().unwrap();
+            resyncing.remove(&id)
+        };
+        DetachedAttachments {
+            sessions: self.core.sessions.clone(),
+            cancels: cancel_item.into_iter().collect(),
+            detached: detached_item.into_iter().collect(),
+            resyncing: resync_item.into_iter().collect(),
+        }
+    }
     fn retain_resync(&self, id: u64, frames: Box<dyn TerminalSubscription>) {
-        let ids = self.ids.lock().unwrap();
-        if ids.contains_key(&id) {
-            self.resyncing.lock().unwrap().insert(id, frames);
+        let mut displaced = Some(frames);
+        {
+            let ids = self.ids.lock().unwrap();
+            if ids.contains_key(&id) {
+                if let Some(frames) = displaced.take() {
+                    let mut resyncing = self.resyncing.lock().unwrap();
+                    displaced = resyncing.insert(id, frames);
+                }
+            }
+        }
+        drop(displaced);
+    }
+    fn take_one(&self, id: u64) -> DetachedAttachments {
+        let detached_item = {
+            let mut ids = self.ids.lock().unwrap();
+            ids.remove(&id)
+        };
+        let cancel_item = {
+            let mut remote = self.remote.lock().unwrap();
+            remote.remove(&id)
+        };
+        let resync_item = {
+            let mut resyncing = self.resyncing.lock().unwrap();
+            resyncing.remove(&id)
+        };
+        DetachedAttachments {
+            sessions: self.core.sessions.clone(),
+            cancels: cancel_item.into_iter().collect(),
+            detached: detached_item.into_iter().collect(),
+            resyncing: resync_item.into_iter().collect(),
         }
     }
     fn remove(&self, id: u64) {
-        if let Some(cancel) = self.remote.lock().unwrap().remove(&id) {
-            cancel();
+        self.take_one(id).run();
+    }
+    fn remove_nonblocking(&self, id: u64) {
+        let cleanup = self.take_one(id);
+        if !cleanup.is_empty() {
+            offload_cleanup(move || cleanup.run());
         }
-        if let Some((session, subscriber)) = self.ids.lock().unwrap().remove(&id) {
-            self.core.sessions.detach_terminal(&session, subscriber);
+    }
+    fn take_cleanup(&self) -> DetachedAttachments {
+        let mut detached = Vec::new();
+        let mut cancels = Vec::new();
+        let mut resyncing = Vec::new();
+        {
+            let mut ids = self.ids.lock().unwrap();
+            detached.extend(ids.drain().map(|(_, pair)| pair));
         }
-        self.resyncing.lock().unwrap().remove(&id);
+        {
+            let mut remote = self.remote.lock().unwrap();
+            cancels.extend(remote.drain().map(|(_, cancel)| cancel));
+        }
+        {
+            let mut frames = self.resyncing.lock().unwrap();
+            resyncing.extend(frames.drain().map(|(_, sub)| sub));
+        }
+        DetachedAttachments {
+            sessions: self.core.sessions.clone(),
+            cancels,
+            detached,
+            resyncing,
+        }
     }
 }
 impl Drop for Attachments {
     fn drop(&mut self) {
-        for (_, cancel) in self.remote.get_mut().unwrap().drain() {
-            cancel();
+        let detached: Vec<_> = self
+            .ids
+            .get_mut()
+            .unwrap()
+            .drain()
+            .map(|(_, pair)| pair)
+            .collect();
+        let cancels: Vec<_> = self
+            .remote
+            .get_mut()
+            .unwrap()
+            .drain()
+            .map(|(_, cancel)| cancel)
+            .collect();
+        let resyncing: Vec<_> = self
+            .resyncing
+            .get_mut()
+            .unwrap()
+            .drain()
+            .map(|(_, frames)| frames)
+            .collect();
+        let cleanup = DetachedAttachments {
+            sessions: self.core.sessions.clone(),
+            cancels,
+            detached,
+            resyncing,
+        };
+        if !cleanup.is_empty() {
+            offload_cleanup(move || cleanup.run());
         }
-        for (_, (session, subscriber)) in self.ids.get_mut().unwrap().drain() {
-            self.core.sessions.detach_terminal(&session, subscriber);
-        }
-        self.resyncing.get_mut().unwrap().clear();
     }
 }
 
@@ -493,19 +627,13 @@ impl Drop for ConnectionCleanup {
         self.cancel.cancel();
         self.reader.abort();
         self.windows.closed.cancel();
+        let attachments = self.attachments.clone();
         let windows = self.windows.clone();
-        tokio::task::spawn_blocking(move || windows.remove());
-        let ids = self
-            .attachments
-            .ids
-            .lock()
-            .unwrap()
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        for id in ids {
-            self.attachments.remove(id);
-        }
+        offload_cleanup(move || {
+            let cleanup = attachments.take_cleanup();
+            windows.remove();
+            cleanup.run();
+        });
     }
 }
 
@@ -784,8 +912,59 @@ fn event_frame(event: &wire::Event) -> std::io::Result<Frame> {
         }
     }
 }
+fn spawn_connection_request(
+    call: wire::Call,
+    permit: OwnedSemaphorePermit,
+    windows: Arc<ConnectionWindows>,
+    tx: mpsc::Sender<Frame>,
+    cancel: CancellationToken,
+) {
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        if cancel.is_cancelled() {
+            return;
+        }
+        let Some(response) = windows.dispatch(call.request) else {
+            return;
+        };
+        if let Ok(frame) = response_frame(call.id, response) {
+            super::block_on(async {
+                tokio::select! {
+                    _ = cancel.cancelled() => {}
+                    _ = tx.send(frame) => {}
+                }
+            });
+        }
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn connection(
+    stream: IpcStream,
+    core: AppCore,
+    welcome: wire::Welcome,
+    apps: Arc<AppGate>,
+    shutdown: CancellationToken,
+    isolated: bool,
+    windows: Arc<ConnectionWindows>,
+    resume_report: tokio::sync::watch::Receiver<Option<runner_core::protocol::AutoResumeReport>>,
+) -> Result<()> {
+    connection_with_limits(
+        stream,
+        core,
+        welcome,
+        apps,
+        shutdown,
+        isolated,
+        windows,
+        resume_report,
+        ConnectionRequestLimits::default(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn connection_with_limits(
     stream: IpcStream,
     core: AppCore,
     welcome: wire::Welcome,
@@ -796,6 +975,7 @@ async fn connection(
     mut resume_report: tokio::sync::watch::Receiver<
         Option<runner_core::protocol::AutoResumeReport>,
     >,
+    limits: ConnectionRequestLimits,
 ) -> Result<()> {
     let (mut read, mut write) = stream.into_split();
     let hello = tokio::time::timeout(Duration::from_millis(500), read_frame(&mut read)).await??;
@@ -961,12 +1141,18 @@ async fn connection(
         reader: reader.abort_handle(),
         windows: windows.clone(),
     };
+    let request_workers = Arc::new(Semaphore::new(limits.max_in_flight.max(1)));
+    let mut request_queue = VecDeque::<wire::Call>::new();
     let result = async {
         loop {
             tokio::select! {
                 biased;
                 _ = shutdown.cancelled() => break,
                 Some(frame) = controls.recv() => write_frame(&mut write, frame).await?,
+                Ok(permit) = request_workers.clone().acquire_owned(), if !request_queue.is_empty() => {
+                    let call = request_queue.pop_front().unwrap();
+                    spawn_connection_request(call, permit, windows.clone(), control_tx.clone(), local.clone());
+                }
                 event = events.recv() => {
                     let event = match event {
                         Ok(event) => {
@@ -1006,18 +1192,36 @@ async fn connection(
                                     continue;
                                 }
                             };
-                            let windows = windows.clone(); let tx = control_tx.clone(); let cancel = local.clone();
-                            tokio::task::spawn_blocking(move || {
-                                if cancel.is_cancelled() { return; }
-                                let Some(response) = windows.dispatch(call.request) else { return; };
-                                if let Ok(frame) = response_frame(call.id, response) { let _ = tx.blocking_send(frame); }
-                            });
+                            if request_queue.is_empty() {
+                                if let Ok(permit) = request_workers.clone().try_acquire_owned() {
+                                    spawn_connection_request(call, permit, windows.clone(), control_tx.clone(), local.clone());
+                                    continue;
+                                }
+                            }
+                            if request_queue.len() < limits.max_queued {
+                                request_queue.push_back(call);
+                            } else {
+                                write_frame(
+                                    &mut write,
+                                    Frame::json(
+                                        wire::REQUEST_ERROR,
+                                        &wire::RequestError {
+                                            id: call.id,
+                                            message: "too many pending requests on connection".into(),
+                                        },
+                                    )?,
+                                )
+                                .await?;
+                            }
                         }
                         wire::ATTACH => {
                             let mut binary = Binary(&frame.payload); let id = binary.u64()?; let session = binary.string()?;
                             let config: Option<runner_core::remote::RemoteTerminal> = if binary.0.is_empty() { None } else { Some(serde_json::from_slice(binary.0).map_err(|_| anyhow::anyhow!("Invalid remote terminal configuration"))?) };
                             if config.as_ref().is_some_and(|c| c.address() != session) { anyhow::bail!("Remote terminal address does not match"); }
-                            attachments.ids.lock().unwrap().insert(id, (session.clone(), 0));
+                            let displaced = attachments.replace_pending(id, session.clone());
+                            if !displaced.is_empty() {
+                                offload_cleanup(move || displaced.run());
+                            }
                             let core = core.clone(); let tx = terminal_tx.clone(); let controls = control_tx.clone(); let attachments = attachments.clone(); let cancel = local.clone();
                             tokio::task::spawn_blocking(move || {
                                 if cancel.is_cancelled() { return; }
@@ -1028,10 +1232,24 @@ async fn connection(
                                 };
                                 match attached {
                                     Ok(attachment) => {
-                                        {
+                                        let cancel_fn = attachment.frames.cancellation();
+                                        let mut displaced_cancel = None;
+                                        let registered = {
                                             let mut ids = attachments.ids.lock().unwrap();
-                                            if let Some(entry) = ids.get_mut(&id) { entry.1 = attachment.subscriber_id; attachments.remote.lock().unwrap().insert(id, attachment.frames.cancellation()); }
-                                            else { (attachment.frames.cancellation())(); core.sessions.detach_terminal(&session, attachment.subscriber_id); return; }
+                                            if let Some(entry) = ids.get_mut(&id) {
+                                                entry.1 = attachment.subscriber_id;
+                                                let mut remote = attachments.remote.lock().unwrap();
+                                                displaced_cancel = remote.insert(id, cancel_fn);
+                                                true
+                                            } else {
+                                                false
+                                            }
+                                        };
+                                        drop(displaced_cancel);
+                                        if !registered {
+                                            (attachment.frames.cancellation())();
+                                            core.sessions.detach_terminal(&session, attachment.subscriber_id);
+                                            return;
                                         }
                                         if let Ok(Some(frames)) = forward_terminal(id, attachment, &tx, &cancel) {
                                             if remote {
@@ -1046,7 +1264,7 @@ async fn connection(
                                 }
                             });
                         }
-                        wire::DETACH => { attachments.remove(Binary(&frame.payload).u64()?); }
+                        wire::DETACH => { attachments.remove_nonblocking(Binary(&frame.payload).u64()?); }
                         wire::INPUT | wire::RESIZE => { input_tx.send(frame)?; }
                         _ => anyhow::bail!("unexpected client frame"),
                     }
@@ -1065,16 +1283,6 @@ async fn connection(
     reader.abort();
     local.cancel();
     drop(input_tx);
-    let ids = attachments
-        .ids
-        .lock()
-        .unwrap()
-        .keys()
-        .copied()
-        .collect::<Vec<_>>();
-    for id in ids {
-        attachments.remove(id);
-    }
     result
 }
 fn forward_terminal(
@@ -2246,5 +2454,244 @@ mod tests {
             .unwrap()
             .unwrap();
         drop((watcher_top, watcher_sub, watcher_b, unwatched));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connection_bounds_pending_requests_and_rejects_overflow_1377() {
+        let root = tempfile::tempdir().unwrap();
+        let core = crate::test_support::test_core_in(root.path().to_owned());
+        #[cfg(unix)]
+        let endpoint = IpcEndpoint(root.path().join("runnerd.sock"));
+        #[cfg(windows)]
+        let endpoint = IpcEndpoint(std::path::PathBuf::from(format!(
+            r"\\.\pipe\runner-bounded-requests-test-{}",
+            root.path().file_name().unwrap().to_string_lossy()
+        )));
+        let mut listener = IpcListener::bind(&endpoint).unwrap();
+        let shutdown = CancellationToken::new();
+        let owners = Arc::new(Mutex::new(HashMap::new()));
+        let server_owners = owners.clone();
+        let server_shutdown = shutdown.clone();
+        let server_core = core.clone();
+        let server = tokio::spawn(async move {
+            let stream = listener.accept().await.unwrap();
+            let windows = Arc::new(ConnectionWindows {
+                core: server_core.clone(),
+                owners: server_owners,
+                id: 1,
+                closed: CancellationToken::new(),
+            });
+            let (_report, resume_report) = tokio::sync::watch::channel(None);
+            connection_with_limits(
+                stream,
+                server_core,
+                wire::Welcome {
+                    exe_sha256: "hash".into(),
+                    pid: 1,
+                    started_at: "now".into(),
+                    app_clients: 0,
+                },
+                Default::default(),
+                server_shutdown,
+                true,
+                windows,
+                resume_report,
+                ConnectionRequestLimits {
+                    max_in_flight: 1,
+                    max_queued: 2,
+                },
+            )
+            .await
+        });
+
+        #[cfg(unix)]
+        let mut client = tokio::net::UnixStream::connect(&endpoint.0).await.unwrap();
+        #[cfg(windows)]
+        let mut client = tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(&endpoint.0)
+            .unwrap();
+        write_frame(
+            &mut client,
+            Frame::json(
+                wire::HELLO,
+                &wire::Hello {
+                    exe_sha256: "hash".into(),
+                    client: "test".into(),
+                },
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let welcome = read_frame(&mut client).await.unwrap();
+        assert_eq!(welcome.kind, wire::WELCOME);
+
+        // Hold `owners` on a helper thread so `window_register` blocks inside dispatch.
+        let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+        let (unlock_tx, unlock_rx) = std::sync::mpsc::channel();
+        let hold_owners = owners.clone();
+        let holder = std::thread::spawn(move || {
+            let _guard = hold_owners.lock().unwrap();
+            let _ = locked_tx.send(());
+            let _ = unlock_rx.recv();
+        });
+        locked_rx.await.unwrap();
+
+        for id in 1..=4u64 {
+            write_frame(
+                &mut client,
+                Frame::json(
+                    wire::REQUEST,
+                    &wire::Call {
+                        id,
+                        request: Request::window_register {
+                            label: format!("win-{id}"),
+                        },
+                    },
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        }
+
+        // Request 4 exceeds `1 in_flight + 2 queued` and must fail immediately with REQUEST_ERROR.
+        let overflow = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = read_frame(&mut client).await.unwrap();
+                if frame.kind == wire::REQUEST_ERROR {
+                    return frame.decode::<wire::RequestError>().unwrap();
+                }
+            }
+        })
+        .await
+        .expect("overflow request receives immediate REQUEST_ERROR");
+        assert_eq!(overflow.id, 4);
+        assert!(overflow.message.contains("too many pending requests"));
+
+        let _ = unlock_tx.send(());
+        holder.join().unwrap();
+
+        let mut replies = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while replies.len() < 3 {
+                let frame = read_frame(&mut client).await.unwrap();
+                if frame.kind == wire::RESPONSE {
+                    let reply: wire::Reply = frame.decode().unwrap();
+                    replies.push(reply.id);
+                }
+            }
+        })
+        .await
+        .expect("admitted requests 1..=3 complete once unblocked");
+        replies.sort_unstable();
+        assert_eq!(replies, vec![1, 2, 3]);
+
+        shutdown.cancel();
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        drop(client);
+    }
+
+    #[test]
+    fn connection_cleanup_and_attachments_drop_do_not_block_single_tokio_worker_1377() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let core = crate::test_support::test_core_in(root.path().to_owned());
+        let events: Arc<dyn crate::session::manager::SessionEvents> =
+            Arc::new(core.session_events());
+        core.sessions
+            .prepare_unlisted_terminal("wedged", (80, 24), &core.db, &events)
+            .unwrap();
+        let mut attached_worker = core.sessions.attach_terminal("wedged").unwrap();
+        let mut attached_detach = core.sessions.attach_terminal("wedged").unwrap();
+        let mut attached_cleanup = core.sessions.attach_terminal("wedged").unwrap();
+        let sub_worker = attached_worker.subscriber_id;
+        let sub_detach = attached_detach.subscriber_id;
+        let sub_cleanup = attached_cleanup.subscriber_id;
+
+        let (unlock_tx, holder) = core.sessions.lock_session_state_for_test("wedged");
+
+        let (entered_remove_tx, entered_remove_rx) = std::sync::mpsc::channel();
+        let entered_remove_tx = Mutex::new(Some(entered_remove_tx));
+        let worker_cancel: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            if let Some(tx) = entered_remove_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+        });
+
+        let attachments = Arc::new(Attachments {
+            core: core.clone(),
+            ids: Mutex::new(HashMap::from([
+                (1, ("wedged".into(), sub_worker)),
+                (2, ("wedged".into(), sub_detach)),
+                (3, ("wedged".into(), sub_cleanup)),
+            ])),
+            remote: Mutex::new(HashMap::from([(1, worker_cancel)])),
+            resyncing: Mutex::default(),
+        });
+
+        // Simulate an ATTACH forwarding worker finishing `attachments.remove(1)` while `"wedged"`'s
+        // `SessionState` is held: `ids` and `remote` must already be released before blocking in
+        // `detach_terminal`, so `DETACH` (`remove_nonblocking`) and `ConnectionCleanup::drop` never
+        // stall the single Tokio worker.
+        let worker_attachments = attachments.clone();
+        let bg_remove = std::thread::spawn(move || {
+            worker_attachments.remove(1);
+        });
+        entered_remove_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("background attachment removal reached cancel before detach_terminal");
+        assert!(
+            !bg_remove.is_finished(),
+            "background remove must still be blocked on wedged SessionState"
+        );
+
+        rt.block_on(async {
+            let reader = tokio::spawn(std::future::pending::<()>());
+            let cleanup = ConnectionCleanup {
+                cancel: CancellationToken::new(),
+                attachments: attachments.clone(),
+                reader: reader.abort_handle(),
+                windows: Arc::new(ConnectionWindows {
+                    core: core.clone(),
+                    owners: Arc::new(Mutex::default()),
+                    id: 7,
+                    closed: CancellationToken::new(),
+                }),
+            };
+            attachments.remove_nonblocking(2);
+            drop(cleanup);
+            drop(attachments);
+
+            let tick = tokio::time::timeout(
+                Duration::from_secs(5),
+                tokio::spawn(async { 99u32 }),
+            )
+            .await
+            .expect("single Tokio worker stays responsive while detach_terminal waits on wedged session")
+            .unwrap();
+            assert_eq!(tick, 99);
+            assert!(
+                !bg_remove.is_finished(),
+                "wedged SessionState is still held while Tokio worker continues serving"
+            );
+        });
+
+        let _ = unlock_tx.send(());
+        holder.join().unwrap();
+        bg_remove.join().unwrap();
+        // `detach_terminal` closes each subscriber's FrameQueue once all offloaded cleanups finish.
+        assert!(attached_worker.frames.recv().is_err());
+        assert!(attached_detach.frames.recv().is_err());
+        assert!(attached_cleanup.frames.recv().is_err());
+        core.sessions.drain_terminal_workers();
     }
 }

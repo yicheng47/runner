@@ -7,6 +7,25 @@ impl SessionManager {
         (!key_only).then_some(session)
     }
 
+    #[cfg(test)]
+    pub(crate) fn lock_session_state_for_test(
+        &self,
+        session_id: &str,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let state = self
+            .session_state(session_id)
+            .expect("session state exists");
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (unlock_tx, unlock_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = state.lock().unwrap();
+            let _ = locked_tx.send(());
+            let _ = unlock_rx.recv();
+        });
+        locked_rx.recv().unwrap();
+        (unlock_tx, holder)
+    }
+
     pub(super) fn raw_session_state(&self, session_id: &str) -> Option<Arc<Mutex<SessionState>>> {
         self.sessions.lock().unwrap().get(session_id).cloned()
     }
