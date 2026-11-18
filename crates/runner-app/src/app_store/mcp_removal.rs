@@ -9,31 +9,45 @@ use crate::app_settings::AppSettings;
 
 impl AppStore {
     pub(crate) fn initialize_mcp_removal(&mut self) {
-        if self.settings.mcp_registrations_removed {
-            return;
-        }
-        let Some(home) = self.home_dir.clone() else {
-            return;
-        };
-        let bridge = self
-            .app_data_dir
-            .join("bin")
-            .join(runner_core::protocol::command::MCP_DEST_BIN_NAME);
-        let report = remove_mcp_registrations(
-            &mut self.settings,
-            &home,
-            || remove_registration_at(&self.client, McpClientId::ClaudeCode, &home, &bridge),
-            || remove_registration_at(&self.client, McpClientId::Codex, &home, &bridge),
-            || remove_registration_at(&self.client, McpClientId::Trae, &home, &bridge),
-            || remove_registration_at(&self.client, McpClientId::Copilot, &home, &bridge),
-        );
-        if report.completed {
+        if compute_mcp_removal(
+            &self.client,
+            self.settings.clone(),
+            self.home_dir.as_deref(),
+            &self.app_data_dir,
+        ) {
+            self.settings.mcp_registrations_removed = true;
             self.save_settings();
         }
-        for message in report.logs {
-            eprintln!("{message}");
-        }
     }
+}
+
+pub(super) fn compute_mcp_removal(
+    client: &runner_core::protocol::DaemonClient,
+    mut settings: AppSettings,
+    home: Option<&Path>,
+    app_data_dir: &Path,
+) -> bool {
+    if settings.mcp_registrations_removed {
+        return false;
+    }
+    let Some(home) = home else {
+        return false;
+    };
+    let bridge = app_data_dir
+        .join("bin")
+        .join(runner_core::protocol::command::MCP_DEST_BIN_NAME);
+    let report = remove_mcp_registrations(
+        &mut settings,
+        home,
+        || remove_registration_at(client, McpClientId::ClaudeCode, home, &bridge),
+        || remove_registration_at(client, McpClientId::Codex, home, &bridge),
+        || remove_registration_at(client, McpClientId::Trae, home, &bridge),
+        || remove_registration_at(client, McpClientId::Copilot, home, &bridge),
+    );
+    for message in report.logs {
+        eprintln!("{message}");
+    }
+    report.completed
 }
 
 #[derive(Debug, Eq, PartialEq)]

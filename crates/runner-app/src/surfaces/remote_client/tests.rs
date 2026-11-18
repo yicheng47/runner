@@ -1393,6 +1393,12 @@ fn remote_chat_info_shows_host_worktree_on_open_and_tracks_connection() {
     let window = add_window(&mut cx, &store, temp.path(), "remote-chat-info");
     let local_panel = store.read_with(&cx, |store, _| store.settings.chat_panel_open);
     window.update(&mut cx, choose_host).unwrap();
+    window
+        .update(&mut cx, |root, _, _| {
+            root.chat_panel_visibility =
+                crate::surfaces::root::SidebarVisibilityTransition::new(false);
+        })
+        .unwrap();
     let mut visual = VisualTestContext::from_window(window.into(), &cx);
     fn wait(
         visual: &mut VisualTestContext,
@@ -1404,8 +1410,8 @@ fn remote_chat_info_shows_host_worktree_on_open_and_tracks_connection() {
             visual.run_until_parked();
             visual.update(|window, cx| {
                 window.simulate_next_frame(cx);
-                window.refresh();
             });
+            visual.refresh().unwrap();
             visual.run_until_parked();
             if ready(visual) {
                 return;
@@ -1419,6 +1425,14 @@ fn remote_chat_info_shows_host_worktree_on_open_and_tracks_connection() {
     });
     let toggle = visual.debug_bounds("CHAT_PANEL_TOGGLE").unwrap();
     visual.simulate_click(toggle.center(), gpui::Modifiers::default());
+    window
+        .update(&mut visual, |root, _, _| {
+            assert!(root.remote_client.chat_info_is_open());
+            root.chat_panel_visibility =
+                crate::surfaces::root::SidebarVisibilityTransition::new(true);
+        })
+        .unwrap();
+    visual.refresh().unwrap();
     let cwd_selector = format!("CHAT_PANEL_META {host_path}").leak();
     wait(
         &mut visual,
@@ -1546,7 +1560,10 @@ fn remote_chat_info_shows_host_worktree_on_open_and_tracks_connection() {
     let collapse = visual.debug_bounds("PANEL_COLLAPSE").unwrap();
     visual.simulate_click(collapse.center(), gpui::Modifiers::default());
     wait(&mut visual, "collapsed remote chat panel", |v| {
-        v.debug_bounds("CHAT_PANEL_TOGGLE").is_some()
+        window
+            .read_with(v, |root, _| !root.remote_client.chat_info_is_open())
+            .unwrap()
+            && v.debug_bounds("CHAT_PANEL_TOGGLE").is_some()
     });
     assert_eq!(
         store.read_with(&visual, |store, _| store.settings.chat_panel_open),

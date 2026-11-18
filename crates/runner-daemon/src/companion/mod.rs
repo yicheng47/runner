@@ -20,9 +20,35 @@ use std::{
     },
 };
 use tokio::{
-    sync::{broadcast, Notify},
+    sync::{broadcast, Notify, OwnedSemaphorePermit, Semaphore},
     time::{Duration, Instant},
 };
+
+pub const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_TERMINAL_WORKERS: usize = 4;
+const MAX_TERMINAL_PENDING: usize = 128;
+const MAX_MISSION_WRITES: usize = 8;
+
+// A shutting-down blocking pool drops a rejected task while holding its own lock, so a cleanup
+// dropped unrun moves to its own thread: dropping its captures there could offload again and
+// deadlock on that lock.
+pub(crate) fn offload_cleanup(f: impl FnOnce() + Send + 'static) {
+    struct Unrun<F: FnOnce() + Send + 'static>(Option<F>);
+    impl<F: FnOnce() + Send + 'static> Drop for Unrun<F> {
+        fn drop(&mut self) {
+            if let Some(f) = self.0.take() {
+                std::thread::spawn(f);
+            }
+        }
+    }
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            let mut cleanup = Unrun(Some(f));
+            handle.spawn_blocking(move || cleanup.0.take().unwrap()());
+        }
+        Err(_) => f(),
+    }
+}
 
 pub const FEATURES: &[&str] = &[
     "overview",
@@ -193,19 +219,40 @@ struct Stream {
     seq: u64,
     initial_size: Option<(u16, u16, TerminalController)>,
     core: Arc<dyn Core>,
+    lease: Option<Arc<Lease>>,
     channel: u64,
     release: bool,
 }
 impl Drop for Stream {
     fn drop(&mut self) {
+        let Some(lease) = self.lease.take() else {
+            return;
+        };
         (self.cancel)();
-        self.core
-            .detach(&self.session, self.subscriber, self.channel, self.release);
+        let core = self.core.clone();
+        let session = std::mem::take(&mut self.session);
+        let subscriber = self.subscriber;
+        let channel = self.channel;
+        let release = self.release;
+        offload_cleanup(move || {
+            core.detach(&session, subscriber, channel, release);
+            drop(lease);
+        });
     }
 }
 impl Stream {
+    fn detach_sync(&mut self) {
+        let Some(lease) = self.lease.take() else {
+            return;
+        };
+        (self.cancel)();
+        self.core
+            .detach(&self.session, self.subscriber, self.channel, self.release);
+        drop(lease);
+    }
     fn new(
         core: Arc<dyn Core>,
+        lease: Arc<Lease>,
         channel: u64,
         session: String,
         attachment: core::Attachment,
@@ -245,6 +292,7 @@ impl Stream {
             last_output: None,
             clipboard: VecDeque::new(),
             core,
+            lease: Some(lease),
             channel,
             release: true,
         }
@@ -368,7 +416,9 @@ struct Lease {
 }
 impl Drop for Lease {
     fn drop(&mut self) {
-        self.core.release_channel(self.channel);
+        let core = self.core.clone();
+        let channel = self.channel;
+        offload_cleanup(move || core.release_channel(channel));
     }
 }
 
@@ -421,12 +471,75 @@ struct FeedWork {
     reserved: usize,
     work: tokio::task::JoinHandle<core::Result<RequestReply>>,
 }
+enum MissionWriteJob {
+    Answer(AnswerRequest),
+    Post(PostRequest),
+}
+impl MissionWriteJob {
+    fn id(&self) -> u64 {
+        match self {
+            Self::Answer(request) => request.id,
+            Self::Post(request) => request.id,
+        }
+    }
+}
+enum TerminalJob {
+    Attach(AttachRequest),
+    Input(InputRequest),
+    Viewport {
+        request: ViewportRequest,
+        take: bool,
+    },
+    Detach(SessionRequest),
+}
+impl TerminalJob {
+    fn id(&self) -> u64 {
+        match self {
+            Self::Attach(request) => request.id,
+            Self::Input(request) => request.id,
+            Self::Viewport { request, .. } => request.id,
+            Self::Detach(request) => request.id,
+        }
+    }
+    fn session(&self) -> &str {
+        match self {
+            Self::Attach(request) => &request.session,
+            Self::Input(request) => &request.session,
+            Self::Viewport { request, .. } => &request.session,
+            Self::Detach(request) => &request.session,
+        }
+    }
+    fn cost(&self) -> usize {
+        match self {
+            Self::Input(request) => request.data.0.len() + 64,
+            _ => 64,
+        }
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActiveTerminalOp {
+    Attach,
+    Detach,
+    Other,
+}
+
+enum TerminalOutcome {
+    Attach(core::Result<Box<Stream>>),
+    Unit(core::Result<()>),
+    Detach,
+}
+struct TerminalCompletion {
+    id: u64,
+    session: String,
+    outcome: TerminalOutcome,
+}
 
 pub struct Adapter {
     lease: Arc<Lease>,
     core: Arc<dyn Core>,
     channel: u64,
     name: String,
+    initialize_timeout: Duration,
     events: broadcast::Receiver<AppEvent>,
     ready: Arc<Notify>,
     streams: VecDeque<Stream>,
@@ -467,6 +580,15 @@ pub struct Adapter {
         tokio::task::JoinHandle<core::Result<serde_json::Value>>,
     )>,
     forks: tokio::task::JoinSet<(u64, core::Result<serde_json::Value>)>,
+    mission_writes: VecDeque<MissionWriteJob>,
+    mission_write_work: Option<(u64, tokio::task::JoinHandle<core::Result<()>>)>,
+    terminal_queues: BTreeMap<String, VecDeque<TerminalJob>>,
+    terminal_ready: VecDeque<String>,
+    terminal_active: BTreeMap<String, ActiveTerminalOp>,
+    terminal_slots: Arc<Semaphore>,
+    terminal_work: tokio::task::JoinSet<TerminalCompletion>,
+    terminal_pending: usize,
+    terminal_queued_bytes: usize,
 }
 impl Adapter {
     pub fn new(core: Arc<dyn Core>, channel: u64, name: String) -> core::Result<Self> {
@@ -479,6 +601,7 @@ impl Adapter {
             core,
             channel,
             name,
+            initialize_timeout: INITIALIZE_TIMEOUT,
             events,
             ready: Arc::new(Notify::new()),
             streams: VecDeque::new(),
@@ -516,12 +639,62 @@ impl Adapter {
             actions: VecDeque::new(),
             action_work: None,
             forks: tokio::task::JoinSet::new(),
+            mission_writes: VecDeque::new(),
+            mission_write_work: None,
+            terminal_queues: BTreeMap::new(),
+            terminal_ready: VecDeque::new(),
+            terminal_active: BTreeMap::new(),
+            terminal_slots: Arc::new(Semaphore::new(MAX_TERMINAL_WORKERS)),
+            terminal_work: tokio::task::JoinSet::new(),
+            terminal_pending: 0,
+            terminal_queued_bytes: 0,
         })
     }
+    pub(crate) fn set_initialize_timeout(&mut self, timeout: Duration) {
+        self.initialize_timeout = timeout;
+    }
     pub async fn initialize(&mut self) -> Result<(), &'static str> {
-        self.statuses = blocking(self.core.clone(), |core| core.statuses())
-            .await
-            .map_err(|_| "core unavailable")?;
+        self.initialize_with_permit(None).await
+    }
+    pub(crate) async fn initialize_with_permit(
+        &mut self,
+        permit: Option<OwnedSemaphorePermit>,
+    ) -> Result<(), &'static str> {
+        #[cfg(test)]
+        let scope_buf = format!("adapter:{}", self.channel);
+        #[cfg(test)]
+        let scope = scope_buf.as_str();
+        #[cfg(not(test))]
+        let scope = "";
+        let timer = crate::slow_stage::StageClock::start(scope);
+        let core = self.core.clone();
+        let raw = tokio::time::timeout(
+            self.initialize_timeout,
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                core.statuses()
+            }),
+        )
+        .await;
+        let (outcome, statuses) = match raw {
+            Ok(Ok(Ok(statuses))) => ("ok", Ok(statuses)),
+            Ok(Ok(Err(_))) | Ok(Err(_)) => ("core_unavailable", Err("core unavailable")),
+            Err(_) => ("deadline", Err("initialize deadline")),
+        };
+        let elapsed = timer.elapsed();
+        let channel = self.channel;
+        crate::slow_stage::warn_if_slow(
+            scope,
+            elapsed,
+            crate::slow_stage::SLOW_STAGE_THRESHOLD,
+            || {
+                format!(
+                    "slow companion Adapter::initialize: channel={channel} elapsed_ms={} outcome={outcome}",
+                    elapsed.as_millis()
+                )
+            },
+        );
+        self.statuses = statuses?;
         Ok(())
     }
     pub fn in_flight(&mut self, bytes: usize) {
@@ -578,14 +751,16 @@ impl Adapter {
         }
     }
     fn remove(&mut self, session: &str, release: bool) {
-        if let Some(index) = self
-            .streams
-            .iter()
-            .position(|stream| stream.session == session)
-        {
-            let mut stream = self.streams.remove(index).unwrap();
+        if let Some(mut stream) = self.take_stream(session) {
             stream.release = release;
         }
+    }
+    fn take_stream(&mut self, session: &str) -> Option<Stream> {
+        let index = self
+            .streams
+            .iter()
+            .position(|stream| stream.session == session)?;
+        self.streams.remove(index)
     }
     fn start_overview(&mut self) {
         if self.overview_work.is_none() {
@@ -672,6 +847,267 @@ impl Adapter {
                 ));
             }
         }
+    }
+    fn start_mission_write(&mut self) {
+        if self.mission_write_work.is_none() {
+            if let Some(job) = self.mission_writes.pop_front() {
+                let id = job.id();
+                let core = self.core.clone();
+                self.mission_write_work = Some((
+                    id,
+                    tokio::task::spawn_blocking(move || match job {
+                        MissionWriteJob::Answer(request) => core.answer(request),
+                        MissionWriteJob::Post(request) => core.post(request),
+                    }),
+                ));
+            }
+        }
+    }
+    fn schedule_terminal_session(&mut self, session: &str) {
+        if !self.terminal_active.contains_key(session)
+            && !self.terminal_ready.iter().any(|queued| queued == session)
+        {
+            self.terminal_ready.push_back(session.to_owned());
+        }
+    }
+    fn has_pending_attach_or_detach(&self, session: &str) -> bool {
+        matches!(
+            self.terminal_active.get(session),
+            Some(ActiveTerminalOp::Attach | ActiveTerminalOp::Detach)
+        ) || self.terminal_queues.get(session).is_some_and(|queue| {
+            queue
+                .iter()
+                .any(|job| matches!(job, TerminalJob::Attach(_) | TerminalJob::Detach(_)))
+        })
+    }
+    fn enqueue_terminal(&mut self, job: TerminalJob) -> Result<(), &'static str> {
+        let session = job.session().to_owned();
+        let session_busy = self.terminal_active.contains_key(&session)
+            || self
+                .terminal_queues
+                .get(&session)
+                .is_some_and(|queue| !queue.is_empty());
+        if !session_busy {
+            match &job {
+                TerminalJob::Input(request)
+                    if !self.streams.iter().any(|s| s.session == request.session) =>
+                {
+                    return self.reply(
+                        request.id,
+                        Err(Failure(
+                            ErrorCode::BadRequest,
+                            "Attach the terminal before sending input.",
+                            None,
+                        )),
+                    );
+                }
+                TerminalJob::Viewport { request, .. }
+                    if !self.streams.iter().any(|s| s.session == request.session) =>
+                {
+                    return self.reply(
+                        request.id,
+                        Err(Failure(
+                            ErrorCode::BadRequest,
+                            "Attach the terminal before changing its viewport.",
+                            None,
+                        )),
+                    );
+                }
+                TerminalJob::Detach(request)
+                    if !self.streams.iter().any(|s| s.session == request.session) =>
+                {
+                    return self.reply(request.id, Ok(serde_json::Value::Null));
+                }
+                _ => {}
+            }
+        }
+        let cost = job.cost();
+        if self.terminal_pending >= MAX_TERMINAL_PENDING
+            || self.terminal_queued_bytes + cost > MAX_MESSAGE_SIZE
+        {
+            return self.reply(
+                job.id(),
+                Err(Failure(
+                    ErrorCode::Failed,
+                    "Too many terminal requests are pending.",
+                    None,
+                )),
+            );
+        }
+        self.terminal_pending += 1;
+        self.terminal_queued_bytes += cost;
+        self.terminal_queues
+            .entry(session.clone())
+            .or_default()
+            .push_back(job);
+        self.schedule_terminal_session(&session);
+        self.start_terminal_work()
+    }
+    fn start_terminal_work(&mut self) -> Result<(), &'static str> {
+        while let Some(session) = self.terminal_ready.pop_front() {
+            if self.terminal_active.contains_key(&session) {
+                continue;
+            }
+            loop {
+                let Some(front) = self.terminal_queues.get(&session).and_then(VecDeque::front)
+                else {
+                    self.terminal_queues.remove(&session);
+                    break;
+                };
+                let attached = self.streams.iter().any(|s| s.session == session);
+                let unattached_immediate = match front {
+                    TerminalJob::Input(request) if !attached => Some((
+                        request.id,
+                        Err(Failure(
+                            ErrorCode::BadRequest,
+                            "Attach the terminal before sending input.",
+                            None,
+                        )),
+                    )),
+                    TerminalJob::Viewport { request, .. } if !attached => Some((
+                        request.id,
+                        Err(Failure(
+                            ErrorCode::BadRequest,
+                            "Attach the terminal before changing its viewport.",
+                            None,
+                        )),
+                    )),
+                    TerminalJob::Detach(request) if !attached => {
+                        Some((request.id, Ok(serde_json::Value::Null)))
+                    }
+                    _ => None,
+                };
+                if let Some((id, reply)) = unattached_immediate {
+                    let popped = self
+                        .terminal_queues
+                        .get_mut(&session)
+                        .unwrap()
+                        .pop_front()
+                        .unwrap();
+                    self.terminal_pending -= 1;
+                    self.terminal_queued_bytes -= popped.cost();
+                    self.reply(id, reply)?;
+                    continue;
+                }
+                let Ok(permit) = self.terminal_slots.clone().try_acquire_owned() else {
+                    self.terminal_ready.push_front(session);
+                    return Ok(());
+                };
+                let job = self
+                    .terminal_queues
+                    .get_mut(&session)
+                    .unwrap()
+                    .pop_front()
+                    .unwrap();
+                self.terminal_queued_bytes -= job.cost();
+                if self
+                    .terminal_queues
+                    .get(&session)
+                    .is_some_and(VecDeque::is_empty)
+                {
+                    self.terminal_queues.remove(&session);
+                }
+                let active_op = match &job {
+                    TerminalJob::Attach(_) => ActiveTerminalOp::Attach,
+                    TerminalJob::Detach(_) => ActiveTerminalOp::Detach,
+                    TerminalJob::Input(_) | TerminalJob::Viewport { .. } => ActiveTerminalOp::Other,
+                };
+                self.terminal_active.insert(session.clone(), active_op);
+                let core = self.core.clone();
+                let channel = self.channel;
+                let name = self.name.clone();
+                let lease = self.lease.clone();
+                let ready = self.ready.clone();
+                let detached_stream = if matches!(job, TerminalJob::Detach(_)) {
+                    self.take_stream(&session)
+                } else {
+                    None
+                };
+                let id = job.id();
+                self.terminal_work.spawn(async move {
+                    let work_session = session.clone();
+                    let outcome = tokio::task::spawn_blocking(move || {
+                        let _permit = permit;
+                        match job {
+                            TerminalJob::Attach(request) => {
+                                let history = request.history_lines() as usize;
+                                let size = request.clamped_size();
+                                let control = if request.control.effective() == ControlMode::Take {
+                                    Control::Take
+                                } else {
+                                    Control::IfFree
+                                };
+                                let result = (|| {
+                                    core.resize(&work_session, channel, &name, size, control)?;
+                                    let attachment = match core.clone().attach(
+                                        &work_session,
+                                        history,
+                                        channel,
+                                    ) {
+                                        Ok(attachment) => attachment,
+                                        Err(error) => {
+                                            core.detach(&work_session, 0, channel, true);
+                                            return Err(error);
+                                        }
+                                    };
+                                    Ok(Box::new(Stream::new(
+                                        lease.core.clone(),
+                                        lease,
+                                        channel,
+                                        work_session,
+                                        attachment,
+                                        ready,
+                                    )))
+                                })();
+                                TerminalOutcome::Attach(result)
+                            }
+                            TerminalJob::Input(request) => TerminalOutcome::Unit(core.input(
+                                &request.session,
+                                channel,
+                                &request.data.0,
+                            )),
+                            TerminalJob::Viewport { request, take } => {
+                                let _lease = lease;
+                                let size = request.clamped_size();
+                                TerminalOutcome::Unit(core.resize(
+                                    &request.session,
+                                    channel,
+                                    &name,
+                                    size,
+                                    if take {
+                                        Control::Take
+                                    } else {
+                                        Control::Viewport
+                                    },
+                                ))
+                            }
+                            TerminalJob::Detach(_) => {
+                                if let Some(mut stream) = detached_stream {
+                                    stream.release = true;
+                                    stream.detach_sync();
+                                }
+                                TerminalOutcome::Detach
+                            }
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|_| {
+                        TerminalOutcome::Unit(Err(Failure(
+                            ErrorCode::Failed,
+                            "The host worker failed.",
+                            None,
+                        )))
+                    });
+                    TerminalCompletion {
+                        id,
+                        session,
+                        outcome,
+                    }
+                });
+                break;
+            }
+        }
+        Ok(())
     }
     fn unfollow(&mut self, request: MissionRequest) -> Result<(), &'static str> {
         let pending = self.request_work.as_ref().is_some_and(|work| work.follow.as_ref() == Some(&request.mission))
@@ -904,14 +1340,44 @@ impl Adapter {
                 self.start_request();
                 return Ok(());
             }
-            ClientMessage::TakeControl(request) => return self.viewport(request, true).await,
-            ClientMessage::Viewport(request) => return self.viewport(request, false).await,
+            ClientMessage::TakeControl(request) => {
+                return self.enqueue_terminal(TerminalJob::Viewport {
+                    request,
+                    take: true,
+                })
+            }
+            ClientMessage::Viewport(request) => {
+                return self.enqueue_terminal(TerminalJob::Viewport {
+                    request,
+                    take: false,
+                })
+            }
+            ClientMessage::Attach(request) => {
+                return self.enqueue_terminal(TerminalJob::Attach(request))
+            }
+            ClientMessage::Input(request) => {
+                return self.enqueue_terminal(TerminalJob::Input(request))
+            }
+            ClientMessage::Detach(request) => {
+                return self.enqueue_terminal(TerminalJob::Detach(request))
+            }
+            ClientMessage::Answer(request) => {
+                return self.enqueue_mission_write(MissionWriteJob::Answer(request))
+            }
+            ClientMessage::Post(request) => {
+                return self.enqueue_mission_write(MissionWriteJob::Post(request))
+            }
             message => message,
         };
         let id;
         let result: core::Result<serde_json::Value> = match message {
             ClientMessage::TakeControl(_)
             | ClientMessage::Viewport(_)
+            | ClientMessage::Attach(_)
+            | ClientMessage::Input(_)
+            | ClientMessage::Detach(_)
+            | ClientMessage::Answer(_)
+            | ClientMessage::Post(_)
             | ClientMessage::Ping(_)
             | ClientMessage::Action(_)
             | ClientMessage::Feed(_)
@@ -919,83 +1385,6 @@ impl Adapter {
             | ClientMessage::Unfollow(_)
             | ClientMessage::Overview(_) => unreachable!(),
             ClientMessage::Hello(_) => return Err("unexpected hello"),
-            ClientMessage::Attach(request) => {
-                id = request.id;
-                let session = request.session.clone();
-                let channel = self.channel;
-                let name = self.name.clone();
-                let history = request.history_lines() as usize;
-                let size = request.clamped_size();
-                let control = if request.control.effective() == ControlMode::Take {
-                    Control::Take
-                } else {
-                    Control::IfFree
-                };
-                let lease = self.lease.clone();
-                let ready = self.ready.clone();
-                let result = blocking(self.core.clone(), move |core| {
-                    core.resize(&session, channel, &name, size, control)?;
-                    let attachment = match core.clone().attach(&session, history, channel) {
-                        Ok(attachment) => attachment,
-                        Err(error) => {
-                            core.detach(&session, 0, channel, true);
-                            return Err(error);
-                        }
-                    };
-                    Ok((
-                        Stream::new(lease.core.clone(), channel, session, attachment, ready),
-                        lease,
-                    ))
-                })
-                .await;
-                match result {
-                    Ok((stream, _lease)) => {
-                        self.remove(&request.session, false);
-                        self.streams.push_back(stream);
-                        self.drain_events()?;
-                        Ok(serde_json::Value::Null)
-                    }
-                    Err(error) => Err(error),
-                }
-            }
-            ClientMessage::Input(request) => {
-                id = request.id;
-                if !self.streams.iter().any(|s| s.session == request.session) {
-                    Err(Failure(
-                        ErrorCode::BadRequest,
-                        "Attach the terminal before sending input.",
-                        None,
-                    ))
-                } else {
-                    let channel = self.channel;
-                    let result = blocking(self.core.clone(), move |core| {
-                        core.input(&request.session, channel, &request.data.0)
-                    })
-                    .await
-                    .map(|_| serde_json::Value::Null);
-                    if result.is_ok() {
-                        self.drain_events()?;
-                    }
-                    result
-                }
-            }
-            ClientMessage::Detach(request) => {
-                id = request.id;
-                self.remove(&request.session, true);
-                Ok(serde_json::Value::Null)
-            }
-            ClientMessage::Answer(request) => {
-                id = request.id;
-                blocking(self.core.clone(), move |core| core.answer(request))
-                    .await
-                    .map(|_| serde_json::Value::Null)
-            }
-            ClientMessage::Post(request) => {
-                id = request.id;
-                blocking(self.core.clone(), move |core| core.post(request))
-                    .await
-                    .map(|_| serde_json::Value::Null)
-            }
             ClientMessage::Unknown(request) => {
                 id = request.id;
                 Err(Failure(
@@ -1006,6 +1395,23 @@ impl Adapter {
             }
         };
         self.reply(id, result)
+    }
+    fn enqueue_mission_write(&mut self, job: MissionWriteJob) -> Result<(), &'static str> {
+        if self.mission_writes.len() + usize::from(self.mission_write_work.is_some())
+            >= MAX_MISSION_WRITES
+        {
+            return self.reply(
+                job.id(),
+                Err(Failure(
+                    ErrorCode::Failed,
+                    "Too many requests are pending.",
+                    None,
+                )),
+            );
+        }
+        self.mission_writes.push_back(job);
+        self.start_mission_write();
+        Ok(())
     }
     fn reply(
         &mut self,
@@ -1030,52 +1436,11 @@ impl Adapter {
         request: ViewportRequest,
         take: bool,
     ) -> Result<(), &'static str> {
-        let id = request.id;
-        let result = if self.streams.iter().any(|s| s.session == request.session) {
-            let channel = self.channel;
-            let name = self.name.clone();
-            let size = request.clamped_size();
-            let lease = self.lease.clone();
-            blocking(self.core.clone(), move |core| {
-                let _lease = lease;
-                core.resize(
-                    &request.session,
-                    channel,
-                    &name,
-                    size,
-                    if take {
-                        Control::Take
-                    } else {
-                        Control::Viewport
-                    },
-                )
-            })
-            .await
-        } else {
-            Err(Failure(
-                ErrorCode::BadRequest,
-                "Attach the terminal before changing its viewport.",
-                None,
-            ))
-        };
-        if result.is_ok() {
-            self.drain_events()?;
-        }
-        self.push(match result {
-            Ok(()) => HostMessage::Result(ResultMessage {
-                id,
-                result: serde_json::Value::Null,
-            }),
-            Err(Failure(code, message, version_gate)) => HostMessage::Error(ErrorMessage {
-                version_gate: version_gate.clone(),
-                id: Some(id),
-                code,
-                message: version_gate
-                    .as_ref()
-                    .map_or_else(|| message.into(), ToString::to_string),
-                versions: None,
-            }),
-        })
+        self.enqueue_terminal(TerminalJob::Viewport { request, take })
+    }
+    #[cfg(test)]
+    pub(crate) fn has_terminal_work(&self) -> bool {
+        !self.terminal_work.is_empty()
     }
     #[cfg(test)]
     pub async fn next(&mut self, terminal_credit: bool) -> Result<Option<Vec<u8>>, &'static str> {
@@ -1122,6 +1487,10 @@ impl Adapter {
                 (q.resync, q.ended && q.frames.is_empty())
             };
             if resync && stream.snapshot.is_none() && stream.initial_size.is_none() {
+                if self.has_pending_attach_or_detach(&stream.session) {
+                    self.streams.push_back(stream);
+                    continue;
+                }
                 let resync = stream.resync.clone();
                 let attachment = blocking(self.core.clone(), move |_| resync()).await;
                 match attachment {
@@ -1130,6 +1499,7 @@ impl Adapter {
                         stream.release = false;
                         let mut fresh = Stream::new(
                             self.core.clone(),
+                            self.lease.clone(),
                             self.channel,
                             stream.session.clone(),
                             core::Attachment {
@@ -1389,6 +1759,50 @@ impl Adapter {
                 self.drain_events()?;
                 self.reply(id, result.unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed.", None))))?;
                 self.start_action();
+            }
+            result = async { match &mut self.mission_write_work { Some((id, work)) => (*id, work.await), None => std::future::pending().await } } => {
+                self.mission_write_work = None;
+                let (id, result) = result;
+                let result = result
+                    .unwrap_or(Err(Failure(ErrorCode::Failed, "The host worker failed.", None)))
+                    .map(|()| serde_json::Value::Null);
+                self.reply(id, result)?;
+                self.start_mission_write();
+            }
+            result = self.terminal_work.join_next(), if !self.terminal_work.is_empty() => {
+                let completion = result.ok_or("host worker failed")?.map_err(|_| "host worker failed")?;
+                self.terminal_active.remove(&completion.session);
+                self.terminal_pending -= 1;
+                match completion.outcome {
+                    TerminalOutcome::Attach(result) => match result {
+                        Ok(stream) => {
+                            self.remove(&completion.session, false);
+                            self.streams.push_back(*stream);
+                            self.drain_events()?;
+                            self.reply(completion.id, Ok(serde_json::Value::Null))?;
+                        }
+                        Err(error) => {
+                            self.reply(completion.id, Err(error))?;
+                        }
+                    },
+                    TerminalOutcome::Unit(result) => {
+                        if result.is_ok() {
+                            self.drain_events()?;
+                        }
+                        self.reply(completion.id, result.map(|()| serde_json::Value::Null))?;
+                    }
+                    TerminalOutcome::Detach => {
+                        self.reply(completion.id, Ok(serde_json::Value::Null))?;
+                    }
+                }
+                if self
+                    .terminal_queues
+                    .get(&completion.session)
+                    .is_some_and(|queue| !queue.is_empty())
+                {
+                    self.schedule_terminal_session(&completion.session);
+                }
+                self.start_terminal_work()?;
             }
             result = self.forks.join_next(), if !self.forks.is_empty() => {
                 let (id, result) = result.ok_or("host worker failed")?.map_err(|_| "host worker failed")?;

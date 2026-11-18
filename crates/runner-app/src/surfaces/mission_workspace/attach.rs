@@ -609,7 +609,7 @@ impl MissionWorkspace {
         let resumed = !self.active;
         self.active = true;
         let state = runner_core::protocol::window::is_secondary_for(
-            &self.core(cx).window_snapshot().unwrap_or_default(),
+            &self.app_store.read(cx).window_entries,
             &self.window_label,
             &Subject::Mission(mission_id.clone()),
         );

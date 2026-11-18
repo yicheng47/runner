@@ -7,6 +7,25 @@ impl SessionManager {
         (!key_only).then_some(session)
     }
 
+    #[cfg(test)]
+    pub(crate) fn lock_session_state_for_test(
+        &self,
+        session_id: &str,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let state = self
+            .session_state(session_id)
+            .expect("session state exists");
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (unlock_tx, unlock_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = state.lock().unwrap();
+            let _ = locked_tx.send(());
+            let _ = unlock_rx.recv();
+        });
+        locked_rx.recv().unwrap();
+        (unlock_tx, holder)
+    }
+
     pub(super) fn raw_session_state(&self, session_id: &str) -> Option<Arc<Mutex<SessionState>>> {
         self.sessions.lock().unwrap().get(session_id).cloned()
     }
@@ -197,11 +216,20 @@ impl SessionManager {
             .iter()
             .map(|(id, session)| (id.clone(), Arc::clone(session)))
             .collect();
+        #[cfg(test)]
+        self.live_session_scan_count
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         sessions
             .into_iter()
             .filter(|(_, session)| session.lock().unwrap().handle.is_some())
             .map(|(id, _)| id)
             .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn live_session_scan_count(&self) -> usize {
+        self.live_session_scan_count
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn session_live(&self, session_id: &str) -> bool {
@@ -480,6 +508,7 @@ impl SessionManager {
     pub(super) fn release_resume_claim(&self, session_id: &str) {
         if let Some(state) = self.session_state(session_id) {
             state.lock().unwrap().resuming = false;
+            Self::rearm_deferred_resize_after_rollback(session_id, &state);
         }
         self.prune_empty_session_state(session_id);
     }
@@ -502,6 +531,7 @@ impl SessionManager {
     pub(super) fn clear_killed(&self, session_id: &str) {
         if let Some(state) = self.session_state(session_id) {
             state.lock().unwrap().killed = false;
+            Self::rearm_deferred_resize_after_rollback(session_id, &state);
         }
         self.prune_empty_session_state(session_id);
     }

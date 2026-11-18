@@ -243,6 +243,7 @@ macro_rules! define_api {
         pub const API_OPERATIONS: &[(&str, bool)] = &[$((stringify!($name), $fast)),*];
         impl Request {
             pub fn is_fast(&self) -> bool { match self { $( Self::$name { .. } => $fast, )* } }
+            pub fn method_name(&self) -> &'static str { match self { $( Self::$name { .. } => stringify!($name), )* } }
         }
         impl DaemonClient { $(
             #[allow(clippy::too_many_arguments)]

@@ -20,6 +20,7 @@ impl ShellComposition {
 
 impl Render for ShellComposition {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _turn = crate::stall_watchdog::enter_turn("root.render");
         self.root
             .update(cx, |root, cx| {
                 if !cx.has_active_drag() {

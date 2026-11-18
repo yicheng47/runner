@@ -1034,13 +1034,14 @@ impl SessionManager {
     /// the spawn-time grid regardless of how big the visible grid
     /// is.
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16, pool: &Arc<DbPool>) -> Result<()> {
-        let _control = self.terminal_control.lock().unwrap();
+        let mut control = self.terminal_control.lock().unwrap();
         self.resize_controlled(
             session_id,
             cols,
             rows,
             pool,
             terminal::ResizeControl::Desktop,
+            &mut control,
         )
     }
     pub(super) fn resize_controlled(
@@ -1050,6 +1051,7 @@ impl SessionManager {
         rows: u16,
         pool: &Arc<DbPool>,
         control: terminal::ResizeControl,
+        control_state: &mut terminal::ControlState,
     ) -> Result<()> {
         let state = self.session_state_or_insert(session_id);
         let settle_ms = self
@@ -1064,6 +1066,7 @@ impl SessionManager {
                 .map(|model| model.size())
                 .or(session.last_requested_size);
             let applied = control.apply(&mut session.controller);
+            control_state.record_session_controller(session_id, &session.controller);
             let size_changed = previous_size != Some((cols, rows));
             let controller_changed = session.controller != previous_controller;
             log::debug!(
@@ -1096,6 +1099,7 @@ impl SessionManager {
             );
             session.last_requested_size = Some((cols, rows));
             session.last_requested_size_dirty = true;
+            let stamp = session.bump_resize_stamp();
 
             let mut ioctl_count = 0;
             let resize_result = if session.killed || session.resuming {
@@ -1115,12 +1119,14 @@ impl SessionManager {
 
             let settle_generation = match session.pending_resize.as_mut() {
                 Some(pending) => {
+                    pending.stamp = stamp;
                     pending.cols = cols;
                     pending.rows = rows;
                     pending.deadline = Instant::now() + Duration::from_millis(settle_ms);
                     pending.suppressed += 1;
                     pending.ioctl_count += ioctl_count;
-                    None
+                    std::mem::take(&mut pending.deferred_during_lifecycle)
+                        .then_some(pending.generation)
                 }
                 None => {
                     let generation = self
@@ -1129,11 +1135,13 @@ impl SessionManager {
                         .wrapping_add(1);
                     session.pending_resize = Some(PendingResize {
                         generation,
+                        stamp,
                         cols,
                         rows,
                         deadline: Instant::now() + Duration::from_millis(settle_ms),
                         suppressed: 0,
                         ioctl_count,
+                        deferred_during_lifecycle: false,
                         pool: Arc::clone(pool),
                     });
                     Some(generation)
@@ -1142,29 +1150,54 @@ impl SessionManager {
             (settle_generation, resize_result)
         };
         if let Some(generation) = settle_generation {
-            let session_id = session_id.to_string();
-            let state = Arc::clone(&state);
-            thread::spawn(move || loop {
-                let wait = {
-                    let state = state.lock().unwrap();
-                    let Some(pending) = state
-                        .pending_resize
-                        .as_ref()
-                        .filter(|pending| pending.generation == generation)
-                    else {
-                        return;
-                    };
-                    pending.deadline.saturating_duration_since(Instant::now())
-                };
-                if !wait.is_zero() {
-                    thread::sleep(wait);
-                    continue;
-                }
-                Self::settle_pending_resize(&session_id, &state, Some(generation));
-                return;
-            });
+            Self::spawn_settle_worker(session_id.to_owned(), Arc::clone(&state), generation);
         }
         resize_result
+    }
+
+    fn spawn_settle_worker(session_id: String, state: Arc<Mutex<SessionState>>, generation: u64) {
+        thread::spawn(move || loop {
+            let wait = {
+                let state = state.lock().unwrap();
+                let Some(pending) = state
+                    .pending_resize
+                    .as_ref()
+                    .filter(|pending| pending.generation == generation)
+                else {
+                    return;
+                };
+                pending.deadline.saturating_duration_since(Instant::now())
+            };
+            if !wait.is_zero() {
+                thread::sleep(wait);
+                continue;
+            }
+            Self::settle_pending_resize(&session_id, &state, Some(generation));
+            return;
+        });
+    }
+
+    pub(super) fn rearm_deferred_resize_after_rollback(
+        session_id: &str,
+        state: &Arc<Mutex<SessionState>>,
+    ) {
+        let generation = {
+            let mut state_guard = state.lock().unwrap();
+            if state_guard.killed || state_guard.resuming {
+                return;
+            }
+            state_guard
+                .pending_resize
+                .as_mut()
+                .filter(|pending| pending.deferred_during_lifecycle)
+                .map(|pending| {
+                    pending.deferred_during_lifecycle = false;
+                    pending.generation
+                })
+        };
+        if let Some(generation) = generation {
+            Self::spawn_settle_worker(session_id.to_owned(), Arc::clone(state), generation);
+        }
     }
 
     fn settle_pending_resize(
@@ -1172,69 +1205,69 @@ impl SessionManager {
         state: &Arc<Mutex<SessionState>>,
         expected_generation: Option<u64>,
     ) {
-        // The runtime resolves a reusable session id to the live child. Keep
-        // the state lock through the ioctl so kill/resume cannot retarget it.
-        let mut state = state.lock().unwrap();
-        if expected_generation.is_some_and(|generation| {
-            state
-                .pending_resize
-                .as_ref()
-                .is_none_or(|pending| pending.generation != generation)
-        }) {
-            return;
-        }
-        let Some(pending) = state.pending_resize.take() else {
-            return;
-        };
-        if state.killed || state.resuming {
-            log::info!(
-                "cols-gate settle abandoned: session={session_id} {}x{} ({} coalesced) — \
-                 kill/resume in flight",
-                pending.cols,
-                pending.rows,
-                pending.suppressed,
-            );
-            return;
-        }
-
-        // Serialize this settled write with resize/install so an older storm
-        // can never overwrite a newer in-memory measurement.
-        let persisted = match pending.pool.get() {
-            Ok(conn) => match crate::repo::session::update_last_size(
-                &conn,
-                session_id,
-                pending.cols,
-                pending.rows,
-            ) {
-                Ok(0) => {
-                    log::warn!("resize persistence found no session row: session={session_id}");
-                    false
-                }
-                Ok(_) => {
-                    if state.last_requested_size == Some((pending.cols, pending.rows)) {
-                        state.last_requested_size_dirty = false;
-                    }
-                    true
-                }
-                Err(error) => {
-                    log::warn!(
-                        "resize persistence failed: session={session_id} {}x{}: {error}",
+        let (pending, work) = {
+            let mut state_guard = state.lock().unwrap();
+            if expected_generation.is_some_and(|generation| {
+                state_guard
+                    .pending_resize
+                    .as_ref()
+                    .is_none_or(|pending| pending.generation != generation)
+            }) {
+                return;
+            }
+            if state_guard.killed || state_guard.resuming {
+                if let Some(pending) = state_guard.pending_resize.as_mut() {
+                    pending.deferred_during_lifecycle = true;
+                    log::info!(
+                        "cols-gate settle deferred: session={session_id} {}x{} ({} coalesced) — \
+                         kill/resume in flight",
                         pending.cols,
                         pending.rows,
+                        pending.suppressed,
                     );
-                    false
                 }
-            },
+                return;
+            }
+            let Some(pending) = state_guard.pending_resize.take() else {
+                return;
+            };
+            let work = state_guard.prepare_resize_persist(
+                state,
+                pending.cols,
+                pending.rows,
+                pending.stamp,
+            );
+            (pending, work)
+        };
+
+        let pool = Arc::clone(&pending.pool);
+        let persisted = work.run(|cols, rows, is_current| match pool.get() {
+            Ok(conn) => {
+                if !is_current() {
+                    return false;
+                }
+                match crate::repo::session::update_last_size(&conn, session_id, cols, rows) {
+                    Ok(0) => {
+                        log::warn!("resize persistence found no session row: session={session_id}");
+                        false
+                    }
+                    Ok(_) => true,
+                    Err(error) => {
+                        log::warn!(
+                            "resize persistence failed: session={session_id} {cols}x{rows}: {error}",
+                        );
+                        false
+                    }
+                }
+            }
             Err(error) => {
                 log::warn!(
                     "resize persistence pool checkout failed: session={session_id} \
-                     {}x{}: {error}",
-                    pending.cols,
-                    pending.rows,
+                     {cols}x{rows}: {error}",
                 );
                 false
             }
-        };
+        });
 
         log::debug!(
             "resize trace: session={session_id} pushes={} immediate_ioctls={} \
@@ -1262,6 +1295,7 @@ impl SessionManager {
     pub fn forget_session_state(&self, session_id: &str) {
         let workers = {
             let _control = self.terminal_control.lock().unwrap();
+            self.control_group_revision.fetch_add(1, Ordering::AcqRel);
             let Some(state) = self.raw_session_state(session_id) else {
                 return;
             };
@@ -1273,6 +1307,7 @@ impl SessionManager {
             state.output_seq = 0;
             state.last_requested_size = None;
             state.last_requested_size_dirty = false;
+            state.bump_resize_stamp();
             state.pending_resize = None;
             workers
         };

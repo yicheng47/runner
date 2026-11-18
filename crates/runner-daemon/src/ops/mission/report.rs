@@ -550,26 +550,35 @@ fn read_states(
     now: Instant,
 ) -> crate::error::Result<Vec<(Mission, Tracked)>> {
     let statuses = crate::ops::session::session_status_snapshot(core)?;
-    let conn = core.db.get()?;
+    let mission_rows = {
+        let conn = core.db.get()?;
+        repo::mission::list(&conn, None)?
+            .into_iter()
+            .map(|mission| {
+                let sessions =
+                    crate::ops::session::list_for_mission(&conn, &core.app_data_dir, &mission.id);
+                (mission, sessions)
+            })
+            .collect::<Vec<_>>()
+    };
     let mut states = Vec::new();
-    for mission in repo::mission::list(&conn, None)? {
-        let sessions =
-            match crate::ops::session::list_for_mission(&conn, &core.app_data_dir, &mission.id) {
-                Ok(sessions) => sessions,
-                Err(error) => {
-                    // Keep the last state, but a mission that cannot be read does not settle.
-                    log::warn!("mission {} state unavailable: {error}", mission.id);
-                    if let Some(tracked) = previous.get(&mission.id) {
-                        let quiet_since = None;
-                        let tracked = Tracked {
-                            quiet_since,
-                            ..tracked.clone()
-                        };
-                        states.push((mission, tracked));
-                    }
-                    continue;
+    for (mission, sessions) in mission_rows {
+        let sessions = match sessions {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                // Keep the last state, but a mission that cannot be read does not settle.
+                log::warn!("mission {} state unavailable: {error}", mission.id);
+                if let Some(tracked) = previous.get(&mission.id) {
+                    let quiet_since = None;
+                    let tracked = Tracked {
+                        quiet_since,
+                        ..tracked.clone()
+                    };
+                    states.push((mission, tracked));
                 }
-            };
+                continue;
+            }
+        };
         let input = phase_input(
             core,
             &mission,

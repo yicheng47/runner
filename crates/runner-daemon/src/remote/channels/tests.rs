@@ -1681,3 +1681,616 @@ async fn a_pty_that_stops_reading_its_input_stalls_only_that_sessions_input_1377
     crate::ops::session::session_stop(&core, &wedged).unwrap();
     crate::ops::session::session_stop(&core, &healthy).unwrap();
 }
+
+struct Gate {
+    entered: tokio::sync::Notify,
+    state: std::sync::Mutex<bool>,
+    cv: std::sync::Condvar,
+}
+impl Default for Gate {
+    fn default() -> Self {
+        Self {
+            entered: tokio::sync::Notify::new(),
+            state: std::sync::Mutex::new(true),
+            cv: std::sync::Condvar::new(),
+        }
+    }
+}
+impl Gate {
+    fn hold(&self) {
+        *self.state.lock().unwrap() = false;
+    }
+    fn release(&self) {
+        *self.state.lock().unwrap() = true;
+        self.cv.notify_all();
+    }
+    fn enter(&self) {
+        let mut open = self.state.lock().unwrap();
+        if !*open {
+            self.entered.notify_waiters();
+        }
+        while !*open {
+            open = self.cv.wait(open).unwrap();
+        }
+    }
+}
+
+#[derive(Default)]
+struct GatedCore {
+    events: crate::events::EventChannel,
+    statuses_gate: Gate,
+    attach_gate: Gate,
+    input_gate: Gate,
+    resize_gate: Gate,
+    post_gate: Gate,
+    detach_gate: Gate,
+    release_gate: Gate,
+    detached_count: std::sync::atomic::AtomicUsize,
+    released_channels: std::sync::Mutex<Vec<u64>>,
+    calls: std::sync::Mutex<Vec<String>>,
+}
+impl GatedCore {
+    fn release_all(&self) {
+        self.statuses_gate.release();
+        self.attach_gate.release();
+        self.input_gate.release();
+        self.resize_gate.release();
+        self.post_gate.release();
+        self.detach_gate.release();
+        self.release_gate.release();
+    }
+}
+impl crate::companion::core::Core for GatedCore {
+    fn overview(&self) -> crate::companion::core::Result<companion::Overview> {
+        Ok(companion::Overview {
+            projects: vec![],
+            tabs: vec![],
+            missions: vec![],
+            sessions: Default::default(),
+            sidebar: None,
+            terminal_palette: None,
+        })
+    }
+    fn statuses(
+        &self,
+    ) -> crate::companion::core::Result<std::collections::BTreeMap<String, companion::SessionStatus>>
+    {
+        self.statuses_gate.enter();
+        Ok(Default::default())
+    }
+    fn subscribe(
+        &self,
+    ) -> crate::companion::core::Result<tokio::sync::broadcast::Receiver<crate::events::AppEvent>>
+    {
+        Ok(self.events.subscribe())
+    }
+    fn attach(
+        self: Arc<Self>,
+        session: &str,
+        _history: usize,
+        channel: u64,
+    ) -> crate::companion::core::Result<crate::companion::core::Attachment> {
+        self.attach_gate.enter();
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("attach:{session}:{channel}"));
+        let make = move || {
+            let snapshot = runner_core::protocol::terminal::TerminalSnapshot {
+                seq: 1,
+                cols: 80,
+                rows: 24,
+                bytes: b"ready".to_vec(),
+                preceding_char: None,
+                unfinished_len: 0,
+                activity: None,
+                controller: runner_core::protocol::terminal::TerminalController::Browser {
+                    channel,
+                    name: "test browser".into(),
+                },
+            };
+            struct IdleFrames(
+                Arc<std::sync::atomic::AtomicBool>,
+                Arc<std::sync::Condvar>,
+                Arc<std::sync::Mutex<()>>,
+            );
+            impl runner_core::protocol::terminal::TerminalSubscription for IdleFrames {
+                fn recv(
+                    &mut self,
+                ) -> std::result::Result<
+                    runner_core::protocol::terminal::TerminalFrame,
+                    runner_core::protocol::ClientError,
+                > {
+                    let mut guard = self.2.lock().unwrap();
+                    while !self.0.load(Ordering::Acquire) {
+                        guard = self.1.wait(guard).unwrap();
+                    }
+                    Err(runner_core::protocol::ClientError::msg("closed"))
+                }
+                fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+                    let closed = self.0.clone();
+                    let cv = self.1.clone();
+                    let lock = self.2.clone();
+                    Arc::new(move || {
+                        let _guard = lock.lock().unwrap();
+                        closed.store(true, Ordering::Release);
+                        cv.notify_all();
+                    })
+                }
+            }
+            let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let cv = Arc::new(std::sync::Condvar::new());
+            let lock = Arc::new(std::sync::Mutex::new(()));
+            Ok(runner_core::protocol::terminal::TerminalAttachment {
+                subscriber_id: 1,
+                snapshot,
+                frames: Box::new(IdleFrames(closed, cv, lock)),
+            })
+        };
+        Ok(crate::companion::core::Attachment {
+            terminal: make()?,
+            resync: Arc::new(make),
+        })
+    }
+    fn resize(
+        &self,
+        session: &str,
+        _channel: u64,
+        _name: &str,
+        size: (u16, u16),
+        control: crate::companion::core::Control,
+    ) -> crate::companion::core::Result<()> {
+        self.resize_gate.enter();
+        let kind = match control {
+            crate::companion::core::Control::Take => "take",
+            crate::companion::core::Control::IfFree => "iffree",
+            crate::companion::core::Control::Viewport => "viewport",
+        };
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("resize:{session}:{kind}:{}x{}", size.0, size.1));
+        Ok(())
+    }
+    fn input(
+        &self,
+        session: &str,
+        _channel: u64,
+        bytes: &[u8],
+    ) -> crate::companion::core::Result<()> {
+        self.input_gate.enter();
+        self.calls.lock().unwrap().push(format!(
+            "input:{session}:{}",
+            String::from_utf8_lossy(bytes)
+        ));
+        Ok(())
+    }
+    fn answer(&self, request: companion::AnswerRequest) -> crate::companion::core::Result<()> {
+        self.post_gate.enter();
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("answer:{}", request.id));
+        Ok(())
+    }
+    fn post(&self, request: companion::PostRequest) -> crate::companion::core::Result<()> {
+        self.post_gate.enter();
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("post:{}", request.id));
+        Ok(())
+    }
+    fn detach(&self, session: &str, _subscriber: u64, _channel: u64, _release: bool) {
+        self.detach_gate.enter();
+        self.calls.lock().unwrap().push(format!("detach:{session}"));
+        self.detached_count.fetch_add(1, Ordering::AcqRel);
+    }
+    fn closed_reason(&self, _session: &str) -> companion::ClosedReason {
+        companion::ClosedReason::Exited
+    }
+    fn release_channel(&self, channel: u64) {
+        self.release_gate.enter();
+        self.released_channels.lock().unwrap().push(channel);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stalled_initialize_hits_deadline_and_closes_channel_cleanly_1377() {
+    let core = Arc::new(GatedCore::default());
+    struct Guard(Arc<GatedCore>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.0.release_all();
+        }
+    }
+    let _guard = Guard(core.clone());
+    core.statuses_gate.hold();
+
+    let mut relay = Relay::with_core(core.clone());
+    relay
+        .routes
+        .as_mut()
+        .unwrap()
+        .set_initialize_timeout(Duration::from_millis(40));
+
+    let mut entered = std::pin::pin!(core.statuses_gate.entered.notified());
+    let mut saw_entered = false;
+    let (mut ch1, host_public) = relay.pair_finish(1, "012345").await;
+    let hello =
+        serde_json::json!({"type":"hello","versions":[1],"client":"desktop","build":"test"});
+    ch1.queue(serde_json::to_vec(&hello).unwrap()).unwrap();
+    relay.flush(1, &mut ch1);
+
+    let closed = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                _ = &mut entered, if !saw_entered => {
+                    saw_entered = true;
+                }
+                out = relay.output() => {
+                    if let Message::Text(text) = out {
+                        return serde_json::from_str::<Value>(&text).unwrap();
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("stalled initialize closes channel at deadline");
+    assert!(saw_entered, "Adapter::initialize entered core.statuses");
+    assert_eq!(
+        closed,
+        serde_json::json!({"type": "closeChannel", "channel": 1})
+    );
+    assert!(!relay.routes.as_ref().unwrap().entries.contains_key(&1));
+    assert!(!relay.machine.trust.devices[0].connected);
+
+    core.statuses_gate.release();
+    relay
+        .routes
+        .as_mut()
+        .unwrap()
+        .set_initialize_timeout(Duration::from_secs(5));
+    relay.reconnect_as(2, &host_public, "desktop").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blocked_terminal_and_mission_requests_keep_ping_pong_live_and_preserve_session_order_1377()
+{
+    let core = Arc::new(GatedCore::default());
+    struct Guard(Arc<GatedCore>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.0.release_all();
+        }
+    }
+    let _guard = Guard(core.clone());
+
+    let mut relay = Relay::with_core(core.clone());
+    let (mut browser, _) = relay.pair_finish(1, "012345").await;
+    assert_eq!(relay.hello(1, &mut browser).await["type"], "welcome");
+
+    async fn send_msg(relay: &mut Relay, browser: &mut Records, msg: Value) {
+        while browser.send_credit() == 0 {
+            let frame = relay.frame(1).await;
+            assert!(browser.receive(&frame).unwrap().is_none());
+        }
+        browser.queue(serde_json::to_vec(&msg).unwrap()).unwrap();
+        relay.flush(1, browser);
+    }
+
+    // 1. Block Attach("s1") and pipeline Input + Viewport + TakeControl + Ping behind it.
+    let mut attach_entered = std::pin::pin!(core.attach_gate.entered.notified());
+    core.attach_gate.hold();
+    for msg in [
+        serde_json::json!({"type":"attach","id":1,"session":"s1","cols":80,"rows":24,"control":"take","history":2}),
+        serde_json::json!({"type":"input","id":2,"session":"s1","data":"YQ=="}),
+        serde_json::json!({"type":"viewport","id":3,"session":"s1","cols":100,"rows":30}),
+        serde_json::json!({"type":"takeControl","id":4,"session":"s1","cols":110,"rows":35}),
+        serde_json::json!({"type":"ping","id":90}),
+    ] {
+        send_msg(&mut relay, &mut browser, msg).await;
+    }
+
+    let mut saw_attach = false;
+    let pong = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            tokio::select! {
+                _ = &mut attach_entered, if !saw_attach => { saw_attach = true; }
+                msg = relay.message(1, &mut browser) => {
+                    relay.flush(1, &mut browser);
+                    if msg["type"] == "pong" && msg["id"] == 90 {
+                        return msg;
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("Ping answers Pong while Attach is blocked");
+    if !saw_attach {
+        tokio::time::timeout(Duration::from_secs(5), attach_entered)
+            .await
+            .expect("Attach enters background worker");
+    }
+    assert_eq!(pong["id"], 90);
+
+    core.attach_gate.release();
+    let mut result_ids = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while result_ids.len() < 4 {
+            let msg = relay.message(1, &mut browser).await;
+            relay.flush(1, &mut browser);
+            if msg["type"] == "result" {
+                result_ids.push(msg["id"].as_u64().unwrap());
+            }
+        }
+    })
+    .await
+    .expect("pipelined Attach, Input, Viewport, and TakeControl finish");
+    assert_eq!(result_ids, vec![1, 2, 3, 4]);
+    assert_eq!(
+        *core.calls.lock().unwrap(),
+        vec![
+            "resize:s1:take:80x24",
+            "attach:s1:1",
+            "input:s1:a",
+            "resize:s1:viewport:100x30",
+            "resize:s1:take:110x35",
+        ]
+    );
+
+    // 2. Block Input("s1") and verify Ping -> Pong, plus bounded terminal request queue.
+    let input_entered = core.input_gate.entered.notified();
+    core.input_gate.hold();
+    send_msg(
+        &mut relay,
+        &mut browser,
+        serde_json::json!({"type":"input","id":100,"session":"s1","data":"Yg=="}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), input_entered)
+        .await
+        .expect("Input enters background worker");
+
+    let mut pending_msgs = VecDeque::new();
+    for id in 101..=228u64 {
+        while browser.send_credit() == 0 {
+            let frame = relay.frame(1).await;
+            if let Some(bytes) = browser.receive(&frame).unwrap() {
+                browser.handled();
+                relay.flush(1, &mut browser);
+                pending_msgs.push_back(serde_json::from_slice::<Value>(&bytes).unwrap());
+            }
+        }
+        browser
+            .queue(
+                serde_json::to_vec(
+                    &serde_json::json!({"type":"input","id":id,"session":"s1","data":"Yw=="}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        relay.flush(1, &mut browser);
+    }
+    send_msg(
+        &mut relay,
+        &mut browser,
+        serde_json::json!({"type":"ping","id":91}),
+    )
+    .await;
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (mut got_pong, mut got_overflow) = (false, false);
+        while !got_pong || !got_overflow {
+            let msg = if let Some(msg) = pending_msgs.pop_front() {
+                msg
+            } else {
+                let msg = relay.message(1, &mut browser).await;
+                relay.flush(1, &mut browser);
+                msg
+            };
+            if msg["type"] == "pong" && msg["id"] == 91 {
+                got_pong = true;
+            }
+            if msg["type"] == "error" && msg["id"] == 228 {
+                assert!(msg["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Too many terminal requests"));
+                got_overflow = true;
+            }
+        }
+    })
+    .await
+    .expect("Pong and queue-bound error arrive while Input is blocked");
+
+    core.input_gate.release();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut seen = 0usize;
+        while seen < 128 {
+            let msg = if let Some(msg) = pending_msgs.pop_front() {
+                msg
+            } else {
+                let msg = relay.message(1, &mut browser).await;
+                relay.flush(1, &mut browser);
+                msg
+            };
+            if msg["type"] == "result" && (100..=227).contains(&msg["id"].as_u64().unwrap()) {
+                seen += 1;
+            }
+        }
+    })
+    .await
+    .expect("all admitted Input requests drain in order");
+
+    // 3. Block Viewport and Post, verifying Ping -> Pong during each.
+    let resize_entered = core.resize_gate.entered.notified();
+    core.resize_gate.hold();
+    send_msg(
+        &mut relay,
+        &mut browser,
+        serde_json::json!({"type":"viewport","id":300,"session":"s1","cols":90,"rows":25}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), resize_entered)
+        .await
+        .expect("Viewport enters background worker");
+    send_msg(
+        &mut relay,
+        &mut browser,
+        serde_json::json!({"type":"ping","id":92}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let msg = relay.message(1, &mut browser).await;
+            relay.flush(1, &mut browser);
+            if msg["type"] == "pong" && msg["id"] == 92 {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("Pong arrives while Viewport is blocked");
+    core.resize_gate.release();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let msg = relay.message(1, &mut browser).await;
+            relay.flush(1, &mut browser);
+            if msg["type"] == "result" && msg["id"] == 300 {
+                return;
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    let post_entered = core.post_gate.entered.notified();
+    core.post_gate.hold();
+    send_msg(
+        &mut relay,
+        &mut browser,
+        serde_json::json!({"type":"post","id":301,"mission":"m1","to":[],"text":"hi"}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), post_entered)
+        .await
+        .expect("Post enters background worker");
+    send_msg(
+        &mut relay,
+        &mut browser,
+        serde_json::json!({"type":"answer","id":302,"mission":"m1","question":"a1","text":"yes"}),
+    )
+    .await;
+    send_msg(
+        &mut relay,
+        &mut browser,
+        serde_json::json!({"type":"ping","id":93}),
+    )
+    .await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let msg = relay.message(1, &mut browser).await;
+            relay.flush(1, &mut browser);
+            if msg["type"] == "pong" && msg["id"] == 93 {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("Pong arrives while Post is blocked");
+    core.post_gate.release();
+    let mut mission_ids = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while mission_ids.len() < 2 {
+            let msg = relay.message(1, &mut browser).await;
+            relay.flush(1, &mut browser);
+            if msg["type"] == "result" {
+                mission_ids.push(msg["id"].as_u64().unwrap());
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(mission_ids, vec![301, 302]);
+}
+
+#[test]
+fn dropping_stream_and_lease_on_single_tokio_worker_does_not_block_worker_1377() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let core = Arc::new(GatedCore::default());
+    struct Guard(Arc<GatedCore>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.0.release_all();
+        }
+    }
+    let _guard = Guard(core.clone());
+
+    rt.block_on(async {
+        let mut relay = Relay::with_core(core.clone());
+        let (mut browser, _) = relay.pair_finish(1, "012345").await;
+        assert_eq!(relay.hello(1, &mut browser).await["type"], "welcome");
+        browser
+            .queue(
+                serde_json::to_vec(&serde_json::json!({
+                    "type":"attach","id":1,"session":"s1","cols":80,"rows":24,"control":"take","history":2
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        relay.flush(1, &mut browser);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let msg = relay.message(1, &mut browser).await;
+                relay.flush(1, &mut browser);
+                if msg["type"] == "result" && msg["id"] == 1 {
+                    return;
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        let detach_entered = core.detach_gate.entered.notified();
+        core.detach_gate.hold();
+        core.release_gate.hold();
+
+        // Aborting channel 1 drops Adapter -> Stream + Lease on the lone Tokio worker.
+        relay.routes.as_mut().unwrap().closed(1);
+        tokio::time::timeout(Duration::from_secs(5), detach_entered)
+            .await
+            .expect("Stream::drop offloads detach onto blocking pool");
+
+        // The single Tokio worker must still schedule async tasks while detach/release block.
+        let heartbeat = tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::spawn(async { 42u32 }),
+        )
+        .await
+        .expect("single Tokio worker stays responsive while Stream/Lease cleanup blocks")
+        .unwrap();
+        assert_eq!(heartbeat, 42);
+
+        let release_entered = core.release_gate.entered.notified();
+        core.detach_gate.release();
+        tokio::time::timeout(Duration::from_secs(5), release_entered)
+            .await
+            .expect("Lease::drop runs after Stream detach");
+        core.release_gate.release();
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while core.released_channels.lock().unwrap().as_slice() != [1] {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    });
+}

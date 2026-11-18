@@ -434,6 +434,9 @@ pub(crate) struct MissionWorkspace {
     pub(crate) rename_modal: Option<MissionRenameModal>,
     mission_id_copy: Entity<CopyValueButton>,
     session_key_copies: HashMap<String, Entity<CopyValueButton>>,
+    mark_viewed_in_flight: bool,
+    pending_mark_viewed_session: Option<String>,
+    mark_viewed_task: Option<gpui::Task<()>>,
     _store_subscription: Subscription,
 }
 
@@ -580,6 +583,7 @@ fn mission_tab_in_direction(
 
 impl Render for MissionWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _turn = crate::stall_watchdog::enter_turn("mission_workspace.render");
         self.render_mission_workspace(window, cx)
     }
 }

@@ -18,30 +18,37 @@ use crate::{repo, AppCore};
 /// Mark the members a stopped runnerd interrupted, and say what the restart
 /// left each mission launch resume brings back.
 pub(crate) fn mark_on_boot(core: &AppCore) -> crate::error::Result<HashMap<String, Restart>> {
-    let conn = core.db.get()?;
-    let stamped = repo::session::resume_on_launch_ids(&conn)?;
     let now = Utc::now();
+    let running_missions = {
+        let conn = core.db.get()?;
+        let stamped = repo::session::resume_on_launch_ids(&conn)?;
+        let mut items = Vec::new();
+        for mission in repo::mission::list(&conn, None)? {
+            if mission.status != MissionStatus::Running || mission.archived_at.is_some() {
+                continue;
+            }
+            let sessions =
+                match crate::ops::session::list_for_mission(&conn, &core.app_data_dir, &mission.id)
+                {
+                    Ok(sessions) => sessions,
+                    Err(error) => {
+                        log::warn!("mission {} interruptions unavailable: {error}", mission.id);
+                        continue;
+                    }
+                };
+            let resumed: Vec<_> = sessions
+                .into_iter()
+                .filter(|row| stamped.contains(&row.session.id))
+                .filter(|row| !Runtime::parse(&row.runtime).is_some_and(Runtime::is_shell))
+                .collect();
+            if !resumed.is_empty() {
+                items.push((mission, resumed));
+            }
+        }
+        items
+    };
     let mut restarts = HashMap::new();
-    for mission in repo::mission::list(&conn, None)? {
-        if mission.status != MissionStatus::Running || mission.archived_at.is_some() {
-            continue;
-        }
-        let sessions =
-            match crate::ops::session::list_for_mission(&conn, &core.app_data_dir, &mission.id) {
-                Ok(sessions) => sessions,
-                Err(error) => {
-                    log::warn!("mission {} interruptions unavailable: {error}", mission.id);
-                    continue;
-                }
-            };
-        let resumed: Vec<_> = sessions
-            .iter()
-            .filter(|row| stamped.contains(&row.session.id))
-            .filter(|row| !Runtime::parse(&row.runtime).is_some_and(Runtime::is_shell))
-            .collect();
-        if resumed.is_empty() {
-            continue;
-        }
+    for (mission, resumed) in running_missions {
         let dir =
             event_log::mission_dir(&core.app_data_dir, mission.crew_id.as_deref(), &mission.id);
         let log = EventLog::open(&dir)?;
@@ -54,7 +61,7 @@ pub(crate) fn mark_on_boot(core: &AppCore) -> crate::error::Result<HashMap<Strin
             .unwrap_or(0);
         let interrupted = Interruptions::from_entries(&entries);
         let latest = latest_statuses(&entries);
-        let stopped_at = |row: &&runner_core::protocol::session::SessionRow| {
+        let stopped_at = |row: &runner_core::protocol::session::SessionRow| {
             row.session.stopped_at.unwrap_or(now)
         };
         let mut marked = false;

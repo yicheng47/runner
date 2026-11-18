@@ -177,6 +177,7 @@ fn mission_feed_from_entries(
     }
 }
 
+#[cfg(test)]
 fn read_log_entries(
     app_data_dir: &std::path::Path,
     conn: &rusqlite::Connection,
@@ -185,19 +186,28 @@ fn read_log_entries(
 ) -> Result<(Mission, Vec<LogEntry>, Vec<SkipReport>)> {
     let mission = mission::get(conn, mission_id)?;
     let mission_dir = event_log::mission_dir(app_data_dir, mission.crew_id.as_deref(), mission_id);
+    #[cfg(test)]
+    super::note_log_open_stage(&mission_dir);
     let log = event_log::EventLog::open(&mission_dir)?;
     let (entries, skipped) = log.read_from_lossy(offset)?;
     Ok((mission, entries, skipped))
 }
 
 pub fn mission_feed(state: &crate::AppCore, args: MissionFeedArgs) -> Result<MissionFeed> {
-    let conn = state.db.get()?;
-    let (_, entries, skipped) = read_log_entries(
-        &state.app_data_dir,
-        &conn,
-        &args.mission_id,
-        args.since_offset.unwrap_or(0),
-    )?;
+    let mission_dir = {
+        let conn = state.db.get()?;
+        let mission = mission::get(&conn, &args.mission_id)?;
+        event_log::mission_dir(
+            &state.app_data_dir,
+            mission.crew_id.as_deref(),
+            &args.mission_id,
+        )
+    };
+    #[cfg(test)]
+    super::note_log_open_stage(&mission_dir);
+    let log = event_log::EventLog::open(&mission_dir)?;
+    let (entries, skipped) = log.read_from_lossy(args.since_offset.unwrap_or(0))?;
+    drop(log);
     Ok(mission_feed_from_entries(
         args.mission_id,
         entries,
@@ -208,15 +218,25 @@ pub fn mission_feed(state: &crate::AppCore, args: MissionFeedArgs) -> Result<Mis
 }
 
 pub fn mission_status(state: &crate::AppCore, id: &str) -> Result<MissionStatusSnapshot> {
-    let conn = state.db.get()?;
-    let (mission, entries, skipped) = read_log_entries(&state.app_data_dir, &conn, id, 0)?;
-    let crew = mission
-        .crew_id
-        .as_deref()
-        .map(|id| crate::repo::crew::get(&conn, id))
-        .transpose()?
-        .flatten();
-    let sessions = session::list_for_mission(&conn, &state.app_data_dir, &mission.id)?;
+    let (mission, crew, sessions) = {
+        let conn = state.db.get()?;
+        let mission = mission::get(&conn, id)?;
+        let crew = mission
+            .crew_id
+            .as_deref()
+            .map(|id| crate::repo::crew::get(&conn, id))
+            .transpose()?
+            .flatten();
+        let sessions = session::list_for_mission(&conn, &state.app_data_dir, &mission.id)?;
+        (mission, crew, sessions)
+    };
+    let mission_dir =
+        event_log::mission_dir(&state.app_data_dir, mission.crew_id.as_deref(), &mission.id);
+    #[cfg(test)]
+    super::note_log_open_stage(&mission_dir);
+    let log = event_log::EventLog::open(&mission_dir)?;
+    let (entries, skipped) = log.read_from_lossy(0)?;
+    drop(log);
     let mut projection = EventProjection::from_entries(&entries);
     let interruptions = crate::router::Interruptions::from_entries(&entries);
     let mut interrupted_at = None;
@@ -268,7 +288,6 @@ pub fn mission_status(state: &crate::AppCore, id: &str) -> Result<MissionStatusS
         })
         .and_then(|entry| entry.event.payload.get("started_by"))
         .and_then(|starter| serde_json::from_value(starter.clone()).ok());
-    drop(conn);
     let phase = state.reports.phase(&mission.id).unwrap_or_else(|| {
         let statuses = crate::ops::session::session_status_snapshot(state).unwrap_or_default();
         super::report::derive(

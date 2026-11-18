@@ -29,43 +29,92 @@ impl NativeRoot {
         if self.closing {
             return;
         }
+        self.report_current_subjects_and_focus(None, None, cx);
+    }
+
+    pub(crate) fn report_current_subjects_and_focus(
+        &mut self,
+        focus: Option<bool>,
+        viewed_tab: Option<(String, Vec<String>, Option<String>)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.closing {
+            return;
+        }
         let subjects = self.current_subjects();
         self.remote_client
             .record_reported_subjects(subjects.clone());
-        if let Err(error) = self.core(cx).report_subjects(
-            &self.window_label,
-            subjects,
-            self.tabs
-                .active()
-                .filter(|_| self.route == AppRoute::Chat && self.remote_client.is_local())
-                .and_then(PaneLayout::focused_session_id),
-        ) {
-            self.error = Some(error.to_string().into());
+        let focused_session_id = self
+            .tabs
+            .active()
+            .filter(|_| self.route == AppRoute::Chat && self.remote_client.is_local())
+            .and_then(PaneLayout::focused_session_id)
+            .map(str::to_owned);
+        let label = self.window_label.clone();
+        self.app_store.update(cx, |store, store_cx| {
+            store.enqueue_window_state(
+                &label,
+                subjects,
+                focused_session_id,
+                focus,
+                viewed_tab,
+                store_cx,
+            );
+        });
+        checkpoint_window_layout_deferred(cx);
+        crate::notifications::view_changed(cx);
+    }
+
+    pub(crate) fn enqueue_tab_viewed(
+        &mut self,
+        tab_id: String,
+        member_ids: Vec<String>,
+        viewed_session_id: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.closing {
+            return;
         }
+        let label = self.window_label.clone();
+        self.app_store.update(cx, |store, store_cx| {
+            store.enqueue_window_tab_viewed(
+                &label,
+                tab_id,
+                member_ids,
+                viewed_session_id,
+                store_cx,
+            );
+        });
         checkpoint_window_layout_deferred(cx);
         crate::notifications::view_changed(cx);
     }
 
     pub(crate) fn sync_window_activation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _turn = crate::stall_watchdog::enter_turn("window.sync_activation");
         if self.closing {
             return;
         }
-        self.window_active = window.is_window_active();
-        self.report_current_subjects(cx);
-        if window.is_window_active() {
-            if let Err(error) = self.core(cx).mark_focused(&self.window_label) {
-                self.error = Some(error.to_string().into());
-            }
-            crate::notifications::refresh_permission(cx);
-            if self.remote_client.is_local() && self.route == AppRoute::Chat {
-                self.mark_active_tab_viewed(window, cx);
-            }
+        let active = window.is_window_active();
+        self.window_active = active;
+        let viewed_tab = if active && self.remote_client.is_local() && self.route == AppRoute::Chat
+        {
+            self.tabs.active().map(|layout| {
+                (
+                    layout.id.clone(),
+                    layout.session_ids(),
+                    layout.focused_session_id().map(str::to_owned),
+                )
+            })
         } else {
-            let _ = self.core(cx).mark_blurred(&self.window_label);
+            None
+        };
+        self.report_current_subjects_and_focus(Some(active), viewed_tab, cx);
+        if active {
+            crate::notifications::refresh_permission(cx);
         }
         crate::notifications::view_changed(cx);
         self.sync_subject_ownership(window, cx);
-        if window.is_window_active() && self.remote_client.is_active() {
+        if active && self.remote_client.is_active() {
             self.mark_remote_sessions_viewed_if_unobstructed(cx);
         }
         if self.remote_client.is_local() && matches!(self.route, AppRoute::Mission(_)) {
@@ -79,7 +128,7 @@ impl NativeRoot {
     pub(crate) fn start_focus_map_listener(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (focus_tx, mut focus_rx) = futures::channel::mpsc::unbounded::<bool>();
         let mut events = self.core(cx).subscribe();
-        cx.background_spawn(async move {
+        let bg_events = cx.background_spawn(async move {
             loop {
                 match events.recv().await {
                     Ok(event)
@@ -99,35 +148,32 @@ impl NativeRoot {
                     Err(runner_core::protocol::EventError::Closed) => break,
                 }
             }
-        })
-        .detach();
-        cx.spawn_in(window, async move |weak, cx| {
+        });
+        let fg_events = cx.spawn_in(window, async move |weak, cx| {
             while let Some(mut reconnected) = focus_rx.next().await {
                 while let Ok(next) = focus_rx.try_recv() {
                     reconnected |= next;
                 }
                 if weak
                     .update_in(cx, |this, window, cx| {
-                        if reconnected && !this.closing {
-                            if let Err(error) = this.core(cx).window_register(&this.window_label) {
-                                this.error = Some(error.to_string().into());
-                            }
+                        if this.closing {
+                            return;
+                        }
+                        let label = this.window_label.clone();
+                        this.app_store.update(cx, |store, store_cx| {
+                            store.enqueue_window_focus_event(&label, reconnected, store_cx);
+                        });
+                        if reconnected {
                             this.sync_window_activation(window, cx);
                         }
-                        this.app_store.update(cx, |store, cx| {
-                            store.window_entries =
-                                store.client.window_snapshot().unwrap_or_default();
-                            cx.notify();
-                        });
-                        this.sync_subject_ownership(window, cx)
                     })
                     .is_err()
                 {
                     break;
                 }
             }
-        })
-        .detach();
+        });
+        self._focus_map_tasks = Some([bg_events, fg_events]);
     }
 
     pub(crate) fn sync_subject_ownership(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -247,9 +293,7 @@ impl NativeRoot {
                 .unwrap_or_default()
         };
         let remote_computer = self.remote_client.computer_id().map(str::to_owned);
-        let entries = self.core(cx).window_snapshot().unwrap_or_default();
-        self.app_store
-            .update(cx, |store, _| store.window_entries = entries.clone());
+        let entries = &self.app_store.read(cx).window_entries;
         let next = active_ids
             .iter()
             .filter_map(|session_id| {
@@ -261,7 +305,7 @@ impl NativeRoot {
                     None => Subject::DirectChat(session_id.clone()),
                 };
                 let state = runner_core::protocol::window::is_secondary_for(
-                    &entries,
+                    entries,
                     &self.window_label,
                     &subject,
                 );
@@ -350,6 +394,7 @@ impl NativeRoot {
             return;
         }
         self.closing = true;
+        self._focus_map_tasks = None;
         self.save_main_window_state(window, cx);
         self.save_settings(cx);
         self.attached.clear();
@@ -359,7 +404,10 @@ impl NativeRoot {
             .update(cx, |workspace, workspace_cx| {
                 workspace.release_window(workspace_cx)
             });
-        let _ = self.core(cx).unregister(&self.window_label);
+        let label = self.window_label.clone();
+        self.app_store.update(cx, |store, store_cx| {
+            store.close_window_queue(&label, store_cx);
+        });
         checkpoint_window_layout_deferred(cx);
     }
 }

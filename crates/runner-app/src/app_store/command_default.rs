@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use super::AppStore;
 use crate::app_settings::AppSettings;
@@ -37,7 +39,7 @@ impl CommandInstallSupport {
 
     #[cfg(test)]
     #[cfg_attr(not(unix), allow(dead_code))]
-    fn isolated(system_bin: PathBuf) -> Self {
+    pub(crate) fn isolated(system_bin: PathBuf) -> Self {
         Self {
             system_bin,
             integration: CommandInstallIntegration { system: false },
@@ -53,91 +55,228 @@ pub(crate) fn mark_command_install_initialized(settings: &mut AppSettings) -> bo
     true
 }
 
-impl AppStore {
-    pub(crate) fn initialize_command_default(&mut self) {
-        if !self.settings.initialized_command_install {
-            if let Some(inputs) = self.command_install_inputs(true) {
-                let integration = self
-                    .command_install_support
-                    .as_ref()
-                    .expect("command inputs require support")
-                    .integration;
-                let result = self
-                    .client
-                    .command_install_default(&inputs, integration.system)
-                    .map(|outcome| {
-                        if matches!(
-                            outcome,
-                            CommandActionOutcome::Installed(_)
-                                | CommandActionOutcome::AlreadyInstalled(_)
-                                | CommandActionOutcome::Foreign(_)
-                                | CommandActionOutcome::Unsupported
-                        ) {
-                            self.settings.initialized_command_install = true;
-                            true
-                        } else {
-                            false
-                        }
-                    });
-                match result {
-                    Ok(true) => self.save_settings(),
-                    Ok(false) => {}
-                    Err(error) => eprintln!("Runner command default failed: {error}"),
+pub(crate) struct CommandDefaultSnapshot {
+    pub(super) seq: u64,
+    pub(super) newly_initialized: bool,
+    pub(super) status: Option<(RunnerCommandStatus, bool, PathBuf)>,
+}
+
+pub(super) fn compute_command_install_inputs(
+    client: &runner_core::protocol::DaemonClient,
+    home: Option<&std::path::Path>,
+    app_data_dir: &std::path::Path,
+    support: Option<&CommandInstallSupport>,
+    require_finished_discovery: bool,
+) -> Option<CommandInstallInputs> {
+    let support = support?;
+    let home = home?.to_path_buf();
+    let debug = cfg!(debug_assertions);
+    #[cfg(windows)]
+    let platform = CommandPlatform::Windows;
+    #[cfg(not(windows))]
+    let platform = CommandPlatform::Unix;
+
+    let login_path = if platform == CommandPlatform::Unix {
+        let discovery = client.discovery_snapshot().ok()?;
+        if require_finished_discovery
+            && !matches!(
+                discovery.result.as_ref(),
+                Some(result)
+                    if result.outcome.is_success() && result.env.path.is_some()
+            )
+        {
+            return None;
+        }
+        discovery
+            .result
+            .as_ref()
+            .and_then(|result| result.env.path.clone())
+            .or_else(|| discovery.shell_env.path.clone())
+            .unwrap_or_default()
+    } else {
+        std::env::var("PATH").unwrap_or_default()
+    };
+    let sidecar = agent_skill::sidecar_path(app_data_dir);
+    let local_bin = home.join(".local/bin");
+    let system_bin = support.system_bin.clone();
+    Some(CommandInstallInputs {
+        home,
+        login_path,
+        system_path: std::env::var("PATH").unwrap_or_default(),
+        sidecar,
+        local_bin,
+        system_bin: system_bin.clone(),
+        system_bin_writable: client
+            .command_directory_writable(&system_bin)
+            .unwrap_or(false),
+        debug,
+        platform,
+    })
+}
+
+pub(super) fn reconcile_command_default_serialized(
+    client: &runner_core::protocol::DaemonClient,
+    home: Option<&std::path::Path>,
+    app_data_dir: &std::path::Path,
+    support: Option<&CommandInstallSupport>,
+    initialized_flag: &AtomicBool,
+    seq_counter: &AtomicU64,
+    lock: &Mutex<()>,
+) -> CommandDefaultSnapshot {
+    let default_inputs = (!initialized_flag.load(Ordering::Acquire))
+        .then(|| compute_command_install_inputs(client, home, app_data_dir, support, true))
+        .flatten();
+    let status_inputs = compute_command_install_inputs(client, home, app_data_dir, support, false);
+
+    let _guard = lock.lock().unwrap();
+    let mut newly_initialized = false;
+    if !initialized_flag.load(Ordering::Acquire) {
+        if let Some(inputs) = default_inputs {
+            let integration = support.expect("command inputs require support").integration;
+            match client.command_install_default(&inputs, integration.system) {
+                Ok(
+                    CommandActionOutcome::Installed(_)
+                    | CommandActionOutcome::AlreadyInstalled(_)
+                    | CommandActionOutcome::Foreign(_)
+                    | CommandActionOutcome::Unsupported,
+                ) => {
+                    initialized_flag.store(true, Ordering::Release);
+                    newly_initialized = true;
                 }
+                Ok(_) => {}
+                Err(error) => eprintln!("Runner command default failed: {error}"),
             }
         }
-        self.refresh_runner_command_status();
+    }
+    let status = status_inputs.and_then(|inputs| {
+        let integration = support.expect("command inputs require support").integration;
+        match client.command_status(&inputs, integration.system) {
+            Ok(status) => Some(status),
+            Err(error) => {
+                eprintln!("Runner command status failed: {error}");
+                None
+            }
+        }
+    });
+    let seq = seq_counter.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+    CommandDefaultSnapshot {
+        seq,
+        newly_initialized,
+        status,
+    }
+}
+
+pub(crate) struct CommandActionContext {
+    pub(crate) client: runner_core::protocol::DaemonClient,
+    pub(crate) home_dir: Option<PathBuf>,
+    pub(crate) app_data_dir: PathBuf,
+    pub(crate) support: Option<CommandInstallSupport>,
+    pub(crate) seq_counter: Arc<AtomicU64>,
+    pub(crate) lock: Arc<Mutex<()>>,
+}
+
+pub(crate) fn run_user_command_action_serialized(
+    ctx: &CommandActionContext,
+    action: UserCommandAction,
+) -> Option<(
+    Result<CommandActionOutcome, runner_core::protocol::ClientError>,
+    CommandDefaultSnapshot,
+)> {
+    let inputs = compute_command_install_inputs(
+        &ctx.client,
+        ctx.home_dir.as_deref(),
+        &ctx.app_data_dir,
+        ctx.support.as_ref(),
+        false,
+    )?;
+    let integration = ctx.support.as_ref()?.integration;
+    let _guard = ctx.lock.lock().unwrap();
+    let result = run_user_command_action(&ctx.client, &inputs, action, integration);
+    let status = match ctx.client.command_status(&inputs, integration.system) {
+        Ok(status) => Some(status),
+        Err(error) => {
+            eprintln!("Runner command status failed: {error}");
+            None
+        }
+    };
+    let seq = ctx
+        .seq_counter
+        .fetch_add(1, Ordering::AcqRel)
+        .wrapping_add(1);
+    Some((
+        result,
+        CommandDefaultSnapshot {
+            seq,
+            newly_initialized: false,
+            status,
+        },
+    ))
+}
+
+impl AppStore {
+    pub(crate) fn apply_command_default(&mut self, snapshot: CommandDefaultSnapshot) -> bool {
+        if snapshot.newly_initialized && !self.settings.initialized_command_install {
+            self.settings.initialized_command_install = true;
+            self.command_install_initialized
+                .store(true, Ordering::Release);
+            self.save_settings();
+        }
+        if snapshot.seq < self.applied_command_status_seq {
+            return false;
+        }
+        self.applied_command_status_seq = snapshot.seq;
+        match snapshot.status {
+            Some((status, requires_escalation, target)) => {
+                self.runner_command_status = Some(status);
+                self.command_install_requires_escalation = requires_escalation;
+                self.command_action_target = Some(target);
+            }
+            None => {
+                self.runner_command_status = None;
+                self.command_install_requires_escalation = false;
+                self.command_action_target = None;
+            }
+        }
+        true
+    }
+
+    pub(crate) fn initialize_command_default(&mut self) {
+        self.command_install_initialized
+            .store(self.settings.initialized_command_install, Ordering::Release);
+        let snapshot = reconcile_command_default_serialized(
+            &self.client,
+            self.home_dir.as_deref(),
+            &self.app_data_dir,
+            self.command_install_support.as_ref(),
+            &self.command_install_initialized,
+            &self.command_status_seq,
+            &self.command_reconcile_lock,
+        );
+        self.apply_command_default(snapshot);
+    }
+
+    pub(crate) fn command_action_context(&self) -> CommandActionContext {
+        CommandActionContext {
+            client: self.client.clone(),
+            home_dir: self.home_dir.clone(),
+            app_data_dir: self.app_data_dir.clone(),
+            support: self.command_install_support.clone(),
+            seq_counter: Arc::clone(&self.command_status_seq),
+            lock: Arc::clone(&self.command_reconcile_lock),
+        }
     }
 
     pub(crate) fn command_install_inputs(
         &self,
         require_finished_discovery: bool,
     ) -> Option<CommandInstallInputs> {
-        let support = self.command_install_support.as_ref()?;
-        let home = self.home_dir.clone()?;
-        let debug = cfg!(debug_assertions);
-        #[cfg(windows)]
-        let platform = CommandPlatform::Windows;
-        #[cfg(not(windows))]
-        let platform = CommandPlatform::Unix;
-
-        let login_path = if platform == CommandPlatform::Unix {
-            let discovery = self.client.discovery_snapshot().ok()?;
-            if require_finished_discovery
-                && !matches!(
-                    discovery.result.as_ref(),
-                    Some(result)
-                        if result.outcome.is_success() && result.env.path.is_some()
-                )
-            {
-                return None;
-            }
-            discovery
-                .result
-                .as_ref()
-                .and_then(|result| result.env.path.clone())
-                .or_else(|| discovery.shell_env.path.clone())
-                .unwrap_or_default()
-        } else {
-            std::env::var("PATH").unwrap_or_default()
-        };
-        let sidecar = agent_skill::sidecar_path(&self.app_data_dir);
-        let local_bin = home.join(".local/bin");
-        let system_bin = support.system_bin.clone();
-        Some(CommandInstallInputs {
-            home,
-            login_path,
-            system_path: std::env::var("PATH").unwrap_or_default(),
-            sidecar,
-            local_bin,
-            system_bin: system_bin.clone(),
-            system_bin_writable: self
-                .client
-                .command_directory_writable(&system_bin)
-                .unwrap_or(false),
-            debug,
-            platform,
-        })
+        compute_command_install_inputs(
+            &self.client,
+            self.home_dir.as_deref(),
+            &self.app_data_dir,
+            self.command_install_support.as_ref(),
+            require_finished_discovery,
+        )
     }
 
     pub(crate) fn refresh_runner_command_status(&mut self) {

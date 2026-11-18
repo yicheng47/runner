@@ -117,10 +117,16 @@ impl NativeRoot {
         {
             return Ok(());
         }
-        let status = self
-            .session_entry(session_id, cx)
-            .map(|entry| entry.status)
-            .with_context(|| format!("direct chat not found: {session_id}"))?;
+        let Some(status) = self.session_entry(session_id, cx).map(|entry| entry.status) else {
+            if self.session_exit_codes.contains_key(session_id)
+                || self.stopping_sessions.contains(session_id)
+                || self.sidebar.read(cx).session_archiving(session_id)
+            {
+                self.attached.remove(session_id);
+                return Ok(());
+            }
+            anyhow::bail!("direct chat not found: {session_id}");
+        };
         if self.attached.contains_key(session_id) {
             return Ok(());
         }

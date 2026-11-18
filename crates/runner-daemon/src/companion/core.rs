@@ -111,8 +111,12 @@ impl DaemonCore {
     }
     fn terminal(&self, session: &str) -> Result<std::sync::Arc<AppCore>> {
         let core = self.core()?;
-        let conn = core.db.get().map_err(failed)?;
-        let row = repo::session::get_row(&conn, session).map_err(failed)?;
+        let row_exists = {
+            let conn = core.db.get().map_err(failed)?;
+            repo::session::get_row(&conn, session)
+                .map_err(failed)?
+                .is_some()
+        };
         let update_task = core
             .sessions
             .runtime_updates
@@ -121,7 +125,7 @@ impl DaemonCore {
             .tasks
             .iter()
             .any(|task| task.id == session);
-        if row.is_none() && !update_task {
+        if !row_exists && !update_task {
             return Err(Failure(
                 ErrorCode::NotFound,
                 "No session has that id.",
@@ -135,7 +139,6 @@ impl DaemonCore {
                 None,
             ));
         }
-        drop(conn);
         Ok(core)
     }
 }
@@ -295,11 +298,14 @@ impl Core for DaemonCore {
         let Ok(core) = self.core() else {
             return ClosedReason::Unknown;
         };
-        let Ok(conn) = core.db.get() else {
-            return ClosedReason::Unknown;
-        };
-        let Ok(Some(row)) = repo::session::get_row(&conn, session) else {
-            return ClosedReason::Unknown;
+        let row = {
+            let Ok(conn) = core.db.get() else {
+                return ClosedReason::Unknown;
+            };
+            let Ok(Some(row)) = repo::session::get_row(&conn, session) else {
+                return ClosedReason::Unknown;
+            };
+            row
         };
         if row.archived_at.is_some() {
             return ClosedReason::Archived;

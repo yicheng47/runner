@@ -899,3 +899,577 @@ fn alternating_remote_takes_resize_only_on_a_real_change() {
         runner_core::companion::Controller::You
     );
 }
+
+#[test]
+fn settle_and_install_handle_drop_locks_before_db_and_reject_stale_resize_writes_1377() {
+    let (pool, _fake, mgr, id) = spawn_claude_for_resize("monotonic-settle");
+    mgr.set_resize_settle_ms(3_600_000);
+
+    // 1. Hold every DbPool connection so settle_pending_resize blocks at pool.get(); verify
+    // SessionState + terminal_control were dropped by running a newer resize immediately, and
+    // verify the older settle's write is rejected once DbPool frees.
+    mgr.resize(&id, 100, 30, &pool).unwrap();
+    let held_conns: Vec<_> = (0..8).map(|_| pool.get().unwrap()).collect();
+    assert!(pool.try_get().is_none());
+
+    let settle_mgr = Arc::clone(&mgr);
+    let settle_id = id.clone();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let stale_settle = std::thread::spawn(move || {
+        let _ = entered_tx.send(());
+        settle_mgr.settle_pending_resize_now(&settle_id);
+    });
+    entered_rx.recv().unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let state = mgr.session_state(&id).unwrap();
+    loop {
+        if state.lock().unwrap().pending_resize.is_none() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "settle_pending_resize did not take pending_resize and release SessionState"
+        );
+        std::thread::yield_now();
+    }
+
+    // While all 8 DbPool connections are still held, a newer resize must succeed immediately.
+    mgr.resize(&id, 185, 42, &pool).unwrap();
+    assert!(state.lock().unwrap().last_requested_size_dirty);
+
+    drop(held_conns);
+    stale_settle.join().unwrap();
+
+    let after_stale: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        after_stale,
+        (120, 30),
+        "stale settle must not overwrite SQLite after newer resize stamp"
+    );
+    assert!(
+        state.lock().unwrap().last_requested_size_dirty,
+        "stale settle must not clear dirty flag for newer resize"
+    );
+
+    mgr.settle_pending_resize_now(&id);
+    let final_size: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(final_size, (185, 42));
+    assert!(!state.lock().unwrap().last_requested_size_dirty);
+    mgr.kill(&id).unwrap();
+
+    // 2. install_handle_with_size_persistence drops terminal_control, gate.state, and SessionState
+    // before persist_size, and preserves dirty=true if a newer resize arrives mid-persistence.
+    mgr.resize(&id, 150, 36, &pool).unwrap();
+    let gate = state.lock().unwrap().delivery_gate.clone();
+    let handle = crate::session::manager::SessionHandle {
+        startup: None,
+        #[cfg(windows)]
+        pending_first_turn: None,
+        id: id.clone(),
+        mission_id: None,
+        role_id: None,
+        runtime_session: crate::session::runtime::RuntimeSession {
+            runtime: "fake".into(),
+            session_id: id.clone(),
+        },
+        rollout_capture: None,
+        forwarder: None,
+        input: Default::default(),
+        stop: Default::default(),
+    };
+    let check_mgr = Arc::clone(&mgr);
+    let check_state = Arc::clone(&state);
+    let check_pool = Arc::clone(&pool);
+    let check_id = id.clone();
+    mgr.install_handle_with_size_persistence(
+        &id,
+        handle,
+        None,
+        Some((120, 30)),
+        |cols, rows| {
+            assert_eq!((cols, rows), (150, 36));
+            let probe_mgr = Arc::clone(&check_mgr);
+            let probe_gate = Arc::clone(&gate);
+            let probe_state = Arc::clone(&check_state);
+            let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+            let probe = std::thread::spawn(move || {
+                drop(probe_mgr.terminal_control.lock().unwrap());
+                drop(probe_gate.state.lock().unwrap());
+                drop(probe_state.lock().unwrap());
+                let _ = probe_tx.send(());
+            });
+            probe_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("terminal_control, delivery_gate.state, and SessionState must be dropped before persist_size");
+            probe.join().unwrap();
+            // Concurrent newer resize arrives while 150x36 is persisting.
+            check_mgr.resize(&check_id, 205, 48, &check_pool).unwrap();
+            crate::repo::session::update_last_size(
+                &check_pool.get().unwrap(),
+                &check_id,
+                cols,
+                rows,
+            )
+            .is_ok()
+        },
+        capture().as_ref(),
+    );
+    assert_eq!(state.lock().unwrap().last_requested_size, Some((205, 48)));
+    assert!(
+        state.lock().unwrap().last_requested_size_dirty,
+        "install_handle persistence of 150x36 must not clear dirty flag for concurrent 205x48"
+    );
+    mgr.settle_pending_resize_now(&id);
+    let installed_final: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(installed_final, (205, 48));
+    assert!(!state.lock().unwrap().last_requested_size_dirty);
+    mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn install_handle_stalled_pool_checkout_keeps_terminal_control_free_1377() {
+    let (pool, _fake, mgr, id) = spawn_claude_for_resize("install-handle-pool");
+    mgr.kill(&id).unwrap();
+    mgr.resize(&id, 144, 34, &pool).unwrap();
+
+    let events: Arc<dyn SessionEvents> = capture();
+    mgr.prepare_unlisted_terminal("healthy-pane", (80, 24), &pool, &events)
+        .unwrap();
+    let input_rx = mgr.record_terminal_input("healthy-pane");
+
+    let (checkout_tx, checkout_rx) = std::sync::mpsc::channel();
+    mgr.set_install_checkout_hook(&id, move || {
+        checkout_tx.send(()).unwrap();
+    });
+    let held_conns: Vec<_> = (0..8).map(|_| pool.get().unwrap()).collect();
+    assert!(pool.try_get().is_none());
+
+    let handle = crate::session::manager::SessionHandle {
+        startup: None,
+        #[cfg(windows)]
+        pending_first_turn: None,
+        id: id.clone(),
+        mission_id: None,
+        role_id: None,
+        runtime_session: crate::session::runtime::RuntimeSession {
+            runtime: "fake".into(),
+            session_id: id.clone(),
+        },
+        rollout_capture: None,
+        forwarder: None,
+        input: Default::default(),
+        stop: Default::default(),
+    };
+    let install_mgr = Arc::clone(&mgr);
+    let install_pool = Arc::clone(&pool);
+    let install_events = Arc::clone(&events);
+    let install_id = id.clone();
+    let install_worker = std::thread::spawn(move || {
+        install_mgr.install_handle(
+            &install_id,
+            handle,
+            None,
+            Some((120, 30)),
+            &install_pool,
+            &install_events,
+        );
+    });
+
+    checkout_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("install_handle worker did not reach DbPool checkout stage");
+    assert!(
+        !install_worker.is_finished(),
+        "install_handle must still be waiting on exhausted DbPool"
+    );
+
+    // Unrelated terminal_control operations must complete within a bounded window while
+    // install_handle waits on DbPool checkout.
+    let probe_mgr = Arc::clone(&mgr);
+    let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+    let probe_worker = std::thread::spawn(move || {
+        probe_mgr.desktop_input("healthy-pane", b"ping").unwrap();
+        probe_mgr.release_browser_channel(99);
+        let _ = probe_tx.send(());
+    });
+    let probe_ok = probe_rx.recv_timeout(Duration::from_millis(500)).is_ok();
+    if !probe_ok {
+        drop(held_conns);
+        let _ = probe_worker.join();
+        let _ = install_worker.join();
+        panic!("terminal_control blocked while install_handle waited on DbPool checkout");
+    }
+    probe_worker.join().unwrap();
+    assert_eq!(
+        input_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        b"ping"
+    );
+
+    drop(held_conns);
+    install_worker.join().unwrap();
+
+    let persisted: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(persisted, (144, 34));
+    mgr.kill(&id).unwrap();
+    mgr.drain_terminal_workers();
+}
+
+#[test]
+fn failed_resume_and_failed_stop_preserve_pending_resize_settlement_1377() {
+    let temp = tempfile::tempdir().unwrap();
+    let (pool, fake, mgr, id) = spawn_claude_for_resize("failed-lifecycle");
+    mgr.set_resize_settle_ms(3_600_000);
+    let state = mgr.session_state(&id).unwrap();
+
+    // 1a. Failed resume on an already-running session preserves deferred pending_resize.
+    mgr.resize(&id, 150, 36, &pool).unwrap();
+    assert!(mgr
+        .resume(&id, None, None, temp.path(), Arc::clone(&pool), capture())
+        .is_err());
+    mgr.settle_pending_resize_now(&id);
+    let after_failed_resume: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(after_failed_resume, (150, 36));
+    assert!(!state.lock().unwrap().last_requested_size_dirty);
+
+    // 1b. Settle firing mid-resume (while resuming=true) defers and rearms on resume rollback.
+    mgr.resize(&id, 162, 38, &pool).unwrap();
+    let claim = mgr.try_claim_resume(&id).unwrap();
+    mgr.settle_pending_resize_now(&id);
+    assert!(state.lock().unwrap().last_requested_size_dirty);
+    state
+        .lock()
+        .unwrap()
+        .pending_resize
+        .as_mut()
+        .unwrap()
+        .deadline = Instant::now();
+    drop(claim);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while state.lock().unwrap().last_requested_size_dirty {
+        assert!(
+            Instant::now() < deadline,
+            "deferred resize did not rearm and settle after failed resume rollback"
+        );
+        std::thread::yield_now();
+    }
+    let after_mid_resume: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(after_mid_resume, (162, 38));
+
+    // 2a. Failed runtime.stop preserves deferred pending_resize.
+    fake.stop_failures.lock().unwrap().insert(id.clone());
+    mgr.resize(&id, 174, 40, &pool).unwrap();
+    assert!(mgr.kill(&id).is_err());
+    mgr.settle_pending_resize_now(&id);
+    let after_failed_stop: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(after_failed_stop, (174, 40));
+    assert!(!state.lock().unwrap().last_requested_size_dirty);
+
+    // 2b. Settle firing mid-stop (while killed=true) defers and rearms when runtime.stop fails.
+    let (stop_entered_tx, stop_entered_rx) = std::sync::mpsc::channel();
+    let (stop_release_tx, stop_release_rx) = std::sync::mpsc::channel();
+    *fake.stop_gate.lock().unwrap() = Some(super::RuntimeGate {
+        entered: stop_entered_tx,
+        release: stop_release_rx,
+    });
+    mgr.resize(&id, 188, 44, &pool).unwrap();
+    let kill_mgr = Arc::clone(&mgr);
+    let kill_id = id.clone();
+    let kill_worker = std::thread::spawn(move || kill_mgr.kill(&kill_id));
+    stop_entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+
+    mgr.settle_pending_resize_now(&id);
+    assert!(state.lock().unwrap().last_requested_size_dirty);
+    state
+        .lock()
+        .unwrap()
+        .pending_resize
+        .as_mut()
+        .unwrap()
+        .deadline = Instant::now();
+    stop_release_tx.send(()).unwrap();
+    assert!(kill_worker.join().unwrap().is_err());
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while state.lock().unwrap().last_requested_size_dirty {
+        assert!(
+            Instant::now() < deadline,
+            "deferred resize did not rearm and settle after failed stop rollback"
+        );
+        std::thread::yield_now();
+    }
+    let after_mid_stop: (u16, u16) = pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT last_cols, last_rows FROM sessions WHERE id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(after_mid_stop, (188, 44));
+
+    fake.stop_failures.lock().unwrap().remove(&id);
+    mgr.kill(&id).unwrap();
+}
+
+#[test]
+fn install_handle_and_prepare_unlisted_revalidate_control_group_after_tab_move_1377() {
+    use crate::ops::node::{node_tab_upsert, NodeTabUpsertInput};
+    use runner_core::companion::Controller as WireController;
+    use std::sync::Barrier;
+
+    let state = crate::test_support::test_core();
+    let events: Arc<dyn SessionEvents> = Arc::new(state.session_events());
+    {
+        let conn = state.db.get().unwrap();
+        for id in ["anchor-a", "anchor-b", "moving-install", "moving-unlisted"] {
+            conn.execute(
+                "INSERT INTO sessions (id, status, agent_runtime, agent_command)
+                 VALUES (?1, 'running', 'codex', 'codex')",
+                params![id],
+            )
+            .unwrap();
+        }
+    }
+    let tab_a = node_tab_upsert(
+        &state,
+        NodeTabUpsertInput {
+            id: ulid::Ulid::new().to_string(),
+            parent_id: None,
+            name: "A".into(),
+            layout: serde_json::json!({"slots": ["anchor-a", "moving-install", "moving-unlisted"]})
+                .to_string(),
+        },
+    )
+    .unwrap();
+    let tab_b = node_tab_upsert(
+        &state,
+        NodeTabUpsertInput {
+            id: ulid::Ulid::new().to_string(),
+            parent_id: None,
+            name: "B".into(),
+            layout: serde_json::json!({"slots": ["anchor-b"]}).to_string(),
+        },
+    )
+    .unwrap();
+
+    state
+        .sessions
+        .prepare_unlisted_terminal("anchor-a", (80, 24), &state.db, &events)
+        .unwrap();
+    state
+        .sessions
+        .prepare_unlisted_terminal("anchor-b", (80, 24), &state.db, &events)
+        .unwrap();
+    state
+        .sessions
+        .browser_resize("anchor-a", 1, "First", 80, 24, true, false, &state.db)
+        .unwrap();
+    state
+        .sessions
+        .browser_resize("anchor-b", 2, "Second", 80, 24, true, false, &state.db)
+        .unwrap();
+
+    // 1. install_handle snapshots moving-install in tab A (channel 1), pauses at barrier while
+    // node_tab_upsert moves moving-install into tab B (channel 2) and completes reconcile_tab_control.
+    let snapped_install = Arc::new(Barrier::new(2));
+    let release_install = Arc::new(Barrier::new(2));
+    {
+        let snapped = Arc::clone(&snapped_install);
+        let release = Arc::clone(&release_install);
+        state
+            .sessions
+            .set_after_install_snapshot_hook("moving-install", move || {
+                snapped.wait();
+                release.wait();
+            });
+    }
+    let install_mgr = Arc::clone(&state.sessions);
+    let install_pool = Arc::clone(&state.db);
+    let install_events = Arc::clone(&events);
+    let install_worker = std::thread::spawn(move || {
+        let handle = crate::session::manager::SessionHandle {
+            startup: None,
+            #[cfg(windows)]
+            pending_first_turn: None,
+            id: "moving-install".into(),
+            mission_id: None,
+            role_id: None,
+            runtime_session: crate::session::runtime::RuntimeSession {
+                runtime: "fake".into(),
+                session_id: "moving-install".into(),
+            },
+            rollout_capture: None,
+            forwarder: None,
+            input: Default::default(),
+            stop: Default::default(),
+        };
+        install_mgr.install_handle(
+            "moving-install",
+            handle,
+            None,
+            Some((80, 24)),
+            &install_pool,
+            &install_events,
+        );
+    });
+
+    snapped_install.wait();
+    node_tab_upsert(
+        &state,
+        NodeTabUpsertInput {
+            id: tab_b.id.clone(),
+            parent_id: None,
+            name: "B".into(),
+            layout: serde_json::json!({"slots": ["anchor-b", "moving-install"]}).to_string(),
+        },
+    )
+    .unwrap();
+    release_install.wait();
+    install_worker.join().unwrap();
+
+    assert_eq!(
+        state.sessions.browser_controller("moving-install", 2),
+        WireController::You
+    );
+    assert!(state
+        .sessions
+        .browser_input("moving-install", 1, b"stale")
+        .is_err());
+    let rx_install = state.sessions.record_terminal_input("moving-install");
+    state
+        .sessions
+        .browser_input("moving-install", 2, b"dest-b")
+        .unwrap();
+    assert_eq!(
+        rx_install.recv_timeout(Duration::from_secs(2)).unwrap(),
+        b"dest-b"
+    );
+
+    // 2. prepare_unlisted_terminal snapshots moving-unlisted in tab A (channel 1), pauses at
+    // barrier while node_tab_upsert moves moving-unlisted into tab B (channel 2).
+    let snapped_unlisted = Arc::new(Barrier::new(2));
+    let release_unlisted = Arc::new(Barrier::new(2));
+    {
+        let snapped = Arc::clone(&snapped_unlisted);
+        let release = Arc::clone(&release_unlisted);
+        state
+            .sessions
+            .set_after_install_snapshot_hook("moving-unlisted", move || {
+                snapped.wait();
+                release.wait();
+            });
+    }
+    let unlisted_mgr = Arc::clone(&state.sessions);
+    let unlisted_pool = Arc::clone(&state.db);
+    let unlisted_events = Arc::clone(&events);
+    let unlisted_worker = std::thread::spawn(move || {
+        unlisted_mgr
+            .prepare_unlisted_terminal(
+                "moving-unlisted",
+                (80, 24),
+                &unlisted_pool,
+                &unlisted_events,
+            )
+            .unwrap();
+    });
+
+    snapped_unlisted.wait();
+    node_tab_upsert(
+        &state,
+        NodeTabUpsertInput {
+            id: tab_b.id,
+            parent_id: None,
+            name: "B".into(),
+            layout: serde_json::json!({"slots": ["anchor-b", "moving-install", "moving-unlisted"]})
+                .to_string(),
+        },
+    )
+    .unwrap();
+    let _ = tab_a;
+    release_unlisted.wait();
+    unlisted_worker.join().unwrap();
+
+    assert_eq!(
+        state.sessions.browser_controller("moving-unlisted", 2),
+        WireController::You
+    );
+    assert!(state
+        .sessions
+        .browser_input("moving-unlisted", 1, b"stale")
+        .is_err());
+    let rx_unlisted = state.sessions.record_terminal_input("moving-unlisted");
+    state
+        .sessions
+        .browser_input("moving-unlisted", 2, b"dest-b-unlisted")
+        .unwrap();
+    assert_eq!(
+        rx_unlisted.recv_timeout(Duration::from_secs(2)).unwrap(),
+        b"dest-b-unlisted"
+    );
+
+    state.sessions.forget_session_state("anchor-a");
+    state.sessions.forget_session_state("anchor-b");
+    state.sessions.forget_session_state("moving-unlisted");
+    state.sessions.drain_terminal_workers();
+}

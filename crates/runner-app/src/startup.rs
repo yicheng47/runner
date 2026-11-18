@@ -46,6 +46,9 @@ pub(crate) fn run() -> Result<()> {
     #[cfg(target_os = "macos")]
     let application = application.with_quit_mode(QuitMode::Explicit);
     application.on_reopen(handle_reopen);
+    let stall_watchdog: Arc<std::sync::Mutex<Option<stall_watchdog::StallWatchdogGuard>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let startup_watchdog = Arc::clone(&stall_watchdog);
     application.run(move |cx: &mut App| {
         cx.set_app_identity(
             &runner_core::app_paths::app_identifier(cfg!(debug_assertions)),
@@ -138,6 +141,9 @@ pub(crate) fn run() -> Result<()> {
         updater.read(cx).start();
         cx.set_global(WindowLayoutCheckpoint::default());
         cx.set_global(runner_app::lifecycle::QuitState::default());
+        *startup_watchdog.lock().unwrap() = Some(
+            stall_watchdog::StallWatchdogGuard::start_for_app(cx.foreground_executor().clone()),
+        );
 
         // App::shutdown clears its windows before polling the returned future, so the
         // checkpoint must run in this callback body rather than inside the future.
@@ -146,9 +152,13 @@ pub(crate) fn run() -> Result<()> {
             stop_connection.shutdown()
         })));
         let quit_connection = connection.clone();
+        let quit_watchdog = Arc::clone(&startup_watchdog);
         #[cfg(windows)]
         let quit_relaunches = relaunches.clone();
         cx.on_app_quit(move |cx| {
+            if let Some(mut guard) = quit_watchdog.lock().unwrap().take() {
+                guard.stop();
+            }
             #[cfg(windows)]
             quit_relaunches.close();
             notifications::dismiss_all(cx);
@@ -372,6 +382,9 @@ pub(crate) fn run() -> Result<()> {
         })
         .detach();
     });
+    if let Some(mut guard) = stall_watchdog.lock().unwrap().take() {
+        guard.stop();
+    }
 
     Ok(())
 }

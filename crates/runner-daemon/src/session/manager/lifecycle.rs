@@ -77,6 +77,7 @@ impl SessionManager {
             // in the map, the killed marker is cleared. The
             // caller sees the error.
             state.lock().unwrap().killed = false;
+            Self::rearm_deferred_resize_after_rollback(session_id, &state);
             return Err(e.into());
         }
 
@@ -103,6 +104,7 @@ impl SessionManager {
                     state.mission_status_sink = None;
                     state.last_requested_size = None;
                     state.last_requested_size_dirty = false;
+                    state.bump_resize_stamp();
                     state.pending_resize = None;
                     (h.stop.clone(), h.forwarder.take())
                 }

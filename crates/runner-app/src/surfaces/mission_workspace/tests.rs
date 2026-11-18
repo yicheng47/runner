@@ -830,6 +830,7 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
         root.sync_window_activation(window, cx);
     })
     .unwrap();
+    cx.run_until_parked();
     assert!(!runner_daemon::repo::session_attention::any_unread(
         &core.db.get().unwrap(),
         &["archived-slot".into()]

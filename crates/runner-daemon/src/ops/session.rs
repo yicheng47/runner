@@ -94,10 +94,66 @@ pub fn session_status_snapshot(
     state: &AppCore,
 ) -> Result<BTreeMap<String, crate::session::status::AgentStatus>> {
     use crate::session::status::{AgentStatus, Lifecycle};
+    #[cfg(test)]
+    let scope_buf = format!("core:{}", state.app_data_dir.display());
+    #[cfg(test)]
+    let scope = scope_buf.as_str();
+    #[cfg(not(test))]
+    let scope = "";
+    let total_timer = crate::slow_stage::StageClock::start(scope);
+
+    let live_timer = crate::slow_stage::StageClock::start(scope);
     let mut statuses = state.sessions.status_snapshot();
+    let live_ms = live_timer.elapsed().as_millis();
+
+    let routers_timer = crate::slow_stage::StageClock::start(scope);
     let interrupted = state.routers.interrupted_sessions();
-    let conn = state.db.get()?;
-    for row in repo::session::status_rows(&conn)? {
+    let routers_ms = routers_timer.elapsed().as_millis();
+
+    let checkout_timer = crate::slow_stage::StageClock::start(scope);
+    let conn = match state.db.get() {
+        Ok(conn) => conn,
+        Err(error) => {
+            let db_checkout_ms = checkout_timer.elapsed().as_millis();
+            let total = total_timer.elapsed();
+            crate::slow_stage::warn_if_slow(
+                scope,
+                total,
+                crate::slow_stage::SLOW_STAGE_THRESHOLD,
+                || {
+                    format!(
+                        "slow session_status_snapshot: total_ms={} live_ms={live_ms} routers_ms={routers_ms} db_checkout_ms={db_checkout_ms} rows_ms=0 outcome=db_checkout_error",
+                        total.as_millis()
+                    )
+                },
+            );
+            return Err(error.into());
+        }
+    };
+    let db_checkout_ms = checkout_timer.elapsed().as_millis();
+
+    let rows_timer = crate::slow_stage::StageClock::start(scope);
+    let rows = match repo::session::status_rows(&conn) {
+        Ok(rows) => rows,
+        Err(error) => {
+            let rows_ms = rows_timer.elapsed().as_millis();
+            let total = total_timer.elapsed();
+            crate::slow_stage::warn_if_slow(
+                scope,
+                total,
+                crate::slow_stage::SLOW_STAGE_THRESHOLD,
+                || {
+                    format!(
+                        "slow session_status_snapshot: total_ms={} live_ms={live_ms} routers_ms={routers_ms} db_checkout_ms={db_checkout_ms} rows_ms={rows_ms} outcome=status_rows_error",
+                        total.as_millis()
+                    )
+                },
+            );
+            return Err(error.into());
+        }
+    };
+    drop(conn);
+    for row in rows {
         let interrupted_since = interrupted.get(&row.id).copied();
         let status = statuses.entry(row.id).or_insert(AgentStatus {
             lifecycle: Lifecycle::Running,
@@ -129,6 +185,19 @@ pub fn session_status_snapshot(
             _ => status.interrupted_since = interrupted_since,
         }
     }
+    let rows_ms = rows_timer.elapsed().as_millis();
+    let total = total_timer.elapsed();
+    crate::slow_stage::warn_if_slow(
+        scope,
+        total,
+        crate::slow_stage::SLOW_STAGE_THRESHOLD,
+        || {
+            format!(
+                "slow session_status_snapshot: total_ms={} live_ms={live_ms} routers_ms={routers_ms} db_checkout_ms={db_checkout_ms} rows_ms={rows_ms} outcome=ok",
+                total.as_millis()
+            )
+        },
+    );
     Ok(statuses)
 }
 
@@ -141,8 +210,9 @@ pub fn session_activity_snapshot(state: &AppCore) -> BTreeMap<String, SessionAct
 /// each session row's runtime. A process without a row, such as a CLI
 /// update in Settings → Agents, is not a session and is not counted.
 pub fn live_session_counts(state: &AppCore) -> Result<HashMap<Runtime, usize>> {
+    let live_ids = state.sessions.live_session_ids();
     let conn = state.db.get()?;
-    count_by_runtime(&conn, &state.sessions.live_session_ids())
+    count_by_runtime(&conn, &live_ids)
 }
 
 fn count_by_runtime(
@@ -445,6 +515,7 @@ pub fn session_archive(state: &AppCore, session_id: &str) -> Result<()> {
     }
     repo::node::remove_session(&tx, session_id)?;
     tx.commit()?;
+    drop(conn);
     state.sessions.forget_session_state(session_id);
     state.session_events().archived(&SessionUpdatedEvent {
         session_id: session_id.to_owned(),

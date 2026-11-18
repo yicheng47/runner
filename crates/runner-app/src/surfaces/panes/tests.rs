@@ -126,6 +126,7 @@ fn dragging_an_empty_pane_grip_preserves_its_id_and_sibling_chat() {
         }
         store.refresh(crate::app_store::StoreRefreshKind::All, cx);
     });
+    cx.run_until_parked();
     let window = cx.add_window(|window, cx| {
         let mut root = crate::NativeRoot::new(
             "empty-pane-drag".into(),
@@ -257,6 +258,7 @@ fn split_header_keeps_its_grip_and_actions_within_narrow_zoomed_panes() {
             drop(conn);
             store.refresh(crate::app_store::StoreRefreshKind::All, cx);
         });
+    cx.run_until_parked();
     let window = cx.add_window(|window, cx| {
         let mut root = crate::NativeRoot::new(
             "split-grip-budget".into(),
@@ -318,6 +320,7 @@ fn a_maximized_pane_fills_the_tab_and_its_toggle_restores_the_split() {
         store.refresh(crate::app_store::StoreRefreshKind::All, cx);
         other
     });
+    cx.run_until_parked();
     let other_island: &str = Box::leak(format!("PANE_ISLAND:{other}").into_boxed_str());
     let other_toggle: &str = Box::leak(format!("PANE_MAXIMIZE:{other}").into_boxed_str());
     let window = cx.add_window(|window, cx| {
@@ -453,6 +456,7 @@ fn title_clicks_select_their_pane_and_maximize_respects_split_floors_and_disconn
             store.refresh(crate::app_store::StoreRefreshKind::All, cx);
             right
         });
+    cx.run_until_parked();
     let window = cx.add_window(|window, cx| {
         let mut root = crate::NativeRoot::new(
             "title-focus".into(),
@@ -629,6 +633,7 @@ fn clicking_away_from_an_inline_rename_saves_it() {
             drop(conn);
             store.refresh(crate::app_store::StoreRefreshKind::All, cx);
         });
+    cx.run_until_parked();
     let window = cx.add_window(|window, cx| {
         let mut root = crate::NativeRoot::new(
             "rename-blur".into(),
@@ -711,6 +716,7 @@ fn pane_title_menu_labels_fit_one_line() {
                             store.refresh(crate::app_store::StoreRefreshKind::All, cx);
                             store.sync_locale(cx);
                         });
+                    cx.run_until_parked();
                     let window = cx.add_window(|window, cx| {
                         let mut root = crate::NativeRoot::new(
                             "pane-menu-fit".into(),
@@ -806,6 +812,9 @@ fn island_status_details_truncate_inside_the_header_without_displacing_controls(
             store.settings.chat_panel_open = false;
             store.settings.sidebar_collapsed = false;
             store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+        });
+        cx.run_until_parked();
+        store.update(&mut cx, |store, _| {
             store.session_statuses.insert(
                 "direct-agent".into(),
                 AgentStatus {
@@ -980,6 +989,7 @@ fn status_grows_leftward_and_the_lifecycle_slot_never_moves() {
         store.settings.sidebar_collapsed = false;
         store.refresh(crate::app_store::StoreRefreshKind::All, cx);
     });
+    cx.run_until_parked();
     let sidebar_width = store.read_with(&cx, |store, _| store.settings.sidebar_width);
     let host = cx.add_window(|window, cx| {
         let mut root = crate::NativeRoot::new(
@@ -1131,6 +1141,7 @@ fn side_panel_keeps_the_last_focused_chat_while_a_split_terminal_has_focus() {
             store.refresh(crate::app_store::StoreRefreshKind::All, cx);
             store.settings.chat_panel_open = true;
         });
+    cx.run_until_parked();
     let host = cx.add_window(|window, cx| {
         let mut root = NativeRoot::new(
             "side-panel-terminal-split".into(),
@@ -1238,6 +1249,7 @@ fn a_hovered_link_names_the_panel_its_own_pane_will_show() {
             store.refresh(crate::app_store::StoreRefreshKind::All, cx);
             store.settings.chat_panel_open = true;
         });
+    cx.run_until_parked();
     let host = cx.add_window(|window, cx| {
         let mut root = NativeRoot::new(
             "link-two-chats".into(),
@@ -1358,6 +1370,7 @@ fn panel_root(
         store.refresh(crate::app_store::StoreRefreshKind::All, cx);
         store.settings.chat_panel_open = true;
     });
+    cx.run_until_parked();
     let host = cx.add_window(|window, cx| {
         let mut root = crate::NativeRoot::new(
             "side-panel-views".into(),
@@ -2047,6 +2060,7 @@ fn the_finder_key_goes_back_to_the_terminal_when_there_is_no_view_to_search() {
         store.refresh(crate::app_store::StoreRefreshKind::All, cx);
         store.settings.files_view = false;
     });
+    cx.run_until_parked();
     cx.update(|cx| {
         cx.bind_keys([gpui::KeyBinding::new(
             "ctrl-shift-o",
@@ -2424,6 +2438,7 @@ fn cached_chat_header_spans_the_chat_column_with_or_without_the_side_panel() {
                 store.settings.chat_panel_open = panel_open;
                 store.settings.app_zoom = zoom;
             });
+            cx.run_until_parked();
             let host = cx.add_window(|window, cx| {
                 let mut root = NativeRoot::new(
                     "chat-header-width".into(),
@@ -2564,6 +2579,7 @@ fn claude_header_preserves_account_spacing_and_controls_in_narrow_panes() {
             store.settings.keymap_overrides.insert("resume-session".into(), Some(crate::keymap::KeyCombo { meta: false, ctrl: false, alt: false, shift: false, code: "F8".into(), label: None, shift_optional: false }));
             store.refresh(crate::app_store::StoreRefreshKind::All,cx);
         });
+    cx.run_until_parked();
     let sidebar_width = store.read_with(&cx, |store, _| store.settings.sidebar_width);
     let panel_width = store.read_with(&cx, |store, _| store.settings.chat_panel_width);
     let host = cx.add_window(|window, cx| {
@@ -3577,6 +3593,7 @@ fn start_surface_column_stays_440_pixels_wide_and_centred() {
         let _ = runner_daemon::ops::onboarding::complete(&store.test_core);
         store.refresh(crate::app_store::StoreRefreshKind::Onboarding, cx);
     });
+    cx.run_until_parked();
     let host = cx.add_window(|window, cx| {
         let mut root = NativeRoot::new(
             "start-surface-width".into(),
@@ -3861,7 +3878,18 @@ fn dropped_files_focus_the_pane_they_land_on() {
     visual.simulate_event(FileDropEvent::Submit {
         position: target.center(),
     });
-    visual.run_until_parked();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while host
+        .read_with(&cx, |root, _| root.chat_error.is_none())
+        .unwrap()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for dropped-file input error on direct-agent"
+        );
+        std::thread::yield_now();
+        visual.run_until_parked();
+    }
 
     host.update(&mut cx, |root, window, _| {
         assert_eq!(root.tabs.active().unwrap().focused_pane_id, target_pane);
@@ -4387,6 +4415,7 @@ fn chat_info_panel_shows_branch_row_only_for_linked_worktrees() {
         store.settings.info_view = true;
         store.refresh(crate::app_store::StoreRefreshKind::All, cx);
     });
+    cx.run_until_parked();
     let host = crate::surfaces::remote_client::tests::add_window(
         &mut cx,
         &store,

@@ -2,6 +2,7 @@ use super::*;
 
 impl NativeRoot {
     pub(crate) fn handle_app_store_update(&mut self, cx: &mut Context<Self>) {
+        let _turn = crate::stall_watchdog::enter_turn("root.store_update");
         let core = self.core(cx).clone();
         let enabled = self.settings(cx).model_runtimes();
         let checked: Vec<_> = enabled
@@ -151,13 +152,14 @@ impl NativeRoot {
         if reactions.prune_window_state {
             self.prune_store_dependent_window_state(cx);
         }
-        if revisions.roles != previous.roles
-            && self
-                .active_chat_detail
-                .as_ref()
-                .is_some_and(|detail| detail.role_id.is_some())
+        if revisions.sessions != previous.sessions
+            || (revisions.roles != previous.roles
+                && self
+                    .active_chat_detail
+                    .as_ref()
+                    .is_some_and(|detail| detail.role_id.is_some()))
         {
-            self.sync_active_chat_detail(cx);
+            self.sync_cached_active_chat_detail(cx);
         }
         if reactions.reload_role_surfaces {
             match self.route.clone() {

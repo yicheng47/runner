@@ -190,12 +190,57 @@ struct DeliveryGate {
 /// Latest PTY size waiting for a resize storm to quiesce.
 struct PendingResize {
     generation: u64,
+    stamp: u64,
     cols: u16,
     rows: u16,
     deadline: Instant,
     suppressed: u32,
     ioctl_count: u32,
+    deferred_during_lifecycle: bool,
     pool: Arc<DbPool>,
+}
+
+pub(super) struct PendingResizePersist {
+    state: Arc<Mutex<SessionState>>,
+    stamp: u64,
+    cols: u16,
+    rows: u16,
+    latest_stamp: Arc<AtomicU64>,
+    persist_gate: Arc<Mutex<u64>>,
+}
+
+impl PendingResizePersist {
+    fn is_current(&self) -> bool {
+        self.latest_stamp.load(Ordering::Acquire) == self.stamp
+    }
+
+    pub(super) fn run(
+        self,
+        persist_size: impl FnOnce(u16, u16, &dyn Fn() -> bool) -> bool,
+    ) -> bool {
+        if !self.is_current() {
+            return false;
+        }
+        let persisted = {
+            let mut last_persisted = self.persist_gate.lock().unwrap();
+            if *last_persisted >= self.stamp || !self.is_current() {
+                return false;
+            }
+            let is_current = || self.is_current();
+            let ok = persist_size(self.cols, self.rows, &is_current);
+            if ok {
+                *last_persisted = self.stamp;
+            }
+            ok
+        };
+        if persisted {
+            let mut state = self.state.lock().unwrap();
+            if state.current_resize_stamp() == self.stamp {
+                state.last_requested_size_dirty = false;
+            }
+        }
+        persisted
+    }
 }
 
 #[derive(Default)]
@@ -224,6 +269,8 @@ struct SessionState {
     /// handle exists. Spawn and resume reconcile this under the state lock.
     last_requested_size: Option<(u16, u16)>,
     last_requested_size_dirty: bool,
+    resize_stamp: Arc<AtomicU64>,
+    resize_persist_gate: Arc<Mutex<u64>>,
     /// Present while resize persistence awaits settlement.
     pending_resize: Option<PendingResize>,
     resuming: bool,
@@ -232,6 +279,32 @@ struct SessionState {
 }
 
 impl SessionState {
+    pub(super) fn bump_resize_stamp(&mut self) -> u64 {
+        self.resize_stamp
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1)
+    }
+
+    pub(super) fn current_resize_stamp(&self) -> u64 {
+        self.resize_stamp.load(Ordering::Acquire)
+    }
+
+    pub(super) fn prepare_resize_persist(
+        &self,
+        state: &Arc<Mutex<SessionState>>,
+        cols: u16,
+        rows: u16,
+        stamp: u64,
+    ) -> PendingResizePersist {
+        PendingResizePersist {
+            state: Arc::clone(state),
+            stamp,
+            cols,
+            rows,
+            latest_stamp: Arc::clone(&self.resize_stamp),
+            persist_gate: Arc::clone(&self.resize_persist_gate),
+        }
+    }
     fn delivery_readiness(
         &self,
         delivery: &DeliveryGateState,
@@ -369,10 +442,17 @@ pub struct SessionManager {
     input_deadline_ms: AtomicU64,
     terminal_palette: Mutex<runner_terminal::palette::TerminalPalette>,
     terminal_control: Mutex<terminal::ControlState>,
+    control_group_revision: AtomicU64,
     #[cfg(test)]
     wake_baseline_read: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     #[cfg(test)]
     terminal_retention_read: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    live_session_scan_count: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    install_checkout_hooks: Mutex<HashMap<String, Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    after_install_snapshot_hooks: Mutex<HashMap<String, Box<dyn FnOnce() + Send>>>,
 }
 
 /// RAII guard that releases a session state's `resuming` flag on drop. The
@@ -503,11 +583,66 @@ impl SessionManager {
             input_deadline_ms: AtomicU64::new(input_writer::INPUT_WRITE_DEADLINE.as_millis() as u64),
             terminal_palette: Mutex::new(runner_terminal::palette::RUNNER),
             terminal_control: Mutex::default(),
+            control_group_revision: AtomicU64::new(0),
             #[cfg(test)]
             wake_baseline_read: Mutex::default(),
             #[cfg(test)]
             terminal_retention_read: Mutex::default(),
+            #[cfg(test)]
+            live_session_scan_count: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            install_checkout_hooks: Mutex::default(),
+            #[cfg(test)]
+            after_install_snapshot_hooks: Mutex::default(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_install_checkout_hook(
+        &self,
+        session_id: &str,
+        hook: impl FnOnce() + Send + 'static,
+    ) {
+        self.install_checkout_hooks
+            .lock()
+            .unwrap()
+            .insert(session_id.to_owned(), Box::new(hook));
+    }
+
+    #[cfg(test)]
+    pub(super) fn run_install_checkout_hook(&self, session_id: &str) {
+        if let Some(hook) = self
+            .install_checkout_hooks
+            .lock()
+            .unwrap()
+            .remove(session_id)
+        {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_after_install_snapshot_hook(
+        &self,
+        session_id: &str,
+        hook: impl FnOnce() + Send + 'static,
+    ) {
+        self.after_install_snapshot_hooks
+            .lock()
+            .unwrap()
+            .insert(session_id.to_owned(), Box::new(hook));
+    }
+
+    #[cfg(test)]
+    pub(super) fn run_after_install_snapshot_hook(&self, session_id: &str) {
+        if let Some(hook) = self
+            .after_install_snapshot_hooks
+            .lock()
+            .unwrap()
+            .remove(session_id)
+        {
+            hook();
+        }
     }
 
     pub fn start_runtime_watchers(
