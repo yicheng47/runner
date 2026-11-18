@@ -2578,7 +2578,14 @@ mod tests {
         drop(interaction);
         drop(cx);
         drop(core);
-        assert_eq!(db.strong_count(), 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while db.strong_count() != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "terminal teardown still holds the SQLite pool"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]

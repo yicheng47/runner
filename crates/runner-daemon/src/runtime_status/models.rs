@@ -103,13 +103,6 @@ impl ModelDiscovery {
             .map(|record| &record.catalog)
     }
 
-    #[cfg(all(test, unix))]
-    pub(crate) fn is_in_flight(&self, runtime: Runtime) -> bool {
-        self.runtimes
-            .get(&runtime)
-            .is_some_and(|state| state.in_flight)
-    }
-
     pub(crate) fn queue_refresh(&mut self, runtimes: &[Runtime]) {
         for &runtime in runtimes.iter().filter(|runtime| {
             crate::runtimes::adapter(**runtime)

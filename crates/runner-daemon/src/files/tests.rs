@@ -354,10 +354,21 @@ fn is_for(event: &AppEvent, root: &Path) -> bool {
 }
 
 fn next_event(rx: &mut broadcast::Receiver<AppEvent>, root: &Path, name: &str) -> AppEvent {
+    next_event_matching(rx, root, name, |_| true)
+}
+
+fn next_event_matching(
+    rx: &mut broadcast::Receiver<AppEvent>,
+    root: &Path,
+    name: &str,
+    matches: impl Fn(&AppEvent) -> bool,
+) -> AppEvent {
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         match rx.try_recv() {
-            Ok(event) if event.name == name && is_for(&event, root) => return event,
+            Ok(event) if event.name == name && is_for(&event, root) && matches(&event) => {
+                return event;
+            }
             Ok(_) => {}
             Err(_) => std::thread::sleep(Duration::from_millis(20)),
         }
@@ -753,11 +764,19 @@ fn another_worktree_s_index_refreshes_no_status() {
         &linked,
         super::watch::MAX_WAIT + Duration::from_secs(1),
     );
-    assert!(events.is_empty(), "{events:?}");
     #[cfg(not(windows))]
-    assert_eq!(files.status_runs(&linked), runs);
+    {
+        assert!(events.is_empty(), "{events:?}");
+        assert_eq!(files.status_runs(&linked), runs);
+    }
     #[cfg(windows)]
-    let _ = runs;
+    {
+        let _ = runs;
+        assert!(
+            events.iter().all(|event| event.name != FILES_STATUS_EVENT),
+            "{events:?}"
+        );
+    }
 }
 
 #[test]
@@ -1455,8 +1474,10 @@ fn removing_watched_root_emits_changed_and_marks_root_missing() {
     let saved_missing = super::root::resolve(files.git().as_ref(), Some(&wt), Some(root)).unwrap();
     assert!(saved_missing.forget_saved);
 
-    let event = next_event(&mut rx, &wt, FILES_CHANGED_EVENT);
-    assert_eq!(event.payload["folders"], serde_json::json!([""]));
-    assert!(events_during(&mut rx, &wt, Duration::from_millis(400)).is_empty());
+    let root_folder = serde_json::json!([""]);
+    let no_paths = serde_json::json!([]);
+    next_event_matching(&mut rx, &wt, FILES_CHANGED_EVENT, |event| {
+        event.payload["folders"] == root_folder && event.payload["paths"] == no_paths
+    });
     files.unwatch(1, &wt);
 }

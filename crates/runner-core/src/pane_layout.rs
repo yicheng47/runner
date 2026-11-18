@@ -957,6 +957,7 @@ mod tests {
 
             assert_eq!(new_pane, "p3");
             assert_eq!(layout.focused_pane_id, "p3");
+            assert_eq!(layout.focused_session_id(), None);
             assert_eq!(layout.session_ids(), ["chat"]);
             let PaneNode::Split(split) = &layout.root else {
                 panic!("the root leaf must become a split");

@@ -72,18 +72,6 @@ fn columns(sessions: &[&str]) -> PaneLayout {
 }
 
 #[test]
-fn splitting_a_tab_leaves_the_new_pane_empty_focused_and_last_in_leaf_order() {
-    let mut layout = PaneLayout::single(Some("A"), &["A".into()]);
-
-    let second = layout.split("p1", SplitOrientation::Row).unwrap();
-
-    assert_eq!(layout.session_ids(), ["A"]);
-    assert_eq!(layout.focused_pane_id, second);
-    assert!(layout.focused_session_id().is_none());
-    assert_eq!(layout.root.leaves().last().unwrap().id, second);
-}
-
-#[test]
 fn pane_assignment_is_move_not_copy_across_tabs() {
     let mut tab_a = columns(&["A"]);
     let second = tab_a.split("p1", SplitOrientation::Row).unwrap();

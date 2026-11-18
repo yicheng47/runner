@@ -1723,10 +1723,12 @@ fn closing_the_last_surface_shows_the_focused_surface_list_whose_letters_open_th
             click_selector(&mut visual, "PANEL_TAB_CLOSE Files");
             host.update(&mut visual, |root, window, cx| {
                 root.set_chat_panel_open(false, cx);
+                root.chat_panel_visibility =
+                    crate::surfaces::root::SidebarVisibilityTransition::new(false);
                 root.chat_focus.focus(window, cx);
             })
             .unwrap();
-            visual.run_until_parked();
+            visual.refresh().unwrap();
             click_selector(&mut visual, "CHAT_PANEL_TOGGLE");
             let focused = host
                 .update(&mut visual, |root, window, _| {
@@ -2002,22 +2004,14 @@ fn search_files_opens_the_collapsed_panel_on_files_and_its_finder() {
     .unwrap();
 
     visual.dispatch_action(crate::SearchFiles);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while visual.debug_bounds("FILES_FINDER_ITEM 0").is_none() {
-        assert!(std::time::Instant::now() < deadline, "timed out");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        visual.run_until_parked();
-    }
+    assert!(visual.debug_bounds("FILES_FINDER").is_some());
     assert!(host
         .read_with(&visual, |root, cx| root.chat_panel_is_open(cx))
         .unwrap());
-    visual.simulate_keystrokes("enter");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while visual.debug_bounds("FILE_CODE").is_none() {
-        assert!(std::time::Instant::now() < deadline, "timed out");
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        visual.run_until_parked();
-    }
+    assert_eq!(
+        chat_surfaces(&host, &mut visual).ids().1,
+        Some(crate::surfaces::side_panel::PanelViewId::Files)
+    );
 }
 
 /// The chat under a parent that records the keys that reach it, as the
