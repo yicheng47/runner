@@ -226,10 +226,11 @@ fn render_resize_frame(
                 .border_1()
                 .border_color(crate::theme::border())
                 .when(inset != Edges::default(), |content| {
+                    // Keep the blur tail and its downward offset inside the 6px resize margin.
                     content.shadow(vec![gpui::BoxShadow {
-                        color: crate::theme::with_alpha(gpui::black(), 0.3),
+                        color: crate::theme::with_alpha(gpui::black(), 0.18),
                         offset: point(px(0.), px(1.)),
-                        blur_radius: px(6.),
+                        blur_radius: px(1.5),
                         spread_radius: px(0.),
                         inset: false,
                     }])
