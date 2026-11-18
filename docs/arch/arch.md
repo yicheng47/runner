@@ -748,6 +748,8 @@ Migration 0026 records each existing session's next-resume launch definition ins
 
 Migration `0025` removes the unused crew purpose and default goal columns. Older Runner versions still select those columns, so they cannot use a database after this migration. Downgrading requires a database backup made before migration; the column drop cannot be reversed to recover their contents.
 
+Migration `0031` (#1171) adds first-run setup's state, `_app_state.onboarding_completed`, and a backfill sets it on existing databases that already hold a session, a mission, or a role or crew other than the seeded ones, so an upgrade never shows setup. A window's launcher shows setup while the key is missing; finishing or skipping setup, or a chat or mission started another way (another window, the CLI, a remote window), sets it, and Settings → Agents → Open setup shows the page without clearing it. New databases are no longer seeded with the Pair coding crew: `seed_defaults` still writes `default_crew_seeded`, so seeding stays idempotent, and existing databases keep the crew they were seeded with. Setup instead offers a starter crew that runnerd proposes from runtime status, a coder and a reviewer on different runtimes when two are eligible, built from the same seed prompts and crew addendum.
+
 ```sql
 crews (
   id TEXT PRIMARY KEY,

@@ -9,15 +9,15 @@ Use [Full smoke test procedure](../full-smoke-test.md) for authorization, candid
 | Area | File | Cases | Smoke | Additional full |
 | --- | --- | ---: | ---: | ---: |
 | Runtime lifecycle, conversation identity, status and hooks | [runtimes.md](runtimes.md) | 60 | 10 | 50 |
-| Native terminal rendering, input, resize, history, find, clipboard and settings | [terminal.md](terminal.md) | 48 | 5 | 43 |
-| Windows, tabs, panes, sidebar and its Active view, cwd, drawers and side panel files and changes | [workspace.md](workspace.md) | 65 | 6 | 59 |
+| Native terminal rendering, input, resize, history, find, clipboard and settings | [terminal.md](terminal.md) | 50 | 5 | 45 |
+| Windows, tabs, panes, sidebar and its Active view, cwd, drawers and side panel files and changes | [workspace.md](workspace.md) | 69 | 6 | 63 |
 | Crews, missions, membership, delivery, asks, feed, linked chats and reports | [missions.md](missions.md) | 53 | 5 | 48 |
 | Quit, daemon lifetime, reconnect and recovery | [daemon.md](daemon.md) | 22 | 4 | 18 |
-| Agents, Claude accounts, settings, themes, list preferences, language, notifications, skills, MCP, side panel, launch flags, installation and updates | [settings.md](settings.md) | 76 | 4 | 72 |
+| Agents, first-run setup, Claude accounts, settings, themes, list preferences, language, notifications, skills, MCP, side panel, launch flags, installation and updates | [settings.md](settings.md) | 81 | 4 | 77 |
 | Candidate CLI commands, output, feeds and connection | [cli.md](cli.md) | 14 | 4 | 10 |
-| Remote access: account, pairing, remote windows, terminals and missions | [remote.md](remote.md) | 53 | 6 | 47 |
+| Remote access: account, pairing, remote windows, terminals and missions | [remote.md](remote.md) | 54 | 6 | 48 |
 | Linux desktop, input, packages, updates, service and hosted remote acceptance | [linux.md](linux.md) | 7 | 0 | 7 |
-| **Total** | | **398** | **44** | **354** |
+| **Total** | | **410** | **44** | **366** |
 
 `regression/` holds this README and one table file per area, with feature sections. Historical feature records remain in `../archive/` and are never edited to turn their old result into a current result. New run results live separately under `docs/tests/runs/`: feature/bug QA runs use `<issue>-<slug>-<platform>.md`, and full smoke or release runs use `YYYY-MM-DD-<platform>.md`, where platform is `mac`, `win`, `linux` or `both`. Repeated runs on the same issue or smoke date append a separately identified candidate/attempt block to that file. Existing dated filenames remain stable. No run record is needed merely to edit this suite.
 
@@ -67,6 +67,8 @@ Follow the results table with findings (expected/actual, minimal repro, severity
 When a feature's test record is archived in a [release's docs sweep](../../../AGENTS.md#docs-sweep-at-release), add its lasting live checks here, or have the record state why none apply. Trace every promoted case to its record/spec/issue/code, reconcile its expectation with current code, set platform/needs/tier and retain the evidence requirements. Results, temporary investigation recipes and automated-only assertions stay with the run/archive or owning test. Change navigation/counts when adding or retiring rows, check all relative links with a script and review at least two cases per area against origin and current code.
 
 ## Not carried over
+
+The 0.20.1 sweep added 13 full-tier cases: `SET-SETUP-01–05` from #1171, which closed after 0.20.0, `WS-CHANGES-09–12` from #1345, `WS-FILES-06` from #1357, `TERM-RENDER-05` from #1356 and `TERM-INPUT-08` from #1366. #1345 removed the comparison label from Changes' diff header, so `WS-CHANGES-03` is retired for `WS-CHANGES-09`. #1369's pull request had already updated `MIS-MSG-01` and `MIS-MSG-03`, and #1347's had added `REMOTE-TERM-09`, now counted. The cases trace to each issue's run record, reconciled with current code and the guide. This promotion establishes no new pass: #1171's Windows and Linux checks, #1366's physical key repeat and Pinyin checks, #1369's Windows `MIS-MSG-03` and the native Windows checks for #1357 remain open in their run records and in [#1375](https://github.com/yicheng47/runner/issues/1375). #1213, #1263 and #1377 stay open, so the slices of them that shipped promote nothing yet; #1376's and #1381's fixes are covered by in-process tests and named no live checks.
 
 The 0.20.0 sweep added 20 full-tier cases: `WS-CHANGES-01–08` from #1141, `SET-LAUNCH-02–04` from #1285, `SET-THEME-01–04` and `SET-PREF-04` from #1319, `SET-AGENT-06–07` from #1251, `SET-USAGE-08` from #1324, `RT-START-09` from #1201 and `REMOTE-WIN-06` from #1315, plus `TERM-SET-07–08`. #1319 removed the terminal palette, so `SET-PREF-01`, `TERM-SET-01` and `TERM-SET-06` are retired for `SET-PREF-04`, `TERM-SET-07` and `TERM-SET-08`. The cases trace to each feature's run record and, for #1141, its archived spec; #1344's pull request had already updated `WS-FILES-05`, and #1318 changed tests only. Expectations follow current code and the guide, including #1251's same-path downgrade and #1201's resume scenario, whose first native attempts failed. This promotion establishes no new pass; #1285's Windows `.cmd` check, #1324's Windows checks and every #1141 Windows and Linux check remain open in their run records. #1171 stays open, so its checks are not promoted yet.
 
