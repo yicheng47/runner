@@ -646,6 +646,33 @@ struct ConnectionWindows {
 
 impl ConnectionWindows {
     fn dispatch(&self, request: Request) -> Option<Response> {
+        #[cfg(test)]
+        let scope_buf = format!("core:{}", self.core.app_data_dir.display());
+        #[cfg(test)]
+        let scope = scope_buf.as_str();
+        #[cfg(not(test))]
+        let scope = "";
+        let method = request.method_name();
+        let timer = crate::slow_stage::StageClock::start(scope);
+        let response = self.dispatch_inner(request);
+        let elapsed = timer.elapsed();
+        let id = self.id;
+        let cancelled = response.is_none();
+        crate::slow_stage::warn_if_slow(
+            scope,
+            elapsed,
+            crate::slow_stage::SLOW_STAGE_THRESHOLD,
+            || {
+                format!(
+                    "slow ConnectionWindows::dispatch: connection={id} method={method} elapsed_ms={} cancelled={cancelled}",
+                    elapsed.as_millis()
+                )
+            },
+        );
+        response
+    }
+
+    fn dispatch_inner(&self, request: Request) -> Option<Response> {
         if matches!(
             request,
             Request::terminal_observe_input { .. } | Request::terminal_take_back { .. }
@@ -2693,5 +2720,111 @@ mod tests {
         assert!(attached_detach.frames.recv().is_err());
         assert!(attached_cleanup.frames.recv().is_err());
         core.sessions.drain_terminal_workers();
+    }
+
+    #[tokio::test]
+    async fn slow_stage_warnings_fire_past_two_seconds_for_initialize_status_and_dispatch_1377() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = crate::test_support::test_core_in(temp.path().to_path_buf());
+
+        // 1. Adapter::initialize (< 2s quiet, >= 2s warns on ok and deadline).
+        let channel_id = 137_799u64;
+        let adapter_probe =
+            crate::slow_stage::SlowStageProbeGuard::install(format!("adapter:{channel_id}"));
+        let arc_core = Arc::new(core.clone());
+        let daemon_core = Arc::new(crate::companion::core::DaemonCore(Arc::downgrade(
+            &arc_core,
+        )));
+        let mut adapter =
+            crate::companion::Adapter::new(daemon_core.clone(), channel_id, "Test".into()).unwrap();
+
+        adapter_probe.set_elapsed_step(Duration::from_millis(500));
+        adapter.initialize().await.unwrap();
+        assert!(adapter_probe.take_warnings().is_empty());
+
+        adapter_probe.set_elapsed_step(Duration::from_millis(2_500));
+        adapter.initialize().await.unwrap();
+        let init_warnings = adapter_probe.take_warnings();
+        assert_eq!(init_warnings.len(), 1);
+        assert!(init_warnings[0].contains("slow companion Adapter::initialize"));
+        assert!(init_warnings[0].contains("channel=137799"));
+        assert!(init_warnings[0].contains("elapsed_ms=2500"));
+        assert!(init_warnings[0].contains("outcome=ok"));
+
+        let init_worker_gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let worker_permit = Arc::clone(&init_worker_gate).acquire_owned().await.unwrap();
+        let held_conns: Vec<_> = (0..core.db.max_size())
+            .map(|_| core.db.get().unwrap())
+            .collect();
+        adapter.set_initialize_timeout(Duration::ZERO);
+        adapter_probe.set_elapsed_step(Duration::from_millis(5_000));
+        assert_eq!(
+            adapter.initialize_with_permit(Some(worker_permit)).await,
+            Err("initialize deadline")
+        );
+        drop(held_conns);
+        // Drain the timed-out spawn_blocking worker before installing core_probe on shared AppCore.
+        let _drained = init_worker_gate.acquire().await.unwrap();
+        let deadline_warnings = adapter_probe.take_warnings();
+        assert_eq!(deadline_warnings.len(), 1);
+        assert!(deadline_warnings[0].contains("slow companion Adapter::initialize"));
+        assert!(deadline_warnings[0].contains("elapsed_ms=5000"));
+        assert!(deadline_warnings[0].contains("outcome=deadline"));
+
+        // 2. session_status_snapshot & ConnectionWindows::dispatch (< 2s quiet, >= 2s warns without leaking payload secrets).
+        let core_probe = crate::slow_stage::SlowStageProbeGuard::install(format!(
+            "core:{}",
+            core.app_data_dir.display()
+        ));
+
+        core_probe.set_elapsed_step(Duration::from_millis(200));
+        crate::ops::session::session_status_snapshot(&core).unwrap();
+        assert!(core_probe.take_warnings().is_empty());
+
+        core_probe.set_elapsed_step(Duration::from_millis(600));
+        crate::ops::session::session_status_snapshot(&core).unwrap();
+        let status_warnings = core_probe.take_warnings();
+        assert_eq!(status_warnings.len(), 1);
+        assert!(status_warnings[0].contains("slow session_status_snapshot"));
+        assert!(status_warnings[0].contains("db_checkout_ms=600"));
+        assert!(status_warnings[0].contains("rows_ms=600"));
+        assert!(status_warnings[0].contains("outcome=ok"));
+
+        let windows = Arc::new(ConnectionWindows {
+            core: core.clone(),
+            owners: Arc::new(Mutex::default()),
+            id: 42,
+            closed: CancellationToken::new(),
+        });
+        core_probe.set_elapsed_step(Duration::from_millis(500));
+        let win_fast = Arc::clone(&windows);
+        assert!(tokio::task::spawn_blocking(move || {
+            win_fast.dispatch(Request::remote_set_pin {
+                pin: runner_core::remote::Secret("999999".into()),
+            })
+        })
+        .await
+        .unwrap()
+        .is_some());
+        assert!(core_probe.take_warnings().is_empty());
+
+        core_probe.set_elapsed_step(Duration::from_millis(2_400));
+        let win_slow = Arc::clone(&windows);
+        assert!(tokio::task::spawn_blocking(move || {
+            win_slow.dispatch(Request::remote_set_pin {
+                pin: runner_core::remote::Secret("999999".into()),
+            })
+        })
+        .await
+        .unwrap()
+        .is_some());
+        let dispatch_warnings = core_probe.take_warnings();
+        assert_eq!(dispatch_warnings.len(), 1);
+        assert!(dispatch_warnings[0]
+            .contains("slow ConnectionWindows::dispatch: connection=42 method=remote_set_pin elapsed_ms=2400 cancelled=false"));
+        assert!(
+            !dispatch_warnings[0].contains("999999"),
+            "slow dispatch logs must never include private request payload fields"
+        );
     }
 }

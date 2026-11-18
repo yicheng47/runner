@@ -6,6 +6,7 @@ use crate::*;
 
 impl NativeRoot {
     pub(crate) fn set_route(&mut self, route: AppRoute, cx: &mut Context<Self>) {
+        let _turn = crate::stall_watchdog::enter_turn("root.set_route");
         if self.remote_client.is_active() {
             if let AppRoute::Mission(id) = route {
                 self.select_remote_item(

@@ -1033,6 +1033,7 @@ impl AppStore {
         started_activity_epoch: u64,
         fetched: FetchedStoreRefresh,
     ) {
+        let _turn = crate::stall_watchdog::enter_turn("store.apply_refresh");
         if let Some(next) = fetched.onboarding {
             if self.onboarding != next {
                 self.onboarding = next;
@@ -1087,6 +1088,7 @@ impl AppStore {
             }
         }
         if let Some(nodes_res) = fetched.nodes {
+            crate::stall_watchdog::breadcrumb("store.apply_refresh.nodes");
             match nodes_res {
                 Ok(mut nodes) => {
                     if self.full_nodes_replaced_revision > started_revisions.nodes {
@@ -1136,6 +1138,7 @@ impl AppStore {
             self.revisions.full_refresh = self.revisions.full_refresh.wrapping_add(1);
         }
         if let Some(missions_res) = fetched.missions {
+            crate::stall_watchdog::breadcrumb("store.apply_refresh.missions");
             match missions_res {
                 Ok((mut missions, idx_res)) => {
                     match idx_res {
@@ -1159,6 +1162,7 @@ impl AppStore {
             }
         }
         if let Some(activity) = fetched.activity {
+            crate::stall_watchdog::breadcrumb("store.apply_refresh.activity");
             match activity.counts {
                 Ok(counts) => {
                     self.live_session_count = counts.values().sum();

@@ -90,6 +90,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn sync_window_activation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _turn = crate::stall_watchdog::enter_turn("window.sync_activation");
         if self.closing {
             return;
         }

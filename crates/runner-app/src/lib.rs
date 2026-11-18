@@ -49,6 +49,7 @@ mod surfaces;
 mod terminal;
 mod window_state;
 
+mod stall_watchdog;
 mod startup;
 mod toast;
 

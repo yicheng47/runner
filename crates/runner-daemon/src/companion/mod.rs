@@ -660,19 +660,41 @@ impl Adapter {
         &mut self,
         permit: Option<OwnedSemaphorePermit>,
     ) -> Result<(), &'static str> {
+        #[cfg(test)]
+        let scope_buf = format!("adapter:{}", self.channel);
+        #[cfg(test)]
+        let scope = scope_buf.as_str();
+        #[cfg(not(test))]
+        let scope = "";
+        let timer = crate::slow_stage::StageClock::start(scope);
         let core = self.core.clone();
-        let statuses = tokio::time::timeout(
+        let raw = tokio::time::timeout(
             self.initialize_timeout,
             tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 core.statuses()
             }),
         )
-        .await
-        .map_err(|_| "initialize deadline")?
-        .map_err(|_| "core unavailable")?
-        .map_err(|_| "core unavailable")?;
-        self.statuses = statuses;
+        .await;
+        let (outcome, statuses) = match raw {
+            Ok(Ok(Ok(statuses))) => ("ok", Ok(statuses)),
+            Ok(Ok(Err(_))) | Ok(Err(_)) => ("core_unavailable", Err("core unavailable")),
+            Err(_) => ("deadline", Err("initialize deadline")),
+        };
+        let elapsed = timer.elapsed();
+        let channel = self.channel;
+        crate::slow_stage::warn_if_slow(
+            scope,
+            elapsed,
+            crate::slow_stage::SLOW_STAGE_THRESHOLD,
+            || {
+                format!(
+                    "slow companion Adapter::initialize: channel={channel} elapsed_ms={} outcome={outcome}",
+                    elapsed.as_millis()
+                )
+            },
+        );
+        self.statuses = statuses?;
         Ok(())
     }
     pub fn in_flight(&mut self, bytes: usize) {

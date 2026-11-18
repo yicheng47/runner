@@ -31,6 +31,7 @@ pub mod session;
 pub mod shell_integration;
 pub mod shell_path;
 pub mod skills;
+pub(crate) mod slow_stage;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod usage;

@@ -2,6 +2,7 @@ use super::*;
 
 impl NativeRoot {
     pub(crate) fn handle_app_store_update(&mut self, cx: &mut Context<Self>) {
+        let _turn = crate::stall_watchdog::enter_turn("root.store_update");
         let core = self.core(cx).clone();
         let enabled = self.settings(cx).model_runtimes();
         let checked: Vec<_> = enabled

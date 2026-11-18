@@ -368,6 +368,7 @@ impl AppStore {
         self.window_coordinator.task = Some(cx.spawn(async move |weak, cx| {
             let mut batch = bg.await;
             let _ = weak.update(cx, |this, cx| {
+                let _turn = crate::stall_watchdog::enter_turn("store.window_sync_apply");
                 for outcome in batch.viewed_outcomes {
                     match outcome.result {
                         Ok(Some(updated)) => {

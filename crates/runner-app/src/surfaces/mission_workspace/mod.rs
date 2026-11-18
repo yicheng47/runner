@@ -583,6 +583,7 @@ fn mission_tab_in_direction(
 
 impl Render for MissionWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _turn = crate::stall_watchdog::enter_turn("mission_workspace.render");
         self.render_mission_workspace(window, cx)
     }
 }
