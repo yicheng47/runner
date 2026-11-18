@@ -623,6 +623,10 @@ pub(crate) struct McpDetail {
 }
 
 impl McpDetail {
+    pub(crate) fn is_open(&self) -> bool {
+        self.entry().is_some()
+    }
+
     fn new(app_store: Entity<AppStore>, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
             TextField::textarea(cx.focus_handle(), "", "", 16, true)

@@ -121,6 +121,7 @@ impl MissionWorkspace {
         let target_changed = self.client.target != client.target;
         let host_changed = !same_host(&self.client.target, &client.target);
         if changed || target_changed {
+            self.drawer_was_focused = false;
             let had_dialog = self.rename_modal.is_some()
                 || self.stop_all_confirm
                 || self.restart_confirm.is_some()
@@ -363,7 +364,7 @@ impl MissionWorkspace {
             let _ = shell.update(cx, |shell, cx| {
                 shell.remote_client.attach_remote_panes(cx);
                 shell.remote_client.reconcile_auto_take(cx);
-                shell.remote_client.mark_remote_sessions_viewed(cx);
+                shell.mark_remote_sessions_viewed_if_unobstructed(cx);
                 cx.notify();
             });
         });

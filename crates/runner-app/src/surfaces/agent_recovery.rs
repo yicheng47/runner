@@ -184,6 +184,9 @@ impl NativeRoot {
                 move |window, cx| {
                     let _ = owner.update(cx, |root, cx| {
                         if !updatable {
+                            if remote {
+                                return;
+                            }
                             root.start_chat_modal = None;
                             root.enter_settings_route(Some("agents"), window, cx);
                         } else if answer {

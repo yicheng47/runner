@@ -130,9 +130,7 @@ impl NativeRoot {
         let sidebar_resize =
             sidebar_divider.map(|divider| self.render_sidebar_resize_handle(divider, cx));
         let preview_trigger = self.render_sidebar_preview_trigger(cx);
-        let modal = self
-            .start_chat_modal
-            .is_some()
+        let modal = (self.route != AppRoute::Settings && self.start_chat_modal.is_some())
             .then(|| self.render_start_chat_modal(window, cx));
         let terminal_close_confirm = (self.remote_client.is_active()
             || matches!(self.route, AppRoute::Chat | AppRoute::Mission(_)))
@@ -143,31 +141,28 @@ impl NativeRoot {
             .then_some(self.fork_confirm.as_ref())
             .flatten()
             .map(|_| self.render_fork_confirm(cx));
-        let sidebar_overlays = if self.route != AppRoute::Settings || self.remote_client.is_active()
-        {
+        let sidebar_overlays = if self.route != AppRoute::Settings {
             self.render_sidebar_overlays(cx)
         } else {
             Vec::new()
         };
-        let entity_overlays = match self.remote_client.mission_workspace() {
-            Some(workspace) => {
-                let fallback = (!self.create_modal_open()
-                    && self.fork_confirm.is_none()
-                    && self.terminal_close_confirm.is_none()
-                    && self.remote_client.ui.pair.is_none()
-                    && !self.remote_client.ui.picker_open)
-                    .then(|| self.root_focus.clone());
-                workspace.update(cx, |workspace, cx| {
-                    workspace.restore_remote_dialog_focus(fallback.as_ref(), window, cx);
-                    workspace.render_mission_overlays(cx)
-                })
-            }
-            _ => {
-                if self.route != AppRoute::Settings {
-                    self.render_entity_overlays(window, cx)
-                } else {
-                    Vec::new()
+        let entity_overlays = if self.route == AppRoute::Settings {
+            Vec::new()
+        } else {
+            match self.remote_client.mission_workspace() {
+                Some(workspace) => {
+                    let fallback = (!self.create_modal_open()
+                        && self.fork_confirm.is_none()
+                        && self.terminal_close_confirm.is_none()
+                        && self.remote_client.ui.pair.is_none()
+                        && !self.remote_client.ui.picker_open)
+                        .then(|| self.root_focus.clone());
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.restore_remote_dialog_focus(fallback.as_ref(), window, cx);
+                        workspace.render_mission_overlays(cx)
+                    })
                 }
+                _ => self.render_entity_overlays(window, cx),
             }
         };
         let chrome = div()
@@ -214,13 +209,10 @@ impl NativeRoot {
             .children(fork_confirm)
             .children(sidebar_overlays)
             .children(entity_overlays);
-        let settings = (self.remote_client.is_local() && self.route == AppRoute::Settings)
-            .then(|| self.render_settings_takeover(window, cx));
+        let settings =
+            (self.route == AppRoute::Settings).then(|| self.render_settings_takeover(window, cx));
         let settings_confirm = self
-            .remote_client
-            .is_local()
-            .then(|| self.settings_confirm_overlay(cx))
-            .flatten()
+            .settings_confirm_overlay(cx)
             .map(|overlay| deferred(overlay).with_priority(100));
         let computer_pair = self
             .remote_client
@@ -230,7 +222,8 @@ impl NativeRoot {
             .remote_client
             .render_computer_picker(window, cx)
             .map(|picker| deferred(picker).with_priority(80));
-        let command_palette = Some(deferred(self.command_palette.clone()).with_priority(50));
+        let command_palette = (self.route != AppRoute::Settings)
+            .then(|| deferred(self.command_palette.clone()).with_priority(50));
         let toast_priority = if self.route == AppRoute::Settings && self.remote_pin_dialog_open() {
             101
         } else {
@@ -257,10 +250,7 @@ impl NativeRoot {
                 root
             })
             .text_color(theme::text())
-            .children(
-                (self.remote_client.is_active() || self.route != AppRoute::Settings)
-                    .then_some(chrome),
-            )
+            .children((self.route != AppRoute::Settings).then_some(chrome))
             .children(settings)
             .children(self.render_window_top_margin_drag_area(cx))
             .children(self.render_window_navigation(window, cx))
@@ -294,8 +284,11 @@ impl NativeRoot {
                             this.usage_open = false;
                             cx.stop_propagation();
                             cx.notify();
-                        } else {
-                            this.close_unfocused_update_popover(window, cx);
+                        } else if !this.close_unfocused_update_popover(window, cx)
+                            && !this.root_focus.contains_focused(window, cx)
+                            && this.route == AppRoute::Settings
+                        {
+                            this.handle_settings_escape(event, window, cx);
                         }
                     });
                 }
@@ -303,6 +296,11 @@ impl NativeRoot {
                     sidebar.handle_shortcut_key_pressed(sidebar_cx);
                 });
             })
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" && this.route == AppRoute::Settings {
+                    this.handle_settings_escape(event, window, cx);
+                }
+            }))
             .on_drag_move::<SidebarResizeDrag>(cx.listener(
                 |this, event: &DragMoveEvent<SidebarResizeDrag>, _, cx| {
                     let width = (f32::from(event.event.position.x - event.bounds.left())
@@ -314,7 +312,7 @@ impl NativeRoot {
                         this.sidebar_resizing = true;
                         cx.notify();
                     }
-                    if this.remote_client.is_active() {
+                    if this.route != AppRoute::Settings && this.remote_client.is_active() {
                         this.remote_client.set_sidebar_width(width, cx);
                         return;
                     }
@@ -329,7 +327,7 @@ impl NativeRoot {
             ))
             .on_drop(cx.listener(|this, _: &SidebarResizeDrag, _, cx| {
                 this.finish_sidebar_resize(cx);
-                if this.remote_client.is_local() {
+                if this.route == AppRoute::Settings || this.remote_client.is_local() {
                     this.save_settings(cx);
                 }
             }))

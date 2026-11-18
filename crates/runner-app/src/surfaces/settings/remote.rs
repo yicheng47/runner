@@ -704,6 +704,10 @@ impl NativeRoot {
     pub(crate) fn remote_pin_dialog_open(&self) -> bool {
         self.settings_page.remote.pin.is_some()
     }
+    #[cfg(test)]
+    pub(crate) fn remote_settings_busy(&self) -> bool {
+        self.settings_page.remote.busy
+    }
     fn remote_open_pin(&mut self, cx: &mut Context<Self>) {
         let fields = [cx.new(PinField::new), cx.new(PinField::new)];
         let subscriptions = fields
@@ -859,6 +863,7 @@ impl NativeRoot {
                     },
                     cx,
                 )
+                .debug_selector("REMOTE_RESET_IDENTITY")
                 .variant(ButtonVariant::Danger),
             )
             .subtitle(crate::i18n::text("remote.reset_identity_detail"))
@@ -907,9 +912,10 @@ impl NativeRoot {
                     cx.stop_propagation();
                 }
             })
-            .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
+            .on_mouse_down(gpui::MouseButton::Left, move |_, window, cx| {
                 cancel.update(cx, |r, cx| {
                     r.settings_page.remote.pin = None;
+                    r.focus_settings_page(window, cx);
                     cx.notify();
                 });
             })
@@ -917,6 +923,7 @@ impl NativeRoot {
                 root.update(cx, |r, cx| match event.keystroke.key.as_str() {
                     "escape" => {
                         r.settings_page.remote.pin = None;
+                        r.focus_settings_page(window, cx);
                         cx.stop_propagation();
                         cx.notify();
                     }
@@ -1206,10 +1213,11 @@ impl NativeRoot {
             Rc::new(move |_, cx| {
                 root.update(cx, |root, cx| root.confirm_remote_action(cx));
             }),
-            Rc::new(move |_, cx| {
+            Rc::new(move |window, cx| {
                 cancel.update(cx, |r, cx| {
                     r.settings_page.remote.confirm = false;
                     r.settings_page.remote.reset_identity = false;
+                    r.focus_settings_page(window, cx);
                     cx.notify();
                 })
             }),

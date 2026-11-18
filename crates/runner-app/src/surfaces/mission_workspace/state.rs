@@ -36,11 +36,21 @@ impl MissionWorkspace {
         let root_focus = cx.focus_handle();
         let drawer_focus = cx.focus_handle();
         let drawer_focus_subscriptions = vec![
-            cx.on_focus_in(&drawer_focus, window, |_, window, cx| {
+            cx.on_focus_in(&drawer_focus, window, |this, window, cx| {
+                this.drawer_was_focused = true;
                 cx.defer_in(window, |_, _, cx| cx.notify())
             }),
-            cx.on_focus_out(&drawer_focus, window, |_, _, window, cx| {
+            cx.on_focus_out(&drawer_focus, window, |this, _, window, cx| {
+                if this.root_focus.contains_focused(window, cx) && !this.drawer_focused(window, cx)
+                {
+                    this.drawer_was_focused = false;
+                }
                 cx.defer_in(window, |_, _, cx| cx.notify())
+            }),
+            cx.on_focus_in(&root_focus, window, |this, window, cx| {
+                if !this.drawer_focused(window, cx) {
+                    this.drawer_was_focused = false;
+                }
             }),
         ];
         let workspace = cx.entity();
@@ -199,6 +209,7 @@ impl MissionWorkspace {
             mission_node_id: None,
             layout: MissionLayout::default(),
             drawer_focus,
+            drawer_was_focused: false,
             _drawer_focus_subscriptions: drawer_focus_subscriptions,
             drawer_resizing: false,
             closing_drawer_shells: HashSet::new(),
@@ -386,6 +397,7 @@ impl MissionWorkspace {
 
     pub(crate) fn release_window(&mut self, cx: &mut Context<Self>) {
         self.active = false;
+        self.drawer_was_focused = false;
         self.mark_viewed_in_flight = false;
         self.pending_mark_viewed_session = None;
         self.mark_viewed_task = None;

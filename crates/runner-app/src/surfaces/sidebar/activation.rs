@@ -87,6 +87,11 @@ impl NativeRoot {
         self.sidebar.update(cx, |sidebar, sidebar_cx| {
             sidebar.dismiss_transients(sidebar_cx)
         });
+        if let Some(sidebar) = self.remote_client.sidebar() {
+            sidebar.update(cx, |sidebar, sidebar_cx| {
+                sidebar.dismiss_transients(sidebar_cx)
+            });
+        }
         self.project_modal = None;
         self._project_cwd_subscription = None;
         self.project_delete_confirm = None;
@@ -103,6 +108,11 @@ impl NativeRoot {
             self.sidebar.update(cx, |sidebar, sidebar_cx| {
                 sidebar.clear_shortcut_pills(sidebar_cx)
             });
+            if let Some(sidebar) = self.remote_client.sidebar() {
+                sidebar.update(cx, |sidebar, sidebar_cx| {
+                    sidebar.clear_shortcut_pills(sidebar_cx)
+                });
+            }
         }
         self.sync_window_activation(window, cx);
     }

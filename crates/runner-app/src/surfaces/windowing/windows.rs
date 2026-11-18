@@ -14,6 +14,9 @@ fn opening_window_minimum(settings: &AppSettings) -> gpui::Size<gpui::Pixels> {
 }
 
 pub(crate) fn close_tab(this: &mut NativeRoot, window: &mut Window, cx: &mut Context<NativeRoot>) {
+    if this.route == AppRoute::Settings {
+        return;
+    }
     if this.launcher_page_visible() {
         this.close_launcher_page(window, cx);
         return;

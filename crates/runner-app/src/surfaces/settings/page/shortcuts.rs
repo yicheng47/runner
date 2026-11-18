@@ -576,7 +576,7 @@ impl NativeRoot {
         }
     }
 
-    pub(super) fn start_shortcut_recording(
+    pub(crate) fn start_shortcut_recording(
         &mut self,
         id: &'static str,
         window: &mut Window,

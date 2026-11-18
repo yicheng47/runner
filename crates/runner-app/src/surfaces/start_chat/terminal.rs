@@ -21,6 +21,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.route == crate::surfaces::AppRoute::Settings {
+            return;
+        }
         let remote = self.front_page_client(cx).is_remote();
         if !remote && self.create_modal_open() {
             return;
@@ -64,6 +67,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.route == crate::surfaces::AppRoute::Settings {
+            return;
+        }
         self.open_mission_launcher(
             None,
             ProjectScope::or_root(self.active_project_id(cx)),
@@ -228,6 +234,9 @@ impl NativeRoot {
     }
 
     pub(crate) fn toggle_terminal_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.route == crate::surfaces::AppRoute::Settings {
+            return;
+        }
         if let Some(workspace) = self.remote_client.remote_mission_workspace() {
             workspace.update(cx, |workspace, cx| {
                 workspace.toggle_terminal_drawer(window, cx)

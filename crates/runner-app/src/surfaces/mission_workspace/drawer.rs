@@ -24,6 +24,7 @@ impl MissionWorkspace {
     }
 
     pub(crate) fn hide_terminal_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.drawer_was_focused = false;
         let original = self.layout.clone();
         self.layout.drawer.set_open(false);
         self.finish_terminal_drawer_update(original, window, cx);
@@ -48,6 +49,7 @@ impl MissionWorkspace {
                 }
                 if self.layout.drawer.open() {
                     if let Some(session_id) = self.layout.drawer.active_shell() {
+                        self.drawer_was_focused = true;
                         self.focus_mission_drawer_terminal(session_id, window, cx);
                     }
                 } else {
@@ -83,6 +85,7 @@ impl MissionWorkspace {
                 {
                     self.error = Some(error.to_string().into());
                 }
+                self.drawer_was_focused = true;
                 self.focus_mission_drawer_terminal(session_id, window, cx);
             }
             Err(error) => {
@@ -473,7 +476,7 @@ impl MissionWorkspace {
             && self.transition_kind(session_id).is_none()
     }
 
-    fn terminal_status(&self, session_id: &str, cx: &App) -> Option<SessionStatus> {
+    pub(super) fn terminal_status(&self, session_id: &str, cx: &App) -> Option<SessionStatus> {
         self.members()
             .iter()
             .find(|session| session.session.id == session_id)

@@ -89,7 +89,7 @@ impl NativeRoot {
         persist: bool,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
+        if self.route != AppRoute::Settings && self.remote_client.is_active() {
             self.remote_client.set_sidebar_collapsed(collapsed, cx);
             return;
         }
@@ -154,11 +154,47 @@ impl NativeRoot {
     }
 
     pub(crate) fn leave_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let return_drawer_shell = self.settings_return_remote_drawer_shell.take();
         self.dismiss_remote_dialog();
         if self.shortcut_recording_active() {
             self.finish_shortcut_recording(window, cx);
         }
         self.save_settings(cx);
+        if self.remote_client.is_active() {
+            self.route = match self.settings_return_route.clone() {
+                AppRoute::Settings => AppRoute::Chat,
+                route => route,
+            };
+            if self.launcher_is_empty_state() {
+                self.reset_launcher_page(cx);
+            }
+            if let Some(workspace) = self.remote_client.remote_mission_workspace() {
+                self.root_focus.focus(window, cx);
+                let drawer_shell = return_drawer_shell.filter(|shell_id| {
+                    !self.remote_client.remote_terminal_failed(shell_id)
+                        && workspace
+                            .read(cx)
+                            .remote_drawer_shell_available(shell_id, cx)
+                });
+                workspace.update(cx, |workspace, cx| {
+                    if let Some(shell_id) = drawer_shell {
+                        workspace.focus_mission_drawer_terminal(&shell_id, window, cx);
+                    } else {
+                        workspace.focus_active_mission_terminal(window, cx);
+                    }
+                });
+            } else if self.launcher_page_visible() {
+                if !self.focus_visible_launcher(window, cx) {
+                    self.root_focus.focus(window, cx);
+                }
+            } else if self.front_page_is_chat() {
+                self.focus_active_terminal(window, cx);
+            } else {
+                self.root_focus.focus(window, cx);
+            }
+            self.sync_window_activation(window, cx);
+            return;
+        }
         match self.settings_return_route.clone() {
             AppRoute::Chat | AppRoute::Settings => {
                 self.set_route(AppRoute::Chat, cx);
@@ -218,7 +254,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn toggle_window_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.route == AppRoute::Settings && self.remote_client.is_local() {
+        if self.route == AppRoute::Settings {
             return;
         }
         let collapsed = !self.front_page_sidebar_collapsed();
@@ -252,7 +288,7 @@ impl NativeRoot {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.route == AppRoute::Settings && self.remote_client.is_local() {
+        if self.route == AppRoute::Settings {
             return;
         }
         let collapsed = !self.front_page_sidebar_collapsed();
@@ -270,7 +306,7 @@ impl NativeRoot {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.route == AppRoute::Settings && self.remote_client.is_local() {
+        if self.route == AppRoute::Settings {
             return;
         }
         self.toggle_sidebar_view(cx);
@@ -295,6 +331,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.route == AppRoute::Settings {
+            return;
+        }
         self.sync_sidebar_shortcut_rows(cx);
         self.front_page_sidebar().update(cx, |sidebar, sidebar_cx| {
             sidebar.select_shortcut_row(index, window, sidebar_cx)
@@ -383,7 +422,7 @@ impl NativeRoot {
     }
 
     pub(super) fn show_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.route == AppRoute::Settings && self.remote_client.is_local() {
+        if self.route == AppRoute::Settings {
             return;
         }
         self.remote_client

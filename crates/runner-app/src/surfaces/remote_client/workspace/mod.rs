@@ -298,13 +298,27 @@ impl RemoteClient {
         }
     }
 
-    pub(crate) fn focus_remote_terminal(&self, id: &str, window: &mut Window, cx: &mut App) {
+    pub(crate) fn remote_terminal_failed(&self, id: &str) -> bool {
+        self.workspace
+            .as_ref()
+            .is_some_and(|remote| remote.errors.contains(id))
+    }
+
+    pub(crate) fn focus_remote_terminal(
+        &self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
         if let Some(pane) = self
             .workspace
             .as_ref()
             .and_then(|remote| remote.terminals.get(id))
         {
             pane.attachment.terminal_focus.focus(window, cx);
+            true
+        } else {
+            false
         }
     }
 
@@ -493,6 +507,7 @@ impl RemoteClient {
 
     pub(crate) fn return_to_this_computer(
         &mut self,
+        focus_root: bool,
         window: &mut Window,
         cx: &mut Context<NativeRoot>,
     ) {
@@ -504,7 +519,9 @@ impl RemoteClient {
         }
         self.workspace = None;
         self.ui.picker_open = false;
-        self.root_focus.focus(window, cx);
+        if focus_root {
+            self.root_focus.focus(window, cx);
+        }
         cx.notify();
     }
 

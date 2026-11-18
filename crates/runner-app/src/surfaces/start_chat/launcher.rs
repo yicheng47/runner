@@ -1895,6 +1895,9 @@ impl ChatLauncher {
                 reason,
                 move |window, cx| {
                     if !updatable {
+                        if remote {
+                            return;
+                        }
                         let _ = owner.update(cx, |view, cx| {
                             view.update_retry = None;
                             cx.notify();
@@ -2670,6 +2673,9 @@ impl NativeRoot {
     }
 
     pub(crate) fn launcher_page_visible(&self) -> bool {
+        if self.route == AppRoute::Settings {
+            return false;
+        }
         self.launcher_is_empty_state()
             || if self.remote_client.is_active() {
                 matches!(

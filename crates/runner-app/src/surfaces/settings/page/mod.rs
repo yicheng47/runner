@@ -845,9 +845,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            return;
-        }
         if matches!(pane, SettingsPane::Skills | SettingsPane::Mcp) {
             self.enter_settings_pane(SettingsPane::Agents, window, cx);
             let tab = if pane == SettingsPane::Skills {
@@ -882,10 +879,33 @@ impl NativeRoot {
                 store.refresh_runner_skill_status();
             });
             self.settings_return_route = self.route.clone();
+            self.settings_return_remote_drawer_shell = self
+                .remote_client
+                .remote_mission_workspace()
+                .filter(|_| self.remote_client.is_active())
+                .and_then(|workspace| workspace.read(cx).active_remote_drawer_shell(window, cx));
             self.settings_page.search_query.clear();
             self.settings_page
                 .search
                 .update(cx, |input, input_cx| input.reset("", input_cx));
+            self.usage_open = false;
+            self.remote_client.ui.picker_open = false;
+            if self.remote_client.ui.pair.take().is_some() {
+                self.remote_client.ui.pair_generation += 1;
+            }
+            self.remote_client.sync_usage_popover(false, cx);
+            self.update_popover.close_without_focus();
+            let palette = self.command_palette.clone();
+            window.defer(cx, move |_, cx| {
+                palette.update(cx, |palette, palette_cx| {
+                    palette.dismiss_without_focus(palette_cx)
+                });
+            });
+            if let Some(sidebar) = self.remote_client.sidebar() {
+                sidebar.update(cx, |sidebar, sidebar_cx| {
+                    sidebar.clear_shortcut_pills(sidebar_cx);
+                });
+            }
             self.dismiss_sidebar_transients(cx);
             self.set_route(AppRoute::Settings, cx);
         }
@@ -973,10 +993,6 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
-            return;
-        }
-
         self.enter_settings_pane(SettingsPane::from_route(pane), window, cx);
     }
 
@@ -1181,7 +1197,7 @@ impl NativeRoot {
         activity: CommandInstallActivity,
         cx: &mut Context<Self>,
     ) {
-        if self.remote_client.is_active() {
+        if self.remote_client.is_active() && self.route != AppRoute::Settings {
             return;
         }
         if self.settings_page.command_install_activity.is_some() {
@@ -1329,6 +1345,79 @@ impl NativeRoot {
             .archived
             .as_ref()
             .map(|archived| archived.read(cx).confirm_overlay().into_any_element())
+    }
+
+    fn settings_is_composing(&self, cx: &gpui::App) -> bool {
+        self.settings_page.search.read(cx).is_composing()
+            || self.settings_page.shortcut_search.read(cx).is_composing()
+            || self
+                .settings_page
+                .default_working_dir
+                .read(cx)
+                .is_composing()
+            || self
+                .settings_page
+                .agents
+                .as_ref()
+                .is_some_and(|agents| agents.read(cx).is_composing(cx))
+    }
+
+    fn settings_escape_blocked(&self, cx: &gpui::App) -> bool {
+        self.quit_dialog.is_some()
+            || self.agent_update.is_some()
+            || self.usage_open
+            || self.update_popover.open
+            || self.remote_client.ui.picker_open
+            || self.remote_client.ui.pair.is_some()
+            || self.remote_overlay_open()
+            || self.settings_is_composing(cx)
+            || (self.settings_page.pane == SettingsPane::Agents
+                && self
+                    .settings_page
+                    .agents
+                    .as_ref()
+                    .is_some_and(|agents| agents.read(cx).detail_or_confirmation_open(cx)))
+            || (self.settings_page.pane == SettingsPane::Archived
+                && self
+                    .settings_page
+                    .archived
+                    .as_ref()
+                    .is_some_and(|archived| archived.read(cx).confirm_open()))
+    }
+
+    pub(crate) fn handle_settings_escape(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.route != AppRoute::Settings || event.keystroke.key != "escape" {
+            return;
+        }
+        let modifiers = event.keystroke.modifiers;
+        if modifiers.platform
+            || modifiers.control
+            || modifiers.alt
+            || modifiers.function
+            || modifiers.shift
+        {
+            return;
+        }
+        if self.shortcut_recording_active() {
+            cx.stop_propagation();
+            self.finish_shortcut_recording(window, cx);
+            return;
+        }
+        if self.settings_escape_blocked(cx) {
+            return;
+        }
+        cx.stop_propagation();
+        self.leave_settings(window, cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn agents_pane_for_test(&self) -> Option<Entity<settings::agents::AgentsPane>> {
+        self.settings_page.agents.clone()
     }
 }
 

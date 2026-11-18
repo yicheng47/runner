@@ -1038,6 +1038,35 @@ impl AgentsPane {
         self.accounts.read(cx).confirm_overlay().into_any_element()
     }
 
+    pub(crate) fn detail_or_confirmation_open(&self, cx: &gpui::App) -> bool {
+        self.skills.read(cx).detail.read(cx).is_open()
+            || self.mcp.read(cx).detail.read(cx).is_open()
+            || self.accounts.read(cx).confirmation_open()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn edit_custom_flags_for_test(
+        &mut self,
+        runtime: Runtime,
+        draft: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(field) = self.custom_flags.get(&runtime).cloned() {
+            field.update(cx, |field, field_cx| {
+                field.focus_handle().focus(window, field_cx);
+                field.reset(draft, field_cx);
+            });
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn custom_flags_matches_saved(&self, runtime: Runtime, cx: &gpui::App) -> bool {
+        self.custom_flags
+            .get(&runtime)
+            .is_some_and(|field| field.read(cx).text() == self.saved_custom_flags(runtime))
+    }
+
     pub(crate) fn is_composing(&self, cx: &gpui::App) -> bool {
         self.skills.read(cx).is_composing(cx)
             || self.mcp.read(cx).is_composing(cx)

@@ -98,6 +98,7 @@ pub(crate) struct Fake {
     features: Mutex<Vec<String>>,
     action_requests: Mutex<Vec<(String, serde_json::Value)>>,
     local_requests: Mutex<Vec<std::mem::Discriminant<Request>>>,
+    local_auth_calls: Mutex<Vec<&'static str>>,
     action_results:
         Mutex<HashMap<String, std::collections::VecDeque<Result<serde_json::Value, ClientError>>>>,
     on_mark_viewed: Mutex<Option<MarkViewedHook>>,
@@ -236,6 +237,22 @@ impl Transport for Fake {
             }
             Request::remote_status {} => {
                 Response::remote_status(Ok(self.status.lock().unwrap().clone()))
+            }
+            Request::remote_logout {} => {
+                self.local_auth_calls.lock().unwrap().push("logout");
+                *self.status.lock().unwrap() = RemoteStatus {
+                    state: RemoteState::Off,
+                    ..Default::default()
+                };
+                Response::remote_logout(Ok(runner_core::remote::RemoteLogout::Removed))
+            }
+            Request::remote_reset_identity {} => {
+                self.local_auth_calls.lock().unwrap().push("reset");
+                *self.status.lock().unwrap() = RemoteStatus {
+                    state: RemoteState::Off,
+                    ..Default::default()
+                };
+                Response::remote_reset_identity(Ok(runner_core::remote::RemoteTrust::default()))
             }
             Request::remote_enroll_start { .. } => {
                 self.enrolls.fetch_add(1, Ordering::SeqCst);
@@ -620,6 +637,7 @@ pub(crate) fn fixture(
         features: Mutex::new(Vec::new()),
         action_requests: Mutex::new(Vec::new()),
         local_requests: Mutex::new(Vec::new()),
+        local_auth_calls: Mutex::new(Vec::new()),
         action_results: Mutex::new(HashMap::new()),
         on_mark_viewed: Mutex::new(None),
         model_session_removal: AtomicBool::new(false),
@@ -2547,12 +2565,21 @@ fn remote_access_settings_row_opens_this_computers_remote_pane() {
         assert!(visual.debug_bounds("COMPUTER_PICKER_PANEL").is_none());
         window
             .read_with(&visual, |root, _| {
-                assert!(root.remote_client.is_local());
+                assert_eq!(root.remote_client.is_active(), remote);
                 assert_eq!(root.route, AppRoute::Settings);
                 assert_eq!(
                     root.settings_page.pane,
                     crate::surfaces::settings::page::SettingsPane::Remote
                 );
+            })
+            .unwrap();
+        let back = visual.debug_bounds("SETTINGS_BACK").unwrap();
+        visual.simulate_click(back.center(), Default::default());
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |root, _| {
+                assert_eq!(root.remote_client.is_active(), remote);
+                assert_ne!(root.route, AppRoute::Settings);
             })
             .unwrap();
     }
@@ -10485,4 +10512,1274 @@ fn host_split_after_take_back_attaches_new_panes_with_if_free_and_preserves_host
             assert!(root.session_is_interactive("s5", cx));
         })
         .unwrap();
+}
+
+fn wait_until(
+    visual: &mut VisualTestContext,
+    label: &str,
+    mut pred: impl FnMut(&mut VisualTestContext) -> bool,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        visual.run_until_parked();
+        if pred(visual) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {label}"
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn settings_visit_keeps_remote_control_unread_and_restores_focus() {
+    use gpui::FocusHandle;
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    fake.features.lock().unwrap().push("markViewed".into());
+    *fake.on_mark_viewed.lock().unwrap() = Some(Box::new(|fake, session| {
+        fake.overview
+            .lock()
+            .unwrap()
+            .sessions
+            .get_mut(session)
+            .unwrap()
+            .status
+            .unread = false;
+    }));
+
+    let mut data = overview();
+    let mut shell = data.sessions["s"].clone();
+    shell.title = "zsh".into();
+    shell.runtime = Some("shell".into());
+    shell.status.status = Status::Working;
+    shell.status.unread = false;
+    data.sessions.get_mut("s").unwrap().status.status = Status::Working;
+    data.sessions.get_mut("s").unwrap().status.unread = false;
+    data.sessions.insert("s2".into(), shell);
+    data.tabs[0].panes = serde_json::from_value(serde_json::json!({
+        "split": "row",
+        "sizes": [0.5, 0.5],
+        "a": { "session": "s" },
+        "b": { "session": "s2" }
+    }))
+    .unwrap();
+    fake.set_overview(data.clone());
+
+    let window = add_window(&mut cx, &store, temp.path(), "settings-keep-control");
+    window.update(&mut cx, choose_host).unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.update(|window, _| window.activate_window());
+
+    wait_until(
+        &mut visual,
+        "split panes attached with desktop control",
+        |visual| {
+            window
+                .read_with(visual, |root, _| {
+                    root.remote_client.workspace().is_some_and(|remote| {
+                        remote.terminals.contains_key("s")
+                            && remote.terminals.contains_key("s2")
+                            && remote.terminals["s"]
+                                .attachment
+                                .terminal
+                                .control()
+                                .desktop()
+                            && remote.terminals["s2"]
+                                .attachment
+                                .terminal
+                                .control()
+                                .desktop()
+                    })
+                })
+                .unwrap()
+        },
+    );
+    wait_until(
+        &mut visual,
+        "focused pane s holds focus initially",
+        |visual| {
+            let focus = window
+                .read_with(visual, |root, _| {
+                    root.remote_client.workspace().unwrap().terminals["s"]
+                        .attachment
+                        .terminal_focus
+                        .clone()
+                })
+                .unwrap();
+            visual.update(|w, _| focus.is_focused(w))
+        },
+    );
+    // Switch split selection away from the default first pane (`s`) to `s2` before Settings.
+    let focus_s2: FocusHandle = window
+        .update(&mut visual, |root, window, cx| {
+            let pane_b = root.front_page_layout().unwrap().root.leaves()[1]
+                .id
+                .clone();
+            root.focus_pane(&pane_b, cx);
+            assert!(root.remote_client.focus_remote_terminal("s2", window, cx));
+            root.remote_client.workspace().unwrap().terminals["s2"]
+                .attachment
+                .terminal_focus
+                .clone()
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        "non-default split pane s2 holds focus",
+        |visual| visual.update(|w, _| focus_s2.is_focused(w)),
+    );
+
+    let (mirror_s, mirror_s2, sidebar_collapsed_before, sidebar_view_before) = window
+        .read_with(&visual, |root, cx| {
+            let remote = root.remote_client.workspace().unwrap();
+            let sidebar = remote.sidebar.read(cx);
+            (
+                remote.terminals["s"].attachment.terminal.clone(),
+                remote.terminals["s2"].attachment.terminal.clone(),
+                remote.sidebar_collapsed,
+                sidebar.active_only(cx),
+            )
+        })
+        .unwrap();
+    let attaches_before = fake.attaches.lock().unwrap().len();
+    let takes_before = fake.takes.lock().unwrap().len();
+    let claims_before = fake.claims.lock().unwrap().len();
+    let cancels_before = fake.cancels.load(Ordering::SeqCst);
+    let mark_viewed_before = fake.request_count("markViewed");
+
+    let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
+    visual.simulate_click(gear.center(), Default::default());
+    visual.run_until_parked();
+
+    assert!(visual.debug_bounds("SETTINGS_CHROME").is_some());
+    assert!(visual.debug_bounds("SIDEBAR_HOST_BUTTON").is_none());
+
+    window
+        .update(&mut visual, |root, w, cx| {
+            assert!(root.remote_client.is_active());
+            assert_eq!(root.route, crate::AppRoute::Settings);
+            assert!(!root.remote_unobstructed());
+            assert!(!root.front_page_has_islands());
+            assert!(!root.front_page_is_chat());
+            assert!(!root.launcher_page_visible());
+            assert!(!root.can_auto_focus_remote_terminal(w, cx));
+            let remote = root.remote_client.workspace().unwrap();
+            assert!(Arc::ptr_eq(
+                &mirror_s,
+                &remote.terminals["s"].attachment.terminal
+            ));
+            assert!(Arc::ptr_eq(
+                &mirror_s2,
+                &remote.terminals["s2"].attachment.terminal
+            ));
+            assert!(!focus_s2.is_focused(w));
+        })
+        .unwrap();
+
+    // Unread arrival while Settings covers the remote window must not acknowledge viewed.
+    data.sessions.get_mut("s2").unwrap().status.unread = true;
+    fake.set_overview(data.clone());
+    visual.run_until_parked();
+    assert_eq!(fake.request_count("markViewed"), mark_viewed_before);
+
+    // Keys and workspace actions inside Settings must not leak into the hidden remote panes.
+    fake.input.lock().unwrap().clear();
+    let action_requests_before = fake.action_requests.lock().unwrap().len();
+    visual.simulate_keystrokes("hello");
+    visual.dispatch_action(crate::ToggleSidebar);
+    visual.dispatch_action(crate::SwitchSidebarView);
+    visual.dispatch_action(crate::CommandPalette);
+    visual.dispatch_action(crate::NewTab);
+    visual.dispatch_action(crate::NewTerminal);
+    visual.dispatch_action(crate::NewMission);
+    visual.dispatch_action(crate::SelectTab1);
+    visual.dispatch_action(crate::SplitPaneRight);
+    visual.dispatch_action(crate::ToggleTerminalDrawer);
+    visual.dispatch_action(crate::CloseTab);
+    visual.run_until_parked();
+
+    assert!(fake.input.lock().unwrap().is_empty());
+    assert_eq!(
+        fake.action_requests.lock().unwrap().len(),
+        action_requests_before
+    );
+    window
+        .read_with(&visual, |root, cx| {
+            assert_eq!(root.route, crate::AppRoute::Settings);
+            assert!(!root.command_palette.read(cx).is_open());
+            let remote = root.remote_client.workspace().unwrap();
+            assert!(matches!(remote.active, Some(Item::Tab(ref id)) if id == "remote-tab"));
+            let leaves = remote.layouts["remote-tab"].root.leaves();
+            assert_eq!(leaves.len(), 2);
+            assert_eq!(remote.sidebar_collapsed, sidebar_collapsed_before);
+            assert_eq!(remote.sidebar.read(cx).active_only(cx), sidebar_view_before);
+        })
+        .unwrap();
+
+    // Back returns directly to the live split tab, restores non-default `s2` focus, and marks viewed.
+    let back = visual.debug_bounds("SETTINGS_BACK").unwrap();
+    visual.simulate_click(back.center(), Default::default());
+    wait_until(
+        &mut visual,
+        "return from settings restores non-default split pane focus",
+        |visual| visual.update(|window, _| focus_s2.is_focused(window)),
+    );
+
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+    assert_eq!(fake.attaches.lock().unwrap().len(), attaches_before);
+    assert_eq!(fake.takes.lock().unwrap().len(), takes_before);
+    assert_eq!(fake.claims.lock().unwrap().len(), claims_before);
+    let mark_viewed = action_trace(&fake, "markViewed");
+    assert_eq!(mark_viewed.len(), mark_viewed_before + 1);
+    assert_eq!(mark_viewed.last().unwrap()["session"], "s2");
+    window
+        .read_with(&visual, |root, cx| {
+            assert!(root.remote_client.is_active());
+            assert_ne!(root.route, crate::AppRoute::Settings);
+            assert_eq!(root.active_focused_session_id().as_deref(), Some("s2"));
+            assert!(root.session_is_interactive("s", cx));
+            assert!(root.session_is_interactive("s2", cx));
+            let remote = root.remote_client.workspace().unwrap();
+            assert!(Arc::ptr_eq(
+                &mirror_s,
+                &remote.terminals["s"].attachment.terminal
+            ));
+            assert!(Arc::ptr_eq(
+                &mirror_s2,
+                &remote.terminals["s2"].attachment.terminal
+            ));
+        })
+        .unwrap();
+
+    visual.simulate_keystrokes("z");
+    visual.run_until_parked();
+    assert_eq!(
+        fake.input.lock().unwrap().as_slice(),
+        &[("remote:host:s2".into(), b"z".to_vec())]
+    );
+
+    // Command Palette on the remote workspace remains free of Settings (REMOTE-WS-04),
+    // while Cmd+, / OpenSettings opens this computer's Settings and Escape returns directly to s2.
+    visual.dispatch_action(crate::CommandPalette);
+    visual.run_until_parked();
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.command_palette.update(cx, |palette, cx| {
+                assert!(palette.is_open());
+                assert!(!palette.contains_item("settings"));
+                palette.dismiss_without_focus(cx);
+            });
+            root.focus_active_terminal(window, cx);
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    visual.dispatch_action(crate::OpenSettings);
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| {
+            assert!(root.remote_client.is_active());
+            assert_eq!(root.route, crate::AppRoute::Settings);
+        })
+        .unwrap();
+    fake.input.lock().unwrap().clear();
+    visual.simulate_keystrokes("escape");
+    wait_until(
+        &mut visual,
+        "escape from OpenSettings restores non-default split pane focus",
+        |visual| visual.update(|window, _| focus_s2.is_focused(window)),
+    );
+    visual.simulate_keystrokes("x");
+    visual.run_until_parked();
+    assert_eq!(
+        fake.input.lock().unwrap().as_slice(),
+        &[("remote:host:s2".into(), b"x".to_vec())]
+    );
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+    assert_eq!(fake.attaches.lock().unwrap().len(), attaches_before);
+    assert_eq!(fake.takes.lock().unwrap().len(), takes_before);
+    assert_eq!(fake.claims.lock().unwrap().len(), claims_before);
+
+    // Host popup's "Remote access settings" opens this computer's Remote pane without dropping control.
+    let host_btn = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
+    visual.simulate_click(host_btn.center(), Default::default());
+    visual.run_until_parked();
+    let remote_settings = visual.debug_bounds("COMPUTER_PICKER_SETTINGS").unwrap();
+    visual.simulate_click(remote_settings.center(), Default::default());
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| {
+            assert!(root.remote_client.is_active());
+            assert_eq!(root.route, crate::AppRoute::Settings);
+            assert_eq!(
+                root.settings_page.pane,
+                crate::surfaces::settings::page::SettingsPane::Remote
+            );
+            let remote = root.remote_client.workspace().unwrap();
+            assert!(Arc::ptr_eq(
+                &mirror_s,
+                &remote.terminals["s"].attachment.terminal
+            ));
+            assert!(Arc::ptr_eq(
+                &mirror_s2,
+                &remote.terminals["s2"].attachment.terminal
+            ));
+        })
+        .unwrap();
+    let back = visual.debug_bounds("SETTINGS_BACK").unwrap();
+    visual.simulate_click(back.center(), Default::default());
+    wait_until(
+        &mut visual,
+        "return after Remote access settings restores s2 focus",
+        |visual| visual.update(|window, _| focus_s2.is_focused(window)),
+    );
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+    assert_eq!(fake.attaches.lock().unwrap().len(), attaches_before);
+    assert_eq!(fake.takes.lock().unwrap().len(), takes_before);
+    assert_eq!(fake.claims.lock().unwrap().len(), claims_before);
+}
+
+#[test]
+fn settings_visit_from_remote_mission_keeps_attachments_and_restores_focus() {
+    use gpui::FocusHandle;
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_missions(&fake);
+    fake.features.lock().unwrap().push("markViewed".into());
+    *fake.on_mark_viewed.lock().unwrap() = Some(Box::new(|fake, session| {
+        fake.overview
+            .lock()
+            .unwrap()
+            .sessions
+            .get_mut(session)
+            .unwrap()
+            .status
+            .unread = false;
+    }));
+
+    let mut data: Overview = serde_json::from_value(serde_json::json!({
+        "projects": [],
+        "tabs": [{"id": "remote-tab", "project": null, "name": "Remote tab", "pinned": false, "panes": {"session": null}, "shells": []}],
+        "missions": [{
+            "id": "remote-mission",
+            "project": null,
+            "title": "Host mission",
+            "crew": "Duo",
+            "state": "running",
+            "pinned": false,
+            "members": [{"handle": "slot-0", "session": "member", "lead": true}],
+            "asks": [],
+            "shells": ["drawer-shell"]
+        }],
+        "sessions": {
+            "member": {"kind": "missionSlot", "title": "Host member", "runtime": "codex", "cwd": "C:\\host\\work", "status": "working", "unread": false},
+            "drawer-shell": {"kind": "shell", "title": "Host shell", "runtime": null, "cwd": "C:\\host\\work", "status": "working", "unread": false}
+        }
+    }))
+    .unwrap();
+    fake.set_overview(data.clone());
+
+    let window = add_window(&mut cx, &store, temp.path(), "settings-remote-mission");
+    window
+        .update(&mut cx, |root, window, cx| {
+            // Preserve a non-Chat local route in the background across the remote Settings visit.
+            root.open_roles(window, cx);
+            assert_eq!(root.route, crate::AppRoute::Roles);
+            choose_host(root, window, cx);
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.select_remote_item(Item::Mission("remote-mission".into()), cx);
+        })
+        .unwrap();
+    visual.run_until_parked();
+    window
+        .update(&mut visual, |root, window, cx| {
+            let ws = root.remote_client.remote_mission_workspace().unwrap();
+            ws.update(cx, |ws, cx| ws.select_mission_session("member", window, cx));
+        })
+        .unwrap();
+
+    wait_until(
+        &mut visual,
+        "remote mission session attached and focused",
+        |visual| {
+            let ready = window
+                .read_with(visual, |root, _| {
+                    root.remote_client.workspace().and_then(|remote| {
+                        remote
+                            .terminals
+                            .get("member")
+                            .filter(|pane| pane.attachment.terminal.control().desktop())
+                            .map(|pane| pane.attachment.terminal_focus.clone())
+                    })
+                })
+                .unwrap();
+            ready.is_some_and(|focus| visual.update(|w, _| focus.is_focused(w)))
+        },
+    );
+
+    let (mirror, focus_s): (_, FocusHandle) = window
+        .read_with(&visual, |root, _| {
+            let pane = &root.remote_client.workspace().unwrap().terminals["member"];
+            (
+                pane.attachment.terminal.clone(),
+                pane.attachment.terminal_focus.clone(),
+            )
+        })
+        .unwrap();
+    let attaches_before = fake.attaches.lock().unwrap().len();
+    let takes_before = fake.takes.lock().unwrap().len();
+    let claims_before = fake.claims.lock().unwrap().len();
+    let cancels_before = fake.cancels.load(Ordering::SeqCst);
+    let mark_viewed_before = fake.request_count("markViewed");
+
+    let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
+    visual.simulate_click(gear.center(), Default::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("SETTINGS_CHROME").is_some());
+
+    // Unread mission update and deferred mission focus attempts must not leak while in Settings.
+    data.sessions.get_mut("member").unwrap().status.unread = true;
+    fake.set_overview(data.clone());
+    window
+        .update(&mut visual, |root, window, cx| {
+            let ws = root.remote_client.remote_mission_workspace().unwrap();
+            ws.update(cx, |ws, cx| ws.focus_active_mission_terminal(window, cx));
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    fake.input.lock().unwrap().clear();
+    visual.dispatch_action(crate::ToggleTerminalDrawer);
+    visual.dispatch_action(crate::CloseTab);
+    visual.dispatch_action(crate::ToggleSidebar);
+    visual.simulate_keystrokes("q");
+    visual.run_until_parked();
+
+    assert!(fake.input.lock().unwrap().is_empty());
+    assert_eq!(fake.request_count("markViewed"), mark_viewed_before);
+    assert!(!visual.update(|window, _| focus_s.is_focused(window)));
+    assert!(visual.debug_bounds("MISSION_TERMINAL_DRAWER").is_none());
+    window
+        .read_with(&visual, |root, cx| {
+            assert_eq!(root.route, crate::AppRoute::Settings);
+            let ws = root.remote_client.remote_mission_workspace().unwrap();
+            assert_eq!(ws.read(cx).remote_visible_sessions(), ["member"]);
+        })
+        .unwrap();
+
+    let back = visual.debug_bounds("SETTINGS_BACK").unwrap();
+    visual.simulate_click(back.center(), Default::default());
+    wait_until(
+        &mut visual,
+        "back returns directly to remote mission session",
+        |visual| visual.update(|window, _| focus_s.is_focused(window)),
+    );
+
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+    assert_eq!(fake.attaches.lock().unwrap().len(), attaches_before);
+    assert_eq!(fake.takes.lock().unwrap().len(), takes_before);
+    assert_eq!(fake.claims.lock().unwrap().len(), claims_before);
+    assert_eq!(fake.request_count("markViewed"), mark_viewed_before + 1);
+    window
+        .read_with(&visual, |root, cx| {
+            assert!(root.remote_client.is_active());
+            assert_eq!(root.route, crate::AppRoute::Roles);
+            assert!(matches!(
+                root.remote_client.workspace().unwrap().active,
+                Some(Item::Mission(ref id)) if id == "remote-mission"
+            ));
+            assert!(Arc::ptr_eq(
+                &mirror,
+                &root.remote_client.workspace().unwrap().terminals["member"]
+                    .attachment
+                    .terminal
+            ));
+            assert!(root.session_is_interactive("member", cx));
+        })
+        .unwrap();
+
+    visual.simulate_keystrokes("m");
+    visual.run_until_parked();
+    assert_eq!(
+        fake.input.lock().unwrap().as_slice(),
+        &[("remote:host:member".into(), b"m".to_vec())]
+    );
+
+    // Open the mission drawer shell while the member tab remains selected, focus the drawer
+    // shell, then visit Settings with Cmd+, and verify Back and Escape both keep the drawer
+    // shell focused instead of misdirecting typing to the center member tab.
+    window
+        .update(&mut visual, |root, window, cx| {
+            let ws = root.remote_client.remote_mission_workspace().unwrap();
+            ws.update(cx, |ws, cx| ws.toggle_terminal_drawer(window, cx));
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        "remote mission drawer shell attached and focused",
+        |visual| {
+            let ready = window
+                .read_with(visual, |root, _| {
+                    root.remote_client.workspace().and_then(|remote| {
+                        remote
+                            .terminals
+                            .get("drawer-shell")
+                            .filter(|pane| pane.attachment.terminal.control().desktop())
+                            .map(|pane| pane.attachment.terminal_focus.clone())
+                    })
+                })
+                .unwrap();
+            ready.is_some_and(|focus| visual.update(|w, _| focus.is_focused(w)))
+        },
+    );
+    let (mirror_drawer, focus_drawer): (_, FocusHandle) = window
+        .update(&mut visual, |root, w, cx| {
+            assert!(root
+                .remote_client
+                .remote_mission_workspace()
+                .unwrap()
+                .read(cx)
+                .drawer_focused(w, cx));
+            let pane = &root.remote_client.workspace().unwrap().terminals["drawer-shell"];
+            (
+                pane.attachment.terminal.clone(),
+                pane.attachment.terminal_focus.clone(),
+            )
+        })
+        .unwrap();
+    let attaches_with_drawer = fake.attaches.lock().unwrap().len();
+    let takes_with_drawer = fake.takes.lock().unwrap().len();
+    let claims_with_drawer = fake.claims.lock().unwrap().len();
+    let cancels_with_drawer = fake.cancels.load(Ordering::SeqCst);
+
+    visual.dispatch_action(crate::OpenSettings);
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, cx| {
+            assert_eq!(root.route, crate::AppRoute::Settings);
+            let ws = root.remote_client.remote_mission_workspace().unwrap();
+            assert_eq!(
+                ws.read(cx).remote_visible_sessions(),
+                ["member", "drawer-shell"]
+            );
+            let remote = root.remote_client.workspace().unwrap();
+            assert!(Arc::ptr_eq(
+                &mirror,
+                &remote.terminals["member"].attachment.terminal
+            ));
+            assert!(Arc::ptr_eq(
+                &mirror_drawer,
+                &remote.terminals["drawer-shell"].attachment.terminal
+            ));
+        })
+        .unwrap();
+
+    let back = visual.debug_bounds("SETTINGS_BACK").unwrap();
+    visual.simulate_click(back.center(), Default::default());
+    wait_until(
+        &mut visual,
+        "back restores remote mission drawer shell focus",
+        |visual| visual.update(|window, _| focus_drawer.is_focused(window)),
+    );
+    assert!(!visual.update(|window, _| focus_s.is_focused(window)));
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_with_drawer);
+    assert_eq!(fake.attaches.lock().unwrap().len(), attaches_with_drawer);
+    assert_eq!(fake.takes.lock().unwrap().len(), takes_with_drawer);
+    assert_eq!(fake.claims.lock().unwrap().len(), claims_with_drawer);
+
+    fake.input.lock().unwrap().clear();
+    visual.simulate_keystrokes("d");
+    visual.run_until_parked();
+    assert_eq!(
+        fake.input.lock().unwrap().as_slice(),
+        &[("remote:host:drawer-shell".into(), b"d".to_vec())]
+    );
+
+    // Repeat via host popup -> Remote access settings (which focuses picker before Settings) -> Back.
+    let host_btn = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
+    visual.simulate_click(host_btn.center(), Default::default());
+    visual.run_until_parked();
+    let remote_settings = visual.debug_bounds("COMPUTER_PICKER_SETTINGS").unwrap();
+    visual.simulate_click(remote_settings.center(), Default::default());
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| {
+            assert_eq!(root.route, crate::AppRoute::Settings);
+            assert_eq!(
+                root.settings_page.pane,
+                crate::surfaces::settings::page::SettingsPane::Remote
+            );
+        })
+        .unwrap();
+    let back = visual.debug_bounds("SETTINGS_BACK").unwrap();
+    visual.simulate_click(back.center(), Default::default());
+    wait_until(
+        &mut visual,
+        "host popup Settings Back restores remote mission drawer shell focus",
+        |visual| visual.update(|window, _| focus_drawer.is_focused(window)),
+    );
+    assert!(!visual.update(|window, _| focus_s.is_focused(window)));
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_with_drawer);
+    assert_eq!(fake.attaches.lock().unwrap().len(), attaches_with_drawer);
+    assert_eq!(fake.takes.lock().unwrap().len(), takes_with_drawer);
+    assert_eq!(fake.claims.lock().unwrap().len(), claims_with_drawer);
+    fake.input.lock().unwrap().clear();
+    visual.simulate_keystrokes("p");
+    visual.run_until_parked();
+    assert_eq!(
+        fake.input.lock().unwrap().as_slice(),
+        &[("remote:host:drawer-shell".into(), b"p".to_vec())]
+    );
+
+    // Repeat with Escape exit.
+    visual.dispatch_action(crate::OpenSettings);
+    visual.run_until_parked();
+    visual.simulate_keystrokes("escape");
+    wait_until(
+        &mut visual,
+        "escape restores remote mission drawer shell focus",
+        |visual| visual.update(|window, _| focus_drawer.is_focused(window)),
+    );
+    fake.input.lock().unwrap().clear();
+    visual.simulate_keystrokes("e");
+    visual.run_until_parked();
+    assert_eq!(
+        fake.input.lock().unwrap().as_slice(),
+        &[("remote:host:drawer-shell".into(), b"e".to_vec())]
+    );
+
+    // Moving focus back to the center member clears drawer focus memory before host-popup Settings.
+    window
+        .update(&mut visual, |root, window, cx| {
+            assert!(root
+                .remote_client
+                .focus_remote_terminal("member", window, cx));
+        })
+        .unwrap();
+    wait_until(&mut visual, "member regains focus", |visual| {
+        visual.update(|window, _| focus_s.is_focused(window))
+    });
+    let host_btn = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
+    visual.simulate_click(host_btn.center(), Default::default());
+    visual.run_until_parked();
+    let remote_settings = visual.debug_bounds("COMPUTER_PICKER_SETTINGS").unwrap();
+    visual.simulate_click(remote_settings.center(), Default::default());
+    visual.run_until_parked();
+    let back = visual.debug_bounds("SETTINGS_BACK").unwrap();
+    visual.simulate_click(back.center(), Default::default());
+    wait_until(
+        &mut visual,
+        "host popup Back keeps member focus after focusing member",
+        |visual| visual.update(|window, _| focus_s.is_focused(window)),
+    );
+    assert!(!visual.update(|window, _| focus_drawer.is_focused(window)));
+
+    // Re-focus drawer, then if the drawer shell ends while Settings is open, Back falls back to the member tab.
+    window
+        .update(&mut visual, |root, window, cx| {
+            let ws = root.remote_client.remote_mission_workspace().unwrap();
+            ws.update(cx, |ws, cx| {
+                ws.focus_mission_drawer_terminal("drawer-shell", window, cx)
+            });
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        "drawer regains focus before stop fallback",
+        |visual| visual.update(|window, _| focus_drawer.is_focused(window)),
+    );
+    visual.dispatch_action(crate::OpenSettings);
+    visual.run_until_parked();
+    data.sessions.get_mut("drawer-shell").unwrap().status.status = Status::Stopped;
+    fake.set_overview(data.clone());
+    visual.run_until_parked();
+    let back = visual.debug_bounds("SETTINGS_BACK").unwrap();
+    visual.simulate_click(back.center(), Default::default());
+    wait_until(
+        &mut visual,
+        "ended drawer shell falls back to active mission member focus",
+        |visual| visual.update(|window, _| focus_s.is_focused(window)),
+    );
+    fake.input.lock().unwrap().clear();
+    visual.simulate_keystrokes("f");
+    visual.run_until_parked();
+    assert_eq!(
+        fake.input.lock().unwrap().as_slice(),
+        &[("remote:host:member".into(), b"f".to_vec())]
+    );
+
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.return_to_this_computer(window, cx)
+        })
+        .unwrap();
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| {
+            assert!(root.remote_client.is_local());
+            assert_eq!(root.route, crate::AppRoute::Roles);
+        })
+        .unwrap();
+}
+
+#[test]
+fn settings_teardown_on_sign_out_reset_and_forget_lands_local() {
+    use super::model::{Command, Connection};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+
+    // 1. Signing out (or resetting remote access) while inside Settings from a remote window
+    // tears down the remote workspace in place and Back lands locally (REMOTE-LOCAL-05).
+    for reset in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = fixture(&mut cx, temp.path());
+        *fake.status.lock().unwrap() = RemoteStatus {
+            state: RemoteState::Paused,
+            account: Some(runner_core::remote::RemoteAccount {
+                username: "jason".into(),
+                display_name: "Jason".into(),
+            }),
+            host_name: Some("Laptop".into()),
+            ..Default::default()
+        };
+        store.update(&mut cx, |store, _| {
+            store.remote_status = Some(fake.status.lock().unwrap().clone());
+        });
+        enable_front_page(&fake);
+        let window = add_window(&mut cx, &store, temp.path(), "settings-signout-reset");
+        let local_route = window.read_with(&cx, |root, _| root.route.clone()).unwrap();
+        window.update(&mut cx, choose_host).unwrap();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        wait_until(&mut visual, "remote attached before settings", |visual| {
+            window
+                .read_with(visual, |root, _| {
+                    root.remote_client
+                        .workspace()
+                        .is_some_and(|r| r.terminals.contains_key("s"))
+                })
+                .unwrap()
+        });
+
+        let cancels_before = fake.cancels.load(Ordering::SeqCst);
+        let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
+        visual.simulate_click(gear.center(), Default::default());
+        visual.run_until_parked();
+        assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+
+        let nav_selector = if reset {
+            "SETTINGS_NAV_remote"
+        } else {
+            "SETTINGS_NAV_account"
+        };
+        let nav = visual.debug_bounds(nav_selector).unwrap();
+        visual.simulate_click(nav.center(), Default::default());
+        wait_until(
+            &mut visual,
+            "remote settings initial refresh settled",
+            |visual| {
+                window
+                    .read_with(visual, |root, _| !root.remote_settings_busy())
+                    .unwrap()
+            },
+        );
+
+        let action_selector = if reset {
+            "REMOTE_RESET_IDENTITY"
+        } else {
+            "ACCOUNT_SIGN_OUT"
+        };
+        let trigger = visual.debug_bounds(action_selector).unwrap();
+        visual.simulate_click(trigger.center(), Default::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_some());
+        window
+            .read_with(&visual, |root, _| {
+                assert!(root.remote_client.is_active());
+                assert_eq!(root.route, crate::AppRoute::Settings);
+            })
+            .unwrap();
+
+        let confirm = visual.debug_bounds("confirm-submit").unwrap();
+        visual.simulate_click(confirm.center(), Default::default());
+        let expected_call = if reset { "reset" } else { "logout" };
+        wait_until(
+            &mut visual,
+            "fake local transport handled sign out or reset",
+            |visual| {
+                fake.local_auth_calls
+                    .lock()
+                    .unwrap()
+                    .contains(&expected_call)
+                    && window
+                        .read_with(visual, |root, _| !root.remote_settings_busy())
+                        .unwrap()
+            },
+        );
+        assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_none());
+
+        // Propagate the resulting RemoteState::Off snapshot from the fake local transport to store.
+        let status_off = fake.status.lock().unwrap().clone();
+        store.update(&mut visual, |store, cx| {
+            store.remote_status = Some(status_off);
+            store.revisions.shell_settings += 1;
+            if reset {
+                store.remote_trust = Some(Default::default());
+            }
+            cx.notify();
+        });
+        wait_until(
+            &mut visual,
+            "remote client torn down in Settings",
+            |visual| {
+                window
+                    .read_with(visual, |root, _| root.remote_client.is_local())
+                    .unwrap()
+            },
+        );
+        assert!(fake.cancels.load(Ordering::SeqCst) > cancels_before);
+        assert!(visual.debug_bounds("SETTINGS_CHROME").is_some());
+        window
+            .read_with(&visual, |root, _| {
+                assert_eq!(root.route, crate::AppRoute::Settings);
+            })
+            .unwrap();
+
+        let back = visual.debug_bounds("SETTINGS_BACK").unwrap();
+        visual.simulate_click(back.center(), Default::default());
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |root, _| {
+                assert!(root.remote_client.is_local());
+                assert_eq!(root.route, local_route);
+            })
+            .unwrap();
+    }
+
+    // 2. Forgetting another computer keeps the active detour alive; forgetting the shown
+    // computer while in Settings tears down the remote workspace and Back lands locally.
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, clients) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    {
+        let mut list = fake.computers.lock().unwrap();
+        let mut other = list[1].clone();
+        other.id = "other".into();
+        other.name = "Mini".into();
+        other.fingerprint = "other-key".into();
+        list.push(other);
+    }
+    clients.update(&mut cx, |clients, cx| clients.refresh(cx));
+    cx.run_until_parked();
+
+    let window = add_window(&mut cx, &store, temp.path(), "settings-forget");
+    let local_route = window.read_with(&cx, |root, _| root.route.clone()).unwrap();
+    window.update(&mut cx, choose_host).unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    wait_until(&mut visual, "host attached before forget", |visual| {
+        window
+            .read_with(visual, |root, _| {
+                root.remote_client
+                    .workspace()
+                    .is_some_and(|r| r.terminals.contains_key("s"))
+            })
+            .unwrap()
+    });
+    let cancels_before = fake.cancels.load(Ordering::SeqCst);
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.open_this_computer_settings(Some("remote"), window, cx)
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    clients.read_with(&visual, |clients, _| {
+        clients.send(Command::Forget("other".into()))
+    });
+    wait_until(&mut visual, "unrelated computer forgotten", |visual| {
+        clients.read_with(visual, |clients, _| {
+            clients.connection("other") == Connection::Forgotten
+        })
+    });
+    window
+        .read_with(&visual, |root, _| {
+            assert!(root.remote_client.is_active());
+            assert_eq!(root.route, crate::AppRoute::Settings);
+        })
+        .unwrap();
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+
+    clients.read_with(&visual, |clients, _| {
+        clients.send(Command::Forget("host".into()))
+    });
+    wait_until(
+        &mut visual,
+        "shown computer forgotten tears down remote",
+        |visual| {
+            window
+                .read_with(visual, |root, _| root.remote_client.is_local())
+                .unwrap()
+        },
+    );
+    assert!(fake.cancels.load(Ordering::SeqCst) > cancels_before);
+    window
+        .read_with(&visual, |root, _| {
+            assert_eq!(root.route, crate::AppRoute::Settings);
+        })
+        .unwrap();
+
+    let back = visual.debug_bounds("SETTINGS_BACK").unwrap();
+    visual.simulate_click(back.center(), Default::default());
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| {
+            assert!(root.remote_client.is_local());
+            assert_eq!(root.route, local_route);
+        })
+        .unwrap();
+}
+
+#[test]
+fn settings_archived_and_local_notification_return_to_this_computer() {
+    use gpui::{px, Point, SystemNotificationResponse};
+    use runner_app::notifications;
+    use runner_app::pane_layout::{PaneLayout, TabSet};
+    use runner_core::protocol::node::{NodeRow, NodeType};
+    use runner_core::protocol::status::{
+        AgentObservation, AgentStatus, HumanInteraction, Lifecycle, WaitReason,
+    };
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+
+    store.update(&mut cx, |store, cx| {
+        let conn = store.test_core.db.get().unwrap();
+        let proj = runner_daemon::repo::project::create(
+            &conn,
+            "LocalProj",
+            temp.path().to_string_lossy().as_ref(),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions(id,title,status,agent_runtime,agent_command,project_id,cwd,archived_at)
+             VALUES ('arch-chat','Local Archived Chat','stopped','codex','codex',?1,?2,'2026-11-17T00:01:00Z')",
+            [proj.id.as_str(), temp.path().to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions(id,title,status,agent_runtime,agent_command,project_id,cwd)
+             VALUES ('local-notif','Local Working Chat','running','codex','codex',?1,?2)",
+            [proj.id.as_str(), temp.path().to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        store.refresh_sessions(cx);
+    });
+    let tab_row = NodeRow {
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+        parent_id: None,
+        position: 0,
+        node_type: NodeType::Tab,
+        name: None,
+        ref_id: None,
+        layout: Some(
+            PaneLayout::single(Some("local-notif"), &[])
+                .serialize()
+                .unwrap(),
+        ),
+        pinned_position: None,
+        last_completed_at: None,
+        last_viewed_at: None,
+        created_at: String::new(),
+    };
+    let client = store.read_with(&cx, |store, _| store.client.clone());
+    client
+        .node_tab_upsert(runner_core::protocol::node::NodeTabUpsertInput {
+            id: tab_row.id.clone(),
+            parent_id: None,
+            name: String::new(),
+            layout: tab_row.layout.clone().unwrap(),
+        })
+        .unwrap();
+    store.update(&mut cx, |store, _| store.nodes = vec![tab_row.clone()]);
+    cx.update(|cx| {
+        cx.set_app_identity("com.wycstudios.runner-dev", "Runner");
+        notifications::install(cx);
+    });
+
+    let window = add_window(&mut cx, &store, temp.path(), "settings-exit-local");
+    window
+        .update(&mut cx, |root, window, cx| {
+            root.tabs = TabSet::from_rows(&[tab_row]);
+            root.tabs.activate("01ARZ3NDEKTSV4RRFFQ69G5FAV");
+            choose_host(root, window, cx);
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+
+    // Part A: opening an archived local item from Settings -> Archived returns to this computer.
+    wait_until(
+        &mut visual,
+        "remote attached before archived check",
+        |visual| {
+            window
+                .read_with(visual, |root, _| {
+                    root.remote_client
+                        .workspace()
+                        .is_some_and(|r| r.terminals.contains_key("s"))
+                })
+                .unwrap()
+        },
+    );
+    let cancels_a = fake.cancels.load(Ordering::SeqCst);
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.open_this_computer_settings(Some("archived"), window, cx)
+        })
+        .unwrap();
+    wait_until(&mut visual, "archived row visible in Settings", |visual| {
+        visual.debug_bounds("ARCHIVED_ROW:arch-chat").is_some()
+    });
+    let row = visual.debug_bounds("ARCHIVED_ROW:arch-chat").unwrap();
+    visual.simulate_click(
+        Point::new(row.left() + px(24.), row.center().y),
+        Default::default(),
+    );
+    wait_until(
+        &mut visual,
+        "archived item returned window locally",
+        |visual| {
+            window
+                .read_with(visual, |root, _| {
+                    root.remote_client.is_local() && root.route == crate::AppRoute::ArchivedChat
+                })
+                .unwrap()
+        },
+    );
+    assert!(fake.cancels.load(Ordering::SeqCst) > cancels_a);
+
+    // Part B: clicking a local notification while Settings covers a remote window returns locally.
+    window.update(&mut visual, choose_host).unwrap();
+    wait_until(
+        &mut visual,
+        "remote reattached before notif check",
+        |visual| {
+            window
+                .read_with(visual, |root, _| {
+                    root.remote_client
+                        .workspace()
+                        .is_some_and(|r| r.terminals.contains_key("s"))
+                })
+                .unwrap()
+        },
+    );
+    let cancels_b = fake.cancels.load(Ordering::SeqCst);
+    let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
+    visual.simulate_click(gear.center(), Default::default());
+    visual.run_until_parked();
+
+    visual.update(|_, cx| {
+        store.update(cx, |store, cx| {
+            store.session_statuses.insert(
+                "local-notif".into(),
+                AgentStatus {
+                    lifecycle: Lifecycle::Running,
+                    observation: AgentObservation {
+                        interactions: vec![HumanInteraction {
+                            id: "notif-1".into(),
+                            reason: WaitReason::Approval,
+                            owners: Vec::new(),
+                            since: 1,
+                        }],
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+            store.revisions.activity += 1;
+            cx.notify();
+        });
+    });
+    wait_until(&mut visual, "local notification delivered", |_| {
+        cx.delivered_system_notifications()
+            .iter()
+            .any(|notice| notice.tag == "local-notif")
+    });
+    cx.simulate_system_notification_response(SystemNotificationResponse {
+        tag: "local-notif".into(),
+        action_id: None,
+    });
+    wait_until(
+        &mut visual,
+        "notification click returned window to local chat",
+        |visual| {
+            window
+                .read_with(visual, |root, _| {
+                    root.remote_client.is_local()
+                        && root.route == crate::AppRoute::Chat
+                        && root.tabs.active_tab_id() == Some("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+                })
+                .unwrap()
+        },
+    );
+    assert!(fake.cancels.load(Ordering::SeqCst) > cancels_b);
+}
+
+#[test]
+fn settings_escape_lets_dialogs_editors_and_recordings_consume_first() {
+    use gpui::FocusHandle;
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+
+    let window = add_window(&mut cx, &store, temp.path(), "settings-escape-order");
+    window.update(&mut cx, choose_host).unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.update(|window, _| window.activate_window());
+
+    wait_until(
+        &mut visual,
+        "remote session s attached and focused",
+        |visual| {
+            let ready = window
+                .read_with(visual, |root, _| {
+                    root.remote_client.workspace().and_then(|remote| {
+                        remote
+                            .terminals
+                            .get("s")
+                            .filter(|pane| pane.attachment.terminal.control().desktop())
+                            .map(|pane| pane.attachment.terminal_focus.clone())
+                    })
+                })
+                .unwrap();
+            ready.is_some_and(|focus| visual.update(|w, _| focus.is_focused(w)))
+        },
+    );
+    let focus_s: FocusHandle = window
+        .read_with(&visual, |root, _| {
+            root.remote_client.workspace().unwrap().terminals["s"]
+                .attachment
+                .terminal_focus
+                .clone()
+        })
+        .unwrap();
+
+    visual.dispatch_action(crate::OpenSettings);
+    visual.run_until_parked();
+
+    // 1. Active shortcut recording consumes Escape first without exiting Settings.
+    let shortcuts_nav = visual.debug_bounds("SETTINGS_NAV_shortcuts").unwrap();
+    visual.simulate_click(shortcuts_nav.center(), Default::default());
+    visual.run_until_parked();
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.start_shortcut_recording("new-chat", window, cx);
+            assert!(root.shortcut_recording_active());
+        })
+        .unwrap();
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| {
+            assert_eq!(root.route, crate::AppRoute::Settings);
+            assert!(!root.shortcut_recording_active());
+        })
+        .unwrap();
+
+    // 2. Active Agents custom-flags editor consumes Escape first without exiting Settings.
+    let agents_nav = visual.debug_bounds("SETTINGS_NAV_agents").unwrap();
+    visual.simulate_click(agents_nav.center(), Default::default());
+    wait_until(&mut visual, "agents cards loaded", |visual| {
+        visual.debug_bounds("AGENT_CARD_codex").is_some()
+    });
+    let codex_card = visual.debug_bounds("AGENT_CARD_codex").unwrap();
+    visual.simulate_click(
+        gpui::point(codex_card.left() + gpui::px(24.), codex_card.center().y),
+        Default::default(),
+    );
+    visual.run_until_parked();
+    let agents_pane = window
+        .update(&mut visual, |root, window, cx| {
+            let pane = root.agents_pane_for_test().unwrap();
+            pane.update(cx, |pane, pane_cx| {
+                pane.edit_custom_flags_for_test(
+                    runner_core::Runtime::Codex,
+                    "--unsaved-draft",
+                    window,
+                    pane_cx,
+                );
+            });
+            pane
+        })
+        .unwrap();
+    visual.run_until_parked();
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, cx| {
+            assert_eq!(root.route, crate::AppRoute::Settings);
+            assert!(agents_pane
+                .read(cx)
+                .custom_flags_matches_saved(runner_core::Runtime::Codex, cx));
+        })
+        .unwrap();
+
+    // 3. Open remote confirmation dialog consumes Escape first without exiting Settings.
+    let remote_nav = visual.debug_bounds("SETTINGS_NAV_remote").unwrap();
+    visual.simulate_click(remote_nav.center(), Default::default());
+    wait_until(&mut visual, "remote settings loaded", |visual| {
+        window
+            .read_with(visual, |root, _| !root.remote_settings_busy())
+            .unwrap()
+    });
+    let reset_btn = visual.debug_bounds("REMOTE_RESET_IDENTITY").unwrap();
+    visual.simulate_click(reset_btn.center(), Default::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_some());
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("CONFIRM_DIALOG_PANEL").is_none());
+    window
+        .read_with(&visual, |root, _| {
+            assert_eq!(root.route, crate::AppRoute::Settings);
+        })
+        .unwrap();
+
+    // 4. With no active dialog, editor, or recording, Escape leaves Settings to the remote terminal.
+    visual.simulate_keystrokes("escape");
+    wait_until(
+        &mut visual,
+        "clean escape exits Settings to live remote session",
+        |visual| visual.update(|window, _| focus_s.is_focused(window)),
+    );
+    fake.input.lock().unwrap().clear();
+    visual.simulate_keystrokes("k");
+    visual.run_until_parked();
+    assert_eq!(
+        fake.input.lock().unwrap().as_slice(),
+        &[("remote:host:s".into(), b"k".to_vec())]
+    );
 }

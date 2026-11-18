@@ -76,8 +76,17 @@ mod remote_isolation_tests {
         visual.run_until_parked();
         window
             .read_with(&visual, |root, _| {
-                assert!(root.remote_client.is_local());
+                assert!(root.remote_client.is_active());
                 assert_eq!(root.route, crate::AppRoute::Settings);
+            })
+            .unwrap();
+        let back = visual.debug_bounds("SETTINGS_BACK").unwrap();
+        visual.simulate_click(back.center(), Default::default());
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |root, _| {
+                assert!(root.remote_client.is_active());
+                assert_ne!(root.route, crate::AppRoute::Settings);
             })
             .unwrap();
     }
