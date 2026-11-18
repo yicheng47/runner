@@ -31,19 +31,24 @@ const MAX_MISSION_WRITES: usize = 8;
 
 // A shutting-down blocking pool drops a rejected task while holding its own lock, so a cleanup
 // dropped unrun moves to its own thread: dropping its captures there could offload again and
-// deadlock on that lock.
+// deadlock on that lock. The thread enters the runtime because cleanups spawn tasks, such as
+// `RemoteHandle::owner_gone`, and panic without one.
 pub(crate) fn offload_cleanup(f: impl FnOnce() + Send + 'static) {
-    struct Unrun<F: FnOnce() + Send + 'static>(Option<F>);
+    struct Unrun<F: FnOnce() + Send + 'static>(Option<F>, tokio::runtime::Handle);
     impl<F: FnOnce() + Send + 'static> Drop for Unrun<F> {
         fn drop(&mut self) {
             if let Some(f) = self.0.take() {
-                std::thread::spawn(f);
+                let handle = self.1.clone();
+                std::thread::spawn(move || {
+                    let _runtime = handle.enter();
+                    f()
+                });
             }
         }
     }
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => {
-            let mut cleanup = Unrun(Some(f));
+            let mut cleanup = Unrun(Some(f), handle.clone());
             handle.spawn_blocking(move || cleanup.0.take().unwrap()());
         }
         Err(_) => f(),

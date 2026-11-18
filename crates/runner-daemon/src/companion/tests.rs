@@ -3616,6 +3616,7 @@ fn cleanup_dropped_by_a_shutting_down_blocking_pool_still_runs_its_nested_cleanu
         fn drop(&mut self) {
             let done = self.0.clone();
             offload_cleanup(move || {
+                tokio::spawn(async {});
                 let _ = done.send(());
             });
         }
