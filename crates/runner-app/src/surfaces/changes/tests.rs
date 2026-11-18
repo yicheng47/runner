@@ -1041,6 +1041,7 @@ fn enter_while_diff_is_loading_focuses_diff_on_arrival_without_stealing_if_focus
     h.wait("alpha.rs diff", |h| h.has("CHANGES_DIFF_CODE"));
     h.click("CHANGES_ROW alpha.rs");
 
+    // A live watcher refresh can queue another reply while a diff is held.
     // 1. Hold diff loads, select `two_hunks.rs`, press Enter while Loading -> focus transfers on arrival.
     let view = h.view();
     view.update(&mut h.visual, |v, _| v.set_hold_diffs(true));

@@ -597,7 +597,12 @@ impl NativeRoot {
         let focused = layout.focused_session_id().map(str::to_owned);
         let (session, chat) = self.panel_session_for(focused.as_deref(), cx)?;
         if chat {
-            self.panel_chat_by_tab.insert(tab_id, session.clone());
+            if self.remote_client.is_active() {
+                self.remote_client
+                    .remember_panel_chat(tab_id, session.clone());
+            } else {
+                self.panel_chat_by_tab.insert(tab_id, session.clone());
+            }
         }
         Some(session)
     }
@@ -624,8 +629,12 @@ impl NativeRoot {
         if let Some(focused) = focused.filter(|id| chats.iter().any(|chat| chat.as_str() == *id)) {
             return Some((focused.to_owned(), true));
         }
-        self.panel_chat_by_tab
-            .get(&layout.id)
+        let remembered = if self.remote_client.is_active() {
+            self.remote_client.panel_chat_for(&layout.id)
+        } else {
+            self.panel_chat_by_tab.get(&layout.id)
+        };
+        remembered
             .filter(|id| chats.contains(id))
             .or_else(|| chats.first())
             .cloned()
@@ -652,10 +661,10 @@ impl NativeRoot {
     }
 
     pub(crate) fn ensure_active_chat_detail(&mut self, cx: &mut Context<Self>) {
+        let active = self.panel_session_id(cx);
         if self.remote_client.is_active() {
             return;
         }
-        let active = self.panel_session_id(cx);
         let loaded = self
             .active_chat_detail
             .as_ref()

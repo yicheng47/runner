@@ -101,10 +101,35 @@ impl SessionManager {
         allow_fresh_fallback: bool,
         fresh: bool,
     ) -> Result<SpawnedSession> {
-        let _claim = self
+        let claim = self
             .try_claim_resume(session_id)
             .ok_or_else(|| Error::msg(format!("session {session_id} is already being resumed")))?;
+        self.resume_claimed(
+            claim,
+            session_id,
+            cols,
+            rows,
+            app_data_dir,
+            pool,
+            events,
+            allow_fresh_fallback,
+            fresh,
+        )
+    }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn resume_claimed(
+        self: &Arc<Self>,
+        _claim: ResumeClaim,
+        session_id: &str,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        app_data_dir: &Path,
+        pool: Arc<DbPool>,
+        events: Arc<dyn SessionEvents>,
+        allow_fresh_fallback: bool,
+        fresh: bool,
+    ) -> Result<SpawnedSession> {
         // Validate the row + collect everything we need under a single
         // short-lived connection. We deliberately don't hold the conn
         // across the spawn (which itself grabs a pool slot for the

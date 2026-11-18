@@ -67,13 +67,11 @@ fn normalized_checkout_path(path: &Path) -> PathBuf {
 /// Shortens a checkout's path from the left (`…/feat-645-m4-host-api` for a
 /// linked worktree under `.worktrees/`, or `~/repos/…/runner` when deep).
 pub(crate) fn shorten_checkout_path(path: &Path, home: Option<&Path>) -> String {
-    if path
-        .parent()
-        .and_then(|parent| parent.file_name())
-        .is_some_and(|name| name == ".worktrees")
-        && let Some(leaf) = path.file_name()
-    {
-        return format!("…/{}", leaf.to_string_lossy());
+    let raw = path.to_string_lossy();
+    let trimmed = raw.trim_end_matches(['/', '\\']);
+    let mut rev = trimmed.rsplit(['/', '\\']).filter(|s| !s.is_empty());
+    if let (Some(leaf), Some(".worktrees")) = (rev.next(), rev.next()) {
+        return format!("…/{leaf}");
     }
     let abbreviated = abbreviate_home(HomePath::Native(path, home)).replace('\\', "/");
     let parts: Vec<&str> = abbreviated
@@ -180,6 +178,22 @@ pub(crate) fn collect_checkout_session_labels(
     worktrees: &[WorktreeEntry],
     cx: &App,
 ) -> BTreeMap<PathBuf, CheckoutSessionLabel> {
+    collect_checkout_session_labels_for(Some(context), own_checkout_top, worktrees, cx)
+}
+
+pub(crate) fn collect_launcher_checkout_session_labels(
+    worktrees: &[WorktreeEntry],
+    cx: &App,
+) -> BTreeMap<PathBuf, CheckoutSessionLabel> {
+    collect_checkout_session_labels_for(None, None, worktrees, cx)
+}
+
+fn collect_checkout_session_labels_for(
+    context: Option<&PanelContext>,
+    own_checkout_top: Option<&Path>,
+    worktrees: &[WorktreeEntry],
+    cx: &App,
+) -> BTreeMap<PathBuf, CheckoutSessionLabel> {
     let store = crate::app_store::global_app_store(cx).read(cx);
     let project_cwd = |project_id: Option<&str>| -> Option<PathBuf> {
         let id = project_id?;
@@ -195,7 +209,9 @@ pub(crate) fn collect_checkout_session_labels(
         if entry.archived_at.is_some() || entry.status != SessionStatus::Running {
             continue;
         }
-        if matches!(&context.subject, PanelSubject::Session(id) if id == &entry.session_id) {
+        if context.is_some_and(
+            |ctx| matches!(&ctx.subject, PanelSubject::Session(id) if id == &entry.session_id),
+        ) {
             continue;
         }
         let is_shell = entry.agent_runtime == "shell";
@@ -231,7 +247,9 @@ pub(crate) fn collect_checkout_session_labels(
         if summary.mission.archived_at.is_some() {
             continue;
         }
-        if matches!(&context.subject, PanelSubject::Mission(id) if id == &summary.mission.id) {
+        if context.is_some_and(
+            |ctx| matches!(&ctx.subject, PanelSubject::Mission(id) if id == &summary.mission.id),
+        ) {
             continue;
         }
         let Some(rows) = store.mission_sessions.get(&summary.mission.id) else {
@@ -279,7 +297,12 @@ pub(crate) fn collect_checkout_session_labels(
         }
     }
 
-    checkout_session_labels(context.surface, own_checkout_top, worktrees, &candidates)
+    checkout_session_labels(
+        context.map_or(PanelSurface::Chat, |ctx| ctx.surface),
+        own_checkout_top,
+        worktrees,
+        &candidates,
+    )
 }
 
 pub(crate) struct PickerSources<'a> {

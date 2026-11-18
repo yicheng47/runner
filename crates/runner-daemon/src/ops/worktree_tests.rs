@@ -141,6 +141,19 @@ fn seed_role_and_crew(core: &AppCore) -> (String, String) {
     ("r1".into(), "c1".into())
 }
 
+fn wait_mission_spawns(core: &AppCore, mission_id: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while core.sessions.has_pending_mission_spawns(mission_id)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::yield_now();
+    }
+    assert!(
+        !core.sessions.has_pending_mission_spawns(mission_id),
+        "mission {mission_id} background spawns did not finish before test action"
+    );
+}
+
 #[test]
 fn git_aware_project_membership_and_precedence_across_chat_terminal_and_mission() {
     let root = tempfile::Builder::new()
@@ -706,9 +719,9 @@ fn restore_unarchive_resume_restart_add_role_and_boot_resume_on_missing_worktree
     }
 
     // Explicit `session_resume` recreates the missing chat and shell worktrees.
-    session::session_resume(&core, &chat.session.id, None, None).unwrap();
+    session::session_resume(&core, &chat.session.id, None, None, false).unwrap();
     assert!(chat_wt.is_dir());
-    session::session_resume(&core, &shell.id, None, None).unwrap();
+    session::session_resume(&core, &shell.id, None, None, false).unwrap();
     assert!(shell_wt.is_dir());
 
     // `mission_resume_with_size` recreates the missing mission worktree before resuming its slot.
@@ -774,11 +787,12 @@ fn restore_unarchive_resume_restart_add_role_and_boot_resume_on_missing_worktree
         &["worktree", "remove", &mission_wt.to_string_lossy()],
     );
 
-    session::session_unarchive(&core, &chat.session.id).unwrap();
+    session::session_unarchive(&core, &chat.session.id, false).unwrap();
     assert!(chat_wt.is_dir());
     crate::daemon::block_on(mission::mission_unarchive_impl(
         &core,
         started.mission.id.clone(),
+        false,
     ))
     .unwrap();
     assert!(mission_wt.is_dir());
@@ -790,7 +804,7 @@ fn restore_unarchive_resume_restart_add_role_and_boot_resume_on_missing_worktree
         &["worktree", "remove", &chat_wt.to_string_lossy()],
     );
     git(&main_repo, &["branch", "-D", "feat/chat-rec"]);
-    let err = session::session_unarchive(&core, &chat.session.id)
+    let err = session::session_unarchive(&core, &chat.session.id, false)
         .unwrap_err()
         .to_string();
     assert!(err.contains("restore in main checkout"), "got: {err}");
@@ -936,7 +950,7 @@ fn worktree_remove_synchronizes_with_concurrent_starts_and_unarchive() {
         let core_unarchive = Arc::clone(&core);
         let sid = cwd_session_id.clone();
         let unarchive_handle =
-            std::thread::spawn(move || session::session_unarchive(&core_unarchive, &sid));
+            std::thread::spawn(move || session::session_unarchive(&core_unarchive, &sid, false));
 
         ready_rx.recv().unwrap();
         let core_remove = Arc::clone(&core);
@@ -1183,9 +1197,9 @@ fn external_worktree_with_and_without_prunable_entry_restores_and_blocks_boot_re
     }
 
     // Explicit resume recreates the external worktree from prunable registration.
-    session::session_resume(&core, &chat.session.id, None, None).unwrap();
+    session::session_resume(&core, &chat.session.id, None, None, false).unwrap();
     assert!(outside_wt.is_dir());
-    session::session_resume(&core, &shell.id, None, None).unwrap();
+    session::session_resume(&core, &shell.id, None, None, false).unwrap();
 
     // 2. Removed with `git worktree remove ../feat-outside` (NO prunable entry left).
     mark_resumable_and_stop();
@@ -1225,13 +1239,13 @@ fn external_worktree_with_and_without_prunable_entry_restores_and_blocks_boot_re
     }
 
     // Explicit resume recreates `../feat-outside` cleanly via unique flattened match.
-    session::session_resume(&core, &chat.session.id, None, None).unwrap();
+    session::session_resume(&core, &chat.session.id, None, None, false).unwrap();
     assert!(outside_wt.is_dir());
     assert_eq!(
         git(&outside_wt, &["branch", "--show-current"]).trim(),
         "feat/outside"
     );
-    session::session_resume(&core, &shell.id, None, None).unwrap();
+    session::session_resume(&core, &shell.id, None, None, false).unwrap();
 
     // 3. Ambiguous branch match preserves restore fallback error and blocks boot resume.
     mark_resumable_and_stop();
@@ -1249,7 +1263,7 @@ fn external_worktree_with_and_without_prunable_entry_restores_and_blocks_boot_re
     assert_eq!(ambig_report.errors.len(), 2);
     assert!(!outside_wt.exists());
 
-    let ambig_err = session::session_resume(&core, &shell.id, None, None)
+    let ambig_err = session::session_resume(&core, &shell.id, None, None, false)
         .unwrap_err()
         .to_string();
     assert!(
@@ -1293,7 +1307,7 @@ fn external_worktree_with_and_without_prunable_entry_restores_and_blocks_boot_re
 
     git(&main_repo, &["worktree", "remove", &outside_str]);
     assert!(!outside_wt.exists());
-    session::session_resume(&core, &sub_chat.session.id, None, None).unwrap();
+    session::session_resume(&core, &sub_chat.session.id, None, None, false).unwrap();
     assert!(sub_src.is_dir());
     assert_eq!(
         repo::session::get_row(&core.db.get().unwrap(), &sub_chat.session.id)
@@ -1315,7 +1329,7 @@ fn external_worktree_with_and_without_prunable_entry_restores_and_blocks_boot_re
     }
     git(&main_repo, &["branch", "src", "main"]);
     git(&main_repo, &["worktree", "remove", &outside_str]);
-    let sub_ambig_err = session::session_resume(&core, &sub_chat.session.id, None, None)
+    let sub_ambig_err = session::session_resume(&core, &sub_chat.session.id, None, None, false)
         .unwrap_err()
         .to_string();
     assert!(
@@ -1374,7 +1388,7 @@ fn external_worktree_with_and_without_prunable_entry_restores_and_blocks_boot_re
         crate::files::worktree_checkout(&core, &plain_dir, Some(&project.id)).unwrap(),
         runner_core::protocol::worktree::WorktreeCheckout::Plain { missing: true }
     );
-    session::session_unarchive(&core, &plain_chat.session.id).unwrap();
+    session::session_unarchive(&core, &plain_chat.session.id, false).unwrap();
     assert!(!plain_dir.exists());
 
     let plain_report = crate::daemon::resume::consume_resume_on_launch_until(
@@ -1387,4 +1401,656 @@ fn external_worktree_with_and_without_prunable_entry_restores_and_blocks_boot_re
     assert_eq!(plain_report.resumed, vec![plain_shell.id.clone()]);
     assert!(plain_report.errors.is_empty(), "{:?}", plain_report.errors);
     assert!(!plain_dir.exists());
+}
+
+#[test]
+fn restore_in_main_checkout_fallback_rewrites_cwd_preserving_existing_subfolder_across_unarchive_and_resume(
+) {
+    let root = tempfile::Builder::new()
+        .prefix("1213-m2-main-fallback-")
+        .tempdir()
+        .unwrap();
+    let app_data = root.path().join("app-data");
+    let main_repo = root.path().join("main-repo");
+    std::fs::create_dir_all(&app_data).unwrap();
+    std::fs::create_dir_all(&main_repo).unwrap();
+    init_repo(&main_repo);
+    std::fs::create_dir_all(main_repo.join("apps/web")).unwrap();
+    std::fs::write(main_repo.join("apps/web/index.ts"), "export {};\n").unwrap();
+    git(&main_repo, &["add", "-A"]);
+    git(&main_repo, &["commit", "-q", "-m", "add apps/web"]);
+
+    let core = Arc::new(core_with_mock_runtime(&app_data));
+    let (role_id, crew_id) = seed_role_and_crew(&core);
+    let project = project::project_create_checked(
+        &core,
+        "Main Fallback".into(),
+        main_repo.to_string_lossy().into_owned(),
+    )
+    .unwrap();
+    let norm_main = normalize_checkout_path(&main_repo);
+    let norm_web = norm_main.join("apps/web");
+
+    // 1. Archived chat in worktree root: branch deleted -> `restore_in_main = true` moves cwd to main root.
+    let wt_root_chat = session::session_start_chat(
+        &core,
+        StartDirectSessionArgs {
+            role_id: Some(role_id.clone()),
+            scope: Some(ProjectScope::Project(project.id.clone())),
+            worktree: Some(WorktreeSpec {
+                branch: "feat/root-gone".into(),
+                base: None,
+            }),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let wt_root_path = std::path::PathBuf::from(
+        repo::session::get_row(&core.db.get().unwrap(), &wt_root_chat.session.id)
+            .unwrap()
+            .unwrap()
+            .cwd
+            .unwrap(),
+    );
+    session::session_archive_direct(&core, &wt_root_chat.session.id).unwrap();
+    git(
+        &main_repo,
+        &["worktree", "remove", &wt_root_path.to_string_lossy()],
+    );
+    git(&main_repo, &["branch", "-D", "feat/root-gone"]);
+
+    assert!(session::session_unarchive(&core, &wt_root_chat.session.id, false).is_err());
+    session::session_unarchive(&core, &wt_root_chat.session.id, true).unwrap();
+    let restored_root = repo::session::get_row(&core.db.get().unwrap(), &wt_root_chat.session.id)
+        .unwrap()
+        .unwrap();
+    assert!(restored_root.archived_at.is_none());
+    assert_eq!(
+        normalize_checkout_path(Path::new(restored_root.cwd.as_deref().unwrap())),
+        norm_main
+    );
+
+    // 2. Archived chat in shared subfolder `apps/web` preserves `main/apps/web`.
+    let sub_wt = core
+        .files
+        .worktree_create(&main_repo, "feat/sub-gone", None)
+        .unwrap();
+    let sub_web = sub_wt.path.join("apps/web");
+    let sub_chat = session::session_start_chat(
+        &core,
+        StartDirectSessionArgs {
+            role_id: Some(role_id.clone()),
+            cwd: Some(sub_web.to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    session::session_archive_direct(&core, &sub_chat.session.id).unwrap();
+    git(
+        &main_repo,
+        &["worktree", "remove", &sub_wt.path.to_string_lossy()],
+    );
+    git(&main_repo, &["branch", "-D", "feat/sub-gone"]);
+
+    session::session_unarchive(&core, &sub_chat.session.id, true).unwrap();
+    let restored_sub = repo::session::get_row(&core.db.get().unwrap(), &sub_chat.session.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        normalize_checkout_path(Path::new(restored_sub.cwd.as_deref().unwrap())),
+        norm_web
+    );
+
+    // 3. Archived chat in branch-only subfolder falls back to `main_repo` root.
+    let only_wt = core
+        .files
+        .worktree_create(&main_repo, "feat/only-sub", None)
+        .unwrap();
+    let branch_only_dir = only_wt.path.join("only_on_branch");
+    std::fs::create_dir_all(&branch_only_dir).unwrap();
+    std::fs::write(branch_only_dir.join("note.txt"), "branch only\n").unwrap();
+    git(&only_wt.path, &["add", "-A"]);
+    git(&only_wt.path, &["commit", "-q", "-m", "branch only dir"]);
+    let only_chat = session::session_start_chat(
+        &core,
+        StartDirectSessionArgs {
+            role_id: Some(role_id.clone()),
+            cwd: Some(branch_only_dir.to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    session::session_archive_direct(&core, &only_chat.session.id).unwrap();
+    git(
+        &main_repo,
+        &["worktree", "remove", &only_wt.path.to_string_lossy()],
+    );
+    git(&main_repo, &["branch", "-D", "feat/only-sub"]);
+
+    session::session_unarchive(&core, &only_chat.session.id, true).unwrap();
+    let restored_only = repo::session::get_row(&core.db.get().unwrap(), &only_chat.session.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        normalize_checkout_path(Path::new(restored_only.cwd.as_deref().unwrap())),
+        norm_main
+    );
+
+    // 4. Stopped external chat in deleted worktree -> `session_resume(..., true)` rewrites cwd & spawns.
+    let ext_wt = root.path().join("feat-ext-gone");
+    git(
+        &main_repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feat/ext-gone",
+            &ext_wt.to_string_lossy(),
+            "main",
+        ],
+    );
+    let ext_web = ext_wt.join("apps/web");
+    let ext_chat = session::session_start_chat(
+        &core,
+        StartDirectSessionArgs {
+            role_id: Some(role_id),
+            cwd: Some(ext_web.to_string_lossy().into_owned()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    session::session_stop(&core, &ext_chat.session.id).unwrap();
+    core.db
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET status = 'stopped' WHERE id = ?1",
+            [&ext_chat.session.id],
+        )
+        .unwrap();
+    git(
+        &main_repo,
+        &["worktree", "remove", &ext_wt.to_string_lossy()],
+    );
+    git(&main_repo, &["branch", "-D", "feat/ext-gone"]);
+
+    assert!(session::session_resume(&core, &ext_chat.session.id, None, None, false).is_err());
+    session::session_resume(&core, &ext_chat.session.id, None, None, true).unwrap();
+    let resumed_ext = repo::session::get_row(&core.db.get().unwrap(), &ext_chat.session.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        normalize_checkout_path(Path::new(resumed_ext.cwd.as_deref().unwrap())),
+        norm_web
+    );
+
+    // 5. Mission `mission_unarchive(..., true)` & `session_resume(..., true)` update mission + slot cwds.
+    let started_mission = crate::daemon::block_on(mission::mission_start_impl_with_size(
+        &core,
+        MissionStart {
+            crew_id: Some(crew_id.clone()),
+            scope: ProjectScope::Project(project.id.clone()),
+            title: "Fallback mission".into(),
+            goal_override: Some("Test".into()),
+            cwd: None,
+            worktree: Some(WorktreeSpec {
+                branch: "feat/mission-gone".into(),
+                base: None,
+            }),
+            started_by_session_id: None,
+            no_report: false,
+        },
+        None,
+    ))
+    .unwrap();
+    wait_mission_spawns(&core, &started_mission.mission.id);
+    let m_wt = std::path::PathBuf::from(started_mission.mission.cwd.clone().unwrap());
+    let slot_sid = session::session_list(&core, &started_mission.mission.id).unwrap()[0]
+        .session
+        .id
+        .clone();
+    crate::daemon::block_on(mission::mission_stop_impl(
+        &core,
+        started_mission.mission.id.clone(),
+    ))
+    .unwrap();
+    crate::daemon::block_on(mission::mission_archive_impl(
+        &core,
+        started_mission.mission.id.clone(),
+    ))
+    .unwrap();
+    git(&main_repo, &["worktree", "remove", &m_wt.to_string_lossy()]);
+    git(&main_repo, &["branch", "-D", "feat/mission-gone"]);
+
+    assert!(crate::daemon::block_on(mission::mission_unarchive(
+        &core,
+        started_mission.mission.id.clone(),
+        false,
+    ))
+    .is_err());
+    let mut events = core.events.subscribe();
+    let reopened = crate::daemon::block_on(mission::mission_unarchive(
+        &core,
+        started_mission.mission.id.clone(),
+        true,
+    ))
+    .unwrap();
+    assert_eq!(
+        normalize_checkout_path(Path::new(reopened.cwd.as_deref().unwrap())),
+        norm_main
+    );
+    let slot_row = repo::session::get_row(&core.db.get().unwrap(), &slot_sid)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        normalize_checkout_path(Path::new(slot_row.cwd.as_deref().unwrap())),
+        norm_main
+    );
+    assert!(std::iter::from_fn(|| events.try_recv().ok()).any(|ev| ev.name == "mission/changed"));
+
+    // Mission stopped slot `session_resume(..., true)` also updates mission & slot cwd.
+    let sub_mission_wt = core
+        .files
+        .worktree_create(&main_repo, "feat/mission-slot-gone", None)
+        .unwrap();
+    let sub_mission = crate::daemon::block_on(mission::mission_start_impl_with_size(
+        &core,
+        MissionStart {
+            crew_id: Some(crew_id),
+            scope: ProjectScope::Project(project.id),
+            title: "Slot fallback mission".into(),
+            goal_override: Some("Test".into()),
+            cwd: Some(
+                sub_mission_wt
+                    .path
+                    .join("apps/web")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            worktree: None,
+            started_by_session_id: None,
+            no_report: false,
+        },
+        None,
+    ))
+    .unwrap();
+    wait_mission_spawns(&core, &sub_mission.mission.id);
+    let sub_slot_sid = session::session_list(&core, &sub_mission.mission.id).unwrap()[0]
+        .session
+        .id
+        .clone();
+    session::session_stop(&core, &sub_slot_sid).unwrap();
+    core.db
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET status = 'stopped' WHERE id = ?1",
+            [&sub_slot_sid],
+        )
+        .unwrap();
+    git(
+        &main_repo,
+        &["worktree", "remove", &sub_mission_wt.path.to_string_lossy()],
+    );
+    git(&main_repo, &["branch", "-D", "feat/mission-slot-gone"]);
+
+    assert!(session::session_resume(&core, &sub_slot_sid, None, None, false).is_err());
+    session::session_resume(&core, &sub_slot_sid, None, None, true).unwrap();
+    let updated_mission = repo::mission::get(&core.db.get().unwrap(), &sub_mission.mission.id)
+        .unwrap()
+        .unwrap();
+    let updated_slot = repo::session::get_row(&core.db.get().unwrap(), &sub_slot_sid)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        normalize_checkout_path(Path::new(updated_mission.cwd.as_deref().unwrap())),
+        norm_web
+    );
+    assert_eq!(
+        normalize_checkout_path(Path::new(updated_slot.cwd.as_deref().unwrap())),
+        norm_web
+    );
+}
+
+#[test]
+fn restore_in_main_synchronizes_with_worktree_gate() {
+    let root = tempfile::Builder::new()
+        .prefix("1213-m2-gate-")
+        .tempdir()
+        .unwrap();
+    let app_data = root.path().join("app-data");
+    let main_repo = root.path().join("repo");
+    std::fs::create_dir_all(&app_data).unwrap();
+    std::fs::create_dir_all(&main_repo).unwrap();
+    init_repo(&main_repo);
+
+    let core = Arc::new(core_with_mock_runtime(&app_data));
+    let (role_id, _crew_id) = seed_role_and_crew(&core);
+    let project = project::project_create_checked(
+        &core,
+        "Gate Fallback".into(),
+        main_repo.to_string_lossy().into_owned(),
+    )
+    .unwrap();
+    let chat = session::session_start_chat(
+        &core,
+        StartDirectSessionArgs {
+            role_id: Some(role_id),
+            scope: Some(ProjectScope::Project(project.id)),
+            worktree: Some(WorktreeSpec {
+                branch: "feat/gate-fallback".into(),
+                base: None,
+            }),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let wt_path = std::path::PathBuf::from(
+        repo::session::get_row(&core.db.get().unwrap(), &chat.session.id)
+            .unwrap()
+            .unwrap()
+            .cwd
+            .unwrap(),
+    );
+    session::session_stop(&core, &chat.session.id).unwrap();
+    core.db
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET status = 'stopped' WHERE id = ?1",
+            [&chat.session.id],
+        )
+        .unwrap();
+    git(
+        &main_repo,
+        &["worktree", "remove", &wt_path.to_string_lossy()],
+    );
+    git(&main_repo, &["branch", "-D", "feat/gate-fallback"]);
+
+    // Hold registration gate inside `session_resume(..., true)` and prove write lock contends.
+    let _other_wt = core
+        .files
+        .worktree_create(&main_repo, "feat/other-remove", None)
+        .unwrap();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (proceed_tx, proceed_rx) = mpsc::channel();
+    let (contended_tx, contended_rx) = mpsc::channel();
+    core.files
+        .worktree_gate()
+        .pause_next_registration(ready_tx, proceed_rx);
+    core.files
+        .worktree_gate()
+        .notify_write_contended(contended_tx);
+
+    let core_resume = Arc::clone(&core);
+    let sid = chat.session.id.clone();
+    let resume_handle =
+        std::thread::spawn(move || session::session_resume(&core_resume, &sid, None, None, true));
+
+    ready_rx.recv().unwrap();
+    let core_remove = Arc::clone(&core);
+    let repo_remove = main_repo.clone();
+    let remove_handle = std::thread::spawn(move || {
+        crate::files::worktree_remove(&core_remove, &repo_remove, "feat/other-remove")
+    });
+
+    contended_rx.recv().unwrap();
+    proceed_tx.send(()).unwrap();
+
+    resume_handle.join().unwrap().unwrap();
+    remove_handle.join().unwrap().unwrap();
+    let updated = repo::session::get_row(&core.db.get().unwrap(), &chat.session.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        normalize_checkout_path(Path::new(updated.cwd.as_deref().unwrap())),
+        normalize_checkout_path(&main_repo)
+    );
+}
+
+#[test]
+fn restore_in_main_refuses_while_sibling_running_or_resuming_and_relocates_once_stopped() {
+    let temp = tempfile::Builder::new()
+        .prefix("1213-m2-r1-")
+        .tempdir()
+        .unwrap();
+    let main_repo = temp.path().join("repo");
+    std::fs::create_dir_all(&main_repo).unwrap();
+    init_repo(&main_repo);
+    std::fs::create_dir_all(main_repo.join("apps/web")).unwrap();
+    std::fs::write(main_repo.join("apps/web/README.md"), "sub\n").unwrap();
+    git(&main_repo, &["add", "-A"]);
+    git(&main_repo, &["commit", "-q", "-m", "sub"]);
+
+    let core = Arc::new(core_with_mock_runtime(temp.path()));
+    let (_role_id, crew_id) = seed_role_and_crew(&core);
+    {
+        let conn = core.db.get().unwrap();
+        insert_test_slot(&conn, "sl2", &crew_id, "r2", "reviewer", 1, false);
+    }
+    let project = project::project_create_checked(
+        &core,
+        "R1 Mission".into(),
+        main_repo.to_string_lossy().into_owned(),
+    )
+    .unwrap();
+
+    let wt = main_repo.join(".worktrees/feat-r1-mission");
+    git(
+        &main_repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat/r1-mission",
+            &wt.to_string_lossy(),
+        ],
+    );
+    let wt_sub = wt.join("apps/web");
+    let wt_sub_str = wt_sub.to_string_lossy().into_owned();
+
+    let started = crate::daemon::block_on(mission::mission_start_impl_with_size(
+        &core,
+        MissionStart {
+            crew_id: Some(crew_id),
+            scope: ProjectScope::Project(project.id),
+            title: "Two slot R1 mission".into(),
+            goal_override: Some("Test sibling guard".into()),
+            cwd: Some(wt_sub_str),
+            worktree: None,
+            started_by_session_id: None,
+            no_report: false,
+        },
+        None,
+    ))
+    .unwrap();
+    wait_mission_spawns(&core, &started.mission.id);
+    let sessions = session::session_list(&core, &started.mission.id).unwrap();
+    assert_eq!(sessions.len(), 2);
+    let slot_a = sessions[0].session.id.clone();
+    let slot_b = sessions[1].session.id.clone();
+
+    // Remove worktree and delete branch so restore fails unless restore_in_main relocates to main.
+    session::session_stop(&core, &slot_a).unwrap();
+    core.db
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET status = 'stopped' WHERE id = ?1",
+            [&slot_a],
+        )
+        .unwrap();
+    git(&main_repo, &["worktree", "remove", &wt.to_string_lossy()]);
+    git(&main_repo, &["branch", "-D", "feat/r1-mission"]);
+
+    let expected_missing_sub = normalize_checkout_path(&wt_sub);
+    let expected_main_sub = normalize_checkout_path(&main_repo.join("apps/web"));
+
+    // 1. Sibling slot_b is still Running -> restore_in_main refuses without mutating cwds.
+    let err = session::session_resume(&core, &slot_a, None, None, true).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "cannot restore mission checkout to main while another mission member is running"
+        ),
+        "unexpected error: {err}"
+    );
+    {
+        let conn = core.db.get().unwrap();
+        assert_eq!(
+            normalize_checkout_path(Path::new(
+                repo::session::get_row(&conn, &slot_a)
+                    .unwrap()
+                    .unwrap()
+                    .cwd
+                    .as_deref()
+                    .unwrap()
+            )),
+            expected_missing_sub
+        );
+        assert_eq!(
+            normalize_checkout_path(Path::new(
+                repo::session::get_row(&conn, &slot_b)
+                    .unwrap()
+                    .unwrap()
+                    .cwd
+                    .as_deref()
+                    .unwrap()
+            )),
+            expected_missing_sub
+        );
+        assert_eq!(
+            normalize_checkout_path(Path::new(
+                repo::mission::get(&conn, &started.mission.id)
+                    .unwrap()
+                    .unwrap()
+                    .cwd
+                    .as_deref()
+                    .unwrap()
+            )),
+            expected_missing_sub
+        );
+    }
+
+    // 2. Sibling slot_b stopped, but holds ResumeClaim -> restore_in_main refuses without mutating cwds.
+    session::session_stop(&core, &slot_b).unwrap();
+    core.db
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET status = 'stopped' WHERE id = ?1",
+            [&slot_b],
+        )
+        .unwrap();
+    let claim_b = core.sessions.try_claim_resume(&slot_b).unwrap();
+    let err = session::session_resume(&core, &slot_a, None, None, true).unwrap_err();
+    assert!(
+        err.to_string().contains(
+            "cannot restore mission checkout to main while another mission member is resuming"
+        ),
+        "unexpected error: {err}"
+    );
+    {
+        let conn = core.db.get().unwrap();
+        assert_eq!(
+            normalize_checkout_path(Path::new(
+                repo::session::get_row(&conn, &slot_a)
+                    .unwrap()
+                    .unwrap()
+                    .cwd
+                    .as_deref()
+                    .unwrap()
+            )),
+            expected_missing_sub
+        );
+        assert_eq!(
+            normalize_checkout_path(Path::new(
+                repo::session::get_row(&conn, &slot_b)
+                    .unwrap()
+                    .unwrap()
+                    .cwd
+                    .as_deref()
+                    .unwrap()
+            )),
+            expected_missing_sub
+        );
+    }
+    drop(claim_b);
+
+    // 3. Both stopped and idle -> restore_in_main relocates mission + all slots together; next slot resumes without restore_in_main.
+    let resumed_a = session::session_resume(&core, &slot_a, None, None, true).unwrap();
+    assert_eq!(resumed_a.id, slot_a);
+    {
+        let conn = core.db.get().unwrap();
+        assert_eq!(
+            normalize_checkout_path(Path::new(
+                repo::session::get_row(&conn, &slot_a)
+                    .unwrap()
+                    .unwrap()
+                    .cwd
+                    .as_deref()
+                    .unwrap()
+            )),
+            expected_main_sub
+        );
+        assert_eq!(
+            normalize_checkout_path(Path::new(
+                repo::session::get_row(&conn, &slot_b)
+                    .unwrap()
+                    .unwrap()
+                    .cwd
+                    .as_deref()
+                    .unwrap()
+            )),
+            expected_main_sub
+        );
+        assert_eq!(
+            normalize_checkout_path(Path::new(
+                repo::mission::get(&conn, &started.mission.id)
+                    .unwrap()
+                    .unwrap()
+                    .cwd
+                    .as_deref()
+                    .unwrap()
+            )),
+            expected_main_sub
+        );
+    }
+    let resumed_b = session::session_resume(&core, &slot_b, None, None, false).unwrap();
+    assert_eq!(resumed_b.id, slot_b);
+    assert_eq!(
+        normalize_checkout_path(Path::new(
+            repo::session::get_row(&core.db.get().unwrap(), &slot_b)
+                .unwrap()
+                .unwrap()
+                .cwd
+                .as_deref()
+                .unwrap()
+        )),
+        expected_main_sub
+    );
+
+    // 4. Stopping all slots and exercising mission_unarchive with restore_in_main relocates an archived mission cleanly.
+    crate::daemon::block_on(mission::mission_stop_impl(
+        &core,
+        started.mission.id.clone(),
+    ))
+    .unwrap();
+    crate::daemon::block_on(mission::mission_archive_impl(
+        &core,
+        started.mission.id.clone(),
+    ))
+    .unwrap();
+    crate::daemon::block_on(mission::mission_unarchive(
+        &core,
+        started.mission.id.clone(),
+        true,
+    ))
+    .unwrap();
+    let conn = core.db.get().unwrap();
+    assert!(repo::mission::get(&conn, &started.mission.id)
+        .unwrap()
+        .unwrap()
+        .archived_at
+        .is_none());
 }

@@ -7,10 +7,14 @@ use crate::surfaces::front_page::{
     client::{ChatLaunch, ChatStart},
     FrontPageClient, FrontPageTarget,
 };
-use gpui::{canvas, Render, SharedString, WeakEntity};
+use gpui::{canvas, Bounds, Pixels, Render, SharedString, WeakEntity};
+use runner_core::protocol::worktree::{WorktreeCheckout, WorktreeSpec};
 use runner_core::protocol::Runtime;
+use std::cell::Cell;
+use std::rc::Rc;
 
 mod mission;
+mod worktree;
 pub(crate) use mission::LauncherOrigin;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +63,7 @@ enum UpdateAction {
         pane: Option<PaneKey>,
         scope: ProjectScope,
         cwd: Option<String>,
+        worktree: Option<WorktreeSpec>,
         initial_prompt: Option<String>,
     },
     Mission(mission::MissionRequest),
@@ -106,6 +111,17 @@ pub(crate) struct ChatLauncher {
     started: Option<(EntryKey, String)>,
     error: Option<String>,
     folder_picker: Option<Entity<FolderPicker>>,
+    checkout: Option<WorktreeCheckout>,
+    checkout_gen: u64,
+    checkout_anchor: Rc<Cell<Bounds<Pixels>>>,
+    checkout_picker: Option<worktree::LauncherCheckoutPicker>,
+    checkout_picker_gen: u64,
+    new_worktree: Option<worktree::NewWorktreeState>,
+    new_worktree_gen: u64,
+    new_worktree_check_gen: u64,
+    base_picker_gen: u64,
+    #[cfg(test)]
+    worktree_test_gates: worktree::WorktreeTestGates,
     step: Step,
     crews: Vec<CrewEntry>,
     goal: Entity<TextField>,
@@ -121,6 +137,7 @@ pub(super) fn launcher_input(
     key: &EntryKey,
     project: Option<String>,
     cwd: Option<String>,
+    worktree: Option<WorktreeSpec>,
     size: (u16, u16),
     initial_prompt: Option<String>,
 ) -> ChatStart {
@@ -136,6 +153,7 @@ pub(super) fn launcher_input(
         speed: None,
         project,
         cwd,
+        worktree,
         size,
         initial_prompt,
     }
@@ -478,6 +496,17 @@ impl ChatLauncher {
             started: None,
             error,
             folder_picker: None,
+            checkout: None,
+            checkout_gen: 0,
+            checkout_anchor: Rc::new(Cell::new(Bounds::default())),
+            checkout_picker: None,
+            checkout_picker_gen: 0,
+            new_worktree: None,
+            new_worktree_gen: 0,
+            new_worktree_check_gen: 0,
+            base_picker_gen: 0,
+            #[cfg(test)]
+            worktree_test_gates: Default::default(),
             step: Step::Start,
             crews,
             goal,
@@ -490,6 +519,8 @@ impl ChatLauncher {
         };
         if remote {
             this.load_host(root.remote_client.computer().cloned(), window, cx);
+        } else if default_page {
+            this.refresh_checkout_state(cx);
         }
         this
     }
@@ -532,8 +563,11 @@ impl ChatLauncher {
 
     #[cfg(test)]
     pub(crate) fn set_cwd_for_test(&mut self, cwd: &str, cx: &mut Context<Self>) {
+        self.new_worktree = None;
+        self.checkout_picker = None;
         self.cwd.update(cx, |input, cx| input.reset(cwd, cx));
         self.sync_sample_prompt_to_cwd(cx);
+        self.refresh_checkout_state(cx);
         cx.notify();
     }
 
@@ -562,6 +596,7 @@ impl ChatLauncher {
                 pane: None,
                 scope: ProjectScope::Root,
                 cwd: None,
+                worktree: None,
                 initial_prompt: None,
             },
             requested: false,
@@ -820,8 +855,11 @@ impl ChatLauncher {
                 self.leave_page(window, cx);
                 return true;
             }
-            (Step::Goal(_), "enter") if !shift => {
+            (Step::Goal(_), "enter") if !shift && self.new_worktree_allows_start() => {
                 self.start_mission(window, cx);
+                return true;
+            }
+            (Step::Goal(_), "enter") if !shift => {
                 return true;
             }
             (Step::Goal(_), "escape") => {
@@ -874,7 +912,11 @@ impl ChatLauncher {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.pending.is_some() || unavailable || !self.client.valid() {
+        if self.pending.is_some()
+            || unavailable
+            || !self.client.valid()
+            || !self.new_worktree_allows_start()
+        {
             return;
         }
         match choice {
@@ -895,15 +937,22 @@ impl ChatLauncher {
         self.pending = Some(choice.clone());
         let scope = self.scope();
         let path = normalized_value(self.cwd.read(cx).text());
+        let worktree = self.worktree_spec();
+        let worktree_cwd = self.worktree_repo_cwd();
         let pane = self.pane.clone();
         let launcher = cx.entity();
         match choice {
             Choice::Mission | Choice::EmptyMission | Choice::Crew(_) => {}
             Choice::Terminal => {
+                let cwd = if worktree.is_some() {
+                    worktree_cwd.or(path)
+                } else {
+                    path
+                };
                 window.defer(cx, move |window, cx| {
                     root.update(cx, |root, cx| {
                         root.launch_from_launcher(
-                            launcher, None, pane, scope, path, false, window, cx,
+                            launcher, None, pane, scope, cwd, worktree, false, window, cx,
                         )
                     })
                 });
@@ -913,7 +962,11 @@ impl ChatLauncher {
                     EntryKey::Role(id) => self.roles.iter().find(|role| &role.id == id),
                     _ => None,
                 };
-                let cwd = launcher_directory(role, path, self.changed_directory);
+                let cwd = if worktree.is_some() {
+                    worktree_cwd.or(path)
+                } else {
+                    launcher_directory(role, path, self.changed_directory)
+                };
                 window.defer(cx, move |window, cx| {
                     root.update(cx, |root, cx| {
                         root.launch_from_launcher(
@@ -922,6 +975,7 @@ impl ChatLauncher {
                             pane,
                             scope,
                             cwd,
+                            worktree,
                             false,
                             window,
                             cx,
@@ -936,8 +990,12 @@ impl ChatLauncher {
     fn choose_project(&mut self, id: &str, cx: &mut Context<Self>) {
         let current = self.cwd.read(cx).text().to_owned();
         if let Some(path) = self.project.choose(id, &current) {
+            self.new_worktree = None;
+            self.checkout_picker = None;
+            self.error = None;
             self.cwd.update(cx, |input, cx| input.reset(path, cx));
             self.sync_sample_prompt_to_cwd(cx);
+            self.refresh_checkout_state(cx);
         }
         self.changed_directory = false;
         cx.notify();
@@ -971,10 +1029,14 @@ impl ChatLauncher {
                     Ok(Ok(Some(paths))) => {
                         if let Some(path) = paths.first() {
                             let path = path.to_string_lossy().into_owned();
+                            this.new_worktree = None;
+                            this.checkout_picker = None;
+                            this.error = None;
                             this.project.picked(&path, cx);
                             this.cwd.update(cx, |input, cx| input.reset(path, cx));
                             this.changed_directory = true;
                             this.sync_sample_prompt_to_cwd(cx);
+                            this.refresh_checkout_state(cx);
                         }
                     }
                     Ok(Ok(None)) => {}
@@ -1246,6 +1308,7 @@ impl Render for ChatLauncher {
             };
             let choice = row.choice.clone();
             let unavailable = row.unavailable;
+            let start_allowed = self.new_worktree_allows_start();
             card = card.child(
                 div()
                     .id(SharedString::from(format!("launcher-row-{index}")))
@@ -1258,9 +1321,11 @@ impl Render for ChatLauncher {
                     .gap(rems(8. / 16.))
                     .rounded(rems(6. / 16.))
                     .when(selected, |row| row.bg(theme::sidebar_selected()))
-                    .when(row.dimmed, |row| row.opacity(0.45))
-                    .cursor_pointer()
-                    .hover(|row| row.bg(theme::sidebar_selected()))
+                    .when(row.dimmed || !start_allowed, |row| row.opacity(0.45))
+                    .when(start_allowed, |row| {
+                        row.cursor_pointer()
+                            .hover(|row| row.bg(theme::sidebar_selected()))
+                    })
                     .children(badge.map(|badge| {
                         div()
                             .debug_selector(move || format!("LAUNCHER_BADGE:{index}"))
@@ -1439,6 +1504,8 @@ impl Render for ChatLauncher {
                         .map(|picker| FolderPicker::anchor(picker.clone())),
                 )
                 .on_click(cx.listener(|this, _, window, cx| this.change_directory(window, cx)));
+            let checkout = self.render_checkout_control(cx);
+            let (path_text, path_dimmed) = self.location_display_path(cx);
             div()
                 .debug_selector(|| "LAUNCHER_LOCATION".into())
                 .h(rems(20. / 16.))
@@ -1455,6 +1522,7 @@ impl Render for ChatLauncher {
                         .text_color(theme::muted()),
                 )
                 .child(div().max_w(rems(140. / 16.)).child(self.project.select()))
+                .children(checkout)
                 .child(
                     div()
                         .flex_1()
@@ -1463,10 +1531,14 @@ impl Render for ChatLauncher {
                         .font_family(theme::UI_MONOSPACE_FONT)
                         .text_size(rems(11. / 16.))
                         .text_color(theme::faint())
-                        .child(self.cwd.read(cx).text().to_owned()),
+                        .when(path_dimmed, |el| el.opacity(0.65))
+                        .child(path_text),
                 )
                 .child(change)
         });
+        let new_worktree_form = (!split)
+            .then(|| self.render_new_worktree_form(cx))
+            .flatten();
         let field = if goal_step {
             self.render_goal_field(window, cx)
         } else {
@@ -1654,6 +1726,7 @@ impl Render for ChatLauncher {
                     .children(brand)
                     .child(field)
                     .children(location)
+                    .children(new_worktree_form)
                     .children(sample_prompt)
                     .children(self.error.as_ref().map(|error| {
                         runner_app::ui::notice_banner(error.clone(), runner_app::ui::Tone::Danger)
@@ -1730,6 +1803,8 @@ impl Render for ChatLauncher {
                     }),
             )
             .children(self.folder_picker.clone())
+            .children(self.render_checkout_picker(window, cx))
+            .children(self.render_base_picker(window, cx))
             .child(
                 canvas(
                     |_, _, _| {},
@@ -2027,6 +2102,7 @@ impl NativeRoot {
                     pane,
                     scope,
                     cwd,
+                    worktree,
                     initial_prompt,
                 } => self.launch_from_launcher_with_prompt(
                     launcher,
@@ -2034,6 +2110,7 @@ impl NativeRoot {
                     pane,
                     scope,
                     cwd,
+                    worktree,
                     true,
                     initial_prompt,
                     window,
@@ -2234,19 +2311,26 @@ impl NativeRoot {
             let input = launcher.update(cx, |launcher, cx| {
                 if !launcher.client.supports(&["startShell", "layout"])
                     || launcher.pending.is_some()
+                    || !launcher.new_worktree_allows_start()
                 {
                     return None;
                 }
                 launcher.pending = Some(Choice::Terminal);
                 cx.notify();
-                Some((
-                    launcher.pane.clone(),
-                    launcher.scope(),
-                    normalized_value(launcher.cwd.read(cx).text()),
-                ))
+                let worktree = launcher.worktree_spec();
+                let cwd = if worktree.is_some() {
+                    launcher
+                        .worktree_repo_cwd()
+                        .or_else(|| normalized_value(launcher.cwd.read(cx).text()))
+                } else {
+                    normalized_value(launcher.cwd.read(cx).text())
+                };
+                Some((launcher.pane.clone(), launcher.scope(), cwd, worktree))
             });
-            if let Some((pane, scope, cwd)) = input {
-                self.launch_from_launcher(launcher, None, pane, scope, cwd, false, window, cx);
+            if let Some((pane, scope, cwd, worktree)) = input {
+                self.launch_from_launcher(
+                    launcher, None, pane, scope, cwd, worktree, false, window, cx,
+                );
             }
             return true;
         }
@@ -2310,6 +2394,7 @@ impl NativeRoot {
                             .cwd
                             .update(cx, |field, cx| field.reset(directory, cx));
                         launcher.changed_directory = true;
+                        launcher.refresh_checkout_state(cx);
                     }
                 });
                 self.launchers.insert(key, next.clone());
@@ -2654,12 +2739,13 @@ impl NativeRoot {
         pane: Option<PaneKey>,
         scope: ProjectScope,
         cwd: Option<String>,
+        worktree: Option<WorktreeSpec>,
         background: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.launch_from_launcher_with_prompt(
-            launcher, key, pane, scope, cwd, background, None, window, cx,
+            launcher, key, pane, scope, cwd, worktree, background, None, window, cx,
         );
     }
 
@@ -2671,6 +2757,7 @@ impl NativeRoot {
         pane: Option<PaneKey>,
         scope: ProjectScope,
         cwd: Option<String>,
+        worktree: Option<WorktreeSpec>,
         background: bool,
         initial_prompt: Option<String>,
         window: &mut Window,
@@ -2735,6 +2822,7 @@ impl NativeRoot {
                         pane,
                         scope,
                         cwd,
+                        worktree: worktree.clone(),
                         initial_prompt,
                     },
                     requested: updatable,
@@ -2830,6 +2918,7 @@ impl NativeRoot {
                 pane: Some(pane),
                 project: scope.project_id().map(str::to_owned),
                 cwd,
+                worktree,
                 size,
             };
             use crate::surfaces::front_page::actions::WorkspaceAction;
@@ -2936,6 +3025,7 @@ impl NativeRoot {
                 &key,
                 scope.project_id().map(str::to_owned),
                 cwd,
+                worktree.clone(),
                 size,
                 initial_prompt,
             ),
@@ -3019,6 +3109,7 @@ impl NativeRoot {
                             pane,
                             scope: scope.clone(),
                             cwd: launch.input.cwd.clone(),
+                            worktree: worktree.clone(),
                             initial_prompt: launch.input.initial_prompt.clone(),
                         },
                         requested: false,
@@ -3168,7 +3259,17 @@ impl NativeRoot {
             )
         });
         let pane = launcher.read(cx).pane.clone();
-        self.launch_from_launcher(launcher, Some(key), pane, scope, cwd, false, window, cx);
+        self.launch_from_launcher(
+            launcher,
+            Some(key),
+            pane,
+            scope,
+            cwd,
+            None,
+            false,
+            window,
+            cx,
+        );
     }
 }
 

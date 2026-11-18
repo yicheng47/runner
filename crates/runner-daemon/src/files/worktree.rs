@@ -1063,40 +1063,52 @@ impl FilesService {
         };
 
         if is_existing_dir(cwd) {
-            let Some(repo) = git.rev_parse(cwd) else {
-                return Ok(WorktreeCheckout::Plain { missing: false });
-            };
-            let entries = git.worktrees(&repo.top)?;
-            let Some(main) = entries.iter().find(|e| e.kind == WorktreeKind::Main) else {
-                return Ok(WorktreeCheckout::Plain { missing: false });
-            };
-            let main_checkout = normalize_checkout_path(&main.path);
-            let current = entries
-                .iter()
-                .find(|entry| same_normalized_checkout_path(&entry.path, &repo.top));
-            let kind = current.map(|e| e.kind).unwrap_or_else(|| {
-                if same_normalized_checkout_path(&main_checkout, &repo.top) {
-                    WorktreeKind::Main
-                } else {
-                    WorktreeKind::Linked
+            if let Some(repo) = git.rev_parse(cwd) {
+                match git.worktrees(&repo.top) {
+                    Ok(entries) => {
+                        let Some(main) = entries.iter().find(|e| e.kind == WorktreeKind::Main)
+                        else {
+                            return Ok(WorktreeCheckout::Plain {
+                                missing: !is_existing_dir(cwd),
+                            });
+                        };
+                        let main_checkout = normalize_checkout_path(&main.path);
+                        let current = entries
+                            .iter()
+                            .find(|entry| same_normalized_checkout_path(&entry.path, &repo.top));
+                        let kind = current.map(|e| e.kind).unwrap_or_else(|| {
+                            if same_normalized_checkout_path(&main_checkout, &repo.top) {
+                                WorktreeKind::Main
+                            } else {
+                                WorktreeKind::Linked
+                            }
+                        });
+                        let (head_branch, head_commit) = head_branch_and_commit(&git, &repo.top);
+                        let branch = head_branch.or_else(|| current.and_then(|e| e.branch.clone()));
+                        let commit = head_commit.or_else(|| current.and_then(|e| e.commit.clone()));
+                        let managed = kind == WorktreeKind::Linked
+                            && is_managed_worktree(&main_checkout, &repo.top);
+                        return Ok(WorktreeCheckout::Git {
+                            top: normalize_checkout_path(&repo.top),
+                            main_checkout,
+                            kind,
+                            managed,
+                            branch,
+                            commit,
+                            missing: false,
+                            missing_branch: None,
+                            candidate_branches: Vec::new(),
+                        });
+                    }
+                    Err(error) => {
+                        if is_existing_dir(cwd) && is_existing_dir(&repo.top) {
+                            return Err(error);
+                        }
+                    }
                 }
-            });
-            let (head_branch, head_commit) = head_branch_and_commit(&git, &repo.top);
-            let branch = head_branch.or_else(|| current.and_then(|e| e.branch.clone()));
-            let commit = head_commit.or_else(|| current.and_then(|e| e.commit.clone()));
-            let managed =
-                kind == WorktreeKind::Linked && is_managed_worktree(&main_checkout, &repo.top);
-            return Ok(WorktreeCheckout::Git {
-                top: normalize_checkout_path(&repo.top),
-                main_checkout,
-                kind,
-                managed,
-                branch,
-                commit,
-                missing: false,
-                missing_branch: None,
-                candidate_branches: Vec::new(),
-            });
+            } else if is_existing_dir(cwd) {
+                return Ok(WorktreeCheckout::Plain { missing: false });
+            }
         }
 
         if let Some(info) = detect_missing_worktree(&git, cwd, project_cwd_hint)? {
@@ -1216,6 +1228,83 @@ impl FilesService {
         ensure_worktrees_excluded(&git, &info.main_checkout, &info.common_dir)?;
         Ok(Some(info.worktree_root))
     }
+
+    pub(crate) fn resolve_main_checkout_fallback(
+        &self,
+        cwd: &Path,
+        project_cwd_hint: Option<&Path>,
+    ) -> Result<Option<PathBuf>> {
+        let Some(git) = self.git() else {
+            return Ok(None);
+        };
+
+        if is_existing_dir(cwd) {
+            let Some(repo) = git.rev_parse(cwd) else {
+                return Ok(None);
+            };
+            let entries = git.worktrees(&repo.top)?;
+            let Some(main) = entries.iter().find(|e| e.kind == WorktreeKind::Main) else {
+                return Ok(None);
+            };
+            let main_checkout = normalize_checkout_path(&main.path);
+            if same_normalized_checkout_path(&main_checkout, &repo.top) {
+                return Ok(None);
+            }
+            return Ok(Some(main_checkout_with_subfolder(
+                &main_checkout,
+                cwd,
+                &repo.top,
+            )));
+        }
+
+        if let Some(info) = detect_missing_worktree(&git, cwd, project_cwd_hint)? {
+            return Ok(Some(main_checkout_with_subfolder(
+                &info.main_checkout,
+                cwd,
+                &info.worktree_root,
+            )));
+        }
+
+        if let Some(hint) = project_cwd_hint {
+            if let Ok(ctx) = repo_context(&git, hint) {
+                let norm_cwd = normalize_checkout_path(cwd);
+                if !normalized_checkout_starts_with(&norm_cwd, &ctx.main_checkout) {
+                    let missing_ancestors: Vec<PathBuf> = norm_cwd
+                        .ancestors()
+                        .take_while(|ancestor| !is_existing_dir(ancestor))
+                        .map(Path::to_path_buf)
+                        .collect();
+                    for ancestor in missing_ancestors.into_iter().rev() {
+                        if let Ok(rel) = norm_cwd.strip_prefix(&ancestor) {
+                            if !rel.as_os_str().is_empty() {
+                                let candidate = ctx.main_checkout.join(rel);
+                                if is_existing_dir(&candidate) {
+                                    return Ok(Some(candidate));
+                                }
+                            }
+                        }
+                    }
+                }
+                return Ok(Some(ctx.main_checkout));
+            }
+        }
+
+        Ok(None)
+    }
+}
+
+fn main_checkout_with_subfolder(main_checkout: &Path, cwd: &Path, worktree_root: &Path) -> PathBuf {
+    let norm_cwd = normalize_checkout_path(cwd);
+    let norm_root = normalize_checkout_path(worktree_root);
+    if let Ok(rel) = norm_cwd.strip_prefix(&norm_root) {
+        if !rel.as_os_str().is_empty() {
+            let candidate = main_checkout.join(rel);
+            if is_existing_dir(&candidate) {
+                return candidate;
+            }
+        }
+    }
+    main_checkout.to_path_buf()
 }
 
 pub(crate) fn worktree_remove(core: &AppCore, dir: &Path, target: &str) -> Result<WorktreeRemoved> {

@@ -151,8 +151,11 @@ fn archive_restore_resumes_first_chunk_with_fresh_terminal_and_color_replies() {
             .windows(b"OLD-HISTORY".len())
             .any(|bytes| bytes == b"OLD-HISTORY"));
 
-        session_unarchive(&core, &id).unwrap();
-        assert_eq!(session_resume(&core, &id, None, None).unwrap().id, id);
+        session_unarchive(&core, &id, false).unwrap();
+        assert_eq!(
+            session_resume(&core, &id, None, None, false).unwrap().id,
+            id
+        );
         let fresh = core.sessions.terminal_model(&id).unwrap();
         assert!(!Arc::ptr_eq(&old, &fresh));
         assert!(!fresh
@@ -215,7 +218,7 @@ fn input_queued_for_a_stopped_process_never_reaches_the_resumed_one() {
         "a stop releases the blocked write's caller at once"
     );
 
-    session_resume(&core, &id, None, None).unwrap();
+    session_resume(&core, &id, None, None, false).unwrap();
     core.sessions.inject_stdin(&id, b"fresh").unwrap();
     release.send(()).unwrap();
     let written = || -> Vec<Vec<u8>> {
@@ -255,7 +258,7 @@ fn ordinary_stop_resume_keeps_sequence_terminal_and_single_input_worker() {
         output(&core, &fake, &id, &mut attachment, seq, b"history\r\n");
     }
     session_stop(&core, &id).unwrap();
-    session_resume(&core, &id, None, None).unwrap();
+    session_resume(&core, &id, None, None, false).unwrap();
     assert!(Arc::ptr_eq(
         &old,
         &core.sessions.terminal_model(&id).unwrap()
@@ -317,7 +320,7 @@ fn stop_resume_rebinds_reused_terminal_for_live_title_updates() {
     );
     std::thread::sleep(Duration::from_millis(5));
     session_stop(&core, &id).unwrap();
-    session_resume(&core, &id, None, None).unwrap();
+    session_resume(&core, &id, None, None, false).unwrap();
     assert!(Arc::ptr_eq(
         &old,
         &core.sessions.terminal_model(&id).unwrap()
@@ -422,7 +425,7 @@ fn stop_resume_rebinds_reused_terminal_for_live_title_updates() {
         resumed_at,
     )
     .unwrap();
-    session_resume(&core, &fresh_id, None, None).unwrap();
+    session_resume(&core, &fresh_id, None, None, false).unwrap();
     assert!(Arc::ptr_eq(
         &fresh_old,
         &core.sessions.terminal_model(&fresh_id).unwrap()
@@ -656,7 +659,7 @@ fn spawned_event_reports_preserved_output_seq_across_resize_stop_and_resume() {
     assert_eq!(core.sessions.terminal_output_sequence(&id), 2);
 
     session_stop(&core, &id).unwrap();
-    session_resume(&core, &id, None, None).unwrap();
+    session_resume(&core, &id, None, None, false).unwrap();
 
     let resumed = next_spawned_event(&mut rx, &id);
     assert_eq!(resumed["output_seq"].as_u64(), Some(2));
@@ -683,7 +686,7 @@ fn resume_snapshot_preserves_paint_seq_across_pre_attach_resize_and_mode_output(
     assert_eq!(core.sessions.terminal_output_sequence(&id), 1);
 
     session_stop(&core, &id).unwrap();
-    session_resume(&core, &id, None, None).unwrap();
+    session_resume(&core, &id, None, None, false).unwrap();
 
     let resumed = next_spawned_event(&mut rx, &id);
     assert_eq!(resumed["output_seq"].as_u64(), Some(1));

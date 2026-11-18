@@ -202,9 +202,7 @@ impl NativeRoot {
     ) -> AnyElement {
         self.sync_chat_panel(cx);
         self.prune_launchers(cx);
-        if self.remote_client.is_local() {
-            self.ensure_active_chat_detail(cx);
-        }
+        self.ensure_active_chat_detail(cx);
         let error_banner = self
             .chat_error
             .clone()
@@ -236,7 +234,41 @@ impl NativeRoot {
                 )
             });
 
-        let Some(layout) = self.front_page_layout().cloned() else {
+        let layout_opt = self.front_page_layout().cloned();
+        let restore_fallback_banner = self
+            .chat_restore_fallback
+            .as_ref()
+            .filter(|_| self.remote_client.is_local())
+            .filter(|_| !self.app_store.read(cx).daemon_disconnected)
+            .filter(|fallback| {
+                layout_opt.as_ref().is_some_and(|layout| {
+                    layout.root.leaves().iter().any(|leaf| {
+                        leaf.session_id.as_deref() == Some(fallback.session_id.as_str())
+                    })
+                })
+            })
+            .map(|fallback| {
+                let confirm_root = cx.entity();
+                let dismiss_root = cx.entity();
+                let busy = self.chat_transitions.contains_key(&fallback.session_id);
+                crate::surfaces::worktree_restore::render_restore_fallback_banner(
+                    "chat",
+                    &fallback.prompt,
+                    busy,
+                    move |window, cx| {
+                        confirm_root.update(cx, |this, cx| {
+                            this.confirm_chat_restore_in_main(window, cx);
+                        });
+                    },
+                    move |_, cx| {
+                        dismiss_root.update(cx, |this, cx| {
+                            this.dismiss_chat_restore_fallback(cx);
+                        });
+                    },
+                )
+            });
+
+        let Some(layout) = layout_opt else {
             let setup_visible = self.setup_visible(cx);
             let content = if setup_visible {
                 self.render_setup(window, cx)
@@ -307,7 +339,6 @@ impl NativeRoot {
         let group_control = self.remote_client.is_local() && self.tab_control_covered(&layout, cx);
         let show_start = start_surface_visible(Some(&layout));
         let grouped = layout.root.leaves().len() > 1;
-        let terminal_tab = self.active_tab_is_terminal(cx);
         if self.remote_client.is_local() {
             self.prune_pane_state(&layout);
         }
@@ -370,16 +401,16 @@ impl NativeRoot {
                     .flatten(),
             )
             .children(error_banner)
+            .children(restore_fallback_banner)
             .children(warning_banner)
             .child(tab_body);
-        let surface = side_panel_surface(terminal_tab);
-        let panel_open = self.remote_client.is_local()
-            && !show_start
-            && (self.chat_panel_is_open(cx) && side_panel_available(self.settings(cx), surface));
-        if !panel_open && self.chat_panel_maximized {
+        let (surface, panel_available) = self.active_chat_panel_surface(cx);
+        let local = self.remote_client.is_local();
+        let panel_open = !show_start && panel_available && self.chat_panel_is_open(cx);
+        if local && !panel_open && self.chat_panel_maximized {
             self.chat_panel_maximized = false;
         }
-        let panel_maximized = panel_open && self.chat_panel_maximized;
+        let panel_maximized = local && panel_open && self.chat_panel_maximized;
         let (panel_visibility, panel_animating) = if panel_maximized {
             (1., false)
         } else {
@@ -397,7 +428,11 @@ impl NativeRoot {
                 .as_ref()
                 .map(|chat| chat.session_id.clone()),
         );
-        let panel_layout = self.chat_panel_layout(self.active_chat_detail.as_ref(), cx);
+        let panel_layout = if local {
+            self.chat_panel_layout(self.active_chat_detail.as_ref(), cx)
+        } else {
+            (self.settings(cx).chat_panel_width, None)
+        };
         let panel_region_style = if panel_maximized {
             gpui::StyleRefinement::default()
                 .flex_1()

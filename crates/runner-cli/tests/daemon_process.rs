@@ -1131,7 +1131,7 @@ fn managed_connection_caps_automatic_restarts_and_allows_explicit_retry() {
             }
             assert!(managed
                 .client()
-                .session_resume(&session.id, None, None)
+                .session_resume(&session.id, None, None, false)
                 .is_err());
             assert!(matches!(
                 SocketTransport::connect(
@@ -1149,7 +1149,7 @@ fn managed_connection_caps_automatic_restarts_and_allows_explicit_retry() {
             assert!(
                 managed
                     .client()
-                    .session_resume(&session.id, Some(80), Some(24))
+                    .session_resume(&session.id, Some(80), Some(24), false)
                     .is_err(),
                 "crashed shells must be closed before explicit recovery"
             );
@@ -1212,7 +1212,7 @@ fn failed_automatic_replacement_waits_for_explicit_retry() {
     );
     assert!(managed
         .client()
-        .session_resume(&session.id, None, None)
+        .session_resume(&session.id, None, None, false)
         .is_err());
     assert!(matches!(
         SocketTransport::connect(&daemon.launch.daemon_endpoint, daemon.hello(&daemon.hash)),
@@ -1237,7 +1237,7 @@ fn failed_automatic_replacement_waits_for_explicit_retry() {
     assert!(
         managed
             .client()
-            .session_resume(&session.id, Some(80), Some(24))
+            .session_resume(&session.id, Some(80), Some(24), false)
             .is_err(),
         "crashed shells must be closed before explicit recovery"
     );

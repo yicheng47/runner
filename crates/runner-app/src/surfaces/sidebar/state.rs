@@ -13,6 +13,12 @@ impl Sidebar {
         let scroll_owner = cx.entity_id();
         let scrollbar = cx.new(|_| Scrollbar::app(scroll.clone(), scroll_owner));
         let store_revisions = app_store.read(cx).revisions;
+        app_store.update(cx, |store, cx| store.add_worktree_watch_consumer(cx));
+        let watch_store = app_store.downgrade();
+        cx.on_release(move |_, cx| {
+            let _ = watch_store.update(cx, |store, cx| store.remove_worktree_watch_consumer(cx));
+        })
+        .detach();
         Self {
             front_page: crate::surfaces::front_page::FrontPageClient::local(
                 app_store.read(cx).client.clone(),
@@ -125,6 +131,7 @@ impl Sidebar {
             || revisions.sessions != previous.sessions
             || revisions.activity != previous.activity
             || revisions.settings != previous.settings
+            || revisions.worktrees != previous.worktrees
             || titles_changed
         {
             cx.notify();

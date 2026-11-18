@@ -57,11 +57,18 @@ impl NativeRoot {
     }
 
     pub(crate) fn chat_panel_is_open(&self, cx: &App) -> bool {
+        if self.remote_client.is_active() {
+            return self.remote_client.chat_info_is_open();
+        }
         self.chat_panel_open
             .unwrap_or(self.settings(cx).chat_panel_open)
     }
 
     pub(crate) fn set_chat_panel_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.remote_client.is_active() {
+            self.remote_client.set_chat_info_open(open);
+            return;
+        }
         self.sync_chat_panel(cx);
         self.chat_panel_open = Some(open);
         if !open {
@@ -158,17 +165,27 @@ impl NativeRoot {
         self.set_chat_panel_maximized(next, window, cx);
     }
 
+    pub(super) fn active_chat_panel_surface(&self, cx: &App) -> (PanelSurface, bool) {
+        let terminal = self.active_tab_is_terminal(cx);
+        let surface = side_panel_surface(terminal);
+        let settings = self.settings(cx);
+        let available = if self.remote_client.is_active() {
+            !terminal && settings.show_side_panel && settings.info_view
+        } else {
+            side_panel_available(settings, surface)
+        };
+        (surface, available)
+    }
+
     pub(super) fn render_island_panel_toggle(
         &self,
         layout: &PaneLayout,
         pane_id: &str,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let surface = side_panel_surface(self.active_tab_is_terminal(cx));
-        if !self.remote_client.is_local()
-            || start_surface_visible(Some(layout))
+        if start_surface_visible(Some(layout))
             || self.chat_panel_is_open(cx)
-            || !side_panel_available(self.settings(cx), surface)
+            || !self.active_chat_panel_surface(cx).1
             || maximized_leaf(&self.maximized_panes, layout)
                 .unwrap_or_else(|| top_right_pane(&layout.root))
                 .id
@@ -421,7 +438,9 @@ impl NativeRoot {
     ) -> AnyElement {
         #[cfg(test)]
         crate::render_counts::count_render("side-panel", cx);
-        let maximized = show_panel && self.chat_panel_maximized;
+        let remote = self.remote_client.is_active() && self.route != AppRoute::ArchivedChat;
+        let detail = detail.filter(|_| !remote);
+        let maximized = show_panel && !remote && self.chat_panel_maximized;
         let visible_width = width * visibility;
         if !show_panel {
             self.chat_files.hide(cx);
@@ -448,9 +467,16 @@ impl NativeRoot {
         let maximize_root = cx.entity();
         let req_max_root = cx.entity();
         let surface_root = cx.entity();
-        let settings = self.settings(cx).clone();
+        let mut settings = self.settings(cx).clone();
+        if remote {
+            settings.files_view = false;
+            settings.changes_view = false;
+        }
         let shown = side_panel::shown(surface, &settings, &self.chat_surfaces.open);
         let handler: side_panel::SurfaceHandler = Rc::new(move |action, window, cx| {
+            if remote {
+                return;
+            }
             surface_root.update(cx, |this, cx| {
                 let settings = this.settings(cx).clone();
                 this.chat_surfaces
@@ -466,7 +492,7 @@ impl NativeRoot {
                 cx.notify();
             })
         });
-        let maximize_control = Some(side_panel::MaximizeControl {
+        let maximize_control = (!remote).then_some(side_panel::MaximizeControl {
             maximized,
             on_toggle: Rc::new(move |window, cx| {
                 maximize_root.update(cx, |this, cx| {
@@ -523,7 +549,7 @@ impl NativeRoot {
                         .on_press(move |window, cx| {
                             collapse_root.update(cx, |this, cx| {
                                 let return_focus = this.chat_panel_contains_focus(window, cx)
-                                    || this.chat_panel_maximized;
+                                    || (!remote && this.chat_panel_maximized);
                                 this.set_chat_panel_open(false, cx);
                                 if return_focus && this.route == AppRoute::Chat {
                                     this.focus_active_terminal(window, cx);
@@ -564,6 +590,8 @@ impl NativeRoot {
         };
         let content = if shown.is_none() {
             None
+        } else if remote {
+            self.render_remote_chat_info(cx)
         } else if let Some(detail) = detail {
             let open_root = cx.entity();
             let toggle_root = cx.entity();
@@ -585,13 +613,28 @@ impl NativeRoot {
                 expanded: self.chat_panel_prompt_expanded,
                 view: cx.entity_id(),
             };
+            let account = self.claude_account_details(detail, cx);
+            let branch_cwd = detail
+                .cwd
+                .clone()
+                .or_else(|| role.as_ref().and_then(|role| role.working_dir.clone()));
+            let branch_project = detail.project_id.clone();
+            let remote = self.front_page_client(cx).is_remote();
+            let branch = crate::surfaces::panes::ensure_info_branch_row(
+                &self.app_store,
+                branch_cwd.as_deref(),
+                branch_project.as_deref(),
+                remote,
+                cx,
+            );
             Some(chat_panel_content(
                 detail,
                 role.as_ref(),
                 width,
                 session_key_copy,
                 actions,
-                self.claude_account_details(detail, cx),
+                account,
+                branch,
                 cx,
             ))
         } else {
@@ -667,5 +710,21 @@ impl NativeRoot {
             )
             .child(panel)
             .into_any_element()
+    }
+
+    fn render_remote_chat_info(&self, cx: &App) -> Option<AnyElement> {
+        let computer = self.remote_client.computer()?;
+        let focused = self.front_page_layout()?.focused_session_id();
+        let (id, _) = self.panel_session_for(focused, cx)?;
+        let session = self.remote_client.session(&id, cx)?;
+        let branch = remote_info_branch_row(
+            &self.app_store,
+            &computer.id,
+            None,
+            Some(&id),
+            session.cwd.as_deref(),
+            cx,
+        );
+        Some(remote_chat_panel_content(session, branch))
     }
 }

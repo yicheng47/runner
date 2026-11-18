@@ -517,6 +517,25 @@ pub(super) mod tests {
                 .debug_bounds(Box::leak(selector.to_owned().into_boxed_str()))
         }
 
+        pub(in crate::surfaces) fn wait(
+            &mut self,
+            mut done: impl FnMut(&mut Self) -> bool,
+            what: &str,
+        ) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                self.visual.run_until_parked();
+                if done(self) {
+                    return;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "timed out waiting for {what}"
+                );
+                std::thread::yield_now();
+            }
+        }
+
         fn choose(&mut self, selection: StartChatSelection, value: &str) {
             let value = value.to_owned();
             self.act(move |root, _, cx| {

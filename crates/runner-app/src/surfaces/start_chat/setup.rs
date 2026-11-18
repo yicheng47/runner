@@ -2423,6 +2423,7 @@ mod tests {
             &EntryKey::Agent("codex".into()),
             None,
             Some("/tmp/beta-repo".into()),
+            None,
             (80, 24),
             Some(preserved),
         );

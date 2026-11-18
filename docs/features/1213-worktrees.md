@@ -1,7 +1,7 @@
 # 1213 — Git worktrees
 
 > Tracking issue: [#1213](https://github.com/yicheng47/runner/issues/1213). Scheduling and priority live on the issue and in the [roadmap](../roadmap.md). Platforms: macOS, Windows and Linux.
-> Status: m1 (`runnerd` and CLI) implemented in PR #1350 (2026-11-17), following the design signed off by Jason on 2026-11-16 and the [decisions](#decisions-settled-with-this-spec) below; m2 (the app) follows in a later PR.
+> Status: implemented (m1 in PR #1350 on 2026-11-17; m2 app surfaces, archive cleanup, restore fallback, and guides in PR on branch `feat/1213-worktrees-app`), following the design signed off by Jason on 2026-11-16 and the [decisions](#decisions-settled-with-this-spec) below.
 > Design: `runner/desktop/specs/1213-worktrees.pen` in `yeelinks_design`, revision `685b8c9`, board `A0AUx`. Sections: 1 the launcher's Checkout control and its folder coupling, 2 New worktree…, 3 the sidebar rules with their edge-case table and both views side by side, 4 the Info panel, 5 cleanup at archive.
 > Supersedes: [#403](https://github.com/yicheng47/runner/issues/403), closed as not planned on 2026-09-22. Related: [#1141](./1141-git-changes.md) (Changes view), [#1345](https://github.com/yicheng47/runner/issues/1345) (Changes: choose the checkout and the base), [#748](./archive/748-mission-link.md) (chats linked to missions), [#1290](https://github.com/yicheng47/runner/issues/1290) (archiving linked missions).
 
@@ -144,7 +144,7 @@ m1 changes no screen, but git-aware membership moves rows in the sidebar and eve
 
 Selected regression cases for m1: the sidebar's Projects and Active rows and the launcher's project/folder rows in [workspace](../tests/regression/workspace.md), because membership decides both.
 
-m2's `qa` runs these on macOS and Windows, and on Linux when a Linux machine is available, in a fixture repository under `/tmp` registered as a project, with an extra worktree made by `git worktree add ../outside`:
+m2's `qa` runs checks 1–7 on macOS (and remote companion branch-switch/missing/recovery/offline display), and on Linux when a Linux machine is available, in a fixture repository under `/tmp` registered as a project, with an extra worktree made by `git worktree add ../outside`; Windows path handling is covered by Windows CI and automated path tests (Jason, 2026-11-17):
 
 1. **Checkout control**: the menu lists the main checkout, the outside worktree and a Runner one; picking one sets the folder; Change into a worktree folder follows; a non-git folder shows no control. Reason: new launcher control.
 2. **New worktree**: an empty name blocks Start; a new branch creates the worktree and starts a chat in it; an existing branch is checked out; a branch already in a worktree starts there; an invalid name and a path collision show their messages and start nothing. Reason: create-and-start.
@@ -153,7 +153,7 @@ m2's `qa` runs these on macOS and Windows, and on Linux when a Linux machine is 
 5. **Info**: the branch row appears only in worktrees. Reason: panel change.
 6. **Archive**: a clean worktree is removed with its box checked and the branch survives; a dirty one shows the option unavailable and stays; a chat with two linked missions lists two rows. Reason: removal.
 7. **Restore**: restoring the archived chat recreates its worktree and a Claude chat resumes with its history; after deleting the branch, the fallback warns. Reason: decision 6.
-8. **Windows paths**: creation, membership and removal with drive-letter paths. Reason: platform path spelling.
+8. **Windows paths (covered by Windows CI and automated tests)**: creation, membership, sidebar/hint formatting, and removal with drive-letter paths. Reason: platform path spelling.
 
 Selected regression cases: the sidebar's Projects and Active rows and the launcher's project/folder rows in [workspace](../tests/regression/workspace.md), and linked-group display from #748.
 
@@ -168,7 +168,7 @@ Proposed, for Jason to confirm before a crew starts: two pull requests to `main`
 | Step | What | Crew | Labels |
 |---|---|---|---|
 | m1 — runnerd and CLI | Worktree service (name check, refs, create-and-start, remove, restore), git-aware membership, `--worktree` and `runner worktree`, `AGENTS.md`'s crew flow. No new screens; the sidebar regroups through membership | hydrogen trio | `core-review`, `risk-high`, `needs-live-test` |
-| m2 — the app | Checkout control and New worktree…, sidebar lines and the Active location change, Info row, archive option and restore fallback, guide pages | claude trio | `frontend-only`, `needs-live-test` |
+| m2 — the app | Checkout control and New worktree…, sidebar lines and the Active location change, Info row, archive option, restore fallback (`restore_in_main` option on unarchive/resume), companion `Overview` checkout/`auto_base` extension and remote host display, guide pages | hydrogen trio | `risk-high`, `core-review` (`needs-live-test` cleared when macOS QA passes; Windows covered by CI) |
 
 m1 leaves today's starts as they are, since the start field is optional and the app does not use the new requests until m2. Its one visible change is membership: a chat or mission started after m1 in a worktree outside a project's folder files under that project. The project is decided at start and stored, so existing rows stay where they are. The spec lands with m1.
 

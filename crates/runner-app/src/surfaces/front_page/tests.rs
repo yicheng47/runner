@@ -151,12 +151,18 @@ fn typed_remote_requests_keep_computer_scope_dimensions_defaults_and_host_paths(
         speed: None,
         project: None,
         cwd: None,
+        worktree: None,
         size: (83, 29),
         initial_prompt: None,
     };
     assert_eq!(a.start_chat(input).unwrap(), "same-id");
-    b.start_shell(Some("project".into()), Some("C:\\work".into()), (91, 31))
-        .unwrap();
+    b.start_shell(
+        Some("project".into()),
+        Some("C:\\work".into()),
+        None,
+        (91, 31),
+    )
+    .unwrap();
     a.stop("same-id").unwrap();
     b.resume("same-id", (84, 30)).unwrap();
     a.restart("same-id", (85, 31)).unwrap();
@@ -454,6 +460,7 @@ fn local_workspace_mutations_keep_daemon_requests_arguments_and_errors() {
         speed: Some("fast".into()),
         project: Some("project".into()),
         cwd: Some("/work".into()),
+        worktree: None,
         size: (101, 37),
         initial_prompt: None,
     };
@@ -538,7 +545,7 @@ fn local_workspace_mutations_keep_daemon_requests_arguments_and_errors() {
         }
     );
     dispatch!(
-        client.start_shell(Some("project".into()), Some("/work".into()), (99, 31)),
+        client.start_shell(Some("project".into()), Some("/work".into()), None, (99, 31)),
         Request::session_start_shell_in {
             scope: scope.clone(),
             cwd: Some("/work".into()),
@@ -552,7 +559,8 @@ fn local_workspace_mutations_keep_daemon_requests_arguments_and_errors() {
         Request::session_resume {
             session_id: "chat".into(),
             cols: Some(83),
-            rows: Some(29)
+            rows: Some(29),
+            restore_in_main: None,
         }
     );
     dispatch!(
@@ -613,6 +621,7 @@ fn local_workspace_mutations_keep_daemon_requests_arguments_and_errors() {
             Some("Goal".into()),
             Some("project".into()),
             Some("/work".into()),
+            None,
             (91, 33)
         ),
         Request::mission_start_impl_with_size {
@@ -866,6 +875,7 @@ fn local_mission_resume_preserves_concurrent_refresh_partial_failure_and_dimensi
         session_id: id.into(),
         cols: Some(91),
         rows: Some(33),
+        restore_in_main: None,
     };
     let initial = vec![
         member("running", SessionStatus::Running),

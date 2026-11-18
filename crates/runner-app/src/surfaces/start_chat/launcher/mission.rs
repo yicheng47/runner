@@ -23,6 +23,7 @@ pub(super) struct MissionRequest {
     goal: Option<String>,
     project: Option<String>,
     cwd: Option<String>,
+    worktree: Option<runner_core::protocol::worktree::WorktreeSpec>,
 }
 
 pub(super) fn local_crews(crews: &[CrewListItem]) -> Vec<CrewEntry> {
@@ -301,6 +302,7 @@ impl ChatLauncher {
         };
         if self.pending.is_some()
             || self.loading
+            || !self.new_worktree_allows_start()
             || !self.client.valid()
             || !self.client.supports(&["catalog", "startMission"])
             || (crew.is_none() && !self.offers_empty_missions())
@@ -318,6 +320,13 @@ impl ChatLauncher {
             return;
         };
         let goal = self.goal.read(cx).text().to_owned();
+        let worktree = self.worktree_spec();
+        let cwd = if worktree.is_some() {
+            self.worktree_repo_cwd()
+                .or_else(|| normalized_value(self.cwd.read(cx).text()))
+        } else {
+            normalized_value(self.cwd.read(cx).text())
+        };
         let request = MissionRequest {
             crew: crew.unwrap_or_default(),
             title: model::mission_title(
@@ -327,7 +336,8 @@ impl ChatLauncher {
             ),
             goal: normalized_value(&goal),
             project: self.scope().project_id().map(str::to_owned),
-            cwd: normalized_value(self.cwd.read(cx).text()),
+            cwd,
+            worktree,
         };
         self.error = None;
         self.pending = Some(Choice::Mission);
@@ -561,7 +571,7 @@ impl ChatLauncher {
                     .size(runner_app::ui::ButtonSize::Compact)
                     .shortcut("↵")
                     .loading(starting)
-                    .disabled(starting || self.loading)
+                    .disabled(starting || self.loading || !self.new_worktree_allows_start())
                     .on_press(move |window, cx| {
                         launcher.update(cx, |launcher, cx| launcher.start_mission(window, cx))
                     }),
@@ -741,6 +751,7 @@ impl NativeRoot {
                 request.goal,
                 request.project,
                 request.cwd,
+                request.worktree,
                 size,
             );
             let gate = result

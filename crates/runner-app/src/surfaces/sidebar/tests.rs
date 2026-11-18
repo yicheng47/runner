@@ -2031,8 +2031,12 @@ fn active_includes_live_idle_chats_and_missions_and_removes_stopped_selection() 
 }
 
 #[test]
-fn active_location_shows_project_relative_worktree_and_compact_home() {
+fn location_strings_cover_every_sidebar_worktree_and_edge_case() {
     use super::active::active_location;
+    use super::location::{resolve_row_location, LocationKind, LocationMode, PaneLocationInput};
+    use runner_core::protocol::files::WorktreeKind;
+    use runner_core::protocol::worktree::{MissingWorktreeBranchState, WorktreeCheckout};
+
     let project = runner_core::protocol::project::ProjectRow {
         id: "runner".into(),
         name: "Runner".into(),
@@ -2040,33 +2044,314 @@ fn active_location_shows_project_relative_worktree_and_compact_home() {
         position: 0,
         created_at: String::new(),
     };
-    assert_eq!(
-        active_location(Some(&project), Some(&project.cwd), None),
-        "Runner"
-    );
-    assert_eq!(
-        active_location(
+    let single = |checkout: Option<&WorktreeCheckout>, cwd: &str| {
+        resolve_row_location(
             Some(&project),
-            Some("/home/j/repos/runner/.worktrees/feat-887"),
-            None
-        ),
-        "Runner › feat-887"
-    );
+            &[PaneLocationInput {
+                label: "Chat",
+                cwd: Some(cwd),
+                checkout,
+            }],
+            Some("/home/j"),
+            LocationMode::Local,
+        )
+    };
+
+    // Main checkout & subfolders & main on another branch: single line, no subfolder, no branch.
+    let main_wt = WorktreeCheckout::Git {
+        top: "/home/j/repos/runner".into(),
+        main_checkout: "/home/j/repos/runner".into(),
+        kind: WorktreeKind::Main,
+        managed: false,
+        branch: Some("feat/switched-main".into()),
+        commit: Some("a41e0c2".into()),
+        missing: false,
+        missing_branch: None,
+        candidate_branches: Vec::new(),
+    };
     assert_eq!(
         active_location(
             Some(&project),
             Some("/home/j/repos/runner/crates/app"),
             None
         ),
-        "Runner › crates/app"
+        "Runner"
     );
+    let main_loc = single(Some(&main_wt), "/home/j/repos/runner/crates/app");
+    assert_eq!(main_loc.projects_line, None);
+    assert_eq!(main_loc.active_line, "Runner");
+    assert_eq!(main_loc.kind, LocationKind::Folder);
+    assert_eq!(main_loc.tooltip, None);
+
+    // Runner-managed worktree & subfolder of worktree.
+    let linked_wt = WorktreeCheckout::Git {
+        top: "/home/j/repos/runner/.worktrees/feat-887".into(),
+        main_checkout: "/home/j/repos/runner".into(),
+        kind: WorktreeKind::Linked,
+        managed: true,
+        branch: Some("feat/887".into()),
+        commit: Some("b2c3d4e".into()),
+        missing: false,
+        missing_branch: None,
+        candidate_branches: Vec::new(),
+    };
+    let linked_loc = single(
+        Some(&linked_wt),
+        "/home/j/repos/runner/.worktrees/feat-887/crates/runner-app",
+    );
+    assert_eq!(linked_loc.projects_line.as_deref(), Some("feat/887"));
+    assert_eq!(linked_loc.active_line, "Runner › feat/887");
+    assert_eq!(linked_loc.kind, LocationKind::Branch);
+    assert_eq!(
+        linked_loc.tooltip.as_deref(),
+        Some("feat/887\n~/repos/runner/.worktrees/feat-887")
+    );
+
+    // Outside worktree (e.g. Codex) looks identical to Runner worktree.
+    let outside_wt = WorktreeCheckout::Git {
+        top: "/home/j/.codex/worktrees/ab12/runner".into(),
+        main_checkout: "/home/j/repos/runner".into(),
+        kind: WorktreeKind::Linked,
+        managed: false,
+        branch: Some("fix/outside".into()),
+        commit: Some("1122334".into()),
+        missing: false,
+        missing_branch: None,
+        candidate_branches: Vec::new(),
+    };
+    let outside_loc = single(Some(&outside_wt), "/home/j/.codex/worktrees/ab12/runner");
+    assert_eq!(outside_loc.projects_line.as_deref(), Some("fix/outside"));
+    assert_eq!(outside_loc.active_line, "Runner › fix/outside");
+    assert_eq!(outside_loc.kind, LocationKind::Branch);
+
+    // Detached HEAD shows short commit with commit icon.
+    let detached_wt = WorktreeCheckout::Git {
+        top: "/home/j/repos/runner/.worktrees/exp".into(),
+        main_checkout: "/home/j/repos/runner".into(),
+        kind: WorktreeKind::Linked,
+        managed: true,
+        branch: None,
+        commit: Some("c0ffee9".into()),
+        missing: false,
+        missing_branch: None,
+        candidate_branches: Vec::new(),
+    };
+    let detached_loc = single(Some(&detached_wt), "/home/j/repos/runner/.worktrees/exp");
+    assert_eq!(detached_loc.projects_line.as_deref(), Some("c0ffee9"));
+    assert_eq!(detached_loc.active_line, "Runner › c0ffee9");
+    assert_eq!(detached_loc.kind, LocationKind::DetachedCommit);
+
+    // Mixed checkouts across split panes -> "2 checkouts" + per-pane branch tooltip.
+    let mixed = resolve_row_location(
+        Some(&project),
+        &[
+            PaneLocationInput {
+                label: "Claude",
+                cwd: Some("/home/j/repos/runner"),
+                checkout: Some(&main_wt),
+            },
+            PaneLocationInput {
+                label: "Codex",
+                cwd: Some("/home/j/repos/runner/.worktrees/feat-887"),
+                checkout: Some(&linked_wt),
+            },
+        ],
+        Some("/home/j"),
+        LocationMode::Local,
+    );
+    assert_eq!(mixed.projects_line.as_deref(), Some("2 checkouts"));
+    assert_eq!(mixed.active_line, "Runner › 2 checkouts");
+    assert_eq!(mixed.kind, LocationKind::MultipleCheckouts);
+    assert_eq!(
+        mixed.tooltip.as_deref(),
+        Some("Claude: feat/switched-main\nCodex: feat/887")
+    );
+
+    // Two panes sharing the same worktree show that single branch.
+    let shared_split = resolve_row_location(
+        Some(&project),
+        &[
+            PaneLocationInput {
+                label: "Claude",
+                cwd: Some("/home/j/repos/runner/.worktrees/feat-887"),
+                checkout: Some(&linked_wt),
+            },
+            PaneLocationInput {
+                label: "Shell",
+                cwd: Some("/home/j/repos/runner/.worktrees/feat-887/crates/runner-app"),
+                checkout: Some(&linked_wt),
+            },
+        ],
+        Some("/home/j"),
+        LocationMode::Local,
+    );
+    assert_eq!(shared_split.projects_line.as_deref(), Some("feat/887"));
+    assert_eq!(shared_split.kind, LocationKind::Branch);
+
+    // Missing worktree: surviving branch and gone/ambiguous fallback to folder name.
+    let missing_surviving = WorktreeCheckout::Git {
+        top: "/home/j/repos/runner/.worktrees/feat-missing".into(),
+        main_checkout: "/home/j/repos/runner".into(),
+        kind: WorktreeKind::Linked,
+        managed: true,
+        branch: Some("feat/missing".into()),
+        commit: None,
+        missing: true,
+        missing_branch: Some(MissingWorktreeBranchState::Surviving),
+        candidate_branches: Vec::new(),
+    };
+    let missing_loc = single(
+        Some(&missing_surviving),
+        "/home/j/repos/runner/.worktrees/feat-missing",
+    );
+    assert_eq!(
+        missing_loc.projects_line.as_deref(),
+        Some("missing · feat/missing")
+    );
+    assert_eq!(missing_loc.active_line, "Runner › missing · feat/missing");
+    assert_eq!(missing_loc.kind, LocationKind::MissingWorktree);
+
+    let missing_gone = WorktreeCheckout::Git {
+        top: "/home/j/repos/runner/.worktrees/feat-gone".into(),
+        main_checkout: "/home/j/repos/runner".into(),
+        kind: WorktreeKind::Linked,
+        managed: true,
+        branch: None,
+        commit: None,
+        missing: true,
+        missing_branch: Some(MissingWorktreeBranchState::Gone),
+        candidate_branches: Vec::new(),
+    };
+    let gone_loc = single(
+        Some(&missing_gone),
+        "/home/j/repos/runner/.worktrees/feat-gone",
+    );
+    assert_eq!(
+        gone_loc.projects_line.as_deref(),
+        Some("missing · feat-gone")
+    );
+    assert_eq!(gone_loc.kind, LocationKind::MissingWorktree);
+
+    // Unfiled rows (no project) compact home cleanly.
     assert_eq!(
         active_location(None, Some("/home/j/repos/runner"), Some("/home/j")),
         "~/repos/runner"
     );
+    let unfiled_wt = resolve_row_location(
+        None,
+        &[PaneLocationInput {
+            label: "Chat",
+            cwd: Some("/home/j/repos/runner/.worktrees/feat-887"),
+            checkout: Some(&linked_wt),
+        }],
+        Some("/home/j"),
+        LocationMode::Local,
+    );
+    assert_eq!(unfiled_wt.projects_line.as_deref(), Some("feat/887"));
+    assert_eq!(unfiled_wt.active_line, "~/repos/runner › feat/887");
+
+    // Before git answers and remote offline both fall back cleanly without a placeholder.
+    let before_git = single(None, "/home/j/repos/runner/.worktrees/feat-887");
+    assert_eq!(before_git.projects_line, None);
+    assert_eq!(before_git.active_line, "Runner");
+    assert_eq!(before_git.kind, LocationKind::Folder);
+
+    let remote_online = resolve_row_location(
+        Some(&project),
+        &[PaneLocationInput {
+            label: "Remote",
+            cwd: Some("/home/j/repos/runner/.worktrees/feat-887"),
+            checkout: Some(&linked_wt),
+        }],
+        Some("/home/j"),
+        LocationMode::RemoteOnline,
+    );
+    assert_eq!(remote_online.projects_line.as_deref(), Some("feat/887"));
+    assert_eq!(remote_online.active_line, "Runner › feat/887");
+    assert_eq!(remote_online.kind, LocationKind::Branch);
+
+    let remote_offline = resolve_row_location(
+        Some(&project),
+        &[PaneLocationInput {
+            label: "Remote",
+            cwd: Some("/home/j/repos/runner/.worktrees/feat-887"),
+            checkout: Some(&linked_wt),
+        }],
+        Some("/home/j"),
+        LocationMode::RemoteOffline,
+    );
+    assert_eq!(remote_offline.projects_line, None);
+    assert_eq!(remote_offline.active_line, "Runner");
+    assert_eq!(remote_offline.kind, LocationKind::Folder);
+
+    let win_main = PathBuf::from(r"C:\Users\dev\repo");
+    let win_wt_dir = PathBuf::from(r"C:\Users\dev\repo\.worktrees\feat-win");
+    let win_linked = WorktreeCheckout::Git {
+        top: win_wt_dir.clone(),
+        main_checkout: win_main.clone(),
+        kind: WorktreeKind::Linked,
+        managed: true,
+        branch: Some("feat/win".into()),
+        commit: Some("deadbee".into()),
+        missing: false,
+        missing_branch: None,
+        candidate_branches: Vec::new(),
+    };
+    let win_loc = resolve_row_location(
+        Some(&project),
+        &[PaneLocationInput {
+            label: "Win",
+            cwd: Some(r"C:\Users\dev\repo\.worktrees\feat-win\crates\app"),
+            checkout: Some(&win_linked),
+        }],
+        None,
+        LocationMode::Local,
+    );
+    assert_eq!(win_loc.projects_line.as_deref(), Some("feat/win"));
+    assert_eq!(win_loc.active_line, "Runner › feat/win");
+
+    let win_unfiled = resolve_row_location(
+        None,
+        &[PaneLocationInput {
+            label: "Win",
+            cwd: Some(r"C:\Users\dev\repo\.worktrees\feat-win"),
+            checkout: Some(&win_linked),
+        }],
+        None,
+        LocationMode::Local,
+    );
+    assert_eq!(win_unfiled.projects_line.as_deref(), Some("feat/win"));
+    assert_eq!(win_unfiled.active_line, r"C:\Users\dev\repo › feat/win");
+
+    let win_missing = WorktreeCheckout::Git {
+        top: win_wt_dir,
+        main_checkout: win_main,
+        kind: WorktreeKind::Linked,
+        managed: true,
+        branch: None,
+        commit: None,
+        missing: true,
+        missing_branch: Some(runner_core::protocol::worktree::MissingWorktreeBranchState::Gone),
+        candidate_branches: Vec::new(),
+    };
+    let win_missing_loc = resolve_row_location(
+        Some(&project),
+        &[PaneLocationInput {
+            label: "Win",
+            cwd: Some(r"C:\Users\dev\repo\.worktrees\feat-win"),
+            checkout: Some(&win_missing),
+        }],
+        None,
+        LocationMode::Local,
+    );
     assert_eq!(
-        active_location(Some(&project), Some("/tmp/work"), None),
-        "Runner › /tmp/work"
+        win_missing_loc.projects_line.as_deref(),
+        Some("missing · feat-win")
+    );
+    assert_eq!(win_missing_loc.active_line, "Runner › missing · feat-win");
+    assert_eq!(
+        win_missing_loc.active_missing,
+        Some(("Runner".into(), "feat-win".into()))
     );
 }
 
@@ -3139,4 +3424,420 @@ fn switch_sidebar_view_expands_only_the_remote_computer_and_syncs_number_rows() 
             active
         );
     }
+}
+
+#[test]
+fn sidebar_shows_worktree_branches_in_both_views_and_tracks_git_switch_and_missing_via_watcher() {
+    use runner_core::protocol::files::{FilesStatusChanged, FILES_STATUS_EVENT};
+    use runner_core::protocol::worktree::WorktreeCheckout;
+    use std::time::{Duration, Instant};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::Builder::new()
+        .prefix("1213-m2-sidebar-")
+        .tempdir()
+        .unwrap();
+    let repo = temp.path().join("repo");
+    let wt_path = repo.join(".worktrees").join("feat-alpha");
+    std::fs::create_dir_all(repo.join("crates/sub")).unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "core.autocrlf", "false"]);
+    std::fs::write(repo.join("crates/sub/file.txt"), "hi\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "init"]);
+    git(&repo, &["branch", "feat/beta", "main"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feat/alpha",
+            wt_path.to_str().unwrap(),
+            "main",
+        ],
+    );
+
+    let mut cx = TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    let core = store.read_with(&cx, |store, _| store.test_core.clone());
+    let mut events_sub = core.events.subscribe();
+
+    let project = runner_daemon::repo::project::create(
+        &core.db.get().unwrap(),
+        "Runner",
+        repo.to_str().unwrap(),
+    )
+    .unwrap();
+    let conn = core.db.get().unwrap();
+    let p_node = runner_daemon::repo::node::ensure_project_node(&conn, &project.id).unwrap();
+    conn.execute_batch(&format!(
+        "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES ('crew', 'Crew', '2026-11-17T00:00:00Z', '2026-11-17T00:00:00Z');
+         INSERT INTO sessions (id, title, status, agent_runtime, agent_command, project_id, cwd)
+             VALUES ('main-chat', 'Main chat', 'running', 'claude-code', 'claude', '{pid}', '{sub}'),
+                    ('wt-chat', 'WT chat', 'running', 'claude-code', 'claude', '{pid}', '{wt}');
+         INSERT INTO missions (id, crew_id, project_id, title, status, cwd, started_at)
+             VALUES ('wt-mission', 'crew', '{pid}', 'WT mission', 'completed', '{wt}', '2026-11-17T00:00:02Z');",
+        pid = project.id,
+        sub = repo.join("crates/sub").to_string_lossy(),
+        wt = wt_path.to_string_lossy(),
+    ))
+    .unwrap();
+    let main_tab = runner_daemon::repo::node::create_tab(
+        &conn,
+        Some(&p_node.id),
+        "Main chat",
+        0,
+        &PaneLayout::single(Some("main-chat"), &["main-chat".into()])
+            .serialize()
+            .unwrap(),
+    )
+    .unwrap();
+    let wt_tab = runner_daemon::repo::node::create_tab(
+        &conn,
+        Some(&p_node.id),
+        "WT chat",
+        1,
+        &PaneLayout::single(Some("wt-chat"), &["wt-chat".into()])
+            .serialize()
+            .unwrap(),
+    )
+    .unwrap();
+    runner_daemon::repo::node::ensure_mission_node(&conn, "wt-mission", Some(&p_node.id)).unwrap();
+    drop(conn);
+
+    store.update(&mut cx, |store, cx| {
+        store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+    });
+    let host = crate::surfaces::remote_client::tests::add_window(
+        &mut cx,
+        &store,
+        temp.path(),
+        "sidebar-wt",
+    );
+    let mut visual = VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(size(px(1200.), px(800.)));
+
+    fn wait_until(
+        visual: &mut VisualTestContext,
+        what: &str,
+        mut ready: impl FnMut(&mut VisualTestContext) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            visual.run_until_parked();
+            if ready(visual) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::yield_now();
+        }
+    }
+
+    let wt_str = wt_path.to_string_lossy().into_owned();
+    let main_row_sel: &'static str =
+        Box::leak(format!("SIDEBAR_ROW sidebar-tab-{}", main_tab.id).into_boxed_str());
+    let wt_row_sel: &'static str =
+        Box::leak(format!("SIDEBAR_ROW sidebar-tab-{}", wt_tab.id).into_boxed_str());
+    let wt_branch_sel: &'static str =
+        Box::leak(format!("SIDEBAR_BRANCH {}", wt_tab.id).into_boxed_str());
+    let main_branch_sel: &'static str =
+        Box::leak(format!("SIDEBAR_BRANCH {}", main_tab.id).into_boxed_str());
+    let mission_branch_sel: &'static str =
+        Box::leak("SIDEBAR_BRANCH wt-mission".to_owned().into_boxed_str());
+
+    // Wait for initial worktree resolution + rendered branch subtitle + watcher's initial status event.
+    let mut wt_watcher_ready = false;
+    wait_until(
+        &mut visual,
+        "initial worktree branch lines and watcher",
+        |v| {
+            wt_watcher_ready |= std::iter::from_fn(|| events_sub.try_recv().ok()).any(|event| {
+                event.name == FILES_STATUS_EVENT
+                    && serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(|u| {
+                        runner_core::app_paths::same_checkout_path(&u.root, &wt_path)
+                    })
+            });
+            let cache_ready = store.read_with(v, |store, _| {
+            matches!(
+                store.worktree_checkout_for(&wt_str, Some(&project.id)),
+                Some(WorktreeCheckout::Git { branch: Some(b), missing: false, .. }) if b == "feat/alpha"
+            )
+        });
+            cache_ready
+                && wt_watcher_ready
+                && v.debug_bounds(wt_branch_sel).is_some()
+                && v.debug_bounds(mission_branch_sel).is_some()
+                && v.debug_bounds(main_branch_sel).is_none()
+        },
+    );
+
+    // Projects view: main stays 1 line; worktree rows expand to >= 44 px.
+    let main_bounds = visual.debug_bounds(main_row_sel).unwrap();
+    let wt_bounds = visual.debug_bounds(wt_row_sel).unwrap();
+    assert!(
+        wt_bounds.size.height >= px(43.5),
+        "expected >= 44px worktree row height, got {:?}",
+        wt_bounds.size.height
+    );
+    assert!(wt_bounds.size.height > main_bounds.size.height);
+
+    // Live git switch inside the worktree updates via #634 watcher.
+    git(&wt_path, &["switch", "-q", "feat/beta"]);
+    wait_until(&mut visual, "watcher branch update to feat/beta", |v| {
+        store.read_with(v, |store, _| {
+            matches!(
+                store.worktree_checkout_for(&wt_str, Some(&project.id)),
+                Some(WorktreeCheckout::Git { branch: Some(b), missing: false, .. }) if b == "feat/beta"
+            )
+        })
+    });
+
+    // Deleting the worktree folder updates to missing · feat/beta via watcher.
+    wait_until(
+        &mut visual,
+        "worktree folder removal",
+        |_| match std::fs::remove_dir_all(&wt_path) {
+            Ok(()) => true,
+            #[cfg(windows)]
+            Err(error)
+                if error.raw_os_error()
+                    == Some(windows::Win32::Foundation::ERROR_SHARING_VIOLATION.0 as i32) =>
+            {
+                false
+            }
+            Err(error) => panic!("removing {}: {error}", wt_path.display()),
+        },
+    );
+    wait_until(&mut visual, "watcher missing worktree detection", |v| {
+        store.read_with(v, |store, _| {
+            matches!(
+                store.worktree_checkout_for(&wt_str, Some(&project.id)),
+                Some(WorktreeCheckout::Git { missing: true, branch: Some(b), .. }) if b == "feat/beta"
+            )
+        })
+    });
+
+    // Active view renders ACTIVE_LOCATION for all rows without subfolders and keeps missing status.
+    host.update(&mut visual, |root, window, cx| {
+        root.switch_sidebar_view(&crate::SwitchSidebarView, window, cx);
+    })
+    .unwrap();
+    let main_active_sel: &'static str =
+        Box::leak(format!("ACTIVE_LOCATION {}", main_tab.id).into_boxed_str());
+    let wt_active_sel: &'static str =
+        Box::leak(format!("ACTIVE_LOCATION {}", wt_tab.id).into_boxed_str());
+    wait_until(&mut visual, "Active view location rows", |v| {
+        v.debug_bounds(main_active_sel).is_some() && v.debug_bounds(wt_active_sel).is_some()
+    });
+
+    // Small Issue 1: missing worktree status stays non-truncated beside a very long project name.
+    let wt_active_row_sel: &'static str =
+        Box::leak(format!("SIDEBAR_ROW active-{}", wt_tab.id).into_boxed_str());
+    let active_missing_sel: &'static str =
+        Box::leak(format!("ACTIVE_MISSING_STATUS {}", wt_tab.id).into_boxed_str());
+    let long_name = "Very Long Project Name That Must Truncate Before Missing Status Badge Disappears In Narrow Sidebar";
+    store.update(&mut visual, |store, _| {
+        store.projects.first_mut().unwrap().name = long_name.into();
+    });
+    wait_until(
+        &mut visual,
+        "active missing status preserved on truncation",
+        |v| {
+            let Some(row) = v.debug_bounds(wt_active_row_sel) else {
+                return false;
+            };
+            let Some(badge) = v.debug_bounds(active_missing_sel) else {
+                return false;
+            };
+            badge.size.width > px(20.)
+                && badge.origin.x + badge.size.width <= row.origin.x + row.size.width + px(1.)
+        },
+    );
+}
+
+#[test]
+fn remote_sidebar_worktrees_show_online_and_fall_back_to_one_line_offline() {
+    use crate::surfaces::remote_client::tests::{add_window, choose_host, fixture};
+    use runner_core::companion::{Checkout, CheckoutKind, Overview};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::Builder::new()
+        .prefix("1213-m2-remote-sb-")
+        .tempdir()
+        .unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+
+    let wt_checkout = Checkout::Git {
+        top: r"C:\nonexistent-remote\repo\.worktrees\feat-remote".into(),
+        main_checkout: r"C:\nonexistent-remote\repo".into(),
+        kind: CheckoutKind::Linked,
+        managed: true,
+        branch: Some("feat/remote".into()),
+        commit: Some("abc1234".into()),
+        missing: false,
+        missing_branch: None,
+        candidate_branches: Vec::new(),
+        auto_base: Some("origin/main".into()),
+    };
+    let main_checkout = Checkout::Git {
+        top: r"C:\nonexistent-remote\repo".into(),
+        main_checkout: r"C:\nonexistent-remote\repo".into(),
+        kind: CheckoutKind::Main,
+        managed: false,
+        branch: Some("main".into()),
+        commit: Some("abc1234".into()),
+        missing: false,
+        missing_branch: None,
+        candidate_branches: Vec::new(),
+        auto_base: None,
+    };
+    let mission_checkout = Checkout::Git {
+        top: "/nonexistent-remote/repo/.worktrees/m-branch".into(),
+        main_checkout: "/nonexistent-remote/repo".into(),
+        kind: CheckoutKind::Linked,
+        managed: true,
+        branch: Some("feat/mission-remote".into()),
+        commit: Some("beef123".into()),
+        missing: false,
+        missing_branch: None,
+        candidate_branches: Vec::new(),
+        auto_base: Some("origin/main".into()),
+    };
+
+    let mut data: Overview = serde_json::from_value(serde_json::json!({
+        "projects": [{"id": "p", "name": "Host project"}],
+        "tabs": [
+            {"id": "main-tab", "project": "p", "name": "Main tab", "pinned": false, "panes": {"session": "s-main"}, "shells": []},
+            {"id": "wt-tab", "project": "p", "name": "WT tab", "pinned": false, "panes": {"session": "s-wt"}, "shells": []}
+        ],
+        "missions": [
+            {
+                "id": "m-wt",
+                "project": "p",
+                "title": "Remote mission",
+                "crew": "Duo",
+                "state": "running",
+                "pinned": false,
+                "cwd": "/nonexistent-remote/repo/.worktrees/m-branch",
+                "members": [],
+                "asks": [],
+                "shells": []
+            }
+        ],
+        "sessions": {
+            "s-main": {"kind": "chat", "title": "Main", "runtime": "codex", "cwd": r"C:\nonexistent-remote\repo", "status": "idle", "unread": false},
+            "s-wt": {"kind": "chat", "title": "WT", "runtime": "codex", "cwd": r"C:\nonexistent-remote\repo\.worktrees\feat-remote", "status": "idle", "unread": false}
+        }
+    }))
+    .unwrap();
+    data.sessions.get_mut("s-main").unwrap().checkout = Some(main_checkout);
+    data.sessions.get_mut("s-wt").unwrap().checkout = Some(wt_checkout);
+    data.missions[0].checkout = Some(mission_checkout);
+
+    fake.set_overview(data.clone());
+    let window = add_window(&mut cx, &store, temp.path(), "remote-worktrees");
+    window.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    fake.emit(
+        "remote/overview",
+        serde_json::json!({"computer": "host", "overview": data}),
+    );
+    window
+        .update(&mut visual, |root, _, cx| {
+            if let Some(workspace) = root.remote_client.workspace() {
+                workspace.sidebar.update(cx, |sidebar, cx| {
+                    if sidebar
+                        .settings(cx)
+                        .sidebar_collapsed_projects
+                        .contains("p")
+                    {
+                        sidebar.toggle_project("p", cx);
+                    }
+                });
+            }
+            cx.notify();
+        })
+        .unwrap();
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+
+    let wt_branch_sel: &'static str = "SIDEBAR_BRANCH wt-tab";
+    let main_branch_sel: &'static str = "SIDEBAR_BRANCH main-tab";
+    let mission_branch_sel: &'static str = "SIDEBAR_BRANCH m-wt";
+
+    fn wait_until(
+        visual: &mut VisualTestContext,
+        label: &str,
+        mut pred: impl FnMut(&mut VisualTestContext) -> bool,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            visual.run_until_parked();
+            if pred(visual) {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "timed out: {label}");
+            std::thread::yield_now();
+        }
+    }
+
+    wait_until(&mut visual, "online remote shows worktree branches", |v| {
+        v.debug_bounds(wt_branch_sel).is_some()
+            && v.debug_bounds(mission_branch_sel).is_some()
+            && v.debug_bounds(main_branch_sel).is_none()
+    });
+    assert!(
+        visual.debug_bounds("REMOTE_SIDEBAR_ROW").is_some(),
+        "expected remote sidebar rows"
+    );
+
+    // Offline -> immediately falls back to 1 line without showing stale branches.
+    fake.emit(
+        "remote/connection",
+        serde_json::json!({"computer": "host", "state": "reconnecting"}),
+    );
+    wait_until(&mut visual, "offline remote falls back to 1 line", |v| {
+        v.debug_bounds(wt_branch_sel).is_none() && v.debug_bounds(mission_branch_sel).is_none()
+    });
+
+    // Reconnected with updated host checkout -> shows fresh branch without touching local disk.
+    if let Some(Checkout::Git { branch, .. }) =
+        data.sessions.get_mut("s-wt").unwrap().checkout.as_mut()
+    {
+        *branch = Some("feat/reconnected".into());
+    }
+    fake.emit(
+        "remote/connection",
+        serde_json::json!({"computer": "host", "state": "connected"}),
+    );
+    fake.emit(
+        "remote/overview",
+        serde_json::json!({"computer": "host", "overview": data}),
+    );
+    wait_until(
+        &mut visual,
+        "reconnected remote worktree line returns",
+        |v| v.debug_bounds(wt_branch_sel).is_some(),
+    );
 }

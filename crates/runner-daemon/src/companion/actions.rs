@@ -679,7 +679,7 @@ impl DaemonCore {
                 cols,
                 rows,
                 ..
-            } => ops::session::session_resume(core, &session, Some(cols), Some(rows))
+            } => ops::session::session_resume(core, &session, Some(cols), Some(rows), false)
                 .map(session_result)
                 .map_err(launch_failed),
             Restart {

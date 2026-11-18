@@ -23,11 +23,13 @@ use crate::theme::{DarkTheme, LightTheme};
 mod command_default;
 mod mcp_removal;
 mod skill_defaults;
+mod worktrees;
 pub(crate) use command_default::{
     mark_command_install_initialized, run_user_command_action, CommandInstallSupport,
     UserCommandAction,
 };
 pub(crate) use skill_defaults::RunnerSkillStatus;
+pub(crate) use worktrees::WorktreeQueryKey;
 
 #[derive(Clone)]
 pub(crate) struct GlobalAppStore(pub(crate) Entity<AppStore>);
@@ -123,6 +125,7 @@ pub(crate) struct StoreRevisions {
     pub(crate) error: u64,
     pub(crate) restart: u64,
     pub(crate) onboarding: u64,
+    pub(crate) worktrees: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -357,6 +360,17 @@ pub(crate) struct AppStore {
     pub(crate) daemon_notice: Option<runner_app::lifecycle::DaemonNotice>,
     pub(crate) stopped_session_count: usize,
     pub(crate) restarted_sessions: Option<usize>,
+    pub(crate) worktree_checkouts:
+        BTreeMap<WorktreeQueryKey, runner_core::protocol::worktree::WorktreeCheckout>,
+    pub(crate) worktree_extra_keys: BTreeSet<WorktreeQueryKey>,
+    worktree_in_flight: BTreeSet<WorktreeQueryKey>,
+    worktree_refresh_needed: BTreeSet<WorktreeQueryKey>,
+    pub(crate) worktree_auto_bases: BTreeMap<PathBuf, Option<String>>,
+    worktree_base_in_flight: BTreeSet<PathBuf>,
+    worktree_base_refresh_needed: BTreeSet<PathBuf>,
+    watched_worktree_roots: BTreeSet<PathBuf>,
+    worktree_watch_consumers: usize,
+    worktree_watch_task: Option<Task<()>>,
     _remote_events_task: Task<()>,
 }
 
@@ -500,7 +514,7 @@ impl AppStore {
         .detach();
 
         let (event_tx, mut event_rx) = futures::channel::mpsc::unbounded::<(
-            StoreRefreshKind,
+            Option<StoreRefreshKind>,
             EntityRefreshKind,
             Option<DaemonEvent>,
         )>();
@@ -513,7 +527,7 @@ impl AppStore {
             loop {
                 let refresh = match events.recv().await {
                     Ok(event) if event.name == "daemon/disconnected" => Some((
-                        StoreRefreshKind::All,
+                        Some(StoreRefreshKind::All),
                         EntityRefreshKind::All,
                         Some(DaemonEvent::Disconnected(
                             if event.payload["in_use"].as_bool().unwrap_or(false) {
@@ -526,22 +540,56 @@ impl AppStore {
                         )),
                     )),
                     Ok(event) if event.name == "daemon/reconnected" => Some((
-                        StoreRefreshKind::All,
+                        Some(StoreRefreshKind::All),
                         EntityRefreshKind::All,
                         Some(DaemonEvent::Reconnected),
                     )),
                     Ok(event) if event.name == "daemon/restarted" => Some((
-                        StoreRefreshKind::All,
+                        Some(StoreRefreshKind::All),
                         EntityRefreshKind::All,
                         Some(DaemonEvent::Restarted(
                             event.payload["count"].as_u64().unwrap_or(0) as usize,
                         )),
                     )),
-                    Ok(event) => StoreRefreshKind::for_event(&event)
-                        .map(|store| (store, EntityRefreshKind::for_event(&event), None)),
-                    Err(runner_core::protocol::EventError::Lagged(_)) => {
-                        Some((StoreRefreshKind::All, EntityRefreshKind::All, None))
+                    Ok(event) if event.name == runner_core::protocol::files::FILES_STATUS_EVENT => {
+                        serde_json::from_value::<runner_core::protocol::files::FilesStatusChanged>(
+                            event.payload,
+                        )
+                        .ok()
+                        .map(|changed| {
+                            (
+                                None,
+                                EntityRefreshKind::None,
+                                Some(DaemonEvent::FilesRootChanged(changed.root)),
+                            )
+                        })
                     }
+                    Ok(event)
+                        if event.name == runner_core::protocol::files::FILES_CHANGED_EVENT =>
+                    {
+                        serde_json::from_value::<runner_core::protocol::files::FilesChanged>(
+                            event.payload,
+                        )
+                        .ok()
+                        .filter(|changed| {
+                            changed.folders.iter().any(|folder| folder.is_empty())
+                                && !runner_core::app_paths::is_existing_dir(&changed.root)
+                        })
+                        .map(|changed| {
+                            (
+                                None,
+                                EntityRefreshKind::None,
+                                Some(DaemonEvent::FilesRootChanged(changed.root)),
+                            )
+                        })
+                    }
+                    Ok(event) => StoreRefreshKind::for_event(&event)
+                        .map(|store| (Some(store), EntityRefreshKind::for_event(&event), None)),
+                    Err(runner_core::protocol::EventError::Lagged(_)) => Some((
+                        Some(StoreRefreshKind::All),
+                        EntityRefreshKind::All,
+                        Some(DaemonEvent::Lagged),
+                    )),
                     Err(runner_core::protocol::EventError::Closed) => break,
                 };
                 if refresh.is_some_and(|refresh| event_tx.unbounded_send(refresh).is_err()) {
@@ -554,12 +602,19 @@ impl AppStore {
             while let Some((mut refresh, mut entity_refresh, event)) = event_rx.next().await {
                 let mut daemon_events = event.into_iter().collect::<Vec<_>>();
                 while let Ok(next) = event_rx.try_recv() {
-                    refresh = refresh.merge(next.0);
+                    refresh = match (refresh, next.0) {
+                        (Some(a), Some(b)) => Some(a.merge(b)),
+                        (Some(a), None) | (None, Some(a)) => Some(a),
+                        (None, None) => None,
+                    };
                     entity_refresh = entity_refresh.merge(next.1);
                     daemon_events.extend(next.2);
                 }
                 if weak
                     .update(cx, |this, cx| {
+                        let mut reconnected = false;
+                        let mut lagged = false;
+                        let mut files_roots = Vec::new();
                         for event in daemon_events {
                             match event {
                                 DaemonEvent::Disconnected(notice) => {
@@ -569,6 +624,7 @@ impl AppStore {
                                     this.revisions.error = this.revisions.error.wrapping_add(1);
                                 }
                                 DaemonEvent::Reconnected => {
+                                    reconnected = true;
                                     this.daemon_disconnected = false;
                                     if matches!(
                                         this.daemon_notice,
@@ -589,13 +645,33 @@ impl AppStore {
                                     }
                                     this.revisions.error = this.revisions.error.wrapping_add(1);
                                 }
+                                DaemonEvent::Lagged => {
+                                    lagged = true;
+                                }
                                 DaemonEvent::Restarted(count) => {
+                                    reconnected = true;
                                     this.restarted_sessions = Some(count);
                                     this.revisions.restart = this.revisions.restart.wrapping_add(1);
                                 }
+                                DaemonEvent::FilesRootChanged(root) => {
+                                    files_roots.push(root);
+                                }
                             }
                         }
-                        this.refresh(refresh, cx);
+                        if let Some(refresh) = refresh {
+                            this.refresh(refresh, cx);
+                        }
+                        if reconnected {
+                            this.rewatch_worktrees_after_reconnect(cx);
+                        } else if lagged {
+                            this.refresh_all_worktrees_after_lag(cx);
+                        } else if !files_roots.is_empty() {
+                            files_roots.sort();
+                            files_roots.dedup();
+                            for root in files_roots {
+                                this.refresh_worktrees_for_root(&root, cx);
+                            }
+                        }
                         if entity_refresh == EntityRefreshKind::All {
                             this.refresh_roles_inner();
                         }
@@ -748,6 +824,16 @@ impl AppStore {
             daemon_notice: None,
             stopped_session_count: 0,
             restarted_sessions: None,
+            worktree_checkouts: BTreeMap::new(),
+            worktree_extra_keys: BTreeSet::new(),
+            worktree_in_flight: BTreeSet::new(),
+            worktree_refresh_needed: BTreeSet::new(),
+            worktree_auto_bases: BTreeMap::new(),
+            worktree_base_in_flight: BTreeSet::new(),
+            worktree_base_refresh_needed: BTreeSet::new(),
+            watched_worktree_roots: BTreeSet::new(),
+            worktree_watch_consumers: 0,
+            worktree_watch_task: None,
             _remote_events_task: remote_events_task,
         };
         if let Some(error) = settings_error {
@@ -767,6 +853,7 @@ impl AppStore {
         store.refresh_render_snapshots();
         store.refresh_onboarding_inner();
         store.collecting_startup_errors = false;
+        store.sync_worktree_checkouts(cx);
         store
     }
 
@@ -796,6 +883,7 @@ impl AppStore {
                 self.refresh_sessions_inner();
             }
             self.refresh_nodes_inner();
+            self.sync_worktree_checkouts(cx);
         }
         if refresh == StoreRefreshKind::All {
             self.refresh_projects_inner();
@@ -817,6 +905,7 @@ impl AppStore {
                             }
                             this.missions = missions;
                             this.revisions.missions = this.revisions.missions.wrapping_add(1);
+                            this.sync_worktree_checkouts(cx);
                         }
                         Err(error) => this.record_error(error.to_string()),
                     }
@@ -831,6 +920,7 @@ impl AppStore {
 
     pub(crate) fn refresh_sessions(&mut self, cx: &mut Context<Self>) {
         self.refresh_sessions_inner();
+        self.sync_worktree_checkouts(cx);
         cx.notify();
     }
 
@@ -843,6 +933,7 @@ impl AppStore {
                 self.nodes = nodes;
                 self.revisions.nodes = self.revisions.nodes.wrapping_add(1);
                 self.revisions.tab_rows = self.revisions.tab_rows.wrapping_add(1);
+                self.sync_worktree_checkouts(cx);
                 cx.notify();
                 Ok(())
             }
@@ -860,6 +951,7 @@ impl AppStore {
         self.nodes = nodes;
         self.revisions.nodes = self.revisions.nodes.wrapping_add(1);
         self.revisions.tab_rows = self.revisions.tab_rows.wrapping_add(1);
+        self.sync_worktree_checkouts(cx);
         cx.notify();
     }
 
@@ -1692,11 +1784,13 @@ mod tests {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum DaemonEvent {
     Disconnected(runner_app::lifecycle::DaemonNotice),
     Reconnected,
+    Lagged,
     Restarted(usize),
+    FilesRootChanged(PathBuf),
 }
 
 #[cfg(test)]

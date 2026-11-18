@@ -2520,6 +2520,7 @@ impl gpui::Render for ChatPanel {
                         account.folder.clone(),
                     )
                 }),
+                None,
                 cx,
             ))
     }
@@ -4304,4 +4305,156 @@ fn chat_panel_retains_widened_width_across_tab_switches_closes_and_divider_drag(
     assert!((panel_width(&mut visual) - 320.).abs() <= 1.);
     switch("direct-agent", &mut visual);
     assert!((panel_width(&mut visual) - 740.).abs() <= 1.);
+}
+
+#[test]
+fn chat_info_panel_shows_branch_row_only_for_linked_worktrees() {
+    use std::time::{Duration, Instant};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::Builder::new()
+        .prefix("1213-m2-chat-info-")
+        .tempdir()
+        .unwrap();
+    let repo = temp.path().join("repo");
+    let wt = repo.join(".worktrees").join("feat-info");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    };
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "core.autocrlf", "false"]);
+    std::fs::write(repo.join("README.md"), "hello\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "init"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feat/info",
+            wt.to_str().unwrap(),
+            "main",
+        ],
+    );
+
+    let mut cx = gpui::TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    let conn = store.read_with(&cx, |s, _| s.test_core.db.get().unwrap());
+    conn.execute_batch(&format!(
+        "INSERT INTO sessions (id, title, status, agent_runtime, agent_command, cwd)
+             VALUES ('main-chat', 'Main chat', 'stopped', 'claude-code', 'claude', '{repo}'),
+                    ('wt-chat', 'WT chat', 'stopped', 'claude-code', 'claude', '{wt}');",
+        repo = repo.to_string_lossy(),
+        wt = wt.to_string_lossy(),
+    ))
+    .unwrap();
+    let main_tab = runner_daemon::repo::node::create_tab(
+        &conn,
+        None,
+        "Main",
+        0,
+        &PaneLayout::single(Some("main-chat"), &["main-chat".into()])
+            .serialize()
+            .unwrap(),
+    )
+    .unwrap();
+    let wt_tab = runner_daemon::repo::node::create_tab(
+        &conn,
+        None,
+        "WT",
+        1,
+        &PaneLayout::single(Some("wt-chat"), &["wt-chat".into()])
+            .serialize()
+            .unwrap(),
+    )
+    .unwrap();
+    drop(conn);
+
+    store.update(&mut cx, |store, cx| {
+        store.settings.show_side_panel = true;
+        store.settings.chat_panel_open = true;
+        store.settings.info_view = true;
+        store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+    });
+    let host = crate::surfaces::remote_client::tests::add_window(
+        &mut cx,
+        &store,
+        temp.path(),
+        "chat-info-branch",
+    );
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(size(px(1400.), px(900.)));
+
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                pred: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !pred(visual) {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::yield_now();
+            visual.run_until_parked();
+        }
+    };
+
+    // Main checkout: no branch row in Info.
+    host.update(&mut visual, |root, _, cx| {
+        root.set_chat_panel_open(true, cx);
+        let mut open = crate::surfaces::side_panel::OpenSurfaces::default();
+        open.open(crate::surfaces::side_panel::PanelViewId::Info);
+        root.chat_surfaces.reset(open);
+        root.apply_tab_rows(cx);
+        root.set_route(crate::AppRoute::Chat, cx);
+        root.tabs.activate(&main_tab.id);
+        root.sync_active_chat_detail(cx);
+        cx.notify();
+    })
+    .unwrap();
+    wait(
+        &mut visual,
+        "main chat checkout cached and cwd rendered",
+        &|v| {
+            store.read_with(v, |s, _| {
+                s.worktree_checkout_for(repo.to_string_lossy().as_ref(), None)
+                    .is_some()
+            }) && v.debug_bounds("CHAT_INFO_SCROLL").is_some()
+        },
+    );
+    assert!(visual.debug_bounds("CHAT_PANEL_BRANCH_ROW").is_none());
+
+    // Linked worktree: branch row + Worktree · from main marker.
+    host.update(&mut visual, |root, _, cx| {
+        root.set_route(crate::AppRoute::Chat, cx);
+        root.tabs.activate(&wt_tab.id);
+        root.sync_active_chat_detail(cx);
+        root.set_chat_panel_open(true, cx);
+        let mut open = crate::surfaces::side_panel::OpenSurfaces::default();
+        open.open(crate::surfaces::side_panel::PanelViewId::Info);
+        root.chat_surfaces.reset(open);
+        cx.notify();
+    })
+    .unwrap();
+    wait(
+        &mut visual,
+        "worktree chat branch row and auto_base",
+        &|v| {
+            v.debug_bounds("CHAT_PANEL_BRANCH_ROW").is_some()
+                && v.debug_bounds("CHAT_PANEL_META feat/info").is_some()
+                && v.debug_bounds("INFO_WORKTREE_MARKER Worktree · from main")
+                    .is_some()
+        },
+    );
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
 }

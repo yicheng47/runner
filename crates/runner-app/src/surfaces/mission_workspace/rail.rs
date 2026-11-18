@@ -955,6 +955,55 @@ impl MissionWorkspace {
                 ),
             ));
         }
+        let branch_info =
+            if let crate::surfaces::front_page::FrontPageTarget::Remote { computer, .. } =
+                &self.client.target
+            {
+                crate::surfaces::panes::remote_info_branch_row(
+                    &self.app_store,
+                    computer,
+                    Some(&mission.id),
+                    None,
+                    mission.cwd.as_deref(),
+                    cx,
+                )
+            } else {
+                crate::surfaces::panes::ensure_info_branch_row(
+                    &self.app_store,
+                    mission.cwd.as_deref(),
+                    mission.project_id.as_deref(),
+                    false,
+                    cx,
+                )
+            };
+        if let Some(branch_info) = branch_info {
+            panel = panel.child(meta_section(
+                crate::i18n::text("ui.info_branch"),
+                div()
+                    .when(cfg!(test), |el| {
+                        el.debug_selector(|| "MISSION_META_BRANCH".into())
+                    })
+                    .flex()
+                    .flex_col()
+                    .gap(rems(2. / 16.))
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .truncate()
+                            .font_family(theme::UI_MONOSPACE_FONT)
+                            .text_size(theme::text_meta())
+                            .text_color(if branch_info.missing {
+                                theme::warning()
+                            } else {
+                                theme::text()
+                            })
+                            .child(branch_info.branch),
+                    )
+                    .child(crate::surfaces::panes::info_worktree_marker(
+                        branch_info.marker,
+                    )),
+            ));
+        }
         panel
             .children(permission_mode.map(|mode| {
                 meta_section(

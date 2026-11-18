@@ -250,6 +250,7 @@ impl MissionWorkspace {
             loading_overlay_visible: false,
             error: None,
             warning: None,
+            restore_fallback: None,
             active_tab: MissionTab::Feed,
             open_tabs: Vec::new(),
             last_measured_terminal_size: None,
@@ -356,6 +357,7 @@ impl MissionWorkspace {
         self.loading_overlay_visible = false;
         self.error = None;
         self.warning = None;
+        self.restore_fallback = None;
         self.active_tab = MissionTab::Feed;
         self.open_tabs.clear();
         self.last_measured_terminal_size = None;
@@ -875,6 +877,7 @@ impl MissionWorkspace {
             .is_some_and(|mission| self.mission_pinned(&mission, cx) != self.menu_pinned);
         if revisions.locale != previous.locale
             || revisions.settings != previous.settings
+            || revisions.worktrees != previous.worktrees
             || (reactions.terminal_wake && self.is_active(cx))
             || pin_moved
         {

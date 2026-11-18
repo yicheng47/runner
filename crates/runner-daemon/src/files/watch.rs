@@ -17,13 +17,13 @@
 //! overflow without a word, and a build's churn in ignored folders fills the
 //! same buffer as an agent's edits.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use runner_core::protocol::files::{
@@ -74,7 +74,7 @@ impl RootWatch {
             status_runs: status_runs.clone(),
             pending: Pending::default(),
             watching_worktrees: false,
-            worktree_dirs: BTreeSet::new(),
+            worktree_dirs: BTreeMap::new(),
             #[cfg(target_os = "linux")]
             watched: BTreeSet::new(),
             polling: cfg!(windows),
@@ -129,6 +129,29 @@ impl Pending {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EntryStamp {
+    created: Option<SystemTime>,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    file_id: (u64, u64),
+}
+
+fn entry_stamp(path: &Path, include_modified: bool) -> Option<EntryStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let file_id = {
+        use std::os::unix::fs::MetadataExt;
+        (meta.dev(), meta.ino())
+    };
+    Some(EntryStamp {
+        created: meta.created().ok(),
+        modified: include_modified.then(|| meta.modified().ok()).flatten(),
+        #[cfg(unix)]
+        file_id,
+    })
+}
+
 struct Watch {
     root: PathBuf,
     root_canonical: PathBuf,
@@ -142,7 +165,7 @@ struct Watch {
     status_runs: Arc<AtomicUsize>,
     pending: Pending,
     watching_worktrees: bool,
-    worktree_dirs: BTreeSet<OsString>,
+    worktree_dirs: BTreeMap<OsString, (Option<EntryStamp>, Option<EntryStamp>)>,
     #[cfg(target_os = "linux")]
     watched: BTreeSet<PathBuf>,
     /// Run a status every [`POLL`], reporting it and the root as changed
@@ -248,14 +271,25 @@ impl Watch {
         )
     }
 
-    fn read_worktree_dirs(common_dir: &Path) -> BTreeSet<OsString> {
+    fn read_worktree_dirs(
+        common_dir: &Path,
+    ) -> BTreeMap<OsString, (Option<EntryStamp>, Option<EntryStamp>)> {
         std::fs::read_dir(common_dir.join("worktrees"))
             .ok()
             .into_iter()
             .flatten()
             .filter_map(|entry| {
                 let entry = entry.ok()?;
-                entry.file_type().ok()?.is_dir().then(|| entry.file_name())
+                if !entry.file_type().ok()?.is_dir() {
+                    return None;
+                }
+                let path = entry.path();
+                // Ignore the directory mtime (index.lock churn updates it on unrelated git ops),
+                // but keep creation/inode identity and `gitdir` mtime so remove+add cycles
+                // within one debounce window still trigger a refresh.
+                let dir_stamp = entry_stamp(&path, false);
+                let gitdir_stamp = entry_stamp(&path.join("gitdir"), true);
+                Some((entry.file_name(), (dir_stamp, gitdir_stamp)))
             })
             .collect()
     }
@@ -272,7 +306,8 @@ impl Watch {
             } else {
                 self.watching_worktrees = true;
             }
-        } else if !wt_dir_live {
+        } else if !wt_dir_live && self.watching_worktrees {
+            let _ = watcher.unwatch(&wt_dir);
             self.watching_worktrees = false;
         }
         let next = Self::read_worktree_dirs(&repo.common_dir);
@@ -321,7 +356,9 @@ impl Watch {
                 return Some(GitFileChange::Metadata);
             }
             if common == Path::new("worktrees")
-                || (common.starts_with("worktrees") && common.components().count() <= 2)
+                || (common.starts_with("worktrees")
+                    && (common.components().count() <= 2
+                        || common.file_name() == Some(std::ffi::OsStr::new("gitdir"))))
             {
                 if self.sync_worktree_watch(watcher) {
                     return Some(GitFileChange::Metadata);
@@ -451,7 +488,6 @@ impl Watch {
         if self.repo.is_some() && (files_changed || pending.git) {
             let status_changed = self.refresh_status(watcher, false);
             if pending.git_meta
-                && !files_changed
                 && !status_changed
                 && runner_core::app_paths::is_existing_dir(&self.root)
             {
@@ -656,7 +692,7 @@ mod tests {
             status_runs: Default::default(),
             pending: Pending::default(),
             watching_worktrees: false,
-            worktree_dirs: BTreeSet::new(),
+            worktree_dirs: BTreeMap::new(),
             watched: BTreeSet::new(),
             polling: false,
             root_missing: false,

@@ -33,8 +33,8 @@ use super::diff::render_viewed_checkbox;
 use super::model::{
     abbreviate_folder, base_chip_label, branch_header_label, build_commit_rows, display_base_ref,
     file_name, filter_base_picker_items, filter_checkout_picker_items, is_viewing_other_checkout,
-    live_worktrees, older_commits_hidden, status_letter_and_color, BasePickerSection, CommitRow,
-    FocusPlace, ListRow, SelectedTarget,
+    live_worktrees, older_commits_hidden, status_letter_and_color, CommitRow, FocusPlace, ListRow,
+    SelectedTarget,
 };
 use super::{ActiveDiff, Body, ChangesView, LoadedDiff, LoadedDiffKind, RootChanges};
 
@@ -782,177 +782,26 @@ impl ChangesView {
     ) -> Option<AnyElement> {
         let picker = self.base_picker.as_ref()?;
         let visible = filter_base_picker_items(&picker.items, &picker.query);
-        let mut rows = Vec::new();
-        let mut last_section: Option<&BasePickerSection> = None;
-        for (position, index) in visible.iter().copied().enumerate() {
-            let item = &picker.items[index];
-            let changed_section = last_section.is_some() && last_section != Some(&item.section);
-            if changed_section {
-                rows.push(
-                    div()
-                        .my(px(4.))
-                        .h(px(1.))
-                        .bg(theme::border())
-                        .into_any_element(),
-                );
-            }
-            if last_section != Some(&item.section) {
-                let header = match &item.section {
-                    BasePickerSection::Auto => None,
-                    BasePickerSection::Local => {
-                        Some(crate::i18n::text("changes.local_branches").to_owned())
-                    }
-                    BasePickerSection::Remote(remote) => Some(remote.to_uppercase()),
-                };
-                if let Some(header) = header {
-                    rows.push(
-                        div()
-                            .px(px(8.))
-                            .pt(px(4.))
-                            .pb(px(2.))
-                            .text_size(theme::text_caption())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::faint())
-                            .child(header)
-                            .into_any_element(),
-                    );
-                }
-            }
-            last_section = Some(&item.section);
-
-            let highlighted = position == picker.highlighted;
-            if highlighted && picker.reveal.replace(false) {
-                picker.scroll.scroll_to_item(rows.len());
-            }
-            let base_ref = item.base_ref.clone();
-            let check_el = if item.current {
-                svg()
-                    .flex_none()
-                    .size(px(12.))
-                    .path("check.svg")
-                    .text_color(theme::accent())
-                    .into_any_element()
-            } else {
-                div().flex_none().size(px(12.)).into_any_element()
-            };
-            rows.push(
-                div()
-                    .id(("changes-base-picker-item", position))
-                    .when(cfg!(test), {
-                        let label = item.label.clone();
-                        move |el| {
-                            el.debug_selector(move || {
-                                format!("CHANGES_BASE_PICKER_ITEM {position} {label}")
-                            })
-                        }
-                    })
-                    .h(px(28.))
-                    .px(px(8.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .rounded(px(5.))
-                    .cursor_pointer()
-                    .when(highlighted, |el| el.bg(theme::sidebar_selected()))
-                    .hover(|el| el.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.pick_base(base_ref.clone(), window, cx);
-                    }))
-                    .child(check_el)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .truncate()
-                            .text_size(theme::text_ui())
-                            .text_color(theme::text())
-                            .child(item.label.clone()),
-                    )
-                    .when_some(item.hint.as_ref(), |el, hint| {
-                        el.child(
-                            div()
-                                .flex_none()
-                                .text_size(theme::text_meta())
-                                .text_color(theme::faint())
-                                .child(hint.clone()),
-                        )
-                    })
-                    .into_any_element(),
-            );
-        }
-        if rows.is_empty() {
-            rows.push(
-                div()
-                    .px(px(8.))
-                    .py(px(10.))
-                    .text_size(theme::text_meta())
-                    .text_color(theme::faint())
-                    .child(crate::i18n::text("changes.no_matching_branches"))
-                    .into_any_element(),
-            );
-        }
-
-        let content = div()
-            .when(cfg!(test), |el| {
-                el.debug_selector(|| "CHANGES_BASE_PICKER".into())
-            })
-            .flex()
-            .flex_col()
-            .rounded(rems(8. / 16.))
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::raised())
-            .shadow_2xl()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .flex_none()
-                    .px(px(12.))
-                    .pt(px(8.))
-                    .pb(px(2.))
-                    .text_size(theme::text_meta())
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::muted())
-                    .child(crate::i18n::text("changes.compare_against")),
-            )
-            .child(
-                div().flex_none().px(px(8.)).pt(px(4.)).pb(px(6.)).child(
-                    div()
-                        .h(px(28.))
-                        .px(px(8.))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .rounded(px(6.))
-                        .border_1()
-                        .border_color(theme::border())
-                        .bg(theme::panel())
-                        .child(
-                            svg()
-                                .flex_none()
-                                .size(px(12.))
-                                .path("search.svg")
-                                .text_color(theme::faint()),
-                        )
-                        .child(div().flex_1().min_w(px(0.)).child(picker.field.clone())),
-                ),
-            )
-            .child(
-                div()
-                    .id("changes-base-picker-list")
-                    .when(cfg!(test), |el| {
-                        el.debug_selector(|| "CHANGES_BASE_PICKER_LIST".into())
-                    })
-                    .max_h(px(320.))
-                    .overflow_y_scroll()
-                    .track_scroll(&picker.scroll)
-                    .px(px(4.))
-                    .pb(px(6.))
-                    .flex()
-                    .flex_col()
-                    .children(rows),
-            )
-            .into_any_element();
+        let entity = cx.entity();
+        let content = crate::surfaces::worktree_pickers::base_picker_card(
+            crate::surfaces::worktree_pickers::PickerListView {
+                id_prefix: "changes-base-picker-item",
+                selector_prefix: "CHANGES_BASE_PICKER_ITEM",
+                title: crate::i18n::text("changes.compare_against").into(),
+                field: picker.field.clone(),
+                visible: &visible,
+                highlighted: picker.highlighted,
+                scroll: &picker.scroll,
+                reveal: &picker.reveal,
+            },
+            &picker.items,
+            Rc::new(move |base_ref, window, cx| {
+                entity.update(cx, |this, cx| this.pick_base(base_ref, window, cx));
+            }),
+            "CHANGES_BASE_PICKER",
+            "changes-base-picker-list",
+            "CHANGES_BASE_PICKER_LIST",
+        );
 
         let root = cx.entity();
         Some(popup_layer_right_aligned(
@@ -973,212 +822,28 @@ impl ChangesView {
     ) -> Option<AnyElement> {
         let picker = self.checkout_picker.as_ref()?;
         let visible = filter_checkout_picker_items(&picker.items, &picker.query);
-        let mut rows = Vec::new();
-        for (position, index) in visible.iter().copied().enumerate() {
-            let item = &picker.items[index];
-            let highlighted = position == picker.highlighted;
-            if highlighted && picker.reveal.replace(false) {
-                picker.scroll.scroll_to_item(rows.len());
-            }
-            let check_el = if item.current {
-                svg()
-                    .flex_none()
-                    .size(px(12.))
-                    .path("check.svg")
-                    .text_color(theme::accent())
-                    .into_any_element()
-            } else {
-                div().flex_none().size(px(12.)).into_any_element()
-            };
-            let kind_icon = match item.kind {
-                WorktreeKind::Main => "house.svg",
-                WorktreeKind::Linked => "folder-git-2.svg",
-            };
-            let pick_path = item.path.clone();
-            let line2 = div()
-                .w_full()
-                .min_w(px(0.))
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .text_size(theme::text_caption())
-                .text_color(theme::faint())
-                .when_some(item.commit.as_ref(), |el, sha| {
-                    el.child(
-                        div()
-                            .flex_none()
-                            .font_family(theme::UI_MONOSPACE_FONT)
-                            .child(sha.clone()),
-                    )
-                    .child(div().flex_none().child("·"))
-                })
-                .when_some(item.uncommitted, |el, count| {
-                    let (text, color) = if count == 0 {
-                        (
-                            crate::i18n::text("changes.clean").to_owned(),
-                            theme::faint(),
-                        )
-                    } else {
-                        (
-                            crate::i18n::tn("changes.uncommitted_count", count),
-                            theme::warning(),
-                        )
-                    };
-                    el.child(div().flex_none().text_color(color).child(text))
-                        .child(div().flex_none().child("·"))
-                })
-                .child(
-                    div()
-                        .min_w(px(0.))
-                        .truncate()
-                        .child(item.short_path.clone()),
-                );
-
-            rows.push(
-                div()
-                    .id(("changes-checkout-picker-item", position))
-                    .when(cfg!(test), {
-                        let branch = item.branch_label.clone();
-                        move |el| {
-                            el.debug_selector(move || {
-                                format!("CHANGES_CHECKOUT_PICKER_ITEM {position} {branch}")
-                            })
-                        }
-                    })
-                    .px(px(8.))
-                    .py(px(6.))
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .rounded(px(5.))
-                    .cursor_pointer()
-                    .when(highlighted, |el| el.bg(theme::sidebar_selected()))
-                    .hover(|el| el.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.pick_checkout(pick_path.clone(), window, cx);
-                    }))
-                    .child(check_el)
-                    .child(
-                        svg()
-                            .flex_none()
-                            .size(px(13.))
-                            .path(kind_icon)
-                            .text_color(theme::muted()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .child(
-                                div()
-                                    .w_full()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .truncate()
-                                            .text_size(theme::text_ui())
-                                            .text_color(theme::text())
-                                            .child(item.branch_label.clone()),
-                                    )
-                                    .when_some(item.session_label.as_ref(), |row, label| {
-                                        row.child(
-                                            div()
-                                                .flex_none()
-                                                .text_size(theme::text_caption())
-                                                .text_color(if label.is_own {
-                                                    theme::muted()
-                                                } else {
-                                                    theme::faint()
-                                                })
-                                                .child(label.text.clone()),
-                                        )
-                                    }),
-                            )
-                            .child(line2),
-                    )
-                    .into_any_element(),
-            );
-        }
-        if rows.is_empty() {
-            rows.push(
-                div()
-                    .px(px(8.))
-                    .py(px(10.))
-                    .text_size(theme::text_meta())
-                    .text_color(theme::faint())
-                    .child(crate::i18n::text("changes.no_matching_checkouts"))
-                    .into_any_element(),
-            );
-        }
-
-        let content = div()
-            .when(cfg!(test), |el| {
-                el.debug_selector(|| "CHANGES_CHECKOUT_PICKER".into())
-            })
-            .flex()
-            .flex_col()
-            .rounded(rems(8. / 16.))
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::raised())
-            .shadow_2xl()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .flex_none()
-                    .px(px(12.))
-                    .pt(px(8.))
-                    .pb(px(2.))
-                    .text_size(theme::text_meta())
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::muted())
-                    .child(crate::i18n::text("changes.show_changes_in")),
-            )
-            .child(
-                div().flex_none().px(px(8.)).pt(px(4.)).pb(px(6.)).child(
-                    div()
-                        .h(px(28.))
-                        .px(px(8.))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .rounded(px(6.))
-                        .border_1()
-                        .border_color(theme::border())
-                        .bg(theme::panel())
-                        .child(
-                            svg()
-                                .flex_none()
-                                .size(px(12.))
-                                .path("search.svg")
-                                .text_color(theme::faint()),
-                        )
-                        .child(div().flex_1().min_w(px(0.)).child(picker.field.clone())),
-                ),
-            )
-            .child(
-                div()
-                    .id("changes-checkout-picker-list")
-                    .when(cfg!(test), |el| {
-                        el.debug_selector(|| "CHANGES_CHECKOUT_PICKER_LIST".into())
-                    })
-                    .max_h(px(340.))
-                    .overflow_y_scroll()
-                    .track_scroll(&picker.scroll)
-                    .px(px(4.))
-                    .pb(px(6.))
-                    .flex()
-                    .flex_col()
-                    .children(rows),
-            )
-            .into_any_element();
+        let entity = cx.entity();
+        let content = crate::surfaces::worktree_pickers::checkout_picker_card(
+            crate::surfaces::worktree_pickers::PickerListView {
+                id_prefix: "changes-checkout-picker-item",
+                selector_prefix: "CHANGES_CHECKOUT_PICKER_ITEM",
+                title: crate::i18n::text("changes.show_changes_in").into(),
+                field: picker.field.clone(),
+                visible: &visible,
+                highlighted: picker.highlighted,
+                scroll: &picker.scroll,
+                reveal: &picker.reveal,
+            },
+            &picker.items,
+            false,
+            None,
+            Rc::new(move |pick_path, window, cx| {
+                entity.update(cx, |this, cx| this.pick_checkout(pick_path, window, cx));
+            }),
+            "CHANGES_CHECKOUT_PICKER",
+            "changes-checkout-picker-list",
+            "CHANGES_CHECKOUT_PICKER_LIST",
+        );
 
         let root = cx.entity();
         Some(popup_layer_right_aligned(

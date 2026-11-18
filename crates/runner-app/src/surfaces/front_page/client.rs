@@ -105,6 +105,10 @@ impl FrontPageClient {
         self.access.is_some()
     }
 
+    pub(crate) fn local_daemon(&self) -> &DaemonClient {
+        &self.daemon
+    }
+
     pub(crate) fn supports(&self, features: &[&str]) -> bool {
         self.access
             .as_ref()
@@ -251,6 +255,7 @@ impl FrontPageClient {
             speed,
             project,
             cwd,
+            worktree,
             size,
             initial_prompt,
         } = input;
@@ -263,7 +268,7 @@ impl FrontPageClient {
                     runner_core::protocol::model::CodexSpeed::Standard
                 }
             });
-            if let Some(initial_prompt) = initial_prompt {
+            if initial_prompt.is_some() || worktree.is_some() {
                 let output = self.daemon.session_start_chat(
                     runner_core::protocol::StartDirectSessionArgs {
                         role_id: role,
@@ -275,11 +280,11 @@ impl FrontPageClient {
                         speed,
                         project_id: project,
                         cwd,
-                        worktree: None,
+                        worktree,
                         scope: Some(scope),
                         cols: Some(size.0),
                         rows: Some(size.1),
-                        initial_prompt: Some(initial_prompt),
+                        initial_prompt,
                     },
                 )?;
                 return Ok(output.session.id);
@@ -321,6 +326,7 @@ impl FrontPageClient {
             speed,
             project,
             cwd,
+            worktree: None,
             size,
             initial_prompt: None,
         })
@@ -335,6 +341,7 @@ impl FrontPageClient {
             speed,
             project,
             cwd,
+            worktree: _,
             size,
             initial_prompt: _,
         } = input;
@@ -435,6 +442,7 @@ impl FrontPageClient {
         &self,
         project: Option<String>,
         cwd: Option<String>,
+        worktree: Option<runner_core::protocol::worktree::WorktreeSpec>,
         size: (u16, u16),
     ) -> ClientResult<String> {
         if !self.is_remote() {
@@ -445,7 +453,7 @@ impl FrontPageClient {
                     cwd,
                     Some(size.0),
                     Some(size.1),
-                    None,
+                    worktree,
                 )
                 .map(|s| s.id);
         }
@@ -491,6 +499,7 @@ impl FrontPageClient {
             speed: None,
             project: None,
             cwd,
+            worktree: None,
             size,
             initial_prompt: None,
         })
@@ -547,13 +556,23 @@ impl FrontPageClient {
         size: (u16, u16),
         launch_claim: bool,
     ) -> ClientResult<String> {
+        self.resume_session_with_options(session, size, launch_claim, false)
+    }
+
+    pub(crate) fn resume_session_with_options(
+        &self,
+        session: &str,
+        size: (u16, u16),
+        launch_claim: bool,
+        restore_in_main: bool,
+    ) -> ClientResult<String> {
         if !self.is_remote() {
             return if launch_claim {
                 self.daemon
                     .session_resume_on_launch(session, Some(size.0), Some(size.1))
             } else {
                 self.daemon
-                    .session_resume(session, Some(size.0), Some(size.1))
+                    .session_resume(session, Some(size.0), Some(size.1), restore_in_main)
             }
             .map(|session| session.id);
         }
@@ -1003,8 +1022,22 @@ impl FrontPageClient {
         mission: String,
         size: (u16, u16),
     ) -> ClientResult<MissionResume> {
+        self.resume_mission_state_with_options(mission, size, false)
+    }
+
+    pub(crate) fn resume_mission_state_with_options(
+        &self,
+        mission: String,
+        size: (u16, u16),
+        restore_in_main: bool,
+    ) -> ClientResult<MissionResume> {
         if !self.is_remote() {
-            return super::local::resume_mission(&self.daemon, &mission, size);
+            return super::local::resume_mission_with_options(
+                &self.daemon,
+                &mission,
+                size,
+                restore_in_main,
+            );
         }
         #[derive(serde::Deserialize)]
         struct Resumed {
@@ -1045,6 +1078,7 @@ impl FrontPageClient {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start_mission(
         &self,
         crew: String,
@@ -1052,6 +1086,7 @@ impl FrontPageClient {
         goal: Option<String>,
         project: Option<String>,
         cwd: Option<String>,
+        worktree: Option<runner_core::protocol::worktree::WorktreeSpec>,
         size: (u16, u16),
     ) -> ClientResult<String> {
         if !self.is_remote() {
@@ -1064,7 +1099,7 @@ impl FrontPageClient {
                         title,
                         goal_override: goal,
                         cwd,
-                        worktree: None,
+                        worktree,
                         started_by_session_id: None,
                         no_report: false,
                     },
@@ -1279,6 +1314,7 @@ pub(crate) struct ChatStart {
     pub(crate) speed: Option<String>,
     pub(crate) project: Option<String>,
     pub(crate) cwd: Option<String>,
+    pub(crate) worktree: Option<runner_core::protocol::worktree::WorktreeSpec>,
     pub(crate) size: (u16, u16),
     pub(crate) initial_prompt: Option<String>,
 }

@@ -190,6 +190,7 @@ impl Sidebar {
             .then(|| members.first().map(|member| member.agent_runtime.as_str()))
             .flatten();
         let leaf_icon = sidebar_tab_icon(pane_count, single_runtime);
+        let location = self.tab_location(&node, &members, cx);
         let menu_node = node.clone();
         let menu_layout = layout.clone();
         let menu_members = members.clone();
@@ -257,6 +258,10 @@ impl Sidebar {
                 )
             };
             let collapsed_head = group.summary.is_some();
+            let subtitle = group
+                .summary
+                .or_else(|| super::location::render_branch_subtitle(&node.id, &location));
+            let tooltip = (!collapsed_head).then_some(location.tooltip).flatten();
             super::elements::sidebar_item_row_with(
                 SharedString::from(format!("sidebar-tab-{}", node.id)),
                 &SidebarItemView {
@@ -266,9 +271,12 @@ impl Sidebar {
                     selected: active,
                     pinned: node.pinned_position.is_some(),
                 },
-                group.summary,
+                subtitle,
                 !group.in_group,
             )
+            .when_some(tooltip, |row, tip| {
+                row.tooltip(move |_, cx| runner_app::ui::tooltip::tooltip_view(tip.clone(), cx))
+            })
             .when(group.in_group, |row| {
                 super::link::head_shape(row, collapsed_head)
             })
@@ -373,6 +381,7 @@ impl Sidebar {
                 .matches(NodeType::Mission, &summary.mission.id)
         });
         let label = summary.mission.title.clone();
+        let location = self.mission_location(&node, &summary, project_id.as_deref(), cx);
         let menu_node = node.clone();
         let menu_summary = summary.clone();
         let menu_root = cx.entity();
@@ -426,6 +435,8 @@ impl Sidebar {
                 sidebar_row_trailing_slot()
                     .child(self.render_mission_attention(&summary, &node.id, cx))
             };
+            let subtitle = super::location::render_branch_subtitle(&summary.mission.id, &location);
+            let tooltip = location.tooltip;
             super::elements::sidebar_item_row_with(
                 SharedString::from(format!("sidebar-mission-{}", summary.mission.id)),
                 &SidebarItemView {
@@ -435,9 +446,12 @@ impl Sidebar {
                     selected: active,
                     pinned: node.pinned_position.is_some(),
                 },
-                None,
+                subtitle,
                 shape.is_none(),
             )
+            .when_some(tooltip, |row, tip| {
+                row.tooltip(move |_, cx| runner_app::ui::tooltip::tooltip_view(tip.clone(), cx))
+            })
             .when_some(shape, |row, shape| shape.apply(row))
             .when(self.front_page.is_remote(), |row| {
                 row.debug_selector(|| "REMOTE_SIDEBAR_ROW".into())

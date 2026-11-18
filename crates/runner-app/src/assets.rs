@@ -212,6 +212,11 @@ const DOWNLOAD: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0
 const LIST_CHECKS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></svg>"#;
 const CIRCLE_MINUS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/></svg>"#;
 const CORNER_DOWN_LEFT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 10 4 15 9 20"/><path d="M20 4v7a4 4 0 0 1-4 4H4"/></svg>"#;
+const CORNER_DOWN_RIGHT: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 10 20 15 15 20"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/></svg>"#;
+const FOLDER_PLUS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 10v6"/><path d="M9 13h6"/><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>"#;
+const GIT_BRANCH_PLUS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/><path d="M18 15v6"/><path d="M21 18h-6"/></svg>"#;
+const GIT_COMMIT_HORIZONTAL: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><line x1="3" x2="9" y1="12" y2="12"/><line x1="15" x2="21" y1="12" y2="12"/></svg>"#;
+const LAYERS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>"#;
 
 const ASSETS: &[(&str, &[u8])] = &[
     ("list-tree.svg", LIST_TREE),
@@ -361,6 +366,11 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("list-checks.svg", LIST_CHECKS),
     ("circle-minus.svg", CIRCLE_MINUS),
     ("corner-down-left.svg", CORNER_DOWN_LEFT),
+    ("corner-down-right.svg", CORNER_DOWN_RIGHT),
+    ("folder-plus.svg", FOLDER_PLUS),
+    ("git-branch-plus.svg", GIT_BRANCH_PLUS),
+    ("git-commit-horizontal.svg", GIT_COMMIT_HORIZONTAL),
+    ("layers.svg", LAYERS),
     ("LICENSE.themes", crate::theme::SHIPPED_NOTICES.as_bytes()),
 ];
 
@@ -523,6 +533,19 @@ mod tests {
     #[test]
     fn fork_icon_is_registered() {
         assert!(Assets.load("git-fork.svg").unwrap().is_some());
+    }
+
+    #[test]
+    fn worktree_icons_are_registered() {
+        for path in [
+            "folder-plus.svg",
+            "git-branch-plus.svg",
+            "git-commit-horizontal.svg",
+            "layers.svg",
+            "corner-down-right.svg",
+        ] {
+            assert!(Assets.load(path).unwrap().is_some(), "{path}");
+        }
     }
 
     #[test]

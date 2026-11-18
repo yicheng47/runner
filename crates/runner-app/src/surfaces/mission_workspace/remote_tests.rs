@@ -2246,3 +2246,76 @@ fn saved_presentation_survives_same_host_reconnect_and_receives_added_members() 
         assert_eq!(workspace.rail_surfaces.open, rail_before);
     });
 }
+
+#[test]
+fn remote_mission_rail_branch_row_tracks_online_checkout_and_hides_offline() {
+    use runner_core::companion::{Checkout, CheckoutKind};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (_temp, cx, window, _store, fake) = setup();
+    let workspace = workspace(window, &cx);
+    let mut pushed = overview();
+    pushed.missions[0].cwd = Some(r"C:\remote-host\repo\.worktrees\feat-rail".into());
+    pushed.missions[0].checkout = Some(Checkout::Git {
+        top: r"C:\remote-host\repo\.worktrees\feat-rail".into(),
+        main_checkout: r"C:\remote-host\repo".into(),
+        kind: CheckoutKind::Linked,
+        managed: true,
+        branch: Some("feat/rail".into()),
+        commit: Some("abc1234".into()),
+        missing: false,
+        missing_branch: None,
+        candidate_branches: Vec::new(),
+        auto_base: Some("origin/main".into()),
+    });
+    fake.set_overview(pushed.clone());
+    cx.run_until_parked();
+
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.update(|_window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.update_app_settings(cx, false, |settings| {
+                settings.mission_rail_open = true;
+                true
+            });
+            workspace.rail_visibility = SidebarVisibilityTransition::new(true);
+            workspace
+                .rail_surfaces
+                .open
+                .open(crate::surfaces::side_panel::PanelViewId::Info);
+            cx.notify();
+        });
+    });
+    visual.run_until_parked();
+
+    assert!(
+        visual.debug_bounds("MISSION_META_BRANCH").is_some(),
+        "remote linked worktree mission should show Info branch row while online"
+    );
+
+    // Dropping remote connection must hide the Info branch row instead of showing stale branch info.
+    fake.emit(
+        "remote/connection",
+        serde_json::json!({"computer": "host", "state": "reconnecting"}),
+    );
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("MISSION_META_BRANCH").is_none(),
+        "offline remote mission must hide Info branch row"
+    );
+
+    // Reconnecting restores it.
+    fake.emit(
+        "remote/connection",
+        serde_json::json!({"computer": "host", "state": "connected"}),
+    );
+    fake.emit(
+        "remote/overview",
+        serde_json::json!({"computer": "host", "overview": pushed}),
+    );
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("MISSION_META_BRANCH").is_some(),
+        "reconnected remote mission should restore Info branch row"
+    );
+}

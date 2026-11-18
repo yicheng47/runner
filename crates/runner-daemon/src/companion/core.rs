@@ -81,6 +81,19 @@ pub trait Core: Send + Sync {
     fn detach(&self, session: &str, subscriber: u64, channel: u64, release: bool);
     fn closed_reason(&self, session: &str) -> ClosedReason;
     fn release_channel(&self, channel: u64);
+    fn sync_overview_watches(
+        &self,
+        _channel: u64,
+        _to_watch: Vec<std::path::PathBuf>,
+        _to_unwatch: Vec<std::path::PathBuf>,
+    ) {
+    }
+}
+
+const COMPANION_WATCH_CLIENT_BASE: u64 = 1u64 << 62;
+
+fn companion_watch_client(channel: u64) -> u64 {
+    COMPANION_WATCH_CLIENT_BASE ^ channel
 }
 #[derive(Clone, Copy)]
 pub enum Control {
@@ -258,6 +271,24 @@ impl Core for DaemonCore {
     fn release_channel(&self, channel: u64) {
         if let Ok(core) = self.core() {
             core.sessions.release_browser_channel(channel);
+            core.files.client_gone(companion_watch_client(channel));
+        }
+    }
+    fn sync_overview_watches(
+        &self,
+        channel: u64,
+        to_watch: Vec<std::path::PathBuf>,
+        to_unwatch: Vec<std::path::PathBuf>,
+    ) {
+        let Ok(core) = self.core() else {
+            return;
+        };
+        let client_id = companion_watch_client(channel);
+        for root in to_unwatch {
+            core.files.unwatch(client_id, &root);
+        }
+        for root in to_watch {
+            let _ = core.files.watch(client_id, root);
         }
     }
     fn closed_reason(&self, session: &str) -> ClosedReason {
@@ -430,6 +461,42 @@ fn sidebar_order(nodes: &[repo::node::NodeRow]) -> Vec<&repo::node::NodeRow> {
     out
 }
 
+fn derive_overview_checkout(
+    core: &AppCore,
+    cwd: Option<&str>,
+    project_id: Option<&str>,
+    checkout_cache: &mut std::collections::HashMap<(String, Option<String>), Option<Checkout>>,
+    auto_base_cache: &mut std::collections::HashMap<std::path::PathBuf, Option<String>>,
+) -> Option<Checkout> {
+    let cwd = cwd.map(str::trim).filter(|cwd| !cwd.is_empty())?;
+    let key = (cwd.to_owned(), project_id.map(str::to_owned));
+    if let Some(cached) = checkout_cache.get(&key) {
+        return cached.clone();
+    }
+    let derived =
+        crate::files::worktree::worktree_checkout(core, std::path::Path::new(cwd), project_id)
+            .ok()
+            .map(|checkout| {
+                let auto_base = match &checkout {
+                    runner_core::protocol::worktree::WorktreeCheckout::Git {
+                        top,
+                        kind: runner_core::protocol::files::WorktreeKind::Linked,
+                        missing: false,
+                        ..
+                    } => auto_base_cache
+                        .entry(top.clone())
+                        .or_insert_with(|| {
+                            crate::files::changes::worktree_auto_base(&core.files, top)
+                        })
+                        .clone(),
+                    _ => None,
+                };
+                Checkout::from_protocol(&checkout, auto_base)
+            });
+    checkout_cache.insert(key, derived.clone());
+    derived
+}
+
 fn overview(core: &AppCore) -> crate::error::Result<Overview> {
     let nodes = crate::ops::node::node_list(core)?;
     let statuses = crate::ops::session::session_status_snapshot(core)?;
@@ -441,6 +508,8 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
         sidebar: None,
         terminal_palette: Some(crate::session::manager::terminal::palette(core).into()),
     };
+    let mut checkout_cache = std::collections::HashMap::new();
+    let mut auto_base_cache = std::collections::HashMap::new();
     let mut ids = Vec::new();
     for node in sidebar_order(&nodes) {
         match node.node_type {
@@ -504,6 +573,13 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
                         }
                     })
                     .collect();
+                let mission_checkout = derive_overview_checkout(
+                    core,
+                    snapshot.mission.cwd.as_deref(),
+                    snapshot.mission.project_id.as_deref(),
+                    &mut checkout_cache,
+                    &mut auto_base_cache,
+                );
                 overview.missions.push(Mission {
                     id: id.into(),
                     project: snapshot.mission.project_id,
@@ -531,91 +607,110 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
                     shells: layout.drawer.shells,
                     linked_chat: snapshot.mission.linked_chat.map(Into::into),
                     phase: snapshot.phase.map(Into::into),
+                    cwd: snapshot.mission.cwd,
+                    checkout: mission_checkout,
                 });
             }
         }
     }
-    let conn = core.db.get()?;
-    for id in ids {
-        if overview.sessions.contains_key(&id) {
-            continue;
-        }
-        let Some(row) = repo::session::get_row(&conn, &id)? else {
-            continue;
-        };
-        if row.archived_at.is_some() {
-            continue;
-        }
-        let runtime = repo::session::effective_runtime(&conn, &id)?;
-        let shell = runtime
-            .as_deref()
-            .and_then(crate::model::Runtime::parse)
-            .is_some_and(crate::model::Runtime::is_shell);
-        let kind = if shell {
-            SessionKind::Shell
-        } else if row.mission_id.is_some() {
-            SessionKind::Agent
-        } else {
-            SessionKind::Chat
-        };
-        let handle = if row.mission_id.is_some() {
-            overview
-                .missions
-                .iter()
-                .flat_map(|mission| &mission.members)
-                .find(|member| member.session == id)
-                .map(|member| member.handle.clone())
-        } else {
-            repo::session::get_direct(&conn, &id)?.and_then(|entry| entry.role_handle)
-        };
-        let runtime_key = runtime.as_deref().unwrap_or_default();
-        let display_name = crate::runtimes::for_key(runtime_key)
-            .catalog()
-            .map(|catalog| catalog.display_name)
-            .unwrap_or(runtime_key);
-        let command = row
-            .launch_definition
-            .as_ref()
-            .map(|definition| definition.command.as_str())
-            .or(row.agent_command.as_deref())
-            .unwrap_or_default();
-        let title = runner_core::protocol::session_title::preferred_title(
-            row.title.as_deref(),
-            row.live_title.as_deref(),
-            None,
-            runtime_key,
-            handle.as_deref(),
-            row.cwd.as_deref(),
-        )
-        .unwrap_or_else(|| {
-            runner_core::protocol::session_title::default_label(
+    let mut pending_sessions = Vec::new();
+    {
+        let conn = core.db.get()?;
+        for id in ids {
+            if overview.sessions.contains_key(&id)
+                || pending_sessions.iter().any(|(seen, _, _)| seen == &id)
+            {
+                continue;
+            }
+            let Some(row) = repo::session::get_row(&conn, &id)? else {
+                continue;
+            };
+            if row.archived_at.is_some() {
+                continue;
+            }
+            let runtime = repo::session::effective_runtime(&conn, &id)?;
+            let shell = runtime
+                .as_deref()
+                .and_then(crate::model::Runtime::parse)
+                .is_some_and(crate::model::Runtime::is_shell);
+            let kind = if shell {
+                SessionKind::Shell
+            } else if row.mission_id.is_some() {
+                SessionKind::Agent
+            } else {
+                SessionKind::Chat
+            };
+            let handle = if row.mission_id.is_some() {
+                overview
+                    .missions
+                    .iter()
+                    .flat_map(|mission| &mission.members)
+                    .find(|member| member.session == id)
+                    .map(|member| member.handle.clone())
+            } else {
+                repo::session::get_direct(&conn, &id)?.and_then(|entry| entry.role_handle)
+            };
+            let runtime_key = runtime.as_deref().unwrap_or_default();
+            let display_name = crate::runtimes::for_key(runtime_key)
+                .catalog()
+                .map(|catalog| catalog.display_name)
+                .unwrap_or(runtime_key);
+            let command = row
+                .launch_definition
+                .as_ref()
+                .map(|definition| definition.command.as_str())
+                .or(row.agent_command.as_deref())
+                .unwrap_or_default();
+            let title = runner_core::protocol::session_title::preferred_title(
+                row.title.as_deref(),
+                row.live_title.as_deref(),
+                None,
                 runtime_key,
-                command,
                 handle.as_deref(),
-                display_name,
+                row.cwd.as_deref(),
             )
-        });
-        let status = statuses
-            .get(&id)
-            .map(SessionStatus::from)
-            .unwrap_or(SessionStatus {
-                startup_error: None,
-                status: Status::Idle,
-                reason: None,
-                unread: false,
-                error_acknowledged: false,
-                interrupted_since: None,
+            .unwrap_or_else(|| {
+                runner_core::protocol::session_title::default_label(
+                    runtime_key,
+                    command,
+                    handle.as_deref(),
+                    display_name,
+                )
             });
-        overview.sessions.insert(
-            id,
-            Session {
-                kind,
-                title,
-                runtime: runtime.filter(|_| !shell),
-                cwd: row.cwd,
-                status,
-            },
+            let status = statuses
+                .get(&id)
+                .map(SessionStatus::from)
+                .unwrap_or(SessionStatus {
+                    startup_error: None,
+                    status: Status::Idle,
+                    reason: None,
+                    unread: false,
+                    error_acknowledged: false,
+                    interrupted_since: None,
+                });
+            pending_sessions.push((
+                id,
+                row.project_id,
+                Session {
+                    kind,
+                    title,
+                    runtime: runtime.filter(|_| !shell),
+                    cwd: row.cwd,
+                    status,
+                    checkout: None,
+                },
+            ));
+        }
+    }
+    for (id, project_id, mut session) in pending_sessions {
+        session.checkout = derive_overview_checkout(
+            core,
+            session.cwd.as_deref(),
+            project_id.as_deref(),
+            &mut checkout_cache,
+            &mut auto_base_cache,
         );
+        overview.sessions.insert(id, session);
     }
     overview.sidebar = Some(
         nodes
@@ -1171,5 +1266,152 @@ mod tests {
         assert!(!overview(&core).unwrap().sessions["s1"].status.unread);
 
         core.sessions.drain_terminal_workers();
+    }
+
+    #[test]
+    fn overview_includes_session_and_mission_checkouts_and_tracks_git_switch() {
+        use std::process::Command;
+
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+
+        let temp = tempfile::Builder::new()
+            .prefix("1213-m2-comp-core-")
+            .tempdir()
+            .unwrap();
+        let origin = temp.path().join("origin.git");
+        let main_repo = temp.path().join("repo");
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "--bare", "-q"]);
+        std::fs::create_dir_all(&main_repo).unwrap();
+        git(&main_repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(main_repo.join("README.md"), "base\n").unwrap();
+        git(&main_repo, &["add", "-A"]);
+        git(&main_repo, &["commit", "-q", "-m", "init"]);
+        git(
+            &main_repo,
+            &["remote", "add", "origin", &origin.to_string_lossy()],
+        );
+        git(&main_repo, &["push", "-q", "-u", "origin", "main"]);
+        git(&main_repo, &["remote", "set-head", "origin", "main"]);
+
+        let core = std::sync::Arc::new(crate::test_support::test_core_in(temp.path().into()));
+        let wt = main_repo.join(".worktrees/feat-alpha");
+        git(
+            &main_repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feat/alpha",
+                &wt.to_string_lossy(),
+            ],
+        );
+        git(&wt, &["branch", "feat/beta"]);
+
+        let conn = core.db.get().unwrap();
+        let now = chrono::Utc::now();
+        let project = repo::project::create(&conn, "Repo", &main_repo.to_string_lossy()).unwrap();
+        crate::test_support::insert_test_role(&conn, "role", "coder", "codex", "codex");
+        repo::crew::insert(
+            &conn,
+            &repo::crew::CrewRow {
+                id: "crew".into(),
+                name: "Duo".into(),
+                system_prompt_addendum: None,
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .unwrap();
+        crate::test_support::insert_test_slot(&conn, "sl", "crew", "role", "coder", 0, true);
+        let wt_str = runner_core::app_paths::normalize_checkout_path(&wt)
+            .to_string_lossy()
+            .into_owned();
+        repo::mission::insert(
+            &conn,
+            &repo::mission::MissionRow {
+                id: "m-wt".into(),
+                crew_id: Some("crew".into()),
+                project_id: Some(project.id.clone()),
+                title: "Worktree mission".into(),
+                status: crate::model::MissionStatus::Completed,
+                goal_override: None,
+                cwd: Some(wt_str.clone()),
+                started_at: now,
+                stopped_at: Some(now),
+                pinned_at: None,
+                archived_at: None,
+                linked_session_id: None,
+                report_to_chat: true,
+            },
+        )
+        .unwrap();
+        let mut s = repo::session::SessionRowDb::new_running("s-wt".into());
+        s.status = crate::model::SessionStatus::Stopped;
+        s.role_id = Some("role".into());
+        s.agent_runtime = Some("codex".into());
+        s.project_id = Some(project.id.clone());
+        s.cwd = Some(wt_str.clone());
+        s.title = Some("Chat".into());
+        repo::session::insert(&conn, &s).unwrap();
+        let project_node = repo::node::ensure_project_node(&conn, &project.id).unwrap();
+        let layout = serde_json::json!({"preset": "single", "slots": ["s-wt"], "sizes": {}});
+        repo::node::create_tab(
+            &conn,
+            Some(&project_node.id),
+            "chat",
+            0,
+            &layout.to_string(),
+        )
+        .unwrap();
+        repo::node::ensure_mission_node(&conn, "m-wt", Some(&project.id)).unwrap();
+        drop(conn);
+
+        let ov = overview(&core).unwrap();
+        let mission = ov.missions.iter().find(|m| m.id == "m-wt").unwrap();
+        assert_eq!(mission.cwd.as_deref(), Some(wt_str.as_str()));
+        match mission.checkout.as_ref().unwrap() {
+            Checkout::Git {
+                kind,
+                managed,
+                branch,
+                missing,
+                auto_base,
+                ..
+            } => {
+                assert_eq!(*kind, CheckoutKind::Linked);
+                assert!(*managed);
+                assert_eq!(branch.as_deref(), Some("feat/alpha"));
+                assert!(!*missing);
+                assert_eq!(auto_base.as_deref(), Some("origin/main"));
+            }
+            other => panic!("expected git checkout, got {other:?}"),
+        }
+        assert_eq!(ov.sessions["s-wt"].checkout, mission.checkout);
+
+        git(&wt, &["switch", "-q", "feat/beta"]);
+        let ov2 = overview(&core).unwrap();
+        let mission2 = ov2.missions.iter().find(|m| m.id == "m-wt").unwrap();
+        assert!(matches!(
+            mission2.checkout.as_ref(),
+            Some(Checkout::Git { branch: Some(b), .. }) if b == "feat/beta"
+        ));
     }
 }

@@ -11,9 +11,8 @@ use runner_core::protocol::files::{
     FileStatus, FilesRoot, FilesRootSource, WorktreeEntry, WorktreeKind,
 };
 
-use crate::surfaces::files::picker::{
-    same_checkout_path, shorten_checkout_path, CheckoutSessionLabel,
-};
+pub(crate) use crate::surfaces::files::picker::CheckoutSessionLabel;
+use crate::surfaces::files::picker::{same_checkout_path, shorten_checkout_path};
 use crate::theme;
 
 /// Which row in the Commits section is active.

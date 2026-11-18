@@ -883,6 +883,33 @@ pub fn set_files_root(conn: &Connection, id: &str, root: Option<&str>) -> rusqli
     )
 }
 
+pub fn set_cwd(conn: &Connection, id: &str, cwd: &str) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE sessions SET cwd = ?2 WHERE id = ?1",
+        rusqlite::params![id, cwd],
+    )
+}
+
+#[derive(Deserialize)]
+pub struct MissionCwdRow {
+    pub id: String,
+    pub cwd: Option<String>,
+    pub project_id: Option<String>,
+    pub status: SessionStatus,
+}
+
+pub fn list_mission_cwd_rows(
+    conn: &Connection,
+    mission_id: &str,
+) -> rusqlite::Result<Vec<MissionCwdRow>> {
+    let mut stmt =
+        conn.prepare("SELECT id, cwd, project_id, status FROM sessions WHERE mission_id = ?1")?;
+    let rows = stmt.query_map(rusqlite::params![mission_id], |row| {
+        from_row::<MissionCwdRow>(row).map_err(de_err)
+    })?;
+    rows.collect()
+}
+
 pub fn set_title(conn: &Connection, id: &str, title: Option<&str>) -> rusqlite::Result<usize> {
     conn.execute(
         "UPDATE sessions SET title = ?2 WHERE id = ?1",

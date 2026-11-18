@@ -1,5 +1,8 @@
 use super::*;
-use crate::surfaces::sidebar::{LinkedMissionArchiveItem, LinkedMissionIdleState};
+use crate::surfaces::sidebar::{
+    render_worktree_remove_options, LinkedMissionArchiveItem, LinkedMissionIdleState,
+    WorktreeCleanScope,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ArchiveConfirmCopy {
@@ -261,45 +264,88 @@ impl NativeRoot {
             .terminal_close_confirm
             .as_ref()
             .expect("archive confirm is open");
-        let (copy, linked_missions) = match &confirm.target {
+        let (copy, linked_missions, scope) = match &confirm.target {
             TerminalCloseTarget::ArchiveAll {
                 session_ids,
                 confirmation_body,
                 ..
             } => {
                 let linked_missions = self.linked_missions_for_chats(session_ids, cx);
-                if linked_missions.is_empty() {
-                    (
-                        ArchiveConfirmCopy {
-                            title: crate::i18n::text("ui.archive_tab").to_owned(),
-                            body: confirmation_body.resolve().to_string(),
-                            detail: None,
-                            confirm_label: crate::i18n::text("ui.archive").to_owned(),
-                            icon: "trash.svg",
-                        },
-                        linked_missions,
-                    )
-                } else {
-                    let mut chats = Vec::new();
-                    let mut terminals = 0usize;
-                    let mut running_chats = 0usize;
-                    for id in session_ids {
-                        let entry = self.front_page_session(id, cx);
-                        let is_shell = entry.as_ref().is_some_and(|session| {
-                            Runtime::parse(&session.agent_runtime).is_some_and(Runtime::is_shell)
-                        });
-                        if is_shell {
-                            terminals += 1;
-                        } else {
-                            if entry
-                                .as_ref()
-                                .is_some_and(|session| session.status == SessionStatus::Running)
-                            {
-                                running_chats += 1;
-                            }
-                            chats.push((id, entry));
+                let mut chats = Vec::new();
+                let mut terminals = 0usize;
+                let mut running_chats = 0usize;
+                for id in session_ids {
+                    let entry = self.front_page_session(id, cx);
+                    let is_shell = entry.as_ref().is_some_and(|session| {
+                        Runtime::parse(&session.agent_runtime).is_some_and(Runtime::is_shell)
+                    });
+                    if is_shell {
+                        terminals += 1;
+                    } else {
+                        if entry
+                            .as_ref()
+                            .is_some_and(|session| session.status == SessionStatus::Running)
+                        {
+                            running_chats += 1;
                         }
+                        chats.push((id, entry));
                     }
+                }
+                let scope = if chats.len() == 1 && terminals == 0 {
+                    WorktreeCleanScope::Chat
+                } else {
+                    WorktreeCleanScope::Tab
+                };
+                if linked_missions.is_empty() {
+                    let body = confirmation_body.resolve().to_string();
+                    if body.is_empty() && chats.len() == 1 && terminals == 0 {
+                        let (_, entry) = &chats[0];
+                        let label = entry
+                            .as_ref()
+                            .map(|entry| entry.label(None))
+                            .unwrap_or_else(|| crate::i18n::text("ui.this_chat").into());
+                        (
+                            ArchiveConfirmCopy {
+                                title: crate::i18n::text("ui.archive_chat").to_owned(),
+                                body: archive_chat_confirm_body(&label, running_chats > 0),
+                                detail: None,
+                                confirm_label: crate::i18n::text("ui.archive_chat_action")
+                                    .to_owned(),
+                                icon: "archive.svg",
+                            },
+                            linked_missions,
+                            scope,
+                        )
+                    } else if body.is_empty() {
+                        (
+                            ArchiveConfirmCopy {
+                                title: crate::i18n::text("ui.archive_tab").to_owned(),
+                                body: crate::i18n::tf(
+                                    "format.archiving_chat",
+                                    &[("label", crate::i18n::tn("count.chats", chats.len()))],
+                                ),
+                                detail: None,
+                                confirm_label: crate::i18n::text("ui.archive_tab_action")
+                                    .to_owned(),
+                                icon: "archive.svg",
+                            },
+                            linked_missions,
+                            scope,
+                        )
+                    } else {
+                        (
+                            ArchiveConfirmCopy {
+                                title: crate::i18n::text("ui.archive_tab").to_owned(),
+                                body,
+                                detail: None,
+                                confirm_label: crate::i18n::text("ui.archive").to_owned(),
+                                icon: "trash.svg",
+                            },
+                            linked_missions,
+                            scope,
+                        )
+                    }
+                } else {
                     let copy = if chats.len() == 1 && terminals == 0 {
                         let (_, entry) = &chats[0];
                         let label = entry
@@ -319,7 +365,7 @@ impl NativeRoot {
                             &linked_missions,
                         )
                     };
-                    (copy, linked_missions)
+                    (copy, linked_missions, scope)
                 }
             }
             TerminalCloseTarget::ArchiveChatPane { session_id, .. } => {
@@ -344,9 +390,41 @@ impl NativeRoot {
                 } else {
                     single_chat_with_missions_confirm_copy(&label, running, &linked_missions)
                 };
-                (copy, linked_missions)
+                (copy, linked_missions, WorktreeCleanScope::Chat)
+            }
+            TerminalCloseTarget::ArchiveMission { mission_id } => {
+                let summary = self
+                    .app_store
+                    .read(cx)
+                    .missions
+                    .iter()
+                    .find(|summary| summary.mission.id == *mission_id);
+                let label = summary
+                    .map(|summary| summary.mission.title.as_str())
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or(mission_id.as_str())
+                    .to_owned();
+                let running = summary.is_some_and(|summary| summary.any_session_live);
+                let copy = ArchiveConfirmCopy {
+                    title: crate::i18n::text("ui.archive_mission").to_owned(),
+                    body: if running {
+                        crate::i18n::tf("format.mission_running_stops_first", &[("label", label)])
+                    } else {
+                        crate::i18n::tf("format.archiving_mission", &[("label", label)])
+                    },
+                    detail: None,
+                    confirm_label: if running {
+                        crate::i18n::text("ui.stop_and_archive_mission").to_owned()
+                    } else {
+                        crate::i18n::text("ui.archive_mission_action").to_owned()
+                    },
+                    icon: "archive.svg",
+                };
+                (copy, Vec::new(), WorktreeCleanScope::Mission)
             }
         };
+        let worktree_note =
+            render_worktree_remove_options(&confirm.worktree_options, scope, cx.entity());
         let root = cx.entity();
         let confirm_root = root.clone();
         let mut dialog = ConfirmDialog::new(
@@ -364,8 +442,25 @@ impl NativeRoot {
         )
         .focus_handle(confirm.focus.clone())
         .icon(copy.icon);
-        if !linked_missions.is_empty() {
-            dialog = dialog.note(render_linked_missions_note(&linked_missions));
+        let combined_note = match (
+            (!linked_missions.is_empty()).then(|| render_linked_missions_note(&linked_missions)),
+            worktree_note,
+        ) {
+            (Some(missions), Some(worktrees)) => Some(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(missions)
+                    .child(worktrees)
+                    .into_any_element(),
+            ),
+            (Some(missions), None) => Some(missions),
+            (None, Some(worktrees)) => Some(worktrees),
+            (None, None) => None,
+        };
+        if let Some(note) = combined_note {
+            dialog = dialog.note(note);
         }
         if let Some(detail) = copy.detail {
             dialog = dialog.detail(detail);

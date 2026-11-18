@@ -111,31 +111,34 @@ fn sort_active_rows(rows: &mut [ActiveSidebarRow]) {
     });
 }
 
+#[cfg(test)]
 pub(super) fn active_location(
     project: Option<&runner_core::protocol::project::ProjectRow>,
     cwd: Option<&str>,
     home: Option<&str>,
 ) -> String {
-    let compact = |path: &str| {
-        runner_app::ui::field::compact_path_candidates(path, home)
-            .into_iter()
-            .next()
-            .unwrap_or_default()
+    active_location_with_checkout(project, cwd, None, home)
+}
+
+#[cfg(test)]
+pub(super) fn active_location_with_checkout(
+    project: Option<&runner_core::protocol::project::ProjectRow>,
+    cwd: Option<&str>,
+    checkout: Option<&runner_core::protocol::worktree::WorktreeCheckout>,
+    home: Option<&str>,
+) -> String {
+    let pane = super::location::PaneLocationInput {
+        label: "",
+        cwd,
+        checkout,
     };
-    let Some(project) = project else {
-        return compact(cwd.unwrap_or_default());
-    };
-    let Some(cwd) = cwd else {
-        return project.name.clone();
-    };
-    match std::path::Path::new(cwd).strip_prefix(&project.cwd) {
-        Ok(relative) if relative.as_os_str().is_empty() => project.name.clone(),
-        Ok(relative) => {
-            let relative = relative.strip_prefix(".worktrees").unwrap_or(relative);
-            format!("{} › {}", project.name, relative.display())
-        }
-        Err(_) => format!("{} › {}", project.name, compact(cwd)),
-    }
+    super::location::resolve_row_location(
+        project,
+        &[pane],
+        home,
+        super::location::LocationMode::Local,
+    )
+    .active_line
 }
 
 impl Sidebar {
@@ -518,48 +521,13 @@ impl Sidebar {
             }
         };
         let (label, icon) = row.title_and_icon(|id| self.live_title(id, cx));
-        let (live, cwd, project_id) = match &row.source {
-            SidebarRow::Tab {
-                node,
-                layout,
-                members,
-                ..
-            } => {
-                let target = super::elements::sidebar_tab_target(layout, members);
-                (
-                    members
-                        .iter()
-                        .any(|member| member.status == SessionStatus::Running),
-                    target.cwd.as_deref(),
-                    node_project_id(&self.source_nodes(cx), node)
-                        .or_else(|| target.project_id.clone()),
-                )
+        let location = match &row.source {
+            SidebarRow::Tab { node, members, .. } => self.tab_location(node, members, cx),
+            SidebarRow::Mission { node, summary, .. } => {
+                self.mission_location(node, summary, None, cx)
             }
-            SidebarRow::Mission { node, summary, .. } => (
-                summary.any_session_live,
-                summary.mission.cwd.as_deref(),
-                node_project_id(&self.source_nodes(cx), node)
-                    .or_else(|| summary.mission.project_id.clone()),
-            ),
         };
-        let projects = self.source_projects(cx);
-        let project = projects
-            .iter()
-            .find(|project| Some(&project.id) == project_id.as_ref());
-        let location = if self.front_page.is_remote() {
-            match (project, cwd) {
-                (Some(project), Some(cwd)) => format!("{} › {}", project.name, cwd),
-                (Some(project), None) => project.name.clone(),
-                (None, Some(cwd)) => cwd.to_owned(),
-                _ => String::new(),
-            }
-        } else {
-            active_location(
-                project.and_then(|p| p.local.as_ref()),
-                cwd,
-                store.home_dir.as_deref().and_then(|path| path.to_str()),
-            )
-        };
+        let live = row.source.is_live();
         let title = if renaming {
             div()
                 .debug_selector(|| format!("ACTIVE_RENAME {}", shortcut.node_id))
@@ -614,28 +582,18 @@ impl Sidebar {
         let menu_row = row.clone();
         let row_id = SharedString::from(format!("active-{}", shortcut.node_id));
         let collapsed_head = group.summary.is_some();
+        let tooltip = (!collapsed_head)
+            .then(|| location.tooltip.clone())
+            .flatten();
         let second_line = match group.summary {
             Some(summary) => summary,
-            None => div()
-                .debug_selector(|| format!("ACTIVE_LOCATION {}", shortcut.node_id))
-                .min_w(px(0.))
-                .flex()
-                .items_center()
-                .gap(rems(6. / 16.))
-                .text_size(theme::text_meta())
-                .text_color(theme::faint())
-                .child(
-                    gpui::svg()
-                        .path("folder.svg")
-                        .size(rems(10. / 16.))
-                        .flex_none()
-                        .text_color(theme::faint()),
-                )
-                .child(div().min_w(px(0.)).truncate().child(location))
-                .into_any_element(),
+            None => super::location::render_active_location_line(&shortcut.node_id, &location),
         };
         let bordered = !group.in_group && shape.is_none();
         sidebar_row_shell(row_id.clone(), active || renaming, false, bordered)
+            .when_some(tooltip, |row, tip| {
+                row.tooltip(move |_, cx| runner_app::ui::tooltip::tooltip_view(tip.clone(), cx))
+            })
             .gap_2()
             .rounded(rems(6. / 16.))
             .when(group.in_group, |row| {

@@ -102,6 +102,13 @@ pub(crate) struct ChatTransition {
     pub(crate) generation: u64,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ChatRestoreFallback {
+    pub(crate) pane_id: String,
+    pub(crate) session_id: String,
+    pub(crate) prompt: crate::surfaces::worktree_restore::RestoreFallbackPrompt,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CloseTarget {
     ChatDrawer,
@@ -136,6 +143,7 @@ pub(crate) struct PaneRename {
     pub(crate) input: Entity<runner_app::ui::TextField>,
 }
 
+#[allow(clippy::enum_variant_names)]
 pub(crate) enum TerminalCloseTarget {
     ArchiveChatPane {
         session_id: String,
@@ -146,12 +154,18 @@ pub(crate) enum TerminalCloseTarget {
         source: ArchiveAllSource,
         confirmation_body: crate::i18n::Text,
     },
+    ArchiveMission {
+        mission_id: String,
+    },
 }
 
 pub(crate) struct TerminalCloseConfirm {
+    pub(crate) id: u64,
     pub(crate) target: TerminalCloseTarget,
     pub(crate) focus: FocusHandle,
     pub(crate) previous_focus: Option<FocusHandle>,
+    pub(crate) worktree_options: Vec<crate::surfaces::sidebar::WorktreeRemoveOption>,
+    pub(crate) worktree_check_generation: u64,
 }
 
 impl TerminalCloseConfirm {
@@ -161,6 +175,7 @@ impl TerminalCloseConfirm {
         window: &mut Window,
         cx: &mut App,
     ) {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         if pending.is_some() {
             return;
         }
@@ -168,9 +183,12 @@ impl TerminalCloseConfirm {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         *pending = Some(Self {
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             target,
             focus,
             previous_focus,
+            worktree_options: Vec::new(),
+            worktree_check_generation: 0,
         });
     }
 
@@ -293,6 +311,7 @@ pub(crate) struct NativeRoot {
     pub(crate) next_chat_transition_generation: u64,
     pub(crate) session_exit_codes: HashMap<String, Option<i32>>,
     pub(crate) chat_error: Option<crate::i18n::Text>,
+    pub(crate) chat_restore_fallback: Option<ChatRestoreFallback>,
     pub(crate) daemon_retrying: bool,
     pub(crate) chat_warning: Option<String>,
     pub(crate) active_chat_detail: Option<DirectSessionEntry>,
@@ -309,6 +328,9 @@ pub(crate) struct NativeRoot {
     pub(crate) _pane_rename_focus_subscription: Option<Subscription>,
     pub(crate) _pane_close_focus_subscription: Option<Subscription>,
     pub(crate) terminal_close_confirm: Option<TerminalCloseConfirm>,
+    #[cfg(test)]
+    pub(crate) archive_check_gates:
+        std::collections::VecDeque<crate::test_support::StagedReplyGate>,
     pub(crate) pending_pane_closes: HashMap<String, PendingPaneClose>,
     pub(crate) pending_tab_close: Option<PendingTabClose>,
     pub(crate) tab_landed_at: Option<Instant>,

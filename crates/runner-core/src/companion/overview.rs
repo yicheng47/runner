@@ -136,6 +136,12 @@ pub struct Mission {
     /// The host's derived mission state (#748); older hosts send none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<MissionPhase>,
+    /// Working directory on the host (#1213); older hosts send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Host-derived git worktree state and auto-detected base (#1213); older hosts send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout: Option<Checkout>,
 }
 
 impl MissionPhase {
@@ -214,4 +220,249 @@ pub struct Session {
     pub cwd: Option<String>,
     #[serde(flatten)]
     pub status: SessionStatus,
+    /// Host-derived git worktree state and auto-detected base (#1213); older hosts send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout: Option<Checkout>,
+}
+
+wire_enum!(CheckoutKind, Main, {
+    Main => "main",
+    Linked => "linked",
+});
+
+wire_enum!(MissingBranchState, Gone, {
+    Surviving => "surviving",
+    Ambiguous => "ambiguous",
+    Gone => "gone",
+});
+
+/// Host-derived checkout state carried over Companion `Overview` (#1213).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Checkout {
+    Git {
+        top: String,
+        main_checkout: String,
+        kind: CheckoutKind,
+        managed: bool,
+        branch: Option<String>,
+        commit: Option<String>,
+        missing: bool,
+        missing_branch: Option<MissingBranchState>,
+        candidate_branches: Vec<String>,
+        auto_base: Option<String>,
+    },
+    Plain {
+        missing: bool,
+    },
+    Unknown(serde_json::Value),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCheckoutWire {
+    #[serde(default = "git_checkout_tag")]
+    status: String,
+    top: String,
+    main_checkout: String,
+    kind: CheckoutKind,
+    managed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commit: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    missing: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    missing_branch: Option<MissingBranchState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    candidate_branches: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auto_base: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlainCheckoutWire {
+    #[serde(default = "plain_checkout_tag")]
+    status: String,
+    #[serde(default)]
+    missing: bool,
+}
+
+fn git_checkout_tag() -> String {
+    "git".to_owned()
+}
+
+fn plain_checkout_tag() -> String {
+    "plain".to_owned()
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+impl Serialize for Checkout {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Git {
+                top,
+                main_checkout,
+                kind,
+                managed,
+                branch,
+                commit,
+                missing,
+                missing_branch,
+                candidate_branches,
+                auto_base,
+            } => GitCheckoutWire {
+                status: git_checkout_tag(),
+                top: top.clone(),
+                main_checkout: main_checkout.clone(),
+                kind: kind.clone(),
+                managed: *managed,
+                branch: branch.clone(),
+                commit: commit.clone(),
+                missing: *missing,
+                missing_branch: missing_branch.clone(),
+                candidate_branches: candidate_branches.clone(),
+                auto_base: auto_base.clone(),
+            }
+            .serialize(serializer),
+            Self::Plain { missing } => PlainCheckoutWire {
+                status: plain_checkout_tag(),
+                missing: *missing,
+            }
+            .serialize(serializer),
+            Self::Unknown(value) => value.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Checkout {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let Some(status) = value.get("status").and_then(serde_json::Value::as_str) else {
+            return Err(serde::de::Error::missing_field("status"));
+        };
+        match status {
+            "git" => {
+                let wire: GitCheckoutWire =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(Self::Git {
+                    top: wire.top,
+                    main_checkout: wire.main_checkout,
+                    kind: wire.kind,
+                    managed: wire.managed,
+                    branch: wire.branch,
+                    commit: wire.commit,
+                    missing: wire.missing,
+                    missing_branch: wire.missing_branch,
+                    candidate_branches: wire.candidate_branches,
+                    auto_base: wire.auto_base,
+                })
+            }
+            "plain" => {
+                let wire: PlainCheckoutWire =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(Self::Plain {
+                    missing: wire.missing,
+                })
+            }
+            _ => Ok(Self::Unknown(value)),
+        }
+    }
+}
+
+impl Checkout {
+    pub fn from_protocol(
+        checkout: &crate::protocol::worktree::WorktreeCheckout,
+        auto_base: Option<String>,
+    ) -> Self {
+        use crate::protocol::files::WorktreeKind as ProtoKind;
+        use crate::protocol::worktree::{MissingWorktreeBranchState, WorktreeCheckout};
+        match checkout {
+            WorktreeCheckout::Git {
+                top,
+                main_checkout,
+                kind,
+                managed,
+                branch,
+                commit,
+                missing,
+                missing_branch,
+                candidate_branches,
+            } => Self::Git {
+                top: top.to_string_lossy().into_owned(),
+                main_checkout: main_checkout.to_string_lossy().into_owned(),
+                kind: match kind {
+                    ProtoKind::Main => CheckoutKind::Main,
+                    ProtoKind::Linked => CheckoutKind::Linked,
+                },
+                managed: *managed,
+                branch: branch.clone(),
+                commit: commit.clone(),
+                missing: *missing,
+                missing_branch: missing_branch.map(|state| match state {
+                    MissingWorktreeBranchState::Surviving => MissingBranchState::Surviving,
+                    MissingWorktreeBranchState::Ambiguous => MissingBranchState::Ambiguous,
+                    MissingWorktreeBranchState::Gone => MissingBranchState::Gone,
+                }),
+                candidate_branches: candidate_branches.clone(),
+                auto_base,
+            },
+            WorktreeCheckout::Plain { missing } => Self::Plain { missing: *missing },
+        }
+    }
+
+    pub fn to_protocol(
+        &self,
+    ) -> Option<(crate::protocol::worktree::WorktreeCheckout, Option<String>)> {
+        use crate::protocol::files::WorktreeKind as ProtoKind;
+        use crate::protocol::worktree::{MissingWorktreeBranchState, WorktreeCheckout};
+        use std::path::PathBuf;
+        match self {
+            Self::Git {
+                top,
+                main_checkout,
+                kind,
+                managed,
+                branch,
+                commit,
+                missing,
+                missing_branch,
+                candidate_branches,
+                auto_base,
+            } => {
+                let proto_kind = match kind {
+                    CheckoutKind::Main => ProtoKind::Main,
+                    CheckoutKind::Linked => ProtoKind::Linked,
+                    CheckoutKind::Unrecognized(_) => return None,
+                };
+                let proto_missing_branch = missing_branch.as_ref().map(|state| match state {
+                    MissingBranchState::Surviving => MissingWorktreeBranchState::Surviving,
+                    MissingBranchState::Ambiguous => MissingWorktreeBranchState::Ambiguous,
+                    MissingBranchState::Gone | MissingBranchState::Unrecognized(_) => {
+                        MissingWorktreeBranchState::Gone
+                    }
+                });
+                Some((
+                    WorktreeCheckout::Git {
+                        top: PathBuf::from(top),
+                        main_checkout: PathBuf::from(main_checkout),
+                        kind: proto_kind,
+                        managed: *managed,
+                        branch: branch.clone(),
+                        commit: commit.clone(),
+                        missing: *missing,
+                        missing_branch: proto_missing_branch,
+                        candidate_branches: candidate_branches.clone(),
+                    },
+                    auto_base.clone(),
+                ))
+            }
+            Self::Plain { missing } => Some((WorktreeCheckout::Plain { missing: *missing }, None)),
+            Self::Unknown(_) => None,
+        }
+    }
 }

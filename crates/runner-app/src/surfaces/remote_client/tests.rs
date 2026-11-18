@@ -1360,6 +1360,201 @@ fn shared_remote_sidebar_controls_do_not_open_local_creation_or_change_local_sta
 }
 
 #[test]
+fn remote_chat_info_shows_host_worktree_on_open_and_tracks_connection() {
+    use runner_core::companion::{Checkout, CheckoutKind};
+    use std::time::{Duration, Instant};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::Builder::new()
+        .prefix("1213-m2-remote-info-")
+        .tempdir()
+        .unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, clients) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    let mut data = overview();
+    let session = data.sessions.get_mut("s").unwrap();
+    let host_path = r"C:\remote-host\repo\.worktrees\feat-chat";
+    session.cwd = Some(host_path.into());
+    session.status.status = Status::Stopped;
+    session.checkout = Some(Checkout::Git {
+        top: host_path.into(),
+        main_checkout: r"C:\remote-host\repo".into(),
+        kind: CheckoutKind::Linked,
+        managed: true,
+        branch: Some("feat/chat".into()),
+        commit: Some("abc1234".into()),
+        missing: false,
+        missing_branch: None,
+        candidate_branches: Vec::new(),
+        auto_base: Some("origin/main".into()),
+    });
+    fake.set_overview(data.clone());
+    let window = add_window(&mut cx, &store, temp.path(), "remote-chat-info");
+    let local_panel = store.read_with(&cx, |store, _| store.settings.chat_panel_open);
+    window.update(&mut cx, choose_host).unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    fn wait(
+        visual: &mut VisualTestContext,
+        what: &str,
+        mut ready: impl FnMut(&mut VisualTestContext) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.refresh();
+            });
+            visual.run_until_parked();
+            if ready(visual) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::yield_now();
+        }
+    }
+    wait(&mut visual, "remote chat side-panel toggle", |v| {
+        v.debug_bounds("CHAT_PANEL_TOGGLE").is_some()
+    });
+    let toggle = visual.debug_bounds("CHAT_PANEL_TOGGLE").unwrap();
+    visual.simulate_click(toggle.center(), gpui::Modifiers::default());
+    let cwd_selector = format!("CHAT_PANEL_META {host_path}").leak();
+    wait(
+        &mut visual,
+        "host worktree metadata on remote chat Info",
+        |v| {
+            v.debug_bounds(cwd_selector).is_some()
+                && v.debug_bounds("CHAT_PANEL_META feat/chat").is_some()
+                && v.debug_bounds("INFO_WORKTREE_MARKER Worktree · from origin/main")
+                    .is_some()
+        },
+    );
+    assert!(visual.debug_bounds("PANEL_TAB Info").is_some());
+    assert!(visual.debug_bounds("PANEL_ADD_SURFACE").is_none());
+    assert!(visual.debug_bounds("PANEL_TAB Files").is_none());
+    assert!(visual.debug_bounds("PANEL_TAB Changes").is_none());
+
+    fake.emit(
+        "remote/connection",
+        serde_json::json!({"computer": "host", "state": "reconnecting"}),
+    );
+    wait(
+        &mut visual,
+        "offline chat Info drops the host branch",
+        |v| {
+            clients.read_with(v, |state, _| state.connection("host")) == Connection::Reconnecting
+                && v.debug_bounds(cwd_selector).is_some()
+                && v.debug_bounds("CHAT_PANEL_BRANCH_ROW").is_none()
+        },
+    );
+    fake.emit(
+        "remote/connection",
+        serde_json::json!({"computer": "host", "state": "connected"}),
+    );
+    wait(&mut visual, "host reconnect applies", |v| {
+        clients.read_with(v, |state, _| state.connection("host")) == Connection::Connected
+    });
+    let Some(Checkout::Git { branch, .. }) = &mut data.sessions.get_mut("s").unwrap().checkout
+    else {
+        unreachable!();
+    };
+    *branch = Some("feat/reconnected".into());
+    fake.set_overview(data.clone());
+    wait(
+        &mut visual,
+        "reconnected chat Info restores the host branch",
+        |v| v.debug_bounds("CHAT_PANEL_META feat/reconnected").is_some(),
+    );
+
+    let mut other_chat = data.sessions["s"].clone();
+    let Some(Checkout::Git { top, branch, .. }) = &mut other_chat.checkout else {
+        unreachable!();
+    };
+    *top = r"C:\remote-host\repo\.worktrees\feat-second".into();
+    other_chat.cwd = Some(top.clone());
+    *branch = Some("feat/second".into());
+    data.sessions.insert("second".into(), other_chat);
+    data.sessions.insert(
+        "terminal".into(),
+        serde_json::from_value(serde_json::json!({
+            "kind": "shell", "title": "Host terminal", "runtime": "shell", "status": "stopped",
+            "unread": false
+        }))
+        .unwrap(),
+    );
+    data.tabs[0].panes = serde_json::from_value(serde_json::json!({
+        "split": "row", "sizes": [0.5, 0.5], "a": {"session": "s"},
+        "b": {
+            "split": "column", "sizes": [0.5, 0.5],
+            "a": {"session": "second"}, "b": {"session": "terminal"}
+        }
+    }))
+    .unwrap();
+    fake.set_overview(data.clone());
+    wait(&mut visual, "three remote panes", |v| {
+        v.debug_bounds("PANE_HEADER:second").is_some()
+            && v.debug_bounds("PANE_HEADER:terminal").is_some()
+    });
+    let focus = |visual: &mut VisualTestContext, session: &str| {
+        window
+            .update(visual, |root, _, cx| {
+                let pane = root
+                    .front_page_layout()
+                    .unwrap()
+                    .root
+                    .leaves()
+                    .into_iter()
+                    .find(|pane| pane.session_id.as_deref() == Some(session))
+                    .unwrap()
+                    .id
+                    .clone();
+                root.focus_pane(&pane, cx);
+            })
+            .unwrap();
+    };
+    focus(&mut visual, "second");
+    wait(&mut visual, "second remote chat branch", |v| {
+        v.debug_bounds("CHAT_PANEL_META feat/second").is_some()
+    });
+    focus(&mut visual, "terminal");
+    wait(
+        &mut visual,
+        "last focused chat Info with terminal focused",
+        |v| {
+            window
+                .read_with(v, |root, _| {
+                    root.active_focused_session_id().as_deref() == Some("terminal")
+                })
+                .unwrap()
+                && v.debug_bounds("CHAT_PANEL_META feat/second").is_some()
+        },
+    );
+
+    focus(&mut visual, "s");
+    data.sessions.get_mut("s").unwrap().checkout = None;
+    fake.set_overview(data);
+    wait(
+        &mut visual,
+        "older host Info without checkout metadata",
+        |v| {
+            v.debug_bounds(cwd_selector).is_some()
+                && v.debug_bounds("CHAT_PANEL_BRANCH_ROW").is_none()
+        },
+    );
+
+    let collapse = visual.debug_bounds("PANEL_COLLAPSE").unwrap();
+    visual.simulate_click(collapse.center(), gpui::Modifiers::default());
+    wait(&mut visual, "collapsed remote chat panel", |v| {
+        v.debug_bounds("CHAT_PANEL_TOGGLE").is_some()
+    });
+    assert_eq!(
+        store.read_with(&visual, |store, _| store.settings.chat_panel_open),
+        local_panel,
+    );
+}
+
+#[test]
 fn remote_sidebar_node_metadata_preserves_mixed_order_and_updates_placement() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();
