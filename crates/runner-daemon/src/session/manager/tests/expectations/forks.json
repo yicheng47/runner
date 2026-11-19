@@ -58,21 +58,7 @@
         "-c",
         "hooks.SessionStart=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", source = \"${source}\" },timeout=2}]}]",
         "-c",
-        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
-        "-c",
-        "hooks.PreToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
-        "-c",
-        "hooks.PostToolUse=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
-        "-c",
-        "hooks.PreCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
-        "-c",
-        "hooks.PostCompact=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\", trigger = \"${trigger}\" },timeout=2}]}]",
-        "-c",
-        "hooks.Stop=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
-        "-c",
-        "hooks.Interrupt=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]",
-        "-c",
-        "hooks.SessionEnd=[{hooks=[{type=\"command\",command=\"'<TMP>/bin/runner' hook report --runtime codex --event SessionEnd 2>/dev/null || :\",timeout=1}]}]"
+        "hooks.UserPromptSubmit=[{hooks=[{type=\"mcp_tool\",server=\"runner_hooks\",tool=\"report\",input={ hook_event_name = \"${hook_event_name}\", session_id = \"${session_id}\", transcript_path = \"${transcript_path}\", turn_id = \"${turn_id}\" },timeout=2}]}]"
       ],
       "env_keys": [
         "CODEX_HOME",

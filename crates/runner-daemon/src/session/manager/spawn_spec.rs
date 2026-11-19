@@ -257,7 +257,10 @@ impl SessionManager {
         let effective_role = crate::runtimes::apply_launch_options(role, spec.mission, &options);
         let role = &effective_role;
         spec.args.clone_from(&role.args);
-        if !spec.mission && !options.status_hooks {
+        let supports_status_hooks = Runtime::parse(&role.runtime).is_some_and(|runtime| {
+            runner_core::protocol::runtime::RuntimeLaunchOption::StatusHooks.supported(runtime)
+        });
+        if !spec.mission && supports_status_hooks && !options.status_hooks {
             spec.env
                 .insert(crate::runtimes::STATUS_HOOKS_ENV.into(), "false".into());
         }
@@ -583,7 +586,10 @@ pub(crate) fn compose_preview_args(
         updated_at: Utc::now(),
     };
     let role = crate::runtimes::apply_launch_options(&role, mission, options);
-    if !mission && !options.status_hooks {
+    if !mission
+        && runner_core::protocol::runtime::RuntimeLaunchOption::StatusHooks.supported(runtime)
+        && !options.status_hooks
+    {
         env.insert(crate::runtimes::STATUS_HOOKS_ENV.into(), "false".into());
     }
     if !options.remote_plugin_catalog {
@@ -846,14 +852,8 @@ fn command_lines(
             .iter()
             .filter(|line| line.starts_with("-c hooks."))
             .count();
-        let note = if mission {
-            Note::AlwaysInMissions
-        } else if options.status_hooks {
-            Note::StatusHooks
-        } else {
-            Note::Identity
-        };
-        let option = (!mission && options.status_hooks).then_some(OptionKey::StatusHooks);
+        let note = Note::Identity;
+        let option = None;
         let hook_lines = [
             RuntimeCommandLine {
                 command: "  --enable hooks --dangerously-bypass-hook-trust".into(),
@@ -1303,6 +1303,106 @@ mod launch_preview_tests {
                     assert_eq!(flag_pos, fork_plan.args.len());
                 }
             }
+        }
+    }
+
+    #[test]
+    fn codex_preview_shows_identity_hooks_without_status_hooks_option_and_ignores_legacy_flag() {
+        use runner_core::protocol::runtime::{RuntimeCommandNote, RuntimeLaunchOption};
+
+        let core = crate::test_support::test_core();
+        let root = tempfile::tempdir().unwrap();
+        // Legacy DB row with status_hooks=false must neither disable Codex's identity hooks
+        // nor emit STATUS_HOOKS_ENV=false on spawn specs.
+        crate::db::set_runtime_launch_option(
+            &core.db,
+            Runtime::Codex,
+            RuntimeLaunchOption::StatusHooks,
+            false,
+        )
+        .unwrap();
+
+        for mission in [false, true] {
+            let preview = core.sessions.command_preview(
+                Runtime::Codex,
+                "codex",
+                mission,
+                &RuntimeLaunchOptions {
+                    bypass: false,
+                    remote_plugin_catalog: true,
+                    status_hooks: false,
+                    custom_flags: String::new(),
+                },
+                root.path(),
+                BTreeMap::new(),
+            );
+            assert!(
+                preview
+                    .lines
+                    .iter()
+                    .all(|line| line.option != Some(RuntimeLaunchOption::StatusHooks)
+                        && line.note != RuntimeCommandNote::StatusHooks),
+                "Codex preview must not expose a StatusHooks option or note: {:?}",
+                preview.lines
+            );
+            let identity_hook_line = preview
+                .lines
+                .iter()
+                .find(|line| line.command.contains("hooks.<event>=[…] × 2"))
+                .expect("Codex preview should collapse its 2 identity hooks");
+            assert_eq!(identity_hook_line.note, RuntimeCommandNote::Identity);
+            assert_eq!(identity_hook_line.option, None);
+
+            let role = Role {
+                id: "codex-role".into(),
+                handle: "coder".into(),
+                display_name: "Coder".into(),
+                runtime: Runtime::Codex.key().into(),
+                command: "codex".into(),
+                args: Vec::new(),
+                working_dir: None,
+                system_prompt: None,
+                env: HashMap::new(),
+                model: None,
+                effort: None,
+                codex_speed: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            };
+            let mut spec = crate::session::runtime::SpawnSpec {
+                session_id: "00000000-0000-0000-0000-000000000042".into(),
+                mission,
+                command: role.command.clone(),
+                args: Vec::new(),
+                agent_runtime: Some(Runtime::Codex),
+                ..Default::default()
+            };
+            let adapter = crate::runtimes::adapter(Runtime::Codex);
+            let plan = adapter.resume_plan(None);
+            core.sessions.apply_runtime_args(
+                &mut spec,
+                &role,
+                &plan,
+                root.path(),
+                None,
+                None,
+                None,
+                Some(&core.db),
+            );
+            assert!(
+                !spec
+                    .env
+                    .contains_key(crate::runtimes::STATUS_HOOKS_ENV),
+                "legacy codex status_hooks=false DB setting must not suppress Codex identity/transcript watcher"
+            );
+            let hooks: Vec<&String> = spec
+                .args
+                .iter()
+                .filter(|arg| arg.starts_with("hooks."))
+                .collect();
+            assert_eq!(hooks.len(), 2, "{hooks:?}");
+            assert!(hooks[0].starts_with("hooks.SessionStart="));
+            assert!(hooks[1].starts_with("hooks.UserPromptSubmit="));
         }
     }
 }

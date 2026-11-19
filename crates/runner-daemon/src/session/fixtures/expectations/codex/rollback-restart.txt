@@ -1,16 +1,12 @@
 runtime=codex name=rollback-restart rules=[2] bugs=[736] known_wrong=[]
 session_status_rows=published
-100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key="22222222-2222-4222-8222-222222222222" delivery=["Respawned","Idle"]
+100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key="22222222-2222-4222-8222-222222222222" delivery=["Respawned"]
   busy@spawn [running/working/baseline]
-  idle@hook [running/idle/hook]
-200 status=running/working/hook activity="busy" completion_armed=true
-  busy@hook [running/working/hook]
-300 status=running/unavailable/hook activity="idle" delivery=["Idle"]
-  idle@hook [running/unavailable/hook]
-400 status=running/idle/hook
-  idle@hook [running/idle/hook]
+200
+250 status=running/working/baseline observation.program_status={"message":null} completion_armed=true
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+400
 500
-600 status=running/working/hook activity="busy"
-  busy@hook [running/working/hook]
-700 status=running/ready/hook outcome="completed" activity="idle" delivery=["Idle"]
-  idle@hook [running/ready/hook outcome="completed"]
+550
+700 status=running/idle/baseline outcome="completed" observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="completed" observation.program_status={"message":null}]

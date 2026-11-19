@@ -126,6 +126,16 @@ impl TerminalAdapter for CodexTerminal {
         }
     }
     fn accept_event(&mut self, event: &AgentEvent) -> bool {
+        if matches!(
+            event,
+            AgentEvent::ProgramSessionStarted { .. }
+                | AgentEvent::ProgramTurnConfirmed { .. }
+                | AgentEvent::ProgramTurnFinished
+                | AgentEvent::ProgramTurnOutcome { .. }
+                | AgentEvent::ProgramIdentityUnavailable
+        ) {
+            return true;
+        }
         if matches!(event, AgentEvent::ConversationRecovered)
             || matches!(event, AgentEvent::Batch { events, .. } if !events.is_empty() && events.iter().all(|event| matches!(event, AgentEvent::ConversationRecovered)))
         {

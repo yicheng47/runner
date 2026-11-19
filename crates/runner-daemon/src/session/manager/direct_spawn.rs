@@ -491,12 +491,11 @@ impl SessionManager {
             role.env.get("COPILOT_HOME").map(String::as_str),
             crate::runtimes::claude_code::spawned_config_dir(&spec.env),
         );
-        let starts_trusted = first_turn.is_none()
-            && crate::runtimes::for_key(&role.runtime).starts_trusted(
-                spec.cwd.as_deref(),
-                &spec.args,
-                &spec.env,
-            );
+        let starts_trusted = crate::runtimes::for_key(&role.runtime).starts_trusted(
+            spec.cwd.as_deref(),
+            &spec.args,
+            &spec.env,
+        );
         let capture_root =
             match crate::runtimes::for_key(&role.runtime).key_capture_for_spawn(&spec) {
                 crate::runtimes::KeyCapture::RolloutScan { sessions_root } => sessions_root,

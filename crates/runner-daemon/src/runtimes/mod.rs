@@ -475,6 +475,13 @@ pub trait RuntimeAdapter: Send + Sync {
     fn startup_delivery_uses_hooks(&self, _pending_turn: bool) -> bool {
         false
     }
+    /// Whether startup delivery waits for an OSC 7501 program-status report
+    /// (or transcript turn outcome) instead of releasing on quiet startup output,
+    /// protecting folder-trust prompts and first turns on runtimes that always
+    /// emit OSC 7501.
+    fn startup_delivery_waits_for_program_status(&self, _pending_turn: bool) -> bool {
+        false
+    }
     /// Whether a resumed or forked conversation sends its startup hook, so a report's
     /// gate can wait for it (#748).
     fn startup_hook_on_reopen(&self) -> bool {

@@ -8,7 +8,9 @@ pub(super) struct StartupDelivery {
     pub(super) runtime: String,
     /// A direct chat's gate holds only reports to it (#748); it has no inbox.
     pub(super) reports_only: bool,
+    trust_cleared: bool,
     hooks: bool,
+    waits_for_program_status: bool,
     status_hooks_enabled: bool,
     program_status: bool,
     seen_working: bool,
@@ -21,11 +23,16 @@ pub(super) struct StartupDelivery {
 
 impl StartupDelivery {
     pub(super) fn new(runtime: &str, pending_turn: bool, now: Instant) -> Self {
-        let hooks = crate::runtimes::for_key(runtime).startup_delivery_uses_hooks(pending_turn);
+        let adapter = crate::runtimes::for_key(runtime);
+        let hooks = adapter.startup_delivery_uses_hooks(pending_turn);
+        let waits_for_program_status =
+            adapter.startup_delivery_waits_for_program_status(pending_turn);
         Self {
             runtime: runtime.to_owned(),
             reports_only: false,
+            trust_cleared: true,
             hooks,
+            waits_for_program_status,
             status_hooks_enabled: true,
             program_status: false,
             seen_working: false,
@@ -43,19 +50,25 @@ impl StartupDelivery {
     pub(super) fn for_reports(runtime: &str, pending_turn: bool, now: Instant) -> Self {
         Self {
             reports_only: true,
+            trust_cleared: false,
             ..Self::new(runtime, pending_turn, now)
         }
     }
 
     /// The same gate for a start that meets no folder-trust screen: a conversation
     /// actually resumed or forked, in a folder trusted when it first ran, or a fresh
-    /// start with no first turn whose runtime has already decided the folder's trust. A
-    /// runtime that sends no startup hook there opens it once startup output settles;
-    /// from the agent's first hook, the hooks decide, first turn included.
+    /// start whose runtime has already decided the folder's trust. A runtime that
+    /// sends no startup hook there opens it once startup output settles (unless a
+    /// first turn is pending); from the agent's first hook, the hooks decide, first
+    /// turn included.
     pub(super) fn for_trusted_reports(runtime: &str, pending_turn: bool, now: Instant) -> Self {
         let gate = Self::for_reports(runtime, pending_turn, now);
+        let reopen_signal = crate::runtimes::for_key(runtime).startup_hook_on_reopen();
         Self {
-            hooks: gate.hooks && crate::runtimes::for_key(runtime).startup_hook_on_reopen(),
+            trust_cleared: true,
+            hooks: gate.hooks && (pending_turn || reopen_signal),
+            waits_for_program_status: gate.waits_for_program_status
+                && (pending_turn || reopen_signal),
             ..gate
         }
     }
@@ -72,8 +85,31 @@ impl StartupDelivery {
 
     pub(super) fn bridge_failed(&mut self) {
         self.hooks = false;
+        self.waits_for_program_status = false;
         self.program_status = false;
         self.working = false;
+    }
+
+    pub(super) fn program_session_started(&mut self) {
+        self.trust_cleared = true;
+        if !self.pending_turn {
+            self.waits_for_program_status = false;
+        }
+    }
+
+    pub(super) fn program_turn_finished(&mut self) -> bool {
+        if !self.hooks && !self.program_status && !self.working {
+            self.trust_cleared = true;
+            self.waits_for_program_status = false;
+            return true;
+        }
+        false
+    }
+
+    pub(super) fn identity_bridge_unavailable(&mut self) {
+        if self.trust_cleared {
+            self.waits_for_program_status = false;
+        }
     }
 
     pub(super) fn observation(
@@ -90,8 +126,19 @@ impl StartupDelivery {
                 && matches!(observation.activity, Activity::Idle | Activity::Ready)
                 && (!self.pending_turn || observation.outcome.is_some());
         }
-        if !self.hooks && observation.program_status.is_some() {
-            self.program_status = true;
+        if !self.hooks
+            && (observation.program_status.is_some()
+                || matches!(
+                    observation.outcome,
+                    Some(
+                        super::super::status::TurnOutcome::Interrupted
+                            | super::super::status::TurnOutcome::Failed
+                    )
+                ))
+        {
+            if observation.program_status.is_some() {
+                self.program_status = true;
+            }
             if observation.activity == Activity::Working {
                 self.seen_working = true;
             }
@@ -116,6 +163,7 @@ impl StartupDelivery {
 
     pub(super) fn output_settled(&self, now: Instant) -> bool {
         !self.hooks
+            && !self.waits_for_program_status
             && !self.program_status
             && !self.working
             && self.first_output.is_some_and(|first| {

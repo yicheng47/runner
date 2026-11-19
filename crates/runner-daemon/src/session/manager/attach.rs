@@ -182,6 +182,12 @@ impl SessionManager {
                 );
                 state_guard
                     .model
+                    .set_program_status_root_app(semantics.program_status_root_app);
+                state_guard.model.set_program_status_transcript_outcomes(
+                    semantics.program_status_transcript_outcomes,
+                );
+                state_guard
+                    .model
                     .set_native_attention(semantics.native_attention);
             }
             state_guard.handle = Some(handle);

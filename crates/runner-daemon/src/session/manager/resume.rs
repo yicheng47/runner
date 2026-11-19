@@ -739,7 +739,7 @@ impl SessionManager {
                     } else {
                         // A resume that falls back to a fresh start can meet a trust prompt again,
                         // unless the runtime's config already records the folder as trusted.
-                        let gate = if plan.resuming || (starts_trusted && !pending_turn) {
+                        let gate = if plan.resuming || starts_trusted {
                             startup::StartupDelivery::for_trusted_reports
                         } else {
                             startup::StartupDelivery::for_reports

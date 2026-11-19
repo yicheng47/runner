@@ -11,8 +11,9 @@ session_status_rows=published
 2700
 2800 status=running/idle/baseline activity="idle" delivery=["Idle"]
   idle@forwarder [running/idle/baseline]
-2900 status=running/working/hook activity="busy" key="11111111-1111-4111-8111-111111111111"
-  busy@hook [running/working/hook]
+2900 key="11111111-1111-4111-8111-111111111111"
+2950 status=running/working/baseline observation.program_status={"message":null} activity="busy"
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
 3000
 5200
 5300 status=running/idle/baseline activity="idle" completion_armed=false delivery=["Idle"]

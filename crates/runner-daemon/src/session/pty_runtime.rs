@@ -302,10 +302,21 @@ impl SessionRuntime for PtyRuntime {
         if spec.agent_runtime == Some(crate::model::Runtime::Shell) {
             idle_detector.read_shell_marks();
         }
-        idle_detector.awaiting_first_hook = spec.mission && hook_status.is_some();
-        if hook_status.is_none() || !status_hooks_enabled {
-            if spec.mission {
+        let program_status_primary = spec.agent_runtime.is_some_and(|runtime| {
+            crate::runtimes::adapter(runtime)
+                .status_semantics()
+                .program_status_authority
+        });
+        idle_detector.awaiting_first_hook =
+            spec.mission && hook_status.is_some() && !program_status_primary;
+        if hook_status.is_none() || !status_hooks_enabled || program_status_primary {
+            if spec.mission && !program_status_primary {
                 let _ = tx.send(RuntimeOutput::StatusBridgeFailed);
+            } else if program_status_primary && hook_status.is_none() {
+                let _ = tx.send(RuntimeOutput::AgentEvent {
+                    event: crate::session::state::agent::AgentEvent::ProgramIdentityUnavailable,
+                    feedback: None,
+                });
             }
             idle_detector.hooks_unavailable();
         }
@@ -338,6 +349,10 @@ impl SessionRuntime for PtyRuntime {
         });
         let entry_for_reader = Arc::clone(&entry);
         let session_id_for_reader = spec.session_id.clone();
+        let hook_monitor = hook_status.map(|watcher| HookMonitor {
+            watcher,
+            program_status_primary,
+        });
         let worker = thread::Builder::new()
             .name(format!("pty-reader-{}", spec.session_id))
             .spawn(move || {
@@ -348,7 +363,7 @@ impl SessionRuntime for PtyRuntime {
                     handle_for_reader,
                     entry_for_reader,
                     session_id_for_reader,
-                    hook_status,
+                    hook_monitor,
                 );
             })
             .map_err(|e| RuntimeError::Msg(format!("spawn reader thread: {e}")))?;
@@ -991,12 +1006,17 @@ impl IdleDetector {
     }
 }
 
+struct HookMonitor {
+    watcher: Box<dyn HookWatcher>,
+    program_status_primary: bool,
+}
+
 fn idle_monitor_thread(
     detector: Arc<Mutex<IdleDetector>>,
     tx: mpsc::Sender<RuntimeOutput>,
     stop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
-    mut hook_status: Option<Box<dyn HookWatcher>>,
+    mut hook_status: Option<HookMonitor>,
     #[cfg(windows)] handle: Arc<SessionHandle>,
 ) {
     loop {
@@ -1010,8 +1030,9 @@ fn idle_monitor_thread(
         if stopped {
             break;
         }
-        if let Some(watcher) = hook_status.as_mut() {
-            let result = watcher.drain_events(
+        if let Some(monitor) = hook_status.as_mut() {
+            let program_status_primary = monitor.program_status_primary;
+            let result = monitor.watcher.drain_events(
                 {
                     let mut detector = detector.lock().expect("idle detector poisoned");
                     std::mem::take(&mut detector.pending_cancel)
@@ -1090,7 +1111,14 @@ fn idle_monitor_thread(
                 }
             };
             if failed {
-                let _ = tx.send(RuntimeOutput::StatusBridgeFailed);
+                if program_status_primary {
+                    let _ = tx.send(RuntimeOutput::AgentEvent {
+                        event: crate::session::state::agent::AgentEvent::ProgramIdentityUnavailable,
+                        feedback: None,
+                    });
+                } else {
+                    let _ = tx.send(RuntimeOutput::StatusBridgeFailed);
+                }
             }
         }
         let transition = {
@@ -1143,7 +1171,7 @@ fn reader_thread(
     handle: Arc<SessionHandle>,
     entry: Arc<SessionEntry>,
     session_id: String,
-    hook_status: Option<Box<dyn HookWatcher>>,
+    hook_status: Option<HookMonitor>,
 ) {
     let detector = Arc::clone(&handle.idle_detector);
     let monitor_done = Arc::new(AtomicBool::new(false));

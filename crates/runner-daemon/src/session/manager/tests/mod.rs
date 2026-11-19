@@ -418,11 +418,59 @@ struct Capture {
     output_manager: Mutex<Weak<SessionManager>>,
     exit: Mutex<Vec<ExitEvent>>,
     updated: Mutex<Vec<SessionUpdatedEvent>>,
+    #[cfg(unix)]
+    updated_notify: std::sync::Condvar,
     fork_started: Mutex<Vec<SessionForkStartedEvent>>,
     status: Mutex<Vec<SessionActivityEvent>>,
+    status_notify: std::sync::Condvar,
     activity: Mutex<Vec<RoleActivityEvent>>,
     warning: Mutex<Vec<WarningEvent>>,
     input_errors: Mutex<Vec<(String, String)>>,
+}
+
+impl Capture {
+    #[cfg(unix)]
+    fn wait_for_updated(&self, session_id: &str) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut guard = self.updated.lock().unwrap();
+        while !guard.iter().any(|ev| ev.session_id == session_id) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "timed out waiting for updated event for {session_id}; saw {:?}",
+                *guard
+            );
+            let (next, _) = self.updated_notify.wait_timeout(guard, remaining).unwrap();
+            guard = next;
+        }
+    }
+
+    fn wait_for_status(
+        &self,
+        session_id: &str,
+        predicate: impl Fn(&SessionActivityEvent) -> bool,
+    ) -> SessionActivityEvent {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut guard = self.status.lock().unwrap();
+        loop {
+            if let Some(ev) = guard
+                .iter()
+                .rev()
+                .find(|ev| ev.session_id == session_id && predicate(ev))
+                .cloned()
+            {
+                return ev;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "timed out waiting for status event for {session_id}; saw {:?}",
+                *guard
+            );
+            let (next, _) = self.status_notify.wait_timeout(guard, remaining).unwrap();
+            guard = next;
+        }
+    }
 }
 
 impl SessionEvents for Capture {
@@ -454,12 +502,15 @@ impl SessionEvents for Capture {
     }
     fn updated(&self, ev: &SessionUpdatedEvent) {
         self.updated.lock().unwrap().push(ev.clone());
+        #[cfg(unix)]
+        self.updated_notify.notify_all();
     }
     fn fork_started(&self, ev: &SessionForkStartedEvent) {
         self.fork_started.lock().unwrap().push(ev.clone());
     }
     fn status(&self, ev: &SessionActivityEvent) {
         self.status.lock().unwrap().push(ev.clone());
+        self.status_notify.notify_all();
     }
     fn role_activity(&self, ev: &RoleActivityEvent) {
         self.activity.lock().unwrap().push(ev.clone());

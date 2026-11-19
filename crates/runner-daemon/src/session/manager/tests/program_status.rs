@@ -412,11 +412,15 @@ fn antigravity_program_status_records_completion_only_on_done() {
         !crate::repo::session_attention::any_unread(&core.db.get().unwrap(), &[id.into()]).unwrap()
     );
 
-    // Working -> Error does NOT record unread completion, and sets failed_since.
+    // Working -> Error does NOT record unread completion, sets failed_since, and
+    // Antigravity Error -> Idle dismisses back to plain Idle (#1295).
     ingest(b"\x1b]7501;state=working:app=agy\x07");
     ingest(b"\x1b]7501;state=error:app=agy\x07");
     assert_eq!(core.sessions.agent_status(id).unread_since, None);
     assert!(core.sessions.agent_status(id).failed_since.is_some());
+    ingest(b"\x1b]7501;state=idle:app=agy\x07");
+    assert_eq!(core.sessions.agent_status(id).observation.outcome, None);
+    assert_eq!(core.sessions.agent_status(id).failed_since, None);
     clear_unread();
 
     // Working -> clear followed by Forwarder Idle does NOT record unread completion
@@ -712,7 +716,9 @@ fn hooks_off_chats_promote_osc7501_across_start_resume_and_fork_while_shells_and
                 "{runtime:?} {label}"
             );
 
-            // Working -> error marks Failed without unread completion.
+            // Working -> error marks Failed without unread completion; trailing idle
+            // dismisses to plain Idle for hooks-off Claude Code/pi, while Codex reconciles
+            // transcript/OSC errors and retains Failed until the next turn.
             ingest(&format!("state=working:app={app}"));
             ingest(&format!("state=error:app={app}"));
             let failed = core.sessions.agent_status(session_id);
@@ -723,6 +729,18 @@ fn hooks_off_chats_promote_osc7501_across_start_resume_and_fork_while_shells_and
             );
             assert!(failed.failed_since.is_some(), "{runtime:?} {label}");
             assert_eq!(failed.unread_since, None, "{runtime:?} {label}");
+            ingest(&format!("state=idle:app={app}"));
+            let after_idle = core.sessions.agent_status(session_id);
+            let expected_after_idle = (runtime == Runtime::Codex).then_some(TurnOutcome::Failed);
+            assert_eq!(
+                after_idle.observation.outcome, expected_after_idle,
+                "{runtime:?} {label} error -> idle"
+            );
+            assert_eq!(
+                after_idle.failed_since.is_some(),
+                runtime == Runtime::Codex,
+                "{runtime:?} {label} error -> idle failed_since"
+            );
             clear_unread();
 
             // Working -> idle (interrupt) disarms without unread completion.
@@ -832,8 +850,39 @@ fn hooks_off_chats_promote_osc7501_across_start_resume_and_fork_while_shells_and
         }
 
         // Toggling status hooks back on and resuming revokes program-status authority
-        // and restores hooked precedence.
+        // for runtimes with a StatusHooks switch; Codex always keeps OSC 7501 authority.
         core.sessions.kill(&id).unwrap();
+        if runtime == Runtime::Codex {
+            assert!(db::set_runtime_launch_option(
+                &core.db,
+                runtime,
+                RuntimeLaunchOption::StatusHooks,
+                true,
+            )
+            .is_ok());
+            core.sessions
+                .resume(
+                    &id,
+                    None,
+                    None,
+                    dir.path(),
+                    Arc::clone(&core.db),
+                    Arc::clone(&events),
+                )
+                .unwrap();
+            assert!(
+                core.sessions
+                    .session_state(&id)
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .model
+                    .program_status_authority(),
+                "Codex keeps program-status authority regardless of legacy status_hooks DB rows"
+            );
+            core.sessions.kill(&id).unwrap();
+            continue;
+        }
         db::set_runtime_launch_option(&core.db, runtime, RuntimeLaunchOption::StatusHooks, true)
             .unwrap();
         core.sessions
@@ -875,18 +924,16 @@ fn hooks_off_chats_promote_osc7501_across_start_resume_and_fork_while_shells_and
         assert_eq!(hooked.observation.source, ObservationSource::Hook);
         assert_eq!(hooked.observation.activity, Activity::Working);
         assert_eq!(hooked.unread_since, None);
-        if runtime != Runtime::Codex {
-            core.sessions.ingest_output_chunk(
-                &id,
-                None,
-                format!("\x1b]7501;state=blocked:app={app}:kind=permission\x1b\\").as_bytes(),
-                events.as_ref(),
-            );
-            assert!(
-                !core.sessions.agent_status(&id).observation.needs_you(),
-                "{runtime:?} hooked chat keeps hook precedence over OSC 7501 blocked"
-            );
-        }
+        core.sessions.ingest_output_chunk(
+            &id,
+            None,
+            format!("\x1b]7501;state=blocked:app={app}:kind=permission\x1b\\").as_bytes(),
+            events.as_ref(),
+        );
+        assert!(
+            !core.sessions.agent_status(&id).observation.needs_you(),
+            "{runtime:?} hooked chat keeps hook precedence over OSC 7501 blocked"
+        );
         core.sessions.kill(&id).unwrap();
     }
 

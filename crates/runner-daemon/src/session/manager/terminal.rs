@@ -495,6 +495,12 @@ impl SessionManager {
             state.model.set_program_status_authority(
                 semantics.program_status_authoritative(status_hooks_enabled),
             );
+            state
+                .model
+                .set_program_status_root_app(semantics.program_status_root_app);
+            state.model.set_program_status_transcript_outcomes(
+                semantics.program_status_transcript_outcomes,
+            );
             state.model.set_native_attention(semantics.native_attention);
         }
         let host = Arc::new(Host {

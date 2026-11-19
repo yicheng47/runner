@@ -232,6 +232,63 @@ pub(crate) struct InputCheckpoint {
     completion: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ProgramTurn {
+    /// Whether the native OSC 7501 stream is currently inside a Working/Blocked turn.
+    native_working: bool,
+    /// Native `Working` starts already counted that have not yet matched a `UserPromptSubmit`.
+    pending_native: usize,
+    /// `UserPromptSubmit` starts already counted that have not yet matched a native `Working`.
+    pending_hook: usize,
+}
+
+impl ProgramTurn {
+    fn has_unmatched_native(&self) -> bool {
+        self.native_working || self.pending_native > 0
+    }
+
+    fn on_working(&mut self) -> bool {
+        if self.native_working {
+            return false;
+        }
+        self.native_working = true;
+        if self.pending_hook > 0 {
+            self.pending_hook -= 1;
+            false
+        } else {
+            self.pending_native = self.pending_native.saturating_add(1);
+            true
+        }
+    }
+
+    fn on_native_end(&mut self, terminal: bool) {
+        if self.native_working {
+            self.native_working = false;
+        } else if terminal && self.pending_hook > 0 {
+            self.pending_hook -= 1;
+        }
+    }
+
+    fn on_confirmed(&mut self) -> bool {
+        if self.pending_native > 0 {
+            self.pending_native -= 1;
+            false
+        } else if self.native_working {
+            // Mid-turn steer attached to an already-paired active native turn.
+            true
+        } else {
+            self.pending_hook = self.pending_hook.saturating_add(1);
+            true
+        }
+    }
+
+    fn on_compacted(&mut self) {
+        if !self.native_working {
+            self.pending_native = 0;
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct SessionModel {
     activity: Option<SessionActivityState>,
@@ -254,7 +311,10 @@ pub(crate) struct SessionModel {
     next_codex_attention: u64,
     native_attention: bool,
     program_status_authority: bool,
-    program_turn_active: bool,
+    program_status_root_app: Option<&'static str>,
+    program_status_transcript_outcomes: bool,
+    program_turn: ProgramTurn,
+    program_turn_outcome: Option<TurnOutcome>,
     program_status_seq: (u64, usize),
     program_status_wait: Option<(String, HumanInteraction)>,
     next_program_status_wait: u64,
@@ -266,6 +326,12 @@ impl SessionModel {
     }
     pub fn set_program_status_authority(&mut self, enabled: bool) {
         self.program_status_authority = enabled;
+    }
+    pub fn set_program_status_root_app(&mut self, app: Option<&'static str>) {
+        self.program_status_root_app = app;
+    }
+    pub fn set_program_status_transcript_outcomes(&mut self, enabled: bool) {
+        self.program_status_transcript_outcomes = enabled;
     }
     pub fn set_native_attention(&mut self, enabled: bool) {
         self.native_attention = enabled;
@@ -484,9 +550,35 @@ impl SessionModel {
                 if self.hook_status_armed {
                     return effects;
                 }
-                let Some(report) = update.current else {
+                use runner_terminal::program_status::State;
+                let report = if let Some(app) = self.program_status_root_app {
+                    match update.trigger {
+                        Some(trigger) => {
+                            if !trigger.id.is_empty() {
+                                return effects;
+                            }
+                            if trigger.state == State::Clear {
+                                if trigger.app.is_some() && trigger.app.as_deref() != Some(app) {
+                                    return effects;
+                                }
+                                None
+                            } else {
+                                if trigger.app.as_deref() != Some(app) {
+                                    return effects;
+                                }
+                                Some(trigger)
+                            }
+                        }
+                        None if update.current.is_none() => None,
+                        None => return effects,
+                    }
+                } else {
+                    update.current
+                };
+                let Some(report) = report else {
                     self.program_status_wait = None;
-                    self.program_turn_active = false;
+                    self.program_turn = ProgramTurn::default();
+                    self.program_turn_outcome = None;
                     if self.status.observation.program_status.is_some() {
                         let completion_armed = self.completion_armed;
                         effects = self.apply(SessionEvent::BridgeFailed { live }, now);
@@ -501,16 +593,36 @@ impl SessionModel {
                     }
                     return effects;
                 };
-                use runner_terminal::program_status::State;
                 let report_state = report.state;
                 let started_turn = match report_state {
-                    State::Working => !std::mem::replace(&mut self.program_turn_active, true),
+                    State::Working => self.program_turn.on_working(),
                     State::Blocked => false,
-                    State::Idle | State::Done | State::Error | State::Clear => {
-                        self.program_turn_active = false;
+                    State::Idle => {
+                        self.program_turn.on_native_end(false);
+                        false
+                    }
+                    State::Done | State::Error => {
+                        self.program_turn.on_native_end(true);
+                        false
+                    }
+                    State::Clear => {
+                        self.program_turn = ProgramTurn::default();
                         false
                     }
                 };
+                match report_state {
+                    State::Idle | State::Blocked => {}
+                    // Delayed Working pairing with an already-confirmed turn must not erase
+                    // that same turn's transcript outcome (e.g. UserPromptSubmit -> turn_aborted
+                    // ahead of PTY Working -> Idle).
+                    State::Working if !started_turn => {}
+                    State::Error if self.program_status_transcript_outcomes => {
+                        self.program_turn_outcome = Some(TurnOutcome::Failed);
+                    }
+                    _ => {
+                        self.program_turn_outcome = None;
+                    }
+                }
                 let mut observation = AgentObservation {
                     activity: if report_state == State::Working {
                         Activity::Working
@@ -521,6 +633,7 @@ impl SessionModel {
                     outcome: match report_state {
                         State::Done => Some(TurnOutcome::Completed),
                         State::Error => Some(TurnOutcome::Failed),
+                        State::Idle => self.program_turn_outcome,
                         _ => None,
                     },
                     program_status: Some(runner_core::protocol::status::ProgramStatusEvidence {
@@ -588,7 +701,8 @@ impl SessionModel {
                 self.compaction_failed_since = None;
                 self.agent = Default::default();
                 self.codex_attention = None;
-                self.program_turn_active = false;
+                self.program_turn = ProgramTurn::default();
+                self.program_turn_outcome = None;
                 self.program_status_seq = (0, 0);
                 self.program_status_wait = None;
                 self.baseline_activity = None;
@@ -602,7 +716,8 @@ impl SessionModel {
                     self.status.lifecycle = Lifecycle::Stopped;
                 }
                 self.codex_attention = None;
-                self.program_turn_active = false;
+                self.program_turn = ProgramTurn::default();
+                self.program_turn_outcome = None;
                 self.program_status_wait = None;
                 self.status.observation.program_status = None;
                 self.status.observation.interactions.clear();
@@ -656,6 +771,81 @@ impl SessionModel {
                     });
                     return effects;
                 }
+                if let agent::AgentEvent::ProgramSessionStarted {
+                    conversation_changed,
+                    compacted,
+                } = event
+                {
+                    if compacted {
+                        self.program_turn.on_compacted();
+                    }
+                    if conversation_changed
+                        && (!self.program_turn.has_unmatched_native()
+                            || self.program_turn_outcome == Some(TurnOutcome::Interrupted))
+                    {
+                        self.program_turn_outcome = None;
+                        if self.program_status_authority
+                            && !self.hook_status_armed
+                            && self.status.observation.outcome.is_some()
+                            && !matches!(
+                                self.status.lifecycle,
+                                Lifecycle::Stopped | Lifecycle::Error
+                            )
+                        {
+                            let mut observation = self.status.observation.clone();
+                            observation.outcome = None;
+                            effects = self.publish_snapshot(observation, live, now);
+                            self.completion_armed = false;
+                            effects.publication = effects
+                                .publication
+                                .map(|(state, _)| (state, StatusSource::ProgramStatus));
+                        }
+                    }
+                    return effects;
+                }
+                if let agent::AgentEvent::ProgramTurnConfirmed { .. } = event {
+                    let started = self.program_turn.on_confirmed();
+                    if started {
+                        self.program_turn_outcome = None;
+                    }
+                    if self.program_status_authority
+                        && (started || self.program_turn.native_working)
+                    {
+                        self.submit_busy = None;
+                    }
+                    effects.program_turn_started = started && self.program_status_authority;
+                    return effects;
+                }
+                if matches!(
+                    event,
+                    agent::AgentEvent::ProgramTurnFinished
+                        | agent::AgentEvent::ProgramIdentityUnavailable
+                ) {
+                    return effects;
+                }
+                if let agent::AgentEvent::ProgramTurnOutcome { outcome } = event {
+                    if !self.program_status_authority
+                        || self.hook_status_armed
+                        || matches!(self.status.lifecycle, Lifecycle::Stopped | Lifecycle::Error)
+                    {
+                        return effects;
+                    }
+                    self.program_turn.native_working = false;
+                    self.program_status_wait = None;
+                    self.program_turn_outcome = Some(outcome);
+                    let mut observation = self.status.observation.clone();
+                    observation.activity = Activity::Idle;
+                    observation.source = ObservationSource::Baseline;
+                    observation.outcome = Some(outcome);
+                    observation.interactions.clear();
+                    observation.detail = None;
+                    effects = self.publish_snapshot(observation, live, now);
+                    self.completion_armed = false;
+                    effects.publication = effects
+                        .publication
+                        .map(|(state, _)| (state, StatusSource::ProgramStatus));
+                    return effects;
+                }
                 let (observation, feedback) =
                     self.agent.reduce_with_feedback(event, now.wall_millis);
                 if let Some(observation) = observation {
@@ -664,7 +854,8 @@ impl SessionModel {
                 effects.agent_feedback = feedback;
             }
             SessionEvent::BridgeFailed { live } => {
-                self.program_turn_active = false;
+                self.program_turn = ProgramTurn::default();
+                self.program_turn_outcome = None;
                 self.program_status_wait = None;
                 self.native_input = None;
                 self.completion_armed = false;
@@ -868,7 +1059,8 @@ impl SessionModel {
                 self.status.failed_since = None;
                 self.compaction_failed_since = None;
                 self.codex_attention = None;
-                self.program_turn_active = false;
+                self.program_turn = ProgramTurn::default();
+                self.program_turn_outcome = None;
                 self.program_status_wait = None;
                 self.status.observation.program_status = None;
                 self.hook_status_armed = false;
@@ -1004,7 +1196,7 @@ impl SessionModel {
         }
         self.hook_status_armed = observation.source == ObservationSource::Hook;
         if self.hook_status_armed {
-            self.program_turn_active = false;
+            self.program_turn = ProgramTurn::default();
         }
         self.status.lifecycle = Lifecycle::Running;
         let old_failed = self.status.observation.outcome == Some(TurnOutcome::Failed);
@@ -1092,7 +1284,7 @@ impl SessionModel {
                 return false;
             }
             self.hook_status_armed = true;
-            self.program_turn_active = false;
+            self.program_turn = ProgramTurn::default();
         }
         if matches!(
             source,
@@ -1122,6 +1314,8 @@ impl SessionModel {
         self.provisional_idle = source == StatusSource::InputEscape;
         if state == SessionActivityState::Idle {
             self.suppress_local_input_busy = false;
+        } else {
+            self.program_turn_outcome = None;
         }
         self.status.lifecycle = Lifecycle::Running;
         if matches!(
@@ -1145,6 +1339,8 @@ impl SessionModel {
             self.status.observation.outcome =
                 if source == StatusSource::Hook && state == SessionActivityState::Idle {
                     Some(TurnOutcome::Completed)
+                } else if state == SessionActivityState::Idle {
+                    self.program_turn_outcome
                 } else {
                     None
                 };

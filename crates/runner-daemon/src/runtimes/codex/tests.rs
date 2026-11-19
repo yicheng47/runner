@@ -570,10 +570,13 @@ fn codex_status_args_for(key: &str, args: &[String], data: &Path, session: &str)
 }
 
 #[test]
-fn codex_terminal_excludes_osc7501_controls_from_activity_and_enables_hooks_off_authority() {
+fn codex_terminal_excludes_osc7501_controls_from_activity_and_uses_program_status_authority() {
     let semantics = Codex.status_semantics();
-    assert!(semantics.native_attention);
-    assert!(!semantics.program_status_authoritative(true));
+    assert!(!semantics.native_attention);
+    assert!(semantics.program_status_authority);
+    assert_eq!(semantics.program_status_root_app, Some("codex"));
+    assert!(semantics.program_status_transcript_outcomes);
+    assert!(semantics.program_status_authoritative(true));
     assert!(semantics.program_status_authoritative(false));
 
     let mut terminal = Codex.terminal_adapter(Some(false)).unwrap();

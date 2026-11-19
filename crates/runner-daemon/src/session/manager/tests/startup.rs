@@ -15,6 +15,7 @@ struct StartupFixture {
     _dir: tempfile::TempDir,
     dispatcher: Mutex<crate::router::dispatch::Dispatcher>,
     now: Mutex<Instant>,
+    program_seq: std::sync::atomic::AtomicU64,
 }
 
 impl StartupFixture {
@@ -48,6 +49,7 @@ impl StartupFixture {
             _dir: dir,
             dispatcher: Mutex::new(crate::router::dispatch::Dispatcher::new(Instant::now())),
             now: Mutex::new(Instant::now()),
+            program_seq: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -88,6 +90,7 @@ impl StartupFixture {
     }
 
     fn launch(&self, runtime: &str, pending_turn: bool, now: Instant) -> OutputStream {
+        self.program_seq.store(0, Ordering::Relaxed);
         let (runtime_session, output) = self
             .fake
             .spawn(SpawnSpec {
@@ -133,6 +136,33 @@ impl StartupFixture {
             AgentEvent::Batch {
                 runtime,
                 events: vec![event],
+            },
+            &Capture::default(),
+        );
+    }
+
+    fn codex_status(&self, state: runner_terminal::program_status::State) {
+        let seq = self.program_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let report = runner_terminal::program_status::Report {
+            id: String::new(),
+            state,
+            app: Some("codex".into()),
+            kind: None,
+            message: None,
+            progress: None,
+            title: None,
+        };
+        self.manager.publish_model_event(
+            "session",
+            SessionEvent::ProgramStatus {
+                seq,
+                subseq: 0,
+                update: Box::new(runner_terminal::program_status::Update {
+                    current: (state != runner_terminal::program_status::State::Clear)
+                        .then(|| report.clone()),
+                    trigger: Some(report),
+                }),
+                live: true,
             },
             &Capture::default(),
         );
@@ -194,6 +224,7 @@ impl Drop for StartupFixture {
 
 #[test]
 fn router_holds_startup_deliveries_until_hook_turn_completion_and_resets_on_resume() {
+    use runner_terminal::program_status::State as P;
     for runtime in [
         Runtime::ClaudeCode,
         Runtime::Codex,
@@ -206,7 +237,11 @@ fn router_holds_startup_deliveries_until_hook_turn_completion_and_resets_on_resu
         let now = Instant::now();
         let output = fixture.launch(runtime.key(), true, now);
         fixture.held();
-        fixture.event(runtime, AgentEvent::StartupReady);
+        if runtime == Runtime::Codex {
+            fixture.codex_status(P::Idle);
+        } else {
+            fixture.event(runtime, AgentEvent::StartupReady);
+        }
         fixture.held();
         fixture.manager.startup_output(
             "session",
@@ -220,19 +255,34 @@ fn router_holds_startup_deliveries_until_hook_turn_completion_and_resets_on_resu
             now + Duration::from_secs(60),
         );
         fixture.held();
-        fixture.event(runtime, AgentEvent::TurnStarted);
+        if runtime == Runtime::Codex {
+            fixture.manager.publish_agent_event(
+                "session",
+                AgentEvent::ProgramTurnConfirmed {
+                    conversation_changed: false,
+                },
+                &Capture::default(),
+            );
+            fixture.codex_status(P::Working);
+        } else {
+            fixture.event(runtime, AgentEvent::TurnStarted);
+        }
         fixture.manager.release_settled_startup(
             "session",
             &output.stop_flag(),
             now + Duration::from_secs(3600),
         );
         fixture.held();
-        fixture.event(
-            runtime,
-            AgentEvent::TurnEnded {
-                outcome: TurnOutcome::Completed,
-            },
-        );
+        if runtime == Runtime::Codex {
+            fixture.codex_status(P::Done);
+        } else {
+            fixture.event(
+                runtime,
+                AgentEvent::TurnEnded {
+                    outcome: TurnOutcome::Completed,
+                },
+            );
+        }
         fixture.submitted();
         assert!(fixture
             .fake
@@ -244,7 +294,11 @@ fn router_holds_startup_deliveries_until_hook_turn_completion_and_resets_on_resu
         fixture.queue("task before resume");
         let _resume = fixture.launch(runtime.key(), false, now);
         fixture.held();
-        fixture.event(runtime, AgentEvent::StartupReady);
+        if runtime == Runtime::Codex {
+            fixture.codex_status(P::Idle);
+        } else {
+            fixture.event(runtime, AgentEvent::StartupReady);
+        }
         fixture.submitted();
     }
 }
@@ -326,23 +380,24 @@ fn codex_conversation_recovery_in_first_turn_falls_back_to_output_release() {
 
 #[test]
 fn codex_interrupted_first_turn_releases_the_startup_hold_once_the_abort_settles() {
+    use runner_terminal::program_status::State as P;
     let fixture = StartupFixture::new();
     fixture.queue("task after interrupt");
     let now = Instant::now();
     let _output = fixture.launch("codex", true, now);
-    fixture.event(Runtime::Codex, AgentEvent::TurnStarted);
-    fixture.event(
-        Runtime::Codex,
-        AgentEvent::TurnEnded {
-            outcome: crate::session::status::TurnOutcome::Interrupted,
+    fixture.manager.publish_agent_event(
+        "session",
+        AgentEvent::ProgramTurnConfirmed {
+            conversation_changed: false,
         },
+        &Capture::default(),
     );
+    fixture.codex_status(P::Working);
     fixture.held();
     fixture.manager.publish_agent_event(
         "session",
-        AgentEvent::Transcript {
-            runtime: Runtime::Codex,
-            events: vec![AgentEvent::AbortSettled],
+        AgentEvent::ProgramTurnOutcome {
+            outcome: crate::session::status::TurnOutcome::Interrupted,
         },
         &Capture::default(),
     );
@@ -351,19 +406,24 @@ fn codex_interrupted_first_turn_releases_the_startup_hold_once_the_abort_settles
 
 #[test]
 fn codex_failed_first_turn_releases_the_startup_hold() {
+    use runner_terminal::program_status::State as P;
     let fixture = StartupFixture::new();
     fixture.queue("task after failure");
     let now = Instant::now();
     let _output = fixture.launch("codex", true, now);
-    fixture.event(Runtime::Codex, AgentEvent::TurnStarted);
+    fixture.manager.publish_agent_event(
+        "session",
+        AgentEvent::ProgramTurnConfirmed {
+            conversation_changed: false,
+        },
+        &Capture::default(),
+    );
+    fixture.codex_status(P::Working);
     fixture.held();
     fixture.manager.publish_agent_event(
         "session",
-        AgentEvent::Transcript {
-            runtime: Runtime::Codex,
-            events: vec![AgentEvent::TurnEnded {
-                outcome: crate::session::status::TurnOutcome::Failed,
-            }],
+        AgentEvent::ProgramTurnOutcome {
+            outcome: crate::session::status::TurnOutcome::Failed,
         },
         &Capture::default(),
     );
@@ -385,12 +445,13 @@ fn startup_exit_preserves_the_backlog_and_delivers_after_resume() {
         .to_string()
         .contains("dropped")));
     let _resume = fixture.launch("codex", false, now);
-    fixture.event(Runtime::Codex, AgentEvent::StartupReady);
+    fixture.codex_status(runner_terminal::program_status::State::Idle);
     fixture.submitted();
 }
 
 #[test]
 fn completed_startup_keeps_a_human_draft_held_until_input_clears() {
+    use runner_terminal::program_status::State as P;
     let fixture = StartupFixture::new();
     fixture.queue("task");
     let now = Instant::now();
@@ -405,13 +466,8 @@ fn completed_startup_keeps_a_human_draft_held_until_input_clears() {
             composer_visible: true,
         },
     );
-    fixture.event(Runtime::Codex, AgentEvent::TurnStarted);
-    fixture.event(
-        Runtime::Codex,
-        AgentEvent::TurnEnded {
-            outcome: TurnOutcome::Completed,
-        },
-    );
+    fixture.codex_status(P::Working);
+    fixture.codex_status(P::Done);
     assert_eq!(
         fixture.manager.reserve_delivery("session").unwrap(),
         DeliveryReservation::Drafting {
@@ -448,7 +504,7 @@ fn readiness_is_owned_by_the_session_manager_before_and_after_attachment() {
     assert_eq!(fixture.manager.delivery_readiness("session"), R::Pending);
     let _output = fixture.launch("codex", false, Instant::now());
     assert_eq!(fixture.manager.delivery_readiness("session"), R::Starting);
-    fixture.event(Runtime::Codex, AgentEvent::StartupReady);
+    fixture.codex_status(runner_terminal::program_status::State::Idle);
     assert!(matches!(
         fixture.manager.delivery_readiness("session"),
         R::Ready { .. }
@@ -737,7 +793,7 @@ fn a_routed_notice_whose_write_is_overdue_is_reported_and_typed_once() {
     let mut seen = events.subscribe();
     fixture.manager.set_runtime_events(events);
     let _output = fixture.launch("codex", false, Instant::now());
-    fixture.event(Runtime::Codex, AgentEvent::StartupReady);
+    fixture.codex_status(runner_terminal::program_status::State::Idle);
 
     // The router types the notice into a session that stopped reading; its write runs past the
     // deadline, the router hears it as typed, and the person hears the session is not reading.
@@ -768,7 +824,7 @@ fn an_ignored_delivery_enter_is_resubmitted_at_turn_end_instead_of_holding_as_a_
     for echo_before_enter in [true, false] {
         let fixture = StartupFixture::new();
         let _output = fixture.launch("codex", false, Instant::now());
-        fixture.event(Runtime::Codex, AgentEvent::StartupReady);
+        fixture.codex_status(runner_terminal::program_status::State::Idle);
         let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
         let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
         let terminal = fixture
@@ -1281,7 +1337,7 @@ fn rejected_native_probe_submits_hold_readiness_without_more_output() {
     for reprobe in [false, true] {
         let fixture = StartupFixture::new();
         let _output = fixture.launch("codex", false, Instant::now());
-        fixture.event(Runtime::Codex, AgentEvent::StartupReady);
+        fixture.codex_status(runner_terminal::program_status::State::Idle);
         let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
         let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
         let terminal = fixture
@@ -1352,7 +1408,7 @@ fn codex_submitted_history_releases_readiness_but_a_later_collapsed_draft_holds(
 
     let fixture = StartupFixture::new();
     let _output = fixture.launch("codex", false, Instant::now());
-    fixture.event(Runtime::Codex, AgentEvent::StartupReady);
+    fixture.codex_status(runner_terminal::program_status::State::Idle);
     let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
     let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
     let terminal = fixture
@@ -1631,7 +1687,11 @@ fn a_return_that_starts_no_turn_frees_the_member_for_its_queued_notice() {
     for runtime in [Runtime::ClaudeCode, Runtime::Codex] {
         let fixture = StartupFixture::new();
         let output = fixture.launch(runtime.key(), false, Instant::now());
-        fixture.event(runtime, AgentEvent::StartupReady);
+        if runtime == Runtime::Codex {
+            fixture.codex_status(runner_terminal::program_status::State::Idle);
+        } else {
+            fixture.event(runtime, AgentEvent::StartupReady);
+        }
         let stop = output.stop_flag();
         let events = Capture::default();
         let start = *fixture.now.lock().unwrap();
@@ -1747,10 +1807,11 @@ fn a_return_that_starts_no_turn_frees_the_member_for_its_queued_notice() {
 #[test]
 fn a_real_codex_turn_releases_the_unconfirmed_notice_before_the_idle_timeout() {
     use crate::router::DeliveryReadiness;
+    use runner_terminal::program_status::State as P;
 
     let fixture = StartupFixture::new();
     let _output = fixture.launch("codex", false, Instant::now());
-    fixture.event(Runtime::Codex, AgentEvent::StartupReady);
+    fixture.codex_status(P::Idle);
     let start = *fixture.now.lock().unwrap();
     let events = Capture::default();
     crate::session::clock::at(start, 0, || {
@@ -1770,7 +1831,14 @@ fn a_real_codex_turn_releases_the_unconfirmed_notice_before_the_idle_timeout() {
     });
     assert_eq!(fixture.fake.inputs.lock().unwrap().len(), 1);
     crate::session::clock::at(now, 0, || {
-        fixture.event(Runtime::Codex, AgentEvent::TurnStarted);
+        fixture.manager.publish_agent_event(
+            "session",
+            AgentEvent::ProgramTurnConfirmed {
+                conversation_changed: false,
+            },
+            &Capture::default(),
+        );
+        fixture.codex_status(P::Working);
         assert_eq!(
             fixture.manager.delivery_readiness("session"),
             DeliveryReadiness::Working
@@ -1951,8 +2019,13 @@ fn working_qualifying_members_are_deliverable_and_every_hold_still_blocks_them()
     let working = |runtime: Runtime| {
         let fixture = StartupFixture::new();
         let output = fixture.launch(runtime.key(), false, Instant::now());
-        fixture.event(runtime, AgentEvent::StartupReady);
-        fixture.event(runtime, AgentEvent::TurnStarted);
+        if runtime == Runtime::Codex {
+            fixture.codex_status(runner_terminal::program_status::State::Idle);
+            fixture.codex_status(runner_terminal::program_status::State::Working);
+        } else {
+            fixture.event(runtime, AgentEvent::StartupReady);
+            fixture.event(runtime, AgentEvent::TurnStarted);
+        }
         (fixture, output)
     };
     let readiness = |fixture: &StartupFixture| fixture.manager.delivery_readiness("session");
@@ -2035,36 +2108,40 @@ fn working_qualifying_members_are_deliverable_and_every_hold_still_blocks_them()
         }
 
         let (fixture, _output) = working(runtime);
-        fixture
-            .manager
-            .session_state("session")
-            .unwrap()
-            .lock()
-            .unwrap()
-            .model
-            .set_native_attention(true);
-        let blocked = runner_terminal::program_status::Report {
-            state: runner_terminal::program_status::State::Blocked,
-            id: String::new(),
-            kind: Some("permission".into()),
-            progress: None,
-            app: Some("codex".into()),
-            title: None,
-            message: None,
-        };
-        fixture.manager.publish_model_event(
-            "session",
-            SessionEvent::ProgramStatus {
-                seq: 1,
-                subseq: 0,
-                update: Box::new(runner_terminal::program_status::Update {
-                    current: Some(blocked.clone()),
-                    trigger: Some(blocked),
-                }),
-                live: true,
-            },
-            &Capture::default(),
-        );
+        if runtime == Runtime::Codex {
+            fixture.codex_status(runner_terminal::program_status::State::Blocked);
+        } else {
+            fixture
+                .manager
+                .session_state("session")
+                .unwrap()
+                .lock()
+                .unwrap()
+                .model
+                .set_native_attention(true);
+            let blocked = runner_terminal::program_status::Report {
+                state: runner_terminal::program_status::State::Blocked,
+                id: String::new(),
+                kind: Some("permission".into()),
+                progress: None,
+                app: Some("codex".into()),
+                title: None,
+                message: None,
+            };
+            fixture.manager.publish_model_event(
+                "session",
+                SessionEvent::ProgramStatus {
+                    seq: 1,
+                    subseq: 0,
+                    update: Box::new(runner_terminal::program_status::Update {
+                        current: Some(blocked.clone()),
+                        trigger: Some(blocked),
+                    }),
+                    live: true,
+                },
+                &Capture::default(),
+            );
+        }
         assert_eq!(readiness(&fixture), R::NeedsYou, "{runtime:?}");
 
         let fixture = StartupFixture::new();
@@ -2309,12 +2386,28 @@ fn a_chat_started_with_a_first_turn_takes_no_report_until_that_turn_completes() 
         )
         .unwrap();
     let id = spawned.id.clone();
-    let hook = |event: AgentEvent| {
-        manager.publish_agent_event(
+    let seq = std::sync::atomic::AtomicU64::new(0);
+    let status = |state: runner_terminal::program_status::State| {
+        let next = seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let report = runner_terminal::program_status::Report {
+            id: String::new(),
+            state,
+            app: Some("codex".into()),
+            kind: None,
+            message: None,
+            progress: None,
+            title: None,
+        };
+        manager.publish_model_event(
             &id,
-            AgentEvent::Batch {
-                runtime: Runtime::Codex,
-                events: vec![event],
+            SessionEvent::ProgramStatus {
+                seq: next,
+                subseq: 0,
+                update: Box::new(runner_terminal::program_status::Update {
+                    current: Some(report.clone()),
+                    trigger: Some(report),
+                }),
+                live: true,
             },
             &Capture::default(),
         );
@@ -2337,18 +2430,15 @@ fn a_chat_started_with_a_first_turn_takes_no_report_until_that_turn_completes() 
             "{why}"
         );
     };
-    hook(AgentEvent::StartupReady);
+    status(runner_terminal::program_status::State::Idle);
     starting("ready, but the first turn has not run");
     let now = Instant::now();
     manager.startup_output(&id, &stop, b"> first turn", now);
     manager.release_settled_startup(&id, &stop, now + Duration::from_secs(60));
     starting("settled output does not open a fresh chat's gate");
-    hook(AgentEvent::TurnStarted);
+    status(runner_terminal::program_status::State::Working);
     starting("the first turn is running");
-    hook(AgentEvent::TurnEnded {
-        outcome: TurnOutcome::Completed,
-    });
-    manager.note_forwarder_transition(&id, SessionActivityState::Idle, StatusSource::Forwarder);
+    status(runner_terminal::program_status::State::Done);
     assert_eq!(
         manager.report_readiness(&id),
         crate::router::DeliveryReadiness::Ready { idle: true }
@@ -2359,7 +2449,7 @@ fn a_chat_started_with_a_first_turn_takes_no_report_until_that_turn_completes() 
 #[test]
 fn chat_without_status_hooks_uses_output_settle_even_with_identity_hooks() {
     let now = super::super::super::clock::now();
-    for runtime in [Runtime::Codex, Runtime::ClaudeCode, Runtime::Pi] {
+    for runtime in [Runtime::ClaudeCode, Runtime::Pi] {
         let mut gate =
             super::super::startup::StartupDelivery::for_reports(runtime.key(), false, now)
                 .with_status_hooks(false);
@@ -2379,6 +2469,27 @@ fn chat_without_status_hooks_uses_output_settle_even_with_identity_hooks() {
             ..Default::default()
         }));
     }
+
+    // Codex has no status hooks: an untrusted fresh gate holds on quiet trust prompts
+    // and releases on OSC 7501 idle, while a trusted/reopened gate also falls back to output settle.
+    let mut untrusted_codex =
+        super::super::startup::StartupDelivery::for_reports(Runtime::Codex.key(), false, now);
+    untrusted_codex.output(b"Do you trust the contents of this directory?", now);
+    assert!(!untrusted_codex.output_settled(now + Duration::from_secs(60)));
+    assert!(untrusted_codex.observation(&AgentObservation {
+        activity: Activity::Idle,
+        source: ObservationSource::Baseline,
+        program_status: Some(Default::default()),
+        ..Default::default()
+    }));
+
+    let mut trusted_codex = super::super::startup::StartupDelivery::for_trusted_reports(
+        Runtime::Codex.key(),
+        false,
+        now,
+    );
+    trusted_codex.output(b"> Ask Codex", now);
+    assert!(trusted_codex.output_settled(now + Duration::from_secs(11)));
 }
 
 #[test]
@@ -2664,4 +2775,439 @@ fn antigravity_program_status_confirms_delivery_turn_start_and_holds_needs_you()
             .turn_started,
         first_turn + 1
     );
+}
+
+#[test]
+fn codex_no_osc_startup_releases_queued_delivery_after_trust_and_first_turn_while_holding_trust_dialog(
+) {
+    // 1. Mission first-turn startup with zero OSC 7501 bytes:
+    // stays Starting across quiet output, SessionStart, and UserPromptSubmit,
+    // then releases queued notice delivery once transcript task_complete (ProgramTurnFinished) arrives.
+    let fixture = StartupFixture::new();
+    fixture.queue("queued before launch");
+    let now = Instant::now();
+    let output = fixture.launch(Runtime::Codex.key(), true, now);
+    let launch = output.stop_flag();
+    fixture.manager.note_forwarder_transition(
+        "session",
+        SessionActivityState::Idle,
+        StatusSource::Forwarder,
+    );
+    fixture
+        .manager
+        .startup_output("session", &launch, b"Do you trust this folder?", now);
+    fixture
+        .manager
+        .release_settled_startup("session", &launch, now + Duration::from_secs(60));
+    fixture.held();
+
+    fixture.manager.publish_agent_event(
+        "session",
+        AgentEvent::ProgramSessionStarted {
+            conversation_changed: false,
+            compacted: false,
+        },
+        &Capture::default(),
+    );
+    fixture.manager.publish_agent_event(
+        "session",
+        AgentEvent::ProgramTurnConfirmed {
+            conversation_changed: false,
+        },
+        &Capture::default(),
+    );
+    fixture
+        .manager
+        .release_settled_startup("session", &launch, now + Duration::from_secs(120));
+    fixture.held();
+
+    fixture.manager.publish_agent_event(
+        "session",
+        AgentEvent::ProgramTurnFinished,
+        &Capture::default(),
+    );
+    assert_eq!(
+        fixture.manager.delivery_readiness("session"),
+        crate::router::DeliveryReadiness::Ready { idle: true }
+    );
+    assert_eq!(
+        fixture.manager.agent_status("session").observation.outcome,
+        None,
+        "transcript task_complete must not fabricate a Completed outcome without OSC 7501"
+    );
+    fixture.submitted();
+
+    // 2. Direct chats with zero OSC 7501 bytes:
+    // - untrusted chat without first turn stays Starting on quiet trust prompt, then settles after SessionStart;
+    // - direct first-turn chat stays Starting until ProgramTurnFinished releases report delivery.
+    let app_data = tempfile::tempdir().unwrap();
+    let codex_home = tempfile::tempdir().unwrap();
+    let pool = pool_with_schema();
+    let mut codex_role = role("codex", &[]);
+    codex_role.runtime = Runtime::Codex.key().into();
+    codex_role.env.insert(
+        "CODEX_HOME".into(),
+        codex_home.path().to_str().unwrap().into(),
+    );
+    insert_role_row(&pool.get().unwrap(), &codex_role);
+    let fake = fake_runtime();
+    let manager = mgr_with_fake(None, fake.clone());
+
+    let untrusted = manager
+        .spawn_direct(
+            &codex_role,
+            None,
+            None,
+            None,
+            None,
+            Some(app_data.path().to_str().unwrap()),
+            None,
+            None,
+            app_data.path(),
+            pool.clone(),
+            capture(),
+            None,
+        )
+        .unwrap()
+        .id;
+    manager.note_forwarder_transition(
+        &untrusted,
+        SessionActivityState::Idle,
+        StatusSource::Forwarder,
+    );
+    let untrusted_stop = manager
+        .session_state(&untrusted)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .handle
+        .as_ref()
+        .unwrap()
+        .stop
+        .clone();
+    manager.startup_output(
+        &untrusted,
+        &untrusted_stop,
+        b"Do you trust the contents of this directory?",
+        now,
+    );
+    manager.release_settled_startup(&untrusted, &untrusted_stop, now + Duration::from_secs(60));
+    assert_eq!(
+        manager.report_readiness(&untrusted),
+        crate::router::DeliveryReadiness::Starting,
+        "quiet trust dialog without SessionStart or OSC must stay held"
+    );
+    manager.publish_agent_event(
+        &untrusted,
+        AgentEvent::ProgramSessionStarted {
+            conversation_changed: false,
+            compacted: false,
+        },
+        &Capture::default(),
+    );
+    manager.startup_output(
+        &untrusted,
+        &untrusted_stop,
+        b"> Ask Codex",
+        now + Duration::from_secs(61),
+    );
+    manager.release_settled_startup(&untrusted, &untrusted_stop, now + Duration::from_secs(70));
+    assert_eq!(
+        manager.report_readiness(&untrusted),
+        crate::router::DeliveryReadiness::Ready { idle: true }
+    );
+    manager.kill(&untrusted).unwrap();
+
+    let first_turn = manager
+        .spawn_direct(
+            &codex_role,
+            None,
+            None,
+            None,
+            None,
+            Some(app_data.path().to_str().unwrap()),
+            None,
+            None,
+            app_data.path(),
+            pool.clone(),
+            capture(),
+            Some("summarize".into()),
+        )
+        .unwrap()
+        .id;
+    manager.note_forwarder_transition(
+        &first_turn,
+        SessionActivityState::Idle,
+        StatusSource::Forwarder,
+    );
+    let first_stop = manager
+        .session_state(&first_turn)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .handle
+        .as_ref()
+        .unwrap()
+        .stop
+        .clone();
+    manager.startup_output(&first_turn, &first_stop, b"> summarize", now);
+    manager.publish_agent_event(
+        &first_turn,
+        AgentEvent::ProgramSessionStarted {
+            conversation_changed: false,
+            compacted: false,
+        },
+        &Capture::default(),
+    );
+    manager.publish_agent_event(
+        &first_turn,
+        AgentEvent::ProgramTurnConfirmed {
+            conversation_changed: false,
+        },
+        &Capture::default(),
+    );
+    manager.release_settled_startup(&first_turn, &first_stop, now + Duration::from_secs(60));
+    assert_eq!(
+        manager.report_readiness(&first_turn),
+        crate::router::DeliveryReadiness::Starting
+    );
+    manager.publish_agent_event(
+        &first_turn,
+        AgentEvent::ProgramTurnFinished,
+        &Capture::default(),
+    );
+    assert_eq!(
+        manager.report_readiness(&first_turn),
+        crate::router::DeliveryReadiness::Ready { idle: true }
+    );
+    manager.kill(&first_turn).unwrap();
+
+    // 3. Mission without identity hooks (--disable hooks / watcher error):
+    // ProgramIdentityUnavailable allows output-settle fallback if no OSC arrives,
+    // without invalidating live OSC 7501 when OSC IS present.
+    let no_hooks = StartupFixture::new();
+    no_hooks.queue("queued without hooks");
+    let output = no_hooks.launch(Runtime::Codex.key(), true, now);
+    let stop = output.stop_flag();
+    no_hooks.manager.note_forwarder_transition(
+        "session",
+        SessionActivityState::Idle,
+        StatusSource::Forwarder,
+    );
+    no_hooks
+        .manager
+        .startup_output("session", &stop, b"done printing", now);
+    no_hooks.manager.publish_agent_event(
+        "session",
+        AgentEvent::ProgramIdentityUnavailable,
+        &Capture::default(),
+    );
+    no_hooks
+        .manager
+        .release_settled_startup("session", &stop, now + Duration::from_secs(60));
+    assert_eq!(
+        no_hooks.manager.delivery_readiness("session"),
+        crate::router::DeliveryReadiness::Ready { idle: true }
+    );
+    no_hooks.submitted();
+
+    // 4. Untrusted quiet startup with an identity watcher failure (ProgramIdentityUnavailable)
+    // must keep holding the unanswered folder-trust dialog until trust is actually cleared.
+    let untrusted_failed = manager
+        .spawn_direct(
+            &codex_role,
+            None,
+            None,
+            None,
+            None,
+            Some(app_data.path().to_str().unwrap()),
+            None,
+            None,
+            app_data.path(),
+            pool.clone(),
+            capture(),
+            None,
+        )
+        .unwrap()
+        .id;
+    manager.note_forwarder_transition(
+        &untrusted_failed,
+        SessionActivityState::Idle,
+        StatusSource::Forwarder,
+    );
+    let untrusted_failed_stop = manager
+        .session_state(&untrusted_failed)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .handle
+        .as_ref()
+        .unwrap()
+        .stop
+        .clone();
+    manager.startup_output(
+        &untrusted_failed,
+        &untrusted_failed_stop,
+        b"Do you trust the contents of this directory?",
+        now,
+    );
+    manager.publish_agent_event(
+        &untrusted_failed,
+        AgentEvent::ProgramIdentityUnavailable,
+        &Capture::default(),
+    );
+    manager.release_settled_startup(
+        &untrusted_failed,
+        &untrusted_failed_stop,
+        now + Duration::from_secs(60),
+    );
+    assert_eq!(
+        manager.report_readiness(&untrusted_failed),
+        crate::router::DeliveryReadiness::Starting,
+        "watcher failure on an untrusted chat must not release an unanswered trust prompt"
+    );
+    manager.kill(&untrusted_failed).unwrap();
+
+    // 5. Known-trusted direct first-turn with watcher absent (--disable hooks, no OSC 7501):
+    // PtyRuntime emits ProgramIdentityUnavailable and trust_cleared is true, so settled output
+    // opens report_readiness instead of leaving the chat Starting forever.
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            "[projects.{:?}]\ntrust_level = \"trusted\"\n",
+            std::fs::canonicalize(app_data.path()).unwrap()
+        ),
+    )
+    .unwrap();
+    let mut disabled_hooks_role = codex_role.clone();
+    disabled_hooks_role.id = ulid::Ulid::new().to_string();
+    disabled_hooks_role.handle = "tester-no-hooks".into();
+    disabled_hooks_role.args = vec!["--disable".into(), "hooks".into()];
+    insert_role_row(&pool.get().unwrap(), &disabled_hooks_role);
+    let trusted_no_hooks = manager
+        .spawn_direct(
+            &disabled_hooks_role,
+            None,
+            None,
+            None,
+            None,
+            Some(app_data.path().to_str().unwrap()),
+            None,
+            None,
+            app_data.path(),
+            pool.clone(),
+            capture(),
+            Some("summarize".into()),
+        )
+        .unwrap()
+        .id;
+    manager.note_forwarder_transition(
+        &trusted_no_hooks,
+        SessionActivityState::Idle,
+        StatusSource::Forwarder,
+    );
+    let trusted_stop = manager
+        .session_state(&trusted_no_hooks)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .handle
+        .as_ref()
+        .unwrap()
+        .stop
+        .clone();
+    manager.startup_output(&trusted_no_hooks, &trusted_stop, b"summary done", now);
+    manager.publish_agent_event(
+        &trusted_no_hooks,
+        AgentEvent::ProgramIdentityUnavailable,
+        &Capture::default(),
+    );
+    manager.release_settled_startup(
+        &trusted_no_hooks,
+        &trusted_stop,
+        now + Duration::from_secs(60),
+    );
+    assert_eq!(
+        manager.report_readiness(&trusted_no_hooks),
+        crate::router::DeliveryReadiness::Ready { idle: true },
+        "trusted direct first-turn with --disable hooks and no OSC must settle rather than hang"
+    );
+    manager.kill(&trusted_no_hooks).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_trusted_direct_first_turn_with_disabled_hooks_emits_unavailable_and_settles_on_real_pty() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let app_data = tempfile::tempdir().unwrap();
+    let codex_home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        format!(
+            "[projects.{:?}]\ntrust_level = \"trusted\"\n",
+            std::fs::canonicalize(app_data.path()).unwrap()
+        ),
+    )
+    .unwrap();
+    let script = app_data.path().join("fake-codex");
+    std::fs::write(&script, "#!/bin/sh\nprintf 'done\\n'\nsleep 60\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let pool = pool_with_schema();
+    let mut codex_role = role(script.to_str().unwrap(), &["--disable", "hooks"]);
+    codex_role.runtime = Runtime::Codex.key().into();
+    codex_role.env.insert(
+        "CODEX_HOME".into(),
+        codex_home.path().to_str().unwrap().into(),
+    );
+    insert_role_row(&pool.get().unwrap(), &codex_role);
+
+    let manager = manager_with_runtime(
+        Default::default(),
+        Arc::new(crate::session::pty_runtime::PtyRuntime::new()),
+    );
+    let events = capture_for(&manager);
+    let spawned = manager
+        .spawn_direct(
+            &codex_role,
+            None,
+            None,
+            None,
+            None,
+            Some(app_data.path().to_str().unwrap()),
+            None,
+            None,
+            app_data.path(),
+            pool.clone(),
+            events.clone(),
+            Some("summarize".into()),
+        )
+        .unwrap();
+    let id = &spawned.id;
+    let host_events: Arc<dyn SessionEvents> = events.clone();
+    let terminal = manager
+        .create_terminal(id, 80, 24, &pool, &host_events)
+        .unwrap();
+    manager.session_state(id).unwrap().lock().unwrap().terminal = Some(terminal);
+
+    // Wait for the real PtyRuntime forwarder to deliver ProgramIdentityUnavailable + baseline Idle.
+    events.wait_for_status(id, |ev| ev.state == SessionActivityState::Idle);
+    let stop = manager
+        .session_state(id)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .handle
+        .as_ref()
+        .unwrap()
+        .stop
+        .clone();
+    manager.release_settled_startup(id, &stop, Instant::now() + Duration::from_secs(60));
+    assert_eq!(
+        manager.report_readiness(id),
+        crate::router::DeliveryReadiness::Ready { idle: true },
+        "real PtyRuntime must emit ProgramIdentityUnavailable for direct --disable hooks so trusted first-turn settles"
+    );
+    manager.kill(id).unwrap();
 }

@@ -32,6 +32,8 @@ pub struct StatusSemantics {
     pub native_attention: bool,
     pub program_status_authority: bool,
     pub program_status_without_hooks: bool,
+    pub program_status_root_app: Option<&'static str>,
+    pub program_status_transcript_outcomes: bool,
     pub interruption_ends_invocation: bool,
     pub reject_events_after_interruption: bool,
     pub reject_completions_after_outcome: bool,

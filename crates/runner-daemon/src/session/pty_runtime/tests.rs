@@ -49,13 +49,11 @@ fn hook_startup_deadline_requires_output_and_quiet_and_stops_after_any_valid_rep
     let mut startup = codex_detector(DEFAULT_IDLE_THRESHOLD, true);
     startup.awaiting_first_hook = true;
     startup.on_output_event_at(b"startup", false, start);
-    // Codex suppresses startup-ready while argv is pending, but the bridge is alive.
-    assert!(
-        !startup.accept_event(&super::super::state::agent::AgentEvent::Batch {
-            runtime: crate::model::Runtime::Codex,
-            events: vec![super::super::state::agent::AgentEvent::StartupReady],
-        })
-    );
+    assert!(startup.accept_event(
+        &super::super::state::agent::AgentEvent::ProgramTurnConfirmed {
+            conversation_changed: false
+        }
+    ));
     assert!(!startup.hook_startup_timed_out_at(start + Duration::from_secs(3600)));
 }
 
@@ -103,7 +101,10 @@ fn allocated_hook_receiver_with_no_reports_enters_output_fallback() {
                 tx,
                 stop,
                 Arc::new(AtomicBool::new(false)),
-                Some(watcher),
+                Some(HookMonitor {
+                    watcher,
+                    program_status_primary: false,
+                }),
             )
         }
     });
@@ -121,16 +122,38 @@ fn allocated_hook_receiver_with_no_reports_enters_output_fallback() {
 
 #[test]
 #[cfg(unix)]
-fn resumed_codex_reports_after_startup_timeout_restore_hook_status() {
+fn codex_identity_watcher_confirms_turns_and_never_fails_program_status_bridge() {
+    struct ObservingWatcher {
+        inner: Box<dyn HookWatcher>,
+        errored: Option<mpsc::Sender<()>>,
+    }
+    impl HookWatcher for ObservingWatcher {
+        fn drain_events(
+            &mut self,
+            cancel: u8,
+            emit: &mut dyn FnMut(
+                crate::session::state::agent::AgentEvent,
+            ) -> crate::session::state::agent::AdapterFeedback,
+            session_start: &mut dyn FnMut(String),
+        ) -> crate::error::Result<()> {
+            let result = self.inner.drain_events(cancel, emit, session_start);
+            if result.is_err() {
+                if let Some(tx) = self.errored.take() {
+                    let _ = tx.send(());
+                }
+            }
+            result
+        }
+    }
     let routes = Arc::new(super::super::hook_queue::HookRoutes::default());
     let receiver = routes.register(
         crate::model::Runtime::Codex,
-        "resumed-bridge".into(),
+        "codex-primary".into(),
         "launch".into(),
     );
     let spec = SpawnSpec {
         agent_runtime: Some(crate::model::Runtime::Codex),
-        session_id: "resumed-bridge".into(),
+        session_id: "codex-primary".into(),
         mission: true,
         pending_turn: Some(false),
         ..Default::default()
@@ -140,9 +163,15 @@ fn resumed_codex_reports_after_startup_timeout_restore_hook_status() {
         .unwrap()
         .start_receiver(&spec, receiver)
         .unwrap();
+    let (errored_tx, errored_rx) = mpsc::channel();
+    let watcher = Box::new(ObservingWatcher {
+        inner: watcher,
+        errored: Some(errored_tx),
+    });
+    let thread = uuid::Uuid::new_v4().to_string();
     let start = Instant::now() - HOOK_STARTUP_TIMEOUT;
     let mut detector = codex_detector(DEFAULT_IDLE_THRESHOLD, false);
-    detector.awaiting_first_hook = true;
+    detector.hooks_unavailable();
     detector.on_output_event_at(b"resumed history", false, start);
     let detector = Arc::new(Mutex::new(detector));
     let stop = Arc::new(AtomicBool::new(false));
@@ -156,24 +185,21 @@ fn resumed_codex_reports_after_startup_timeout_restore_hook_status() {
                 tx,
                 stop,
                 Arc::new(AtomicBool::new(false)),
-                Some(watcher),
+                Some(HookMonitor {
+                    watcher,
+                    program_status_primary: true,
+                }),
             )
         }
     });
-    let failed = rx.recv_timeout(Duration::from_secs(5));
-    {
-        let mut detector = detector.lock().unwrap();
-        detector.on_input(b"next task");
-        detector.on_input(b"\r");
-    }
     for (event, payload) in [
         (
             "SessionStart",
-            serde_json::json!({"session_id": "thread", "source": "resume", "transcript_path": null}),
+            serde_json::json!({"session_id": thread, "source": "resume", "transcript_path": null}),
         ),
         (
             "UserPromptSubmit",
-            serde_json::json!({"session_id": "thread", "turn_id": "turn", "transcript_path": null}),
+            serde_json::json!({"session_id": thread, "turn_id": "turn-1", "transcript_path": null}),
         ),
     ] {
         routes
@@ -181,39 +207,70 @@ fn resumed_codex_reports_after_startup_timeout_restore_hook_status() {
                 bridge_unavailable: false,
                 version: runner_core::protocol::hook::VERSION,
                 runtime: crate::model::Runtime::Codex,
-                session_id: "resumed-bridge".into(),
+                session_id: "codex-primary".into(),
                 generation: "launch".into(),
                 event: event.into(),
                 payload,
-                caller_thread_id: Some("thread".into()),
+                caller_thread_id: Some(thread.clone()),
             })
             .unwrap();
     }
     let deadline = Instant::now() + Duration::from_secs(5);
-    let restored = loop {
+    let mut saw_key = false;
+    let mut saw_started = false;
+    let mut saw_confirmed = false;
+    while !(saw_key && saw_started && saw_confirmed) {
         match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(RuntimeOutput::AgentEvent { event, .. }) => break Some(event),
+            Ok(RuntimeOutput::ConversationStart(id)) if id == thread => saw_key = true,
+            Ok(RuntimeOutput::AgentEvent {
+                event:
+                    super::super::state::agent::AgentEvent::ProgramSessionStarted {
+                        conversation_changed: false,
+                        compacted: false,
+                    },
+                ..
+            }) => saw_started = true,
+            Ok(RuntimeOutput::AgentEvent {
+                event:
+                    super::super::state::agent::AgentEvent::ProgramTurnConfirmed {
+                        conversation_changed: false,
+                    },
+                ..
+            }) => saw_confirmed = true,
+            Ok(RuntimeOutput::StatusBridgeFailed) => {
+                panic!("program-status-primary runtime must not emit StatusBridgeFailed")
+            }
             Ok(_) => {}
-            Err(_) => break None,
+            Err(error) => panic!("timed out waiting for Codex identity events: {error}"),
         }
-    };
+    }
+    // Retiring the hook route closes the identity watcher with ProgramIdentityUnavailable
+    // (letting no-OSC startup fall back) without emitting StatusBridgeFailed.
+    routes.retire("codex-primary");
+    errored_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("monitor should observe retired hook route");
     stop.store(true, Ordering::Release);
     monitor.join().unwrap();
+    let mut saw_unavailable = false;
+    for event in rx.try_iter() {
+        assert!(
+            !matches!(event, RuntimeOutput::StatusBridgeFailed),
+            "program-status-primary watcher close must not emit StatusBridgeFailed: {event:?}"
+        );
+        if matches!(
+            event,
+            RuntimeOutput::AgentEvent {
+                event: super::super::state::agent::AgentEvent::ProgramIdentityUnavailable,
+                ..
+            }
+        ) {
+            saw_unavailable = true;
+        }
+    }
     assert!(
-        matches!(failed, Ok(RuntimeOutput::StatusBridgeFailed)),
-        "{failed:?}"
-    );
-    // The late SessionStart is dropped so it cannot end the submitted turn.
-    assert!(
-        matches!(
-            &restored,
-            Some(super::super::state::agent::AgentEvent::Batch { events, .. })
-                if matches!(
-                    events.as_slice(),
-                    [super::super::state::agent::AgentEvent::TurnStarted]
-                )
-        ),
-        "{restored:?}"
+        saw_unavailable,
+        "retired identity watcher must emit ProgramIdentityUnavailable for no-OSC startup fallback"
     );
 }
 
@@ -255,7 +312,10 @@ fn claude_feedback_wait_releases_detector_and_ends_on_detach() {
                 tx,
                 stop,
                 Arc::new(AtomicBool::new(false)),
-                Some(Box::new(Watcher(returned_tx))),
+                Some(HookMonitor {
+                    watcher: Box::new(Watcher(returned_tx)),
+                    program_status_primary: false,
+                }),
             );
             ended_tx.send(()).unwrap();
         }
@@ -970,22 +1030,17 @@ fn codex_startup_readiness_input_and_missing_hooks_are_baseline_only() {
     assert_eq!(detector.tick_state(), Some(SessionActivityState::Busy));
     assert_eq!(detector.on_output_state(ready, false), None);
     assert_eq!(detector.current, SessionActivityState::Busy);
-    assert!(!accept_hook(
-        &mut detector,
-        &super::super::status::AgentObservation {
-            activity: super::super::status::Activity::Idle,
-            source: super::super::status::ObservationSource::Hook,
-            ..Default::default()
+    assert!(detector.accept_event(
+        &super::super::state::agent::AgentEvent::ProgramTurnConfirmed {
+            conversation_changed: false
         }
     ));
-    assert!(accept_hook(
-        &mut detector,
-        &super::super::status::AgentObservation {
-            activity: super::super::status::Activity::Working,
-            source: super::super::status::ObservationSource::Hook,
-            ..Default::default()
+    assert!(detector.accept_event(
+        &super::super::state::agent::AgentEvent::ProgramTurnOutcome {
+            outcome: super::super::status::TurnOutcome::Interrupted,
         }
     ));
+    detector.hooks_unavailable();
     assert_eq!(detector.adapter.as_ref().unwrap().held_activity(), None);
     let mut detector = codex_detector(DEFAULT_IDLE_THRESHOLD, true);
     assert_eq!(detector.tick_state(), Some(SessionActivityState::Busy));
@@ -1281,63 +1336,110 @@ fn codex_title_fallback_is_identical_for_direct_and_mission_sessions() {
 #[test]
 #[cfg(unix)]
 fn codex_hook_runtime_events_bridge_failure_and_teardown() {
-    use super::super::status::{Activity, TurnOutcome};
+    use super::super::state::agent::AgentEvent;
     let rt = PtyRuntime::new();
     let mut spawn = spec("codex-hooks", "/bin/cat", &[]);
     spawn.agent_runtime = Some(crate::model::Runtime::Codex);
     spawn.env.insert(GENERATION_ENV.into(), "current".into());
     let (session, stream) = rt.spawn(spawn).unwrap();
-    for event in ["UserPromptSubmit", "Stop", "PreToolUse", "Interrupt"] {
+    let thread = uuid::Uuid::new_v4().to_string();
+    admit_hook(
+        &rt,
+        "codex-hooks",
+        crate::model::Runtime::Codex,
+        "SessionStart",
+        serde_json::json!({"session_id":thread,"source":"startup","transcript_path":null}),
+    );
+    for (event, turn) in [
+        ("UserPromptSubmit", "one"),
+        ("Stop", "one"),
+        ("PreToolUse", "one"),
+        ("Interrupt", "one"),
+        // Final valid hook acts as a FIFO fence proving the removed status hooks were drained.
+        ("UserPromptSubmit", "two"),
+    ] {
         admit_hook(
             &rt,
             "codex-hooks",
             crate::model::Runtime::Codex,
             event,
-            serde_json::json!({"session_id":"main","turn_id":"one"}),
+            serde_json::json!({"session_id":thread,"turn_id":turn}),
         );
     }
     let deadline = Instant::now() + Duration::from_secs(3);
-    let mut values = Vec::new();
-    while values.len() < 4 && Instant::now() < deadline {
-        if let Ok(super::super::runtime::TestOutput::AgentObservation(value)) =
-            stream.recv_status_timeout(Duration::from_millis(50))
-        {
-            values.push(value);
+    let mut saw_key = false;
+    let mut started = 0usize;
+    let mut confirmed = 0usize;
+    while !(saw_key && started >= 1 && confirmed >= 2) && Instant::now() < deadline {
+        match stream.recv_timeout(Duration::from_millis(50)) {
+            Ok(RuntimeOutput::ConversationStart(id)) if id == thread => saw_key = true,
+            Ok(RuntimeOutput::AgentEvent {
+                event:
+                    AgentEvent::ProgramSessionStarted {
+                        conversation_changed: false,
+                        compacted: false,
+                    },
+                ..
+            }) => started += 1,
+            Ok(RuntimeOutput::AgentEvent {
+                event:
+                    AgentEvent::ProgramTurnConfirmed {
+                        conversation_changed: false,
+                    },
+                ..
+            }) => confirmed += 1,
+            Ok(RuntimeOutput::AgentEvent { event, .. }) => {
+                panic!("removed Codex status hook must not emit agent event: {event:?}")
+            }
+            Ok(RuntimeOutput::StatusBridgeFailed) => {
+                panic!("Codex program-status runtime must not emit StatusBridgeFailed")
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
+    assert!(saw_key);
+    assert_eq!(started, 1);
+    assert_eq!(confirmed, 2);
+
+    // Retiring the identity hook route signals ProgramIdentityUnavailable (never StatusBridgeFailed).
     rt.hooks.retire(&session.session_id);
     let deadline = Instant::now() + Duration::from_secs(3);
-    let mut failed = false;
-    while !failed && Instant::now() < deadline {
-        failed = matches!(
-            stream.recv_status_timeout(Duration::from_millis(50)),
-            Ok(super::super::runtime::TestOutput::StatusBridgeFailed)
-        );
+    let mut unavailable = false;
+    while !unavailable && Instant::now() < deadline {
+        match stream.recv_timeout(Duration::from_millis(50)) {
+            Ok(RuntimeOutput::StatusBridgeFailed) => {
+                panic!("Codex identity hook retirement must not emit StatusBridgeFailed")
+            }
+            Ok(RuntimeOutput::AgentEvent {
+                event: AgentEvent::ProgramIdentityUnavailable,
+                ..
+            }) => unavailable = true,
+            Ok(RuntimeOutput::AgentEvent { event, .. }) => {
+                panic!("unexpected Codex agent event after retirement: {event:?}")
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
     }
+    assert!(unavailable);
+
     rt.stop(&session).unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut closed = false;
     while !closed && Instant::now() < deadline {
-        closed = matches!(
-            stream.recv_status_timeout(Duration::from_millis(50)),
-            Err(mpsc::RecvTimeoutError::Disconnected)
-        );
+        match stream.recv_timeout(Duration::from_millis(50)) {
+            Ok(RuntimeOutput::StatusBridgeFailed) => {
+                panic!("Codex identity hook teardown must not emit StatusBridgeFailed")
+            }
+            Ok(RuntimeOutput::AgentEvent { event, .. }) => {
+                panic!("unexpected Codex agent event during teardown: {event:?}")
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => closed = true,
+        }
     }
-    assert!(failed);
     assert!(closed);
-    assert_eq!(
-        values.iter().map(|v| v.activity).collect::<Vec<_>>(),
-        [
-            Activity::Working,
-            Activity::Ready,
-            Activity::Working,
-            Activity::Unavailable
-        ]
-    );
-    assert_eq!(
-        values.last().unwrap().outcome,
-        Some(TurnOutcome::Interrupted)
-    );
 }
 
 #[test]
@@ -2646,39 +2748,141 @@ fn windows_hook_bridge(
 #[test]
 #[cfg(windows)]
 fn codex_admitted_hooks_bridge_failure_and_teardown_windows() {
-    use super::super::status::{Activity, TurnOutcome};
-    let values = windows_hook_bridge(
-        crate::model::Runtime::Codex,
+    use super::super::state::agent::AgentEvent;
+    let rt = PtyRuntime::new();
+    let mut spawn = spec(
         "codex-hooks",
-        &[(
-            runner_core::protocol::hook::GENERATION_ENV,
-            "current".into(),
-        )],
-        |rt| {
-            for event in ["UserPromptSubmit", "Stop", "PreToolUse", "Interrupt"] {
-                admit_hook(
-                    rt,
-                    "codex-hooks",
-                    crate::model::Runtime::Codex,
-                    event,
-                    serde_json::json!({"session_id":"main","turn_id":"one"}),
-                );
+        "cmd",
+        &["/d", "/c", "ping -n 30 127.0.0.1 >nul"],
+    );
+    spawn.agent_runtime = Some(crate::model::Runtime::Codex);
+    spawn.env.insert(
+        runner_core::protocol::hook::GENERATION_ENV.into(),
+        "current".into(),
+    );
+    let (session, stream) = rt.spawn(spawn).unwrap();
+    let mut handshake = HostHandshake::default();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !handshake.answered && Instant::now() < deadline {
+        match stream.recv_timeout(Duration::from_millis(50)) {
+            Ok(RuntimeOutput::Stream(bytes)) => handshake.observe(&rt, &session, &bytes),
+            Ok(RuntimeOutput::StatusBridgeFailed) => {
+                panic!("Codex program-status runtime must not emit StatusBridgeFailed")
             }
-        },
-        4,
+            Ok(RuntimeOutput::AgentEvent { event, .. }) => {
+                panic!("unexpected Codex agent event before hooks: {event:?}")
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    assert!(
+        handshake.answered,
+        "host never asked for the cursor position"
     );
-    assert_eq!(
-        values.iter().map(|v| v.activity).collect::<Vec<_>>(),
-        [
-            Activity::Working,
-            Activity::Ready,
-            Activity::Working,
-            Activity::Unavailable
-        ]
+    let thread = uuid::Uuid::new_v4().to_string();
+    admit_hook(
+        &rt,
+        "codex-hooks",
+        crate::model::Runtime::Codex,
+        "SessionStart",
+        serde_json::json!({"session_id":thread,"source":"startup","transcript_path":null}),
     );
-    assert_eq!(
-        values.last().unwrap().outcome,
-        Some(TurnOutcome::Interrupted)
+    for (event, turn) in [
+        ("UserPromptSubmit", "one"),
+        ("Stop", "one"),
+        ("PreToolUse", "one"),
+        ("Interrupt", "one"),
+        // Final valid hook acts as a FIFO fence proving the removed status hooks were drained.
+        ("UserPromptSubmit", "two"),
+    ] {
+        admit_hook(
+            &rt,
+            "codex-hooks",
+            crate::model::Runtime::Codex,
+            event,
+            serde_json::json!({"session_id":thread,"turn_id":turn}),
+        );
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut saw_key = false;
+    let mut started = 0usize;
+    let mut confirmed = 0usize;
+    while !(saw_key && started >= 1 && confirmed >= 2) && Instant::now() < deadline {
+        match stream.recv_timeout(Duration::from_millis(50)) {
+            Ok(RuntimeOutput::ConversationStart(id)) if id == thread => saw_key = true,
+            Ok(RuntimeOutput::AgentEvent {
+                event:
+                    AgentEvent::ProgramSessionStarted {
+                        conversation_changed: false,
+                        compacted: false,
+                    },
+                ..
+            }) => started += 1,
+            Ok(RuntimeOutput::AgentEvent {
+                event:
+                    AgentEvent::ProgramTurnConfirmed {
+                        conversation_changed: false,
+                    },
+                ..
+            }) => confirmed += 1,
+            Ok(RuntimeOutput::AgentEvent { event, .. }) => {
+                panic!("removed Codex status hook must not emit agent event: {event:?}")
+            }
+            Ok(RuntimeOutput::StatusBridgeFailed) => {
+                panic!("Codex program-status runtime must not emit StatusBridgeFailed")
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    assert!(saw_key);
+    assert_eq!(started, 1);
+    assert_eq!(confirmed, 2);
+
+    // Retiring the identity hook route signals ProgramIdentityUnavailable (never StatusBridgeFailed).
+    rt.hooks.retire(&session.session_id);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut unavailable = false;
+    while !unavailable && Instant::now() < deadline {
+        match stream.recv_timeout(Duration::from_millis(50)) {
+            Ok(RuntimeOutput::StatusBridgeFailed) => {
+                panic!("Codex identity hook retirement must not emit StatusBridgeFailed")
+            }
+            Ok(RuntimeOutput::AgentEvent {
+                event: AgentEvent::ProgramIdentityUnavailable,
+                ..
+            }) => unavailable = true,
+            Ok(RuntimeOutput::AgentEvent { event, .. }) => {
+                panic!("unexpected Codex agent event after retirement: {event:?}")
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    assert!(
+        unavailable,
+        "codex-hooks: identity bridge loss not reported"
+    );
+
+    rt.stop(&session).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut closed = false;
+    while !closed && Instant::now() < deadline {
+        match stream.recv_timeout(Duration::from_millis(50)) {
+            Ok(RuntimeOutput::StatusBridgeFailed) => {
+                panic!("Codex identity hook teardown must not emit StatusBridgeFailed")
+            }
+            Ok(RuntimeOutput::AgentEvent { event, .. }) => {
+                panic!("unexpected Codex agent event during teardown: {event:?}")
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => closed = true,
+        }
+    }
+    assert!(
+        closed,
+        "codex-hooks: hook watcher kept the output channel alive"
     );
 }
 
@@ -2865,7 +3069,10 @@ fn conversation_update_finishing_after_eof_is_not_forwarded() {
         tx,
         Arc::new(AtomicBool::new(false)),
         done.clone(),
-        Some(Box::new(ClosingWatcher(done))),
+        Some(HookMonitor {
+            watcher: Box::new(ClosingWatcher(done)),
+            program_status_primary: false,
+        }),
     );
     assert!(rx
         .try_iter()

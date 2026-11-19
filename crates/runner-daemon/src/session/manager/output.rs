@@ -259,6 +259,7 @@ impl SessionManager {
                     Ok(RuntimeOutput::ConversationStart(key)) => {
                         let result = (|| -> Result<()> {
                             let mut mission = None;
+                            let mut replaced_key = false;
                             let updated = manager_t.report_key(
                                 &session_id,
                                 PersistKey {
@@ -277,10 +278,25 @@ impl SessionManager {
                                     if row.agent_session_key == effect.key {
                                         return Ok(false);
                                     }
+                                    replaced_key = row.agent_session_key.is_some();
                                     Self::write_key_effect(&conn, &session_id, effect)
                                 },
                             )?;
                             if updated {
+                                if replaced_key {
+                                    manager_t.publish_model_event_for_launch(
+                                        &session_id,
+                                        SessionEvent::Agent {
+                                            event: crate::session::state::agent::AgentEvent::ProgramSessionStarted {
+                                                conversation_changed: true,
+                                                compacted: false,
+                                            },
+                                            live: true,
+                                        },
+                                        Some(&stop),
+                                        events.as_ref(),
+                                    );
+                                }
                                 events.updated(&SessionUpdatedEvent {
                                     session_id: session_id.clone(),
                                     mission_id: mission,
@@ -1402,7 +1418,12 @@ impl SessionManager {
 fn has_started_turn(event: &crate::session::state::agent::AgentEvent) -> bool {
     use crate::session::state::agent::AgentEvent;
     match event {
-        AgentEvent::TurnStarted | AgentEvent::Working { .. } | AgentEvent::TurnEnded { .. } => true,
+        AgentEvent::TurnStarted
+        | AgentEvent::ProgramTurnConfirmed { .. }
+        | AgentEvent::ProgramTurnFinished
+        | AgentEvent::ProgramTurnOutcome { .. }
+        | AgentEvent::Working { .. }
+        | AgentEvent::TurnEnded { .. } => true,
         AgentEvent::Batch { events, .. } => events.iter().any(has_started_turn),
         _ => false,
     }

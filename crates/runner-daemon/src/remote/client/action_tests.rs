@@ -1645,7 +1645,7 @@ async fn remote_launch_refusal_keeps_the_typed_runtime_version_gate() {
         .expect("remote refusal lost its typed recovery details");
     assert_eq!(gate.runtime, runner_core::protocol::Runtime::Codex);
     assert_eq!(gate.installed_version, "0.147.0");
-    assert_eq!(gate.min_version, "0.149.0");
+    assert_eq!(gate.min_version, "0.164.0");
     assert!(error.message.contains("Settings → Agents"));
 
     let mission = {
@@ -1703,7 +1703,7 @@ async fn remote_launch_refusal_keeps_the_typed_runtime_version_gate() {
         .request("2".into(), request)
         .await
         .unwrap_err();
-    assert_eq!(error.version_gate.unwrap().min_version, "0.149.0");
+    assert_eq!(error.version_gate.unwrap().min_version, "0.164.0");
 }
 
 #[tokio::test]
