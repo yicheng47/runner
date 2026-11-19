@@ -639,7 +639,7 @@ impl MissionWorkspace {
         }
     }
 
-    fn remote_dialogs_clear(&self) -> bool {
+    pub(super) fn remote_dialogs_clear(&self) -> bool {
         self.active
             && self.rename_modal.is_none()
             && !self.stop_all_confirm

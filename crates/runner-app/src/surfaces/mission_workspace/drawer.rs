@@ -5,6 +5,103 @@ use runner_core::protocol::model::SessionStatus;
 use super::*;
 use crate::*;
 
+#[derive(Clone)]
+struct RemoteDrawerCloseFocus {
+    session_id: String,
+    generation: u64,
+    target: crate::surfaces::front_page::FrontPageTarget,
+    origin_focus: Option<gpui::FocusHandle>,
+}
+
+impl RemoteDrawerCloseFocus {
+    fn defer_restore(
+        self,
+        workspace: &mut MissionWorkspace,
+        window: &mut Window,
+        cx: &mut Context<MissionWorkspace>,
+    ) {
+        workspace.drawer_close_focus_token = workspace.drawer_close_focus_token.wrapping_add(1);
+        let token = workspace.drawer_close_focus_token;
+        workspace.drawer_close_focus_subscription = None;
+        cx.defer_in(window, move |this, window, cx| {
+            if this.drawer_close_focus_token != token {
+                return;
+            }
+            if self.restore_if_closed(this, window, cx) {
+                return;
+            }
+            // A remote close acknowledgement can arrive before the host pushes the updated overview.
+            let clients = this.app_store.read(cx).remote_clients.clone();
+            this.drawer_close_focus_subscription =
+                Some(cx.observe_in(&clients, window, move |_, _, window, cx| {
+                    let focus = self.clone();
+                    cx.defer_in(window, move |this, window, cx| {
+                        if this.drawer_close_focus_token != token {
+                            return;
+                        }
+                        if focus.restore_if_closed(this, window, cx) {
+                            this.drawer_close_focus_token =
+                                this.drawer_close_focus_token.wrapping_add(1);
+                            this.drawer_close_focus_subscription = None;
+                        }
+                    });
+                }));
+        });
+    }
+
+    fn restore_if_closed(
+        &self,
+        this: &mut MissionWorkspace,
+        window: &mut Window,
+        cx: &mut Context<MissionWorkspace>,
+    ) -> bool {
+        if !this.active
+            || this.generation != self.generation
+            || this.client.target != self.target
+            || !this.remote_dialogs_clear()
+        {
+            return true;
+        }
+        let shell_allows = this.shell.upgrade().is_none_or(|shell| {
+            let root = shell.read(cx);
+            root.allows_remote_terminal_auto_focus_window(cx)
+                && root.remote_client.allows_auto_terminal_focus(None)
+        });
+        if !shell_allows {
+            return true;
+        }
+        let focused = window.focused(cx);
+        let dropped_focus = focused.as_ref().is_some_and(|handle| {
+            this.shell.upgrade().is_some_and(|shell| {
+                shell
+                    .read(cx)
+                    .remote_client
+                    .allows_auto_terminal_focus(Some(handle))
+            })
+        });
+        let focus_eligible = focused == self.origin_focus
+            || focused.is_none()
+            || focused.as_ref() == Some(&this.drawer_focus)
+            || dropped_focus;
+        if !focus_eligible {
+            return true;
+        }
+        if this.layout.drawer.shells().contains(&self.session_id) {
+            return false;
+        }
+        if this.layout.drawer.open() {
+            if let Some(active) = this.layout.drawer.active_shell().map(str::to_owned) {
+                this.drawer_was_focused = true;
+                this.focus_mission_drawer_terminal(&active, window, cx);
+                return true;
+            }
+        }
+        this.drawer_was_focused = false;
+        this.focus_active_mission_terminal(window, cx);
+        true
+    }
+}
+
 impl MissionWorkspace {
     pub(crate) fn toggle_terminal_drawer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !mission_drawer_available(self.archived(), self.secondary_state(cx).secondary)
@@ -349,6 +446,18 @@ impl MissionWorkspace {
         cx.notify();
     }
 
+    pub(crate) fn close_focused_terminal_drawer_shell(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session_id) = self.layout.drawer.active_shell().map(str::to_owned) {
+            self.request_close_terminal_drawer_shell(&session_id, window, cx);
+        } else {
+            self.hide_terminal_drawer(window, cx);
+        }
+    }
+
     pub(crate) fn close_terminal_drawer_shell(
         &mut self,
         session_id: &str,
@@ -357,38 +466,67 @@ impl MissionWorkspace {
     ) {
         let remote = self.client.is_remote();
         if remote
-            && !self
-                .layout
-                .drawer
-                .shells()
-                .iter()
-                .any(|id| id == session_id)
+            && (!self.presentation.drawer_actions_available()
+                || !self
+                    .layout
+                    .drawer
+                    .shells()
+                    .iter()
+                    .any(|id| id == session_id))
         {
             return;
         }
-        if !remote {
-            if !self.closing_drawer_shells.insert(session_id.to_owned()) {
-                return;
-            }
-            self.error = None;
+        if !remote && self.closing_drawer_shells.contains(session_id) {
+            return;
         }
         let Some(operation) =
             self.prepare_mission_action("close", format!("shell-close:{session_id}"))
         else {
             return;
         };
+        if !remote {
+            self.closing_drawer_shells.insert(session_id.to_owned());
+            self.error = None;
+        }
+        let origin_focus = window.focused(cx);
+        let origin_in_drawer = self.drawer_focused(window, cx);
+        let mut remote_focus = (remote && origin_in_drawer).then(|| RemoteDrawerCloseFocus {
+            session_id: session_id.to_owned(),
+            generation: self.generation,
+            target: self.client.target.clone(),
+            origin_focus: origin_focus.clone(),
+        });
         let core = self.client.clone();
         let target = session_id.to_owned();
         let close_target = target.clone();
         let close = cx.background_spawn(async move {
             core.close(&close_target).map_err(|error| error.to_string())
         });
+        #[cfg(test)]
+        let test_gate = self.drawer_close_gates.pop_front();
         cx.spawn_in(window, async move |weak, cx| {
             let result = close.await;
+            #[cfg(test)]
+            let applied = match test_gate {
+                Some(gate) => Some(gate.wait().await),
+                None => None,
+            };
             let _ = weak.update_in(cx, |this, window, cx| {
-                let Some(result) =
-                    this.complete_mission_action(operation, result, |_| Vec::new(), cx)
-                else {
+                #[cfg(test)]
+                let _applied = applied;
+                let Some(result) = this.complete_mission_action_observed(
+                    operation,
+                    result,
+                    |_| Vec::new(),
+                    |this, succeeded, cx| {
+                        if remote && succeeded {
+                            if let Some(focus) = remote_focus.take() {
+                                focus.defer_restore(this, window, cx);
+                            }
+                        }
+                    },
+                    cx,
+                ) else {
                     return;
                 };
                 this.closing_drawer_shells.remove(&target);
@@ -405,10 +543,36 @@ impl MissionWorkspace {
                         {
                             this.error = Some(error.to_string().into());
                         }
-                        if let Some(active) = this.layout.drawer.active_shell().map(str::to_owned) {
-                            this.focus_mission_drawer_terminal(&active, window, cx);
-                        } else {
-                            this.focus_active_mission_terminal(window, cx);
+                        if !this.layout.drawer.open() || this.layout.drawer.active_shell().is_none()
+                        {
+                            this.drawer_was_focused = false;
+                        }
+                        let in_settings = this
+                            .shell
+                            .upgrade()
+                            .is_some_and(|shell| shell.read(cx).route == AppRoute::Settings);
+                        let focused = window.focused(cx);
+                        let restore_focus = origin_in_drawer
+                            && this.is_active(cx)
+                            && !in_settings
+                            && (focused == origin_focus
+                                || focused.is_none()
+                                || focused.as_ref() == Some(&this.drawer_focus));
+                        if restore_focus {
+                            if this.layout.drawer.open() {
+                                if let Some(active) =
+                                    this.layout.drawer.active_shell().map(str::to_owned)
+                                {
+                                    this.drawer_was_focused = true;
+                                    this.focus_mission_drawer_terminal(&active, window, cx);
+                                } else {
+                                    this.drawer_was_focused = false;
+                                    this.focus_active_mission_terminal(window, cx);
+                                }
+                            } else {
+                                this.drawer_was_focused = false;
+                                this.focus_active_mission_terminal(window, cx);
+                            }
                         }
                     }
                     Err(error) => this.error = Some(error.into()),

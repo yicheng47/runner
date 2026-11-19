@@ -229,7 +229,7 @@ impl NativeRoot {
         }
     }
 
-    fn allows_remote_terminal_auto_focus_window(&self, cx: &App) -> bool {
+    pub(crate) fn allows_remote_terminal_auto_focus_window(&self, cx: &App) -> bool {
         !(self.closing
             || !self.remote_client.is_active()
             || self.route == AppRoute::Settings

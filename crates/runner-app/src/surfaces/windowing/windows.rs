@@ -43,7 +43,7 @@ pub(crate) fn close_tab(this: &mut NativeRoot, window: &mut Window, cx: &mut Con
         CloseTarget::MissionDrawer => {
             this.mission_workspace
                 .update(cx, |workspace, workspace_cx| {
-                    workspace.hide_terminal_drawer(window, workspace_cx)
+                    workspace.close_focused_terminal_drawer_shell(window, workspace_cx)
                 });
         }
         CloseTarget::Pane => {

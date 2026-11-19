@@ -5490,3 +5490,572 @@ fn mission_rail_info_shows_branch_row_only_for_linked_worktree() {
     host.update(&mut visual, |_, window, _| window.remove_window())
         .unwrap();
 }
+
+fn seed_local_mission_drawer_shells(
+    host: gpui::WindowHandle<NativeRoot>,
+    cx: &mut gpui::TestAppContext,
+    core: &runner_daemon::AppCore,
+    shells: &[&str],
+    open: bool,
+) -> String {
+    let mut layout = MissionLayout::default();
+    for &id in shells {
+        layout.drawer.add(id.to_owned());
+    }
+    layout.drawer.set_open(open);
+    let node_id = {
+        let conn = core.db.get().unwrap();
+        for &id in shells {
+            conn.execute(
+                "INSERT INTO sessions (id, role_id, mission_id, slot_id, status, agent_runtime, agent_command)
+                 VALUES (?1, 'test-shell-role', NULL, NULL, 'running', 'shell', '/bin/sh')",
+                [id],
+            )
+            .unwrap();
+        }
+        let node =
+            runner_daemon::repo::node::ensure_mission_node(&conn, "test-mission", None).unwrap();
+        runner_daemon::repo::node::set_layout(&conn, &node.id, &layout.serialize().unwrap())
+            .unwrap();
+        node.id
+    };
+    let events: Arc<dyn runner_daemon::session::manager::SessionEvents> =
+        Arc::new(core.session_events());
+    host.update(cx, |root, _, cx| {
+        root.app_store.update(cx, |store, store_cx| {
+            for &id in shells {
+                core.sessions
+                    .prepare_unlisted_terminal(id, (80, 24), &core.db, &events)
+                    .unwrap();
+                store.bridge.attach(id).unwrap();
+            }
+            store.refresh_sessions(store_cx);
+            store.refresh_nodes(store_cx).unwrap();
+        });
+    })
+    .unwrap();
+    node_id
+}
+
+fn wait_local_mission(
+    visual: &mut gpui::VisualTestContext,
+    what: &str,
+    mut ready: impl FnMut(&mut gpui::VisualTestContext) -> bool,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        visual.run_until_parked();
+        if ready(visual) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn local_mission_drawer_cmd_w_closes_shells_persists_layout_and_restores_focus() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for on_session_tab in [false, true] {
+        let (_temp, mut cx, host, fake) = suspended_mission_test();
+        let core = fake.base.0.clone();
+        let node_id = seed_local_mission_drawer_shells(
+            host,
+            &mut cx,
+            &core,
+            &["drawer-1", "drawer-2", "drawer-3"],
+            true,
+        );
+
+        host.update(&mut cx, |root, window, cx| {
+            root.open_mission("test-mission".into(), window, cx);
+        })
+        .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+        visual.update(|window, _| window.activate_window());
+
+        wait_local_mission(&mut visual, "mission and drawer shells loaded", |v| {
+            host.read_with(v, |root, cx| {
+                let ws = root.mission_workspace.read(cx);
+                !ws.loading
+                    && ws.layout.drawer.open()
+                    && ws.layout.drawer.shells() == ["drawer-1", "drawer-2", "drawer-3"]
+                    && ws.attached.contains_key("drawer-1")
+                    && ws.attached.contains_key("drawer-2")
+                    && ws.attached.contains_key("drawer-3")
+                    && ws.attached.contains_key("mission-agent")
+            })
+            .unwrap()
+                && v.debug_bounds("MISSION_TERMINAL_DRAWER").is_some()
+        });
+
+        // Focus non-final middle shell drawer-2 so closing it must select predecessor drawer-1.
+        let (focus_shell_1, focus_shell_2, focus_shell_3, focus_member, focus_root) = host
+            .update(&mut visual, |root, window, cx| {
+                root.mission_workspace.update(cx, |ws, cx| {
+                    if on_session_tab {
+                        ws.select_mission_session("mission-agent", window, cx);
+                    } else {
+                        ws.select_mission_feed(window, cx);
+                    }
+                    ws.activate_terminal_drawer_shell("drawer-2", window, cx);
+                    (
+                        ws.attached["drawer-1"].terminal_focus.clone(),
+                        ws.attached["drawer-2"].terminal_focus.clone(),
+                        ws.attached["drawer-3"].terminal_focus.clone(),
+                        ws.attached["mission-agent"].terminal_focus.clone(),
+                        ws.root_focus.clone(),
+                    )
+                })
+            })
+            .unwrap();
+        wait_local_mission(&mut visual, "drawer-2 focused", |v| {
+            host.update(v, |root, window, cx| {
+                let ws = root.mission_workspace.read(cx);
+                focus_shell_2.is_focused(window)
+                    && ws.drawer_focused(window, cx)
+                    && ws.drawer_was_focused
+            })
+            .unwrap()
+        });
+
+        // First Cmd+W closes non-final active drawer-2 -> selects predecessor drawer-1.
+        host.update(&mut visual, crate::surfaces::windowing::close_tab)
+            .unwrap();
+        wait_local_mission(
+            &mut visual,
+            "drawer-2 closed and focus moved to drawer-1",
+            |v| {
+                let state_ok = host
+                    .read_with(v, |root, cx| {
+                        let ws = root.mission_workspace.read(cx);
+                        ws.layout.drawer.open()
+                            && ws.layout.drawer.shells() == ["drawer-1", "drawer-3"]
+                            && ws.layout.drawer.active_shell() == Some("drawer-1")
+                            && !ws.attached.contains_key("drawer-2")
+                            && ws.drawer_was_focused
+                    })
+                    .unwrap();
+                let focus_ok = v.update(|window, _| focus_shell_1.is_focused(window));
+                let db_ok = {
+                    let conn = core.db.get().unwrap();
+                    let row = runner_daemon::repo::node::get(&conn, &node_id)
+                        .unwrap()
+                        .unwrap();
+                    let persisted = MissionLayout::from_node_row(&row).unwrap();
+                    let gone = runner_daemon::repo::session::get_row(&conn, "drawer-2")
+                        .unwrap()
+                        .is_none();
+                    gone && persisted.drawer.open()
+                        && persisted.drawer.shells() == ["drawer-1", "drawer-3"]
+                        && persisted.drawer.active_shell() == Some("drawer-1")
+                };
+                state_ok && focus_ok && db_ok
+            },
+        );
+
+        // Second Cmd+W closes index-0 drawer-1 -> moves focus to remaining drawer-3.
+        host.update(&mut visual, crate::surfaces::windowing::close_tab)
+            .unwrap();
+        wait_local_mission(
+            &mut visual,
+            "drawer-1 closed and focus moved to drawer-3",
+            |v| {
+                let state_ok = host
+                    .read_with(v, |root, cx| {
+                        let ws = root.mission_workspace.read(cx);
+                        ws.layout.drawer.open()
+                            && ws.layout.drawer.shells() == ["drawer-3"]
+                            && ws.layout.drawer.active_shell() == Some("drawer-3")
+                            && !ws.attached.contains_key("drawer-1")
+                            && ws.drawer_was_focused
+                    })
+                    .unwrap();
+                let focus_ok = v.update(|window, _| focus_shell_3.is_focused(window));
+                let db_ok = {
+                    let conn = core.db.get().unwrap();
+                    let row = runner_daemon::repo::node::get(&conn, &node_id)
+                        .unwrap()
+                        .unwrap();
+                    let persisted = MissionLayout::from_node_row(&row).unwrap();
+                    let gone = runner_daemon::repo::session::get_row(&conn, "drawer-1")
+                        .unwrap()
+                        .is_none();
+                    gone && persisted.drawer.open()
+                        && persisted.drawer.shells() == ["drawer-3"]
+                        && persisted.drawer.active_shell() == Some("drawer-3")
+                };
+                state_ok && focus_ok && db_ok
+            },
+        );
+
+        // Third Cmd+W closes last drawer-3, hides drawer, clears drawer_was_focused, and
+        // returns focus to the active mission surface.
+        host.update(&mut visual, crate::surfaces::windowing::close_tab)
+            .unwrap();
+        wait_local_mission(
+            &mut visual,
+            "last drawer shell closed, drawer hidden, focus restored to mission",
+            |v| {
+                let state_ok = host
+                    .read_with(v, |root, cx| {
+                        let ws = root.mission_workspace.read(cx);
+                        !ws.layout.drawer.open()
+                            && ws.layout.drawer.shells().is_empty()
+                            && !ws.attached.contains_key("drawer-3")
+                            && !ws.drawer_was_focused
+                    })
+                    .unwrap();
+                let focus_ok = v.update(|window, _| {
+                    if on_session_tab {
+                        focus_member.is_focused(window)
+                    } else {
+                        focus_root.is_focused(window)
+                    }
+                });
+                let db_ok = {
+                    let conn = core.db.get().unwrap();
+                    let row = runner_daemon::repo::node::get(&conn, &node_id)
+                        .unwrap()
+                        .unwrap();
+                    let persisted = MissionLayout::from_node_row(&row).unwrap();
+                    let gone = runner_daemon::repo::session::get_row(&conn, "drawer-3")
+                        .unwrap()
+                        .is_none();
+                    gone && !persisted.drawer.open() && persisted.drawer.shells().is_empty()
+                };
+                state_ok && focus_ok && db_ok
+            },
+        );
+
+        host.update(&mut visual, |_, window, _| window.remove_window())
+            .unwrap();
+    }
+}
+
+#[test]
+fn local_mission_drawer_cmd_w_respects_intervening_focus_change_and_concurrent_layout_edits() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (_temp, mut cx, host, fake) = suspended_mission_test();
+    let core = fake.base.0.clone();
+    let node_id =
+        seed_local_mission_drawer_shells(host, &mut cx, &core, &["drawer-1", "drawer-2"], true);
+
+    host.update(&mut cx, |root, window, cx| {
+        root.open_mission("test-mission".into(), window, cx);
+    })
+    .unwrap();
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+    visual.update(|window, _| window.activate_window());
+
+    wait_local_mission(&mut visual, "mission loaded for gated close test", |v| {
+        host.read_with(v, |root, cx| {
+            let ws = root.mission_workspace.read(cx);
+            !ws.loading
+                && ws.layout.drawer.open()
+                && ws.layout.drawer.shells() == ["drawer-1", "drawer-2"]
+                && ws.attached.contains_key("drawer-1")
+                && ws.attached.contains_key("drawer-2")
+        })
+        .unwrap()
+            && v.debug_bounds("MISSION_TERMINAL_DRAWER").is_some()
+    });
+
+    let (focus_shell_1, focus_shell_2, focus_composer) = host
+        .update(&mut visual, |root, window, cx| {
+            root.mission_workspace.update(cx, |ws, cx| {
+                ws.select_mission_feed(window, cx);
+                ws.activate_terminal_drawer_shell("drawer-2", window, cx);
+                (
+                    ws.attached["drawer-1"].terminal_focus.clone(),
+                    ws.attached["drawer-2"].terminal_focus.clone(),
+                    ws.composer_input.read(cx).focus_handle(),
+                )
+            })
+        })
+        .unwrap();
+    wait_local_mission(&mut visual, "drawer-2 focused before gated close", |v| {
+        v.update(|window, _| focus_shell_2.is_focused(window))
+    });
+
+    // Gate applying drawer-2's close reply, move focus to Feed composer, and simulate a
+    // concurrent shell addition in SQLite before releasing the UI callback.
+    let (gate, handle) = crate::test_support::StagedReplyGate::pair();
+    host.update(&mut visual, |root, window, cx| {
+        root.mission_workspace
+            .update(cx, |ws, _| ws.drawer_close_gates.push_back(gate));
+        crate::surfaces::windowing::close_tab(root, window, cx);
+    })
+    .unwrap();
+    wait_local_mission(&mut visual, "drawer-2 close reply entered gate", |_| {
+        handle.is_entered()
+    });
+
+    visual.update(|window, cx| focus_composer.focus(window, cx));
+    wait_local_mission(&mut visual, "composer focused while close in flight", |v| {
+        v.update(|window, _| focus_composer.is_focused(window))
+    });
+
+    {
+        let conn = core.db.get().unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, role_id, mission_id, slot_id, status, agent_runtime, agent_command)
+             VALUES ('drawer-concurrent', 'test-shell-role', NULL, NULL, 'running', 'shell', '/bin/sh')",
+            [],
+        )
+        .unwrap();
+        let row = runner_daemon::repo::node::get(&conn, &node_id)
+            .unwrap()
+            .unwrap();
+        let mut layout = MissionLayout::from_node_row(&row).unwrap();
+        layout.drawer.add("drawer-concurrent".into());
+        runner_daemon::repo::node::set_layout(&conn, &node_id, &layout.serialize().unwrap())
+            .unwrap();
+    }
+
+    let applied = handle.release();
+    wait_local_mission(
+        &mut visual,
+        "drawer-2 closed while preserving concurrent shell and composer focus",
+        |v| {
+            let ui_ok = host
+                .read_with(v, |root, cx| {
+                    let ws = root.mission_workspace.read(cx);
+                    ws.layout.drawer.open()
+                        && ws.layout.drawer.shells() == ["drawer-1", "drawer-concurrent"]
+                        && !ws.closing_drawer_shells.contains("drawer-2")
+                })
+                .unwrap();
+            let db_ok = {
+                let conn = core.db.get().unwrap();
+                let row = runner_daemon::repo::node::get(&conn, &node_id)
+                    .unwrap()
+                    .unwrap();
+                let persisted = MissionLayout::from_node_row(&row).unwrap();
+                persisted.drawer.shells() == ["drawer-1", "drawer-concurrent"]
+            };
+            applied.is_applied() && ui_ok && db_ok
+        },
+    );
+    assert!(visual.update(|window, _| focus_composer.is_focused(window)));
+    assert!(!visual.update(|window, _| focus_shell_1.is_focused(window)));
+
+    // Clean up drawer-concurrent, then verify last-shell close also preserves intervening
+    // composer focus while clearing drawer_was_focused.
+    runner_daemon::ops::session::session_close(&core, "drawer-concurrent").unwrap();
+    wait_local_mission(&mut visual, "only drawer-1 remains", |v| {
+        host.read_with(v, |root, cx| {
+            root.mission_workspace.read(cx).layout.drawer.shells() == ["drawer-1"]
+        })
+        .unwrap()
+    });
+    host.update(&mut visual, |root, window, cx| {
+        root.mission_workspace.update(cx, |ws, cx| {
+            ws.activate_terminal_drawer_shell("drawer-1", window, cx);
+        });
+    })
+    .unwrap();
+    wait_local_mission(
+        &mut visual,
+        "drawer-1 focused before last gated close",
+        |v| {
+            host.update(v, |root, window, cx| {
+                let ws = root.mission_workspace.read(cx);
+                focus_shell_1.is_focused(window) && ws.drawer_was_focused
+            })
+            .unwrap()
+        },
+    );
+
+    let (gate, handle) = crate::test_support::StagedReplyGate::pair();
+    host.update(&mut visual, |root, window, cx| {
+        root.mission_workspace
+            .update(cx, |ws, _| ws.drawer_close_gates.push_back(gate));
+        crate::surfaces::windowing::close_tab(root, window, cx);
+    })
+    .unwrap();
+    wait_local_mission(&mut visual, "drawer-1 close reply entered gate", |_| {
+        handle.is_entered()
+    });
+    visual.update(|window, cx| focus_composer.focus(window, cx));
+    wait_local_mission(
+        &mut visual,
+        "composer focused before last close reply",
+        |v| v.update(|window, _| focus_composer.is_focused(window)),
+    );
+    let applied = handle.release();
+    wait_local_mission(
+        &mut visual,
+        "last shell closed keeping composer focus and clearing drawer_was_focused",
+        |v| {
+            applied.is_applied()
+                && host
+                    .read_with(v, |root, cx| {
+                        let ws = root.mission_workspace.read(cx);
+                        !ws.layout.drawer.open()
+                            && ws.layout.drawer.shells().is_empty()
+                            && !ws.drawer_was_focused
+                            && !ws.closing_drawer_shells.contains("drawer-1")
+                    })
+                    .unwrap()
+        },
+    );
+    assert!(visual.update(|window, _| focus_composer.is_focused(window)));
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[test]
+fn local_mission_drawer_empty_focused_cmd_w_hides_and_non_drawer_actions_stay_intact() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+
+    // 1. Open and focused drawer with active_shell() == None falls back safely to hiding.
+    {
+        let (_temp, mut cx, host, fake) = suspended_mission_test();
+        let core = fake.base.0.clone();
+        let node_id = seed_local_mission_drawer_shells(host, &mut cx, &core, &[], true);
+        host.update(&mut cx, |root, window, cx| {
+            root.open_mission("test-mission".into(), window, cx);
+        })
+        .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+        visual.update(|window, _| window.activate_window());
+
+        wait_local_mission(&mut visual, "mission with empty open drawer loaded", |v| {
+            host.read_with(v, |root, cx| {
+                let ws = root.mission_workspace.read(cx);
+                !ws.loading && ws.layout.drawer.open() && ws.layout.drawer.active_shell().is_none()
+            })
+            .unwrap()
+                && v.debug_bounds("MISSION_TERMINAL_DRAWER").is_some()
+        });
+
+        let focus_root = host
+            .update(&mut visual, |root, window, cx| {
+                root.mission_workspace.update(cx, |ws, cx| {
+                    ws.select_mission_feed(window, cx);
+                    ws.drawer_focus.focus(window, cx);
+                    ws.root_focus.clone()
+                })
+            })
+            .unwrap();
+        wait_local_mission(&mut visual, "empty drawer focused", |v| {
+            host.update(v, |root, window, cx| {
+                let ws = root.mission_workspace.read(cx);
+                ws.drawer_focused(window, cx) && ws.drawer_was_focused
+            })
+            .unwrap()
+        });
+
+        host.update(&mut visual, crate::surfaces::windowing::close_tab)
+            .unwrap();
+        wait_local_mission(&mut visual, "empty drawer hidden on Cmd+W", |v| {
+            let state_ok = host
+                .read_with(v, |root, cx| {
+                    let ws = root.mission_workspace.read(cx);
+                    !ws.layout.drawer.open() && !ws.drawer_was_focused
+                })
+                .unwrap();
+            let focus_ok = v.update(|window, _| focus_root.is_focused(window));
+            let db_ok = {
+                let conn = core.db.get().unwrap();
+                let row = runner_daemon::repo::node::get(&conn, &node_id)
+                    .unwrap()
+                    .unwrap();
+                !MissionLayout::from_node_row(&row).unwrap().drawer.open()
+            };
+            state_ok && focus_ok && db_ok
+        });
+
+        host.update(&mut visual, |_, window, _| window.remove_window())
+            .unwrap();
+    }
+
+    // 2. Non-drawer Cmd+W, drawer hide button, and toggle leave shells intact.
+    {
+        let (_temp, mut cx, host, fake) = suspended_mission_test();
+        let core = fake.base.0.clone();
+        seed_local_mission_drawer_shells(host, &mut cx, &core, &["drawer-1", "drawer-2"], true);
+        host.update(&mut cx, |root, window, cx| {
+            root.open_mission("test-mission".into(), window, cx);
+        })
+        .unwrap();
+        let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+
+        wait_local_mission(&mut visual, "mission with two drawer shells loaded", |v| {
+            host.read_with(v, |root, cx| {
+                let ws = root.mission_workspace.read(cx);
+                !ws.loading
+                    && ws.layout.drawer.open()
+                    && ws.layout.drawer.shells() == ["drawer-1", "drawer-2"]
+                    && ws.attached.contains_key("mission-agent")
+            })
+            .unwrap()
+        });
+
+        // Focus outside drawer (Feed and Session tab): Cmd+W leaves drawer open and shells alive.
+        for on_session_tab in [false, true] {
+            host.update(&mut visual, |root, window, cx| {
+                root.mission_workspace.update(cx, |ws, cx| {
+                    if on_session_tab {
+                        ws.select_mission_session("mission-agent", window, cx);
+                    } else {
+                        ws.select_mission_feed(window, cx);
+                    }
+                });
+            })
+            .unwrap();
+            visual.run_until_parked();
+            host.update(&mut visual, crate::surfaces::windowing::close_tab)
+                .unwrap();
+            visual.run_until_parked();
+            host.read_with(&visual, |root, cx| {
+                let ws = root.mission_workspace.read(cx);
+                assert!(ws.layout.drawer.open());
+                assert_eq!(ws.layout.drawer.shells(), ["drawer-1", "drawer-2"]);
+            })
+            .unwrap();
+        }
+
+        // Hide button and Opt+F12 toggle hide without closing shells, and reopen with both intact.
+        host.update(&mut visual, |root, window, cx| {
+            root.mission_workspace
+                .update(cx, |ws, cx| ws.hide_terminal_drawer(window, cx));
+        })
+        .unwrap();
+        visual.run_until_parked();
+        host.read_with(&visual, |root, cx| {
+            let ws = root.mission_workspace.read(cx);
+            assert!(!ws.layout.drawer.open());
+            assert_eq!(ws.layout.drawer.shells(), ["drawer-1", "drawer-2"]);
+            assert!(!ws.drawer_was_focused);
+        })
+        .unwrap();
+        visual.dispatch_action(crate::ToggleTerminalDrawer);
+        visual.run_until_parked();
+        host.read_with(&visual, |root, cx| {
+            let ws = root.mission_workspace.read(cx);
+            assert!(ws.layout.drawer.open());
+            assert_eq!(ws.layout.drawer.shells(), ["drawer-1", "drawer-2"]);
+        })
+        .unwrap();
+        let conn = core.db.get().unwrap();
+        assert!(runner_daemon::repo::session::get_row(&conn, "drawer-1")
+            .unwrap()
+            .is_some());
+        assert!(runner_daemon::repo::session::get_row(&conn, "drawer-2")
+            .unwrap()
+            .is_some());
+
+        host.update(&mut visual, |_, window, _| window.remove_window())
+            .unwrap();
+    }
+}
