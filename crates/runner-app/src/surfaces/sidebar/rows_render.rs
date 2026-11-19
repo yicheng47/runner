@@ -687,10 +687,8 @@ impl Sidebar {
                         }
                         let dragged = event.drag(cx).node_id.clone();
                         let dragged_type = this
-                            .app_store
-                            .read(cx)
-                            .nodes
-                            .iter()
+                            .source_nodes(cx)
+                            .into_iter()
                             .find(|node| node.id == dragged)
                             .map(|node| node.node_type);
                         if dragged_type == Some(NodeType::Project) {

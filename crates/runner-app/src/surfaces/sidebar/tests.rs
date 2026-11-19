@@ -3841,3 +3841,172 @@ fn remote_sidebar_worktrees_show_online_and_fall_back_to_one_line_offline() {
         |v| v.debug_bounds(wt_branch_sel).is_some(),
     );
 }
+
+#[test]
+fn remote_project_drag_shows_header_drop_indicator_and_reorders_projects() {
+    use crate::surfaces::remote_client::tests::{
+        action_trace, add_window, choose_host, enable_front_page, fixture,
+    };
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+
+    let data: runner_core::companion::Overview = serde_json::from_value(serde_json::json!({
+        "projects": [
+            {"id": "p1", "name": "Alpha"},
+            {"id": "p2", "name": "Beta"}
+        ],
+        "tabs": [
+            {
+                "id": "root-tab",
+                "project": null,
+                "name": "Standalone",
+                "pinned": false,
+                "panes": {"session": "s-root"},
+                "shells": []
+            }
+        ],
+        "missions": [],
+        "sessions": {
+            "s-root": {
+                "kind": "chat",
+                "title": "Standalone",
+                "runtime": "codex",
+                "status": "idle",
+                "unread": false
+            }
+        }
+    }))
+    .unwrap();
+    fake.set_overview(data);
+
+    let window = add_window(&mut cx, &store, temp.path(), "remote-project-drag");
+    window.update(&mut cx, choose_host).unwrap();
+    cx.run_until_parked();
+    let sidebar = window
+        .read_with(&cx, |root, _| {
+            root.remote_client.workspace().unwrap().sidebar.clone()
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.simulate_resize(size(px(1000.), px(800.)));
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    let p1 = visual.debug_bounds("SIDEBAR_PROJECT:p1").unwrap();
+    let p2 = visual.debug_bounds("SIDEBAR_PROJECT:p2").unwrap();
+    assert!(p2.top() > p1.top(), "expected Beta below Alpha");
+
+    // Drag remote project p2 upward over Alpha's upper and lower header halves.
+    let p1_top = gpui::point(p1.center().x, p1.top() + px(1.));
+    let p1_bottom = gpui::point(p1.center().x, p1.bottom() - px(1.));
+    visual.simulate_mouse_down(p2.center(), MouseButton::Left, gpui::Modifiers::default());
+    visual.simulate_mouse_move(
+        p2.center() + gpui::point(px(0.), px(-12.)),
+        Some(MouseButton::Left),
+        gpui::Modifiers::default(),
+    );
+    visual.simulate_mouse_move(p1_top, Some(MouseButton::Left), gpui::Modifiers::default());
+    visual.run_until_parked();
+    sidebar.read_with(&visual, |sidebar, _| {
+        assert_eq!(sidebar.drop_marker.as_deref(), Some("project:p1:false"));
+        assert_eq!(
+            sidebar.drop_target,
+            Some(DropTarget {
+                kind: DropKind::Project,
+                parent_id: None,
+                index: 0,
+                group: None,
+            })
+        );
+    });
+
+    visual.simulate_mouse_move(
+        p1_bottom,
+        Some(MouseButton::Left),
+        gpui::Modifiers::default(),
+    );
+    visual.run_until_parked();
+    sidebar.read_with(&visual, |sidebar, _| {
+        assert_eq!(sidebar.drop_marker.as_deref(), Some("project:p1:true"));
+        assert_eq!(
+            sidebar.drop_target,
+            Some(DropTarget {
+                kind: DropKind::Project,
+                parent_id: None,
+                index: 1,
+                group: None,
+            })
+        );
+    });
+
+    visual.simulate_mouse_move(p1_top, Some(MouseButton::Left), gpui::Modifiers::default());
+    visual.simulate_mouse_up(p1_top, MouseButton::Left, gpui::Modifiers::default());
+    visual.run_until_parked();
+
+    assert_eq!(
+        action_trace(&fake, "move"),
+        [serde_json::json!({
+            "id": 0,
+            "type": "move",
+            "target": {"kind": "project", "id": "p2"},
+            "project": null,
+            "order": [
+                {"kind": "project", "id": "p2"},
+                {"kind": "project", "id": "p1"},
+                {"kind": "tab", "id": "root-tab"}
+            ]
+        })]
+    );
+
+    // Dragging a remote leaf onto a remote project header still targets the project container.
+    let root_tab = visual
+        .debug_bounds("SIDEBAR_ITEM_TITLE:Standalone")
+        .unwrap();
+    visual.simulate_mouse_down(
+        root_tab.center(),
+        MouseButton::Left,
+        gpui::Modifiers::default(),
+    );
+    visual.simulate_mouse_move(
+        root_tab.center() + gpui::point(px(0.), px(-12.)),
+        Some(MouseButton::Left),
+        gpui::Modifiers::default(),
+    );
+    visual.simulate_mouse_move(
+        p1.center(),
+        Some(MouseButton::Left),
+        gpui::Modifiers::default(),
+    );
+    visual.run_until_parked();
+    sidebar.read_with(&visual, |sidebar, _| {
+        assert_eq!(sidebar.drop_marker.as_deref(), Some("container:p1"));
+        assert_eq!(
+            sidebar.drop_target,
+            Some(DropTarget {
+                kind: DropKind::Leaf,
+                parent_id: Some("p1".into()),
+                index: 0,
+                group: None,
+            })
+        );
+    });
+
+    visual.simulate_mouse_up(p1.center(), MouseButton::Left, gpui::Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        action_trace(&fake, "move").last(),
+        Some(&serde_json::json!({
+            "id": 0,
+            "type": "move",
+            "target": {"kind": "tab", "id": "root-tab"},
+            "project": "p1",
+            "order": [
+                {"kind": "tab", "id": "root-tab"}
+            ]
+        }))
+    );
+}
