@@ -7,7 +7,10 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.create_modal_open() || self.launcher_start_pending(cx) {
+        if self.route == crate::surfaces::AppRoute::Settings
+            || self.create_modal_open()
+            || self.launcher_start_pending(cx)
+        {
             return;
         }
         let scope = ProjectScope::or_root(self.new_tab_project_id(cx));

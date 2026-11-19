@@ -454,6 +454,16 @@ impl CommandPaletteState {
         cx.notify();
     }
 
+    pub(crate) fn dismiss_without_focus(&mut self, cx: &mut Context<Self>) {
+        if !self.open {
+            return;
+        }
+        self.selection_epoch = self.selection_epoch.wrapping_add(1);
+        self.open = false;
+        self.previous_focus = None;
+        cx.notify();
+    }
+
     pub(crate) fn new(
         shell: WeakEntity<NativeRoot>,
         app_store: Entity<AppStore>,
@@ -538,6 +548,11 @@ impl CommandPaletteState {
 
     pub(crate) fn is_open(&self) -> bool {
         self.open
+    }
+
+    #[cfg(test)]
+    pub(crate) fn contains_item(&self, id: &str) -> bool {
+        self.items.iter().any(|item| item.id == id)
     }
 
     pub(crate) fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {

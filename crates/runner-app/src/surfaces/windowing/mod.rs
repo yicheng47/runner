@@ -229,9 +229,10 @@ impl NativeRoot {
         }
     }
 
-    pub(crate) fn can_auto_focus_remote_terminal(&self, window: &Window, cx: &App) -> bool {
-        if self.closing
+    fn allows_remote_terminal_auto_focus_window(&self, cx: &App) -> bool {
+        !(self.closing
             || !self.remote_client.is_active()
+            || self.route == AppRoute::Settings
             || self.command_palette.read(cx).is_open()
             || self.start_chat_modal.is_some()
             || self.project_modal.is_some()
@@ -241,15 +242,31 @@ impl NativeRoot {
             || self.fork_confirm.is_some()
             || self.quit_dialog.is_some()
             || self.agent_update.is_some()
-            || self.usage_open
-        {
+            || self.usage_open)
+    }
+
+    pub(crate) fn can_auto_focus_remote_terminal(&self, window: &Window, cx: &App) -> bool {
+        if !self.allows_remote_terminal_auto_focus_window(cx) {
             return false;
         }
+        if let Some(workspace) = self.remote_client.remote_mission_workspace() {
+            if !workspace
+                .read(cx)
+                .allows_remote_center_auto_focus(window, cx)
+            {
+                return false;
+            }
+        }
         let focused = window.focused(cx);
-        if focused
-            .as_ref()
-            .is_some_and(|current| current == &self.root_focus || current == &self.chat_focus)
-        {
+        let neutral = focused.as_ref().is_some_and(|current| {
+            current == &self.root_focus
+                || current == &self.chat_focus
+                || self
+                    .remote_client
+                    .remote_mission_workspace()
+                    .is_some_and(|ws| ws.read(cx).has_neutral_remote_focus(Some(current)))
+        });
+        if neutral {
             return self.remote_client.allows_auto_terminal_focus(None);
         }
         self.remote_client
@@ -262,6 +279,25 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut App,
     ) {
+        if let Some(workspace) = self.remote_client.remote_mission_workspace() {
+            let Some(drawer) = workspace
+                .read(cx)
+                .remote_auto_focus_target(session_id, window, cx)
+            else {
+                return;
+            };
+            let eligible = if drawer {
+                self.allows_remote_terminal_auto_focus_window(cx)
+                    && self.remote_client.allows_auto_terminal_focus(None)
+            } else {
+                self.can_auto_focus_remote_terminal(window, cx)
+            };
+            if eligible {
+                self.remote_client
+                    .focus_terminal_and_clear_dropped(session_id, window, cx);
+            }
+            return;
+        }
         if !self.can_auto_focus_remote_terminal(window, cx) {
             return;
         }

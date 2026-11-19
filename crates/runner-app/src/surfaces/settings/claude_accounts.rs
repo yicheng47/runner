@@ -181,6 +181,10 @@ impl AccountsSection {
         self.name.read(cx).is_composing() || self.folder.read(cx).is_composing()
     }
 
+    pub(crate) fn confirmation_open(&self) -> bool {
+        self.sign_out_confirmation.is_some() || self.share_confirmation.is_some()
+    }
+
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         self.perform(ClaudeAccountAction::Refresh, cx);
     }

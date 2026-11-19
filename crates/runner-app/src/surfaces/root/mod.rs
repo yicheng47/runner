@@ -353,6 +353,7 @@ pub(crate) struct NativeRoot {
     pub(crate) settings_page: SettingsState,
     pub(crate) route: AppRoute,
     pub(crate) settings_return_route: AppRoute,
+    pub(crate) settings_return_remote_drawer_shell: Option<String>,
     pub(crate) usage_open: bool,
     pub(crate) usage_refresh_task: Option<gpui::Task<()>>,
     pub(crate) claude_account_picker: Option<Entity<runner_app::ui::select::StyledSelect>>,

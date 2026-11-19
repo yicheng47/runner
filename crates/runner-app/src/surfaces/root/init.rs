@@ -311,8 +311,12 @@ impl NativeRoot {
         let updater = global_updater(cx);
         let root_entity = cx.entity().downgrade();
         let composition = cx.new(|_| surfaces::render_cache::ShellComposition::new(root_entity));
-        let remote_client =
-            surfaces::remote_client::RemoteClient::new(app_store.clone(), root_focus.clone(), cx);
+        let remote_client = surfaces::remote_client::RemoteClient::new(
+            app_store.clone(),
+            root_focus.clone(),
+            window,
+            cx,
+        );
         let mut root = Self {
             remote_client,
             composition,
@@ -399,6 +403,7 @@ impl NativeRoot {
             settings_page,
             route: initial_route.clone(),
             settings_return_route: initial_route,
+            settings_return_remote_drawer_shell: None,
             usage_open: false,
             usage_refresh_task: None,
             usage_checked: None,

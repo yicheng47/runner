@@ -32,6 +32,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.route == AppRoute::Settings {
+            return;
+        }
         let remote = self.front_page_client(cx).is_remote();
         if !remote && self.route != AppRoute::Chat {
             return;
@@ -85,6 +88,9 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.route == AppRoute::Settings {
+            return;
+        }
         let remote = self.front_page_client(cx).is_remote();
         if !remote && self.route != AppRoute::Chat {
             return;

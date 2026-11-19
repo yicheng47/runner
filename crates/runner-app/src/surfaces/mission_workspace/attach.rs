@@ -639,16 +639,77 @@ impl MissionWorkspace {
         }
     }
 
+    fn remote_dialogs_clear(&self) -> bool {
+        self.active
+            && self.rename_modal.is_none()
+            && !self.stop_all_confirm
+            && self.restart_confirm.is_none()
+            && self.remove_confirm.is_none()
+    }
+
+    pub(crate) fn allows_remote_center_auto_focus(&self, window: &Window, cx: &App) -> bool {
+        self.remote_dialogs_clear()
+            && !self.rail_effectively_maximized(cx)
+            && !self.drawer_focused(window, cx)
+    }
+
+    pub(crate) fn remote_auto_focus_target(
+        &self,
+        session_id: &str,
+        window: &Window,
+        cx: &App,
+    ) -> Option<bool> {
+        if !self.remote_dialogs_clear() {
+            return None;
+        }
+        if self.drawer_focused(window, cx) {
+            let waiting_drawer = self.layout.drawer.open()
+                && self.layout.drawer.active_shell() == Some(session_id)
+                && window.focused(cx).as_ref() == Some(&self.drawer_focus);
+            return waiting_drawer.then_some(true);
+        }
+        if self.rail_effectively_maximized(cx) {
+            return None;
+        }
+        matches!(&self.active_tab, MissionTab::Session(active) if active == session_id)
+            .then_some(false)
+    }
+
+    pub(crate) fn remote_drawer_shell_available(&self, shell_id: &str, cx: &App) -> bool {
+        self.remote_dialogs_clear()
+            && !self.rail_effectively_maximized(cx)
+            && self.layout.drawer.open()
+            && self.layout.drawer.active_shell() == Some(shell_id)
+            && self.terminal_status(shell_id, cx)
+                == Some(runner_core::protocol::model::SessionStatus::Running)
+    }
+
+    pub(crate) fn active_remote_drawer_shell(&self, window: &Window, cx: &App) -> Option<String> {
+        (self.active && (self.drawer_focused(window, cx) || self.drawer_was_focused))
+            .then(|| self.layout.drawer.active_shell().map(str::to_owned))
+            .flatten()
+    }
+
+    pub(crate) fn has_neutral_remote_focus(&self, focused: Option<&FocusHandle>) -> bool {
+        focused.is_some_and(|handle| handle == &self.root_focus)
+    }
+
     pub(crate) fn focus_active_mission_terminal(&self, window: &mut Window, cx: &mut App) {
-        if self.rename_modal.is_some() || self.stop_all_confirm || self.restart_confirm.is_some() {
+        if self.rename_modal.is_some()
+            || self.stop_all_confirm
+            || self.restart_confirm.is_some()
+            || self.remove_confirm.is_some()
+        {
             return;
         }
         if self.presentation.is_remote() {
-            if let MissionTab::Session(id) = &self.active_tab {
-                self.defer_remote_terminal_focus(id.clone(), false, window, cx);
-            } else {
-                self.root_focus.focus(window, cx);
+            if !self.rail_effectively_maximized(cx) {
+                if let MissionTab::Session(id) = &self.active_tab {
+                    self.defer_remote_terminal_focus(id.clone(), false, window, cx);
+                    return;
+                }
             }
+            self.root_focus.focus(window, cx);
             return;
         }
         if self.rail_effectively_maximized(cx) {
@@ -670,7 +731,7 @@ impl MissionWorkspace {
         window.focus(&self.root_focus, cx);
     }
 
-    pub(super) fn focus_mission_drawer_terminal(
+    pub(crate) fn focus_mission_drawer_terminal(
         &self,
         session_id: &str,
         window: &mut Window,
@@ -702,28 +763,40 @@ impl MissionWorkspace {
         let generation = self.generation;
         window.defer(cx, move |window, cx| {
             shell.update(cx, |shell, cx| {
-                let current = shell
-                    .remote_client
-                    .mission_workspace()
-                    .is_some_and(|workspace| {
-                        if shell.remote_client.client(cx).target != target {
-                            return false;
-                        }
-                        let workspace = workspace.read(cx);
-                        workspace.active
-                            && workspace.generation == generation
-                            && workspace.rename_modal.is_none()
-                            && !workspace.stop_all_confirm
-                            && workspace.restart_confirm.is_none()
-                            && if drawer {
-                                workspace.layout.drawer.open()
-                                    && workspace.layout.drawer.active_shell() == Some(&id)
-                            } else {
-                                workspace.active_tab == MissionTab::Session(id.clone())
+                let current = shell.route != AppRoute::Settings
+                    && shell
+                        .remote_client
+                        .mission_workspace()
+                        .is_some_and(|workspace| {
+                            if shell.remote_client.client(cx).target != target {
+                                return false;
                             }
-                    });
-                if current {
-                    shell.remote_client.focus_remote_terminal(&id, window, cx);
+                            let workspace = workspace.read(cx);
+                            workspace.active
+                                && workspace.generation == generation
+                                && workspace.rename_modal.is_none()
+                                && !workspace.stop_all_confirm
+                                && workspace.restart_confirm.is_none()
+                                && workspace.remove_confirm.is_none()
+                                && if drawer {
+                                    workspace.layout.drawer.open()
+                                        && workspace.layout.drawer.active_shell() == Some(&id)
+                                } else {
+                                    !workspace.rail_effectively_maximized(cx)
+                                        && workspace.active_tab == MissionTab::Session(id.clone())
+                                }
+                        });
+                if current && !shell.remote_client.focus_remote_terminal(&id, window, cx) {
+                    if let Some(workspace) = shell.remote_client.remote_mission_workspace() {
+                        workspace.update(cx, |workspace, cx| {
+                            let placeholder = if drawer {
+                                &workspace.drawer_focus
+                            } else {
+                                &workspace.root_focus
+                            };
+                            placeholder.focus(window, cx);
+                        });
+                    }
                 }
             })
         });

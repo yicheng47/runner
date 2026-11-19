@@ -137,6 +137,10 @@ impl ArchivedPane {
         self.confirm_overlay.clone()
     }
 
+    pub(crate) fn confirm_open(&self) -> bool {
+        self.confirm.is_open()
+    }
+
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         if self.loading || !self.restoring.is_empty() || self.confirm.is_submitting() {
             return;
@@ -193,6 +197,9 @@ impl ArchivedPane {
             window.defer(cx, move |window, cx| {
                 if let Some(shell) = shell.upgrade() {
                     shell.update(cx, |shell, shell_cx| {
+                        if shell.remote_client.is_active() {
+                            shell.return_to_this_computer(window, shell_cx);
+                        }
                         shell.open_mission(item.id, window, shell_cx)
                     });
                 }
@@ -214,6 +221,9 @@ impl ArchivedPane {
                     window.defer(cx, move |window, cx| {
                         if let Some(shell) = shell.upgrade() {
                             shell.update(cx, |shell, shell_cx| {
+                                if shell.remote_client.is_active() {
+                                    shell.return_to_this_computer(window, shell_cx);
+                                }
                                 shell.open_archived_chat(chat, window, shell_cx)
                             });
                         }
@@ -424,6 +434,7 @@ impl ArchivedPane {
         let open_item = item.clone();
         let key_item = item.clone();
         let restore_item = item.clone();
+        let selector_id = item.id.clone();
         let restoring = self.restoring.contains(&(item.kind, item.id.clone()));
         let cwd = item.cwd.as_deref().map(cwd_basename);
         div()
@@ -432,6 +443,7 @@ impl ArchivedPane {
                 item.kind.key(),
                 item.id
             )))
+            .debug_selector(move || format!("ARCHIVED_ROW:{selector_id}"))
             .tab_index(0)
             .flex()
             .items_center()

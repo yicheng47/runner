@@ -315,7 +315,9 @@ impl NativeRoot {
                 .and_then(PaneLayout::focused_session_id)
                 .filter(|id| !self.chat_secondary_state(id, cx).secondary)
             {
-                self.remote_client.focus_remote_terminal(id, window, cx);
+                if !self.remote_client.focus_remote_terminal(id, window, cx) {
+                    self.chat_focus.focus(window, cx);
+                }
             } else {
                 self.chat_focus.focus(window, cx);
             }

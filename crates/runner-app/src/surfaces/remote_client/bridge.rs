@@ -54,6 +54,7 @@ impl NativeRoot {
             .remote_client
             .visit_computer(computer, &self.window_label, window, cx)
         {
+            self.settings_return_remote_drawer_shell = None;
             self.clear_remote_transients();
             self.clear_chat_secondaries();
             self.command_palette
@@ -68,11 +69,17 @@ impl NativeRoot {
     }
 
     pub(crate) fn return_to_this_computer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_return_remote_drawer_shell = None;
         self.clear_remote_transients();
         self.clear_chat_secondaries();
         self.command_palette
             .update(cx, |palette, cx| palette.close_for_target_change(cx));
-        self.remote_client.return_to_this_computer(window, cx);
+        let in_settings = self.route == crate::surfaces::AppRoute::Settings;
+        self.remote_client
+            .return_to_this_computer(!in_settings, window, cx);
+        if in_settings && window.focused(cx).is_none() {
+            self.focus_settings_page(window, cx);
+        }
         self.sync_window_activation(window, cx);
     }
 
@@ -83,9 +90,6 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         self.remote_client.ui.picker_open = false;
-        if self.remote_client.is_active() {
-            self.return_to_this_computer(window, cx);
-        }
         self.enter_settings_route(pane, window, cx);
         cx.notify();
     }
@@ -119,7 +123,9 @@ impl NativeRoot {
     }
 
     pub(crate) fn remote_unobstructed(&self) -> bool {
-        !self.remote_client.ui.picker_open && self.start_chat_modal.is_none()
+        self.route != crate::surfaces::AppRoute::Settings
+            && !self.remote_client.ui.picker_open
+            && self.start_chat_modal.is_none()
     }
 
     pub(crate) fn mark_remote_sessions_viewed_if_unobstructed(&mut self, cx: &mut Context<Self>) {
@@ -133,7 +139,7 @@ impl NativeRoot {
             self.start_chat_modal = None;
         }
         self.sync_remote_state(cx);
-        self.remote_client.mark_remote_sessions_viewed(cx);
+        self.mark_remote_sessions_viewed_if_unobstructed(cx);
         cx.notify();
     }
 

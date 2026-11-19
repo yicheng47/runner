@@ -8,11 +8,19 @@ impl NativeRoot {
     pub(crate) fn set_route(&mut self, route: AppRoute, cx: &mut Context<Self>) {
         let _turn = crate::stall_watchdog::enter_turn("root.set_route");
         if self.remote_client.is_active() {
-            if let AppRoute::Mission(id) = route {
-                self.select_remote_item(
-                    crate::surfaces::remote_client::RemoteItem::Mission(id),
-                    cx,
-                );
+            match route {
+                AppRoute::Mission(id) => {
+                    self.select_remote_item(
+                        crate::surfaces::remote_client::RemoteItem::Mission(id),
+                        cx,
+                    );
+                }
+                AppRoute::Settings if self.route != AppRoute::Settings => {
+                    self.update_popover.close_without_focus();
+                    self.route = AppRoute::Settings;
+                    cx.notify();
+                }
+                _ => {}
             }
             return;
         }

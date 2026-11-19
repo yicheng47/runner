@@ -496,9 +496,12 @@ impl NativeRoot {
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if self.update_popover.open && !self.update_popover.has_focus(window) {
             self.close_update_popover(window, cx);
+            true
+        } else {
+            false
         }
     }
 

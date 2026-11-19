@@ -51,41 +51,44 @@ impl NativeRoot {
             .debug_selector(|| "SETTINGS_CHROME".into())
             .key_context("Settings")
             .track_focus(&self.settings_page.focus)
-            .when(
-                matches!(active, SettingsPane::Agents | SettingsPane::Appearance),
-                |settings| {
-                    settings.on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                        if event.keystroke.key != "tab"
-                            || this.settings_page.search.read(cx).is_composing()
-                        {
-                            return;
-                        }
-                        let modifiers = event.keystroke.modifiers;
-                        let allowed = match this.settings_page.pane {
-                            SettingsPane::Agents => !this
-                                .settings_page
-                                .agents
-                                .as_ref()
-                                .is_some_and(|pane| pane.read(cx).is_composing(cx)),
-                            SettingsPane::Appearance => {
-                                !(modifiers.control
-                                    || modifiers.platform
-                                    || modifiers.alt
-                                    || modifiers.function)
-                            }
-                            _ => false,
-                        };
-                        if allowed {
-                            cx.stop_propagation();
-                            if modifiers.shift {
-                                window.focus_prev(cx);
-                            } else {
-                                window.focus_next(cx);
-                            }
-                        }
-                    }))
-                },
-            )
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape" {
+                    this.handle_settings_escape(event, window, cx);
+                    return;
+                }
+                if event.keystroke.key != "tab"
+                    || !matches!(
+                        this.settings_page.pane,
+                        SettingsPane::Agents | SettingsPane::Appearance
+                    )
+                    || this.settings_page.search.read(cx).is_composing()
+                {
+                    return;
+                }
+                let modifiers = event.keystroke.modifiers;
+                let allowed = match this.settings_page.pane {
+                    SettingsPane::Agents => !this
+                        .settings_page
+                        .agents
+                        .as_ref()
+                        .is_some_and(|pane| pane.read(cx).is_composing(cx)),
+                    SettingsPane::Appearance => {
+                        !(modifiers.control
+                            || modifiers.platform
+                            || modifiers.alt
+                            || modifiers.function)
+                    }
+                    _ => false,
+                };
+                if allowed {
+                    cx.stop_propagation();
+                    if modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                }
+            }))
             .inset_0()
             .flex()
             .overflow_hidden()

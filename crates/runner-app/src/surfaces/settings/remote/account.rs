@@ -158,6 +158,7 @@ impl NativeRoot {
                             Self::confirm_sign_out,
                             cx,
                         )
+                        .debug_selector("ACCOUNT_SIGN_OUT")
                         .variant(ButtonVariant::Danger),
                     )
                     .subtitle(tr(
@@ -174,7 +175,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn confirm_sign_out(&mut self, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
+        if self.route != crate::surfaces::AppRoute::Settings {
             return;
         }
         self.settings_page.remote.reset_identity = false;

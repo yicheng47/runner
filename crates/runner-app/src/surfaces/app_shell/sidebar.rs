@@ -427,9 +427,7 @@ impl NativeRoot {
         &self,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        (self.front_page_sidebar_collapsed()
-            && (self.route != AppRoute::Settings || self.remote_client.is_active()))
-        .then(|| {
+        (self.front_page_sidebar_collapsed() && self.route != AppRoute::Settings).then(|| {
             div()
                 .id("sidebar-preview-trigger")
                 .absolute()

@@ -46,10 +46,19 @@ impl RemoteClient {
     pub(crate) fn new(
         app_store: Entity<AppStore>,
         root_focus: FocusHandle,
+        window: &mut Window,
         cx: &mut Context<NativeRoot>,
     ) -> Self {
         let clients = app_store.read(cx).remote_clients.clone();
-        let subscription = cx.observe(&clients, |root, _, cx| root.sync_remote_state(cx));
+        let subscription = cx.observe_in(&clients, window, |root, clients, window, cx| {
+            let forgotten = root.remote_client.workspace.as_ref().is_some_and(|remote| {
+                clients.read(cx).connection(&remote.computer.id) == Connection::Forgotten
+            });
+            root.sync_remote_state(cx);
+            if root.route == crate::surfaces::AppRoute::Settings && forgotten {
+                root.return_to_this_computer(window, cx);
+            }
+        });
         Self {
             ui: ClientUi::new(cx),
             workspace: None,

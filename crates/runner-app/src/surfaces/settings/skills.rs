@@ -652,6 +652,10 @@ impl EventEmitter<CatalogUpdate> for SkillDetail {}
 impl EventEmitter<SaveNotice> for SkillDetail {}
 
 impl SkillDetail {
+    pub(crate) fn is_open(&self) -> bool {
+        self.skill.is_some()
+    }
+
     fn new(app_store: Entity<AppStore>, cx: &mut Context<Self>) -> Self {
         let editor = cx.new(|cx| {
             TextField::textarea(cx.focus_handle(), "", "", 16, true)
