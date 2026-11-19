@@ -4,7 +4,6 @@ pub(crate) mod codex_trust;
 mod conversation;
 pub(crate) mod fork;
 pub(crate) mod models;
-mod program_status;
 pub(crate) mod skills;
 mod terminal;
 pub(crate) mod usage;
@@ -246,6 +245,7 @@ impl RuntimeAdapter for Codex {
         StatusSemantics {
             startup_ready_batch: true,
             native_attention: true,
+            program_status_without_hooks: true,
             reject_events_after_interruption: true,
             reject_completions_after_outcome: true,
             compaction: CompactionPolicy::KeepWorking,

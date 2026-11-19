@@ -556,3 +556,382 @@ fn antigravity_coalesced_and_split_program_status_chunks_preserve_completion_and
         );
     }
 }
+
+#[test]
+fn hooks_off_chats_promote_osc7501_across_start_resume_and_fork_while_shells_and_hooked_chats_stay_bounded(
+) {
+    use crate::session::state::agent::AgentEvent;
+    use crate::session::status::WaitReason;
+    use runner_core::protocol::runtime::RuntimeLaunchOption;
+
+    for (runtime, app) in [
+        (Runtime::Codex, "codex"),
+        (Runtime::ClaudeCode, "claude"),
+        (Runtime::Pi, "pi"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = fake_runtime();
+        let core = crate::test_support::test_core_with_runtime(fake.clone());
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        db::set_runtime_launch_option(&core.db, runtime, RuntimeLaunchOption::StatusHooks, false)
+            .unwrap();
+
+        let mut agent_role = role(runtime.key(), &[]);
+        agent_role.runtime = runtime.key().into();
+        agent_role.command = "fake".into();
+        insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &agent_role,
+                None,
+                None,
+                None,
+                None,
+                Some(dir.path().to_str().unwrap()),
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+                None,
+            )
+            .unwrap();
+        let id = spawned.id;
+        let state = core.sessions.session_state(&id).unwrap();
+        assert!(
+            state.lock().unwrap().model.program_status_authority(),
+            "{runtime:?} start with hooks off must grant program-status authority"
+        );
+        // Late terminal creation after handle install must keep hooks-off authority.
+        let _recreated = core
+            .sessions
+            .create_terminal(&id, 80, 24, &core.db, &events)
+            .unwrap();
+        assert!(
+            state.lock().unwrap().model.program_status_authority(),
+            "{runtime:?} late create_terminal must preserve hooks-off authority"
+        );
+
+        let verify_turn = |session_id: &str, label: &str| {
+            let state = core.sessions.session_state(session_id).unwrap();
+            let clear_unread = || {
+                crate::repo::session_attention::mark_viewed(
+                    &core.db.get().unwrap(),
+                    session_id,
+                    "2026-11-19T00:00:00Z",
+                )
+                .unwrap();
+                state
+                    .lock()
+                    .unwrap()
+                    .model
+                    .apply(SessionEvent::Viewed, crate::session::clock::state_now());
+            };
+            let ingest = |payload: &str| {
+                core.sessions.ingest_output_chunk(
+                    session_id,
+                    None,
+                    format!("\x1b]7501;{payload}\x1b\\").as_bytes(),
+                    events.as_ref(),
+                );
+            };
+
+            ingest(&format!("state=working:app={app}"));
+            let working = core.sessions.agent_status(session_id);
+            assert_eq!(
+                working.observation.activity,
+                Activity::Working,
+                "{runtime:?} {label}"
+            );
+            assert!(
+                working.observation.program_status.is_some(),
+                "{runtime:?} {label}"
+            );
+            assert_eq!(working.unread_since, None, "{runtime:?} {label}");
+
+            for (kind, expected) in [
+                ("permission", WaitReason::Approval),
+                ("question", WaitReason::Answer),
+                ("auth", WaitReason::Unknown),
+            ] {
+                ingest(&format!("state=blocked:app={app}:kind={kind}"));
+                let blocked = core.sessions.agent_status(session_id);
+                assert!(
+                    blocked.observation.needs_you(),
+                    "{runtime:?} {label} {kind}"
+                );
+                assert_eq!(
+                    blocked.observation.interactions[0].reason, expected,
+                    "{runtime:?} {label} {kind}"
+                );
+            }
+
+            ingest(&format!("state=working:app={app}"));
+            assert!(
+                !core
+                    .sessions
+                    .agent_status(session_id)
+                    .observation
+                    .needs_you(),
+                "{runtime:?} {label}"
+            );
+
+            ingest(&format!("state=done:app={app}"));
+            let done = core.sessions.agent_status(session_id);
+            assert_eq!(
+                done.observation.activity,
+                Activity::Idle,
+                "{runtime:?} {label}"
+            );
+            assert_eq!(
+                done.observation.outcome,
+                Some(TurnOutcome::Completed),
+                "{runtime:?} {label}"
+            );
+            assert!(
+                done.unread_since.is_some(),
+                "{runtime:?} {label} done must record unread completion"
+            );
+            assert!(
+                crate::repo::session_attention::any_unread(
+                    &core.db.get().unwrap(),
+                    &[session_id.to_owned()]
+                )
+                .unwrap(),
+                "{runtime:?} {label}"
+            );
+            clear_unread();
+
+            // Keypress acknowledgement (done -> idle) must not double-record completion.
+            ingest(&format!("state=idle:app={app}"));
+            assert_eq!(
+                core.sessions.agent_status(session_id).unread_since,
+                None,
+                "{runtime:?} {label}"
+            );
+
+            // Working -> error marks Failed without unread completion.
+            ingest(&format!("state=working:app={app}"));
+            ingest(&format!("state=error:app={app}"));
+            let failed = core.sessions.agent_status(session_id);
+            assert_eq!(
+                failed.observation.outcome,
+                Some(TurnOutcome::Failed),
+                "{runtime:?} {label}"
+            );
+            assert!(failed.failed_since.is_some(), "{runtime:?} {label}");
+            assert_eq!(failed.unread_since, None, "{runtime:?} {label}");
+            clear_unread();
+
+            // Working -> idle (interrupt) disarms without unread completion.
+            ingest(&format!("state=working:app={app}"));
+            ingest(&format!("state=idle:app={app}"));
+            assert_eq!(
+                core.sessions.agent_status(session_id).unread_since,
+                None,
+                "{runtime:?} {label}"
+            );
+        };
+
+        verify_turn(&id, "start");
+
+        // Resume with hooks off preserves program-status authority.
+        core.sessions.kill(&id).unwrap();
+        core.sessions
+            .resume(
+                &id,
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+            )
+            .unwrap();
+        assert!(
+            core.sessions
+                .session_state(&id)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .model
+                .program_status_authority(),
+            "{runtime:?} resume with hooks off must grant program-status authority"
+        );
+        verify_turn(&id, "resume");
+
+        // Fork with hooks off grants program-status authority for direct-fork runtimes
+        // (Claude Code and pi) and for Codex's headless-fork launch path (`resume_on_launch`).
+        if matches!(runtime, Runtime::ClaudeCode | Runtime::Pi) {
+            let key = uuid::Uuid::new_v4().to_string();
+            core.db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE sessions SET agent_session_key = ?1 WHERE id = ?2",
+                    rusqlite::params![key, id],
+                )
+                .unwrap();
+            let forked = core
+                .sessions
+                .spawn_fork(
+                    &id,
+                    None,
+                    None,
+                    None,
+                    dir.path(),
+                    Arc::clone(&core.db),
+                    Arc::clone(&events),
+                )
+                .unwrap();
+            assert!(
+                core.sessions
+                    .session_state(&forked.id)
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .model
+                    .program_status_authority(),
+                "{runtime:?} fork with hooks off must grant program-status authority"
+            );
+            verify_turn(&forked.id, "fork");
+            core.sessions.kill(&forked.id).unwrap();
+        } else {
+            let key = uuid::Uuid::new_v4().to_string();
+            core.sessions.kill(&id).unwrap();
+            core.db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE sessions SET agent_session_key = ?1 WHERE id = ?2",
+                    rusqlite::params![key, id],
+                )
+                .unwrap();
+            core.sessions
+                .resume_on_launch(
+                    &id,
+                    None,
+                    None,
+                    dir.path(),
+                    Arc::clone(&core.db),
+                    Arc::clone(&events),
+                )
+                .unwrap();
+            assert!(
+                core.sessions
+                    .session_state(&id)
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .model
+                    .program_status_authority(),
+                "{runtime:?} resume_on_launch (fork launch) with hooks off must grant program-status authority"
+            );
+            verify_turn(&id, "fork-resume-on-launch");
+        }
+
+        // Toggling status hooks back on and resuming revokes program-status authority
+        // and restores hooked precedence.
+        core.sessions.kill(&id).unwrap();
+        db::set_runtime_launch_option(&core.db, runtime, RuntimeLaunchOption::StatusHooks, true)
+            .unwrap();
+        core.sessions
+            .resume(
+                &id,
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+            )
+            .unwrap();
+        assert!(
+            !core
+                .sessions
+                .session_state(&id)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .model
+                .program_status_authority(),
+            "{runtime:?} resume with hooks on must not grant program-status authority"
+        );
+        core.sessions.publish_agent_event(
+            &id,
+            AgentEvent::Batch {
+                runtime,
+                events: vec![AgentEvent::TurnStarted],
+            },
+            events.as_ref(),
+        );
+        core.sessions.ingest_output_chunk(
+            &id,
+            None,
+            format!("\x1b]7501;state=done:app={app}\x1b\\").as_bytes(),
+            events.as_ref(),
+        );
+        let hooked = core.sessions.agent_status(&id);
+        assert_eq!(hooked.observation.source, ObservationSource::Hook);
+        assert_eq!(hooked.observation.activity, Activity::Working);
+        assert_eq!(hooked.unread_since, None);
+        if runtime != Runtime::Codex {
+            core.sessions.ingest_output_chunk(
+                &id,
+                None,
+                format!("\x1b]7501;state=blocked:app={app}:kind=permission\x1b\\").as_bytes(),
+                events.as_ref(),
+            );
+            assert!(
+                !core.sessions.agent_status(&id).observation.needs_you(),
+                "{runtime:?} hooked chat keeps hook precedence over OSC 7501 blocked"
+            );
+        }
+        core.sessions.kill(&id).unwrap();
+    }
+
+    // Bare shell tabs stay passive: OSC 7501 shows status, never unread completion badges (RT-STATUS-14).
+    let dir = tempfile::tempdir().unwrap();
+    let fake = fake_runtime();
+    let core = crate::test_support::test_core_with_runtime(fake);
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    let mut shell_role = role("shell", &[]);
+    shell_role.runtime = Runtime::Shell.key().into();
+    shell_role.command = "fake".into();
+    let shell = core
+        .sessions
+        .spawn_runtime_direct(
+            &shell_role,
+            None,
+            Some(dir.path().to_str().unwrap()),
+            None,
+            None,
+            dir.path(),
+            Arc::clone(&core.db),
+            Arc::clone(&events),
+        )
+        .unwrap();
+    assert!(!core
+        .sessions
+        .session_state(&shell.id)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .model
+        .program_status_authority());
+    core.sessions.ingest_output_chunk(
+        &shell.id,
+        None,
+        b"\x1b]7501;state=working:app=claude\x07\x1b]7501;state=done:app=claude\x07",
+        events.as_ref(),
+    );
+    let status = core.sessions.agent_status(&shell.id);
+    assert_eq!(status.observation.outcome, Some(TurnOutcome::Completed));
+    assert_eq!(status.unread_since, None);
+    assert!(!crate::repo::session_attention::any_unread(
+        &core.db.get().unwrap(),
+        std::slice::from_ref(&shell.id),
+    )
+    .unwrap());
+    core.sessions.kill(&shell.id).unwrap();
+}

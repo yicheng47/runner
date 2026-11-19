@@ -53,9 +53,6 @@ impl SessionManager {
             router::SessionDeliveryEvent::Idle
         };
         let event = match event {
-            TerminalEvent::CodexAttention(blocked) => {
-                SessionEvent::CodexAttention { blocked, live }
-            }
             TerminalEvent::Activity(state) => SessionEvent::Transition {
                 state,
                 source: StatusSource::Forwarder,
@@ -84,24 +81,12 @@ impl SessionManager {
         event: crate::runtimes::TerminalEvent,
         events: &dyn SessionEvents,
     ) {
-        if let crate::runtimes::TerminalEvent::CodexAttention(blocked) = event {
-            self.publish_model_event_for_launch(
-                session_id,
-                SessionEvent::CodexAttention {
-                    blocked,
-                    live: true,
-                },
-                None,
-                events,
-            );
-            return;
-        }
         if !self.note_terminal_event(session_id, event) {
             return;
         }
         events.status(&SessionActivityEvent {
             session_id: session_id.to_owned(),
-            state: event.state().expect("attention handled above"),
+            state: event.state(),
             source: StatusSource::Forwarder,
             status: self.agent_status(session_id),
         });
@@ -114,18 +99,6 @@ impl SessionManager {
         event: crate::runtimes::TerminalEvent,
         events: &dyn SessionEvents,
     ) {
-        if let crate::runtimes::TerminalEvent::CodexAttention(blocked) = event {
-            self.publish_model_event_for_launch(
-                session_id,
-                SessionEvent::CodexAttention {
-                    blocked,
-                    live: true,
-                },
-                None,
-                events,
-            );
-            return;
-        }
         if !self.note_terminal_event(session_id, event) {
             return;
         }
@@ -139,16 +112,14 @@ impl SessionManager {
         };
         events.status(&SessionActivityEvent {
             session_id: session_id.to_owned(),
-            state: event.state().expect("attention handled above"),
+            state: event.state(),
             source: StatusSource::Forwarder,
             status: status.clone(),
         });
         if let Some(sink) = sink {
-            if let Err(error) = sink.append_session_status(
-                event.state().expect("attention handled above"),
-                StatusSource::Forwarder,
-                &status,
-            ) {
+            if let Err(error) =
+                sink.append_session_status(event.state(), StatusSource::Forwarder, &status)
+            {
                 log::warn!("append spawn session_status failed for {session_id}: {error}");
             }
         }
@@ -583,8 +554,7 @@ impl SessionManager {
                 SessionEvent::Agent { live, .. }
                 | SessionEvent::BridgeFailed { live }
                 | SessionEvent::SubmitTimeout { live }
-                | SessionEvent::CodexAttention { live, .. } => *live = is_live,
-                SessionEvent::ProgramStatus { live, .. } => *live = is_live,
+                | SessionEvent::ProgramStatus { live, .. } => *live = is_live,
                 _ => {}
             }
             let agent_turn = matches!(&event, SessionEvent::Agent { event, live: true } if agent_turn_started(event));

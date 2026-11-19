@@ -590,8 +590,7 @@ fn accept_hook(
 }
 
 #[test]
-fn codex_native_attention_bypasses_activity_dedup_and_survives_hook_takeover() {
-    use crate::runtimes::TerminalEvent;
+fn codex_osc7501_controls_never_count_as_activity_with_or_without_hooks() {
     use crate::session::state::agent::AgentEvent;
     for hooks in [false, true] {
         let mut detector = codex_detector(Duration::from_secs(2), false);
@@ -600,31 +599,43 @@ fn codex_native_attention_bypasses_activity_dedup_and_survives_hook_takeover() {
             detector.accept_event(&AgentEvent::TurnStarted);
         } else {
             detector.hooks_unavailable();
-        }
-        for (report, blocked) in [
-            (b"\x1b]7501;state=blocked:app=codex\x1b\\".as_slice(), true),
-            (b"\x1b]7501;state=blocked:app=codex\x07", true),
-            (b"\x1b]7501;state=working:app=codex\x07", false),
-            (b"\x1b]7501;state=idle:app=codex\x07", false),
-            (b"\x1b]7501;state=clear\x1b\\", false),
-        ] {
-            detector.on_output_event_at(report, true, start);
             assert_eq!(
-                detector.take_attention(),
-                Some(TerminalEvent::CodexAttention(blocked))
+                detector.tick_event_at(start + Duration::from_secs(3)),
+                Some(crate::runtimes::TerminalEvent::Activity(
+                    SessionActivityState::Idle
+                ))
             );
-            assert_eq!(detector.current, SessionActivityState::Busy);
+        }
+        let expected = detector.current;
+        for report in [
+            b"\x1b]7501;state=blocked:app=codex\x1b\\".as_slice(),
+            b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\",
+            b"\x1b]7501;state=blocked:app=codex:kind=question\x1b\\",
+            b"\x1b]7501;state=blocked:app=codex:kind=auth\x07",
+            b"\x1b]7501;state=working:app=codex\x07",
+            b"\x1b]7501;state=done:app=codex\x1b\\",
+            b"\x1b]7501;state=error:app=codex\x1b\\",
+            b"\x1b]7501;state=idle:app=codex\x07",
+            b"\x1b]7501;state=clear\x1b\\",
+        ] {
+            assert_eq!(
+                detector.on_output_event_at(report, false, start + Duration::from_secs(4)),
+                None
+            );
+            assert_eq!(detector.current, expected);
         }
     }
 }
 
 #[test]
-fn codex_native_attention_preserves_nonquiet_activity_and_readiness_in_the_same_chunk() {
+fn codex_osc7501_controls_preserve_nonquiet_activity_and_readiness_in_the_same_chunk() {
     use crate::runtimes::TerminalEvent as T;
     let start = Instant::now();
     for payload in [
         b"\x1b]7501;state=working:app=codex\x1b\\ordinary response".as_slice(),
         b"ordinary response\x1b]7501;state=idle:app=codex\x07",
+        b"\x1b]7501;state=done:app=codex\x1b\\ordinary response",
+        b"ordinary response\x1b]7501;state=error:app=codex\x1b\\",
     ] {
         let mut detector = codex_detector(Duration::from_secs(2), false);
         detector.hooks_unavailable();
@@ -636,34 +647,77 @@ fn codex_native_attention_preserves_nonquiet_activity_and_readiness_in_the_same_
             detector.on_output_event_at(payload, false, start + Duration::from_secs(4)),
             Some(T::Activity(SessionActivityState::Busy))
         );
-        assert_eq!(detector.take_attention(), Some(T::CodexAttention(false)));
         assert_eq!(detector.current, SessionActivityState::Busy);
     }
     let mut detector = codex_detector(Duration::from_secs(2), false);
     detector.hooks_unavailable();
     assert_eq!(
         detector.on_output_event_at(
-            b"\x1b[?2004h\x1b]7501;state=blocked:app=codex\x07",
+            b"\x1b[?2004h\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\",
             false,
             start
         ),
         Some(T::Ready(SessionActivityState::Idle))
     );
-    assert_eq!(detector.take_attention(), Some(T::CodexAttention(true)));
     let mut detector = codex_detector(Duration::from_secs(2), false);
     detector.hooks_unavailable();
     detector.on_output_event_at(&osc_title("⠋ project"), false, start);
     detector.on_output_event_at(&osc_title("⠙ project"), false, start);
     let combined = [
         osc_title("project"),
-        b"\x1b]7501;state=blocked:app=codex\x07".to_vec(),
+        b"\x1b]7501;state=blocked:app=codex:kind=question\x1b\\".to_vec(),
     ]
     .concat();
     assert_eq!(
         detector.on_output_event_at(&combined, false, start),
         Some(T::Title(SessionActivityState::Idle))
     );
-    assert_eq!(detector.take_attention(), Some(T::CodexAttention(true)));
+}
+
+#[test]
+fn codex_reader_emits_stream_before_heuristic_transition_on_mixed_read() {
+    use crate::runtimes::TerminalEvent as T;
+
+    // Ready(Idle) + blocked in one read: Stream must precede TerminalEvent.
+    let mut raw = codex_detector(Duration::from_secs(2), false);
+    raw.hooks_unavailable();
+    let detector = Mutex::new(raw);
+    let (tx, rx) = mpsc::channel();
+    let ready_mixed = b"\x1b[?2004h\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\";
+    assert!(emit_read_chunk(ready_mixed, false, &detector, &tx));
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        RuntimeOutput::Stream(bytes) if bytes == ready_mixed
+    ));
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        RuntimeOutput::TerminalEvent(T::Ready(SessionActivityState::Idle))
+    ));
+    assert!(rx.try_recv().is_err());
+
+    // Title(Idle) + blocked in one read: Stream must precede TerminalEvent.
+    let mut raw = codex_detector(Duration::from_secs(2), false);
+    raw.hooks_unavailable();
+    let start = Instant::now();
+    raw.on_output_event_at(&osc_title("⠋ project"), false, start);
+    raw.on_output_event_at(&osc_title("⠙ project"), false, start);
+    let detector = Mutex::new(raw);
+    let (tx, rx) = mpsc::channel();
+    let title_mixed = [
+        osc_title("project"),
+        b"\x1b]7501;state=blocked:app=codex:kind=question\x1b\\".to_vec(),
+    ]
+    .concat();
+    assert!(emit_read_chunk(&title_mixed, false, &detector, &tx));
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        RuntimeOutput::Stream(bytes) if bytes == title_mixed
+    ));
+    assert!(matches!(
+        rx.try_recv().unwrap(),
+        RuntimeOutput::TerminalEvent(T::Title(SessionActivityState::Idle))
+    ));
+    assert!(rx.try_recv().is_err());
 }
 
 #[test]

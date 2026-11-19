@@ -31,6 +31,7 @@ pub struct StatusSemantics {
     pub startup_ready_batch: bool,
     pub native_attention: bool,
     pub program_status_authority: bool,
+    pub program_status_without_hooks: bool,
     pub interruption_ends_invocation: bool,
     pub reject_events_after_interruption: bool,
     pub reject_completions_after_outcome: bool,
@@ -48,4 +49,11 @@ pub struct StatusSemantics {
     pub deduplicate_wait_events: bool,
     pub idle_clears_compaction: bool,
     pub detail_after_outcome: bool,
+}
+
+impl StatusSemantics {
+    pub fn program_status_authoritative(self, status_hooks_enabled: bool) -> bool {
+        self.program_status_authority
+            || (!status_hooks_enabled && self.program_status_without_hooks)
+    }
 }

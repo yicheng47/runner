@@ -271,6 +271,7 @@ impl RuntimeAdapter for ClaudeCode {
         StatusSemantics {
             interaction_prefix: Some("claude"),
             batch_feedback: true,
+            program_status_without_hooks: true,
             compaction: CompactionPolicy::ResumeUnfinishedTurn,
             compaction_requires_start: true,
             permission_prompt: PermissionPromptPolicy::VisibleCandidates,

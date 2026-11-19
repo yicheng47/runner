@@ -9,6 +9,7 @@ pub(super) struct StartupDelivery {
     /// A direct chat's gate holds only reports to it (#748); it has no inbox.
     pub(super) reports_only: bool,
     hooks: bool,
+    status_hooks_enabled: bool,
     program_status: bool,
     seen_working: bool,
     pending_turn: bool,
@@ -25,6 +26,7 @@ impl StartupDelivery {
             runtime: runtime.to_owned(),
             reports_only: false,
             hooks,
+            status_hooks_enabled: true,
             program_status: false,
             seen_working: false,
             pending_turn,
@@ -59,8 +61,13 @@ impl StartupDelivery {
     }
 
     pub(super) fn with_status_hooks(mut self, enabled: bool) -> Self {
+        self.status_hooks_enabled = enabled;
         self.hooks &= enabled;
         self
+    }
+
+    pub(super) fn status_hooks_enabled(&self) -> bool {
+        self.status_hooks_enabled
     }
 
     pub(super) fn bridge_failed(&mut self) {
@@ -83,7 +90,7 @@ impl StartupDelivery {
                 && matches!(observation.activity, Activity::Idle | Activity::Ready)
                 && (!self.pending_turn || observation.outcome.is_some());
         }
-        if observation.program_status.is_some() {
+        if !self.hooks && observation.program_status.is_some() {
             self.program_status = true;
             if observation.activity == Activity::Working {
                 self.seen_working = true;

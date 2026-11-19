@@ -2035,10 +2035,32 @@ fn working_qualifying_members_are_deliverable_and_every_hold_still_blocks_them()
         }
 
         let (fixture, _output) = working(runtime);
+        fixture
+            .manager
+            .session_state("session")
+            .unwrap()
+            .lock()
+            .unwrap()
+            .model
+            .set_native_attention(true);
+        let blocked = runner_terminal::program_status::Report {
+            state: runner_terminal::program_status::State::Blocked,
+            id: String::new(),
+            kind: Some("permission".into()),
+            progress: None,
+            app: Some("codex".into()),
+            title: None,
+            message: None,
+        };
         fixture.manager.publish_model_event(
             "session",
-            SessionEvent::CodexAttention {
-                blocked: true,
+            SessionEvent::ProgramStatus {
+                seq: 1,
+                subseq: 0,
+                update: Box::new(runner_terminal::program_status::Update {
+                    current: Some(blocked.clone()),
+                    trigger: Some(blocked),
+                }),
                 live: true,
             },
             &Capture::default(),
@@ -2341,9 +2363,21 @@ fn chat_without_status_hooks_uses_output_settle_even_with_identity_hooks() {
         let mut gate =
             super::super::startup::StartupDelivery::for_reports(runtime.key(), false, now)
                 .with_status_hooks(false);
+        assert!(!gate.status_hooks_enabled());
         gate.output(b"ready", now);
         assert!(!gate.output_settled(now + Duration::from_secs(1)));
         assert!(gate.output_settled(now + Duration::from_secs(11)));
+
+        // When hooks are enabled on a fresh gate, pre-hook OSC 7501 idle must not release early.
+        let mut hooked =
+            super::super::startup::StartupDelivery::for_reports(runtime.key(), false, now);
+        assert!(hooked.status_hooks_enabled());
+        assert!(!hooked.observation(&AgentObservation {
+            activity: Activity::Idle,
+            source: ObservationSource::Baseline,
+            program_status: Some(Default::default()),
+            ..Default::default()
+        }));
     }
 }
 

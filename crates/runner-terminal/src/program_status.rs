@@ -26,10 +26,16 @@ pub struct Report {
     pub message: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Update {
+    pub current: Option<Report>,
+    pub trigger: Option<Report>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Event {
     Query,
-    Changed(Option<Report>),
+    Changed(Box<Update>),
     Shell(ShellMark),
 }
 
@@ -60,6 +66,22 @@ impl ShellMarks {
     }
 }
 
+/// Counts non-OSC-7501 bytes in PTY output across reads, withholding candidate
+/// OSC 7501 controls across chunk boundaries until recognized or rejected.
+#[derive(Default)]
+pub struct ActivityFilter(Parser);
+
+impl ActivityFilter {
+    pub fn observe(&mut self, bytes: &[u8]) -> usize {
+        self.0.scan(bytes);
+        self.0.activity_bytes()
+    }
+
+    pub fn activity_bytes(&self) -> usize {
+        self.0.activity_bytes()
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Parser {
     mode: Mode,
@@ -68,6 +90,8 @@ pub(crate) struct Parser {
     records: VecDeque<Report>,
     discard_report: bool,
     shell_finished: bool,
+    pending_bytes: usize,
+    activity_bytes: usize,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -82,90 +106,190 @@ enum Mode {
 }
 
 impl Parser {
+    pub(crate) fn activity_bytes(&self) -> usize {
+        self.activity_bytes
+    }
+
     pub(crate) fn invalidate_records(&mut self) {
         self.records.clear();
         self.discard_report = matches!(self.mode, Mode::Osc | Mode::OscEscape);
         self.shell_finished = false;
     }
 
+    fn release_activity(&mut self) {
+        self.activity_bytes += self.pending_bytes;
+        self.pending_bytes = 0;
+    }
+
+    fn is_7501_candidate(&self) -> bool {
+        if self.length >= 4096 {
+            return false;
+        }
+        const PREFIX: &[u8] = b"7501;";
+        if self.payload.len() <= PREFIX.len() {
+            PREFIX.starts_with(&self.payload)
+        } else {
+            self.payload.starts_with(PREFIX)
+        }
+    }
+
+    fn finish_osc(&mut self) -> Option<Event> {
+        if self.pending_bytes > 0 {
+            self.pending_bytes += 1;
+        } else {
+            self.activity_bytes += 1;
+        }
+        let is_7501 = self.payload.starts_with(b"7501;");
+        let event = self.finish();
+        if is_7501 && event.is_some() {
+            self.pending_bytes = 0;
+        } else {
+            self.release_activity();
+        }
+        event
+    }
+
     pub(crate) fn scan(&mut self, bytes: &[u8]) -> Vec<(usize, Event)> {
+        self.activity_bytes = 0;
         let mut events = Vec::new();
         for (index, &byte) in bytes.iter().enumerate() {
             let mut changed = false;
             self.mode = match self.mode {
-                Mode::Ground if byte == 0x1b => Mode::Escape,
+                Mode::Ground if byte == 0x1b => {
+                    self.pending_bytes = 1;
+                    Mode::Escape
+                }
                 Mode::Escape => match byte {
                     b']' => {
+                        self.pending_bytes += 1;
                         self.payload.clear();
                         self.length = 2;
                         self.discard_report = false;
                         Mode::Osc
                     }
-                    b'P' | b'X' | b'^' | b'_' => Mode::String,
+                    b'P' | b'X' | b'^' | b'_' => {
+                        self.release_activity();
+                        self.activity_bytes += 1;
+                        Mode::String
+                    }
                     b'c' => {
+                        self.release_activity();
+                        self.activity_bytes += 1;
                         changed = !self.records.is_empty();
                         self.records.clear();
                         self.shell_finished = false;
                         Mode::Ground
                     }
-                    0x1b => Mode::Escape,
-                    _ => Mode::Ground,
+                    0x1b => {
+                        self.release_activity();
+                        self.pending_bytes = 1;
+                        Mode::Escape
+                    }
+                    _ => {
+                        self.release_activity();
+                        self.activity_bytes += 1;
+                        Mode::Ground
+                    }
                 },
                 Mode::Osc | Mode::OscEscape => {
                     self.length = (self.length + 1).min(4097);
                     match byte {
                         b'\\' if matches!(self.mode, Mode::OscEscape) => {
-                            if let Some(event) = self.finish() {
+                            if let Some(event) = self.finish_osc() {
                                 events.push((index + 1, event));
                             }
                             Mode::Ground
                         }
                         0x07 if matches!(self.mode, Mode::Osc) => {
-                            if let Some(event) = self.finish() {
+                            if let Some(event) = self.finish_osc() {
                                 events.push((index + 1, event));
                             }
                             Mode::Ground
                         }
-                        0x18 | 0x1a => Mode::Ground,
-                        0x1b if matches!(self.mode, Mode::OscEscape) => Mode::Escape,
-                        0x1b => Mode::OscEscape,
+                        0x18 | 0x1a => {
+                            self.release_activity();
+                            self.activity_bytes += 1;
+                            Mode::Ground
+                        }
+                        0x1b if matches!(self.mode, Mode::OscEscape) => {
+                            self.release_activity();
+                            self.pending_bytes = 1;
+                            Mode::Escape
+                        }
+                        0x1b => {
+                            self.pending_bytes += 1;
+                            Mode::OscEscape
+                        }
                         _ if matches!(self.mode, Mode::OscEscape) => {
                             // An ESC that is not ST aborts this OSC.
                             self.payload.clear();
                             match byte {
                                 b']' => {
+                                    // The ESC just before `]` starts a new OSC; release everything prior.
+                                    self.activity_bytes += self.pending_bytes.saturating_sub(1);
+                                    self.pending_bytes = 2;
                                     self.length = 2;
                                     self.discard_report = false;
                                     Mode::Osc
                                 }
-                                b'P' | b'X' | b'^' | b'_' => Mode::String,
+                                b'P' | b'X' | b'^' | b'_' => {
+                                    self.release_activity();
+                                    self.activity_bytes += 1;
+                                    Mode::String
+                                }
                                 b'c' => {
+                                    self.release_activity();
+                                    self.activity_bytes += 1;
                                     changed = !self.records.is_empty();
                                     self.records.clear();
                                     self.shell_finished = false;
                                     Mode::Ground
                                 }
-                                _ => Mode::Ground,
+                                _ => {
+                                    self.release_activity();
+                                    self.activity_bytes += 1;
+                                    Mode::Ground
+                                }
                             }
                         }
                         _ => {
                             if self.payload.len() < 4096 {
                                 self.payload.push(byte);
                             }
+                            if self.pending_bytes > 0 {
+                                self.pending_bytes += 1;
+                                if !self.is_7501_candidate() {
+                                    self.release_activity();
+                                }
+                            } else {
+                                self.activity_bytes += 1;
+                            }
                             Mode::Osc
                         }
                     }
                 }
-                Mode::String | Mode::StringEscape => match byte {
-                    b'\\' if matches!(self.mode, Mode::StringEscape) => Mode::Ground,
-                    0x18 | 0x1a => Mode::Ground,
-                    0x1b => Mode::StringEscape,
-                    _ => Mode::String,
-                },
-                Mode::Ground => Mode::Ground,
+                Mode::String | Mode::StringEscape => {
+                    self.activity_bytes += 1;
+                    match byte {
+                        b'\\' if matches!(self.mode, Mode::StringEscape) => Mode::Ground,
+                        0x18 | 0x1a => Mode::Ground,
+                        0x1b => Mode::StringEscape,
+                        _ => Mode::String,
+                    }
+                }
+                Mode::Ground => {
+                    self.activity_bytes += 1;
+                    Mode::Ground
+                }
             };
             if changed {
-                events.push((index + 1, Event::Changed(self.current())));
+                events.push((
+                    index + 1,
+                    Event::Changed(Box::new(Update {
+                        current: self.current(),
+                        trigger: None,
+                    })),
+                ));
             }
         }
         events
@@ -191,7 +315,12 @@ impl Parser {
             let before = self.records.len();
             self.records
                 .retain(|report| matches!(report.state, State::Done | State::Error));
-            return (before != self.records.len()).then(|| Event::Changed(self.current()));
+            return (before != self.records.len()).then(|| {
+                Event::Changed(Box::new(Update {
+                    current: self.current(),
+                    trigger: None,
+                }))
+            });
         }
         let payload = self.payload.strip_prefix(b"7501;")?;
         if payload == b"?" {
@@ -201,6 +330,7 @@ impl Parser {
             return None;
         }
         let report = parse_report(payload)?;
+        let trigger = report.clone();
         if report.state == State::Clear {
             self.records.retain(|entry| {
                 !report.id.is_empty()
@@ -214,7 +344,10 @@ impl Parser {
             }
             self.records.push_back(report);
         }
-        Some(Event::Changed(self.current()))
+        Some(Event::Changed(Box::new(Update {
+            current: self.current(),
+            trigger: Some(trigger),
+        })))
     }
 
     fn current(&self) -> Option<Report> {
@@ -370,7 +503,7 @@ mod tests {
             .scan(format!("\x1b]7501;{payload}\x07").as_bytes())
             .into_iter()
             .find_map(|(_, event)| match event {
-                Event::Changed(report) => report,
+                Event::Changed(update) => update.current,
                 _ => None,
             })
     }
@@ -412,10 +545,13 @@ mod tests {
                     assert_eq!(events.len(), 1, "{split}");
                     match &events[0].1 {
                         Event::Query => assert_eq!(payload, "?"),
-                        Event::Changed(Some(report)) => {
+                        Event::Changed(update) => {
+                            let report = update.current.as_ref().expect("current report");
+                            let trigger = update.trigger.as_ref().expect("trigger report");
                             assert_eq!(report.state, State::Blocked);
                             assert_eq!(report.message.as_deref(), Some("Hello"));
                             assert_eq!(report.kind.as_deref(), Some("question"));
+                            assert_eq!(trigger, report);
                         }
                         _ => panic!("missing report"),
                     }
@@ -608,6 +744,222 @@ mod tests {
         assert!(parser
             .scan(b"\x1b]7501;state=clear\x07")
             .iter()
-            .any(|(_, event)| *event == Event::Changed(None)));
+            .any(|(_, event)| matches!(
+                event,
+                Event::Changed(update)
+                    if update.current.is_none()
+                        && update.trigger.as_ref().is_some_and(|trigger| {
+                            trigger.state == State::Clear && trigger.id.is_empty()
+                        })
+            )));
+    }
+
+    #[test]
+    fn changed_update_preserves_triggering_record_even_when_foreign_child_wins_aggregate() {
+        let mut parser = Parser::default();
+        parser.scan(b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\");
+        parser.scan(b"\x1b]7501;state=blocked:id=sub:app=other:kind=question\x1b\\");
+        let events = parser.scan(b"\x1b]7501;state=done:app=codex\x1b\\");
+        assert_eq!(events.len(), 1);
+        match &events[0].1 {
+            Event::Changed(update) => {
+                let current = update.current.as_ref().expect("aggregate current");
+                let trigger = update.trigger.as_ref().expect("triggering root done");
+                assert_eq!(current.id, "sub");
+                assert_eq!(current.state, State::Blocked);
+                assert_eq!(current.app.as_deref(), Some("other"));
+                assert!(trigger.id.is_empty());
+                assert_eq!(trigger.state, State::Done);
+                assert_eq!(trigger.app.as_deref(), Some("codex"));
+            }
+            other => panic!("expected aggregate current + triggering root done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn codex_0163_and_0164_plus_reports_survive_every_split_and_terminator() {
+        for terminator in ["\x07", "\x1b\\"] {
+            for (payload, expected_state, expected_kind, expected_app) in [
+                (
+                    "state=blocked:app=codex",
+                    State::Blocked,
+                    None,
+                    Some("codex"),
+                ),
+                ("state=blocked", State::Blocked, None, None),
+                (
+                    "state=blocked:app=codex:kind=permission",
+                    State::Blocked,
+                    Some("permission"),
+                    Some("codex"),
+                ),
+                (
+                    "state=blocked:app=codex:kind=question",
+                    State::Blocked,
+                    Some("question"),
+                    Some("codex"),
+                ),
+                (
+                    "state=blocked:app=codex:kind=auth",
+                    State::Blocked,
+                    Some("auth"),
+                    Some("codex"),
+                ),
+                (
+                    "state=working:app=codex",
+                    State::Working,
+                    None,
+                    Some("codex"),
+                ),
+                ("state=idle:app=codex", State::Idle, None, Some("codex")),
+                ("state=done:app=codex", State::Done, None, Some("codex")),
+                ("state=error:app=codex", State::Error, None, Some("codex")),
+            ] {
+                let bytes = format!("\x1b]7501;{payload}{terminator}");
+                for split in 0..=bytes.len() {
+                    let mut parser = Parser::default();
+                    let mut events = parser.scan(&bytes.as_bytes()[..split]);
+                    events.extend(parser.scan(&bytes.as_bytes()[split..]));
+                    assert_eq!(events.len(), 1, "{payload} split={split}");
+                    match &events[0].1 {
+                        Event::Changed(update) => {
+                            let report = update.current.as_ref().expect("current report");
+                            let trigger = update.trigger.as_ref().expect("trigger report");
+                            assert_eq!(report.state, expected_state, "{payload}");
+                            assert_eq!(report.kind.as_deref(), expected_kind, "{payload}");
+                            assert_eq!(report.app.as_deref(), expected_app, "{payload}");
+                            assert!(report.id.is_empty(), "{payload}");
+                            assert_eq!(trigger, report, "{payload}");
+                        }
+                        other => panic!("expected report for {payload}, got {other:?}"),
+                    }
+                    let clear = format!("\x1b]7501;state=clear{terminator}");
+                    let cleared = parser.scan(clear.as_bytes());
+                    assert_eq!(cleared.len(), 1);
+                    assert_eq!(cleared[0].0, clear.len());
+                    assert!(matches!(
+                        &cleared[0].1,
+                        Event::Changed(update)
+                            if update.current.is_none()
+                                && update.trigger.as_ref().is_some_and(|trigger| {
+                                    trigger.state == State::Clear
+                                        && trigger.id.is_empty()
+                                        && trigger.app.is_none()
+                                })
+                    ));
+                    assert!(parser.current().is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn activity_filter_excludes_recognized_7501_controls_and_preserves_other_bytes_at_every_split()
+    {
+        for payload in [
+            "7501;?",
+            "7501;state=blocked:app=codex",
+            "7501;state=blocked:app=codex:kind=permission",
+            "7501;state=blocked:app=codex:kind=question",
+            "7501;state=blocked:app=codex:kind=auth",
+            "7501;state=working:app=codex",
+            "7501;state=idle:app=codex",
+            "7501;state=done:app=codex",
+            "7501;state=error:app=codex",
+            "7501;state=clear",
+        ] {
+            for terminator in ["\x07", "\x1b\\"] {
+                let control = format!("\x1b]{payload}{terminator}");
+                for split in 0..=control.len() {
+                    let mut filter = ActivityFilter::default();
+                    assert_eq!(
+                        filter.observe(&control.as_bytes()[..split]),
+                        0,
+                        "{payload} prefix split={split}"
+                    );
+                    assert_eq!(
+                        filter.observe(&control.as_bytes()[split..]),
+                        0,
+                        "{payload} suffix split={split}"
+                    );
+                    let mixed = format!("before{control}after");
+                    let mut count = 0;
+                    for byte in mixed.as_bytes() {
+                        count += filter.observe(&[*byte]);
+                    }
+                    assert_eq!(count, b"beforeafter".len(), "{payload}");
+                }
+            }
+        }
+
+        // Exact 4096-byte OSC 7501 control is excluded; 4097-byte oversized is released.
+        for terminator in ["\x07", "\x1b\\"] {
+            let prefix = "\x1b]7501;state=idle:unknown=";
+            let valid = format!(
+                "{prefix}{}{terminator}",
+                "a".repeat(4096 - prefix.len() - terminator.len())
+            );
+            assert_eq!(valid.len(), 4096);
+            let mut filter = ActivityFilter::default();
+            let mut count = 0;
+            for byte in valid.as_bytes() {
+                count += filter.observe(&[*byte]);
+            }
+            assert_eq!(count, 0);
+
+            let oversized = valid.replacen("unknown=", "unknown=a", 1);
+            assert_eq!(oversized.len(), 4097);
+            let mut filter = ActivityFilter::default();
+            let mut count = 0;
+            for byte in oversized.as_bytes() {
+                count += filter.observe(&[*byte]);
+            }
+            assert_eq!(count, oversized.len());
+        }
+
+        // Non-7501 OSCs, rejected/aborted 7501 reports, and DCS-nested sequences keep full byte counts.
+        for stream in [
+            b"\x1b]2;custom title\x07".as_slice(),
+            b"\x1b]0;project\x1b\\",
+            b"\x1b]133;D;0\x1b\\\x1b]133;A\x1b\\",
+            b"\x1b[?2004h",
+            b"\x1b]7501;state=BLOCKED:app=codex\x07",
+            b"\x1b]7501;state=blo\tcked\x07",
+            b"\x1b]7501;state=working:id=bad!\x07",
+            b"\x1b]7501;state=blocked:msg=a\x07",
+            b"\x1b]7501;state=blocked:msg=/w==\x07",
+            b"\x1b]7501;state=blocked:msg=Cg==\x07",
+            b"\x1b]7501;state=blocked\x18\x07",
+            b"\x1b]7501;state=blocked\x1a\x1b\\",
+            b"\x1b]7501;state=blocked\x1b\x1b\\",
+            b"\x1bP\x1b]7501;state=blocked:app=codex\x07\x1b\\",
+        ] {
+            let mut filter = ActivityFilter::default();
+            let mut count = 0;
+            for byte in stream {
+                count += filter.observe(&[*byte]);
+            }
+            assert_eq!(count, stream.len(), "{stream:?}");
+        }
+
+        // An aborted OSC followed by a valid OSC 7501 counts only the aborted bytes.
+        for (aborted, valid) in [
+            (
+                b"\x1b]0;title".as_slice(),
+                b"\x1b]7501;state=idle:app=codex\x07".as_slice(),
+            ),
+            (
+                b"\x1b]7501;state=blocked".as_slice(),
+                b"\x1b]7501;state=clear\x1b\\".as_slice(),
+            ),
+        ] {
+            let combined = [aborted, valid].concat();
+            let mut filter = ActivityFilter::default();
+            let mut count = 0;
+            for byte in &combined {
+                count += filter.observe(&[*byte]);
+            }
+            assert_eq!(count, aborted.len(), "{aborted:?}");
+        }
     }
 }

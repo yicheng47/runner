@@ -849,7 +849,7 @@ impl IdleDetector {
                 self.last_byte = now;
                 return self.tick_event_at(now);
             }
-            let state = event.state()?;
+            let state = event.state();
             if activity_bytes > 0 {
                 self.last_byte = now;
             }
@@ -867,19 +867,14 @@ impl IdleDetector {
                 .map(TerminalEvent::Activity)
         }
     }
-    pub(crate) fn take_attention(&mut self) -> Option<crate::runtimes::TerminalEvent> {
-        self.adapter
-            .as_mut()?
-            .take_attention()
-            .map(crate::runtimes::TerminalEvent::CodexAttention)
-    }
     #[cfg(test)]
     fn on_output_state(&mut self, bytes: &[u8], quiet: bool) -> Option<SessionActivityState> {
-        self.on_output(bytes, quiet).and_then(|event| event.state())
+        self.on_output(bytes, quiet)
+            .map(crate::runtimes::TerminalEvent::state)
     }
     #[cfg(test)]
     fn tick_state(&mut self) -> Option<SessionActivityState> {
-        self.tick().and_then(|event| event.state())
+        self.tick().map(crate::runtimes::TerminalEvent::state)
     }
     #[cfg(test)]
     fn on_output_at(
@@ -889,7 +884,7 @@ impl IdleDetector {
         now: Instant,
     ) -> Option<SessionActivityState> {
         self.on_output_event_at(bytes, quiet, now)
-            .and_then(|event| event.state())
+            .map(crate::runtimes::TerminalEvent::state)
     }
     fn on_input(&mut self, bytes: &[u8]) {
         self.on_input_at(bytes, Instant::now());
@@ -991,7 +986,8 @@ impl IdleDetector {
     }
     #[cfg(test)]
     fn tick_at(&mut self, now: Instant) -> Option<SessionActivityState> {
-        self.tick_event_at(now).and_then(|event| event.state())
+        self.tick_event_at(now)
+            .map(crate::runtimes::TerminalEvent::state)
     }
 }
 
@@ -1116,6 +1112,30 @@ fn idle_monitor_thread(
     }
 }
 
+pub(crate) fn emit_read_chunk(
+    chunk: &[u8],
+    in_resize_grace: bool,
+    detector: &Mutex<IdleDetector>,
+    tx: &mpsc::Sender<RuntimeOutput>,
+) -> bool {
+    let transition = {
+        let mut detector = detector.lock().expect("idle detector poisoned");
+        detector.on_output(chunk, in_resize_grace)
+    };
+    // Deliver raw bytes before any heuristic transition from the same read so
+    // OSC 7501 reports parsed by TerminalModel install waits before Ready/Title
+    // idle can publish baseline Idle or run completion bookkeeping.
+    if tx.send(RuntimeOutput::Stream(chunk.to_vec())).is_err() && !cfg!(windows) {
+        return false;
+    }
+    if let Some(event) = transition {
+        if tx.send(RuntimeOutput::TerminalEvent(event)).is_err() && !cfg!(windows) {
+            return false;
+        }
+    }
+    true
+}
+
 fn reader_thread(
     mut reader: Box<dyn Read + Send>,
     tx: mpsc::Sender<RuntimeOutput>,
@@ -1170,19 +1190,9 @@ fn reader_thread(
                     .lock()
                     .expect("last_resize poisoned")
                     .is_some_and(|t| t.elapsed() < RESIZE_GRACE);
-                let (transition, attention) = {
-                    let mut detector = detector.lock().expect("idle detector poisoned");
-                    let transition = detector.on_output(&buf[..n], in_resize_grace);
-                    (transition, detector.take_attention())
-                };
-                for event in attention.into_iter().chain(transition) {
-                    if tx.send(RuntimeOutput::TerminalEvent(event)).is_err() && !cfg!(windows) {
-                        break 'read_output;
-                    }
-                }
-                if tx.send(RuntimeOutput::Stream(buf[..n].to_vec())).is_err() && !cfg!(windows) {
+                if !emit_read_chunk(&buf[..n], in_resize_grace, &detector, &tx) {
                     // Receiver dropped (manager's forwarder gone).
-                    break;
+                    break 'read_output;
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,

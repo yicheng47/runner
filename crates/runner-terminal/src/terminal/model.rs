@@ -42,7 +42,6 @@ pub struct ModelOptions {
     pub shell: bool,
     pub initial_title: String,
     pub cwd: Option<String>,
-    pub codex_native_attention: bool,
 }
 
 pub struct TerminalModel {
@@ -66,8 +65,7 @@ pub struct TerminalModel {
     cwd_reports: Option<Mutex<CwdReports>>,
     live_cwd: Mutex<Option<PathBuf>>,
     program_status: Mutex<crate::program_status::Parser>,
-    pending_program_status: Mutex<Vec<(u64, Option<crate::program_status::Report>)>>,
-    codex_native_attention: bool,
+    pending_program_status: Mutex<Vec<(u64, crate::program_status::Update)>>,
 }
 
 impl TerminalModel {
@@ -162,7 +160,6 @@ impl TerminalModel {
             live_cwd: Mutex::new(None),
             program_status: Mutex::default(),
             pending_program_status: Mutex::default(),
-            codex_native_attention: options.codex_native_attention,
         });
         let term_for_events = Arc::downgrade(&term);
         let events_stopped = Arc::clone(&stopped);
@@ -347,13 +344,11 @@ impl TerminalModel {
         for (end, event) in self.program_status.lock().unwrap().scan(bytes) {
             match event {
                 crate::program_status::Event::Query => queries.push((end, None)),
-                crate::program_status::Event::Changed(report) => {
-                    if !self.codex_native_attention {
-                        self.pending_program_status
-                            .lock()
-                            .unwrap()
-                            .push((seq, report));
-                    }
+                crate::program_status::Event::Changed(update) => {
+                    self.pending_program_status
+                        .lock()
+                        .unwrap()
+                        .push((seq, *update));
                 }
                 crate::program_status::Event::Shell(_) => {}
             }
@@ -431,11 +426,11 @@ impl TerminalModel {
         self.publish_input(Some(self.initial_observation));
     }
 
-    pub fn take_program_statuses(&self) -> Vec<(u64, Option<crate::program_status::Report>)> {
+    pub fn take_program_statuses(&self) -> Vec<(u64, crate::program_status::Update)> {
         std::mem::take(&mut *self.pending_program_status.lock().unwrap())
     }
 
-    pub fn take_program_status(&self) -> Option<(u64, Option<crate::program_status::Report>)> {
+    pub fn take_program_status(&self) -> Option<(u64, crate::program_status::Update)> {
         self.take_program_statuses().pop()
     }
 
@@ -1249,7 +1244,7 @@ mod clipboard_tests {
         let states = model
             .take_program_statuses()
             .into_iter()
-            .map(|(seq, report)| (seq, report.map(|report| report.state)))
+            .map(|(seq, update)| (seq, update.current.map(|report| report.state)))
             .collect::<Vec<_>>();
         assert_eq!(
             states,

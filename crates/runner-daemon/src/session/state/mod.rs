@@ -123,11 +123,7 @@ pub(crate) enum SessionEvent {
     ProgramStatus {
         seq: u64,
         subseq: usize,
-        report: Option<runner_terminal::program_status::Report>,
-        live: bool,
-    },
-    CodexAttention {
-        blocked: bool,
+        update: Box<runner_terminal::program_status::Update>,
         live: bool,
     },
     #[cfg(test)]
@@ -256,6 +252,7 @@ pub(crate) struct SessionModel {
     agent: agent::AgentModel,
     codex_attention: Option<HumanInteraction>,
     next_codex_attention: u64,
+    native_attention: bool,
     program_status_authority: bool,
     program_turn_active: bool,
     program_status_seq: (u64, usize),
@@ -269,6 +266,9 @@ impl SessionModel {
     }
     pub fn set_program_status_authority(&mut self, enabled: bool) {
         self.program_status_authority = enabled;
+    }
+    pub fn set_native_attention(&mut self, enabled: bool) {
+        self.native_attention = enabled;
     }
     #[cfg(test)]
     pub fn completion_armed(&self) -> bool {
@@ -463,7 +463,7 @@ impl SessionModel {
             SessionEvent::ProgramStatus {
                 seq,
                 subseq,
-                report,
+                update,
                 live,
             } => {
                 if !live
@@ -474,10 +474,17 @@ impl SessionModel {
                     return effects;
                 }
                 self.program_status_seq = (seq, subseq);
+                // Codex with status hooks enabled overlays native waits onto
+                // live hook or baseline status rather than taking over full
+                // ProgramStatus (which would suppress baseline Idle before
+                // hook takeover or after bridge loss).
+                if self.native_attention && !self.program_status_authority {
+                    return self.apply_native_attention(update.trigger, live, now);
+                }
                 if self.hook_status_armed {
                     return effects;
                 }
-                let Some(report) = report else {
+                let Some(report) = update.current else {
                     self.program_status_wait = None;
                     self.program_turn_active = false;
                     if self.status.observation.program_status.is_some() {
@@ -524,11 +531,7 @@ impl SessionModel {
                     ..Default::default()
                 };
                 if report_state == State::Blocked {
-                    let reason = match report.kind.as_deref() {
-                        Some("permission") => WaitReason::Approval,
-                        Some("question") => WaitReason::Answer,
-                        _ => WaitReason::Unknown,
-                    };
+                    let reason = Self::wait_reason(report.kind.as_deref());
                     let same_wait = self
                         .program_status_wait
                         .as_ref()
@@ -560,41 +563,10 @@ impl SessionModel {
                 } else {
                     self.completion_armed = completion_armed;
                 }
-                effects.program_turn_started = started_turn;
+                effects.program_turn_started = started_turn && self.program_status_authority;
                 effects.publication = effects
                     .publication
                     .map(|(state, _)| (state, StatusSource::ProgramStatus));
-            }
-            SessionEvent::CodexAttention { blocked, live } => {
-                if !live || blocked == self.codex_attention.is_some() {
-                    return effects;
-                }
-                let mut observation = self.status.observation.clone();
-                if let Some(wait) = self.codex_attention.take() {
-                    observation.interactions.retain(|entry| entry.id != wait.id);
-                }
-                if !blocked && observation.source != ObservationSource::Hook {
-                    observation.activity = match self.baseline_activity {
-                        Some(SessionActivityState::Busy) => Activity::Working,
-                        Some(SessionActivityState::Idle) => Activity::Idle,
-                        None => Activity::Unavailable,
-                    };
-                }
-                if blocked {
-                    self.next_codex_attention += 1;
-                    self.codex_attention = Some(HumanInteraction {
-                        id: format!("codex-native:{}", self.next_codex_attention),
-                        reason: WaitReason::Unknown,
-                        owners: Vec::new(),
-                        since: now.wall_millis,
-                    });
-                }
-                let completion_armed = self.completion_armed;
-                effects = self.publish_snapshot(observation, live, now);
-                self.completion_armed = completion_armed;
-                effects.publication = effects
-                    .publication
-                    .map(|(state, _)| (state, StatusSource::CodexAttention));
             }
             #[cfg(test)]
             SessionEvent::TestPending(pending) => self.local_input_pending = pending,
@@ -915,6 +887,75 @@ impl SessionModel {
                 self.key = Some(report);
             }
         }
+        effects
+    }
+
+    fn wait_reason(kind: Option<&str>) -> WaitReason {
+        match kind {
+            Some("permission") => WaitReason::Approval,
+            Some("question") => WaitReason::Answer,
+            _ => WaitReason::Unknown,
+        }
+    }
+
+    fn apply_native_attention(
+        &mut self,
+        trigger: Option<runner_terminal::program_status::Report>,
+        live: bool,
+        now: Now,
+    ) -> Effects {
+        use runner_terminal::program_status::State;
+        let Some(trigger) = trigger else {
+            return Effects::default();
+        };
+        if !trigger.id.is_empty() {
+            return Effects::default();
+        }
+        let reason = if trigger.state == State::Clear {
+            if trigger.app.is_some() && trigger.app.as_deref() != Some("codex") {
+                return Effects::default();
+            }
+            None
+        } else {
+            if trigger.app.as_deref() != Some("codex") {
+                return Effects::default();
+            }
+            (trigger.state == State::Blocked).then(|| Self::wait_reason(trigger.kind.as_deref()))
+        };
+        if self.codex_attention.as_ref().map(|wait| wait.reason) == reason {
+            return Effects::default();
+        }
+        let mut observation = self.status.observation.clone();
+        if let Some(wait) = self.codex_attention.take() {
+            observation.interactions.retain(|entry| entry.id != wait.id);
+        }
+        if reason.is_none() && observation.source != ObservationSource::Hook {
+            observation.activity = match self.baseline_activity {
+                Some(SessionActivityState::Busy) => Activity::Working,
+                Some(SessionActivityState::Idle) => Activity::Idle,
+                None => Activity::Unavailable,
+            };
+            observation.source = if self.baseline_activity.is_some() {
+                ObservationSource::Baseline
+            } else {
+                ObservationSource::Unavailable
+            };
+        }
+        if let Some(reason) = reason {
+            self.next_codex_attention += 1;
+            self.codex_attention = Some(HumanInteraction {
+                id: format!("codex-native:{}", self.next_codex_attention),
+                reason,
+                owners: Vec::new(),
+                since: now.wall_millis,
+            });
+        }
+        let completion_armed = self.completion_armed;
+        let mut effects = self.publish_snapshot(observation, live, now);
+        self.completion_armed = completion_armed;
+        effects.publication = effects
+            .publication
+            .map(|(state, _)| (state, StatusSource::CodexAttention));
         effects
     }
 

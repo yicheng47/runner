@@ -827,10 +827,32 @@ fn status_sources_keep_their_wire_strings() {
     }
 }
 
+fn codex_update(
+    state: runner_terminal::program_status::State,
+    kind: Option<&str>,
+) -> Box<runner_terminal::program_status::Update> {
+    use runner_terminal::program_status::{Report, State, Update};
+    let report = Report {
+        state,
+        id: String::new(),
+        kind: kind.map(str::to_owned),
+        progress: None,
+        app: (state != State::Clear).then(|| "codex".into()),
+        title: None,
+        message: None,
+    };
+    Box::new(Update {
+        current: (state != State::Clear).then(|| report.clone()),
+        trigger: Some(report),
+    })
+}
+
 #[test]
 fn codex_native_attention_is_independent_of_hooks_and_local_input() {
     use agent::AgentEvent as A;
+    use runner_terminal::program_status::State as P;
     let mut model = SessionModel::default();
+    model.set_native_attention(true);
     let time = now();
     let hook = |event| SessionEvent::Agent {
         event: A::Batch {
@@ -839,32 +861,105 @@ fn codex_native_attention_is_independent_of_hooks_and_local_input() {
         },
         live: true,
     };
+    let mut seq = 0u64;
+    let mut program = |model: &mut SessionModel,
+                       update: Box<runner_terminal::program_status::Update>,
+                       at: Now| {
+        seq += 1;
+        model.apply(
+            SessionEvent::ProgramStatus {
+                seq,
+                subseq: 0,
+                update,
+                live: true,
+            },
+            at,
+        )
+    };
     model.apply(SessionEvent::Attached, time);
     model.apply(hook(A::TurnStarted), time);
     let original = model.status().observation.clone();
-    let opened = model.apply(
-        SessionEvent::CodexAttention {
-            blocked: true,
-            live: true,
-        },
+
+    // Every blocked kind maps to the expected WaitReason and resolves on working/idle/done/error/clear.
+    for (kind, expected_reason, resolver) in [
+        (None, WaitReason::Unknown, codex_update(P::Working, None)),
+        (
+            Some("permission"),
+            WaitReason::Approval,
+            codex_update(P::Idle, None),
+        ),
+        (
+            Some("question"),
+            WaitReason::Answer,
+            codex_update(P::Done, None),
+        ),
+        (
+            Some("auth"),
+            WaitReason::Unknown,
+            codex_update(P::Error, None),
+        ),
+        (
+            Some("permission"),
+            WaitReason::Approval,
+            codex_update(P::Clear, None),
+        ),
+    ] {
+        let opened = program(&mut model, codex_update(P::Blocked, kind), time);
+        assert_eq!(
+            opened.publication,
+            Some((SessionActivityState::Busy, StatusSource::CodexAttention))
+        );
+        let wait = model.status().observation.interactions[0].clone();
+        assert_eq!(wait.reason, expected_reason, "{kind:?}");
+        assert_eq!(model.status().observation.source, ObservationSource::Hook);
+        assert!(model.status().observation.program_status.is_none());
+
+        let later = Now {
+            wall_millis: time.wall_millis + 90_000,
+            ..time
+        };
+        let duplicate = program(&mut model, codex_update(P::Blocked, kind), later);
+        assert!(duplicate.publication.is_none());
+        assert_eq!(model.status().observation.interactions, vec![wait.clone()]);
+
+        let before_clear = model.status().observation.clone();
+        let completion = model.completion_armed();
+        let cleared = program(&mut model, resolver, later);
+        assert_eq!(
+            cleared.publication,
+            Some((SessionActivityState::Busy, StatusSource::CodexAttention))
+        );
+        assert!(cleared.input_cleared);
+        assert!(!model.status().observation.needs_you());
+        assert_eq!(model.status().observation.activity, before_clear.activity);
+        assert_eq!(model.status().observation.outcome, before_clear.outcome);
+        assert_eq!(model.completion_armed(), completion);
+        assert_eq!(model.status().unread_since, None);
+    }
+
+    // Changing kind while blocked replaces the wait with the new reason and id.
+    let opened = program(
+        &mut model,
+        codex_update(P::Blocked, Some("permission")),
         time,
     );
     assert!(opened.publication.is_some());
-    let wait = model.status().observation.interactions[0].clone();
-    assert_eq!(wait.reason, WaitReason::Unknown);
+    let approval_wait = model.status().observation.interactions[0].clone();
+    assert_eq!(approval_wait.reason, WaitReason::Approval);
     let later = Now {
         wall_millis: time.wall_millis + 90_000,
         ..time
     };
-    let duplicate = model.apply(
-        SessionEvent::CodexAttention {
-            blocked: true,
-            live: true,
-        },
+    let switched = program(
+        &mut model,
+        codex_update(P::Blocked, Some("question")),
         later,
     );
-    assert!(duplicate.publication.is_none());
-    assert_eq!(model.status().observation.interactions, vec![wait.clone()]);
+    assert!(switched.publication.is_some());
+    let wait = model.status().observation.interactions[0].clone();
+    assert_eq!(wait.reason, WaitReason::Answer);
+    assert_ne!(wait.id, approval_wait.id);
+
     for event in [
         A::Working {
             detail: Some(WorkDetail::UsingTools),
@@ -907,31 +1002,32 @@ fn codex_native_attention_is_independent_of_hooks_and_local_input() {
     assert!(model.status().observation.needs_you());
     let before_clear = model.status().observation.clone();
     let completion = model.completion_armed();
-    model.apply(
-        SessionEvent::CodexAttention {
-            blocked: false,
-            live: true,
-        },
-        later,
-    );
+    program(&mut model, codex_update(P::Done, None), later);
     assert!(!model.status().observation.needs_you());
     assert_eq!(model.status().observation.activity, before_clear.activity);
     assert_eq!(model.status().observation.outcome, before_clear.outcome);
     assert_eq!(model.completion_armed(), completion);
     assert_eq!(model.status().unread_since, None);
-    model.apply(
-        SessionEvent::CodexAttention {
-            blocked: true,
-            live: true,
-        },
-        later,
-    );
+
+    // Non-blocked reports while hooks are armed and no wait is open are no-ops.
+    for update in [
+        codex_update(P::Working, None),
+        codex_update(P::Idle, None),
+        codex_update(P::Done, None),
+        codex_update(P::Error, None),
+        codex_update(P::Clear, None),
+    ] {
+        assert!(program(&mut model, update, later).publication.is_none());
+    }
+
+    program(&mut model, codex_update(P::Blocked, None), later);
     assert_ne!(model.status().observation.interactions[0].id, wait.id);
     assert_eq!(original.activity, Activity::Working);
 }
 
 #[test]
 fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
+    use runner_terminal::program_status::State as P;
     for terminal in [
         SessionEvent::Exited {
             code: Some(0),
@@ -941,6 +1037,7 @@ fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
         SessionEvent::Attached,
     ] {
         let mut model = SessionModel::default();
+        model.set_native_attention(true);
         let time = now();
         model.apply(
             SessionEvent::Transition {
@@ -958,8 +1055,10 @@ fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
             time,
         );
         model.apply(
-            SessionEvent::CodexAttention {
-                blocked: true,
+            SessionEvent::ProgramStatus {
+                seq: 1,
+                subseq: 0,
+                update: codex_update(P::Blocked, Some("permission")),
                 live: false,
             },
             time,
@@ -969,13 +1068,17 @@ fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
             "stale launch report"
         );
         model.apply(
-            SessionEvent::CodexAttention {
-                blocked: true,
+            SessionEvent::ProgramStatus {
+                seq: 1,
+                subseq: 0,
+                update: codex_update(P::Blocked, Some("permission")),
                 live: true,
             },
             time,
         );
         let wait = model.status().observation.interactions.clone();
+        assert_eq!(wait[0].reason, WaitReason::Approval);
+        assert!(model.status().observation.program_status.is_none());
         model.apply(SessionEvent::BridgeFailed { live: true }, time);
         model.apply(
             SessionEvent::Transition {
@@ -988,20 +1091,31 @@ fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
         assert_eq!(model.status().observation.interactions, wait);
         assert_eq!(model.activity(), Some(SessionActivityState::Busy));
         model.apply(
-            SessionEvent::CodexAttention {
-                blocked: false,
+            SessionEvent::ProgramStatus {
+                seq: 2,
+                subseq: 0,
+                update: codex_update(P::Clear, None),
                 live: false,
             },
             time,
         );
         assert!(model.status().observation.needs_you());
         model.apply(
-            SessionEvent::CodexAttention {
-                blocked: false,
+            SessionEvent::ProgramStatus {
+                seq: 2,
+                subseq: 0,
+                update: codex_update(P::Clear, None),
                 live: true,
             },
             time,
         );
+        assert!(!model.status().observation.needs_you());
+        assert_eq!(model.status().observation.activity, Activity::Idle);
+        assert_eq!(
+            model.status().observation.source,
+            ObservationSource::Baseline
+        );
+        assert!(model.status().observation.program_status.is_none());
         assert!(model.local_input_pending());
         assert!(model
             .draft_hold(time.monotonic + Duration::from_secs(60))
@@ -1010,8 +1124,10 @@ fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
         assert!(!model.completion_armed());
         assert_eq!(model.status().unread_since, None);
         model.apply(
-            SessionEvent::CodexAttention {
-                blocked: true,
+            SessionEvent::ProgramStatus {
+                seq: 3,
+                subseq: 0,
+                update: codex_update(P::Blocked, Some("question")),
                 live: true,
             },
             time,
@@ -1021,23 +1137,201 @@ fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
     }
 }
 
+#[test]
+fn codex_pre_hook_blocked_wait_survives_hook_takeover_and_clears_on_report() {
+    use agent::AgentEvent as A;
+    use runner_terminal::program_status::State as P;
+    let mut model = SessionModel::default();
+    model.set_native_attention(true);
+    let time = now();
+    model.apply(SessionEvent::Attached, time);
+    model.apply(
+        SessionEvent::ProgramStatus {
+            seq: 1,
+            subseq: 0,
+            update: codex_update(P::Blocked, Some("permission")),
+            live: true,
+        },
+        time,
+    );
+    let wait = model.status().observation.interactions[0].clone();
+    assert_eq!(wait.reason, WaitReason::Approval);
+    assert!(model.status().observation.program_status.is_none());
+    model.apply(
+        SessionEvent::Agent {
+            event: A::Batch {
+                runtime: crate::model::Runtime::Codex,
+                events: vec![A::TurnStarted],
+            },
+            live: true,
+        },
+        time,
+    );
+    assert_eq!(model.status().observation.source, ObservationSource::Hook);
+    assert!(model.status().observation.program_status.is_none());
+    assert_eq!(model.status().observation.interactions, vec![wait]);
+    let cleared = model.apply(
+        SessionEvent::ProgramStatus {
+            seq: 2,
+            subseq: 0,
+            update: codex_update(P::Working, None),
+            live: true,
+        },
+        time,
+    );
+    assert_eq!(
+        cleared.publication,
+        Some((SessionActivityState::Busy, StatusSource::CodexAttention))
+    );
+    assert!(!model.status().observation.needs_you());
+    assert_eq!(model.status().observation.activity, Activity::Working);
+}
+
+#[test]
+fn codex_overlay_filters_foreign_reports_and_retains_baseline_completion_without_hooks() {
+    use runner_terminal::program_status::{Report, State as P, Update};
+    let mut model = SessionModel::default();
+    model.set_native_attention(true);
+    let time = now();
+    let mut seq = 0u64;
+    let mut send = |model: &mut SessionModel, update: Box<Update>| {
+        seq += 1;
+        model.apply(
+            SessionEvent::ProgramStatus {
+                seq,
+                subseq: 0,
+                update,
+                live: true,
+            },
+            time,
+        )
+    };
+    let report = |state: P, id: &str, app: Option<&str>, kind: Option<&str>| Report {
+        state,
+        id: id.into(),
+        kind: kind.map(str::to_owned),
+        progress: None,
+        app: app.map(str::to_owned),
+        title: None,
+        message: None,
+    };
+
+    // Baseline Busy + armed completion before any hook arrives.
+    transition(
+        &mut model,
+        SessionActivityState::Busy,
+        StatusSource::Forwarder,
+    );
+    model.apply(SessionEvent::ArmCompletion, time);
+
+    // Foreign root or child blocked reports never open Codex's overlay.
+    for foreign in [
+        report(P::Blocked, "", Some("other"), Some("permission")),
+        report(P::Blocked, "", None, Some("permission")),
+        report(P::Blocked, "sub", Some("codex"), Some("question")),
+        report(P::Blocked, "sub", Some("other"), Some("question")),
+    ] {
+        let effects = send(
+            &mut model,
+            Box::new(Update {
+                current: Some(foreign.clone()),
+                trigger: Some(foreign),
+            }),
+        );
+        assert!(effects.publication.is_none());
+        assert!(!model.status().observation.needs_you());
+        assert!(model.status().observation.program_status.is_none());
+    }
+
+    // Codex working without a wait does not enter full ProgramStatus or suppress baseline Idle.
+    assert!(send(&mut model, codex_update(P::Working, None))
+        .publication
+        .is_none());
+    assert!(model.status().observation.program_status.is_none());
+    assert_eq!(
+        transition(
+            &mut model,
+            SessionActivityState::Idle,
+            StatusSource::Forwarder
+        )
+        .publication,
+        Some((SessionActivityState::Idle, StatusSource::Forwarder))
+    );
+    assert!(model.completion_armed());
+
+    // Open a real Codex permission wait, then interleave foreign root/child reports.
+    assert_eq!(
+        send(&mut model, codex_update(P::Blocked, Some("permission"))).publication,
+        Some((SessionActivityState::Busy, StatusSource::CodexAttention))
+    );
+    let wait = model.status().observation.interactions[0].clone();
+    assert_eq!(wait.reason, WaitReason::Approval);
+
+    let foreign_child = report(P::Blocked, "sub", Some("other"), Some("question"));
+    for trigger in [
+        report(P::Idle, "", Some("other"), None),
+        report(P::Done, "", Some("other"), None),
+        report(P::Clear, "", Some("other"), None),
+        report(P::Clear, "sub", None, None),
+        foreign_child.clone(),
+        report(P::Blocked, "sub", Some("codex"), Some("question")),
+    ] {
+        let effects = send(
+            &mut model,
+            Box::new(Update {
+                current: Some(trigger.clone()),
+                trigger: Some(trigger),
+            }),
+        );
+        assert!(effects.publication.is_none());
+        assert_eq!(model.status().observation.interactions, vec![wait.clone()]);
+    }
+
+    // Even when a foreign blocked child wins aggregate `current`, Codex's own root Done
+    // trigger releases the Codex wait and restores baseline Idle without disarming completion.
+    let released = send(
+        &mut model,
+        Box::new(Update {
+            current: Some(foreign_child),
+            trigger: Some(report(P::Done, "", Some("codex"), None)),
+        }),
+    );
+    assert_eq!(
+        released.publication,
+        Some((SessionActivityState::Idle, StatusSource::CodexAttention))
+    );
+    assert!(released.input_cleared);
+    assert!(!model.status().observation.needs_you());
+    assert_eq!(model.status().observation.activity, Activity::Idle);
+    assert_eq!(
+        model.status().observation.source,
+        ObservationSource::Baseline
+    );
+    assert!(model.status().observation.program_status.is_none());
+    assert!(model.completion_armed());
+}
+
 fn program(
     model: &mut SessionModel,
     seq: u64,
     state: Option<runner_terminal::program_status::State>,
 ) -> Effects {
+    let report = state.map(|state| runner_terminal::program_status::Report {
+        state,
+        id: String::new(),
+        kind: Some("permission".into()),
+        progress: None,
+        app: Some("test".into()),
+        title: None,
+        message: Some("Approve this?".into()),
+    });
     model.apply(
         SessionEvent::ProgramStatus {
             seq,
             subseq: 0,
-            report: state.map(|state| runner_terminal::program_status::Report {
-                state,
-                id: String::new(),
-                kind: Some("permission".into()),
-                progress: None,
-                app: Some("test".into()),
-                title: None,
-                message: Some("Approve this?".into()),
+            update: Box::new(runner_terminal::program_status::Update {
+                current: report.clone(),
+                trigger: report,
             }),
             live: true,
         },
@@ -1084,7 +1378,7 @@ fn program_status_maps_work_waits_and_outcomes_without_completion_attention() {
 
 #[test]
 fn authoritative_program_status_arms_completion_on_work_and_disarms_on_interrupt_error_or_clear() {
-    use runner_terminal::program_status::{Report, State as P};
+    use runner_terminal::program_status::{Report, State as P, Update};
     let mut model = SessionModel::default();
     model.set_program_status_authority(true);
 
@@ -1093,18 +1387,22 @@ fn authoritative_program_status_arms_completion_on_work_and_disarms_on_interrupt
                 state: Option<P>,
                 kind: Option<&str>,
                 msg: Option<&str>| {
+        let report = state.map(|state| Report {
+            state,
+            id: String::new(),
+            kind: kind.map(str::to_owned),
+            progress: None,
+            app: Some("agy".into()),
+            title: None,
+            message: msg.map(str::to_owned),
+        });
         model.apply(
             SessionEvent::ProgramStatus {
                 seq,
                 subseq: 0,
-                report: state.map(|state| Report {
-                    state,
-                    id: String::new(),
-                    kind: kind.map(str::to_owned),
-                    progress: None,
-                    app: Some("agy".into()),
-                    title: None,
-                    message: msg.map(str::to_owned),
+                update: Box::new(Update {
+                    current: report.clone(),
+                    trigger: report,
                 }),
                 live: true,
             },
@@ -1233,19 +1531,26 @@ fn authoritative_program_status_arms_completion_on_work_and_disarms_on_interrupt
     // while stale or duplicate (seq, subseq) pairs are ignored.
     let mut coalesced = SessionModel::default();
     coalesced.set_program_status_authority(true);
+    let agy_update = |state| {
+        let report = Report {
+            state,
+            id: String::new(),
+            kind: None,
+            progress: None,
+            app: Some("agy".into()),
+            title: None,
+            message: None,
+        };
+        Box::new(Update {
+            current: Some(report.clone()),
+            trigger: Some(report),
+        })
+    };
     let first = coalesced.apply(
         SessionEvent::ProgramStatus {
             seq: 5,
             subseq: 0,
-            report: Some(Report {
-                state: P::Working,
-                id: String::new(),
-                kind: None,
-                progress: None,
-                app: Some("agy".into()),
-                title: None,
-                message: None,
-            }),
+            update: agy_update(P::Working),
             live: true,
         },
         now(),
@@ -1256,15 +1561,7 @@ fn authoritative_program_status_arms_completion_on_work_and_disarms_on_interrupt
         SessionEvent::ProgramStatus {
             seq: 5,
             subseq: 1,
-            report: Some(Report {
-                state: P::Done,
-                id: String::new(),
-                kind: None,
-                progress: None,
-                app: Some("agy".into()),
-                title: None,
-                message: None,
-            }),
+            update: agy_update(P::Done),
             live: true,
         },
         now(),
@@ -1278,15 +1575,7 @@ fn authoritative_program_status_arms_completion_on_work_and_disarms_on_interrupt
         SessionEvent::ProgramStatus {
             seq: 5,
             subseq: 0,
-            report: Some(Report {
-                state: P::Idle,
-                id: String::new(),
-                kind: None,
-                progress: None,
-                app: Some("agy".into()),
-                title: None,
-                message: None,
-            }),
+            update: agy_update(P::Idle),
             live: true,
         },
         now(),

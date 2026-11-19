@@ -187,28 +187,13 @@ impl SessionManager {
                     .take()
                     .map(Ok)
                     .unwrap_or_else(|| output.recv_timeout(Duration::from_millis(500)));
-                if let Ok(RuntimeOutput::TerminalEvent(
-                    crate::runtimes::TerminalEvent::CodexAttention(blocked),
-                )) = &next
-                {
-                    manager_t.publish_model_event_for_launch(
-                        &session_id,
-                        SessionEvent::CodexAttention {
-                            blocked: *blocked,
-                            live: true,
-                        },
-                        Some(&stop),
-                        events.as_ref(),
-                    );
-                    continue;
-                }
                 let terminal = match &next {
                     Ok(RuntimeOutput::TerminalEvent(event)) => Some(*event),
                     _ => None,
                 };
                 let next = next.map(|output| match output {
                     RuntimeOutput::TerminalEvent(event) => RuntimeOutput::StatusTransition {
-                        state: event.state().expect("attention handled above"),
+                        state: event.state(),
                         source: crate::session::state::StatusSource::Forwarder,
                     },
                     other => other,
@@ -1377,13 +1362,13 @@ impl SessionManager {
             model.publish_input(observation);
         }
         if let Some(launch) = launch {
-            for (subseq, (seq, report)) in program_statuses.into_iter().enumerate() {
+            for (subseq, (seq, update)) in program_statuses.into_iter().enumerate() {
                 self.publish_model_event_for_launch(
                     session_id,
                     SessionEvent::ProgramStatus {
                         seq,
                         subseq,
-                        report,
+                        update: Box::new(update),
                         live: true,
                     },
                     Some(&launch),

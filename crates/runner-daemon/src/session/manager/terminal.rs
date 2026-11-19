@@ -480,16 +480,23 @@ impl SessionManager {
         events: &Arc<dyn SessionEvents>,
     ) -> Result<(Arc<TerminalModel>, TerminalStartedAt)> {
         let started_at = Arc::new(Mutex::new(binding.started_at));
-        let program_status_authority = binding.runtime.is_some_and(|runtime| {
-            crate::runtimes::adapter(runtime)
-                .status_semantics()
-                .program_status_authority
-        });
-        self.session_state_or_insert(id)
-            .lock()
-            .unwrap()
-            .model
-            .set_program_status_authority(program_status_authority);
+        let semantics = binding
+            .runtime
+            .map(|runtime| crate::runtimes::adapter(runtime).status_semantics())
+            .unwrap_or_default();
+        {
+            let state = self.session_state_or_insert(id);
+            let mut state = state.lock().unwrap();
+            let status_hooks_enabled = state
+                .handle
+                .as_ref()
+                .and_then(|handle| handle.startup.as_ref())
+                .is_none_or(|startup| startup.status_hooks_enabled());
+            state.model.set_program_status_authority(
+                semantics.program_status_authoritative(status_hooks_enabled),
+            );
+            state.model.set_native_attention(semantics.native_attention);
+        }
         let host = Arc::new(Host {
             manager: Arc::downgrade(self),
             pool: pool.clone(),
@@ -504,11 +511,6 @@ impl SessionManager {
             cols,
             rows,
             ModelOptions {
-                codex_native_attention: binding.runtime.is_some_and(|runtime| {
-                    crate::runtimes::adapter(runtime)
-                        .status_semantics()
-                        .native_attention
-                }),
                 agent: binding.agent,
                 shell: binding.runtime.is_some_and(Runtime::is_shell),
                 initial_title: binding.initial_title,

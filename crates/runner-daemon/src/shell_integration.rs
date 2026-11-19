@@ -585,7 +585,7 @@ mod real_shells {
             fed = shell.output.len();
             model
                 .take_program_status()
-                .map(|(_, report)| report.map(|report| report.state))
+                .map(|(_, update)| update.current.map(|report| report.state))
         };
         feed(&shell);
         shell.send(

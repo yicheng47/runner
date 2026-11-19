@@ -803,8 +803,8 @@ fn codex_windows_batch_pending_prompt_is_recorded_before_argv_suppression() {
 
 #[test]
 fn codex_native_attention_publication_holds_delivery_and_preserves_drafts() {
-    use crate::runtimes::TerminalEvent;
     use crate::session::state::agent::AgentEvent;
+    use crate::session::status::WaitReason;
     #[derive(Default)]
     struct DeliveryEvents(Mutex<Vec<router::SessionDeliveryEvent>>);
     impl router::SessionDeliveryListener for DeliveryEvents {
@@ -814,27 +814,39 @@ fn codex_native_attention_publication_holds_delivery_and_preserves_drafts() {
     }
     for mission in [false, true] {
         let manager = mgr_with_fake(None, fake_runtime());
+        let pool = pool_with_schema();
         let id = "native-codex";
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id, status, agent_runtime) VALUES (?1, 'running', 'codex')",
+                [id],
+            )
+            .unwrap();
         install_test_session_handle(&manager, id);
         let root = tempfile::tempdir().unwrap();
         let event_log = Arc::new(EventLog::open(root.path()).unwrap());
-        if mission {
-            manager
-                .session_state(id)
-                .unwrap()
-                .lock()
-                .unwrap()
-                .mission_status_sink = Some(ForwarderEmitCtx {
-                crew_id: Some("crew".into()),
-                mission_id: "mission".into(),
-                handle: "codex".into(),
-                event_log: event_log.clone(),
-            });
+        let events = capture();
+        let host_events: Arc<dyn SessionEvents> = events.clone();
+        let terminal = manager
+            .create_terminal(id, 80, 24, &pool, &host_events)
+            .unwrap();
+        {
+            let state = manager.session_state(id).unwrap();
+            let mut state = state.lock().unwrap();
+            state.terminal = Some(terminal);
+            if mission {
+                state.mission_status_sink = Some(ForwarderEmitCtx {
+                    crew_id: Some("crew".into()),
+                    mission_id: "mission".into(),
+                    handle: "codex".into(),
+                    event_log: event_log.clone(),
+                });
+            }
         }
         let delivered = Arc::new(DeliveryEvents::default());
         let listener: Arc<dyn router::SessionDeliveryListener> = delivered.clone();
         manager.register_delivery_listener(id, Arc::downgrade(&listener));
-        let events = capture();
         manager.publish_agent_event(
             id,
             AgentEvent::Batch {
@@ -843,59 +855,68 @@ fn codex_native_attention_publication_holds_delivery_and_preserves_drafts() {
             },
             events.as_ref(),
         );
-        let publish = |event| {
-            if mission {
-                manager.publish_mission_terminal_event(id, event, events.as_ref());
-            } else {
-                manager.publish_direct_terminal_event(id, event, events.as_ref());
-            }
+        let ingest = |bytes: &[u8]| {
+            manager.ingest_output_chunk(id, mission.then_some("mission"), bytes, events.as_ref());
         };
-        let mut terminal = crate::runtimes::adapter(Runtime::Codex)
-            .terminal_adapter(Some(false))
-            .unwrap();
-        terminal.accept_event(&AgentEvent::TurnStarted);
-        terminal.on_output(b"\x1b]7501;state=blocked:app=codex\x1b\\");
-        let blocked = TerminalEvent::CodexAttention(terminal.take_attention().unwrap());
-        assert_eq!(blocked, TerminalEvent::CodexAttention(true));
-        publish(blocked);
-        let wait = manager.agent_status(id).observation.interactions[0].clone();
-        let count = events.status.lock().unwrap().len();
-        publish(blocked);
-        assert_eq!(events.status.lock().unwrap().len(), count);
-        assert_eq!(
-            manager.reserve_delivery(id).unwrap(),
-            router::DeliveryReservation::HumanInteraction
-        );
-        manager.mark_status_viewed(&[id.into()]);
-        assert!(manager.status_snapshot()[id].observation.needs_you());
         let state = manager.session_state(id).unwrap();
         state.lock().unwrap().model.apply(
             SessionEvent::TestPending(true),
             crate::session::clock::state_now(),
         );
-        manager.publish_agent_event(
-            id,
-            AgentEvent::Batch {
-                runtime: Runtime::Codex,
-                events: vec![AgentEvent::Working {
-                    detail: Some(crate::session::status::WorkDetail::UsingTools),
-                }],
-            },
-            events.as_ref(),
-        );
-        assert_eq!(
-            manager.agent_status(id).observation.interactions,
-            vec![wait]
-        );
-        for report in [
-            b"\x1b]7501;state=working:app=codex\x07".as_slice(),
-            b"\x1b]7501;state=idle:app=codex\x07",
-            b"\x1b]7501;state=clear\x1b\\",
+        for (blocked, expected_reason, release) in [
+            (
+                b"\x1b]7501;state=blocked:app=codex\x1b\\".as_slice(),
+                WaitReason::Unknown,
+                b"\x1b]7501;state=working:app=codex\x07".as_slice(),
+            ),
+            (
+                b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\",
+                WaitReason::Approval,
+                b"\x1b]7501;state=idle:app=codex\x07",
+            ),
+            (
+                b"\x1b]7501;state=blocked:app=codex:kind=question\x1b\\",
+                WaitReason::Answer,
+                b"\x1b]7501;state=done:app=codex\x1b\\",
+            ),
+            (
+                b"\x1b]7501;state=blocked:app=codex:kind=auth\x1b\\",
+                WaitReason::Unknown,
+                b"\x1b]7501;state=error:app=codex\x1b\\",
+            ),
+            (
+                b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\",
+                WaitReason::Approval,
+                b"\x1b]7501;state=clear\x1b\\",
+            ),
         ] {
-            terminal.on_output(report);
-            publish(TerminalEvent::CodexAttention(
-                terminal.take_attention().unwrap(),
-            ));
+            ingest(blocked);
+            let wait = manager.agent_status(id).observation.interactions[0].clone();
+            assert_eq!(wait.reason, expected_reason);
+            let count = events.status.lock().unwrap().len();
+            ingest(blocked);
+            assert_eq!(events.status.lock().unwrap().len(), count);
+            assert_eq!(
+                manager.reserve_delivery(id).unwrap(),
+                router::DeliveryReservation::HumanInteraction
+            );
+            manager.mark_status_viewed(&[id.into()]);
+            assert!(manager.status_snapshot()[id].observation.needs_you());
+            manager.publish_agent_event(
+                id,
+                AgentEvent::Batch {
+                    runtime: Runtime::Codex,
+                    events: vec![AgentEvent::Working {
+                        detail: Some(crate::session::status::WorkDetail::UsingTools),
+                    }],
+                },
+                events.as_ref(),
+            );
+            assert_eq!(
+                manager.agent_status(id).observation.interactions,
+                vec![wait]
+            );
+            ingest(release);
             assert!(!manager.agent_status(id).observation.needs_you());
             assert_eq!(
                 manager.agent_status(id).observation.activity,
@@ -907,9 +928,7 @@ fn codex_native_attention_publication_holds_delivery_and_preserves_drafts() {
                 manager.reserve_delivery(id).unwrap(),
                 router::DeliveryReservation::LocalInputPending
             );
-            publish(blocked);
         }
-        publish(TerminalEvent::CodexAttention(false));
         assert!(delivered
             .0
             .lock()
@@ -933,62 +952,95 @@ fn codex_native_attention_publication_holds_delivery_and_preserves_drafts() {
                     serde_json::to_value(&status.status).unwrap()
                 );
             }
-            assert!(rows
-                .iter()
-                .any(
-                    |row| row.event.payload["status"]["observation"]["interactions"][0]["reason"]
-                        == "unknown"
-                ));
+            for reason in ["unknown", "approval", "answer"] {
+                assert!(
+                    rows.iter().any(|row| {
+                        row.event.payload["status"]["observation"]["interactions"][0]["reason"]
+                            == reason
+                    }),
+                    "missing mission wait reason {reason}"
+                );
+            }
         }
     }
 }
 
 #[test]
 fn codex_native_clear_never_runs_completion_callback_even_when_armed() {
+    use crate::session::state::agent::AgentEvent;
     let core = crate::test_support::test_core();
-    core.db.get().unwrap().execute("INSERT INTO sessions(id, status, agent_runtime) VALUES ('native-attention', 'running', 'codex')", []).unwrap();
-    install_test_session_handle(&core.sessions, "native-attention");
-    let events = core.session_events();
-    core.sessions.publish_direct_activity(
-        "native-attention",
-        SessionActivityState::Idle,
-        StatusSource::Forwarder,
-        &events,
+    let id = "native-attention";
+    core.db
+        .get()
+        .unwrap()
+        .execute(
+            "INSERT INTO sessions(id, status, agent_runtime) VALUES (?1, 'running', 'codex')",
+            [id],
+        )
+        .unwrap();
+    install_test_session_handle(&core.sessions, id);
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    let terminal = core
+        .sessions
+        .create_terminal(id, 80, 24, &core.db, &events)
+        .unwrap();
+    let state = core.sessions.session_state(id).unwrap();
+    state.lock().unwrap().terminal = Some(terminal);
+    core.sessions.publish_agent_event(
+        id,
+        AgentEvent::Batch {
+            runtime: Runtime::Codex,
+            events: vec![AgentEvent::StartupReady],
+        },
+        events.as_ref(),
     );
-    let state = core.sessions.session_state("native-attention").unwrap();
     state.lock().unwrap().model.apply(
         SessionEvent::ArmCompletion,
         crate::session::clock::state_now(),
     );
-    for blocked in [true, true, false] {
-        core.sessions.publish_direct_terminal_event(
-            "native-attention",
-            crate::runtimes::TerminalEvent::CodexAttention(blocked),
-            &events,
-        );
+    for report in [
+        b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\".as_slice(),
+        b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\",
+        b"\x1b]7501;state=working:app=codex\x1b\\",
+        b"\x1b]7501;state=blocked:app=codex:kind=question\x1b\\",
+        b"\x1b]7501;state=done:app=codex\x1b\\",
+        b"\x1b]7501;state=blocked:app=codex:kind=auth\x1b\\",
+        b"\x1b]7501;state=error:app=codex\x1b\\",
+        b"\x1b]7501;state=blocked:app=codex\x1b\\",
+        b"\x1b]7501;state=idle:app=codex\x1b\\",
+        b"\x1b]7501;state=clear\x1b\\",
+    ] {
+        core.sessions
+            .ingest_output_chunk(id, None, report, events.as_ref());
     }
-    let status = core.sessions.agent_status("native-attention");
+    let status = core.sessions.agent_status(id);
     assert_eq!(status.unread_since, None);
     assert_eq!(status.observation.outcome, None);
     assert!(
         state.lock().unwrap().model.completion_armed(),
         "native attention must not consume hook completion"
     );
-    assert!(!crate::repo::session_attention::any_unread(
-        &core.db.get().unwrap(),
-        &["native-attention".into()]
-    )
-    .unwrap());
+    assert!(
+        !crate::repo::session_attention::any_unread(&core.db.get().unwrap(), &[id.into()]).unwrap()
+    );
 }
 
 #[test]
 fn codex_native_forwarder_publishes_without_a_mounted_client_for_chats_and_missions() {
-    use crate::runtimes::TerminalEvent;
     use crate::session::state::agent::AgentEvent as A;
+    use crate::session::status::WaitReason;
     for mission in [false, true] {
         let fake = fake_runtime();
         let manager = mgr_with_fake(None, fake.clone());
+        let pool = pool_with_schema();
         let id = "native-forwarder";
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id, status, agent_runtime) VALUES (?1, 'running', 'codex')",
+                [id],
+            )
+            .unwrap();
         let (runtime, output) = fake
             .spawn(SpawnSpec {
                 session_id: id.into(),
@@ -1004,10 +1056,16 @@ fn codex_native_forwarder_publishes_without_a_mounted_client_for_chats_and_missi
             handle: "codex".into(),
             event_log: log.clone(),
         });
+        let events = capture();
+        let host_events: Arc<dyn SessionEvents> = events.clone();
+        let terminal = manager
+            .create_terminal(id, 80, 24, &pool, &host_events)
+            .unwrap();
         {
             let state = manager.session_state(id).unwrap();
             let mut state = state.lock().unwrap();
             state.handle.as_mut().unwrap().stop = output.stop_flag();
+            state.terminal = Some(terminal);
             state.mission_status_sink = sink.clone();
             assert!(state.subscribers.is_empty());
         }
@@ -1023,23 +1081,28 @@ fn codex_native_forwarder_publishes_without_a_mounted_client_for_chats_and_missi
             let tx = spawns[0].tx.as_ref().unwrap();
             for item in [
                 batch(A::TurnStarted),
-                RuntimeOutput::TerminalEvent(TerminalEvent::CodexAttention(true)),
-                RuntimeOutput::TerminalEvent(TerminalEvent::CodexAttention(true)),
+                RuntimeOutput::Stream(
+                    b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\".to_vec(),
+                ),
+                RuntimeOutput::Stream(
+                    b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\".to_vec(),
+                ),
                 batch(A::Working {
                     detail: Some(crate::session::status::WorkDetail::UsingTools),
                 }),
-                RuntimeOutput::TerminalEvent(TerminalEvent::CodexAttention(false)),
+                RuntimeOutput::Stream(b"\x1b]7501;state=working:app=codex\x1b\\".to_vec()),
                 batch(A::TurnEnded {
                     outcome: TurnOutcome::Interrupted,
                 }),
-                RuntimeOutput::TerminalEvent(TerminalEvent::CodexAttention(true)),
-                RuntimeOutput::TerminalEvent(TerminalEvent::CodexAttention(false)),
+                RuntimeOutput::Stream(
+                    b"\x1b]7501;state=blocked:app=codex:kind=question\x1b\\".to_vec(),
+                ),
+                RuntimeOutput::Stream(b"\x1b]7501;state=done:app=codex\x1b\\".to_vec()),
             ] {
                 tx.send(item).unwrap();
             }
         }
         fake.close_spawn(0);
-        let events = capture();
         manager
             .start_forwarder_thread(
                 id.into(),
@@ -1047,7 +1110,7 @@ fn codex_native_forwarder_publishes_without_a_mounted_client_for_chats_and_missi
                 mission.then(|| "mission".into()),
                 runtime,
                 output,
-                pool_with_schema(),
+                pool,
                 events.clone(),
                 role("fake", &[]),
                 None,
@@ -1061,6 +1124,10 @@ fn codex_native_forwarder_publishes_without_a_mounted_client_for_chats_and_missi
         assert_eq!(statuses.len(), 7);
         assert!(statuses[1].status.observation.needs_you());
         assert_eq!(
+            statuses[1].status.observation.interactions[0].reason,
+            WaitReason::Approval
+        );
+        assert_eq!(
             statuses[1].status.observation.interactions,
             statuses[2].status.observation.interactions
         );
@@ -1068,9 +1135,14 @@ fn codex_native_forwarder_publishes_without_a_mounted_client_for_chats_and_missi
         assert!(!statuses[3].status.observation.needs_you());
         assert_eq!(statuses[3].status.observation.outcome, None);
         assert_eq!(
+            statuses[5].status.observation.interactions[0].reason,
+            WaitReason::Answer
+        );
+        assert_eq!(
             statuses[6].status.observation.outcome,
             Some(TurnOutcome::Interrupted)
         );
+        assert!(!statuses[6].status.observation.needs_you());
         assert!(statuses
             .iter()
             .all(|status| status.status.unread_since.is_none()));
@@ -1094,41 +1166,49 @@ fn codex_native_forwarder_publishes_without_a_mounted_client_for_chats_and_missi
 #[test]
 fn codex_native_attention_ignores_reports_from_an_older_launch() {
     let manager = mgr_with_fake(None, fake_runtime());
+    let pool = pool_with_schema();
     let id = "native-generation";
+    pool.get()
+        .unwrap()
+        .execute(
+            "INSERT INTO sessions(id, status, agent_runtime) VALUES (?1, 'running', 'codex')",
+            [id],
+        )
+        .unwrap();
     install_test_session_handle(&manager, id);
     let events = capture();
+    let host_events: Arc<dyn SessionEvents> = events.clone();
+    let terminal = manager
+        .create_terminal(id, 80, 24, &pool, &host_events)
+        .unwrap();
+    manager.session_state(id).unwrap().lock().unwrap().terminal = Some(terminal);
     let older = Arc::new(AtomicBool::new(false));
-    for blocked in [true, false] {
-        manager.publish_model_event_for_launch(
-            id,
-            SessionEvent::CodexAttention {
-                blocked,
-                live: true,
-            },
-            Some(&older),
-            events.as_ref(),
-        );
+    for report in [
+        b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\".as_slice(),
+        b"\x1b]7501;state=idle:app=codex\x1b\\",
+    ] {
+        manager.ingest_output_for_launch(id, None, report, events.as_ref(), Some(&older));
         assert!(events.status.lock().unwrap().is_empty());
     }
-    manager.publish_direct_terminal_event(
+    manager.ingest_output_chunk(
         id,
-        crate::runtimes::TerminalEvent::CodexAttention(true),
+        None,
+        b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\",
         events.as_ref(),
     );
-    manager.publish_model_event_for_launch(
+    manager.ingest_output_for_launch(
         id,
-        SessionEvent::CodexAttention {
-            blocked: false,
-            live: true,
-        },
-        Some(&older),
+        None,
+        b"\x1b]7501;state=idle:app=codex\x1b\\",
         events.as_ref(),
+        Some(&older),
     );
     assert!(manager.agent_status(id).observation.needs_you());
     manager.session_state(id).unwrap().lock().unwrap().killed = true;
-    manager.publish_direct_terminal_event(
+    manager.ingest_output_chunk(
         id,
-        crate::runtimes::TerminalEvent::CodexAttention(false),
+        None,
+        b"\x1b]7501;state=idle:app=codex\x1b\\",
         events.as_ref(),
     );
     assert!(manager.agent_status(id).observation.needs_you());
@@ -1136,7 +1216,6 @@ fn codex_native_attention_ignores_reports_from_an_older_launch() {
 
 #[test]
 fn codex_native_attention_preserves_real_hook_completion_in_both_clear_orderings() {
-    use crate::runtimes::TerminalEvent;
     use crate::session::state::agent::AgentEvent as A;
     for clear_first in [false, true] {
         for outcome in [
@@ -1153,7 +1232,17 @@ fn codex_native_attention_preserves_real_hook_completion_in_both_clear_orderings
             ").unwrap();
             let id = "native-completion";
             install_test_session_handle(&core.sessions, id);
-            let events = core.session_events();
+            let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+            let terminal = core
+                .sessions
+                .create_terminal(id, 80, 24, &core.db, &events)
+                .unwrap();
+            core.sessions
+                .session_state(id)
+                .unwrap()
+                .lock()
+                .unwrap()
+                .terminal = Some(terminal);
             let hook = |event| {
                 core.sessions.publish_agent_event(
                     id,
@@ -1161,25 +1250,22 @@ fn codex_native_attention_preserves_real_hook_completion_in_both_clear_orderings
                         runtime: Runtime::Codex,
                         events: vec![event],
                     },
-                    &events,
+                    events.as_ref(),
                 );
             };
-            let native = |blocked| {
-                core.sessions.publish_direct_terminal_event(
-                    id,
-                    TerminalEvent::CodexAttention(blocked),
-                    &events,
-                )
+            let native = |bytes: &[u8]| {
+                core.sessions
+                    .ingest_output_chunk(id, None, bytes, events.as_ref());
             };
             let writes = || {
                 core.db.get().unwrap().query_row("SELECT count(*) FROM completion_writes WHERE session_id = 'native-completion'", [], |row| row.get::<_, i64>(0)).unwrap()
             };
             hook(A::TurnStarted);
-            native(true);
-            native(true);
+            native(b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\");
+            native(b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\");
             if clear_first {
-                native(false);
-                native(false);
+                native(b"\x1b]7501;state=working:app=codex\x1b\\");
+                native(b"\x1b]7501;state=done:app=codex\x1b\\");
                 assert_eq!(writes(), 0, "native clear alone is not a completion");
             }
             hook(A::TurnEnded { outcome });
@@ -1190,8 +1276,8 @@ fn codex_native_attention_preserves_real_hook_completion_in_both_clear_orderings
             );
             let unread = core.sessions.agent_status(id).unread_since;
             assert_eq!(unread.is_some(), outcome == TurnOutcome::Completed);
-            native(false);
-            native(false);
+            native(b"\x1b]7501;state=done:app=codex\x1b\\");
+            native(b"\x1b]7501;state=idle:app=codex\x1b\\");
             hook(A::TurnEnded { outcome });
             hook(A::ToolEnded {
                 owner: None,
@@ -1199,8 +1285,8 @@ fn codex_native_attention_preserves_real_hook_completion_in_both_clear_orderings
                 interrupted: false,
                 transcript: false,
             });
-            native(true);
-            native(false);
+            native(b"\x1b]7501;state=blocked:app=codex:kind=question\x1b\\");
+            native(b"\x1b]7501;state=clear\x1b\\");
             let status = core.sessions.agent_status(id);
             assert_eq!(status.unread_since, unread);
             assert_eq!(status.observation.outcome, Some(outcome));
@@ -1223,110 +1309,460 @@ fn codex_native_attention_preserves_real_hook_completion_in_both_clear_orderings
 #[test]
 fn codex_native_only_output_does_not_fabricate_completion_but_mixed_output_keeps_activity() {
     use crate::session::pty_runtime::IdleDetector;
-    for split_bytes in [false, true] {
-        let core = crate::test_support::test_core();
-        let id = "native-byte-evidence";
+    use crate::session::state::agent::AgentEvent as A;
+    use crate::session::status::WaitReason;
+
+    for after_bridge_loss in [false, true] {
+        for split_bytes in [false, true] {
+            let core = crate::test_support::test_core();
+            let id = "native-byte-evidence";
+            core.db
+                .get()
+                .unwrap()
+                .execute(
+                    "INSERT INTO sessions(id, status, agent_runtime) VALUES (?1, 'running', 'codex')",
+                    [id],
+                )
+                .unwrap();
+            install_test_session_handle(&core.sessions, id);
+            let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+            let terminal = core
+                .sessions
+                .create_terminal(id, 80, 24, &core.db, &events)
+                .unwrap();
+            let state = core.sessions.session_state(id).unwrap();
+            {
+                let mut guard = state.lock().unwrap();
+                guard.terminal = Some(terminal);
+                // Hooks configured on (`program_status_authority == false`, `native_attention == true`),
+                // before any hook is accepted or after bridge loss.
+                assert!(!guard.model.program_status_authority());
+            }
+            if after_bridge_loss {
+                core.sessions.publish_agent_event(
+                    id,
+                    A::Batch {
+                        runtime: Runtime::Codex,
+                        events: vec![A::TurnStarted],
+                    },
+                    events.as_ref(),
+                );
+                core.sessions.publish_model_event(
+                    id,
+                    SessionEvent::BridgeFailed { live: true },
+                    events.as_ref(),
+                );
+            }
+            let start = Instant::now();
+            let mut detector = IdleDetector::with_adapter_at(
+                Duration::from_secs(2),
+                crate::runtimes::adapter(Runtime::Codex).terminal_adapter(Some(false)),
+                start,
+            );
+            detector.hooks_unavailable();
+            let publish = |event| {
+                core.sessions
+                    .publish_direct_terminal_event(id, event, events.as_ref())
+            };
+            publish(
+                detector
+                    .tick_event_at(start + Duration::from_secs(3))
+                    .unwrap(),
+            );
+            state.lock().unwrap().model.apply(
+                SessionEvent::ArmCompletion,
+                crate::session::clock::state_now(),
+            );
+            for (index, (control, expected_wait)) in [
+                (
+                    b"\x1b]7501;state=blocked:app=codex\x1b\\".as_slice(),
+                    Some(WaitReason::Unknown),
+                ),
+                (
+                    b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\",
+                    Some(WaitReason::Approval),
+                ),
+                (
+                    b"\x1b]7501;state=blocked:app=codex:kind=question\x1b\\",
+                    Some(WaitReason::Answer),
+                ),
+                (
+                    b"\x1b]7501;state=blocked:app=codex:kind=auth\x07",
+                    Some(WaitReason::Unknown),
+                ),
+                (b"\x1b]7501;state=clear\x1b\\", None),
+                (b"\x1b]7501;state=working:app=codex\x07", None),
+                (b"\x1b]7501;state=done:app=codex\x1b\\", None),
+                (b"\x1b]7501;state=error:app=codex\x1b\\", None),
+                (b"\x1b]7501;state=idle:app=codex\x1b\\", None),
+                (b"\x1b]7501;state=clear\x07", None),
+            ]
+            .iter()
+            .enumerate()
+            {
+                let time = start + Duration::from_secs(4 + index as u64 * 4);
+                let chunk_size = if split_bytes { 1 } else { control.len() };
+                for chunk in control.chunks(chunk_size) {
+                    core.sessions
+                        .ingest_output_chunk(id, None, chunk, events.as_ref());
+                    if let Some(event) = detector.on_output_event_at(chunk, false, time) {
+                        publish(event);
+                    }
+                }
+                if let Some(event) = detector.tick_event_at(time + Duration::from_secs(3)) {
+                    publish(event);
+                }
+                let status = core.sessions.agent_status(id);
+                assert_eq!(
+                    status.observation.interactions.first().map(|w| w.reason),
+                    *expected_wait,
+                    "after_bridge_loss={after_bridge_loss} split={split_bytes} idx={index}"
+                );
+                assert!(
+                    status.observation.program_status.is_none(),
+                    "Codex with status hooks on stays in overlay mode before hook takeover and after bridge loss"
+                );
+                assert_eq!(status.unread_since, None);
+                assert_eq!(status.observation.outcome, None);
+                assert!(state.lock().unwrap().model.completion_armed());
+                assert!(!crate::repo::session_attention::any_unread(
+                    &core.db.get().unwrap(),
+                    &[id.into()]
+                )
+                .unwrap());
+                let rows: i64 = core
+                    .db
+                    .get()
+                    .unwrap()
+                    .query_row(
+                        "SELECT count(*) FROM session_attention WHERE session_id = ?1",
+                        [id],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    rows, 0,
+                    "native-only controls must not invoke completion bookkeeping"
+                );
+            }
+            let mixed = b"\x1b]7501;state=working:app=codex\x07ordinary response";
+            let time = start + Duration::from_secs(60);
+            let chunk_size = if split_bytes { 1 } else { mixed.len() };
+            for chunk in mixed.chunks(chunk_size) {
+                core.sessions
+                    .ingest_output_chunk(id, None, chunk, events.as_ref());
+                if let Some(event) = detector.on_output_event_at(chunk, false, time) {
+                    publish(event);
+                }
+            }
+            let working = core.sessions.agent_status(id);
+            assert_eq!(working.observation.activity, Activity::Working);
+            assert!(working.observation.program_status.is_none());
+            publish(
+                detector
+                    .tick_event_at(time + Duration::from_secs(3))
+                    .unwrap(),
+            );
+            assert!(core.sessions.agent_status(id).unread_since.is_some());
+            assert!(crate::repo::session_attention::any_unread(
+                &core.db.get().unwrap(),
+                &[id.into()]
+            )
+            .unwrap());
+            assert!(!state.lock().unwrap().model.completion_armed());
+        }
+    }
+}
+
+#[test]
+fn codex_overlay_ignores_foreign_root_and_child_reports_end_to_end() {
+    use crate::session::state::agent::AgentEvent as A;
+    use crate::session::status::WaitReason;
+
+    let manager = mgr_with_fake(None, fake_runtime());
+    let pool = pool_with_schema();
+    let id = "codex-foreign-isolation";
+    pool.get()
+        .unwrap()
+        .execute(
+            "INSERT INTO sessions(id, status, agent_runtime) VALUES (?1, 'running', 'codex')",
+            [id],
+        )
+        .unwrap();
+    install_test_session_handle(&manager, id);
+    let events = capture();
+    let host_events: Arc<dyn SessionEvents> = events.clone();
+    let terminal = manager
+        .create_terminal(id, 80, 24, &pool, &host_events)
+        .unwrap();
+    manager.session_state(id).unwrap().lock().unwrap().terminal = Some(terminal);
+
+    manager.publish_agent_event(
+        id,
+        A::Batch {
+            runtime: Runtime::Codex,
+            events: vec![A::TurnStarted],
+        },
+        events.as_ref(),
+    );
+    events.status.lock().unwrap().clear();
+
+    let ingest = |bytes: &[u8]| manager.ingest_output_chunk(id, None, bytes, events.as_ref());
+
+    // Foreign root or child blocked reports never open Codex's overlay.
+    for foreign in [
+        b"\x1b]7501;state=blocked:app=other:kind=permission\x1b\\".as_slice(),
+        b"\x1b]7501;state=blocked:kind=permission\x1b\\",
+        b"\x1b]7501;state=blocked:id=sub:app=codex:kind=question\x1b\\",
+        b"\x1b]7501;state=blocked:id=sub:app=other:kind=question\x1b\\",
+    ] {
+        ingest(foreign);
+        assert!(!manager.agent_status(id).observation.needs_you());
+        assert!(events.status.lock().unwrap().is_empty());
+    }
+
+    // Genuine Codex permission wait opens the overlay and holds delivery.
+    ingest(b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\");
+    let wait = manager.agent_status(id).observation.interactions[0].clone();
+    assert_eq!(wait.reason, WaitReason::Approval);
+    assert_eq!(
+        manager.delivery_readiness(id),
+        router::DeliveryReadiness::NeedsYou
+    );
+    assert_eq!(events.status.lock().unwrap().len(), 1);
+    events.status.lock().unwrap().clear();
+
+    // Interleaved foreign root and child reports (including a foreign blocked child
+    // and foreign root idle/done/clear) cannot dismiss or mutate the Codex wait.
+    for foreign in [
+        b"\x1b]7501;state=idle:app=other\x1b\\".as_slice(),
+        b"\x1b]7501;state=done:app=other\x1b\\",
+        b"\x1b]7501;state=working:app=claude\x07",
+        b"\x1b]7501;state=clear:app=other\x1b\\",
+        b"\x1b]7501;state=clear:id=sub\x1b\\",
+        b"\x1b]7501;state=blocked:id=sub:app=other:kind=question\x1b\\",
+        b"\x1b]7501;state=blocked:id=sub:app=codex:kind=question\x1b\\",
+    ] {
+        ingest(foreign);
+        assert_eq!(
+            manager.agent_status(id).observation.interactions,
+            vec![wait.clone()],
+            "foreign report must not disturb Codex wait"
+        );
+        assert_eq!(
+            manager.delivery_readiness(id),
+            router::DeliveryReadiness::NeedsYou
+        );
+        assert!(events.status.lock().unwrap().is_empty());
+    }
+
+    // Codex's own root Done releases the hold even while the foreign blocked child
+    // still wins the shared parser's aggregate record.
+    ingest(b"\x1b]7501;state=done:app=codex\x1b\\");
+    let cleared = manager.agent_status(id);
+    assert!(!cleared.observation.needs_you());
+    assert_eq!(cleared.observation.source, ObservationSource::Hook);
+    assert_eq!(cleared.observation.activity, Activity::Working);
+    assert_eq!(
+        manager.delivery_readiness(id),
+        router::DeliveryReadiness::Ready { idle: false }
+    );
+    assert_eq!(events.status.lock().unwrap().len(), 1);
+    assert_eq!(
+        events.status.lock().unwrap()[0].source,
+        StatusSource::CodexAttention
+    );
+
+    // Unscoped root clear also releases a live Codex wait.
+    ingest(b"\x1b]7501;state=blocked:app=codex:kind=question\x1b\\");
+    assert_eq!(
+        manager.agent_status(id).observation.interactions[0].reason,
+        WaitReason::Answer
+    );
+    ingest(b"\x1b]7501;state=clear\x1b\\");
+    assert!(!manager.agent_status(id).observation.needs_you());
+}
+
+#[test]
+fn codex_mixed_ready_or_title_idle_with_blocked_installs_wait_before_heuristic_through_forwarder() {
+    use crate::session::pty_runtime::{emit_read_chunk, IdleDetector};
+    use crate::session::status::WaitReason;
+
+    type RecordedStatus = (SessionActivityState, StatusSource, bool, Option<WaitReason>);
+    struct RecordingEvents {
+        inner: crate::session::manager::CoreSessionEvents,
+        recorded: Arc<Mutex<Vec<RecordedStatus>>>,
+    }
+    impl SessionEvents for RecordingEvents {
+        fn exit(&self, ev: &ExitEvent) {
+            self.inner.exit(ev);
+        }
+        fn spawned(&self, ev: &SessionSpawnedEvent) {
+            self.inner.spawned(ev);
+        }
+        fn archived(&self, ev: &SessionUpdatedEvent) {
+            self.inner.archived(ev);
+        }
+        fn updated(&self, ev: &SessionUpdatedEvent) {
+            self.inner.updated(ev);
+        }
+        fn status(&self, ev: &SessionActivityEvent) {
+            self.inner.status(ev);
+            self.recorded.lock().unwrap().push((
+                ev.state,
+                ev.source,
+                ev.status.observation.needs_you(),
+                ev.status.observation.interactions.first().map(|w| w.reason),
+            ));
+        }
+        fn role_activity(&self, ev: &RoleActivityEvent) {
+            self.inner.role_activity(ev);
+        }
+        fn warning(&self, ev: &WarningEvent) {
+            self.inner.warning(ev);
+        }
+    }
+
+    for (label, title_mode, mixed, expected_reason) in [
+        (
+            "ready-idle-plus-blocked",
+            false,
+            b"\x1b[?2004h\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\".to_vec(),
+            WaitReason::Approval,
+        ),
+        (
+            "title-idle-plus-blocked",
+            true,
+            b"\x1b]0;project\x07\x1b]7501;state=blocked:app=codex:kind=question\x1b\\".to_vec(),
+            WaitReason::Answer,
+        ),
+    ] {
+        let fake = fake_runtime();
+        let core = crate::test_support::test_core_with_runtime(fake.clone());
+        let id = format!("mixed-read-{label}");
         core.db
             .get()
             .unwrap()
             .execute(
                 "INSERT INTO sessions(id, status, agent_runtime) VALUES (?1, 'running', 'codex')",
-                [id],
+                [&id],
             )
             .unwrap();
-        install_test_session_handle(&core.sessions, id);
-        let events = core.session_events();
+        let (runtime, output) = fake
+            .spawn(SpawnSpec {
+                session_id: id.clone(),
+                ..Default::default()
+            })
+            .unwrap();
+        install_test_session_handle(&core.sessions, &id);
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let events: Arc<dyn SessionEvents> = Arc::new(RecordingEvents {
+            inner: core.session_events(),
+            recorded: Arc::clone(&recorded),
+        });
+        let terminal = core
+            .sessions
+            .create_terminal(&id, 80, 24, &core.db, &events)
+            .unwrap();
+        let state = core.sessions.session_state(&id).unwrap();
+        {
+            let mut guard = state.lock().unwrap();
+            guard.handle.as_mut().unwrap().stop = output.stop_flag();
+            guard.terminal = Some(terminal);
+            guard.model.apply(
+                SessionEvent::Transition {
+                    state: SessionActivityState::Busy,
+                    source: StatusSource::Forwarder,
+                    live: true,
+                },
+                crate::session::clock::state_now(),
+            );
+            guard.model.apply(
+                SessionEvent::ArmCompletion,
+                crate::session::clock::state_now(),
+            );
+        }
+
         let start = Instant::now();
-        let mut detector = IdleDetector::with_adapter_at(
+        let mut raw_detector = IdleDetector::with_adapter_at(
             Duration::from_secs(2),
             crate::runtimes::adapter(Runtime::Codex).terminal_adapter(Some(false)),
             start,
         );
-        detector.hooks_unavailable();
-        let publish = |event| {
-            core.sessions
-                .publish_direct_terminal_event(id, event, &events)
-        };
-        publish(
-            detector
-                .tick_event_at(start + Duration::from_secs(3))
-                .unwrap(),
-        );
-        let state = core.sessions.session_state(id).unwrap();
-        state.lock().unwrap().model.apply(
-            SessionEvent::ArmCompletion,
-            crate::session::clock::state_now(),
-        );
-        for (index, control) in [
-            b"\x1b]7501;state=blocked:app=codex\x1b\\".as_slice(),
-            b"\x1b]7501;state=blocked:app=codex\x07",
-            b"\x1b]7501;state=clear\x1b\\",
-            b"\x1b]7501;state=working:app=codex\x07",
-            b"\x1b]7501;state=idle:app=codex\x1b\\",
-            b"\x1b]7501;state=clear\x07",
-        ]
-        .iter()
-        .enumerate()
+        raw_detector.hooks_unavailable();
+        if title_mode {
+            raw_detector.on_output_event_at(b"\x1b]0;\xe2\xa0\x8b project\x07", false, start);
+            raw_detector.on_output_event_at(b"\x1b]0;\xe2\xa0\x99 project\x07", false, start);
+        }
+        let detector = Mutex::new(raw_detector);
+
+        let (fence_tx, fence_rx) = std::sync::mpsc::channel();
         {
-            let time = start + Duration::from_secs(4 + index as u64 * 4);
-            let chunk_size = if split_bytes { 1 } else { control.len() };
-            for chunk in control.chunks(chunk_size) {
-                let transition = detector.on_output_event_at(chunk, false, time);
-                for event in detector.take_attention().into_iter().chain(transition) {
-                    publish(event);
-                }
-            }
-            if let Some(event) = detector.tick_event_at(time + Duration::from_secs(3)) {
-                publish(event);
-            }
-            let status = core.sessions.agent_status(id);
-            assert_eq!(status.unread_since, None);
-            assert_eq!(status.observation.outcome, None);
-            assert!(state.lock().unwrap().model.completion_armed());
-            assert!(!crate::repo::session_attention::any_unread(
-                &core.db.get().unwrap(),
-                &[id.into()]
-            )
-            .unwrap());
-            let rows: i64 = core
-                .db
-                .get()
-                .unwrap()
-                .query_row(
-                    "SELECT count(*) FROM session_attention WHERE session_id = ?1",
-                    [id],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(
-                rows, 0,
-                "native-only controls must not invoke completion bookkeeping"
-            );
+            let spawns = fake.spawns.lock().unwrap();
+            let tx = spawns[0].tx.as_ref().unwrap();
+            assert!(emit_read_chunk(&mixed, false, &detector, tx));
+            tx.send(RuntimeOutput::AgentEvent {
+                event: crate::session::state::agent::AgentEvent::Batch {
+                    runtime: Runtime::Codex,
+                    events: Vec::new(),
+                },
+                feedback: Some(fence_tx),
+            })
+            .unwrap_or_else(|_| panic!("{label}"));
         }
-        let mixed = b"\x1b]7501;state=working:app=codex\x07ordinary response";
-        let time = start + Duration::from_secs(40);
-        let chunk_size = if split_bytes { 1 } else { mixed.len() };
-        for chunk in mixed.chunks(chunk_size) {
-            let transition = detector.on_output_event_at(chunk, false, time);
-            for event in detector.take_attention().into_iter().chain(transition) {
-                publish(event);
-            }
-        }
+        let root = tempfile::tempdir().unwrap();
+        let forwarder = core.sessions.start_forwarder_thread(
+            id.clone(),
+            String::new(),
+            None,
+            runtime,
+            output,
+            Arc::clone(&core.db),
+            Arc::clone(&events),
+            role("codex", &[]),
+            None,
+            false,
+            None,
+            root.path().to_path_buf(),
+        );
+        fence_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|error| panic!("{label}: forwarder fence failed: {error}"));
+
         assert_eq!(
-            core.sessions.agent_status(id).observation.activity,
-            Activity::Working
+            core.sessions.delivery_readiness(&id),
+            router::DeliveryReadiness::NeedsYou,
+            "{label}"
         );
-        publish(
-            detector
-                .tick_event_at(time + Duration::from_secs(3))
-                .unwrap(),
+        let status = core.sessions.agent_status(&id);
+        assert!(status.observation.needs_you(), "{label}");
+        assert_eq!(status.unread_since, None, "{label}");
+        assert!(state.lock().unwrap().model.completion_armed(), "{label}");
+        let rows: i64 = core
+            .db
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM session_attention WHERE session_id = ?1",
+                [&id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0, "{label}: must write zero completion rows");
+        let seq = recorded.lock().unwrap().clone();
+        assert_eq!(
+            seq,
+            vec![(
+                SessionActivityState::Busy,
+                StatusSource::CodexAttention,
+                true,
+                Some(expected_reason),
+            )],
+            "{label}: only the native wait must publish; heuristic Idle must never precede or follow it"
         );
-        assert!(core.sessions.agent_status(id).unread_since.is_some());
-        assert!(
-            crate::repo::session_attention::any_unread(&core.db.get().unwrap(), &[id.into()])
-                .unwrap()
-        );
-        assert!(!state.lock().unwrap().model.completion_armed());
+
+        fake.close_spawn(0);
+        forwarder.join().unwrap();
     }
 }
 
