@@ -276,6 +276,16 @@ impl ChatLauncher {
     }
 
     pub(super) fn refresh_checkout_state(&mut self, cx: &mut Context<Self>) {
+        self.load_checkout_state(true, cx);
+    }
+
+    /// After a project-menu pick, whose project the checkout's repository
+    /// must not override.
+    pub(super) fn refresh_checkout_details(&mut self, cx: &mut Context<Self>) {
+        self.load_checkout_state(false, cx);
+    }
+
+    fn load_checkout_state(&mut self, follow_repo: bool, cx: &mut Context<Self>) {
         if !self.default_page || self.client.is_remote() {
             self.checkout = None;
             self.checkout_picker = None;
@@ -303,7 +313,9 @@ impl ChatLauncher {
                 }
                 match result {
                     Ok(checkout) => {
-                        if let WorktreeCheckout::Git { main_checkout, .. } = &checkout {
+                        if let (true, WorktreeCheckout::Git { main_checkout, .. }) =
+                            (follow_repo, &checkout)
+                        {
                             let main_str = main_checkout.to_string_lossy().into_owned();
                             this.project.follow_external_repo(&main_str, &cwd_text, cx);
                         }

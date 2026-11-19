@@ -3602,3 +3602,247 @@ fn launcher_pickers_drop_stale_replies_across_picker_and_repo_switches() {
         );
     });
 }
+
+#[test]
+fn choosing_no_project_returns_to_the_default_directory() {
+    let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+    let projects = project_fixture(&mut harness);
+    open_tab_in(&mut harness, Some(&projects[0].id));
+    harness.act(|root, window, cx| root.open_new_tab_modal(&NewTab, window, cx));
+    assert_eq!(page_directory(&mut harness), projects[0].cwd);
+    let default_directory =
+        harness.read_root(|root, cx| local_default_directory(root.settings(cx)).unwrap());
+    assert_ne!(default_directory, projects[0].cwd);
+    harness.act(|root, window, cx| {
+        let launcher = root.render_launcher(None, true, window, cx);
+        launcher.update(cx, |launcher, cx| {
+            let picker = launcher.project.select();
+            picker.update(cx, |select, cx| select.set_value(String::new(), cx));
+            launcher.choose_project("", cx);
+        });
+    });
+    assert_eq!(page_picker(&mut harness), (ProjectScope::Root, false));
+    assert_eq!(page_directory(&mut harness), default_directory);
+}
+
+#[test]
+fn choosing_a_project_clears_a_new_worktree_draft_when_the_folder_stays() {
+    use runner_core::protocol::worktree::WorktreeNameCheck;
+
+    let tmp = tempfile::Builder::new()
+        .prefix("launcher-repick-")
+        .tempdir()
+        .unwrap();
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_launcher_git_repo(&repo);
+    let repo_str = repo.to_string_lossy().into_owned();
+    let mut harness = modal_harness(1200., 900., Vec::new(), Vec::new(), ChatMode::Runtime);
+    let mut project_id = String::new();
+    harness.act(|root, _, cx| {
+        project_id = root
+            .core(cx)
+            .project_create_checked("Repo".into(), repo_str.clone())
+            .unwrap()
+            .id;
+        root.app_store.update(cx, |store, _| {
+            store.settings.default_working_dir = repo_str.clone();
+        });
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|root, cx| {
+                root.app_store
+                    .read(cx)
+                    .projects
+                    .iter()
+                    .any(|project| project.id == project_id)
+            })
+        },
+        "project listed",
+    );
+    let mut page = None;
+    harness.act(|root, window, cx| {
+        root.start_chat_modal = None;
+        root.open_launcher_page(
+            ProjectScope::Project(project_id.clone()),
+            Step::Start,
+            false,
+            window,
+            cx,
+        );
+        page = Some(root.render_launcher(None, true, window, cx));
+    });
+    let launcher = page.unwrap();
+
+    // Re-picking the project, then No project whose default is the same
+    // folder: neither moves the folder, and both drop the draft.
+    for pick in [project_id.clone(), String::new()] {
+        harness.wait(
+            |h| {
+                h.read_root(|_, cx| {
+                    let view = launcher.read(cx);
+                    view.has_checkout() && view.cwd.read(cx).text() == repo_str
+                })
+            },
+            "launcher at the repository's main checkout",
+        );
+        harness.act(|_, window, cx| {
+            launcher.update(cx, |view, cx| view.enter_new_worktree(window, cx));
+        });
+        harness.wait(
+            |h| {
+                h.read_root(|_, cx| {
+                    launcher
+                        .read(cx)
+                        .new_worktree_base_label_for_test()
+                        .is_some()
+                })
+            },
+            "New worktree form with its default base",
+        );
+        harness.act(|_, _, cx| {
+            launcher.update(cx, |view, cx| {
+                view.set_new_worktree_branch_for_test("feat/draft", cx);
+            });
+        });
+        harness.wait(
+            |h| {
+                h.read_root(|_, cx| {
+                    matches!(
+                        launcher.read(cx).new_worktree_check_state(),
+                        Some(WorktreeNameCheck::NewBranch { .. })
+                    )
+                })
+            },
+            "draft branch checked",
+        );
+        harness.act(|_, _, cx| launcher.update(cx, |view, cx| view.choose_project(&pick, cx)));
+        harness.wait(
+            |h| {
+                h.read_root(|_, cx| {
+                    let view = launcher.read(cx);
+                    !view.new_worktree_is_open()
+                        && view.worktree_spec().is_none()
+                        && view.has_checkout()
+                        && view.cwd.read(cx).text() == repo_str
+                })
+            },
+            "the pick leaves New worktree mode in the same folder",
+        );
+    }
+}
+
+#[test]
+fn choosing_no_project_stays_no_project_when_the_default_is_a_linked_worktree() {
+    use runner_core::protocol::files::WorktreeKind;
+    use runner_core::protocol::worktree::WorktreeCheckout;
+
+    let tmp = tempfile::Builder::new()
+        .prefix("launcher-no-project-wt-")
+        .tempdir()
+        .unwrap();
+    let repo = tmp.path().join("repo");
+    let outside = tmp.path().join("outside-wt");
+    std::fs::create_dir_all(&repo).unwrap();
+    init_launcher_git_repo(&repo);
+    let out = std::process::Command::new("git")
+        .current_dir(&repo)
+        .args([
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feat/outside",
+            outside.to_str().unwrap(),
+            "main",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let repo_str = repo.to_string_lossy().into_owned();
+    let outside_str = outside.to_string_lossy().into_owned();
+    let mut harness = modal_harness(1200., 900., Vec::new(), Vec::new(), ChatMode::Runtime);
+    let mut project_id = String::new();
+    harness.act(|root, _, cx| {
+        project_id = root
+            .core(cx)
+            .project_create_checked("Repo".into(), repo_str.clone())
+            .unwrap()
+            .id;
+        root.app_store.update(cx, |store, _| {
+            store.settings.default_working_dir = outside_str.clone();
+        });
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|root, cx| {
+                root.app_store
+                    .read(cx)
+                    .projects
+                    .iter()
+                    .any(|project| project.id == project_id)
+            })
+        },
+        "project listed",
+    );
+    let mut page = None;
+    harness.act(|root, window, cx| {
+        root.start_chat_modal = None;
+        root.open_launcher_page(
+            ProjectScope::Project(project_id.clone()),
+            Step::Start,
+            false,
+            window,
+            cx,
+        );
+        page = Some(root.render_launcher(None, true, window, cx));
+    });
+    let launcher = page.unwrap();
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                let view = launcher.read(cx);
+                matches!(
+                    view.checkout,
+                    Some(WorktreeCheckout::Git {
+                        kind: WorktreeKind::Main,
+                        ..
+                    })
+                ) && view.cwd.read(cx).text() == repo_str
+            })
+        },
+        "launcher at the project's main checkout",
+    );
+
+    harness.act(|_, _, cx| {
+        launcher.update(cx, |view, cx| {
+            let picker = view.project.select();
+            picker.update(cx, |select, cx| select.set_value(String::new(), cx));
+            view.choose_project("", cx);
+        });
+    });
+    // The linked worktree's checkout arrives with its main checkout, the
+    // project's folder; No project must survive it.
+    harness.wait(
+        |h| {
+            h.read_root(|_, cx| {
+                let view = launcher.read(cx);
+                matches!(
+                    view.checkout,
+                    Some(WorktreeCheckout::Git {
+                        kind: WorktreeKind::Linked,
+                        ..
+                    })
+                ) && view.project.scope() == ProjectScope::Root
+                    && view.project.select().read(cx).value().is_empty()
+                    && view.cwd.read(cx).text() == outside_str
+            })
+        },
+        "No project kept after the linked worktree's checkout is applied",
+    );
+}
