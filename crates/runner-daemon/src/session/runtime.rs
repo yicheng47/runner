@@ -398,7 +398,7 @@ impl OutputStream {
                     }
                 }
                 RuntimeOutput::TerminalEvent(event) => {
-                    let Some(state) = event.state() else { continue };
+                    let state = event.state();
                     return Ok(TestOutput::StatusTransition {
                         state,
                         source: StatusSource::Forwarder,

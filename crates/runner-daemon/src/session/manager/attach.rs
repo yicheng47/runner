@@ -176,11 +176,19 @@ impl SessionManager {
                 .map(|startup| startup.runtime.clone())
                 .unwrap_or_default();
             if let Some(startup) = &handle.startup {
+                let semantics = crate::runtimes::for_key(&startup.runtime).status_semantics();
                 state_guard.model.set_program_status_authority(
-                    crate::runtimes::for_key(&startup.runtime)
-                        .status_semantics()
-                        .program_status_authority,
+                    semantics.program_status_authoritative(startup.status_hooks_enabled()),
                 );
+                state_guard
+                    .model
+                    .set_program_status_root_app(semantics.program_status_root_app);
+                state_guard.model.set_program_status_transcript_outcomes(
+                    semantics.program_status_transcript_outcomes,
+                );
+                state_guard
+                    .model
+                    .set_native_attention(semantics.native_attention);
             }
             state_guard.handle = Some(handle);
             state_guard

@@ -9,8 +9,7 @@ pub(crate) struct CodexTerminal {
     // Outlives the startup state so a SessionStart that reaches a recovered bridge
     // late cannot end the turn submitted during the output fallback.
     fallback_turn: bool,
-    program_status: super::program_status::ProgramStatusParser,
-    attention: Option<bool>,
+    program_status: runner_terminal::program_status::ActivityFilter,
 }
 
 impl CodexTerminal {
@@ -28,20 +27,19 @@ impl CodexTerminal {
             hook_owned: false,
             fallback_turn: false,
             program_status: Default::default(),
-            attention: None,
         }
     }
 }
 
 impl TerminalAdapter for CodexTerminal {
     fn on_output(&mut self, bytes: &[u8]) -> Option<TerminalEvent> {
-        self.attention = self.program_status.observe(bytes);
+        let activity_bytes = self.program_status.observe(bytes);
         let title_activity = (!self.hook_owned)
             .then(|| self.title.observe(bytes))
             .flatten();
         if let Some(startup) = self.startup.as_mut() {
             startup.ready |= startup.readiness.observe(bytes)[0];
-            if self.program_status.activity_bytes() > 0
+            if activity_bytes > 0
                 && !startup.submitted_input
                 && (startup.pending_turn || startup.ready)
             {
@@ -55,14 +53,11 @@ impl TerminalAdapter for CodexTerminal {
             }
         }
         title_activity
-            .filter(|_| self.program_status.activity_bytes() > 0)
+            .filter(|_| activity_bytes > 0)
             .map(TerminalEvent::Title)
     }
     fn output_activity_bytes(&self, _bytes: &[u8]) -> usize {
         self.program_status.activity_bytes()
-    }
-    fn take_attention(&mut self) -> Option<bool> {
-        self.attention.take()
     }
     fn on_input(&mut self, bytes: &[u8]) -> TerminalInput {
         let mut input = TerminalInput::default();
@@ -131,6 +126,16 @@ impl TerminalAdapter for CodexTerminal {
         }
     }
     fn accept_event(&mut self, event: &AgentEvent) -> bool {
+        if matches!(
+            event,
+            AgentEvent::ProgramSessionStarted { .. }
+                | AgentEvent::ProgramTurnConfirmed { .. }
+                | AgentEvent::ProgramTurnFinished
+                | AgentEvent::ProgramTurnOutcome { .. }
+                | AgentEvent::ProgramIdentityUnavailable
+        ) {
+            return true;
+        }
         if matches!(event, AgentEvent::ConversationRecovered)
             || matches!(event, AgentEvent::Batch { events, .. } if !events.is_empty() && events.iter().all(|event| matches!(event, AgentEvent::ConversationRecovered)))
         {

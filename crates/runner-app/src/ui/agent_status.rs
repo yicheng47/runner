@@ -91,6 +91,7 @@ impl StatusPresentation {
             kind,
             estimated: observation.source == ObservationSource::Baseline
                 && observation.program_status.is_none()
+                && observation.outcome.is_none()
                 && matches!(kind, StatusKind::Working | StatusKind::Idle),
             exit_code: status.exit_code,
             outcome: observation.outcome,
@@ -1841,6 +1842,38 @@ mod pane_control_tests {
                 );
                 assert!((label.left() - row.left() - px(18. * zoom)).abs() < px(0.5));
             }
+        }
+    }
+
+    #[test]
+    fn transcript_interrupted_outcome_renders_interrupted_with_or_without_program_status() {
+        use runner_core::protocol::status::{
+            Activity, AgentObservation, AgentStatus, Lifecycle, ObservationSource,
+            ProgramStatusEvidence, TurnOutcome,
+        };
+        for program_status in [Some(ProgramStatusEvidence { message: None }), None] {
+            let status = AgentStatus {
+                lifecycle: Lifecycle::Running,
+                observation: AgentObservation {
+                    activity: Activity::Idle,
+                    source: ObservationSource::Baseline,
+                    outcome: Some(TurnOutcome::Interrupted),
+                    program_status,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let presentation = StatusPresentation::new(&status);
+            assert_eq!(presentation.kind, StatusKind::Idle);
+            assert!(!presentation.estimated);
+            assert_eq!(
+                presentation.short_label_at(0).text(),
+                format!(
+                    "{} · {}",
+                    crate::i18n::text("ui.idle"),
+                    crate::i18n::text("ui.interrupted")
+                )
+            );
         }
     }
 }

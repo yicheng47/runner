@@ -187,28 +187,13 @@ impl SessionManager {
                     .take()
                     .map(Ok)
                     .unwrap_or_else(|| output.recv_timeout(Duration::from_millis(500)));
-                if let Ok(RuntimeOutput::TerminalEvent(
-                    crate::runtimes::TerminalEvent::CodexAttention(blocked),
-                )) = &next
-                {
-                    manager_t.publish_model_event_for_launch(
-                        &session_id,
-                        SessionEvent::CodexAttention {
-                            blocked: *blocked,
-                            live: true,
-                        },
-                        Some(&stop),
-                        events.as_ref(),
-                    );
-                    continue;
-                }
                 let terminal = match &next {
                     Ok(RuntimeOutput::TerminalEvent(event)) => Some(*event),
                     _ => None,
                 };
                 let next = next.map(|output| match output {
                     RuntimeOutput::TerminalEvent(event) => RuntimeOutput::StatusTransition {
-                        state: event.state().expect("attention handled above"),
+                        state: event.state(),
                         source: crate::session::state::StatusSource::Forwarder,
                     },
                     other => other,
@@ -274,6 +259,7 @@ impl SessionManager {
                     Ok(RuntimeOutput::ConversationStart(key)) => {
                         let result = (|| -> Result<()> {
                             let mut mission = None;
+                            let mut replaced_key = false;
                             let updated = manager_t.report_key(
                                 &session_id,
                                 PersistKey {
@@ -292,10 +278,25 @@ impl SessionManager {
                                     if row.agent_session_key == effect.key {
                                         return Ok(false);
                                     }
+                                    replaced_key = row.agent_session_key.is_some();
                                     Self::write_key_effect(&conn, &session_id, effect)
                                 },
                             )?;
                             if updated {
+                                if replaced_key {
+                                    manager_t.publish_model_event_for_launch(
+                                        &session_id,
+                                        SessionEvent::Agent {
+                                            event: crate::session::state::agent::AgentEvent::ProgramSessionStarted {
+                                                conversation_changed: true,
+                                                compacted: false,
+                                            },
+                                            live: true,
+                                        },
+                                        Some(&stop),
+                                        events.as_ref(),
+                                    );
+                                }
                                 events.updated(&SessionUpdatedEvent {
                                     session_id: session_id.clone(),
                                     mission_id: mission,
@@ -1377,13 +1378,13 @@ impl SessionManager {
             model.publish_input(observation);
         }
         if let Some(launch) = launch {
-            for (subseq, (seq, report)) in program_statuses.into_iter().enumerate() {
+            for (subseq, (seq, update)) in program_statuses.into_iter().enumerate() {
                 self.publish_model_event_for_launch(
                     session_id,
                     SessionEvent::ProgramStatus {
                         seq,
                         subseq,
-                        report,
+                        update: Box::new(update),
                         live: true,
                     },
                     Some(&launch),
@@ -1417,7 +1418,12 @@ impl SessionManager {
 fn has_started_turn(event: &crate::session::state::agent::AgentEvent) -> bool {
     use crate::session::state::agent::AgentEvent;
     match event {
-        AgentEvent::TurnStarted | AgentEvent::Working { .. } | AgentEvent::TurnEnded { .. } => true,
+        AgentEvent::TurnStarted
+        | AgentEvent::ProgramTurnConfirmed { .. }
+        | AgentEvent::ProgramTurnFinished
+        | AgentEvent::ProgramTurnOutcome { .. }
+        | AgentEvent::Working { .. }
+        | AgentEvent::TurnEnded { .. } => true,
         AgentEvent::Batch { events, .. } => events.iter().any(has_started_turn),
         _ => false,
     }

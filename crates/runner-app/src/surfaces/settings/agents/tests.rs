@@ -1569,8 +1569,14 @@ fn custom_flags_renders_for_agents_with_and_without_switches_and_matches_copy() 
             ))
             .is_none());
         if runtime_name == Runtime::Codex {
+            assert!(
+                window
+                    .debug_bounds("AGENT_LAUNCH_SWITCH_codex_StatusHooks")
+                    .is_none(),
+                "Codex must not show a Status hooks switch once OSC 7501 owns its status"
+            );
             let switch_bounds = window
-                .debug_bounds("AGENT_LAUNCH_SWITCH_codex_StatusHooks")
+                .debug_bounds("AGENT_LAUNCH_SWITCH_codex_RemotePluginCatalog")
                 .unwrap();
             assert!(
                 row_bounds.top() > switch_bounds.bottom(),

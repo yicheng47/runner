@@ -32,13 +32,11 @@ fn switch_copy(
         RuntimeLaunchOption::StatusHooks => (
             "ui.launch_status_hooks",
             match runtime {
-                Runtime::Codex => "ui.launch_codex_hooks_description",
                 Runtime::ClaudeCode => "ui.launch_claude_hooks_description",
                 Runtime::Pi => "ui.launch_pi_hooks_description",
                 _ => "ui.launch_activity_hooks_description",
             },
             match runtime {
-                Runtime::Codex => "On: --enable hooks --dangerously-bypass-hook-trust -c hooks.…",
                 Runtime::ClaudeCode => "On: --settings {\"hooks\":{…}}",
                 Runtime::Pi => "On: -e <Runner status extension>",
                 Runtime::Copilot => "On: --plugin-dir <Runner status plugin>",

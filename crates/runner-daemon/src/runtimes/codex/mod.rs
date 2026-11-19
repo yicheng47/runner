@@ -4,7 +4,6 @@ pub(crate) mod codex_trust;
 mod conversation;
 pub(crate) mod fork;
 pub(crate) mod models;
-mod program_status;
 pub(crate) mod skills;
 mod terminal;
 pub(crate) mod usage;
@@ -130,15 +129,16 @@ pub(crate) fn inject_codex_hooks(args: &[String], windows: bool) -> bool {
     true
 }
 
+#[cfg(test)]
 pub(crate) fn codex_status_args(
     role_args: &[String],
     app_data_dir: &Path,
     _session_id: &str,
 ) -> Vec<String> {
-    codex_hook_args(role_args, app_data_dir, true)
+    codex_hook_args(role_args, app_data_dir)
 }
 
-fn codex_hook_args(role_args: &[String], app_data_dir: &Path, status: bool) -> Vec<String> {
+fn codex_hook_args(role_args: &[String], app_data_dir: &Path) -> Vec<String> {
     if !inject_codex_hooks(role_args, cfg!(windows)) {
         return Vec::new();
     }
@@ -155,24 +155,6 @@ fn codex_hook_args(role_args: &[String], app_data_dir: &Path, status: bool) -> V
         format!("mcp_servers.runner_hooks={{command={executable},args=[\"hook\",\"serve\"],env_vars=[\"{}\",\"{}\",\"{}\"],required=false,enabled=true}}", hook::ENDPOINT_ENV, hook::SESSION_ENV, hook::GENERATION_ENV),
     ]);
     for event in crate::runtimes::codex::codex_status::EVENTS {
-        if !status && !matches!(*event, "SessionStart" | "UserPromptSubmit") {
-            continue;
-        }
-        if *event == "SessionEnd" {
-            let command = toml_edit::Value::from(hook_report_command(
-                app_data_dir,
-                Runtime::Codex,
-                event,
-                cfg!(windows),
-            ));
-            args.extend([
-                "-c".into(),
-                format!(
-                    "hooks.{event}=[{{hooks=[{{type=\"command\",command={command},timeout=1}}]}}]"
-                ),
-            ]);
-            continue;
-        }
         let mut input = toml_edit::InlineTable::new();
         for field in ["hook_event_name", "session_id", "transcript_path"] {
             input.insert(field, format!("${{{field}}}").into());
@@ -181,9 +163,6 @@ fn codex_hook_args(role_args: &[String], app_data_dir: &Path, status: bool) -> V
             input.insert("source", "${source}".into());
         } else {
             input.insert("turn_id", "${turn_id}".into());
-        }
-        if matches!(*event, "PreCompact" | "PostCompact") {
-            input.insert("trigger", "${trigger}".into());
         }
         args.extend([
             "-c".into(),
@@ -244,13 +223,9 @@ impl RuntimeAdapter for Codex {
 
     fn status_semantics(&self) -> StatusSemantics {
         StatusSemantics {
-            startup_ready_batch: true,
-            native_attention: true,
-            reject_events_after_interruption: true,
-            reject_completions_after_outcome: true,
-            compaction: CompactionPolicy::KeepWorking,
-            interrupted_turn_unavailable: true,
-            ended_session_keeps_ready: true,
+            program_status_authority: true,
+            program_status_root_app: Some("codex"),
+            program_status_transcript_outcomes: true,
             ..Default::default()
         }
     }
@@ -304,13 +279,6 @@ impl RuntimeAdapter for Codex {
             Box::new(terminal::CodexTerminal::new(pending)) as Box<dyn TerminalAdapter>
         })
     }
-    fn startup_delivery_uses_hooks(&self, _pending_turn: bool) -> bool {
-        true
-    }
-    /// A native fork or a resume can start without SessionStart.
-    fn startup_hook_on_reopen(&self) -> bool {
-        false
-    }
     fn starts_trusted(
         &self,
         cwd: Option<&Path>,
@@ -324,6 +292,12 @@ impl RuntimeAdapter for Codex {
     }
     fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
         Some(&Hooks)
+    }
+    fn startup_delivery_waits_for_program_status(&self, _pending_turn: bool) -> bool {
+        true
+    }
+    fn startup_hook_on_reopen(&self) -> bool {
+        false
     }
     fn key_capture(&self) -> KeyCapture {
         KeyCapture::RolloutScan {
@@ -418,11 +392,7 @@ impl RuntimeAdapter for Codex {
         {
             out.extend(strings(&["-c", "features.remote_plugin=false"]));
         }
-        out.extend(if status_hooks_enabled(ctx.env) {
-            codex_status_args(ctx.role_args, ctx.app_data_dir, ctx.session_id)
-        } else {
-            codex_hook_args(ctx.role_args, ctx.app_data_dir, false)
-        });
+        out.extend(codex_hook_args(ctx.role_args, ctx.app_data_dir));
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out
     }

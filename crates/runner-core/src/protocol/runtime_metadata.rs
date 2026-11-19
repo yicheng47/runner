@@ -192,7 +192,7 @@ pub mod codex {
         ));
         Some(RuntimeCatalog {
             name: Runtime::Codex,
-            min_version: Some("0.149.0"),
+            min_version: Some("0.164.0"),
             display_name: Runtime::Codex.display_name(),
             command: Runtime::Codex.command().unwrap(),
             capabilities: capabilities(),

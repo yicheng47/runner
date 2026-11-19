@@ -250,6 +250,10 @@ struct SessionState {
     pending_spawn: bool,
     delivery_runtime: String,
     turn_started: u64,
+    #[cfg(all(test, unix))]
+    program_turn_confirmed: u64,
+    #[cfg(all(test, unix))]
+    turn_notify: Arc<Condvar>,
     /// The latest line the router typed, and whether the agent has reported a turn from it.
     delivery_line: Option<String>,
     delivery_prompted: bool,
@@ -696,6 +700,51 @@ impl SessionManager {
     #[cfg(test)]
     pub(crate) fn wait_for_idle_input(&self, session_id: &str) {
         self.test_input_writer(session_id).wait_until_idle();
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn wait_for_turn_started(&self, session_id: &str, before: u64) -> u64 {
+        let state = self.session_state(session_id).expect("session state");
+        let notify = Arc::clone(&state.lock().unwrap().turn_notify);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut guard = state.lock().unwrap();
+        while guard.turn_started == before {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "turn_started for {session_id} stayed at {before}"
+            );
+            let (next, _) = notify.wait_timeout(guard, remaining).unwrap();
+            guard = next;
+        }
+        guard.turn_started
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn program_turn_confirmed_count(&self, session_id: &str) -> u64 {
+        self.session_state(session_id)
+            .expect("session state")
+            .lock()
+            .unwrap()
+            .program_turn_confirmed
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn wait_for_program_turn_confirmed(&self, session_id: &str, before: u64) -> u64 {
+        let state = self.session_state(session_id).expect("session state");
+        let notify = Arc::clone(&state.lock().unwrap().turn_notify);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut guard = state.lock().unwrap();
+        while guard.program_turn_confirmed == before {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "program_turn_confirmed for {session_id} stayed at {before}"
+            );
+            let (next, _) = notify.wait_timeout(guard, remaining).unwrap();
+            guard = next;
+        }
+        guard.program_turn_confirmed
     }
 
     #[cfg(test)]

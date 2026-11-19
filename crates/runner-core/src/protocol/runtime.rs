@@ -42,11 +42,7 @@ impl RuntimeLaunchOption {
             Self::StatusHooks => {
                 matches!(
                     runtime,
-                    Runtime::Codex
-                        | Runtime::ClaudeCode
-                        | Runtime::Pi
-                        | Runtime::Copilot
-                        | Runtime::OpenCode
+                    Runtime::ClaudeCode | Runtime::Pi | Runtime::Copilot | Runtime::OpenCode
                 ) || (runtime == Runtime::Grok && !cfg!(windows))
             }
         }

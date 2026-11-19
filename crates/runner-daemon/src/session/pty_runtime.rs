@@ -302,10 +302,21 @@ impl SessionRuntime for PtyRuntime {
         if spec.agent_runtime == Some(crate::model::Runtime::Shell) {
             idle_detector.read_shell_marks();
         }
-        idle_detector.awaiting_first_hook = spec.mission && hook_status.is_some();
-        if hook_status.is_none() || !status_hooks_enabled {
-            if spec.mission {
+        let program_status_primary = spec.agent_runtime.is_some_and(|runtime| {
+            crate::runtimes::adapter(runtime)
+                .status_semantics()
+                .program_status_authority
+        });
+        idle_detector.awaiting_first_hook =
+            spec.mission && hook_status.is_some() && !program_status_primary;
+        if hook_status.is_none() || !status_hooks_enabled || program_status_primary {
+            if spec.mission && !program_status_primary {
                 let _ = tx.send(RuntimeOutput::StatusBridgeFailed);
+            } else if program_status_primary && hook_status.is_none() {
+                let _ = tx.send(RuntimeOutput::AgentEvent {
+                    event: crate::session::state::agent::AgentEvent::ProgramIdentityUnavailable,
+                    feedback: None,
+                });
             }
             idle_detector.hooks_unavailable();
         }
@@ -338,6 +349,10 @@ impl SessionRuntime for PtyRuntime {
         });
         let entry_for_reader = Arc::clone(&entry);
         let session_id_for_reader = spec.session_id.clone();
+        let hook_monitor = hook_status.map(|watcher| HookMonitor {
+            watcher,
+            program_status_primary,
+        });
         let worker = thread::Builder::new()
             .name(format!("pty-reader-{}", spec.session_id))
             .spawn(move || {
@@ -348,7 +363,7 @@ impl SessionRuntime for PtyRuntime {
                     handle_for_reader,
                     entry_for_reader,
                     session_id_for_reader,
-                    hook_status,
+                    hook_monitor,
                 );
             })
             .map_err(|e| RuntimeError::Msg(format!("spawn reader thread: {e}")))?;
@@ -849,7 +864,7 @@ impl IdleDetector {
                 self.last_byte = now;
                 return self.tick_event_at(now);
             }
-            let state = event.state()?;
+            let state = event.state();
             if activity_bytes > 0 {
                 self.last_byte = now;
             }
@@ -867,19 +882,14 @@ impl IdleDetector {
                 .map(TerminalEvent::Activity)
         }
     }
-    pub(crate) fn take_attention(&mut self) -> Option<crate::runtimes::TerminalEvent> {
-        self.adapter
-            .as_mut()?
-            .take_attention()
-            .map(crate::runtimes::TerminalEvent::CodexAttention)
-    }
     #[cfg(test)]
     fn on_output_state(&mut self, bytes: &[u8], quiet: bool) -> Option<SessionActivityState> {
-        self.on_output(bytes, quiet).and_then(|event| event.state())
+        self.on_output(bytes, quiet)
+            .map(crate::runtimes::TerminalEvent::state)
     }
     #[cfg(test)]
     fn tick_state(&mut self) -> Option<SessionActivityState> {
-        self.tick().and_then(|event| event.state())
+        self.tick().map(crate::runtimes::TerminalEvent::state)
     }
     #[cfg(test)]
     fn on_output_at(
@@ -889,7 +899,7 @@ impl IdleDetector {
         now: Instant,
     ) -> Option<SessionActivityState> {
         self.on_output_event_at(bytes, quiet, now)
-            .and_then(|event| event.state())
+            .map(crate::runtimes::TerminalEvent::state)
     }
     fn on_input(&mut self, bytes: &[u8]) {
         self.on_input_at(bytes, Instant::now());
@@ -991,8 +1001,14 @@ impl IdleDetector {
     }
     #[cfg(test)]
     fn tick_at(&mut self, now: Instant) -> Option<SessionActivityState> {
-        self.tick_event_at(now).and_then(|event| event.state())
+        self.tick_event_at(now)
+            .map(crate::runtimes::TerminalEvent::state)
     }
+}
+
+struct HookMonitor {
+    watcher: Box<dyn HookWatcher>,
+    program_status_primary: bool,
 }
 
 fn idle_monitor_thread(
@@ -1000,7 +1016,7 @@ fn idle_monitor_thread(
     tx: mpsc::Sender<RuntimeOutput>,
     stop: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
-    mut hook_status: Option<Box<dyn HookWatcher>>,
+    mut hook_status: Option<HookMonitor>,
     #[cfg(windows)] handle: Arc<SessionHandle>,
 ) {
     loop {
@@ -1014,8 +1030,9 @@ fn idle_monitor_thread(
         if stopped {
             break;
         }
-        if let Some(watcher) = hook_status.as_mut() {
-            let result = watcher.drain_events(
+        if let Some(monitor) = hook_status.as_mut() {
+            let program_status_primary = monitor.program_status_primary;
+            let result = monitor.watcher.drain_events(
                 {
                     let mut detector = detector.lock().expect("idle detector poisoned");
                     std::mem::take(&mut detector.pending_cancel)
@@ -1094,7 +1111,14 @@ fn idle_monitor_thread(
                 }
             };
             if failed {
-                let _ = tx.send(RuntimeOutput::StatusBridgeFailed);
+                if program_status_primary {
+                    let _ = tx.send(RuntimeOutput::AgentEvent {
+                        event: crate::session::state::agent::AgentEvent::ProgramIdentityUnavailable,
+                        feedback: None,
+                    });
+                } else {
+                    let _ = tx.send(RuntimeOutput::StatusBridgeFailed);
+                }
             }
         }
         let transition = {
@@ -1116,6 +1140,30 @@ fn idle_monitor_thread(
     }
 }
 
+pub(crate) fn emit_read_chunk(
+    chunk: &[u8],
+    in_resize_grace: bool,
+    detector: &Mutex<IdleDetector>,
+    tx: &mpsc::Sender<RuntimeOutput>,
+) -> bool {
+    let transition = {
+        let mut detector = detector.lock().expect("idle detector poisoned");
+        detector.on_output(chunk, in_resize_grace)
+    };
+    // Deliver raw bytes before any heuristic transition from the same read so
+    // OSC 7501 reports parsed by TerminalModel install waits before Ready/Title
+    // idle can publish baseline Idle or run completion bookkeeping.
+    if tx.send(RuntimeOutput::Stream(chunk.to_vec())).is_err() && !cfg!(windows) {
+        return false;
+    }
+    if let Some(event) = transition {
+        if tx.send(RuntimeOutput::TerminalEvent(event)).is_err() && !cfg!(windows) {
+            return false;
+        }
+    }
+    true
+}
+
 fn reader_thread(
     mut reader: Box<dyn Read + Send>,
     tx: mpsc::Sender<RuntimeOutput>,
@@ -1123,7 +1171,7 @@ fn reader_thread(
     handle: Arc<SessionHandle>,
     entry: Arc<SessionEntry>,
     session_id: String,
-    hook_status: Option<Box<dyn HookWatcher>>,
+    hook_status: Option<HookMonitor>,
 ) {
     let detector = Arc::clone(&handle.idle_detector);
     let monitor_done = Arc::new(AtomicBool::new(false));
@@ -1170,19 +1218,9 @@ fn reader_thread(
                     .lock()
                     .expect("last_resize poisoned")
                     .is_some_and(|t| t.elapsed() < RESIZE_GRACE);
-                let (transition, attention) = {
-                    let mut detector = detector.lock().expect("idle detector poisoned");
-                    let transition = detector.on_output(&buf[..n], in_resize_grace);
-                    (transition, detector.take_attention())
-                };
-                for event in attention.into_iter().chain(transition) {
-                    if tx.send(RuntimeOutput::TerminalEvent(event)).is_err() && !cfg!(windows) {
-                        break 'read_output;
-                    }
-                }
-                if tx.send(RuntimeOutput::Stream(buf[..n].to_vec())).is_err() && !cfg!(windows) {
+                if !emit_read_chunk(&buf[..n], in_resize_grace, &detector, &tx) {
                     // Receiver dropped (manager's forwarder gone).
-                    break;
+                    break 'read_output;
                 }
             }
             Err(e) if e.kind() == ErrorKind::Interrupted => continue,

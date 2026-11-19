@@ -205,15 +205,12 @@ async fn native_command_reporters_preserve_utf8_and_provider_neutral_results() {
             first_turn: None,
         },
     );
-    let codex_config = codex_args
-        .iter()
-        .find(|arg| arg.starts_with("hooks.SessionEnd="))
-        .unwrap()
-        .parse::<toml_edit::DocumentMut>()
-        .unwrap();
-    let codex_command = codex_config["hooks"]["SessionEnd"][0]["hooks"][0]["command"]
-        .as_str()
-        .unwrap();
+    assert!(
+        !codex_args
+            .iter()
+            .any(|arg| arg.starts_with("hooks.SessionEnd=")),
+        "Codex no longer injects a SessionEnd command hook: {codex_args:?}"
+    );
     #[cfg(windows)]
     let shells = ["direct", "powershell", "pwsh"];
     #[cfg(unix)]
@@ -225,7 +222,7 @@ async fn native_command_reporters_preserve_utf8_and_provider_neutral_results() {
             Runtime::Copilot,
             Runtime::Antigravity,
         ] {
-            if shell != "direct" && !matches!(provider, Runtime::Codex | Runtime::Copilot) {
+            if shell != "direct" && provider != Runtime::Copilot {
                 continue;
             }
             #[cfg(windows)]
@@ -307,24 +304,16 @@ async fn native_command_reporters_preserve_utf8_and_provider_neutral_results() {
                     "-NoProfile",
                     "-NonInteractive",
                     "-Command",
-                    if provider == Runtime::Codex {
-                        codex_command
-                    } else {
-                        hooks["hooks"]["PreToolUse"][0]["hooks"][0]["powershell"]
-                            .as_str()
-                            .unwrap()
-                    },
+                    hooks["hooks"]["PreToolUse"][0]["hooks"][0]["powershell"]
+                        .as_str()
+                        .unwrap(),
                 ]);
                 #[cfg(unix)]
                 command.args([
                     "-c",
-                    if provider == Runtime::Codex {
-                        codex_command
-                    } else {
-                        hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-                            .as_str()
-                            .unwrap()
-                    },
+                    hooks["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+                        .as_str()
+                        .unwrap(),
                 ]);
                 command
             };

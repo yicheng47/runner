@@ -33,14 +33,14 @@ fn known_old_runtime_is_refused_before_every_launch_path_and_unknown_is_allowed(
         .write()
         .unwrap()
         .versions
-        .set_installed(Runtime::Codex, &role.command, Some("0.147.0"));
+        .set_installed(Runtime::Codex, &role.command, Some("0.163.0"));
     let check = |error: Error| {
         let Error::RuntimeVersionGate(gate) = error else {
             panic!("expected typed version gate, got {error}")
         };
         assert_eq!(gate.runtime, Runtime::Codex);
-        assert_eq!(gate.installed_version, "0.147.0");
-        assert_eq!(gate.min_version, "0.149.0");
+        assert_eq!(gate.installed_version, "0.163.0");
+        assert_eq!(gate.min_version, "0.164.0");
     };
     check(
         manager
@@ -117,6 +117,13 @@ fn known_old_runtime_is_refused_before_every_launch_path_and_unknown_is_allowed(
         .write()
         .unwrap()
         .versions
+        .set_installed(Runtime::Codex, &role.command, Some("0.164.0"));
+    assert!(manager.resolve_role_executable(&role, &pool).is_ok());
+    manager
+        .discovery_state
+        .write()
+        .unwrap()
+        .versions
         .set_installed(Runtime::Codex, &role.command, None);
     assert!(manager.resolve_role_executable(&role, &pool).is_ok());
 }
@@ -125,8 +132,8 @@ fn known_old_runtime_is_refused_before_every_launch_path_and_unknown_is_allowed(
 fn gate_remains_typed_after_daemon_dispatch_and_wire_roundtrip() {
     let gate = runner_core::protocol::RuntimeVersionGate {
         runtime: Runtime::Codex,
-        installed_version: "0.147.0".into(),
-        min_version: "0.149.0".into(),
+        installed_version: "0.163.0".into(),
+        min_version: "0.164.0".into(),
     };
     let error = Error::RuntimeVersionGate(gate.clone()).into_client_error();
     let wire = serde_json::to_vec(&error).unwrap();

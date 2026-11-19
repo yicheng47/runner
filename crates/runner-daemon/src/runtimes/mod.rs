@@ -173,16 +173,14 @@ pub struct CaptureContext {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalEvent {
-    CodexAttention(bool),
     Activity(crate::session::runtime::SessionActivityState),
     Title(crate::session::runtime::SessionActivityState),
     Ready(crate::session::runtime::SessionActivityState),
 }
 impl TerminalEvent {
-    pub(crate) fn state(self) -> Option<crate::session::runtime::SessionActivityState> {
+    pub(crate) fn state(self) -> crate::session::runtime::SessionActivityState {
         match self {
-            Self::CodexAttention(_) => None,
-            Self::Activity(state) | Self::Title(state) | Self::Ready(state) => Some(state),
+            Self::Activity(state) | Self::Title(state) | Self::Ready(state) => state,
         }
     }
 }
@@ -194,11 +192,6 @@ pub struct TerminalInput {
 }
 pub trait TerminalAdapter: Send {
     fn on_output(&mut self, bytes: &[u8]) -> Option<TerminalEvent>;
-    /// Drain the latest native wait-state change after `on_output`, independently of activity.
-    /// `true` holds delivery for human attention; `false` releases that native hold.
-    fn take_attention(&mut self) -> Option<bool> {
-        None
-    }
     // Called after on_output; adapters may release deferred byte evidence here.
     fn output_activity_bytes(&self, bytes: &[u8]) -> usize {
         bytes.len()
@@ -480,6 +473,13 @@ pub trait RuntimeAdapter: Send + Sync {
         None
     }
     fn startup_delivery_uses_hooks(&self, _pending_turn: bool) -> bool {
+        false
+    }
+    /// Whether startup delivery waits for an OSC 7501 program-status report
+    /// (or transcript turn outcome) instead of releasing on quiet startup output,
+    /// protecting folder-trust prompts and first turns on runtimes that always
+    /// emit OSC 7501.
+    fn startup_delivery_waits_for_program_status(&self, _pending_turn: bool) -> bool {
         false
     }
     /// Whether a resumed or forked conversation sends its startup hook, so a report's

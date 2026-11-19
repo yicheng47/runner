@@ -28,6 +28,30 @@ pub enum AgentEvent {
     PromptSubmitted {
         prompt: String,
     },
+    /// Identity-hook signal (e.g. Codex `SessionStart`) that the runtime got
+    /// past startup/trust prompts; `conversation_changed` marks an actual
+    /// conversation-key switch such as `/clear` or `/new`.
+    ProgramSessionStarted {
+        conversation_changed: bool,
+        compacted: bool,
+    },
+    /// Identity-hook confirmation (e.g. Codex `UserPromptSubmit`) that a
+    /// delivered turn started when OSC 7501 owns session status.
+    ProgramTurnConfirmed {
+        conversation_changed: bool,
+    },
+    /// Transcript-reported clean turn end (e.g. Codex `task_complete` without
+    /// error) used only to release startup delivery when no OSC 7501 arrives.
+    ProgramTurnFinished,
+    /// Transcript-reported terminal outcome (`Interrupted` or `Failed`) for a
+    /// turn whose primary status comes from OSC 7501.
+    ProgramTurnOutcome {
+        outcome: TurnOutcome,
+    },
+    /// Identity-hook watcher is unavailable or failed on a runtime whose
+    /// primary status comes from OSC 7501; lets startup fall back to output
+    /// settle when no OSC 7501 arrives without invalidating live OSC 7501.
+    ProgramIdentityUnavailable,
     TurnStarted,
     Working {
         detail: Option<WorkDetail>,
@@ -280,7 +304,13 @@ impl AgentModel {
         }
         match event {
             AgentEvent::ConversationRecovered | AgentEvent::BackgroundWork { .. } => unreachable!(),
-            AgentEvent::EditorDraft { .. } | AgentEvent::PromptSubmitted { .. } => return false,
+            AgentEvent::EditorDraft { .. }
+            | AgentEvent::PromptSubmitted { .. }
+            | AgentEvent::ProgramSessionStarted { .. }
+            | AgentEvent::ProgramTurnConfirmed { .. }
+            | AgentEvent::ProgramTurnFinished
+            | AgentEvent::ProgramTurnOutcome { .. }
+            | AgentEvent::ProgramIdentityUnavailable => return false,
             AgentEvent::StartupReady => {
                 self.clear_turn(true);
                 self.value.activity = Activity::Idle;

@@ -570,14 +570,33 @@ fn codex_status_args_for(key: &str, args: &[String], data: &Path, session: &str)
 }
 
 #[test]
-fn native_attention_is_drained_independently_of_activity() {
+fn codex_terminal_excludes_osc7501_controls_from_activity_and_uses_program_status_authority() {
+    let semantics = Codex.status_semantics();
+    assert!(!semantics.native_attention);
+    assert!(semantics.program_status_authority);
+    assert_eq!(semantics.program_status_root_app, Some("codex"));
+    assert!(semantics.program_status_transcript_outcomes);
+    assert!(semantics.program_status_authoritative(true));
+    assert!(semantics.program_status_authoritative(false));
+
     let mut terminal = Codex.terminal_adapter(Some(false)).unwrap();
-    terminal.on_output(b"\x1b]7501;state=blocked:app=codex\x1b\\");
-    assert_eq!(terminal.take_attention(), Some(true));
-    assert_eq!(terminal.take_attention(), None);
-    terminal.on_output(b"\x1b]7501;state=idle:app=codex\x1b\\");
-    assert_eq!(terminal.take_attention(), Some(false));
-    assert_eq!(terminal.take_attention(), None);
+    for control in [
+        b"\x1b]7501;state=blocked:app=codex\x1b\\".as_slice(),
+        b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\",
+        b"\x1b]7501;state=blocked:app=codex:kind=question\x1b\\",
+        b"\x1b]7501;state=blocked:app=codex:kind=auth\x1b\\",
+        b"\x1b]7501;state=working:app=codex\x1b\\",
+        b"\x1b]7501;state=done:app=codex\x1b\\",
+        b"\x1b]7501;state=error:app=codex\x1b\\",
+        b"\x1b]7501;state=idle:app=codex\x1b\\",
+        b"\x1b]7501;state=clear\x1b\\",
+    ] {
+        terminal.on_output(control);
+        assert_eq!(terminal.output_activity_bytes(control), 0, "{control:?}");
+    }
+    let mixed = b"\x1b]7501;state=blocked:app=codex:kind=permission\x1b\\hello";
+    terminal.on_output(mixed);
+    assert_eq!(terminal.output_activity_bytes(mixed), b"hello".len());
 }
 
 #[test]

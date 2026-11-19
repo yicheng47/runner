@@ -827,10 +827,32 @@ fn status_sources_keep_their_wire_strings() {
     }
 }
 
+fn codex_update(
+    state: runner_terminal::program_status::State,
+    kind: Option<&str>,
+) -> Box<runner_terminal::program_status::Update> {
+    use runner_terminal::program_status::{Report, State, Update};
+    let report = Report {
+        state,
+        id: String::new(),
+        kind: kind.map(str::to_owned),
+        progress: None,
+        app: (state != State::Clear).then(|| "codex".into()),
+        title: None,
+        message: None,
+    };
+    Box::new(Update {
+        current: (state != State::Clear).then(|| report.clone()),
+        trigger: Some(report),
+    })
+}
+
 #[test]
 fn codex_native_attention_is_independent_of_hooks_and_local_input() {
     use agent::AgentEvent as A;
+    use runner_terminal::program_status::State as P;
     let mut model = SessionModel::default();
+    model.set_native_attention(true);
     let time = now();
     let hook = |event| SessionEvent::Agent {
         event: A::Batch {
@@ -839,32 +861,105 @@ fn codex_native_attention_is_independent_of_hooks_and_local_input() {
         },
         live: true,
     };
+    let mut seq = 0u64;
+    let mut program = |model: &mut SessionModel,
+                       update: Box<runner_terminal::program_status::Update>,
+                       at: Now| {
+        seq += 1;
+        model.apply(
+            SessionEvent::ProgramStatus {
+                seq,
+                subseq: 0,
+                update,
+                live: true,
+            },
+            at,
+        )
+    };
     model.apply(SessionEvent::Attached, time);
     model.apply(hook(A::TurnStarted), time);
     let original = model.status().observation.clone();
-    let opened = model.apply(
-        SessionEvent::CodexAttention {
-            blocked: true,
-            live: true,
-        },
+
+    // Every blocked kind maps to the expected WaitReason and resolves on working/idle/done/error/clear.
+    for (kind, expected_reason, resolver) in [
+        (None, WaitReason::Unknown, codex_update(P::Working, None)),
+        (
+            Some("permission"),
+            WaitReason::Approval,
+            codex_update(P::Idle, None),
+        ),
+        (
+            Some("question"),
+            WaitReason::Answer,
+            codex_update(P::Done, None),
+        ),
+        (
+            Some("auth"),
+            WaitReason::Unknown,
+            codex_update(P::Error, None),
+        ),
+        (
+            Some("permission"),
+            WaitReason::Approval,
+            codex_update(P::Clear, None),
+        ),
+    ] {
+        let opened = program(&mut model, codex_update(P::Blocked, kind), time);
+        assert_eq!(
+            opened.publication,
+            Some((SessionActivityState::Busy, StatusSource::CodexAttention))
+        );
+        let wait = model.status().observation.interactions[0].clone();
+        assert_eq!(wait.reason, expected_reason, "{kind:?}");
+        assert_eq!(model.status().observation.source, ObservationSource::Hook);
+        assert!(model.status().observation.program_status.is_none());
+
+        let later = Now {
+            wall_millis: time.wall_millis + 90_000,
+            ..time
+        };
+        let duplicate = program(&mut model, codex_update(P::Blocked, kind), later);
+        assert!(duplicate.publication.is_none());
+        assert_eq!(model.status().observation.interactions, vec![wait.clone()]);
+
+        let before_clear = model.status().observation.clone();
+        let completion = model.completion_armed();
+        let cleared = program(&mut model, resolver, later);
+        assert_eq!(
+            cleared.publication,
+            Some((SessionActivityState::Busy, StatusSource::CodexAttention))
+        );
+        assert!(cleared.input_cleared);
+        assert!(!model.status().observation.needs_you());
+        assert_eq!(model.status().observation.activity, before_clear.activity);
+        assert_eq!(model.status().observation.outcome, before_clear.outcome);
+        assert_eq!(model.completion_armed(), completion);
+        assert_eq!(model.status().unread_since, None);
+    }
+
+    // Changing kind while blocked replaces the wait with the new reason and id.
+    let opened = program(
+        &mut model,
+        codex_update(P::Blocked, Some("permission")),
         time,
     );
     assert!(opened.publication.is_some());
-    let wait = model.status().observation.interactions[0].clone();
-    assert_eq!(wait.reason, WaitReason::Unknown);
+    let approval_wait = model.status().observation.interactions[0].clone();
+    assert_eq!(approval_wait.reason, WaitReason::Approval);
     let later = Now {
         wall_millis: time.wall_millis + 90_000,
         ..time
     };
-    let duplicate = model.apply(
-        SessionEvent::CodexAttention {
-            blocked: true,
-            live: true,
-        },
+    let switched = program(
+        &mut model,
+        codex_update(P::Blocked, Some("question")),
         later,
     );
-    assert!(duplicate.publication.is_none());
-    assert_eq!(model.status().observation.interactions, vec![wait.clone()]);
+    assert!(switched.publication.is_some());
+    let wait = model.status().observation.interactions[0].clone();
+    assert_eq!(wait.reason, WaitReason::Answer);
+    assert_ne!(wait.id, approval_wait.id);
+
     for event in [
         A::Working {
             detail: Some(WorkDetail::UsingTools),
@@ -907,31 +1002,32 @@ fn codex_native_attention_is_independent_of_hooks_and_local_input() {
     assert!(model.status().observation.needs_you());
     let before_clear = model.status().observation.clone();
     let completion = model.completion_armed();
-    model.apply(
-        SessionEvent::CodexAttention {
-            blocked: false,
-            live: true,
-        },
-        later,
-    );
+    program(&mut model, codex_update(P::Done, None), later);
     assert!(!model.status().observation.needs_you());
     assert_eq!(model.status().observation.activity, before_clear.activity);
     assert_eq!(model.status().observation.outcome, before_clear.outcome);
     assert_eq!(model.completion_armed(), completion);
     assert_eq!(model.status().unread_since, None);
-    model.apply(
-        SessionEvent::CodexAttention {
-            blocked: true,
-            live: true,
-        },
-        later,
-    );
+
+    // Non-blocked reports while hooks are armed and no wait is open are no-ops.
+    for update in [
+        codex_update(P::Working, None),
+        codex_update(P::Idle, None),
+        codex_update(P::Done, None),
+        codex_update(P::Error, None),
+        codex_update(P::Clear, None),
+    ] {
+        assert!(program(&mut model, update, later).publication.is_none());
+    }
+
+    program(&mut model, codex_update(P::Blocked, None), later);
     assert_ne!(model.status().observation.interactions[0].id, wait.id);
     assert_eq!(original.activity, Activity::Working);
 }
 
 #[test]
 fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
+    use runner_terminal::program_status::State as P;
     for terminal in [
         SessionEvent::Exited {
             code: Some(0),
@@ -941,6 +1037,7 @@ fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
         SessionEvent::Attached,
     ] {
         let mut model = SessionModel::default();
+        model.set_native_attention(true);
         let time = now();
         model.apply(
             SessionEvent::Transition {
@@ -958,8 +1055,10 @@ fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
             time,
         );
         model.apply(
-            SessionEvent::CodexAttention {
-                blocked: true,
+            SessionEvent::ProgramStatus {
+                seq: 1,
+                subseq: 0,
+                update: codex_update(P::Blocked, Some("permission")),
                 live: false,
             },
             time,
@@ -969,13 +1068,17 @@ fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
             "stale launch report"
         );
         model.apply(
-            SessionEvent::CodexAttention {
-                blocked: true,
+            SessionEvent::ProgramStatus {
+                seq: 1,
+                subseq: 0,
+                update: codex_update(P::Blocked, Some("permission")),
                 live: true,
             },
             time,
         );
         let wait = model.status().observation.interactions.clone();
+        assert_eq!(wait[0].reason, WaitReason::Approval);
+        assert!(model.status().observation.program_status.is_none());
         model.apply(SessionEvent::BridgeFailed { live: true }, time);
         model.apply(
             SessionEvent::Transition {
@@ -988,20 +1091,31 @@ fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
         assert_eq!(model.status().observation.interactions, wait);
         assert_eq!(model.activity(), Some(SessionActivityState::Busy));
         model.apply(
-            SessionEvent::CodexAttention {
-                blocked: false,
+            SessionEvent::ProgramStatus {
+                seq: 2,
+                subseq: 0,
+                update: codex_update(P::Clear, None),
                 live: false,
             },
             time,
         );
         assert!(model.status().observation.needs_you());
         model.apply(
-            SessionEvent::CodexAttention {
-                blocked: false,
+            SessionEvent::ProgramStatus {
+                seq: 2,
+                subseq: 0,
+                update: codex_update(P::Clear, None),
                 live: true,
             },
             time,
         );
+        assert!(!model.status().observation.needs_you());
+        assert_eq!(model.status().observation.activity, Activity::Idle);
+        assert_eq!(
+            model.status().observation.source,
+            ObservationSource::Baseline
+        );
+        assert!(model.status().observation.program_status.is_none());
         assert!(model.local_input_pending());
         assert!(model
             .draft_hold(time.monotonic + Duration::from_secs(60))
@@ -1010,8 +1124,10 @@ fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
         assert!(!model.completion_armed());
         assert_eq!(model.status().unread_since, None);
         model.apply(
-            SessionEvent::CodexAttention {
-                blocked: true,
+            SessionEvent::ProgramStatus {
+                seq: 3,
+                subseq: 0,
+                update: codex_update(P::Blocked, Some("question")),
                 live: true,
             },
             time,
@@ -1021,23 +1137,201 @@ fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
     }
 }
 
+#[test]
+fn codex_pre_hook_blocked_wait_survives_hook_takeover_and_clears_on_report() {
+    use agent::AgentEvent as A;
+    use runner_terminal::program_status::State as P;
+    let mut model = SessionModel::default();
+    model.set_native_attention(true);
+    let time = now();
+    model.apply(SessionEvent::Attached, time);
+    model.apply(
+        SessionEvent::ProgramStatus {
+            seq: 1,
+            subseq: 0,
+            update: codex_update(P::Blocked, Some("permission")),
+            live: true,
+        },
+        time,
+    );
+    let wait = model.status().observation.interactions[0].clone();
+    assert_eq!(wait.reason, WaitReason::Approval);
+    assert!(model.status().observation.program_status.is_none());
+    model.apply(
+        SessionEvent::Agent {
+            event: A::Batch {
+                runtime: crate::model::Runtime::Codex,
+                events: vec![A::TurnStarted],
+            },
+            live: true,
+        },
+        time,
+    );
+    assert_eq!(model.status().observation.source, ObservationSource::Hook);
+    assert!(model.status().observation.program_status.is_none());
+    assert_eq!(model.status().observation.interactions, vec![wait]);
+    let cleared = model.apply(
+        SessionEvent::ProgramStatus {
+            seq: 2,
+            subseq: 0,
+            update: codex_update(P::Working, None),
+            live: true,
+        },
+        time,
+    );
+    assert_eq!(
+        cleared.publication,
+        Some((SessionActivityState::Busy, StatusSource::CodexAttention))
+    );
+    assert!(!model.status().observation.needs_you());
+    assert_eq!(model.status().observation.activity, Activity::Working);
+}
+
+#[test]
+fn codex_overlay_filters_foreign_reports_and_retains_baseline_completion_without_hooks() {
+    use runner_terminal::program_status::{Report, State as P, Update};
+    let mut model = SessionModel::default();
+    model.set_native_attention(true);
+    let time = now();
+    let mut seq = 0u64;
+    let mut send = |model: &mut SessionModel, update: Box<Update>| {
+        seq += 1;
+        model.apply(
+            SessionEvent::ProgramStatus {
+                seq,
+                subseq: 0,
+                update,
+                live: true,
+            },
+            time,
+        )
+    };
+    let report = |state: P, id: &str, app: Option<&str>, kind: Option<&str>| Report {
+        state,
+        id: id.into(),
+        kind: kind.map(str::to_owned),
+        progress: None,
+        app: app.map(str::to_owned),
+        title: None,
+        message: None,
+    };
+
+    // Baseline Busy + armed completion before any hook arrives.
+    transition(
+        &mut model,
+        SessionActivityState::Busy,
+        StatusSource::Forwarder,
+    );
+    model.apply(SessionEvent::ArmCompletion, time);
+
+    // Foreign root or child blocked reports never open Codex's overlay.
+    for foreign in [
+        report(P::Blocked, "", Some("other"), Some("permission")),
+        report(P::Blocked, "", None, Some("permission")),
+        report(P::Blocked, "sub", Some("codex"), Some("question")),
+        report(P::Blocked, "sub", Some("other"), Some("question")),
+    ] {
+        let effects = send(
+            &mut model,
+            Box::new(Update {
+                current: Some(foreign.clone()),
+                trigger: Some(foreign),
+            }),
+        );
+        assert!(effects.publication.is_none());
+        assert!(!model.status().observation.needs_you());
+        assert!(model.status().observation.program_status.is_none());
+    }
+
+    // Codex working without a wait does not enter full ProgramStatus or suppress baseline Idle.
+    assert!(send(&mut model, codex_update(P::Working, None))
+        .publication
+        .is_none());
+    assert!(model.status().observation.program_status.is_none());
+    assert_eq!(
+        transition(
+            &mut model,
+            SessionActivityState::Idle,
+            StatusSource::Forwarder
+        )
+        .publication,
+        Some((SessionActivityState::Idle, StatusSource::Forwarder))
+    );
+    assert!(model.completion_armed());
+
+    // Open a real Codex permission wait, then interleave foreign root/child reports.
+    assert_eq!(
+        send(&mut model, codex_update(P::Blocked, Some("permission"))).publication,
+        Some((SessionActivityState::Busy, StatusSource::CodexAttention))
+    );
+    let wait = model.status().observation.interactions[0].clone();
+    assert_eq!(wait.reason, WaitReason::Approval);
+
+    let foreign_child = report(P::Blocked, "sub", Some("other"), Some("question"));
+    for trigger in [
+        report(P::Idle, "", Some("other"), None),
+        report(P::Done, "", Some("other"), None),
+        report(P::Clear, "", Some("other"), None),
+        report(P::Clear, "sub", None, None),
+        foreign_child.clone(),
+        report(P::Blocked, "sub", Some("codex"), Some("question")),
+    ] {
+        let effects = send(
+            &mut model,
+            Box::new(Update {
+                current: Some(trigger.clone()),
+                trigger: Some(trigger),
+            }),
+        );
+        assert!(effects.publication.is_none());
+        assert_eq!(model.status().observation.interactions, vec![wait.clone()]);
+    }
+
+    // Even when a foreign blocked child wins aggregate `current`, Codex's own root Done
+    // trigger releases the Codex wait and restores baseline Idle without disarming completion.
+    let released = send(
+        &mut model,
+        Box::new(Update {
+            current: Some(foreign_child),
+            trigger: Some(report(P::Done, "", Some("codex"), None)),
+        }),
+    );
+    assert_eq!(
+        released.publication,
+        Some((SessionActivityState::Idle, StatusSource::CodexAttention))
+    );
+    assert!(released.input_cleared);
+    assert!(!model.status().observation.needs_you());
+    assert_eq!(model.status().observation.activity, Activity::Idle);
+    assert_eq!(
+        model.status().observation.source,
+        ObservationSource::Baseline
+    );
+    assert!(model.status().observation.program_status.is_none());
+    assert!(model.completion_armed());
+}
+
 fn program(
     model: &mut SessionModel,
     seq: u64,
     state: Option<runner_terminal::program_status::State>,
 ) -> Effects {
+    let report = state.map(|state| runner_terminal::program_status::Report {
+        state,
+        id: String::new(),
+        kind: Some("permission".into()),
+        progress: None,
+        app: Some("test".into()),
+        title: None,
+        message: Some("Approve this?".into()),
+    });
     model.apply(
         SessionEvent::ProgramStatus {
             seq,
             subseq: 0,
-            report: state.map(|state| runner_terminal::program_status::Report {
-                state,
-                id: String::new(),
-                kind: Some("permission".into()),
-                progress: None,
-                app: Some("test".into()),
-                title: None,
-                message: Some("Approve this?".into()),
+            update: Box::new(runner_terminal::program_status::Update {
+                current: report.clone(),
+                trigger: report,
             }),
             live: true,
         },
@@ -1084,7 +1378,7 @@ fn program_status_maps_work_waits_and_outcomes_without_completion_attention() {
 
 #[test]
 fn authoritative_program_status_arms_completion_on_work_and_disarms_on_interrupt_error_or_clear() {
-    use runner_terminal::program_status::{Report, State as P};
+    use runner_terminal::program_status::{Report, State as P, Update};
     let mut model = SessionModel::default();
     model.set_program_status_authority(true);
 
@@ -1093,18 +1387,22 @@ fn authoritative_program_status_arms_completion_on_work_and_disarms_on_interrupt
                 state: Option<P>,
                 kind: Option<&str>,
                 msg: Option<&str>| {
+        let report = state.map(|state| Report {
+            state,
+            id: String::new(),
+            kind: kind.map(str::to_owned),
+            progress: None,
+            app: Some("agy".into()),
+            title: None,
+            message: msg.map(str::to_owned),
+        });
         model.apply(
             SessionEvent::ProgramStatus {
                 seq,
                 subseq: 0,
-                report: state.map(|state| Report {
-                    state,
-                    id: String::new(),
-                    kind: kind.map(str::to_owned),
-                    progress: None,
-                    app: Some("agy".into()),
-                    title: None,
-                    message: msg.map(str::to_owned),
+                update: Box::new(Update {
+                    current: report.clone(),
+                    trigger: report,
                 }),
                 live: true,
             },
@@ -1233,19 +1531,26 @@ fn authoritative_program_status_arms_completion_on_work_and_disarms_on_interrupt
     // while stale or duplicate (seq, subseq) pairs are ignored.
     let mut coalesced = SessionModel::default();
     coalesced.set_program_status_authority(true);
+    let agy_update = |state| {
+        let report = Report {
+            state,
+            id: String::new(),
+            kind: None,
+            progress: None,
+            app: Some("agy".into()),
+            title: None,
+            message: None,
+        };
+        Box::new(Update {
+            current: Some(report.clone()),
+            trigger: Some(report),
+        })
+    };
     let first = coalesced.apply(
         SessionEvent::ProgramStatus {
             seq: 5,
             subseq: 0,
-            report: Some(Report {
-                state: P::Working,
-                id: String::new(),
-                kind: None,
-                progress: None,
-                app: Some("agy".into()),
-                title: None,
-                message: None,
-            }),
+            update: agy_update(P::Working),
             live: true,
         },
         now(),
@@ -1256,15 +1561,7 @@ fn authoritative_program_status_arms_completion_on_work_and_disarms_on_interrupt
         SessionEvent::ProgramStatus {
             seq: 5,
             subseq: 1,
-            report: Some(Report {
-                state: P::Done,
-                id: String::new(),
-                kind: None,
-                progress: None,
-                app: Some("agy".into()),
-                title: None,
-                message: None,
-            }),
+            update: agy_update(P::Done),
             live: true,
         },
         now(),
@@ -1278,15 +1575,7 @@ fn authoritative_program_status_arms_completion_on_work_and_disarms_on_interrupt
         SessionEvent::ProgramStatus {
             seq: 5,
             subseq: 0,
-            report: Some(Report {
-                state: P::Idle,
-                id: String::new(),
-                kind: None,
-                progress: None,
-                app: Some("agy".into()),
-                title: None,
-                message: None,
-            }),
+            update: agy_update(P::Idle),
             live: true,
         },
         now(),
@@ -1823,4 +2112,925 @@ fn interruption_guards_neither_drop_nor_strand_background_work() {
         assert!(model.reduce(batch(vec![clear]), 1).is_some());
         assert!(!model.value.background);
     }
+}
+
+#[test]
+fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501() {
+    use agent::AgentEvent as A;
+    use runner_terminal::program_status::{Report, State as P, Update};
+
+    let report = |state: P, kind: Option<&str>| Report {
+        id: String::new(),
+        state,
+        app: Some("codex".into()),
+        kind: kind.map(str::to_owned),
+        progress: None,
+        title: None,
+        message: None,
+    };
+    let mut seq = 0u64;
+    let mut emit = |model: &mut SessionModel, state: P, kind: Option<&str>, at: Now| {
+        seq += 1;
+        let current = (state != P::Clear).then(|| report(state, kind));
+        let trigger = Some(report(state, kind));
+        model.apply(
+            SessionEvent::ProgramStatus {
+                seq,
+                subseq: 0,
+                update: Box::new(Update { current, trigger }),
+                live: true,
+            },
+            at,
+        )
+    };
+
+    let start = now();
+    let mut model = SessionModel::default();
+    model.set_program_status_authority(true);
+    model.set_program_status_root_app(Some("codex"));
+    model.set_program_status_transcript_outcomes(true);
+
+    let confirm = |model: &mut SessionModel, conversation_changed: bool, at: Now| {
+        model.apply(
+            SessionEvent::Agent {
+                event: A::ProgramTurnConfirmed {
+                    conversation_changed,
+                },
+                live: true,
+            },
+            at,
+        )
+    };
+
+    // 1. UserPromptSubmit (ProgramTurnConfirmed) before Working counts turn_started once
+    // and clears submit_busy so SubmitTimeout cannot drop a confirmed turn back to Idle.
+    emit(&mut model, P::Idle, None, start);
+    let rev = model.revision();
+    model.apply(SessionEvent::Delivered { revision: rev }, start);
+    assert!(model.submit_armed());
+    let confirmed = confirm(&mut model, false, start);
+    assert!(confirmed.program_turn_started);
+    assert!(!model.submit_armed());
+    assert!(!model.submit_busy_due(later(start, SUBMIT_TURN_START_WINDOW).monotonic));
+    let working = emit(&mut model, P::Working, None, start);
+    assert!(
+        !working.program_turn_started,
+        "Working after ProgramTurnConfirmed must not double-count turn_started"
+    );
+
+    // 2. Mid-turn ProgramTurnConfirmed (queued/steered turn 2 while still Working) counts again.
+    assert!(confirm(&mut model, false, start).program_turn_started);
+
+    // 3. Working before ProgramTurnConfirmed also counts once (not twice).
+    emit(&mut model, P::Done, None, start);
+    assert!(emit(&mut model, P::Working, None, start).program_turn_started);
+    assert!(!confirm(&mut model, false, start).program_turn_started);
+
+    // 3b. Delayed UserPromptSubmit arriving AFTER Working -> Done or Working -> Idle
+    // must NOT double-count turn_started or leave the turn Confirmed; the next real turn
+    // (in either order) and a mid-turn steer each get precisely one confirmation.
+    emit(&mut model, P::Done, None, start);
+    for end_state in [P::Done, P::Idle] {
+        assert!(emit(&mut model, P::Working, None, start).program_turn_started);
+        emit(&mut model, end_state, None, start);
+        let rev = model.revision();
+        model.apply(SessionEvent::Delivered { revision: rev }, start);
+        assert!(
+            !confirm(&mut model, false, start).program_turn_started,
+            "delayed hook after Working -> {end_state:?} must not double-count turn_started"
+        );
+        assert!(
+            model.submit_armed(),
+            "delayed hook for finished turn must not clear a fresh submission's submit_busy"
+        );
+        // Next turn, hook first + mid-turn steer.
+        assert!(confirm(&mut model, false, start).program_turn_started);
+        assert!(!emit(&mut model, P::Working, None, start).program_turn_started);
+        assert!(confirm(&mut model, false, start).program_turn_started);
+        emit(&mut model, P::Done, None, start);
+
+        // Next turn, native Working first + hook mid-turn + mid-turn steer.
+        assert!(emit(&mut model, P::Working, None, start).program_turn_started);
+        assert!(!confirm(&mut model, false, start).program_turn_started);
+        assert!(confirm(&mut model, false, start).program_turn_started);
+        emit(&mut model, P::Done, None, start);
+    }
+
+    // 3c. Hook first with stale Idle redraw before Working, and hook first ending directly
+    // at Done without an intermediate Working frame: each turn gets precisely one confirmation.
+    assert!(confirm(&mut model, false, start).program_turn_started);
+    emit(&mut model, P::Idle, None, start);
+    assert!(
+        !emit(&mut model, P::Working, None, start).program_turn_started,
+        "stale Idle between UserPromptSubmit and Working must not double-count"
+    );
+    assert!(confirm(&mut model, false, start).program_turn_started);
+    emit(&mut model, P::Done, None, start);
+
+    assert!(confirm(&mut model, false, start).program_turn_started);
+    emit(&mut model, P::Done, None, start);
+    assert!(emit(&mut model, P::Working, None, start).program_turn_started);
+    assert!(!confirm(&mut model, false, start).program_turn_started);
+    emit(&mut model, P::Done, None, start);
+
+    // 4. Transcript Interrupted survives trailing OSC 7501 Idle in both orderings,
+    // disarms completion, and clears on the next turn.
+    for idle_first in [true, false] {
+        let t = later(start, Duration::from_secs(1));
+        assert!(confirm(&mut model, false, t).program_turn_started);
+        assert!(!emit(&mut model, P::Working, None, t).program_turn_started);
+        emit(&mut model, P::Blocked, Some("permission"), t);
+        assert!(model.status().observation.needs_you());
+        if idle_first {
+            emit(&mut model, P::Idle, None, t);
+            model.apply(
+                SessionEvent::Agent {
+                    event: A::ProgramTurnOutcome {
+                        outcome: TurnOutcome::Interrupted,
+                    },
+                    live: true,
+                },
+                t,
+            );
+        } else {
+            model.apply(
+                SessionEvent::Agent {
+                    event: A::ProgramTurnOutcome {
+                        outcome: TurnOutcome::Interrupted,
+                    },
+                    live: true,
+                },
+                t,
+            );
+            emit(&mut model, P::Idle, None, t);
+        }
+        assert_eq!(model.status().observation.activity, Activity::Idle);
+        assert_eq!(
+            model.status().observation.outcome,
+            Some(TurnOutcome::Interrupted)
+        );
+        assert!(!model.status().observation.needs_you());
+        assert!(!model.completion_armed());
+        assert_eq!(model.status().failed_since, None);
+        assert!(
+            !model
+                .apply(SessionEvent::TakeCompletion, t)
+                .completion_consumed
+        );
+
+        // Next turn clears the outcome.
+        assert!(confirm(&mut model, false, t).program_turn_started);
+        assert!(!emit(&mut model, P::Working, None, t).program_turn_started);
+        assert_eq!(model.status().observation.outcome, None);
+        emit(&mut model, P::Done, None, t);
+    }
+
+    // 4b. API failures have both OSC error and transcript task_complete(error): both
+    // orderings commute through trailing OSC idle with zero completion badges and recover cleanly.
+    for error_first in [true, false] {
+        let t = later(start, Duration::from_secs(2));
+        assert!(confirm(&mut model, false, t).program_turn_started);
+        assert!(!emit(&mut model, P::Working, None, t).program_turn_started);
+        assert!(model.completion_armed());
+        if error_first {
+            emit(&mut model, P::Error, None, t);
+            model.apply(
+                SessionEvent::Agent {
+                    event: A::ProgramTurnOutcome {
+                        outcome: TurnOutcome::Failed,
+                    },
+                    live: true,
+                },
+                t,
+            );
+        } else {
+            model.apply(
+                SessionEvent::Agent {
+                    event: A::ProgramTurnOutcome {
+                        outcome: TurnOutcome::Failed,
+                    },
+                    live: true,
+                },
+                t,
+            );
+            emit(&mut model, P::Error, None, t);
+        }
+        // Trailing OSC idle (e.g. keypress acknowledgment) preserves Failed with zero badges.
+        emit(&mut model, P::Idle, None, t);
+        assert_eq!(model.status().observation.activity, Activity::Idle);
+        assert_eq!(
+            model.status().observation.outcome,
+            Some(TurnOutcome::Failed)
+        );
+        assert!(model.status().failed_since.is_some());
+        assert!(!model.completion_armed());
+        assert!(
+            !model
+                .apply(SessionEvent::TakeCompletion, t)
+                .completion_consumed,
+            "error_first={error_first}: failed turn must not leave completion armed"
+        );
+
+        // Recovery turn clears Failed and records completion once on Done.
+        assert!(confirm(&mut model, false, t).program_turn_started);
+        assert!(!emit(&mut model, P::Working, None, t).program_turn_started);
+        assert_eq!(model.status().observation.outcome, None);
+        assert_eq!(model.status().failed_since, None);
+        emit(&mut model, P::Done, None, t);
+        assert_eq!(
+            model.status().observation.outcome,
+            Some(TurnOutcome::Completed)
+        );
+        assert!(
+            model
+                .apply(SessionEvent::TakeCompletion, t)
+                .completion_consumed
+        );
+    }
+
+    // 4c. Delayed UserPromptSubmit after Working -> Error does not erase Failed before Idle.
+    let t = later(start, Duration::from_secs(3));
+    assert!(emit(&mut model, P::Working, None, t).program_turn_started);
+    emit(&mut model, P::Error, None, t);
+    assert!(!confirm(&mut model, false, t).program_turn_started);
+    emit(&mut model, P::Idle, None, t);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+
+    // 4d. An actual conversation-key change (/clear) resets saved transcript outcomes in
+    // both SessionStart-before-idle and idle-before-SessionStart orders.
+    for session_start_first in [true, false] {
+        let t = later(start, Duration::from_secs(4));
+        assert!(confirm(&mut model, false, t).program_turn_started);
+        assert!(!emit(&mut model, P::Working, None, t).program_turn_started);
+        model.apply(
+            SessionEvent::Agent {
+                event: A::ProgramTurnOutcome {
+                    outcome: TurnOutcome::Interrupted,
+                },
+                live: true,
+            },
+            t,
+        );
+        assert_eq!(
+            model.status().observation.outcome,
+            Some(TurnOutcome::Interrupted)
+        );
+        if session_start_first {
+            model.apply(
+                SessionEvent::Agent {
+                    event: A::ProgramSessionStarted {
+                        conversation_changed: true,
+                        compacted: false,
+                    },
+                    live: true,
+                },
+                t,
+            );
+            emit(&mut model, P::Idle, None, t);
+        } else {
+            emit(&mut model, P::Idle, None, t);
+            model.apply(
+                SessionEvent::Agent {
+                    event: A::ProgramSessionStarted {
+                        conversation_changed: true,
+                        compacted: false,
+                    },
+                    live: true,
+                },
+                t,
+            );
+        }
+        assert_eq!(model.status().observation.activity, Activity::Idle);
+        assert_eq!(
+            model.status().observation.outcome,
+            None,
+            "session_start_first={session_start_first}: /clear must not carry Interrupted into the new conversation"
+        );
+        assert!(!model.completion_armed());
+    }
+
+    // 4e. Native OSC Working arriving before a missed-SessionStart conversation switch
+    // (ConversationStart + UserPromptSubmit) preserves the counted native start so total
+    // increments stay 1, and a following mid-turn steer increments once.
+    for hook_conversation_changed in [false, true] {
+        let t = later(start, Duration::from_secs(5));
+        assert!(emit(&mut model, P::Working, None, t).program_turn_started);
+        assert!(model.completion_armed());
+        model.apply(
+            SessionEvent::Agent {
+                event: A::ProgramSessionStarted {
+                    conversation_changed: true,
+                    compacted: false,
+                },
+                live: true,
+            },
+            t,
+        );
+        assert!(
+            !confirm(&mut model, hook_conversation_changed, t).program_turn_started,
+            "hook_conversation_changed={hook_conversation_changed}: first confirmation after Working + ConversationStart must not double-count"
+        );
+        assert!(
+            confirm(&mut model, false, t).program_turn_started,
+            "hook_conversation_changed={hook_conversation_changed}: next real mid-turn steer must confirm once"
+        );
+        emit(&mut model, P::Done, None, t);
+        assert!(
+            model
+                .apply(SessionEvent::TakeCompletion, t)
+                .completion_consumed,
+            "conversation-change binding during Working must keep completion armed"
+        );
+    }
+
+    // 5. Fallback Codex without any OSC 7501 bytes keeps program_status == None after
+    // ProgramTurnOutcome so baseline Forwarder transitions keep working on the next turn.
+    let mut fallback = SessionModel::default();
+    fallback.set_program_status_authority(true);
+    fallback.apply(
+        SessionEvent::Transition {
+            state: SessionActivityState::Busy,
+            source: StatusSource::Forwarder,
+            live: true,
+        },
+        start,
+    );
+    fallback.apply(
+        SessionEvent::Agent {
+            event: A::ProgramTurnOutcome {
+                outcome: TurnOutcome::Interrupted,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert!(fallback.status().observation.program_status.is_none());
+    assert_eq!(
+        fallback.status().observation.outcome,
+        Some(TurnOutcome::Interrupted)
+    );
+    // Trailing silence Idle preserves Interrupted.
+    fallback.apply(
+        SessionEvent::Transition {
+            state: SessionActivityState::Idle,
+            source: StatusSource::Forwarder,
+            live: true,
+        },
+        start,
+    );
+    assert_eq!(
+        fallback.status().observation.outcome,
+        Some(TurnOutcome::Interrupted)
+    );
+    // Next baseline Busy still takes effect and clears Interrupted.
+    let next_busy = fallback.apply(
+        SessionEvent::Transition {
+            state: SessionActivityState::Busy,
+            source: StatusSource::Forwarder,
+            live: true,
+        },
+        start,
+    );
+    assert_eq!(
+        next_busy.publication,
+        Some((SessionActivityState::Busy, StatusSource::Forwarder))
+    );
+    assert_eq!(fallback.status().observation.activity, Activity::Working);
+    assert_eq!(fallback.status().observation.outcome, None);
+
+    // 6. Authoritative Codex (program_status_root_app = Some("codex")) filters out foreign
+    // root/child records while honoring unscoped root clear; other runtimes
+    // (program_status_root_app = None) preserve the shared hierarchical update.current policy.
+    let mut codex = SessionModel::default();
+    codex.set_program_status_authority(true);
+    codex.set_program_status_root_app(Some("codex"));
+    let mut agy = SessionModel::default();
+    agy.set_program_status_authority(true);
+    let foreign_child = Report {
+        id: "sub".into(),
+        state: P::Blocked,
+        app: Some("other".into()),
+        kind: Some("question".into()),
+        progress: None,
+        title: None,
+        message: None,
+    };
+    let codex_done = Report {
+        id: String::new(),
+        state: P::Done,
+        app: Some("codex".into()),
+        kind: None,
+        progress: None,
+        title: None,
+        message: None,
+    };
+    let agy_done = Report {
+        id: String::new(),
+        state: P::Done,
+        app: Some("agy".into()),
+        kind: None,
+        progress: None,
+        title: None,
+        message: None,
+    };
+    for (target, done) in [
+        (&mut codex, codex_done.clone()),
+        (&mut agy, agy_done.clone()),
+    ] {
+        let work = Report {
+            state: P::Working,
+            ..done.clone()
+        };
+        target.apply(
+            SessionEvent::ProgramStatus {
+                seq: 1,
+                subseq: 0,
+                update: Box::new(Update {
+                    current: Some(work.clone()),
+                    trigger: Some(work),
+                }),
+                live: true,
+            },
+            start,
+        );
+        target.apply(
+            SessionEvent::ProgramStatus {
+                seq: 2,
+                subseq: 0,
+                update: Box::new(Update {
+                    current: Some(foreign_child.clone()),
+                    trigger: Some(foreign_child.clone()),
+                }),
+                live: true,
+            },
+            start,
+        );
+        // Foreign child preempts update.current while root emits Done.
+        target.apply(
+            SessionEvent::ProgramStatus {
+                seq: 3,
+                subseq: 0,
+                update: Box::new(Update {
+                    current: Some(foreign_child.clone()),
+                    trigger: Some(done),
+                }),
+                live: true,
+            },
+            start,
+        );
+    }
+    assert_eq!(
+        codex.status().observation.outcome,
+        Some(TurnOutcome::Completed),
+        "authoritative Codex must ignore foreign child and accept its own root Done"
+    );
+    assert!(!codex.status().observation.needs_you());
+    assert!(
+        agy.status().observation.needs_you(),
+        "non-Codex runtimes keep shared hierarchical update.current policy"
+    );
+    assert_eq!(agy.status().observation.outcome, None);
+
+    // 7. Non-Codex authoritative runtimes (Antigravity, hooks-off Claude Code and pi)
+    // dismiss OSC 7501 error on trailing idle to plain Idle (outcome == None), whereas
+    // Codex reconciles transcript/OSC errors and preserves Failed until new work.
+    for (runtime, app, status_hooks) in [
+        (crate::model::Runtime::Antigravity, "agy", true),
+        (crate::model::Runtime::ClaudeCode, "claude", false),
+        (crate::model::Runtime::Pi, "pi", false),
+    ] {
+        let semantics = crate::runtimes::adapter(runtime).status_semantics();
+        assert!(!semantics.program_status_transcript_outcomes, "{runtime:?}");
+        let mut other = SessionModel::default();
+        other.set_program_status_authority(semantics.program_status_authoritative(status_hooks));
+        other.set_program_status_root_app(semantics.program_status_root_app);
+        other.set_program_status_transcript_outcomes(semantics.program_status_transcript_outcomes);
+        for (seq, state) in [(1, P::Working), (2, P::Error), (3, P::Idle)] {
+            let report = Report {
+                id: String::new(),
+                state,
+                app: Some(app.into()),
+                kind: None,
+                progress: None,
+                title: None,
+                message: None,
+            };
+            other.apply(
+                SessionEvent::ProgramStatus {
+                    seq,
+                    subseq: 0,
+                    update: Box::new(Update {
+                        current: Some(report.clone()),
+                        trigger: Some(report),
+                    }),
+                    live: true,
+                },
+                start,
+            );
+        }
+        assert_eq!(
+            other.status().observation.activity,
+            Activity::Idle,
+            "{runtime:?}"
+        );
+        assert_eq!(
+            other.status().observation.outcome,
+            None,
+            "{runtime:?}: error -> idle must return plain Idle"
+        );
+        assert_eq!(other.status().failed_since, None, "{runtime:?}");
+    }
+}
+
+#[test]
+fn codex_turn_confirmation_handles_every_interleaving_of_identity_and_osc7501() {
+    use agent::AgentEvent as A;
+    use runner_terminal::program_status::{Report, State as P, Update};
+
+    #[derive(Clone, Copy, Debug)]
+    enum Step {
+        SessionStart { changed: bool },
+        UserPrompt { changed: bool },
+        TurnFinished,
+        TurnInterrupted,
+        TurnFailed,
+        Working,
+        Idle,
+        Done,
+        Error,
+    }
+
+    fn interleavings(a: &[Step], b: &[Step]) -> Vec<Vec<Step>> {
+        if a.is_empty() {
+            return vec![b.to_vec()];
+        }
+        if b.is_empty() {
+            return vec![a.to_vec()];
+        }
+        let mut out = Vec::new();
+        for mut rest in interleavings(&a[1..], b) {
+            let mut seq = Vec::with_capacity(a.len() + b.len());
+            seq.push(a[0]);
+            seq.append(&mut rest);
+            out.push(seq);
+        }
+        for mut rest in interleavings(a, &b[1..]) {
+            let mut seq = Vec::with_capacity(a.len() + b.len());
+            seq.push(b[0]);
+            seq.append(&mut rest);
+            out.push(seq);
+        }
+        out
+    }
+
+    let apply_step = |model: &mut SessionModel, seq: &mut u64, step: Step, at: Now| -> bool {
+        match step {
+            Step::SessionStart { changed } => {
+                model
+                    .apply(
+                        SessionEvent::Agent {
+                            event: A::ProgramSessionStarted {
+                                conversation_changed: changed,
+                                compacted: false,
+                            },
+                            live: true,
+                        },
+                        at,
+                    )
+                    .program_turn_started
+            }
+            Step::UserPrompt { changed } => {
+                model
+                    .apply(
+                        SessionEvent::Agent {
+                            event: A::ProgramTurnConfirmed {
+                                conversation_changed: changed,
+                            },
+                            live: true,
+                        },
+                        at,
+                    )
+                    .program_turn_started
+            }
+            Step::TurnFinished => {
+                model
+                    .apply(
+                        SessionEvent::Agent {
+                            event: A::ProgramTurnFinished,
+                            live: true,
+                        },
+                        at,
+                    )
+                    .program_turn_started
+            }
+            Step::TurnInterrupted | Step::TurnFailed => {
+                let outcome = match step {
+                    Step::TurnInterrupted => TurnOutcome::Interrupted,
+                    Step::TurnFailed => TurnOutcome::Failed,
+                    _ => unreachable!(),
+                };
+                model
+                    .apply(
+                        SessionEvent::Agent {
+                            event: A::ProgramTurnOutcome { outcome },
+                            live: true,
+                        },
+                        at,
+                    )
+                    .program_turn_started
+            }
+            Step::Working | Step::Idle | Step::Done | Step::Error => {
+                *seq += 1;
+                let state = match step {
+                    Step::Working => P::Working,
+                    Step::Idle => P::Idle,
+                    Step::Done => P::Done,
+                    Step::Error => P::Error,
+                    _ => unreachable!(),
+                };
+                let report = Report {
+                    id: String::new(),
+                    state,
+                    app: Some("codex".into()),
+                    kind: None,
+                    progress: None,
+                    title: None,
+                    message: None,
+                };
+                model
+                    .apply(
+                        SessionEvent::ProgramStatus {
+                            seq: *seq,
+                            subseq: 0,
+                            update: Box::new(Update {
+                                current: Some(report.clone()),
+                                trigger: Some(report),
+                            }),
+                            live: true,
+                        },
+                        at,
+                    )
+                    .program_turn_started
+            }
+        }
+    };
+
+    let start = now();
+    let cases = [
+        (
+            "fresh-launch-completed",
+            false,
+            vec![
+                Step::SessionStart { changed: false },
+                Step::UserPrompt { changed: false },
+                Step::TurnFinished,
+            ],
+            vec![Step::Working, Step::Done],
+            TurnOutcome::Completed,
+            true,
+        ),
+        (
+            "session-start-rekey-completed",
+            true,
+            vec![
+                Step::SessionStart { changed: true },
+                Step::UserPrompt { changed: false },
+                Step::TurnFinished,
+            ],
+            vec![Step::Working, Step::Done],
+            TurnOutcome::Completed,
+            true,
+        ),
+        (
+            "missed-session-start-rekey-completed",
+            true,
+            vec![
+                Step::SessionStart { changed: true },
+                Step::UserPrompt { changed: true },
+                Step::TurnFinished,
+            ],
+            vec![Step::Working, Step::Done],
+            TurnOutcome::Completed,
+            true,
+        ),
+        (
+            "missed-session-start-rekey-failed",
+            true,
+            vec![
+                Step::SessionStart { changed: true },
+                Step::UserPrompt { changed: true },
+                Step::TurnFailed,
+            ],
+            vec![Step::Working, Step::Error],
+            TurnOutcome::Failed,
+            false,
+        ),
+        (
+            "fresh-launch-interrupted",
+            false,
+            vec![
+                Step::SessionStart { changed: false },
+                Step::UserPrompt { changed: false },
+                Step::TurnInterrupted,
+            ],
+            vec![Step::Working, Step::Idle],
+            TurnOutcome::Interrupted,
+            false,
+        ),
+        (
+            "rekey-interrupted",
+            true,
+            vec![
+                Step::SessionStart { changed: true },
+                Step::UserPrompt { changed: false },
+                Step::TurnInterrupted,
+            ],
+            vec![Step::Working, Step::Idle],
+            TurnOutcome::Interrupted,
+            false,
+        ),
+    ];
+
+    for (name, prior_interrupted, stream_a, stream_b, expected_outcome, expect_completion) in cases
+    {
+        let all = interleavings(&stream_a, &stream_b);
+        assert_eq!(all.len(), 10, "{name}: C(5,2) = 10 interleavings");
+        for trace in all {
+            let mut model = SessionModel::default();
+            model.set_program_status_authority(true);
+            model.set_program_status_root_app(Some("codex"));
+            model.set_program_status_transcript_outcomes(true);
+            let mut seq = 0u64;
+            if prior_interrupted {
+                model.apply(
+                    SessionEvent::Agent {
+                        event: A::ProgramTurnOutcome {
+                            outcome: TurnOutcome::Interrupted,
+                        },
+                        live: true,
+                    },
+                    start,
+                );
+            }
+
+            let mut starts = 0usize;
+            for &step in &trace {
+                if apply_step(&mut model, &mut seq, step, start) {
+                    starts += 1;
+                }
+            }
+            assert_eq!(
+                starts, 1,
+                "{name} trace={trace:?}: single turn must count exactly once"
+            );
+            assert_eq!(
+                model.status().observation.outcome,
+                Some(expected_outcome),
+                "{name} trace={trace:?}: native outcome must be retained"
+            );
+            assert_eq!(
+                model
+                    .apply(SessionEvent::TakeCompletion, start)
+                    .completion_consumed,
+                expect_completion,
+                "{name} trace={trace:?}: completion badge mismatch"
+            );
+            if expected_outcome == TurnOutcome::Failed {
+                // Trailing OSC idle preserves Failed across every failed interleaving.
+                seq += 1;
+                let idle = Report {
+                    id: String::new(),
+                    state: P::Idle,
+                    app: Some("codex".into()),
+                    kind: None,
+                    progress: None,
+                    title: None,
+                    message: None,
+                };
+                model.apply(
+                    SessionEvent::ProgramStatus {
+                        seq,
+                        subseq: 0,
+                        update: Box::new(Update {
+                            current: Some(idle.clone()),
+                            trigger: Some(idle),
+                        }),
+                        live: true,
+                    },
+                    start,
+                );
+                assert_eq!(
+                    model.status().observation.outcome,
+                    Some(TurnOutcome::Failed),
+                    "{name} trace={trace:?}: trailing idle must preserve Failed"
+                );
+            }
+
+            // Subsequent genuine Turn 2 + mid-turn steer (tested in both Working-first and
+            // hook-first starts) must clear any prior outcome and count precisely once each.
+            let t2 = later(start, Duration::from_secs(1));
+            assert!(
+                apply_step(&mut model, &mut seq, Step::Working, t2),
+                "{name} trace={trace:?}: Turn 2 Working must start once"
+            );
+            assert_eq!(
+                model.status().observation.outcome,
+                None,
+                "{name} trace={trace:?}: genuine Turn 2 Working must clear prior outcome"
+            );
+            assert!(
+                !apply_step(
+                    &mut model,
+                    &mut seq,
+                    Step::UserPrompt { changed: false },
+                    t2
+                ),
+                "{name} trace={trace:?}: Turn 2 UserPromptSubmit must pair with Working"
+            );
+            assert!(
+                apply_step(
+                    &mut model,
+                    &mut seq,
+                    Step::UserPrompt { changed: false },
+                    t2
+                ),
+                "{name} trace={trace:?}: Turn 2 mid-turn steer must confirm once"
+            );
+            assert!(!apply_step(&mut model, &mut seq, Step::Done, t2));
+            assert_eq!(
+                model.status().observation.outcome,
+                Some(TurnOutcome::Completed),
+                "{name} trace={trace:?}: recovery Turn 2 must finish Completed"
+            );
+
+            // Also verify hook-first recovery after an Interrupted turn clears the outcome on Turn 3.
+            if expected_outcome == TurnOutcome::Interrupted {
+                let t3 = later(start, Duration::from_secs(2));
+                assert!(apply_step(
+                    &mut model,
+                    &mut seq,
+                    Step::UserPrompt { changed: false },
+                    t3
+                ));
+                assert!(!apply_step(&mut model, &mut seq, Step::TurnInterrupted, t3));
+                assert!(!apply_step(&mut model, &mut seq, Step::Working, t3));
+                assert!(!apply_step(&mut model, &mut seq, Step::Idle, t3));
+                assert_eq!(
+                    model.status().observation.outcome,
+                    Some(TurnOutcome::Interrupted)
+                );
+                let t4 = later(start, Duration::from_secs(3));
+                assert!(apply_step(
+                    &mut model,
+                    &mut seq,
+                    Step::UserPrompt { changed: false },
+                    t4
+                ));
+                assert!(!apply_step(&mut model, &mut seq, Step::Working, t4));
+                assert_eq!(model.status().observation.outcome, None);
+                assert!(!apply_step(&mut model, &mut seq, Step::Idle, t4));
+                assert_eq!(
+                    model.status().observation.outcome,
+                    None,
+                    "{name} trace={trace:?}: hook-first Turn 4 Idle must not inherit stale Interrupted"
+                );
+            }
+        }
+    }
+
+    // Manual /compact (Working -> Done -> SessionStart(compacted=true), no UserPromptSubmit)
+    // clears its unpaired native turn credit so a later Turn 2 + steer each count once.
+    let mut compacted = SessionModel::default();
+    compacted.set_program_status_authority(true);
+    compacted.set_program_status_root_app(Some("codex"));
+    compacted.set_program_status_transcript_outcomes(true);
+    let mut seq = 0u64;
+    assert!(apply_step(&mut compacted, &mut seq, Step::Working, start));
+    assert!(!apply_step(&mut compacted, &mut seq, Step::Done, start));
+    compacted.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionStarted {
+                conversation_changed: false,
+                compacted: true,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert!(apply_step(
+        &mut compacted,
+        &mut seq,
+        Step::UserPrompt { changed: false },
+        start
+    ));
+    assert!(!apply_step(&mut compacted, &mut seq, Step::Working, start));
+    assert!(apply_step(
+        &mut compacted,
+        &mut seq,
+        Step::UserPrompt { changed: false },
+        start
+    ));
 }

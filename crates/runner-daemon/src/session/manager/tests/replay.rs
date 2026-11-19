@@ -162,7 +162,7 @@ impl runner_terminal::terminal::TerminalHost for ReplayTerminalHost {
     fn clipboard_store(&self, _: &str, _: runner_terminal::terminal::ClipboardTarget, _: &str) {}
 }
 
-fn attach_replay_program_terminal(manager: &SessionManager) {
+fn attach_replay_program_terminal(manager: &SessionManager, runtime: &str) {
     let terminal = runner_terminal::terminal::TerminalModel::new(
         Arc::new(ReplayTerminalHost),
         ID.to_owned(),
@@ -174,9 +174,18 @@ fn attach_replay_program_terminal(manager: &SessionManager) {
         },
     )
     .unwrap();
+    let semantics = crate::runtimes::for_key(runtime).status_semantics();
     let state = manager.session_state_or_insert(ID);
     let mut state = state.lock().unwrap();
-    state.model.set_program_status_authority(true);
+    state
+        .model
+        .set_program_status_authority(semantics.program_status_authority);
+    state
+        .model
+        .set_program_status_root_app(semantics.program_status_root_app);
+    state
+        .model
+        .set_program_status_transcript_outcomes(semantics.program_status_transcript_outcomes);
     if let Some(previous) = state.terminal.replace(terminal) {
         for worker in previous.stop_workers() {
             let _ = worker.join();
@@ -373,19 +382,25 @@ fn replay(path: &Path) -> Value {
     );
     crate::test_support::insert_session_row(&conn, &row).unwrap();
     let start = Instant::now();
+    let uses_program_status = crate::runtimes::for_key(&header.runtime)
+        .status_semantics()
+        .program_status_authority;
     let mut detector = IdleDetector::with_adapter_at(
         Duration::from_secs(2),
         crate::runtimes::for_key(&header.runtime)
             .terminal_adapter((header.runtime == "codex").then_some(header.pending_turn)),
         start,
     );
+    if uses_program_status {
+        detector.hooks_unavailable();
+    }
     let mut cancel = 0;
     let mut timeline = Vec::new();
     let mut token = None;
     with_conversation_home(&home, || {
         clock::at(start, EPOCH, || {
-            if header.runtime == "antigravity" {
-                attach_replay_program_terminal(&manager);
+            if uses_program_status {
+                attach_replay_program_terminal(&manager, &header.runtime);
             }
             install_replay_handle(&manager, &conn, events.as_ref(), &log);
             manager.publish_mission_activity(
@@ -402,7 +417,7 @@ fn replay(path: &Path) -> Value {
                 let mut transition = None;
                 match step.event {
                     Event::Output { bytes, quiet } => {
-                        if header.runtime == "antigravity" {
+                        if uses_program_status {
                             manager.ingest_output_chunk(
                                 ID,
                                 Some("scenario-mission"),
@@ -560,8 +575,8 @@ fn replay(path: &Path) -> Value {
                         )
                         .unwrap();
                         watcher = self::watcher(&header.runtime, &routes, &home, &generation);
-                        if header.runtime == "antigravity" {
-                            attach_replay_program_terminal(&manager);
+                        if uses_program_status {
+                            attach_replay_program_terminal(&manager, &header.runtime);
                         }
                         install_replay_handle(&manager, &conn, events.as_ref(), &log);
                         detector = IdleDetector::with_adapter_at(
@@ -570,6 +585,9 @@ fn replay(path: &Path) -> Value {
                                 .terminal_adapter((header.runtime == "codex").then_some(false)),
                             now,
                         );
+                        if uses_program_status {
+                            detector.hooks_unavailable();
+                        }
                         manager.publish_mission_activity(
                             ID,
                             SessionActivityState::Busy,

@@ -12,7 +12,7 @@ If a copy of Runner from another version or build is open on the same data, a ne
 
 Codex can download its remote plugin catalog on every start. Turn **Settings → Agents → Codex → Launch → Remote plugin catalog** off to skip that download; catalog plugins will no longer load. Start a new session to apply the change.
 
-If **Status hooks** is off, Runner uses native terminal status or terminal activity. Update Codex to 0.163.0+, Claude Code to 2.1.295+ or pi to 1.1.0+ for native status, or turn hooks back on for detailed reports. Resume still uses the identity hook. Missions always use status hooks.
+For runtimes with a **Status hooks** switch (Claude Code, pi, Copilot CLI, OpenCode and Grok), turning it off switches chats to native terminal status or terminal activity. Update Claude Code to 2.1.295+ or pi to 1.1.0+ for native status, or turn **Status hooks** back on for detailed reports; resume still uses the identity hook, and missions keep status hooks for those runtimes. Codex (0.164.0+) and Antigravity CLI use native OSC 7501 terminal status in both chats and missions without a **Status hooks** switch.
 
 ## An agent is missing or fails to start
 
@@ -81,7 +81,7 @@ In a normal Linux window, drag an edge or corner to resize. The middle caption b
 
 ## Codex is too old for Runner
 
-Runner requires Codex **0.149.0 or newer**. **Update needed** appears only on Codex’s agent row; role rows have no update labels or actions. Start Codex or any role using it to update Codex before launching, or choose **Update Codex** on a refused chat's card. The pane starts after a successful update. If an old version still appears, check the executable override in **Settings → Agents → Codex** and refresh detection.
+Runner requires Codex **0.164.0 or newer**. **Update needed** appears only on Codex’s agent row; role rows have no update labels or actions. Start Codex or any role using it to update Codex before launching, or choose **Update Codex** on a refused chat's card. The pane starts after a successful update. If an old version still appears, check the executable override in **Settings → Agents → Codex** and refresh detection.
 
 ## Codex didn't accept Runner's launch flags
 

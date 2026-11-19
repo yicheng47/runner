@@ -53,9 +53,6 @@ impl SessionManager {
             router::SessionDeliveryEvent::Idle
         };
         let event = match event {
-            TerminalEvent::CodexAttention(blocked) => {
-                SessionEvent::CodexAttention { blocked, live }
-            }
             TerminalEvent::Activity(state) => SessionEvent::Transition {
                 state,
                 source: StatusSource::Forwarder,
@@ -84,24 +81,12 @@ impl SessionManager {
         event: crate::runtimes::TerminalEvent,
         events: &dyn SessionEvents,
     ) {
-        if let crate::runtimes::TerminalEvent::CodexAttention(blocked) = event {
-            self.publish_model_event_for_launch(
-                session_id,
-                SessionEvent::CodexAttention {
-                    blocked,
-                    live: true,
-                },
-                None,
-                events,
-            );
-            return;
-        }
         if !self.note_terminal_event(session_id, event) {
             return;
         }
         events.status(&SessionActivityEvent {
             session_id: session_id.to_owned(),
-            state: event.state().expect("attention handled above"),
+            state: event.state(),
             source: StatusSource::Forwarder,
             status: self.agent_status(session_id),
         });
@@ -114,18 +99,6 @@ impl SessionManager {
         event: crate::runtimes::TerminalEvent,
         events: &dyn SessionEvents,
     ) {
-        if let crate::runtimes::TerminalEvent::CodexAttention(blocked) = event {
-            self.publish_model_event_for_launch(
-                session_id,
-                SessionEvent::CodexAttention {
-                    blocked,
-                    live: true,
-                },
-                None,
-                events,
-            );
-            return;
-        }
         if !self.note_terminal_event(session_id, event) {
             return;
         }
@@ -139,16 +112,14 @@ impl SessionManager {
         };
         events.status(&SessionActivityEvent {
             session_id: session_id.to_owned(),
-            state: event.state().expect("attention handled above"),
+            state: event.state(),
             source: StatusSource::Forwarder,
             status: status.clone(),
         });
         if let Some(sink) = sink {
-            if let Err(error) = sink.append_session_status(
-                event.state().expect("attention handled above"),
-                StatusSource::Forwarder,
-                &status,
-            ) {
+            if let Err(error) =
+                sink.append_session_status(event.state(), StatusSource::Forwarder, &status)
+            {
                 log::warn!("append spawn session_status failed for {session_id}: {error}");
             }
         }
@@ -583,11 +554,39 @@ impl SessionManager {
                 SessionEvent::Agent { live, .. }
                 | SessionEvent::BridgeFailed { live }
                 | SessionEvent::SubmitTimeout { live }
-                | SessionEvent::CodexAttention { live, .. } => *live = is_live,
-                SessionEvent::ProgramStatus { live, .. } => *live = is_live,
+                | SessionEvent::ProgramStatus { live, .. } => *live = is_live,
                 _ => {}
             }
             let agent_turn = matches!(&event, SessionEvent::Agent { event, live: true } if agent_turn_started(event));
+            let program_session_started = matches!(
+                &event,
+                SessionEvent::Agent {
+                    event: super::super::state::agent::AgentEvent::ProgramSessionStarted { .. },
+                    live: true
+                }
+            );
+            let program_turn_finished = matches!(
+                &event,
+                SessionEvent::Agent {
+                    event: super::super::state::agent::AgentEvent::ProgramTurnFinished,
+                    live: true
+                }
+            );
+            let program_identity_unavailable = matches!(
+                &event,
+                SessionEvent::Agent {
+                    event: super::super::state::agent::AgentEvent::ProgramIdentityUnavailable,
+                    live: true
+                }
+            );
+            #[cfg(all(test, unix))]
+            let program_turn_confirmed = matches!(
+                &event,
+                SessionEvent::Agent {
+                    event: super::super::state::agent::AgentEvent::ProgramTurnConfirmed { .. },
+                    live: true
+                }
+            );
             let prompted = matches!(&event, SessionEvent::Agent { event, live: true }
                 if session.delivery_line.as_deref().is_some_and(|line| agent_prompted(event, line)));
             let was_idle = session.model.activity() == Some(SessionActivityState::Idle);
@@ -595,6 +594,13 @@ impl SessionManager {
             if (agent_turn && effects.agent_feedback.accepted) || effects.program_turn_started {
                 session.turn_started = session.turn_started.wrapping_add(1);
                 session.delivery_prompted |= prompted;
+                #[cfg(all(test, unix))]
+                session.turn_notify.notify_all();
+            }
+            #[cfg(all(test, unix))]
+            if program_turn_confirmed {
+                session.program_turn_confirmed = session.program_turn_confirmed.wrapping_add(1);
+                session.turn_notify.notify_all();
             }
             let became_idle =
                 !was_idle && session.model.activity() == Some(SessionActivityState::Idle);
@@ -606,7 +612,15 @@ impl SessionManager {
                 if bridge_failed {
                     startup.bridge_failed();
                 }
-                if startup.observation(&status.observation) {
+                if program_session_started {
+                    startup.program_session_started();
+                }
+                if program_identity_unavailable {
+                    startup.identity_bridge_unavailable();
+                }
+                if (program_turn_finished && startup.program_turn_finished())
+                    || startup.observation(&status.observation)
+                {
                     handle.startup = None;
                     true
                 } else {

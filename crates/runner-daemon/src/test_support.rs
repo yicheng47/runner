@@ -45,7 +45,10 @@ impl SessionRuntime for InertRuntime {
     }
 }
 
-pub(crate) fn test_core_in(app_data_dir: PathBuf) -> AppCore {
+pub(crate) fn test_core_in_with_runtime(
+    app_data_dir: PathBuf,
+    runtime: Arc<dyn SessionRuntime>,
+) -> AppCore {
     let runtime_shell_env = Arc::new(std::sync::RwLock::new(LoginShellEnv::default()));
     let runtime_discovery = Arc::new(std::sync::RwLock::new(
         crate::shell_path::DiscoveryState::startup(None, None),
@@ -54,7 +57,7 @@ pub(crate) fn test_core_in(app_data_dir: PathBuf) -> AppCore {
     let sessions = SessionManager::new(
         Arc::clone(&runtime_shell_env),
         Arc::clone(&runtime_discovery),
-        Arc::new(InertRuntime),
+        runtime,
     );
     sessions.set_runtime_events(events.clone());
     AppCore {
@@ -80,6 +83,14 @@ pub(crate) fn test_core_in(app_data_dir: PathBuf) -> AppCore {
         reports: Default::default(),
         app_version: "0.0.0-test".into(),
     }
+}
+
+pub(crate) fn test_core_in(app_data_dir: PathBuf) -> AppCore {
+    test_core_in_with_runtime(app_data_dir, Arc::new(InertRuntime))
+}
+
+pub(crate) fn test_core_with_runtime(runtime: Arc<dyn SessionRuntime>) -> AppCore {
+    test_core_in_with_runtime(PathBuf::new(), runtime)
 }
 
 pub(crate) fn test_core() -> AppCore {

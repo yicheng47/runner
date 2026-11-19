@@ -1,18 +1,26 @@
-runtime=codex name=approve-cancel rules=[] bugs=[] known_wrong=[]
+runtime=codex name=approve-cancel rules=[6] bugs=[] known_wrong=[]
 session_status_rows=published
-100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key="11111111-1111-4111-8111-111111111111" delivery=["Respawned","Idle"]
+100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key="11111111-1111-4111-8111-111111111111" delivery=["Respawned"]
   busy@spawn [running/working/baseline]
-  idle@hook [running/idle/hook]
+150 status=running/idle/baseline observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
 200 quiescent=false delivery=["InputQueueDrained"]
 300 activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
-  busy@input-submit [running/idle/hook]
-400 status=running/working/hook
-  busy@hook [running/working/hook]
-500 status=running/working/hook detail="using_tools"
-  busy@hook [running/working/hook detail="using_tools"]
+  busy@input-submit [running/idle/baseline observation.program_status={"message":null}]
+400
+450 status=running/working/baseline observation.program_status={"message":null}
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+500 status=running/idle/baseline interactions=[{"id":"program-status:1","reason":"approval","owners":[],"since":1767225600500}] observation.program_status={"message":null} quiescent=false
+  busy@program-status [running/idle/baseline interactions=[{"id":"program-status:1","reason":"approval","owners":[],"since":1767225600500}] observation.program_status={"message":null}]
 600
-700 result={"gate":"unavailable"}
+700 result={"gate":"human_interaction"}
 700
 800 delivery=["ReadinessChanged"]
+850 status=running/working/baseline observation.program_status={"message":null} quiescent=true delivery=["ReadinessChanged"]
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
 900 quiescent=false delivery=["InputQueueDrained"]
-1000 status=running/working/hook detail="using_tools" unread_since=1767225601000 completion_armed=false result={"completion_consumed":true,"viewed":false}
+950 status=running/idle/baseline observation.program_status={"message":null} activity="idle" completion_armed=false delivery=["Idle"]
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
+975 status=running/idle/baseline outcome="interrupted" observation.program_status={"message":null}
+  idle@program-status [running/idle/baseline outcome="interrupted" observation.program_status={"message":null}]
+1000 result={"completion_consumed":false,"viewed":false}

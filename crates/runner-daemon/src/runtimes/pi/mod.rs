@@ -146,6 +146,7 @@ impl RuntimeAdapter for Pi {
     fn status_semantics(&self) -> StatusSemantics {
         StatusSemantics {
             interaction_prefix: Some("pi"),
+            program_status_without_hooks: true,
             preserve_turn_interactions: true,
             tool_end: ToolEndPolicy::KeepWorking,
             compaction: CompactionPolicy::RestoreExact,
