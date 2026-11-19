@@ -350,6 +350,10 @@ pub(crate) struct MissionWorkspace {
     drawer_focus: FocusHandle,
     drawer_was_focused: bool,
     _drawer_focus_subscriptions: Vec<gpui::Subscription>,
+    drawer_close_focus_token: u64,
+    drawer_close_focus_subscription: Option<gpui::Subscription>,
+    #[cfg(test)]
+    drawer_close_gates: std::collections::VecDeque<crate::test_support::StagedReplyGate>,
     drawer_resizing: bool,
     closing_drawer_shells: HashSet<String>,
     drawer_exit_codes: HashMap<String, Option<i32>>,

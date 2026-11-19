@@ -428,7 +428,7 @@ impl MissionWorkspace {
 impl MissionWorkspace {
     pub(crate) fn close_visible_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.drawer_focused(window, cx) {
-            self.hide_terminal_drawer(window, cx);
+            self.close_focused_terminal_drawer_shell(window, cx);
         } else if let MissionTab::Session(id) = self.active_tab.clone() {
             self.close_mission_session_tab(&id, window, cx);
         }

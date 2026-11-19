@@ -122,6 +122,8 @@ impl MissionWorkspace {
         let host_changed = !same_host(&self.client.target, &client.target);
         if changed || target_changed {
             self.drawer_was_focused = false;
+            self.drawer_close_focus_token = self.drawer_close_focus_token.wrapping_add(1);
+            self.drawer_close_focus_subscription = None;
             let had_dialog = self.rename_modal.is_some()
                 || self.stop_all_confirm
                 || self.restart_confirm.is_some()
@@ -228,6 +230,9 @@ impl MissionWorkspace {
         self.presentation.set_selected_handle(selected_handle);
         self.presentation
             .sync_drawer(self.mission_id.as_deref(), &mut self.layout);
+        if !self.layout.drawer.open() {
+            self.drawer_was_focused = false;
+        }
         self.presentation.bind_feed(client, mission_id, clients, cx);
         self.sync_remote_feed(cx);
         cx.notify();
@@ -882,13 +887,41 @@ impl MissionPresentation {
         }
         let was_open = layout.drawer.open();
         let active = layout.drawer.active_shell().map(str::to_owned);
+        let active_index = active
+            .as_deref()
+            .and_then(|id| layout.drawer.shells().iter().position(|shell| shell == id));
+        let previous_shells = layout.drawer.shells().to_vec();
         let height = layout.drawer.height();
         let mut drawer = MissionLayout::default().drawer;
-        for shell in summary.shells {
-            drawer.add(shell);
+        for shell in &summary.shells {
+            drawer.add(shell.clone());
         }
         if let Some(active) = active {
-            drawer.activate(&active);
+            if !drawer.activate(&active) {
+                if let Some(index) = active_index {
+                    // Match `TerminalDrawer::remove`: prefer the nearest surviving predecessor
+                    // before the removed active index, then the first surviving shell after it.
+                    let successor = previous_shells[..index]
+                        .iter()
+                        .rev()
+                        .chain(previous_shells[index + 1..].iter())
+                        .find(|id| summary.shells.contains(*id))
+                        .cloned()
+                        .or_else(|| {
+                            drawer
+                                .shells()
+                                .get(
+                                    index
+                                        .saturating_sub(1)
+                                        .min(drawer.shells().len().saturating_sub(1)),
+                                )
+                                .cloned()
+                        });
+                    if let Some(successor) = successor {
+                        drawer.activate(&successor);
+                    }
+                }
+            }
         }
         drawer.set_height(height);
         drawer.set_open(was_open && !drawer.shells().is_empty());

@@ -308,7 +308,7 @@
 "heading.terminals" = "终端"
 "heading.with_missions" = "有任务"
 "heading.workspace" = "工作区"
-"keymap.close-pane.description" = "隐藏当前终端抽屉，关闭当前拆分窗格、对话标签页或启动器页面。"
+"keymap.close-pane.description" = "关闭当前任务抽屉 Shell、拆分窗格、对话标签页或启动器页面。"
 "keymap.close-pane.title" = "关闭标签页"
 "keymap.command-palette.description" = "搜索命令、任务、对话、角色和小队。"
 "keymap.command-palette.title" = "命令面板"

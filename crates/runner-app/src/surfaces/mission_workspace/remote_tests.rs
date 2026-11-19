@@ -2319,3 +2319,523 @@ fn remote_mission_rail_branch_row_tracks_online_checkout_and_hides_offline() {
         "reconnected remote mission should restore Info branch row"
     );
 }
+
+fn wait_remote_mission(
+    visual: &mut VisualTestContext,
+    what: &str,
+    mut ready: impl FnMut(&mut VisualTestContext) -> bool,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        visual.run_until_parked();
+        if ready(visual) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        std::thread::yield_now();
+    }
+}
+
+fn overview_with_shells(shells: &[&str]) -> Overview {
+    let mut data = overview();
+    for &id in shells {
+        let mut shell = data.sessions["member"].clone();
+        shell.kind = runner_core::companion::SessionKind::Shell;
+        shell.runtime = None;
+        shell.title = id.into();
+        data.sessions.insert(id.into(), shell);
+    }
+    data.missions[0].shells = shells.iter().map(|id| (*id).to_owned()).collect();
+    data
+}
+
+#[test]
+fn remote_mission_drawer_cmd_w_closes_shells_and_restores_focus() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for on_session_tab in [false, true] {
+        for push_before_result in [false, true] {
+            let (_temp, cx, window, _store, fake) = setup();
+            let workspace = workspace(window, &cx);
+            fake.set_overview(overview_with_shells(&["shell-1", "shell-2", "shell-3"]));
+            cx.run_until_parked();
+
+            let mut visual = VisualTestContext::from_window(window.into(), &cx);
+            visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+
+            // Focus non-final middle shell shell-2 so closing it must select predecessor shell-1
+            // (matching TerminalDrawer::remove) rather than jumping to shell-3.
+            let focus_root = window
+                .update(&mut visual, |_, window, cx| {
+                    workspace.update(cx, |ws, cx| {
+                        if on_session_tab {
+                            ws.select_mission_session("member", window, cx);
+                        } else {
+                            ws.select_mission_feed(window, cx);
+                        }
+                        ws.layout.drawer.set_open(true);
+                        ws.activate_terminal_drawer_shell("shell-2", window, cx);
+                        ws.root_focus.clone()
+                    })
+                })
+                .unwrap();
+
+            wait_remote_mission(
+                &mut visual,
+                "shell-2 attached and focused before first Cmd+W",
+                |v| {
+                    let shell_focused = window
+                        .read_with(v, |root, cx| {
+                            root.remote_client
+                                .remote_terminal_interactive("shell-2", cx)
+                                .then(|| root.remote_client.remote_terminal_focus("shell-2"))
+                                .flatten()
+                        })
+                        .unwrap()
+                        .is_some_and(|focus| v.update(|w, _| focus.is_focused(w)));
+                    let member_ready = !on_session_tab
+                        || window
+                            .read_with(v, |root, cx| {
+                                root.remote_client.remote_terminal_interactive("member", cx)
+                            })
+                            .unwrap();
+                    let drawer_flags = v.update(|w, cx| {
+                        workspace.read_with(cx, |ws, cx| {
+                            ws.drawer_focused(w, cx) && ws.drawer_was_focused
+                        })
+                    });
+                    shell_focused && member_ready && drawer_flags
+                },
+            );
+
+            // First Cmd+W closes non-final active shell-2 -> moves focus to predecessor shell-1.
+            let after_first = overview_with_shells(&["shell-1", "shell-3"]);
+            if push_before_result {
+                window
+                    .update(&mut visual, |root, window, cx| {
+                        crate::surfaces::windowing::close_tab(root, window, cx);
+                        let clients = root.app_store.read(cx).remote_clients.clone();
+                        clients.update(cx, |clients, cx| {
+                            clients.overviews.insert("host".into(), after_first.clone());
+                            cx.notify();
+                        });
+                        root.sync_remote_state(cx);
+                    })
+                    .unwrap();
+            } else {
+                window
+                    .update(&mut visual, crate::surfaces::windowing::close_tab)
+                    .unwrap();
+                wait_remote_mission(
+                    &mut visual,
+                    "first close RPC reply applied on UI with drawer_expected set",
+                    |v| {
+                        fake.request_count("close") == 1
+                            && workspace.read_with(v, |ws, _| {
+                                ws.presentation
+                                    .remote_for_test()
+                                    .unwrap()
+                                    .drawer_expected
+                                    .is_some()
+                            })
+                    },
+                );
+                workspace.read_with(&visual, |ws, _| {
+                    assert_eq!(
+                        ws.layout.drawer.shells(),
+                        &["shell-1", "shell-2", "shell-3"]
+                    );
+                });
+                // A second Cmd+W before the host overview arrives must not fire a duplicate close.
+                window
+                    .update(&mut visual, crate::surfaces::windowing::close_tab)
+                    .unwrap();
+                visual.run_until_parked();
+                assert_eq!(fake.request_count("close"), 1);
+                fake.set_overview(after_first);
+            }
+
+            wait_remote_mission(
+                &mut visual,
+                "shell-2 closed and predecessor shell-1 attached and focused",
+                |v| {
+                    let close_sent = fake.request_count("close") == 1;
+                    let drawer_ok = workspace.read_with(v, |ws, _| {
+                        ws.layout.drawer.open()
+                            && ws.layout.drawer.shells() == ["shell-1", "shell-3"]
+                            && ws.layout.drawer.active_shell() == Some("shell-1")
+                            && ws.drawer_was_focused
+                            && ws
+                                .presentation
+                                .remote_for_test()
+                                .unwrap()
+                                .drawer_expected
+                                .is_none()
+                    });
+                    let shell_1_focused = window
+                        .read_with(v, |root, cx| {
+                            root.remote_client
+                                .remote_terminal_interactive("shell-1", cx)
+                                .then(|| root.remote_client.remote_terminal_focus("shell-1"))
+                                .flatten()
+                        })
+                        .unwrap()
+                        .is_some_and(|focus| v.update(|w, _| focus.is_focused(w)));
+                    close_sent && drawer_ok && shell_1_focused
+                },
+            );
+            assert_eq!(
+                remote_test::action_trace(&fake, "close")[0]["session"],
+                "shell-2"
+            );
+
+            fake.input.lock().unwrap().clear();
+            visual.simulate_keystrokes("x");
+            visual.run_until_parked();
+            assert_eq!(
+                fake.input.lock().unwrap().as_slice(),
+                &[("remote:host:shell-1".into(), b"x".to_vec())]
+            );
+
+            // Second Cmd+W closes index-0 shell-1 -> moves focus to remaining shell-3.
+            let after_second = overview_with_shells(&["shell-3"]);
+            if push_before_result {
+                window
+                    .update(&mut visual, |root, window, cx| {
+                        crate::surfaces::windowing::close_tab(root, window, cx);
+                        let clients = root.app_store.read(cx).remote_clients.clone();
+                        clients.update(cx, |clients, cx| {
+                            clients
+                                .overviews
+                                .insert("host".into(), after_second.clone());
+                            cx.notify();
+                        });
+                        root.sync_remote_state(cx);
+                    })
+                    .unwrap();
+            } else {
+                window
+                    .update(&mut visual, crate::surfaces::windowing::close_tab)
+                    .unwrap();
+                wait_remote_mission(
+                    &mut visual,
+                    "second close RPC reply applied on UI with drawer_expected set",
+                    |v| {
+                        fake.request_count("close") == 2
+                            && workspace.read_with(v, |ws, _| {
+                                ws.presentation
+                                    .remote_for_test()
+                                    .unwrap()
+                                    .drawer_expected
+                                    .is_some()
+                            })
+                    },
+                );
+                fake.set_overview(after_second);
+            }
+
+            wait_remote_mission(
+                &mut visual,
+                "shell-1 closed and shell-3 attached and focused",
+                |v| {
+                    let close_sent = fake.request_count("close") == 2;
+                    let drawer_ok = workspace.read_with(v, |ws, _| {
+                        ws.layout.drawer.open()
+                            && ws.layout.drawer.shells() == ["shell-3"]
+                            && ws.layout.drawer.active_shell() == Some("shell-3")
+                            && ws.drawer_was_focused
+                            && ws
+                                .presentation
+                                .remote_for_test()
+                                .unwrap()
+                                .drawer_expected
+                                .is_none()
+                    });
+                    let shell_3_focused = window
+                        .read_with(v, |root, cx| {
+                            root.remote_client
+                                .remote_terminal_interactive("shell-3", cx)
+                                .then(|| root.remote_client.remote_terminal_focus("shell-3"))
+                                .flatten()
+                        })
+                        .unwrap()
+                        .is_some_and(|focus| v.update(|w, _| focus.is_focused(w)));
+                    close_sent && drawer_ok && shell_3_focused
+                },
+            );
+            assert_eq!(
+                remote_test::action_trace(&fake, "close")[1]["session"],
+                "shell-1"
+            );
+
+            fake.input.lock().unwrap().clear();
+            visual.simulate_keystrokes("y");
+            visual.run_until_parked();
+            assert_eq!(
+                fake.input.lock().unwrap().as_slice(),
+                &[("remote:host:shell-3".into(), b"y".to_vec())]
+            );
+
+            // Third Cmd+W closes last shell-3, hides drawer, clears drawer_was_focused, and
+            // returns focus to the remote mission (member terminal or Feed root_focus).
+            let after_third = overview_with_shells(&[]);
+            if push_before_result {
+                window
+                    .update(&mut visual, |root, window, cx| {
+                        crate::surfaces::windowing::close_tab(root, window, cx);
+                        let clients = root.app_store.read(cx).remote_clients.clone();
+                        clients.update(cx, |clients, cx| {
+                            clients.overviews.insert("host".into(), after_third.clone());
+                            cx.notify();
+                        });
+                        root.sync_remote_state(cx);
+                    })
+                    .unwrap();
+            } else {
+                window
+                    .update(&mut visual, crate::surfaces::windowing::close_tab)
+                    .unwrap();
+                wait_remote_mission(
+                    &mut visual,
+                    "third close RPC reply applied on UI with drawer_expected set",
+                    |v| {
+                        fake.request_count("close") == 3
+                            && workspace.read_with(v, |ws, _| {
+                                ws.presentation
+                                    .remote_for_test()
+                                    .unwrap()
+                                    .drawer_expected
+                                    .is_some()
+                            })
+                    },
+                );
+                fake.set_overview(after_third);
+            }
+
+            wait_remote_mission(
+                &mut visual,
+                "last shell closed, drawer hidden, focus restored to remote mission",
+                |v| {
+                    let close_sent = fake.request_count("close") == 3;
+                    let drawer_ok = workspace.read_with(v, |ws, _| {
+                        !ws.layout.drawer.open()
+                            && ws.layout.drawer.shells().is_empty()
+                            && !ws.drawer_was_focused
+                            && ws
+                                .presentation
+                                .remote_for_test()
+                                .unwrap()
+                                .drawer_expected
+                                .is_none()
+                    });
+                    let focus_ok = if on_session_tab {
+                        window
+                            .read_with(v, |root, _| {
+                                root.remote_client.remote_terminal_focus("member")
+                            })
+                            .unwrap()
+                            .is_some_and(|focus| v.update(|w, _| focus.is_focused(w)))
+                    } else {
+                        v.update(|w, _| focus_root.is_focused(w))
+                    };
+                    close_sent && drawer_ok && focus_ok
+                },
+            );
+            assert_eq!(
+                remote_test::action_trace(&fake, "close")[2]["session"],
+                "shell-3"
+            );
+
+            if on_session_tab {
+                fake.input.lock().unwrap().clear();
+                visual.simulate_keystrokes("m");
+                visual.run_until_parked();
+                assert_eq!(
+                    fake.input.lock().unwrap().as_slice(),
+                    &[("remote:host:member".into(), b"m".to_vec())]
+                );
+            }
+
+            window
+                .update(&mut visual, |_, window, _| window.remove_window())
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn remote_mission_drawer_cmd_w_respects_close_capability_empty_fallback_and_non_regressions() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+
+    // 1. Host without "close" capability: Cmd+W in focused drawer shell sends no RPC and leaves
+    //    the drawer open with its shell intact.
+    {
+        let (_temp, mut cx, window, store, fake) = setup();
+        let workspace = workspace(window, &cx);
+        fake.without_features(&["close"]);
+        window
+            .update(&mut cx, |root, _, cx| {
+                store
+                    .read(cx)
+                    .remote_clients
+                    .clone()
+                    .update(cx, |clients, cx| {
+                        clients.invalidate_capabilities("host");
+                        cx.notify();
+                    });
+                root.sync_remote_state(cx);
+            })
+            .unwrap();
+        fake.set_overview(overview_with_shells(&["shell-1"]));
+        cx.run_until_parked();
+
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+        window
+            .update(&mut visual, |_, window, cx| {
+                workspace.update(cx, |ws, cx| {
+                    ws.layout.drawer.set_open(true);
+                    ws.activate_terminal_drawer_shell("shell-1", window, cx);
+                })
+            })
+            .unwrap();
+        wait_remote_mission(
+            &mut visual,
+            "shell-1 focused without close capability",
+            |v| {
+                window
+                    .read_with(v, |root, _| {
+                        root.remote_client.remote_terminal_focus("shell-1")
+                    })
+                    .unwrap()
+                    .is_some_and(|focus| v.update(|w, _| focus.is_focused(w)))
+            },
+        );
+
+        window
+            .update(&mut visual, crate::surfaces::windowing::close_tab)
+            .unwrap();
+        visual.run_until_parked();
+        assert_eq!(fake.request_count("close"), 0);
+        workspace.read_with(&visual, |ws, _| {
+            assert!(ws.layout.drawer.open());
+            assert_eq!(ws.layout.drawer.shells(), &["shell-1"]);
+            assert!(ws
+                .presentation
+                .remote_for_test()
+                .unwrap()
+                .drawer_expected
+                .is_none());
+        });
+        window
+            .update(&mut visual, |_, window, _| window.remove_window())
+            .unwrap();
+    }
+
+    // 2. Empty open & focused drawer (active_shell() == None) falls back safely to hiding.
+    {
+        let (_temp, cx, window, _store, fake) = setup();
+        let workspace = workspace(window, &cx);
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+        visual.update(|window, _| window.activate_window());
+        let focus_root = window
+            .update(&mut visual, |_, window, cx| {
+                workspace.update(cx, |ws, cx| {
+                    ws.select_mission_feed(window, cx);
+                    ws.layout.drawer.set_open(true);
+                    ws.drawer_focus.focus(window, cx);
+                    ws.root_focus.clone()
+                })
+            })
+            .unwrap();
+        wait_remote_mission(&mut visual, "empty remote drawer focused", |v| {
+            v.update(|w, cx| {
+                workspace.read_with(cx, |ws, cx| {
+                    ws.drawer_focused(w, cx)
+                        && ws.drawer_was_focused
+                        && ws.layout.drawer.active_shell().is_none()
+                })
+            })
+        });
+
+        window
+            .update(&mut visual, crate::surfaces::windowing::close_tab)
+            .unwrap();
+        wait_remote_mission(&mut visual, "empty remote drawer hidden", |v| {
+            workspace.read_with(v, |ws, _| {
+                !ws.layout.drawer.open() && !ws.drawer_was_focused
+            }) && v.update(|w, _| focus_root.is_focused(w))
+        });
+        assert_eq!(fake.request_count("close"), 0);
+        window
+            .update(&mut visual, |_, window, _| window.remove_window())
+            .unwrap();
+    }
+
+    // 3. Non-drawer Cmd+W still closes the active remote mission session tab, and hide/toggle keep
+    //    both shells intact.
+    {
+        let (_temp, cx, window, _store, fake) = setup();
+        let workspace = workspace(window, &cx);
+        fake.set_overview(overview_with_shells(&["shell-1", "shell-2"]));
+        cx.run_until_parked();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+        window
+            .update(&mut visual, |_, window, cx| {
+                workspace.update(cx, |ws, cx| {
+                    ws.layout.drawer.set_open(true);
+                    ws.select_mission_session("member", window, cx);
+                })
+            })
+            .unwrap();
+        wait_remote_mission(&mut visual, "member tab focused outside drawer", |v| {
+            window
+                .read_with(v, |root, _| {
+                    root.remote_client.remote_terminal_focus("member")
+                })
+                .unwrap()
+                .is_some_and(|focus| v.update(|w, _| focus.is_focused(w)))
+        });
+
+        window
+            .update(&mut visual, crate::surfaces::windowing::close_tab)
+            .unwrap();
+        wait_remote_mission(&mut visual, "member tab closed to Feed", |v| {
+            workspace.read_with(v, |ws, _| ws.active_tab == MissionTab::Feed)
+        });
+        assert_eq!(fake.request_count("close"), 0);
+        workspace.read_with(&visual, |ws, _| {
+            assert!(ws.layout.drawer.open());
+            assert_eq!(ws.layout.drawer.shells(), &["shell-1", "shell-2"]);
+        });
+
+        // Hide button and toggle leave shells intact.
+        window
+            .update(&mut visual, |_, window, cx| {
+                workspace.update(cx, |ws, cx| ws.hide_terminal_drawer(window, cx))
+            })
+            .unwrap();
+        visual.run_until_parked();
+        assert_eq!(fake.request_count("close"), 0);
+        workspace.read_with(&visual, |ws, _| {
+            assert!(!ws.layout.drawer.open());
+            assert_eq!(ws.layout.drawer.shells(), &["shell-1", "shell-2"]);
+            assert!(!ws.drawer_was_focused);
+        });
+        visual.dispatch_action(crate::ToggleTerminalDrawer);
+        visual.run_until_parked();
+        workspace.read_with(&visual, |ws, _| {
+            assert!(ws.layout.drawer.open());
+            assert_eq!(ws.layout.drawer.shells(), &["shell-1", "shell-2"]);
+        });
+        assert_eq!(fake.request_count("close"), 0);
+
+        window
+            .update(&mut visual, |_, window, _| window.remove_window())
+            .unwrap();
+    }
+}

@@ -75,7 +75,7 @@ pub(crate) struct Fake {
     pair_ops: Mutex<Vec<&'static str>>,
     refusal: Mutex<Option<String>>,
     attaches: Mutex<Vec<RemoteTerminal>>,
-    input: Mutex<Vec<(String, Vec<u8>)>>,
+    pub(crate) input: Mutex<Vec<(String, Vec<u8>)>>,
     sizes: Mutex<Vec<(String, u16, u16)>>,
     takes: Mutex<Vec<(String, String, u16, u16)>>,
     claims: Mutex<Vec<(String, String, u16, u16)>>,

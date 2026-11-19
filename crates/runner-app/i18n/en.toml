@@ -308,7 +308,7 @@
 "heading.terminals" = "TERMINALS"
 "heading.with_missions" = "WITH MISSIONS"
 "heading.workspace" = "WORKSPACE"
-"keymap.close-pane.description" = "Hide the focused drawer, close the focused split pane, close the chat tab, or close the launcher page."
+"keymap.close-pane.description" = "Close the focused mission drawer shell, split pane, chat tab, or launcher page."
 "keymap.close-pane.title" = "Close tab"
 "keymap.command-palette.description" = "Search commands, missions, chats, roles, and crews."
 "keymap.command-palette.title" = "Command palette"

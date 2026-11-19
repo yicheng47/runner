@@ -211,6 +211,10 @@ impl MissionWorkspace {
             drawer_focus,
             drawer_was_focused: false,
             _drawer_focus_subscriptions: drawer_focus_subscriptions,
+            drawer_close_focus_token: 0,
+            drawer_close_focus_subscription: None,
+            #[cfg(test)]
+            drawer_close_gates: std::collections::VecDeque::new(),
             drawer_resizing: false,
             closing_drawer_shells: HashSet::new(),
             drawer_exit_codes: HashMap::new(),
@@ -338,6 +342,8 @@ impl MissionWorkspace {
         self.attached.clear();
         self.mission_node_id = None;
         self.layout = MissionLayout::default();
+        self.drawer_close_focus_token = self.drawer_close_focus_token.wrapping_add(1);
+        self.drawer_close_focus_subscription = None;
         self.drawer_resizing = false;
         self.closing_drawer_shells.clear();
         self.drawer_exit_codes.clear();
@@ -398,6 +404,8 @@ impl MissionWorkspace {
     pub(crate) fn release_window(&mut self, cx: &mut Context<Self>) {
         self.active = false;
         self.drawer_was_focused = false;
+        self.drawer_close_focus_token = self.drawer_close_focus_token.wrapping_add(1);
+        self.drawer_close_focus_subscription = None;
         self.mark_viewed_in_flight = false;
         self.pending_mark_viewed_session = None;
         self.mark_viewed_task = None;

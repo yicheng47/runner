@@ -322,6 +322,14 @@ impl RemoteClient {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn remote_terminal_focus(&self, id: &str) -> Option<FocusHandle> {
+        self.workspace
+            .as_ref()
+            .and_then(|remote| remote.terminals.get(id))
+            .map(|pane| pane.attachment.terminal_focus.clone())
+    }
+
     pub(crate) fn visit_computer(
         &mut self,
         computer: Computer,
