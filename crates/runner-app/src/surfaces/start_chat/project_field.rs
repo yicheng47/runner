@@ -113,23 +113,20 @@ impl ProjectField {
         self.choices.iter().find(|choice| choice.id == id)
     }
 
-    /// The menu chose `id`, empty for No project. Returns the working
-    /// directory the choice leaves, when it differs from `directory`: the
-    /// project's folder, unless `directory` is already inside it.
+    /// The menu chose `id`, empty for No project. Returns the folder the
+    /// choice starts in: the project's folder, or `directory` for No project.
     pub(crate) fn choose(&mut self, id: &str, directory: &str) -> Option<String> {
         if self.locked {
             return None;
         }
         self.chosen = (!id.is_empty()).then(|| id.to_owned());
-        let replacement = self
+        let start = self
             .chosen()
-            .and_then(|project| (!self.holds(project, directory)).then(|| project.path.clone()));
-        self.committed_directory = replacement
-            .as_deref()
-            .unwrap_or(directory)
+            .map_or(directory, |project| project.path.as_str())
             .trim()
             .to_owned();
-        replacement
+        self.committed_directory = start.clone();
+        Some(start)
     }
 
     /// The working directory was committed: a directory inside a project
@@ -210,10 +207,6 @@ impl ProjectField {
             select.set_value(value, select_cx);
         });
     }
-
-    fn holds(&self, project: &ProjectChoice, directory: &str) -> bool {
-        deepest_folder_of([project.path.as_str()], directory.trim(), self.local).is_some()
-    }
 }
 
 fn project_options(choices: &[ProjectChoice]) -> Vec<SelectOption> {
@@ -284,13 +277,19 @@ mod tests {
     }
 
     #[gpui::test]
-    fn choosing_a_project_takes_its_folder_unless_the_directory_is_inside(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn choosing_a_project_takes_its_folder(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             let mut field = project_field(Some("runner"), false, cx);
             let worktree = "/repos/yicheng47/runner/.worktrees/feat-968";
-            assert_eq!(field.choose("runner", worktree), None);
+            assert_eq!(
+                field.choose("runner", worktree).as_deref(),
+                Some("/repos/yicheng47/runner")
+            );
+            assert_eq!(
+                field.choose("parent", "/repos/yicheng47/quill").as_deref(),
+                Some("/repos/yicheng47")
+            );
+            assert_eq!(field.scope(), ProjectScope::Project("parent".into()));
             assert_eq!(
                 field.choose("quill", worktree).as_deref(),
                 Some("/repos/yicheng47/quill")
@@ -299,7 +298,7 @@ mod tests {
                 field.choose("runner", "").as_deref(),
                 Some("/repos/yicheng47/runner")
             );
-            assert_eq!(field.choose("", worktree), None);
+            assert_eq!(field.choose("", "/home/me").as_deref(), Some("/home/me"));
             assert_eq!(field.scope(), ProjectScope::Root);
             assert_eq!(
                 field.choose("web", "/repos/yicheng47/runner"),
@@ -319,8 +318,8 @@ mod tests {
             field.choose("", directory);
             assert!(!field.follow(directory, cx));
             assert_eq!(field.scope(), ProjectScope::Root);
-            field.choose("parent", directory);
-            assert!(!field.follow(directory, cx));
+            let folder = field.choose("parent", directory).unwrap();
+            assert!(!field.follow(&folder, cx));
             assert_eq!(field.scope(), ProjectScope::Project("parent".into()));
             assert!(field.follow("/repos/yicheng47/runner/src", cx));
             assert_eq!(field.scope(), ProjectScope::Project("runner".into()));

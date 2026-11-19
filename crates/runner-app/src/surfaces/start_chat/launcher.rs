@@ -989,13 +989,21 @@ impl ChatLauncher {
 
     fn choose_project(&mut self, id: &str, cx: &mut Context<Self>) {
         let current = self.cwd.read(cx).text().to_owned();
-        if let Some(path) = self.project.choose(id, &current) {
+        let default = self.default_directory(cx);
+        let start = if default.is_empty() {
+            &current
+        } else {
+            &default
+        };
+        if let Some(path) = self.project.choose(id, start) {
             self.new_worktree = None;
             self.checkout_picker = None;
             self.error = None;
-            self.cwd.update(cx, |input, cx| input.reset(path, cx));
-            self.sync_sample_prompt_to_cwd(cx);
-            self.refresh_checkout_state(cx);
+            if path != current.trim() {
+                self.cwd.update(cx, |input, cx| input.reset(path, cx));
+                self.sync_sample_prompt_to_cwd(cx);
+            }
+            self.refresh_checkout_details(cx);
         }
         self.changed_directory = false;
         cx.notify();
