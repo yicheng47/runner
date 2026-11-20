@@ -14,9 +14,9 @@ All three slots run `codex` with `--ask-for-approval on-request --sandbox worksp
 
 | Slot | Model | Effort | Speed |
 | --- | --- | --- | --- |
-| @coder | `gpt-6.1-sol` | `xhigh` | fast |
-| @reviewer | `gpt-6-astra` | `xhigh` | standard |
-| @qa | `gpt-6.1-sol` | `xhigh` | fast |
+| @coder | `gpt-6.2-sol` | `xhigh` | fast |
+| @reviewer | `gpt-6.2-astra` | `xhigh` | standard |
+| @qa | `gpt-6.2-sol` | `xhigh` | fast |
 
 ## Team conventions
 
