@@ -42,9 +42,28 @@ pub fn default_label(
         .unwrap_or_else(|| display_name.to_owned())
 }
 
+/// Extract a session topic from a raw PTY OSC title for an agent runtime.
+///
+/// For `pi`, Runner accepts only OSC titles prefixed with `π - ` or `pi - `
+/// (such as stock `pi`'s `π - <name> - <cwd>` titles from `/name` or
+/// `pi.setSessionName()`) so unbranded subprocess titles like `npm view …` or
+/// `cmd.exe - …` are ignored instead of persisted as the chat title. Custom
+/// `piConfig.name` brands and arbitrary `ctx.ui.setTitle()` text without those
+/// prefixes are intentionally ignored.
+pub fn osc_provider_title(raw: &str, runtime: Runtime, cwd: Option<&str>) -> Option<String> {
+    let clean = sanitize_raw(raw);
+    if runtime == Runtime::Pi && !has_pi_brand_prefix(&clean) {
+        return None;
+    }
+    provider_title_clean(&clean, cwd)
+}
+
 pub fn provider_title(raw: &str, cwd: Option<&str>) -> Option<String> {
-    let clean: String = raw
-        .chars()
+    provider_title_clean(&sanitize_raw(raw), cwd)
+}
+
+fn sanitize_raw(raw: &str) -> String {
+    raw.chars()
         .take(512)
         .map(|c| {
             if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
@@ -53,8 +72,19 @@ pub fn provider_title(raw: &str, cwd: Option<&str>) -> Option<String> {
                 c
             }
         })
-        .collect();
-    let mut title = trim_chrome(&clean);
+        .collect()
+}
+
+fn has_pi_brand_prefix(clean: &str) -> bool {
+    let Some((left, _)) = clean.trim().split_once(" - ") else {
+        return false;
+    };
+    let brand = left.trim();
+    brand == "π" || brand.eq_ignore_ascii_case("pi")
+}
+
+fn provider_title_clean(clean: &str, cwd: Option<&str>) -> Option<String> {
+    let mut title = trim_chrome(clean);
     // Codex animates ASCII prefixes in its OSC title; keep the topic stable.
     if let Some(("|" | "/" | "-" | "\\", rest)) = title.split_once(' ') {
         title = trim_chrome(rest);
@@ -346,6 +376,58 @@ mod tests {
                 "{raw}"
             );
         }
+    }
+
+    #[test]
+    fn pi_osc_titles_reject_unbranded_subprocess_titles_and_keep_branded_topics() {
+        let cwd = Some(r"C:\Users\jason\runner");
+        for raw in [
+            "",
+            "π",
+            "pi",
+            "π - ",
+            "π - runner",
+            "pi - runner",
+            "npm view pi-hashline-edit-pro version",
+            r"C:\Windows\system32\cmd.exe - npm view pi-hashline-edit-pro version",
+            r"C:\Windows\system32\cmd.exe - π - Spoofed topic",
+            r"C:\Windows\system32\cmd.exe - pi - Spoofed topic",
+            "/bin/sh - npm view pi-hashline-edit-pro version",
+            "pi-hashline-edit-pro",
+            "pi-hashline-edit-pro - update check",
+            "pi | Airplane type",
+            "π | Airplane type",
+            "Airplane type - π",
+            "⠋ π - Spoofed topic - runner",
+        ] {
+            assert_eq!(osc_provider_title(raw, Runtime::Pi, cwd), None, "{raw}");
+        }
+        for (raw, expected) in [
+            ("π - Airplane type", "Airplane type"),
+            ("π - Airplane type - runner", "Airplane type"),
+            ("pi - Airplane type - runner", "Airplane type"),
+            ("PI - Airplane type - runner", "Airplane type"),
+            ("  π - Airplane type - runner  ", "Airplane type"),
+            (
+                "π - Fix parser - preserve spans - runner",
+                "Fix parser - preserve spans",
+            ),
+            ("π - 汽车讨论 - runner", "汽车讨论"),
+        ] {
+            assert_eq!(
+                osc_provider_title(raw, Runtime::Pi, cwd).as_deref(),
+                Some(expected),
+                "{raw}"
+            );
+        }
+        assert_eq!(
+            osc_provider_title("Discuss cars | runner", Runtime::Codex, cwd).as_deref(),
+            Some("Discuss cars")
+        );
+        assert_eq!(
+            osc_provider_title("◐ Airplane type", Runtime::ClaudeCode, cwd).as_deref(),
+            Some("Airplane type")
+        );
     }
 
     #[test]

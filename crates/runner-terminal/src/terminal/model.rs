@@ -38,8 +38,7 @@ impl ClipboardTarget {
 
 #[derive(Default)]
 pub struct ModelOptions {
-    pub agent: bool,
-    pub shell: bool,
+    pub runtime: Option<runner_core::Runtime>,
     pub initial_title: String,
     pub cwd: Option<String>,
 }
@@ -156,7 +155,10 @@ impl TerminalModel {
             publish_order: Mutex::default(),
             initial_observation,
             fixture_recorder,
-            cwd_reports: options.shell.then(Mutex::default),
+            cwd_reports: options
+                .runtime
+                .is_some_and(runner_core::Runtime::is_shell)
+                .then(Mutex::default),
             live_cwd: Mutex::new(None),
             program_status: Mutex::default(),
             pending_program_status: Mutex::default(),
@@ -254,18 +256,20 @@ impl TerminalModel {
                                 Event::Title(title) => title,
                                 _ => String::new(),
                             };
-                            let cleaned = if options.agent {
-                                let Some(title) =
-                                    runner_core::protocol::session_title::provider_title(
-                                        &raw,
-                                        options.cwd.as_deref(),
-                                    )
-                                else {
-                                    continue;
-                                };
-                                title
-                            } else {
-                                sanitize_title(&raw)
+                            let cleaned = match options.runtime {
+                                Some(runtime) if !runtime.is_shell() => {
+                                    let Some(title) =
+                                        runner_core::protocol::session_title::osc_provider_title(
+                                            &raw,
+                                            runtime,
+                                            options.cwd.as_deref(),
+                                        )
+                                    else {
+                                        continue;
+                                    };
+                                    title
+                                }
+                                _ => sanitize_title(&raw),
                             };
                             let changed = {
                                 let mut held = title.lock().unwrap();
@@ -829,7 +833,7 @@ mod delivery_tests {
             80,
             4,
             ModelOptions {
-                agent: true,
+                runtime: Some(runner_core::Runtime::Codex),
                 ..ModelOptions::default()
             },
         )
@@ -904,7 +908,7 @@ mod delivery_tests {
             80,
             4,
             ModelOptions {
-                agent: true,
+                runtime: Some(runner_core::Runtime::Codex),
                 ..ModelOptions::default()
             },
         )
@@ -970,6 +974,78 @@ mod delivery_tests {
 
         let workers = model.stop_workers();
         for worker in workers {
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn pi_runtime_ignores_unbranded_subprocess_osc_titles() {
+        struct TitleHost {
+            persisted: Mutex<Vec<String>>,
+        }
+        impl TerminalHost for TitleHost {
+            fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+                Ok(())
+            }
+            fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+                Ok(())
+            }
+            fn report_input_state(&self, _: &str, _: InputObservation) {}
+            fn set_live_title(&self, _: &str, title: &str) -> Result<()> {
+                self.persisted.lock().unwrap().push(title.to_owned());
+                Ok(())
+            }
+            fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+                Ok(())
+            }
+            fn is_local_host(&self, _: &str) -> bool {
+                true
+            }
+            fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+        }
+
+        let host = Arc::new(TitleHost {
+            persisted: Mutex::default(),
+        });
+        let model = TerminalModel::new(
+            host.clone(),
+            "pi-titles".into(),
+            80,
+            4,
+            ModelOptions {
+                runtime: Some(runner_core::Runtime::Pi),
+                cwd: Some(r"C:\Users\jason\runner".into()),
+                ..ModelOptions::default()
+            },
+        )
+        .unwrap();
+
+        model.feed_output(1, b"\x1b]0;npm view pi-hashline-edit-pro version\x07");
+        model.feed_output(
+            2,
+            b"\x1b]2;C:\\Windows\\system32\\cmd.exe - npm view pi-hashline-edit-pro version\x07",
+        );
+        model.feed_output(3, "\x1b]0;π - runner\x07".as_bytes());
+        model.flush_events();
+        assert_eq!(model.title(), "");
+        assert!(host.persisted.lock().unwrap().is_empty());
+
+        model.feed_output(4, "\x1b]0;π - Fix login bug - runner\x07".as_bytes());
+        model.feed_output(5, b"\x1b]0;npm view pi-hashline-edit-pro version\x07");
+        model.feed_output(6, "\x1b]0;π - runner\x07".as_bytes());
+        model.flush_events();
+        assert_eq!(model.title(), "Fix login bug");
+        assert_eq!(*host.persisted.lock().unwrap(), vec!["Fix login bug"]);
+
+        model.feed_output(7, "\x1b]2;π - Follow-up topic\x1b\\".as_bytes());
+        model.flush_events();
+        assert_eq!(model.title(), "Follow-up topic");
+        assert_eq!(
+            *host.persisted.lock().unwrap(),
+            vec!["Fix login bug", "Follow-up topic"]
+        );
+
+        for worker in model.stop_workers() {
             worker.join().unwrap();
         }
     }

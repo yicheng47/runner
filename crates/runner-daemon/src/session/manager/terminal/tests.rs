@@ -100,6 +100,74 @@ fn terminal_titles_persist_topics_and_ignore_directory_status_and_reset() {
 }
 
 #[test]
+fn pi_terminal_titles_ignore_subprocess_osc_and_persist_branded_topics() {
+    use crate::repo::session::{self, SessionRowDb};
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    let conn = core.db.get().unwrap();
+    let mut row = SessionRowDb::new_running("replay-race".into());
+    row.agent_runtime = Some("pi".into());
+    row.agent_command = Some("pi".into());
+    row.cwd = Some(r"C:\Users\jason\runner".into());
+    session::insert(&conn, &row).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE title_writes (title TEXT);
+            CREATE TRIGGER record_title AFTER UPDATE OF live_title ON sessions
+            BEGIN INSERT INTO title_writes VALUES (NEW.live_title); END;",
+    )
+    .unwrap();
+    let terminal =
+        TerminalSession::attach(core.clone(), row.id.clone(), 80, 24, Arc::new(|| {})).unwrap();
+    assert_eq!(terminal.title(), "");
+
+    for (seq, data, expected, writes) in [
+        (1, "\x1b]0;npm view pi-hashline-edit-pro version\x07", "", 0),
+        (
+            2,
+            "\x1b]2;C:\\Windows\\system32\\cmd.exe - npm view pi-hashline-edit-pro version\x07",
+            "",
+            0,
+        ),
+        (3, "\x1b]0;π - runner\x07", "", 0),
+        (
+            4,
+            "\x1b]0;π - Fix login bug - runner\x07",
+            "Fix login bug",
+            1,
+        ),
+        (
+            5,
+            "\x1b]0;npm view pi-hashline-edit-pro version\x07",
+            "Fix login bug",
+            1,
+        ),
+        (6, "\x1b]0;π - runner\x07", "Fix login bug", 1),
+        (
+            7,
+            "\x1b]2;pi - Renamed topic - runner\x1b\\",
+            "Renamed topic",
+            2,
+        ),
+    ] {
+        terminal.feed_output(&output(seq, data)).unwrap();
+        flush_terminal_events(&terminal);
+        assert_eq!(terminal.title(), expected);
+        let stored = session::get_row(&conn, &row.id).unwrap().unwrap();
+        assert_eq!(
+            stored.live_title.as_deref(),
+            (!expected.is_empty()).then_some(expected)
+        );
+        let count: usize = conn
+            .query_row("SELECT COUNT(*) FROM title_writes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, writes);
+    }
+
+    let reopened = TerminalSession::attach(core, row.id, 80, 24, Arc::new(|| {})).unwrap();
+    assert_eq!(reopened.title(), "Renamed topic");
+}
+
+#[test]
 fn shell_titles_keep_braille_without_persistence() {
     use crate::repo::session::{self, SessionRowDb};
     let temp = tempfile::tempdir().unwrap();

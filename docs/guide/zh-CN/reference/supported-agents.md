@@ -78,6 +78,8 @@ Runner 在全平台都按 shell 词法拆分 **自定义参数**，且不展开 
 
 **Antigravity CLI** 会将 `agy models` 中带思考力度后缀的条目合并为单一基础模型（例如 `gemini-4-hydrogen` 或 `claude-opus-5-5`），并通过独立的 **思考强度（Effort）** 选择器列出该模型支持的级别（`low`、`medium`、`high`、`xhigh` 及支持时的 `max`）。由于 Runner 仅在指定 `--model` 时才会传递 `--effort`，当没有显式或继承的启动模型时会禁用 **思考强度**（聊天或小队插槽中留空 **模型（Model）** 覆盖项时仍可继承角色的 **模型**）；选择不支持思考力度的模型或输入旧版带力度后缀的模型 ID（例如 `gemini-4-hydrogen-xhigh` 或 `gpt-oss-120b-medium`）时，也会禁用 **思考强度** 并省略冲突的 `--effort` 参数。
 
+**pi** 聊天标题仅接受以 `π - ` 或 `pi - ` 开头的终端 OSC 标题，防止扩展启动时运行的子进程（例如 `npm view` 或 `cmd.exe` 命令）覆盖聊天名称。在默认 pi 中，`/name` 与 `pi.setSessionName()` 会发送带前缀的 `π - <name> - <cwd>` 标题并自动更新聊天名称；不带 `π - ` 或 `pi - ` 前缀的自定义 `piConfig.name` 前缀与任意 `ctx.ui.setTitle()` 标题会被忽略。
+
 **OpenCode v2** 支持聊天、角色、小队、精确会话标识、动态模型与模型变体、钩子状态、技能目录、MCP 设置和 Runner 技能。没有聊天分叉、用量指示器、全局技能开关或更新控制。后端/原生数据检查覆盖回复、协调与停止/恢复；完整 GUI 和 Windows 检查尚未验证。任务使用其自动权限模式。
 
 **TRAE CLI** 仍需主动启用。提供技能目录、MCP 配置与任务权限支持。不要假定它与主要运行时具有相同功能或平台支持。
