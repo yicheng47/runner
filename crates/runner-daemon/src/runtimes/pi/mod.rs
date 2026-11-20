@@ -145,13 +145,10 @@ pub struct Pi;
 impl RuntimeAdapter for Pi {
     fn status_semantics(&self) -> StatusSemantics {
         StatusSemantics {
-            interaction_prefix: Some("pi"),
-            program_status_without_hooks: true,
-            preserve_turn_interactions: true,
-            tool_end: ToolEndPolicy::KeepWorking,
-            compaction: CompactionPolicy::RestoreExact,
-            compaction_requires_start: true,
-            detail_after_outcome: true,
+            program_status_authority: true,
+            program_status_root_app: Some("pi"),
+            program_status_transcript_outcomes: true,
+            program_status_cancel_interrupt: true,
             ..Default::default()
         }
     }
@@ -169,7 +166,18 @@ impl RuntimeAdapter for Pi {
         pi_defaults(&settings_path(home))
     }
 
-    fn startup_delivery_uses_hooks(&self, _pending_turn: bool) -> bool {
+    fn terminal_adapter(&self, _pending_turn: Option<bool>) -> Option<Box<dyn TerminalAdapter>> {
+        Some(Box::new(ProgramStatusTerminal::default()))
+    }
+    fn starts_trusted(
+        &self,
+        _cwd: Option<&Path>,
+        args: &[String],
+        _env: &std::collections::BTreeMap<String, String>,
+    ) -> bool {
+        pi_has_project_trust_override(args)
+    }
+    fn startup_delivery_waits_for_program_status(&self, _pending_turn: bool) -> bool {
         true
     }
     fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
@@ -286,6 +294,105 @@ impl StatusHooks for Hooks {
         }
         hook_env(app_data_dir, &spec.session_id)
     }
+}
+
+fn pi_has_project_trust_override(args: &[String]) -> bool {
+    let mut trusted = false;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = args[i].as_str();
+        if arg == "--" {
+            break;
+        }
+        match arg {
+            "--approve" | "-a" | "--no-approve" | "-na" => {
+                trusted = true;
+            }
+            "--provider"
+            | "--model"
+            | "--api-key"
+            | "--system-prompt"
+            | "--append-system-prompt"
+            | "--name"
+            | "-n"
+            | "--session"
+            | "--session-id"
+            | "--fork"
+            | "--session-dir"
+            | "--models"
+            | "--tools"
+            | "-t"
+            | "--exclude-tools"
+            | "-xt"
+            | "--thinking"
+            | "--export"
+            | "--extension"
+            | "-e"
+            | "--skill"
+            | "--prompt-template"
+            | "--theme" => {
+                if i + 1 < args.len() {
+                    i += 1;
+                }
+            }
+            "--mode" | "--use-theme" | "--tui-mode" => {
+                if args.get(i + 1).is_some_and(|next| !next.starts_with('-')) {
+                    i += 1;
+                }
+            }
+            "--print" | "-p" => {
+                if args.get(i + 1).is_some_and(|next| {
+                    !next.starts_with('@') && (!next.starts_with('-') || next.starts_with("---"))
+                }) {
+                    i += 1;
+                }
+            }
+            "--list-models" => {
+                if args
+                    .get(i + 1)
+                    .is_some_and(|next| !next.starts_with('-') && !next.starts_with('@'))
+                {
+                    i += 1;
+                }
+            }
+            "--help"
+            | "-h"
+            | "--version"
+            | "-v"
+            | "--continue"
+            | "-c"
+            | "--resume"
+            | "-r"
+            | "--no-session"
+            | "--no-tools"
+            | "-nt"
+            | "--no-builtin-tools"
+            | "-nbt"
+            | "--no-extensions"
+            | "-ne"
+            | "--no-mcp"
+            | "--no-skills"
+            | "-ns"
+            | "--no-prompt-templates"
+            | "-np"
+            | "--no-themes"
+            | "--no-context-files"
+            | "-nc"
+            | "--verbose"
+            | "--offline" => {}
+            _ if arg.starts_with("--")
+                && !arg.contains('=')
+                && args
+                    .get(i + 1)
+                    .is_some_and(|next| !next.starts_with('-') && !next.starts_with('@')) =>
+            {
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    trusted
 }
 
 #[cfg(test)]

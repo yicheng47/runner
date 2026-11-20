@@ -1,9 +1,12 @@
-{"runtime":"pi","name":"escape-reply","rules":[],"bugs":[784],"known_wrong":[],"pending_turn":false}
-{"ms":100,"event":"hook","report":{"hook_event_name":"session_start","session_id":"11111111-1111-4111-8111-111111111111","reason":"startup"}}
+{"runtime":"pi","name":"escape-reply","rules":[],"bugs":[784],"known_wrong":[],"pending_turn":false,"evidence":"pi error-shaped abort message settles Interrupted without unread completion while real API errors remain Failed."}
+{"ms":100,"event":"hook","report":{"hook_event_name":"session_start","session_id":"11111111-1111-4111-8111-111111111111","session_file":"<TRANSCRIPT>","reason":"startup"}}
+{"ms":150,"event":"output","bytes":"\u001b]7501;state=idle:app=pi\u001b\\"}
 {"ms":200,"event":"input","bytes":"sample"}
 {"ms":300,"event":"input","bytes":"\r"}
-{"ms":400,"event":"hook","report":{"hook_event_name":"agent_start","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":400,"event":"hook","report":{"hook_event_name":"input","session_id":"11111111-1111-4111-8111-111111111111","session_file":"<TRANSCRIPT>","text":"sample"}}
+{"ms":450,"event":"output","bytes":"\u001b]7501;state=working:app=pi\u001b\\"}
 {"ms":500,"event":"input","bytes":"\u001b"}
-{"ms":600,"event":"hook","report":{"hook_event_name":"message_end","session_id":"11111111-1111-4111-8111-111111111111","stopReason":"error","errorMessage":"This operation was aborted"}}
-{"ms":700,"event":"hook","report":{"hook_event_name":"agent_settled","session_id":"11111111-1111-4111-8111-111111111111"}}
+{"ms":600,"event":"output","bytes":"\u001b]7501;state=error:msg=VGhpcyBvcGVyYXRpb24gd2FzIGFib3J0ZWQ:app=pi\u001b\\"}
+{"ms":650,"event":"record","record":{"type":"message","message":{"role":"assistant","stopReason":"error","errorMessage":"This operation was aborted"}}}
+{"ms":700,"event":"output","bytes":"\u001b]7501;state=idle:app=pi\u001b\\"}
 {"ms":800,"event":"completion"}

@@ -1,19 +1,15 @@
-use crate::model::Runtime;
-use crate::session::state::agent::{AdapterFeedback, AgentEvent};
-#[cfg(test)]
-use crate::session::state::StatusSource;
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::error::Result;
-use crate::session::hook_feed::HookFeed;
-use crate::session::status::{TurnOutcome, WaitReason};
+use crate::session::hook_feed::{HookFeed, TranscriptTail};
+use crate::session::state::agent::{AdapterFeedback, AgentEvent, ProgramOutcomePolicy};
+use crate::session::status::TurnOutcome;
 
-#[cfg(test)]
-use crate::session::status::{Activity, AgentObservation, ObservationSource, WorkDetail};
 #[cfg(test)]
 pub(crate) const SESSION_KEY_ENV: &str = "RUNNER_PI_SESSION_KEY";
 #[cfg(test)]
@@ -25,7 +21,7 @@ const EXTENSION_FILE: &str = "runner-status.ts";
 const EXTENSION_SOURCE: &str = r#"import net from "node:net";
 import { setTimeout as deadlineTimeout, clearTimeout as clearDeadline } from "node:timers";
 
-const minimumVersion = [0, 84, 4];
+const minimumVersion = [1, 1, 0];
 
 function versionIsTooOld(version) {
   const parts = String(version).split(".").map((part) => Number.parseInt(part, 10) || 0);
@@ -142,72 +138,53 @@ export default async function (pi) {
     sample();
   }
 
+  function sessionFileOf(ctx) {
+    try {
+      return typeof ctx.sessionManager?.getSessionFile === "function"
+        ? ctx.sessionManager.getSessionFile() ?? null
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   pi.on("session_start", async (event, ctx) => {
     stopEditorTracking();
     if (ctx.mode !== "tui") return;
     try {
       const sessionId = ctx.sessionManager.getSessionId();
-      await append(event, { reason: event.reason, session_id: sessionId });
+      await append(event, {
+        reason: event.reason,
+        session_id: sessionId,
+        session_file: sessionFileOf(ctx),
+      });
     } catch {}
-    if (process.env.RUNNER_STATUS_HOOKS !== "false") trackEditor(ctx);
+    trackEditor(ctx);
   });
 
-  if (process.env.RUNNER_STATUS_HOOKS === "false") return;
-
-  pi.on("agent_start", (event, ctx) => {
+  pi.on("input", (event, ctx) => {
     if (ctx.mode !== "tui") return;
-    return append(event);
-  });
-
-  pi.on("tool_execution_start", (event, ctx) => {
-    if (ctx.mode !== "tui") return;
-    return append(event, { toolCallId: event.toolCallId, toolName: event.toolName });
-  });
-
-  pi.on("tool_execution_end", (event, ctx) => {
-    if (ctx.mode !== "tui") return;
-    return append(event, { toolCallId: event.toolCallId, toolName: event.toolName });
-  });
-
-  pi.on("session_before_compact", (event, ctx) => {
-    if (ctx.mode !== "tui") return;
-    return append(event, { reason: event.reason });
-  });
-
-  pi.on("session_compact", (event, ctx) => {
-    if (ctx.mode !== "tui") return;
-    return append(event);
-  });
-
-  pi.on("session_compact_failed", (event, ctx) => {
-    if (ctx.mode !== "tui") return;
-    return append(event);
-  });
-
-  pi.on("message_end", (event, ctx) => {
-    if (ctx.mode !== "tui") return;
-    if (event.message?.role !== "assistant") return;
+    let sessionId = null;
+    try {
+      sessionId = typeof ctx.sessionManager?.getSessionId === "function"
+        ? ctx.sessionManager.getSessionId() ?? null
+        : null;
+    } catch {}
     return append(event, {
-      stopReason: event.message.stopReason,
-      errorMessage: typeof event.message.errorMessage === "string"
-        ? event.message.errorMessage.slice(0, 512)
-        : null,
+      text: typeof event.text === "string" ? event.text.slice(0, 4096) : null,
+      session_id: sessionId,
+      session_file: sessionFileOf(ctx),
     });
-  });
-
-  pi.on("agent_settled", (event, ctx) => {
-    if (ctx.mode !== "tui") return;
-    return append(event);
   });
 
   pi.on("ui_prompt_start", (event, ctx) => {
     if (ctx.mode !== "tui") return;
-    return append(event, { kind: event.kind, title: event.title });
+    return append(event, { kind: event.kind });
   });
 
   pi.on("ui_prompt_end", (event, ctx) => {
     if (ctx.mode !== "tui") return;
-    return append(event, { kind: event.kind, title: event.title });
+    return append(event, { kind: event.kind });
   });
 
   pi.on("session_shutdown", (event, ctx) => {
@@ -245,125 +222,129 @@ struct StatusReport {
     #[serde(default)]
     hook_event_name: String,
     reason: Option<String>,
-    pub(crate) session_id: Option<String>,
-    #[serde(rename = "toolCallId")]
-    tool_call_id: Option<String>,
-    #[serde(rename = "toolName")]
-    tool_name: Option<String>,
-    #[serde(rename = "stopReason")]
-    stop_reason: Option<String>,
-    #[serde(rename = "errorMessage")]
-    error_message: Option<String>,
     kind: Option<String>,
-    title: Option<String>,
+    pub(crate) session_id: Option<String>,
+    #[serde(alias = "transcript_path")]
+    session_file: Option<PathBuf>,
+    #[serde(alias = "prompt")]
+    text: Option<String>,
     drafting: Option<bool>,
 }
 
 #[derive(Clone, Default)]
 struct PiParser {
-    open_tools: std::collections::BTreeSet<String>,
-    compacting: bool,
+    session_id: Option<String>,
+    transcript_path: Option<PathBuf>,
 }
+
 impl PiParser {
-    fn hook(&mut self, report: StatusReport) -> Option<Vec<AgentEvent>> {
-        let event = match report.hook_event_name.as_str() {
-            "editor_draft" => AgentEvent::EditorDraft {
+    fn hook(&mut self, report: StatusReport) -> Option<AgentEvent> {
+        match report.hook_event_name.as_str() {
+            "editor_draft" => Some(AgentEvent::EditorDraft {
                 drafting: report.drafting?,
-            },
+            }),
             "session_start" => {
                 if report.reason.as_deref() == Some("reload") {
-                    return None;
-                }
-                report.session_id.filter(|id| !id.is_empty())?;
-                self.open_tools.clear();
-                self.compacting = false;
-                AgentEvent::StartupReady
-            }
-            "agent_start" => {
-                self.open_tools.clear();
-                self.compacting = false;
-                AgentEvent::TurnStarted
-            }
-            "tool_execution_start" => {
-                let id = report.tool_call_id.filter(|id| !id.is_empty())?;
-                report.tool_name.filter(|name| !name.is_empty())?;
-                if !self.open_tools.insert(id) {
-                    return None;
-                }
-                AgentEvent::ToolStarted {
-                    count: self.open_tools.len(),
-                    question: None,
-                }
-            }
-            "tool_execution_end" => {
-                let id = report.tool_call_id.filter(|id| !id.is_empty())?;
-                report.tool_name.filter(|name| !name.is_empty())?;
-                if !self.open_tools.remove(&id) {
-                    return None;
-                }
-                AgentEvent::ToolEnded {
-                    owner: None,
-                    count: self.open_tools.len(),
-                    interrupted: false,
-                    transcript: false,
-                }
-            }
-            "session_before_compact" => {
-                self.compacting = true;
-                AgentEvent::CompactionStarted
-            }
-            "session_compact" | "session_compact_failed" => {
-                if !self.compacting {
-                    return None;
-                }
-                self.compacting = false;
-                AgentEvent::CompactionEnded
-            }
-            "message_end" => AgentEvent::Outcome {
-                outcome: match report.stop_reason.as_deref() {
-                    Some("error")
-                        if report.error_message.as_deref()
-                            == Some("This operation was aborted") =>
-                    {
-                        TurnOutcome::Interrupted
+                    if let Some(path) = report.session_file {
+                        self.transcript_path = Some(path);
                     }
-                    Some("error") => TurnOutcome::Failed,
-                    Some("aborted") => TurnOutcome::Interrupted,
-                    _ => TurnOutcome::Completed,
-                },
-            },
-            "agent_settled" => {
-                self.open_tools.clear();
-                self.compacting = false;
-                AgentEvent::Settled
+                    return None;
+                }
+                let session = report.session_id.filter(|id| !id.is_empty())?;
+                let conversation_changed = self
+                    .session_id
+                    .as_ref()
+                    .is_some_and(|prev| *prev != session);
+                self.session_id = Some(session);
+                if let Some(path) = report.session_file {
+                    self.transcript_path = Some(path);
+                } else if conversation_changed {
+                    self.transcript_path = None;
+                }
+                Some(AgentEvent::ProgramSessionStarted {
+                    conversation_changed,
+                    compacted: false,
+                })
             }
-            "ui_prompt_start" => AgentEvent::ReplaceInteraction {
-                reason: match report.kind.as_deref()? {
-                    "confirm" => WaitReason::Approval,
-                    "select" | "input" | "editor" => WaitReason::Answer,
-                    "custom" => WaitReason::Unknown,
-                    _ => return None,
-                },
-                owner: report.title.unwrap_or_else(|| "pi-ui".into()),
-            },
-            "ui_prompt_end" | "session_shutdown" => AgentEvent::ClearInteractions,
-            _ => return None,
-        };
-        Some(vec![event])
+            "input" => {
+                if let Some(id) = report.session_id.filter(|id| !id.is_empty()) {
+                    if self.session_id.is_none() {
+                        self.session_id = Some(id);
+                    }
+                }
+                if let Some(path) = report.session_file {
+                    self.transcript_path = Some(path);
+                }
+                Some(AgentEvent::ProgramTurnConfirmed {
+                    conversation_changed: false,
+                    prompt: report.text,
+                })
+            }
+            "ui_prompt_start"
+                if matches!(
+                    report.kind.as_deref(),
+                    Some("confirm" | "select" | "input" | "editor" | "custom")
+                ) =>
+            {
+                Some(AgentEvent::ProgramWaitOverlay { active: true })
+            }
+            "ui_prompt_end"
+                if matches!(
+                    report.kind.as_deref(),
+                    Some("confirm" | "select" | "input" | "editor" | "custom")
+                ) =>
+            {
+                Some(AgentEvent::ProgramWaitOverlay { active: false })
+            }
+            "session_shutdown" => Some(AgentEvent::ProgramWaitOverlay { active: false }),
+            _ => None,
+        }
+    }
+
+    fn record(&mut self, entry: &Value) -> Option<AgentEvent> {
+        if entry["type"] != "message" {
+            return None;
+        }
+        let message = &entry["message"];
+        if message["role"] != "assistant" {
+            return None;
+        }
+        match message["stopReason"].as_str()? {
+            "aborted" => Some(AgentEvent::ProgramTurnOutcome {
+                outcome: TurnOutcome::Interrupted,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+            }),
+            "error" if message["errorMessage"].as_str() == Some("This operation was aborted") => {
+                Some(AgentEvent::ProgramTurnOutcome {
+                    outcome: TurnOutcome::Interrupted,
+                    policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                })
+            }
+            "error" => Some(AgentEvent::ProgramTurnOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::NativeFallbackOnly,
+            }),
+            "stop" | "length" => Some(AgentEvent::ProgramTurnFinished),
+            _ => None,
+        }
     }
 }
 
 pub(crate) struct PiStatusWatcher {
     feed: HookFeed,
     parser: PiParser,
+    transcript: Option<TranscriptTail>,
 }
+
 impl PiStatusWatcher {
     pub(crate) fn from_receiver(receiver: crate::session::hook_queue::HookReceiver) -> Self {
         Self {
             feed: HookFeed::from_receiver(receiver),
             parser: Default::default(),
+            transcript: None,
         }
     }
+
     pub(crate) fn drain_events(
         &mut self,
         _cancel: u8,
@@ -372,7 +353,9 @@ impl PiStatusWatcher {
     ) -> Result<()> {
         self.feed.drain(|report| {
             if let Ok(report) = serde_json::from_value::<StatusReport>(report) {
-                if report.hook_event_name == "session_start" {
+                let is_start = report.hook_event_name == "session_start";
+                let is_reload = report.reason.as_deref() == Some("reload");
+                if is_start {
                     if let Some(id) = report
                         .session_id
                         .as_deref()
@@ -381,23 +364,55 @@ impl PiStatusWatcher {
                         session_start(id.to_owned());
                     }
                 }
-                if let Some(events) = self.parser.hook(report) {
-                    if let [AgentEvent::EditorDraft { drafting }] = events.as_slice() {
-                        emit(AgentEvent::EditorDraft {
-                            drafting: *drafting,
-                        });
-                        return;
+                let previous_path = self.parser.transcript_path.clone();
+                let previous_session = self.parser.session_id.clone();
+                if let Some(event) = self.parser.hook(report) {
+                    if self.parser.session_id != previous_session
+                        || self.parser.transcript_path != previous_path
+                    {
+                        self.transcript = None;
+                        if is_start && !is_reload {
+                            if let Some(path) = self.parser.transcript_path.as_deref() {
+                                self.transcript = TranscriptTail::open_at_end(path).ok();
+                            }
+                        }
                     }
-                    emit(AgentEvent::Batch {
-                        runtime: Runtime::Pi,
-                        events,
-                    });
+                    emit(event);
                 }
             }
         })?;
+        self.drain_transcript(&mut emit);
         Ok(())
     }
+
+    fn drain_transcript(&mut self, emit: &mut impl FnMut(AgentEvent) -> AdapterFeedback) {
+        let Some(path) = self.parser.transcript_path.clone() else {
+            return;
+        };
+        if self
+            .transcript
+            .as_ref()
+            .is_none_or(|tail| tail.path != path)
+        {
+            self.transcript = TranscriptTail::open(&path).ok();
+        }
+        let Some(tail) = self.transcript.as_mut() else {
+            return;
+        };
+        while let Ok(count) = tail.reader.read_until(b'\n', &mut tail.pending) {
+            if count == 0 || tail.pending.last() != Some(&b'\n') {
+                break;
+            }
+            if let Ok(record) = serde_json::from_slice(&tail.pending) {
+                if let Some(event) = self.parser.record(&record) {
+                    emit(event);
+                }
+            }
+            tail.pending.clear();
+        }
+    }
 }
+
 impl crate::session::hook_feed::HookWatcher for PiStatusWatcher {
     fn drain_events(
         &mut self,
@@ -410,202 +425,238 @@ impl crate::session::hook_feed::HookWatcher for PiStatusWatcher {
 }
 
 #[cfg(test)]
-#[derive(Clone, Default)]
-struct PiObservation {
-    parser: PiParser,
-    model: crate::session::state::agent::AgentModel,
-    value: crate::session::state::agent::TurnState,
-}
-#[cfg(test)]
-impl std::ops::Deref for PiObservation {
-    type Target = PiParser;
-    fn deref(&self) -> &Self::Target {
-        &self.parser
-    }
-}
-#[cfg(test)]
-impl std::ops::DerefMut for PiObservation {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.parser
-    }
-}
-#[cfg(test)]
-impl PiObservation {
-    fn observe(&mut self, event: StatusReport, now: i64) -> Option<AgentObservation> {
-        let events = self.parser.hook(event)?;
-        let reduced = self.model.reduce(
-            AgentEvent::Batch {
-                runtime: Runtime::Pi,
-                events,
-            },
-            now,
-        );
-        self.value = self.model.value.clone();
-        reduced
-    }
-}
-#[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::fs::{self, File};
     use std::process::Command;
 
     use serde_json::{json, Value};
 
     use super::*;
+    use crate::model::Runtime;
 
-    struct TestWatcher {
-        inner: PiStatusWatcher,
-        hooks: crate::session::hook_queue::TestHookRoute,
-        observation: PiObservation,
-        cancel: u8,
+    fn report(value: Value) -> StatusReport {
+        serde_json::from_value(value).unwrap()
     }
-    impl std::ops::Deref for TestWatcher {
-        type Target = PiStatusWatcher;
-        fn deref(&self) -> &Self::Target {
-            &self.inner
+
+    #[test]
+    fn editor_draft_requires_a_boolean_and_legacy_status_hooks_are_dropped() {
+        let mut parser = PiParser::default();
+        for drafting in [true, false] {
+            let event = parser
+                .hook(report(json!({
+                    "hook_event_name": "editor_draft",
+                    "drafting": drafting,
+                })))
+                .unwrap();
+            assert!(matches!(event, AgentEvent::EditorDraft { drafting: v } if v == drafting));
         }
-    }
-    impl std::ops::DerefMut for TestWatcher {
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            &mut self.inner
+        assert!(parser
+            .hook(report(json!({"hook_event_name": "editor_draft"})))
+            .is_none());
+        assert!(serde_json::from_value::<StatusReport>(json!({
+            "hook_event_name": "editor_draft",
+            "drafting": "true",
+        }))
+        .is_err());
+
+        for dropped in [
+            "agent_start",
+            "tool_execution_start",
+            "tool_execution_end",
+            "session_before_compact",
+            "session_compact",
+            "session_compact_failed",
+            "message_end",
+            "agent_settled",
+        ] {
+            assert!(
+                parser
+                    .hook(report(json!({"hook_event_name": dropped})))
+                    .is_none(),
+                "legacy pi status hook {dropped} must be dropped"
+            );
         }
-    }
-    impl TestWatcher {
-        fn new(generation: String) -> Self {
-            let (hooks, receiver) =
-                crate::session::hook_queue::TestHookRoute::new(Runtime::Pi, generation);
-            Self {
-                inner: PiStatusWatcher::from_receiver(receiver),
-                hooks,
-                observation: Default::default(),
-                cancel: 0,
+
+        // ui_prompt_start/ui_prompt_end track the outer extension prompt lifetime as a wait
+        // overlay (deduplicated behind native OSC 7501 blocked) so stacked unannotated custom
+        // dialogs retain a hold; unknown or missing kinds are dropped.
+        for ignored_kind in [None, Some("unknown")] {
+            for event_name in ["ui_prompt_start", "ui_prompt_end"] {
+                let mut payload = json!({"hook_event_name": event_name});
+                if let Some(kind) = ignored_kind {
+                    payload["kind"] = json!(kind);
+                }
+                assert!(
+                    parser.hook(report(payload)).is_none(),
+                    "{event_name} kind={ignored_kind:?} must be dropped"
+                );
             }
         }
-        fn drain_with_session_starts(
-            &mut self,
-            mut publish: impl FnMut(AgentObservation, StatusSource),
-            starts: impl FnMut(String),
-        ) -> Result<()> {
-            self.inner.parser = self.observation.parser.clone();
-            let cancel = std::mem::take(&mut self.cancel);
-            let mut events = Vec::new();
-            let result = self.inner.drain_events(
-                cancel,
+        for kind in ["confirm", "select", "input", "editor", "custom"] {
+            assert!(matches!(
+                parser.hook(report(
+                    json!({"hook_event_name": "ui_prompt_start", "kind": kind})
+                )),
+                Some(AgentEvent::ProgramWaitOverlay { active: true })
+            ));
+            assert!(matches!(
+                parser.hook(report(
+                    json!({"hook_event_name": "ui_prompt_end", "kind": kind})
+                )),
+                Some(AgentEvent::ProgramWaitOverlay { active: false })
+            ));
+        }
+        assert!(matches!(
+            parser.hook(report(
+                json!({"hook_event_name": "session_shutdown", "reason": "quit"})
+            )),
+            Some(AgentEvent::ProgramWaitOverlay { active: false })
+        ));
+    }
+
+    #[test]
+    fn session_start_input_and_transcript_outcomes_preserve_reload_and_skip_resume_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_file = dir.path().join("session.jsonl");
+        let mut file = File::create(&session_file).unwrap();
+        // Pre-existing aborted assistant message before resume must be skipped.
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "message",
+                "message": {"role": "assistant", "stopReason": "aborted"}
+            })
+        )
+        .unwrap();
+        file.flush().unwrap();
+
+        let (hooks, receiver) =
+            crate::session::hook_queue::TestHookRoute::new(Runtime::Pi, "current".into());
+        let mut watcher = PiStatusWatcher::from_receiver(receiver);
+        let key = "11111111-1111-4111-8111-111111111111";
+        let next_key = "22222222-2222-4222-8222-222222222222";
+        hooks
+            .admit(json!({
+                "generation": "current",
+                "hook_event_name": "session_start",
+                "reason": "resume",
+                "session_id": key,
+                "session_file": session_file,
+            }))
+            .unwrap();
+        hooks
+            .admit(json!({
+                "generation": "current",
+                "hook_event_name": "session_start",
+                "reason": "reload",
+                "session_id": key,
+                "session_file": session_file,
+            }))
+            .unwrap();
+
+        let mut events = Vec::new();
+        let mut starts = Vec::new();
+        watcher
+            .drain_events(
+                0,
                 |event| {
                     events.push(event);
                     Default::default()
                 },
-                starts,
-            );
-            for event in events {
-                let source = if let AgentEvent::Batch { events, .. } = &event {
-                    match events.first() {
-                        Some(AgentEvent::LocalCancel { kind })
-                            if kind & crate::session::state::CTRL_C_INTERRUPT != 0 =>
-                        {
-                            StatusSource::InputInterrupt
-                        }
-                        Some(AgentEvent::LocalCancel { .. }) => StatusSource::InputEscape,
-                        _ => StatusSource::Hook,
-                    }
-                } else {
-                    StatusSource::Hook
-                };
-                if let Some(value) = self
-                    .observation
-                    .model
-                    .reduce(event, crate::session::clock::timestamp_millis())
-                {
-                    publish(value, source);
-                }
-            }
-            self.observation.value = self.observation.model.value.clone();
-            self.observation.parser = self.inner.parser.clone();
-            result
-        }
-        fn drain_status(
-            &mut self,
-            publish: impl FnMut(AgentObservation, StatusSource),
-        ) -> Result<()> {
-            self.drain_with_session_starts(publish, |_| {})
-        }
-    }
-
-    fn report(event: &str) -> Value {
-        json!({"hook_event_name": event})
-    }
-
-    #[test]
-    fn editor_draft_requires_a_boolean_and_does_not_change_turn_status() {
-        let mut parser = PiParser::default();
-        for drafting in [true, false] {
-            let events = parser
-                .hook(
-                    serde_json::from_value(json!({
-                        "hook_event_name":"editor_draft", "drafting":drafting,
-                    }))
-                    .unwrap(),
-                )
-                .unwrap();
-            assert!(
-                matches!(events.as_slice(), [AgentEvent::EditorDraft { drafting: value }] if *value == drafting)
-            );
-            let mut state = PiObservation::default();
-            let before = state.value.clone();
-            assert!(observe(
-                &mut state,
-                json!({
-                    "hook_event_name":"editor_draft", "drafting":drafting,
-                })
+                |id| starts.push(id),
             )
-            .is_none());
-            assert_eq!(state.value, before);
+            .unwrap();
+        assert_eq!(starts, [key, key]);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            AgentEvent::ProgramSessionStarted {
+                conversation_changed: false,
+                compacted: false,
+            }
+        ));
+        events.clear();
+
+        hooks
+            .admit(json!({
+                "generation": "current",
+                "hook_event_name": "input",
+                "text": "[inbox] hello",
+                "session_id": key,
+                "session_file": session_file,
+            }))
+            .unwrap();
+        for entry in [
+            json!({"type": "message", "message": {"role": "user", "content": "hi"}}),
+            json!({"type": "message", "message": {"role": "assistant", "stopReason": "error", "errorMessage": "This operation was aborted"}}),
+            json!({"type": "message", "message": {"role": "assistant", "stopReason": "error", "errorMessage": "Provider unavailable"}}),
+            json!({"type": "message", "message": {"role": "assistant", "stopReason": "stop"}}),
+        ] {
+            writeln!(file, "{entry}").unwrap();
         }
-        assert!(parser
-            .hook(serde_json::from_value(report("editor_draft")).unwrap())
-            .is_none());
-        assert!(serde_json::from_value::<StatusReport>(json!({
-            "hook_event_name":"editor_draft", "drafting":"true",
-        }))
-        .is_err());
-    }
+        file.flush().unwrap();
 
-    fn observe(state: &mut PiObservation, value: Value) -> Option<AgentObservation> {
-        state.observe(
-            serde_json::from_value::<StatusReport>(value).unwrap(),
-            crate::session::clock::timestamp_millis(),
-        )
-    }
+        watcher
+            .drain_events(
+                0,
+                |event| {
+                    events.push(event);
+                    Default::default()
+                },
+                |id| starts.push(id),
+            )
+            .unwrap();
+        assert_eq!(events.len(), 4);
+        assert!(matches!(
+            events[0],
+            AgentEvent::ProgramTurnConfirmed {
+                conversation_changed: false,
+                prompt: Some(ref text),
+            } if text == "[inbox] hello"
+        ));
+        assert!(matches!(
+            events[1],
+            AgentEvent::ProgramTurnOutcome {
+                outcome: TurnOutcome::Interrupted,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+            }
+        ));
+        assert!(matches!(
+            events[2],
+            AgentEvent::ProgramTurnOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::NativeFallbackOnly,
+            }
+        ));
+        assert!(matches!(events[3], AgentEvent::ProgramTurnFinished));
 
-    #[test]
-    fn session_start_publishes_hook_idle_and_preserves_reload_guard() {
-        let mut state = PiObservation::default();
-        let startup = json!({
-            "hook_event_name":"session_start",
-            "reason":"startup",
-            "session_id":"11111111-1111-4111-8111-111111111111",
-        });
-        let started = observe(&mut state, startup.clone()).unwrap();
-        assert_eq!(started.activity, Activity::Idle);
-        assert_eq!(started.source, ObservationSource::Hook);
-        assert_eq!(started.outcome, None);
-        assert_eq!(started.detail, None);
-
-        let restarted = observe(&mut state, startup).unwrap();
-        assert_eq!(restarted.activity, Activity::Idle);
-        assert_eq!(restarted.source, ObservationSource::Hook);
-
-        let before = state.value.clone();
-        assert!(observe(
-            &mut state,
-            json!({
-                "hook_event_name":"session_start",
-                "reason":"reload",
-                "session_id":"11111111-1111-4111-8111-111111111111",
-            }),
-        )
-        .is_none());
-        assert_eq!(state.value, before);
+        events.clear();
+        hooks
+            .admit(json!({
+                "generation": "current",
+                "hook_event_name": "session_start",
+                "reason": "new",
+                "session_id": next_key,
+            }))
+            .unwrap();
+        watcher
+            .drain_events(
+                0,
+                |event| {
+                    events.push(event);
+                    Default::default()
+                },
+                |id| starts.push(id),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [AgentEvent::ProgramSessionStarted {
+                conversation_changed: true,
+                compacted: false,
+            }]
+        ));
     }
 
     #[test]
@@ -625,232 +676,6 @@ mod tests {
             EXTENSION_SOURCE
         );
         assert_eq!(fs::read_dir(extension_dir(root.path())).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn lifecycle_tools_compaction_outcomes_and_boundaries_follow_pi_events() {
-        let mut state = PiObservation::default();
-        let started = observe(
-            &mut state,
-            json!({
-                "hook_event_name":"session_start",
-                "reason":"startup",
-                "session_id":"11111111-1111-4111-8111-111111111111",
-            }),
-        )
-        .unwrap();
-        assert_eq!(started.activity, Activity::Idle);
-        assert_eq!(started.source, ObservationSource::Hook);
-        assert_eq!(
-            observe(&mut state, report("agent_start")).unwrap().activity,
-            Activity::Working
-        );
-        let start = json!({
-            "hook_event_name":"tool_execution_start",
-            "toolCallId":"call-one",
-            "toolName":"bash",
-        });
-        assert_eq!(
-            observe(&mut state, start).unwrap().detail,
-            Some(WorkDetail::UsingTools)
-        );
-        let end = json!({
-            "hook_event_name":"tool_execution_end",
-            "toolCallId":"call-one",
-            "toolName":"bash",
-        });
-        assert_eq!(observe(&mut state, end).unwrap().detail, None);
-        assert_eq!(
-            observe(&mut state, report("session_before_compact"))
-                .unwrap()
-                .detail,
-            Some(WorkDetail::CompactingContext)
-        );
-        assert_eq!(
-            observe(&mut state, report("session_compact"))
-                .unwrap()
-                .detail,
-            None
-        );
-        assert!(observe(&mut state, report("agent_end")).is_none());
-        assert!(observe(
-            &mut state,
-            json!({"hook_event_name":"message_end","stopReason":"stop"}),
-        )
-        .is_none());
-        assert_eq!(
-            observe(&mut state, report("agent_settled"))
-                .unwrap()
-                .outcome,
-            Some(TurnOutcome::Completed)
-        );
-        for reason in ["new", "resume", "fork"] {
-            let value = observe(
-                &mut state,
-                json!({
-                    "hook_event_name":"session_start",
-                    "reason":reason,
-                    "session_id":"11111111-1111-4111-8111-111111111111",
-                }),
-            )
-            .unwrap();
-            assert_eq!(value.activity, Activity::Idle);
-            assert_eq!(value.outcome, None);
-        }
-        for (stop_reason, outcome) in [
-            ("stop", TurnOutcome::Completed),
-            ("error", TurnOutcome::Failed),
-            ("aborted", TurnOutcome::Interrupted),
-        ] {
-            observe(&mut state, report("agent_start"));
-            assert!(observe(
-                &mut state,
-                json!({
-                    "hook_event_name":"message_end",
-                    "stopReason":stop_reason,
-                    "errorMessage":"x".repeat(2048),
-                }),
-            )
-            .is_none());
-            let settled = observe(&mut state, report("agent_settled")).unwrap();
-            assert_eq!(settled.activity, Activity::Ready);
-            assert_eq!(settled.outcome, Some(outcome));
-        }
-        let before = state.value.clone();
-        assert!(observe(
-            &mut state,
-            json!({
-                "hook_event_name":"session_start",
-                "reason":"reload",
-                "session_id":"11111111-1111-4111-8111-111111111111",
-            }),
-        )
-        .is_none());
-        assert_eq!(state.value, before);
-    }
-
-    #[test]
-    fn aborted_error_settles_interrupted_while_provider_errors_remain_failed() {
-        for (message, expected) in [
-            (Some("This operation was aborted"), TurnOutcome::Interrupted),
-            (Some("Provider unavailable"), TurnOutcome::Failed),
-            (
-                Some("Request failed: This operation was aborted"),
-                TurnOutcome::Failed,
-            ),
-            (None, TurnOutcome::Failed),
-        ] {
-            let mut state = PiObservation::default();
-            observe(&mut state, report("agent_start"));
-            assert!(observe(
-                &mut state,
-                json!({"hook_event_name":"message_end","stopReason":"error","errorMessage":message}),
-            ).is_none());
-            let settled = observe(&mut state, report("agent_settled")).unwrap();
-            assert_eq!(settled.activity, Activity::Ready);
-            assert_eq!(settled.outcome, Some(expected));
-            assert_eq!(
-                observe(&mut state, report("agent_start")).unwrap().outcome,
-                None
-            );
-            observe(
-                &mut state,
-                json!({"hook_event_name":"message_end","stopReason":"stop"}),
-            );
-            assert_eq!(
-                observe(&mut state, report("agent_settled"))
-                    .unwrap()
-                    .outcome,
-                Some(TurnOutcome::Completed)
-            );
-        }
-    }
-
-    #[test]
-    fn prompt_kinds_raise_one_wait_and_end_or_shutdown_clear_it() {
-        for (kind, reason) in [
-            ("confirm", WaitReason::Approval),
-            ("select", WaitReason::Answer),
-            ("input", WaitReason::Answer),
-            ("editor", WaitReason::Answer),
-            ("custom", WaitReason::Unknown),
-        ] {
-            let mut state = PiObservation::default();
-            observe(
-                &mut state,
-                json!({
-                    "hook_event_name":"session_start",
-                    "reason":"startup",
-                    "session_id":"11111111-1111-4111-8111-111111111111",
-                }),
-            );
-            let waiting = observe(
-                &mut state,
-                json!({"hook_event_name":"ui_prompt_start","kind":kind,"title":"Choose"}),
-            )
-            .unwrap();
-            assert_eq!(waiting.interactions.len(), 1);
-            assert_eq!(waiting.interactions[0].reason, reason);
-            assert!(observe(
-                &mut state,
-                json!({"hook_event_name":"ui_prompt_end","kind":kind,"title":"Choose"}),
-            )
-            .unwrap()
-            .interactions
-            .is_empty());
-            observe(
-                &mut state,
-                json!({"hook_event_name":"ui_prompt_start","kind":kind,"title":"Choose"}),
-            );
-            assert!(observe(
-                &mut state,
-                json!({"hook_event_name":"session_shutdown","reason":"new"}),
-            )
-            .unwrap()
-            .interactions
-            .is_empty());
-        }
-    }
-
-    #[test]
-    fn watcher_rejects_wrong_generation_malformed_reports_and_reports_bridge_loss() {
-        let mut watcher = TestWatcher::new("current".into());
-
-        assert!(watcher.hooks.admit_json("not json").is_err());
-        assert!(watcher
-            .hooks
-            .admit(json!({"generation":"old","hook_event_name":"agent_start"}))
-            .is_err());
-        for value in [
-            json!({
-                "generation":"current",
-                "hook_event_name":"session_start",
-                "reason":"startup",
-                "session_id":"11111111-1111-4111-8111-111111111111",
-            }),
-            json!({"generation":"current","hook_event_name":"agent_start"}),
-            json!({
-                "generation":"current",
-                "hook_event_name":"message_end",
-                "stopReason":"error",
-                "errorMessage":"x".repeat(4096),
-            }),
-            json!({"generation":"current","hook_event_name":"agent_settled"}),
-        ] {
-            watcher.hooks.admit(value).unwrap();
-        }
-
-        let mut values = Vec::new();
-        watcher.drain_status(|value, _| values.push(value)).unwrap();
-        assert_eq!(values.len(), 3);
-        assert_eq!(values[0].activity, Activity::Idle);
-        assert_eq!(values[0].source, ObservationSource::Hook);
-        assert_eq!(values[1].activity, Activity::Working);
-        assert_eq!(values[2].outcome, Some(TurnOutcome::Failed));
-        watcher.hooks.retire();
-
-        assert!(watcher.drain_status(|_, _| {}).is_err());
-        drop(watcher);
     }
 
     const IPC_FIXTURE: &str = r#"import net from "node:net";
@@ -913,21 +738,30 @@ import assert from "node:assert/strict";
 import extension from "./runner-status.mjs";
 const handlers = new Map();
 await extension({ on(name, handler) { handlers.set(name, handler); } });
-const fire = (type, fields = {}) => handlers.get(type)({ type, ...fields }, { mode: "tui" });
+const ctx = {
+  mode: "tui",
+  sessionManager: {
+    getSessionId: () => "11111111-1111-4111-8111-111111111111",
+    getSessionFile: () => "/tmp/pi.jsonl",
+  },
+};
+const fire = (type, fields = {}) => handlers.get(type)({ type, ...fields }, ctx);
 let connects = 0;
 const connect = net.Socket.prototype.connect;
 net.Socket.prototype.connect = function(...args) { connects += 1; return connect.apply(this, args); };
-await fire("agent_start");
+await fire("input", { text: "first" });
 if (process.env.ABSENT_CONTROL) await new Promise(resolve => server.close(resolve));
 const started = performance.now();
 const queued = [];
 const bytes = process.env.OVERFLOW === "bytes";
+if (bytes) {
+  ctx.sessionManager.getSessionFile = () => "你".repeat(2 * 1024 * 1024);
+}
 for (let index = 0; index < (bytes ? 3 : 65); index += 1) {
-  queued.push(fire("tool_execution_start", { toolCallId: String(index), toolName: bytes ? "你".repeat(2 * 1024 * 1024) : "bash" }));
+  queued.push(fire("input", { text: String(index) }));
 }
 await Promise.all(queued);
-await fire("agent_settled");
-await fire("agent_start");
+await fire("input", { text: "after" });
 await fire("session_shutdown", { reason: "quit" });
 assert.equal(connects, 2, "one ordinary report and one control attempt only");
 assert.ok(performance.now() - started < Number(process.env.DEADLINE_MS) + 1250, "overflow must remain bounded and neutral");
@@ -1031,7 +865,7 @@ const ui = {
 const ctx = { mode: "tui", ui, sessionManager: { getSessionId: () => "probe-session" } };
 const fire = (type, fields = {}) => handlers.get(type)({ type, ...fields }, ctx);
 const drafts = () => reports.filter(report => report.hook_event_name === "editor_draft");
-const settle = () => fire("agent_settled");
+const settle = () => fire("input", { text: "sync" });
 const flush = () => {
   const callbacks = [...deferred.values()];
   deferred.clear();
@@ -1109,7 +943,7 @@ await finish();
     }
 
     #[test]
-    fn embedded_extension_runs_as_mjs_reports_and_rekeys() {
+    fn embedded_extension_runs_as_mjs_reports_identity_and_rekeys() {
         if Command::new("node").arg("--version").output().is_err() {
             eprintln!("skipping pi extension test: node is not on PATH");
             return;
@@ -1130,49 +964,62 @@ await finish();
         .unwrap();
         fs::write(
             package.join("index.js"),
-            "export const VERSION = '0.85.1';\n",
+            "export const VERSION = '1.1.0';\n",
         )
         .unwrap();
         let driver = root.path().join("driver.mjs");
         fs::write(
             &driver,
-            format!("{IPC_FIXTURE}{}", r#"
+            format!(
+                "{IPC_FIXTURE}{}",
+                r#"
 import extension from "./runner-status.mjs";
 const handlers = new Map();
 await extension({ on(name, handler) { handlers.set(name, handler); } });
-const expected = Number(process.env.EXPECT_HANDLERS || "12");
+const expected = Number(process.env.EXPECT_HANDLERS || "5");
 if (handlers.size !== expected) throw new Error(`handlers ${handlers.size}, expected ${expected}`);
 if (handlers.size === 0) { await finish(); process.exit(0); }
+for (const removed of [
+  "agent_start", "tool_execution_start", "tool_execution_end",
+  "session_before_compact", "session_compact", "session_compact_failed",
+  "message_end", "agent_settled",
+]) {
+  if (handlers.has(removed)) throw new Error(`unexpected status handler ${removed}`);
+}
 let sessionId = process.env.TEST_SESSION_ID;
+let sessionFile = "/tmp/pi-1.jsonl";
 const ctx = {
   mode: "print",
-  sessionManager: { getSessionId() { return sessionId; } },
+  sessionManager: {
+    getSessionId() { return sessionId; },
+    getSessionFile() { return sessionFile; },
+  },
 };
-await handlers.get("agent_start")({ type: "agent_start" }, ctx);
+await handlers.get("input")({ type: "input", text: "ignored-in-print" }, ctx);
+await handlers.get("ui_prompt_start")({ type: "ui_prompt_start", kind: "custom" }, ctx);
+await handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctx);
 ctx.mode = "tui";
 const fire = (type, fields = {}) => handlers.get(type)({ type, ...fields }, ctx);
 await fire("session_start", { reason: "startup" });
-await fire("agent_start");
-await fire("tool_execution_start", { toolCallId: "call-one", toolName: "bash" });
-await fire("tool_execution_end", { toolCallId: "call-one", toolName: "bash" });
-await fire("session_before_compact", { reason: "manual" });
-await fire("session_compact", { reason: "manual" });
-await fire("message_end", { message: { role: "user" } });
-await fire("message_end", { message: { role: "assistant", stopReason: "error", errorMessage: "x".repeat(700) } });
-await fire("ui_prompt_start", { kind: "confirm", title: "Approve" });
-await fire("ui_prompt_end", { kind: "confirm", title: "Approve" });
-await fire("agent_settled");
+await fire("input", { text: "x".repeat(5000) });
+await fire("ui_prompt_start", { kind: "confirm", title: "Confirm" });
+await fire("ui_prompt_end", { kind: "confirm", title: "Confirm" });
+await fire("ui_prompt_start", { kind: "custom" });
+await fire("ui_prompt_end", { kind: "custom" });
 await fire("session_shutdown", { reason: "quit" });
 if (process.env.NEXT_SESSION_ID) {
   sessionId = process.env.NEXT_SESSION_ID;
+  sessionFile = "/tmp/pi-2.jsonl";
   await fire("session_start", { reason: "new" });
 }
 if (process.env.RETURN_SESSION_ID) {
   sessionId = process.env.RETURN_SESSION_ID;
+  sessionFile = "/tmp/pi-1.jsonl";
   await fire("session_start", { reason: "resume" });
 }
 await finish();
-"#),
+"#
+            ),
         )
         .unwrap();
 
@@ -1191,38 +1038,97 @@ await finish();
         assert!(output.status.success(), "{output:?}");
         assert!(output.stdout.is_empty() && output.stderr.is_empty());
         let reports: Vec<Value> = serde_json::from_slice(&fs::read(&capture).unwrap()).unwrap();
-        assert_eq!(reports.len(), 13);
+        assert_eq!(reports.len(), 9);
         assert_eq!(reports[0]["hook_event_name"], "session_start");
         assert_eq!(reports[0]["session_id"], session_key);
-        assert_eq!(reports[11]["session_id"], new_key);
-        assert_eq!(reports[12]["session_id"], session_key);
-        let error = reports
-            .iter()
-            .find(|report| report["hook_event_name"] == "message_end")
-            .unwrap();
-        assert_eq!(error["errorMessage"].as_str().unwrap().len(), 512);
-        let mut watcher = TestWatcher::new("current".into());
-        for payload in reports {
-            watcher.hooks.admit(payload).unwrap();
+        assert_eq!(reports[0]["session_file"], "/tmp/pi-1.jsonl");
+        assert_eq!(reports[1]["hook_event_name"], "input");
+        assert_eq!(reports[1]["text"].as_str().unwrap().len(), 4096);
+        assert_eq!(reports[2]["hook_event_name"], "ui_prompt_start");
+        assert_eq!(reports[2]["kind"], "confirm");
+        assert_eq!(reports[3]["hook_event_name"], "ui_prompt_end");
+        assert_eq!(reports[3]["kind"], "confirm");
+        assert_eq!(reports[4]["hook_event_name"], "ui_prompt_start");
+        assert_eq!(reports[4]["kind"], "custom");
+        assert_eq!(reports[5]["hook_event_name"], "ui_prompt_end");
+        assert_eq!(reports[5]["kind"], "custom");
+        assert_eq!(reports[6]["hook_event_name"], "session_shutdown");
+        assert_eq!(reports[7]["session_id"], new_key);
+        assert_eq!(reports[8]["session_id"], session_key);
+
+        let (hooks, receiver) =
+            crate::session::hook_queue::TestHookRoute::new(Runtime::Pi, "current".into());
+        let mut watcher = PiStatusWatcher::from_receiver(receiver);
+        for mut payload in reports {
+            payload["generation"] = json!("current");
+            hooks.admit(payload).unwrap();
         }
-        let mut values = Vec::new();
+        let mut events = Vec::new();
         let mut keys = Vec::new();
         watcher
-            .drain_with_session_starts(|value, _| values.push(value), |key| keys.push(key))
+            .drain_events(
+                0,
+                |event| {
+                    events.push(event);
+                    Default::default()
+                },
+                |key| keys.push(key),
+            )
             .unwrap();
         assert_eq!(keys, [session_key, new_key, session_key]);
-        assert_eq!(values.first().unwrap().activity, Activity::Idle);
-        assert_eq!(values.first().unwrap().source, ObservationSource::Hook);
-        assert_eq!(values[1].activity, Activity::Working);
-        assert!(values
-            .iter()
-            .any(|value| value.outcome == Some(TurnOutcome::Failed)));
-        assert_eq!(values.last().unwrap().activity, Activity::Idle);
-        assert_eq!(values.last().unwrap().outcome, None);
+        assert_eq!(events.len(), 9);
+        assert!(matches!(
+            events[0],
+            AgentEvent::ProgramSessionStarted {
+                conversation_changed: false,
+                ..
+            }
+        ));
+        assert!(matches!(
+            events[1],
+            AgentEvent::ProgramTurnConfirmed {
+                conversation_changed: false,
+                prompt: Some(_),
+            }
+        ));
+        assert!(matches!(
+            events[2],
+            AgentEvent::ProgramWaitOverlay { active: true }
+        ));
+        assert!(matches!(
+            events[3],
+            AgentEvent::ProgramWaitOverlay { active: false }
+        ));
+        assert!(matches!(
+            events[4],
+            AgentEvent::ProgramWaitOverlay { active: true }
+        ));
+        assert!(matches!(
+            events[5],
+            AgentEvent::ProgramWaitOverlay { active: false }
+        ));
+        assert!(matches!(
+            events[6],
+            AgentEvent::ProgramWaitOverlay { active: false }
+        ));
+        assert!(matches!(
+            events[7],
+            AgentEvent::ProgramSessionStarted {
+                conversation_changed: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            events[8],
+            AgentEvent::ProgramSessionStarted {
+                conversation_changed: true,
+                ..
+            }
+        ));
 
         fs::write(
             package.join("index.js"),
-            "export const VERSION = '0.84.3';\n",
+            "export const VERSION = '1.0.9';\n",
         )
         .unwrap();
         let output = Command::new("node")

@@ -1,0 +1,17 @@
+{"runtime":"claude-code","name":"background-tasks","rules":[2,8],"bugs":[],"known_wrong":[],"pending_turn":false,"evidence":"Claude Code id= child records add background-task detail text only and never change root Working, Done, unread badges or crew delivery."}
+{"ms":100,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>"}}
+{"ms":150,"event":"output","bytes":"\u001b]7501;state=idle:app=claude-code\u001b\\"}
+{"ms":200,"event":"input","bytes":"sample"}
+{"ms":300,"event":"input","bytes":"\r"}
+{"ms":400,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>","prompt":"sample"}}
+{"ms":450,"event":"output","bytes":"\u001b]7501;state=working:app=claude-code\u001b\\"}
+{"ms":500,"event":"output","bytes":"\u001b]7501;id=bg-1:app=claude-code:state=working\u001b\\"}
+{"ms":550,"event":"output","bytes":"\u001b]7501;id=bg-2:app=claude-code:state=blocked:kind=permission\u001b\\"}
+{"ms":600,"event":"reserve"}
+{"ms":650,"event":"finish"}
+{"ms":700,"event":"output","bytes":"\u001b]7501;state=done:app=claude-code\u001b\\"}
+{"ms":800,"event":"completion"}
+{"ms":850,"event":"reserve"}
+{"ms":875,"event":"finish"}
+{"ms":900,"event":"output","bytes":"\u001b]7501;state=clear:id=bg-1\u001b\\"}
+{"ms":1000,"event":"output","bytes":"\u001b]7501;state=clear:id=bg-2\u001b\\"}

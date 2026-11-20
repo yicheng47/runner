@@ -1,8 +1,9 @@
 runtime=pi name=draft-delivery rules=[5] bugs=[766,753,799] known_wrong=[]
 session_status_rows=published
-100 status=running/idle/hook activity="idle" completion_armed=false quiescent=true key="11111111-1111-4111-8111-111111111111" delivery=["Respawned","Idle"]
+100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key="11111111-1111-4111-8111-111111111111" delivery=["Respawned"]
   busy@spawn [running/working/baseline]
-  idle@hook [running/idle/hook]
+105 status=running/idle/baseline observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
 110
 120
 200 quiescent=false delivery=["InputQueueDrained"]
@@ -30,13 +31,13 @@ session_status_rows=published
 8800 quiescent=false delivery=["InputQueueDrained"]
 8810
 8900 activity="busy" completion_armed=true delivery=["ReadinessChanged"]
-  busy@input-submit [running/idle/hook]
+  busy@input-submit [running/idle/baseline observation.program_status={"message":null}]
 8910 delivery=["InputCleared"]
-8920 status=running/working/hook
-  busy@hook [running/working/hook]
+8920
+8930 status=running/working/baseline observation.program_status={"message":null}
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
 11100 quiescent=true
-11200
-11300 status=running/ready/hook outcome="completed" activity="idle" delivery=["Idle"]
-  idle@hook [running/ready/hook outcome="completed"]
+11300 status=running/idle/baseline outcome="completed" observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="completed" observation.program_status={"message":null}]
 11400 quiescent=false result={"gate":"ready"}
 11410 quiescent=true delivery=["DeliveryFinished"]

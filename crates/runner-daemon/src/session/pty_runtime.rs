@@ -1045,33 +1045,6 @@ fn idle_monitor_thread(
                     {
                         return Default::default();
                     }
-                    // The manager can write input while publishing; release the detector before waiting.
-                    if event.needs_feedback() {
-                        let (reply, receipt) = mpsc::channel();
-                        if tx
-                            .send(RuntimeOutput::AgentEvent {
-                                event,
-                                feedback: Some(reply),
-                            })
-                            .is_err()
-                        {
-                            return Default::default();
-                        }
-                        loop {
-                            match receipt.recv_timeout(IDLE_MONITOR_POLL) {
-                                Ok(feedback) => return feedback,
-                                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                                    return Default::default()
-                                }
-                                Err(mpsc::RecvTimeoutError::Timeout) => {
-                                    if stop.load(Ordering::Acquire) || done.load(Ordering::Acquire)
-                                    {
-                                        return Default::default();
-                                    }
-                                }
-                            }
-                        }
-                    }
                     let _ = tx.send(RuntimeOutput::AgentEvent {
                         event,
                         feedback: None,

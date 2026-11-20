@@ -276,6 +276,53 @@ fn pi_session_directory_expands_tilde_and_resolves_relative_overrides_from_cwd()
     );
 }
 
+#[test]
+fn pi_starts_trusted_requires_explicit_approval_args() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = std::collections::BTreeMap::new();
+    assert!(!Pi.starts_trusted(Some(dir.path()), &[], &env));
+    assert!(!Pi.starts_trusted(None, &[], &env));
+    for flag in ["--approve", "-a", "--no-approve", "-na"] {
+        assert!(
+            Pi.starts_trusted(Some(dir.path()), &[flag.into()], &env),
+            "flag {flag} skips pi's trust prompt"
+        );
+        assert!(
+            Pi.starts_trusted(
+                Some(dir.path()),
+                &[
+                    "--model".into(),
+                    "m".into(),
+                    flag.into(),
+                    "--".into(),
+                    "prompt".into()
+                ],
+                &env,
+            ),
+            "flag {flag} before -- skips pi's trust prompt"
+        );
+    }
+    // Positional args after `--` and option values must NOT be mistaken for trust flags.
+    for non_trust in [
+        vec!["--", "--approve"],
+        vec!["--", "-a"],
+        vec!["--", "--no-approve"],
+        vec!["--name", "-a"],
+        vec!["-n", "--approve"],
+        vec!["--model", "--approve"],
+        vec!["--system-prompt", "-na"],
+        vec!["-e", "--approve"],
+        vec!["--session-dir", "-a"],
+        vec!["--thinking", "--approve"],
+    ] {
+        let args: Vec<String> = non_trust.iter().map(|s| (*s).into()).collect();
+        assert!(
+            !Pi.starts_trusted(Some(dir.path()), &args, &env),
+            "{non_trust:?} must not mark pi trusted"
+        );
+    }
+}
+
 fn pi_status_args_for(key: &str, data: &Path) -> Vec<String> {
     if key == Runtime::Pi.key() {
         pi_status_args(data)

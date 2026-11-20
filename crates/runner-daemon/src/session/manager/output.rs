@@ -331,6 +331,7 @@ impl SessionManager {
                                 state,
                                 source,
                                 status: manager_t.agent_status(&session_id),
+                                program_done: false,
                             });
                             let outcome = ctx.try_append_session_status(
                                 state,
@@ -883,6 +884,7 @@ impl SessionManager {
                 SessionEvent::Input {
                     class: input_class,
                     submitted,
+                    cancel: interrupt_key(bytes).is_some(),
                 },
                 crate::session::clock::state_now(),
             );
@@ -893,6 +895,7 @@ impl SessionManager {
                     state,
                     source,
                     status: session.model.status().clone(),
+                    program_done: false,
                 });
             let input_cleared = effects
                 .input_cleared

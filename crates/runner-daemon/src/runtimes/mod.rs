@@ -300,9 +300,45 @@ pub struct McpConfig {
     pub supports_http: bool,
 }
 
+/// Terminal adapter for OSC 7501 runtimes without custom title/startup parsing:
+/// strips valid OSC 7501 sequences from raw byte-activity counts so quiet status
+/// probes or reports never wake the silence fallback.
+#[derive(Default)]
+pub(crate) struct ProgramStatusTerminal {
+    filter: runner_terminal::program_status::ActivityFilter,
+}
+
+impl TerminalAdapter for ProgramStatusTerminal {
+    fn on_output(&mut self, bytes: &[u8]) -> Option<TerminalEvent> {
+        self.filter.observe(bytes);
+        None
+    }
+    fn output_activity_bytes(&self, _bytes: &[u8]) -> usize {
+        self.filter.activity_bytes()
+    }
+    fn on_input(&mut self, _bytes: &[u8]) -> TerminalInput {
+        TerminalInput::default()
+    }
+    fn held_activity(&self) -> Option<crate::session::runtime::SessionActivityState> {
+        None
+    }
+    fn hooks_unavailable(&mut self) {}
+    fn accept_event(&mut self, _event: &crate::session::state::agent::AgentEvent) -> bool {
+        true
+    }
+}
+
 pub fn unbatched_status_semantics() -> StatusSemantics {
-    // Standalone reducer events historically use Claude's hook semantics.
-    claude_code::ClaudeCode.status_semantics()
+    // Standalone reducer tests historically use Claude's legacy hook semantics.
+    StatusSemantics {
+        interaction_prefix: Some("claude"),
+        compaction: CompactionPolicy::ResumeUnfinishedTurn,
+        compaction_requires_start: true,
+        permission_prompt: PermissionPromptPolicy::VisibleCandidates,
+        elicitation_uses_requests: true,
+        idle_clears_compaction: true,
+        ..Default::default()
+    }
 }
 
 pub trait RuntimeAdapter: Send + Sync {

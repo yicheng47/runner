@@ -792,22 +792,12 @@ fn command_lines(
             }
             note = if mission {
                 Note::AlwaysInMissions
-            } else if options.status_hooks && options.bypass {
-                Note::HooksBypass
             } else if options.bypass {
                 Note::IdentityBypass
-            } else if options.status_hooks {
-                Note::StatusHooks
             } else {
                 Note::Identity
             };
-            option = if mission {
-                None
-            } else if options.status_hooks {
-                Some(OptionKey::StatusHooks)
-            } else {
-                options.bypass.then_some(OptionKey::Bypass)
-            };
+            option = (!mission && options.bypass).then_some(OptionKey::Bypass);
         }
         if code.contains("hooks.")
             || code.contains("mcp_servers.runner_hooks")
@@ -818,7 +808,14 @@ fn command_lines(
             i += count;
             continue;
         }
-        if arg == "-e" || arg == "--plugin-dir" {
+        if arg == "-e" {
+            note = if mission {
+                Note::AlwaysInMissions
+            } else {
+                Note::Identity
+            };
+            option = None;
+        } else if arg == "--plugin-dir" {
             note = if mission {
                 Note::AlwaysInMissions
             } else if options.status_hooks {
@@ -1053,7 +1050,7 @@ mod launch_preview_tests {
 
     #[test]
     fn antigravity_preview_shows_title_hook_settings_without_disturbing_claude() {
-        use runner_core::protocol::runtime::{RuntimeCommandNote, RuntimeLaunchOption};
+        use runner_core::protocol::runtime::RuntimeCommandNote;
 
         let core = crate::test_support::test_core();
         let root = tempfile::tempdir().unwrap();
@@ -1114,11 +1111,8 @@ mod launch_preview_tests {
             .find(|line| line.command.trim_start().starts_with("--settings "))
             .expect("Claude Code preview should show --settings");
         assert!(claude_settings.command.contains("\"tui\":\"fullscreen\""));
-        assert_eq!(claude_settings.note, RuntimeCommandNote::StatusHooks);
-        assert_eq!(
-            claude_settings.option,
-            Some(RuntimeLaunchOption::StatusHooks)
-        );
+        assert_eq!(claude_settings.note, RuntimeCommandNote::Identity);
+        assert_eq!(claude_settings.option, None);
     }
 
     #[test]
@@ -1403,6 +1397,97 @@ mod launch_preview_tests {
             assert_eq!(hooks.len(), 2, "{hooks:?}");
             assert!(hooks[0].starts_with("hooks.SessionStart="));
             assert!(hooks[1].starts_with("hooks.UserPromptSubmit="));
+        }
+
+        // Claude Code and pi likewise drop the StatusHooks option, show identity hooks
+        // only, and ignore legacy status_hooks=false rows.
+        for (runtime, command) in [(Runtime::ClaudeCode, "claude"), (Runtime::Pi, "pi")] {
+            crate::db::set_runtime_launch_option(
+                &core.db,
+                runtime,
+                RuntimeLaunchOption::StatusHooks,
+                false,
+            )
+            .unwrap();
+            for mission in [false, true] {
+                let preview = core.sessions.command_preview(
+                    runtime,
+                    command,
+                    mission,
+                    &RuntimeLaunchOptions {
+                        bypass: false,
+                        remote_plugin_catalog: true,
+                        status_hooks: false,
+                        custom_flags: String::new(),
+                    },
+                    root.path(),
+                    BTreeMap::new(),
+                );
+                assert!(
+                    preview.lines.iter().all(|line| {
+                        line.option != Some(RuntimeLaunchOption::StatusHooks)
+                            && line.note != RuntimeCommandNote::StatusHooks
+                    }),
+                    "{runtime} preview must not expose a StatusHooks option or note: {:?}",
+                    preview.lines
+                );
+                let role = Role {
+                    id: format!("{runtime}-role"),
+                    handle: "coder".into(),
+                    display_name: "Coder".into(),
+                    runtime: runtime.key().into(),
+                    command: command.into(),
+                    args: Vec::new(),
+                    working_dir: None,
+                    system_prompt: None,
+                    env: HashMap::new(),
+                    model: None,
+                    effort: None,
+                    codex_speed: None,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                };
+                let mut spec = crate::session::runtime::SpawnSpec {
+                    session_id: "00000000-0000-0000-0000-000000000043".into(),
+                    mission,
+                    command: role.command.clone(),
+                    args: Vec::new(),
+                    agent_runtime: Some(runtime),
+                    ..Default::default()
+                };
+                let adapter = crate::runtimes::adapter(runtime);
+                let plan = adapter.resume_plan(None);
+                core.sessions.apply_runtime_args(
+                    &mut spec,
+                    &role,
+                    &plan,
+                    root.path(),
+                    None,
+                    None,
+                    None,
+                    Some(&core.db),
+                );
+                assert!(
+                    !spec.env.contains_key(crate::runtimes::STATUS_HOOKS_ENV),
+                    "legacy {runtime} status_hooks=false DB row must not emit STATUS_HOOKS_ENV"
+                );
+                if runtime == Runtime::ClaudeCode {
+                    let pair = spec
+                        .args
+                        .windows(2)
+                        .find(|w| w[0] == "--settings")
+                        .expect("Claude Code spawn must pass --settings");
+                    let settings: serde_json::Value = serde_json::from_str(&pair[1]).unwrap();
+                    let mut keys: Vec<_> = settings["hooks"]
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .map(String::as_str)
+                        .collect();
+                    keys.sort_unstable();
+                    assert_eq!(keys, ["SessionStart", "UserPromptSubmit"]);
+                }
+            }
         }
     }
 }

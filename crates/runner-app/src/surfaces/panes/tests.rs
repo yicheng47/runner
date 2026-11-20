@@ -827,6 +827,7 @@ fn island_status_details_truncate_inside_the_header_without_displacing_controls(
                                 "Allow this command with a very long program status message? "
                                     .repeat(40)
                             }),
+                            background_tasks: 0,
                         }),
                         interactions: if approval {
                             vec![HumanInteraction {

@@ -1,13 +1,13 @@
-{"runtime":"claude-code","name":"approval-approved","rules":[6],"bugs":[],"known_wrong":[],"pending_turn":false}
+{"runtime":"claude-code","name":"approval-approved","rules":[6],"bugs":[],"known_wrong":[],"pending_turn":false,"evidence":"Claude Code 2.1.295+ reports permission waits natively via OSC 7501 state=blocked:kind=permission."}
 {"ms":100,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>"}}
+{"ms":150,"event":"output","bytes":"\u001b]7501;state=idle:app=claude-code\u001b\\"}
 {"ms":200,"event":"input","bytes":"sample"}
 {"ms":300,"event":"input","bytes":"\r"}
-{"ms":400,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111"}}
-{"ms":500,"event":"hook","report":{"hook_event_name":"PreToolUse","session_id":"11111111-1111-4111-8111-111111111111","tool_use_id":"tool-1","tool_name":"Bash","tool_input":{"command":"echo sample"},"transcript_path":"<TRANSCRIPT>"}}
-{"ms":600,"event":"hook","report":{"hook_event_name":"PermissionRequest","session_id":"11111111-1111-4111-8111-111111111111","tool_use_id":"tool-1","tool_name":"Bash","tool_input":{"command":"echo sample"}}}
-{"ms":700,"event":"hook","report":{"hook_event_name":"Notification","session_id":"11111111-1111-4111-8111-111111111111","notification_type":"permission_prompt"}}
+{"ms":400,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>","prompt":"sample"}}
+{"ms":450,"event":"output","bytes":"\u001b]7501;state=working:app=claude-code\u001b\\"}
+{"ms":600,"event":"output","bytes":"\u001b]7501;state=blocked:kind=permission:app=claude-code\u001b\\"}
 {"ms":800,"event":"reserve"}
-{"ms":900,"event":"hook","report":{"hook_event_name":"PostToolUse","session_id":"11111111-1111-4111-8111-111111111111","tool_use_id":"tool-1","tool_name":"Bash","tool_input":{"command":"echo sample"}}}
-{"ms":1000,"event":"hook","report":{"hook_event_name":"Stop","session_id":"11111111-1111-4111-8111-111111111111","stop_reason":"end_turn"}}
+{"ms":900,"event":"output","bytes":"\u001b]7501;state=working:app=claude-code\u001b\\"}
+{"ms":1000,"event":"output","bytes":"\u001b]7501;state=done:app=claude-code\u001b\\"}
 {"ms":1100,"event":"reserve"}
 {"ms":1200,"event":"finish"}

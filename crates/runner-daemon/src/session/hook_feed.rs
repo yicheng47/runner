@@ -115,6 +115,16 @@ impl TranscriptTail {
             pending: Vec::new(),
         })
     }
+
+    pub(crate) fn open_at_end(path: &Path) -> std::io::Result<Self> {
+        let mut file = File::open(path)?;
+        file.seek(SeekFrom::End(0))?;
+        Ok(Self {
+            path: path.to_owned(),
+            reader: BufReader::new(file),
+            pending: Vec::new(),
+        })
+    }
 }
 
 #[cfg(test)]

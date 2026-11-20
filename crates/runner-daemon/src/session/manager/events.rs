@@ -229,6 +229,11 @@ pub struct SessionActivityEvent {
     pub state: SessionActivityState,
     pub source: StatusSource,
     pub status: AgentStatus,
+    /// True only when an authoritative OSC 7501 root `State::Done` report
+    /// produced this publication, so wait/detail-only republications cannot
+    /// duplicate or suppress unread completion bookkeeping.
+    #[serde(skip)]
+    pub(crate) program_done: bool,
 }
 
 /// Lifecycle and metadata emitter. Terminal frames use the manager's
@@ -327,12 +332,7 @@ impl SessionEvents for CoreSessionEvents {
             && ev.status.observation.outcome != Some(TurnOutcome::Failed)
         {
             if let Some(sessions) = self.sessions.upgrade() {
-                let program_status_completion = ev.source == StatusSource::ProgramStatus
-                    && ev.state == SessionActivityState::Idle
-                    && ev.status.observation.outcome == Some(TurnOutcome::Completed)
-                    && sessions.session_state(&ev.session_id).is_some_and(|state| {
-                        state.lock().unwrap().model.program_status_authority()
-                    });
+                let program_status_completion = ev.program_done;
                 let baseline_or_hook_completion = ev.source != StatusSource::ProgramStatus
                     && ev.status.observation.program_status.is_none()
                     && {

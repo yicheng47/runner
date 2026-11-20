@@ -40,10 +40,8 @@ impl RuntimeLaunchOption {
             ),
             Self::RemotePluginCatalog => runtime == Runtime::Codex,
             Self::StatusHooks => {
-                matches!(
-                    runtime,
-                    Runtime::ClaudeCode | Runtime::Pi | Runtime::Copilot | Runtime::OpenCode
-                ) || (runtime == Runtime::Grok && !cfg!(windows))
+                matches!(runtime, Runtime::Copilot | Runtime::OpenCode)
+                    || (runtime == Runtime::Grok && !cfg!(windows))
             }
         }
     }

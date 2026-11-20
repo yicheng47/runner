@@ -10,11 +10,24 @@ use crate::session::status::{
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AdapterFeedback {
     pub(crate) accepted: bool,
-    pub(crate) read_transcript: bool,
-    pub(crate) compacting: bool,
-    pub(crate) activity: Activity,
-    pub(crate) detail: Option<WorkDetail>,
-    pub(crate) outcome: Option<TurnOutcome>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramOutcomePolicy {
+    /// Guaranteed terminal turn outcome from the runtime's own turn lifecycle
+    /// (e.g. Codex `turn_aborted` / `task_complete`). Settles the turn
+    /// immediately even ahead of PTY OSC 7501 `idle`/`error`.
+    Immediate,
+    /// Interrupt/abort transcript outcome on a runtime with live OSC 7501.
+    /// Applies immediately when no OSC 7501 report is active or once the
+    /// native root is idle; while the native root is Working or Blocked,
+    /// defers until the native terminal boundary.
+    DeferWhileNativeActive,
+    /// Failure transcript outcome used only when native OSC 7501 reporting is
+    /// absent (`program_status` is `None`), because live OSC 7501 already
+    /// emits `state=error` on terminal failure and `state=blocked:kind=auth`
+    /// on auth waits, while transcript errors can precede auto-retry.
+    NativeFallbackOnly,
 }
 
 #[derive(Debug, Clone)]
@@ -35,10 +48,11 @@ pub enum AgentEvent {
         conversation_changed: bool,
         compacted: bool,
     },
-    /// Identity-hook confirmation (e.g. Codex `UserPromptSubmit`) that a
-    /// delivered turn started when OSC 7501 owns session status.
+    /// Identity-hook confirmation (e.g. Codex/Claude `UserPromptSubmit` or pi
+    /// `input`) that a delivered turn started when OSC 7501 owns session status.
     ProgramTurnConfirmed {
         conversation_changed: bool,
+        prompt: Option<String>,
     },
     /// Transcript-reported clean turn end (e.g. Codex `task_complete` without
     /// error) used only to release startup delivery when no OSC 7501 arrives.
@@ -47,6 +61,15 @@ pub enum AgentEvent {
     /// turn whose primary status comes from OSC 7501.
     ProgramTurnOutcome {
         outcome: TurnOutcome,
+        policy: ProgramOutcomePolicy,
+    },
+    /// Narrow runtime wait overlay (pi `ui_prompt_start`/`ui_prompt_end` for
+    /// `kind == "custom"` and `session_shutdown`) that surfaces unannotated
+    /// custom dialogs as Needs you (`WaitReason::Unknown`) and holds delivery
+    /// without arming hook status authority or duplicating a native OSC 7501
+    /// `blocked` wait.
+    ProgramWaitOverlay {
+        active: bool,
     },
     /// Identity-hook watcher is unavailable or failed on a runtime whose
     /// primary status comes from OSC 7501; lets startup fall back to output
@@ -142,17 +165,6 @@ impl AgentEvent {
             || matches!(self, Self::Batch { events, .. } if events.iter().any(Self::conversation_recovered))
     }
 
-    pub(crate) fn needs_feedback(&self) -> bool {
-        match self {
-            Self::Batch { runtime, .. } | Self::Transcript { runtime, .. } => {
-                crate::runtimes::adapter(*runtime)
-                    .status_semantics()
-                    .batch_feedback
-            }
-            _ => false,
-        }
-    }
-
     pub(crate) fn startup_ready(&self) -> bool {
         matches!(self, Self::Batch { runtime, events }
             if crate::runtimes::adapter(*runtime).status_semantics().startup_ready_batch
@@ -242,21 +254,7 @@ impl AgentModel {
     }
 
     fn feedback(&self, accepted: bool) -> AdapterFeedback {
-        AdapterFeedback {
-            accepted,
-            read_transcript: self.tools != 0
-                || self.value.needs_you()
-                || self.cancelled_tool_result,
-            compacting: self.compacting,
-            activity: self.value.activity,
-            detail: self.value.detail,
-            outcome: self.value.outcome,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cancelled_tool_result(&self) -> bool {
-        self.cancelled_tool_result
+        AdapterFeedback { accepted }
     }
 
     fn apply(&mut self, event: AgentEvent, semantics: StatusSemantics, now: i64) -> bool {
@@ -310,6 +308,7 @@ impl AgentModel {
             | AgentEvent::ProgramTurnConfirmed { .. }
             | AgentEvent::ProgramTurnFinished
             | AgentEvent::ProgramTurnOutcome { .. }
+            | AgentEvent::ProgramWaitOverlay { .. }
             | AgentEvent::ProgramIdentityUnavailable => return false,
             AgentEvent::StartupReady => {
                 self.clear_turn(true);

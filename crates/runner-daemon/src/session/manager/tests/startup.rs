@@ -141,13 +141,18 @@ impl StartupFixture {
         );
     }
 
-    fn codex_status(&self, state: runner_terminal::program_status::State) {
+    fn program_status(
+        &self,
+        app: &str,
+        state: runner_terminal::program_status::State,
+        kind: Option<&str>,
+    ) {
         let seq = self.program_seq.fetch_add(1, Ordering::Relaxed) + 1;
         let report = runner_terminal::program_status::Report {
             id: String::new(),
             state,
-            app: Some("codex".into()),
-            kind: None,
+            app: Some(app.into()),
+            kind: kind.map(str::to_owned),
             message: None,
             progress: None,
             title: None,
@@ -160,12 +165,23 @@ impl StartupFixture {
                 update: Box::new(runner_terminal::program_status::Update {
                     current: (state != runner_terminal::program_status::State::Clear)
                         .then(|| report.clone()),
+                    root: (state != runner_terminal::program_status::State::Clear)
+                        .then(|| report.clone()),
+                    active_children: Vec::new(),
                     trigger: Some(report),
                 }),
                 live: true,
             },
             &Capture::default(),
         );
+    }
+
+    fn codex_status(&self, state: runner_terminal::program_status::State) {
+        self.program_status("codex", state, None);
+    }
+
+    fn claude_status(&self, state: runner_terminal::program_status::State) {
+        self.program_status("claude-code", state, None);
     }
 
     fn drive(&self) {
@@ -237,8 +253,11 @@ fn router_holds_startup_deliveries_until_hook_turn_completion_and_resets_on_resu
         let now = Instant::now();
         let output = fixture.launch(runtime.key(), true, now);
         fixture.held();
-        if runtime == Runtime::Codex {
-            fixture.codex_status(P::Idle);
+        let app = crate::runtimes::adapter(runtime)
+            .status_semantics()
+            .program_status_root_app;
+        if let Some(app) = app {
+            fixture.program_status(app, P::Idle, None);
         } else {
             fixture.event(runtime, AgentEvent::StartupReady);
         }
@@ -255,15 +274,16 @@ fn router_holds_startup_deliveries_until_hook_turn_completion_and_resets_on_resu
             now + Duration::from_secs(60),
         );
         fixture.held();
-        if runtime == Runtime::Codex {
+        if let Some(app) = app {
             fixture.manager.publish_agent_event(
                 "session",
                 AgentEvent::ProgramTurnConfirmed {
                     conversation_changed: false,
+                    prompt: None,
                 },
                 &Capture::default(),
             );
-            fixture.codex_status(P::Working);
+            fixture.program_status(app, P::Working, None);
         } else {
             fixture.event(runtime, AgentEvent::TurnStarted);
         }
@@ -273,8 +293,8 @@ fn router_holds_startup_deliveries_until_hook_turn_completion_and_resets_on_resu
             now + Duration::from_secs(3600),
         );
         fixture.held();
-        if runtime == Runtime::Codex {
-            fixture.codex_status(P::Done);
+        if let Some(app) = app {
+            fixture.program_status(app, P::Done, None);
         } else {
             fixture.event(
                 runtime,
@@ -294,8 +314,8 @@ fn router_holds_startup_deliveries_until_hook_turn_completion_and_resets_on_resu
         fixture.queue("task before resume");
         let _resume = fixture.launch(runtime.key(), false, now);
         fixture.held();
-        if runtime == Runtime::Codex {
-            fixture.codex_status(P::Idle);
+        if let Some(app) = app {
+            fixture.program_status(app, P::Idle, None);
         } else {
             fixture.event(runtime, AgentEvent::StartupReady);
         }
@@ -389,6 +409,7 @@ fn codex_interrupted_first_turn_releases_the_startup_hold_once_the_abort_settles
         "session",
         AgentEvent::ProgramTurnConfirmed {
             conversation_changed: false,
+            prompt: None,
         },
         &Capture::default(),
     );
@@ -398,6 +419,7 @@ fn codex_interrupted_first_turn_releases_the_startup_hold_once_the_abort_settles
         "session",
         AgentEvent::ProgramTurnOutcome {
             outcome: crate::session::status::TurnOutcome::Interrupted,
+            policy: crate::session::state::agent::ProgramOutcomePolicy::Immediate,
         },
         &Capture::default(),
     );
@@ -415,6 +437,7 @@ fn codex_failed_first_turn_releases_the_startup_hold() {
         "session",
         AgentEvent::ProgramTurnConfirmed {
             conversation_changed: false,
+            prompt: None,
         },
         &Capture::default(),
     );
@@ -424,6 +447,7 @@ fn codex_failed_first_turn_releases_the_startup_hold() {
         "session",
         AgentEvent::ProgramTurnOutcome {
             outcome: crate::session::status::TurnOutcome::Failed,
+            policy: crate::session::state::agent::ProgramOutcomePolicy::Immediate,
         },
         &Capture::default(),
     );
@@ -562,69 +586,80 @@ fn a_synthetic_busy_publication_cannot_confirm_an_attempt() {
 
 #[test]
 fn only_a_turn_reporting_the_typed_line_as_its_prompt_marks_it_delivered() {
-    let fixture = StartupFixture::new();
-    let _output = fixture.launch("claude-code", false, Instant::now());
-    fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
-    let prompted = || {
-        fixture
-            .manager
-            .delivery_snapshot("session")
-            .unwrap()
-            .prompted
-    };
-    let turn = |prompt: &str| {
+    use runner_terminal::program_status::State as P;
+    for (runtime, app) in [(Runtime::ClaudeCode, "claude-code"), (Runtime::Pi, "pi")] {
+        let fixture = StartupFixture::new();
+        let _output = fixture.launch(runtime.key(), false, Instant::now());
+        fixture.program_status(app, P::Idle, None);
+        let prompted = || {
+            fixture
+                .manager
+                .delivery_snapshot("session")
+                .unwrap()
+                .prompted
+        };
+        let turn = |prompt: Option<&str>| {
+            fixture.manager.publish_agent_event(
+                "session",
+                AgentEvent::ProgramTurnConfirmed {
+                    conversation_changed: false,
+                    prompt: prompt.map(str::to_owned),
+                },
+                &Capture::default(),
+            );
+            fixture.program_status(app, P::Working, None);
+        };
+        let end = || {
+            fixture.program_status(app, P::Done, None);
+        };
+        let typed = |line: &[u8]| {
+            let DeliveryReservation::Ready(token) =
+                fixture.manager.reserve_delivery("session").unwrap()
+            else {
+                panic!("the session is not ready");
+            };
+            assert!(fixture
+                .manager
+                .inject_reserved("session", token, line)
+                .unwrap());
+            fixture.manager.finish_delivery("session", token);
+        };
+
+        typed(b"[runner] line");
+        assert!(!prompted(), "{runtime:?}");
+        turn(Some("a scheduled wakeup"));
+        assert!(!prompted(), "{runtime:?}: another prompt");
+        end();
+        turn(None);
+        assert!(!prompted(), "{runtime:?}: a turn with no reported prompt");
+        end();
+        turn(Some("[runner] line\n"));
+        assert!(prompted(), "{runtime:?}");
+        end();
+        typed(b"[runner] next");
+        assert!(!prompted(), "{runtime:?}: the next line starts unproven");
+        // Working arriving before UserPromptSubmit/input still sets prompted once the hook lands.
+        fixture.program_status(app, P::Working, None);
+        assert!(!prompted(), "{runtime:?}");
         fixture.manager.publish_agent_event(
             "session",
-            AgentEvent::Batch {
-                runtime: Runtime::ClaudeCode,
-                events: vec![
-                    AgentEvent::PromptSubmitted {
-                        prompt: prompt.into(),
-                    },
-                    AgentEvent::TurnStarted,
-                ],
+            AgentEvent::ProgramTurnConfirmed {
+                conversation_changed: false,
+                prompt: Some("[runner] next".into()),
             },
             &Capture::default(),
         );
-    };
-    let end = || {
-        fixture.event(
-            Runtime::ClaudeCode,
-            AgentEvent::TurnEnded {
-                outcome: crate::session::status::TurnOutcome::Completed,
-            },
+        assert!(
+            prompted(),
+            "{runtime:?}: hook after Working must still prove the typed prompt"
         );
-    };
-    let typed = |line: &[u8]| {
-        let DeliveryReservation::Ready(token) =
-            fixture.manager.reserve_delivery("session").unwrap()
-        else {
-            panic!("the session is not ready");
-        };
-        assert!(fixture
-            .manager
-            .inject_reserved("session", token, line)
-            .unwrap());
-        fixture.manager.finish_delivery("session", token);
-    };
-
-    typed(b"[runner] line");
-    assert!(!prompted());
-    turn("a scheduled wakeup");
-    assert!(!prompted(), "another prompt");
-    end();
-    fixture.event(Runtime::ClaudeCode, AgentEvent::TurnStarted);
-    assert!(!prompted(), "a turn with no reported prompt");
-    end();
-    turn("[runner] line\n");
-    assert!(prompted());
-    end();
-    typed(b"[runner] next");
-    assert!(!prompted(), "the next line starts unproven");
+        end();
+    }
 }
 
 #[test]
 fn approval_response_and_release_are_readiness_events_not_composer_clear_evidence() {
+    use runner_terminal::program_status::State as P;
     #[derive(Default)]
     struct Events(Mutex<Vec<crate::router::SessionDeliveryEvent>>);
     impl crate::router::SessionDeliveryListener for Events {
@@ -634,30 +669,18 @@ fn approval_response_and_release_are_readiness_events_not_composer_clear_evidenc
     }
     let fixture = StartupFixture::new();
     let _output = fixture.launch("claude-code", false, Instant::now());
-    fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+    fixture.claude_status(P::Idle);
     let events = Arc::new(Events::default());
     let listener: Arc<dyn crate::router::SessionDeliveryListener> = events.clone();
     fixture
         .manager
         .register_delivery_listener("session", Arc::downgrade(&listener));
-    fixture.event(
-        Runtime::ClaudeCode,
-        AgentEvent::InteractionOpened {
-            reason: crate::session::status::WaitReason::Approval,
-            owners: vec!["approval".into()],
-        },
-    );
+    fixture.program_status("claude-code", P::Blocked, Some("permission"));
     fixture
         .manager
         .inject_direct_stdin("session", b"\r", &Capture::default())
         .unwrap();
-    fixture.event(
-        Runtime::ClaudeCode,
-        AgentEvent::InteractionClosed {
-            owner: "approval".into(),
-            reason: None,
-        },
-    );
+    fixture.claude_status(P::Working);
     for bytes in [b"\r".as_slice(), b"\x03".as_slice()] {
         fixture
             .manager
@@ -693,7 +716,7 @@ fn resized_unsubmitted_input_waits_for_composer_output_after_a_successful_local_
 
     let fixture = StartupFixture::new();
     let _output = fixture.launch("claude-code", false, Instant::now());
-    fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+    fixture.claude_status(runner_terminal::program_status::State::Idle);
     let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
     let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
     let terminal = fixture
@@ -756,12 +779,7 @@ fn resized_unsubmitted_input_waits_for_composer_output_after_a_successful_local_
         .iter()
         .any(|row| row.contains("[inbox]")));
     emit(b"\x1b[2J\x1b[H> ");
-    fixture.event(
-        Runtime::ClaudeCode,
-        AgentEvent::TurnEnded {
-            outcome: TurnOutcome::Completed,
-        },
-    );
+    fixture.claude_status(runner_terminal::program_status::State::Done);
     crate::session::clock::at(now, 0, || fixture.drive());
     advance(Duration::from_millis(500));
     let inputs = fixture.fake.inputs.lock().unwrap();
@@ -924,7 +942,7 @@ fn a_confirmed_notice_left_on_screen_never_holds_the_idle_member() {
     for history_at_composer_row in [true, false] {
         let fixture = StartupFixture::new();
         let _output = fixture.launch("claude-code", false, Instant::now());
-        fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+        fixture.claude_status(runner_terminal::program_status::State::Idle);
         let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
         let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
         let terminal = fixture
@@ -964,7 +982,7 @@ fn a_confirmed_notice_left_on_screen_never_holds_the_idle_member() {
             inputs()
         );
         crate::session::clock::at(now(), 0, || {
-            fixture.event(Runtime::ClaudeCode, AgentEvent::TurnStarted)
+            fixture.claude_status(runner_terminal::program_status::State::Working)
         });
         if history_at_composer_row {
             emit(
@@ -980,12 +998,7 @@ fn a_confirmed_notice_left_on_screen_never_holds_the_idle_member() {
         advance(crate::router::dispatch::CONFIRM_WINDOW);
         assert_eq!(fixture.fake.inputs.lock().unwrap().len(), 2);
         crate::session::clock::at(now(), 0, || {
-            fixture.event(
-                Runtime::ClaudeCode,
-                AgentEvent::TurnEnded {
-                    outcome: TurnOutcome::Completed,
-                },
-            )
+            fixture.claude_status(runner_terminal::program_status::State::Done)
         });
         advance(Duration::from_secs(60));
         crate::session::clock::at(now(), 0, || fixture.queue("second"));
@@ -1020,7 +1033,7 @@ fn an_output_observation_published_after_the_confirmation_cannot_restore_the_hol
 
     let fixture = StartupFixture::new();
     let _output = fixture.launch("claude-code", false, Instant::now());
-    fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+    fixture.claude_status(runner_terminal::program_status::State::Idle);
     let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
     let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
     let terminal = fixture
@@ -1056,7 +1069,7 @@ fn an_output_observation_published_after_the_confirmation_cannot_restore_the_hol
     emit(format!("\x1b[5;1H\x1b[K> {body}").as_bytes());
     advance(Duration::from_millis(300));
     crate::session::clock::at(now(), 0, || {
-        fixture.event(Runtime::ClaudeCode, AgentEvent::TurnStarted)
+        fixture.claude_status(runner_terminal::program_status::State::Working)
     });
     // The output thread computes its observation, then the router confirms before it publishes.
     let seq = fixture
@@ -1076,12 +1089,7 @@ fn an_output_observation_published_after_the_confirmation_cannot_restore_the_hol
     advance(crate::router::dispatch::CONFIRM_WINDOW);
     terminal.publish_input(late);
     crate::session::clock::at(now(), 0, || {
-        fixture.event(
-            Runtime::ClaudeCode,
-            AgentEvent::TurnEnded {
-                outcome: TurnOutcome::Completed,
-            },
-        )
+        fixture.claude_status(runner_terminal::program_status::State::Done)
     });
     let idle = readiness();
     crate::session::clock::at(now(), 0, || fixture.queue("second"));
@@ -1118,7 +1126,7 @@ fn person_input_before_the_confirmation_keeps_its_draft_held() {
     for paste in [false, true] {
         let fixture = StartupFixture::new();
         let _output = fixture.launch("claude-code", false, Instant::now());
-        fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+        fixture.claude_status(runner_terminal::program_status::State::Idle);
         let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
         let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
         let terminal = fixture
@@ -1166,7 +1174,7 @@ fn person_input_before_the_confirmation_keeps_its_draft_held() {
             fixture.manager.delivery_snapshot("session").unwrap()
         });
         crate::session::clock::at(now(), 0, || {
-            fixture.event(Runtime::ClaudeCode, AgentEvent::TurnStarted)
+            fixture.claude_status(runner_terminal::program_status::State::Working)
         });
         emit(
             format!("\x1b[5;1H\x1b[K> {body}\x1b[6;1H\x1b[K⏺ Read 1 message\x1b[7;1H\x1b[K> \x1b[8;1H\x1b[K")
@@ -1188,12 +1196,7 @@ fn person_input_before_the_confirmation_keeps_its_draft_held() {
         fixture.manager.confirm_delivery("session", &snapshot);
         emit(b"\x1b[7;1H\x1b[K> draft");
         crate::session::clock::at(now(), 0, || {
-            fixture.event(
-                Runtime::ClaudeCode,
-                AgentEvent::TurnEnded {
-                    outcome: TurnOutcome::Completed,
-                },
-            )
+            fixture.claude_status(runner_terminal::program_status::State::Done)
         });
         advance(Duration::from_secs(60));
         crate::session::clock::at(now(), 0, || fixture.queue("second"));
@@ -1233,7 +1236,7 @@ fn an_unsent_notice_without_a_pending_attempt_is_rechecked_when_the_member_is_id
     for stale in [true, false] {
         let fixture = StartupFixture::new();
         let _output = fixture.launch("claude-code", false, Instant::now());
-        fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+        fixture.claude_status(runner_terminal::program_status::State::Idle);
         let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
         let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
         let terminal = fixture
@@ -1276,19 +1279,14 @@ fn an_unsent_notice_without_a_pending_attempt_is_rechecked_when_the_member_is_id
         terminal.track_delivery_submit();
         if stale {
             crate::session::clock::at(now(), 0, || {
-                fixture.event(Runtime::ClaudeCode, AgentEvent::TurnStarted)
+                fixture.claude_status(runner_terminal::program_status::State::Working)
             });
             emit(
                 format!("{echo}\x1b[6;1H\x1b[K⏺ Read 1 message\x1b[7;1H\x1b[K> \x1b[8;1H\x1b[K")
                     .as_bytes(),
             );
             crate::session::clock::at(now(), 0, || {
-                fixture.event(
-                    Runtime::ClaudeCode,
-                    AgentEvent::TurnEnded {
-                        outcome: TurnOutcome::Completed,
-                    },
-                )
+                fixture.claude_status(runner_terminal::program_status::State::Done)
             });
         } else {
             emit(echo.as_bytes());
@@ -1480,7 +1478,7 @@ fn generated_submissions_accept_rotating_placeholders_and_deliver_later_backlogs
     for second_enter in [false, true] {
         let fixture = StartupFixture::new();
         let _output = fixture.launch("claude-code", false, Instant::now());
-        fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+        fixture.claude_status(runner_terminal::program_status::State::Idle);
         let pool = db::open_pool(&fixture._dir.path().join("terminal.db")).unwrap();
         let events: Arc<dyn SessionEvents> = Arc::new(Capture::default());
         let terminal = fixture
@@ -1533,12 +1531,7 @@ fn generated_submissions_accept_rotating_placeholders_and_deliver_later_backlogs
         assert!(
             !matches!(fixture.fake.inputs.lock().unwrap().last(), Some(FakeInput::Bytes { bytes, .. }) if String::from_utf8_lossy(bytes).contains("2 new messages"))
         );
-        fixture.event(
-            Runtime::ClaudeCode,
-            AgentEvent::TurnEnded {
-                outcome: TurnOutcome::Completed,
-            },
-        );
+        fixture.claude_status(runner_terminal::program_status::State::Done);
         advance(Duration::from_millis(300));
         let inputs = fixture.fake.inputs.lock().unwrap().clone();
         assert!(
@@ -1621,7 +1614,7 @@ fn generated_submit_cannot_publish_over_a_newer_composition_observation() {
     for guarded in [false, true] {
         let fixture = StartupFixture::new();
         let _output = fixture.launch("claude-code", false, Instant::now());
-        fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+        fixture.claude_status(runner_terminal::program_status::State::Idle);
         let (start, go) = mpsc::channel();
         let (ready, attempted) = mpsc::channel();
         let host = Arc::new(Host {
@@ -1687,11 +1680,11 @@ fn a_return_that_starts_no_turn_frees_the_member_for_its_queued_notice() {
     for runtime in [Runtime::ClaudeCode, Runtime::Codex] {
         let fixture = StartupFixture::new();
         let output = fixture.launch(runtime.key(), false, Instant::now());
-        if runtime == Runtime::Codex {
-            fixture.codex_status(runner_terminal::program_status::State::Idle);
-        } else {
-            fixture.event(runtime, AgentEvent::StartupReady);
-        }
+        let app = crate::runtimes::adapter(runtime)
+            .status_semantics()
+            .program_status_root_app
+            .unwrap();
+        fixture.program_status(app, runner_terminal::program_status::State::Idle, None);
         let stop = output.stop_flag();
         let events = Capture::default();
         let start = *fixture.now.lock().unwrap();
@@ -1835,6 +1828,7 @@ fn a_real_codex_turn_releases_the_unconfirmed_notice_before_the_idle_timeout() {
             "session",
             AgentEvent::ProgramTurnConfirmed {
                 conversation_changed: false,
+                prompt: None,
             },
             &Capture::default(),
         );
@@ -1864,7 +1858,7 @@ fn a_turn_that_reports_in_time_is_never_reverted_and_a_late_one_returns_to_busy(
     for late in [false, true] {
         let fixture = StartupFixture::new();
         let output = fixture.launch("claude-code", false, Instant::now());
-        fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+        fixture.claude_status(runner_terminal::program_status::State::Idle);
         let stop = output.stop_flag();
         let events = Capture::default();
         let start = *fixture.now.lock().unwrap();
@@ -1885,14 +1879,14 @@ fn a_turn_that_reports_in_time_is_never_reverted_and_a_late_one_returns_to_busy(
         };
         if !late {
             crate::session::clock::at(at(2), 0, || {
-                fixture.event(Runtime::ClaudeCode, AgentEvent::TurnStarted)
+                fixture.claude_status(runner_terminal::program_status::State::Working)
             });
         }
         expire(11);
         if late {
             assert_eq!(activity(), SessionActivityState::Idle);
             crate::session::clock::at(at(14), 0, || {
-                fixture.event(Runtime::ClaudeCode, AgentEvent::TurnStarted)
+                fixture.claude_status(runner_terminal::program_status::State::Working)
             });
         }
         assert_eq!(activity(), SessionActivityState::Busy, "late={late}");
@@ -1902,12 +1896,7 @@ fn a_turn_that_reports_in_time_is_never_reverted_and_a_late_one_returns_to_busy(
             "late={late}"
         );
         crate::session::clock::at(at(40), 0, || {
-            fixture.event(
-                Runtime::ClaudeCode,
-                AgentEvent::TurnEnded {
-                    outcome: TurnOutcome::Completed,
-                },
-            )
+            fixture.claude_status(runner_terminal::program_status::State::Done)
         });
         assert_eq!(activity(), SessionActivityState::Idle, "late={late}");
         expire(60);
@@ -1919,7 +1908,7 @@ fn a_turn_that_reports_in_time_is_never_reverted_and_a_late_one_returns_to_busy(
 fn the_forwarder_loop_withdraws_a_submit_busy_that_outlived_its_window() {
     let fixture = StartupFixture::new();
     let output = fixture.launch("claude-code", false, Instant::now());
-    fixture.event(Runtime::ClaudeCode, AgentEvent::StartupReady);
+    fixture.claude_status(runner_terminal::program_status::State::Idle);
     let events = Arc::new(Capture::default());
     // The forwarder reads the real clock, so the Return goes in a window ago.
     let past = Instant::now() - crate::session::state::SUBMIT_TURN_START_WINDOW;
@@ -2015,17 +2004,15 @@ fn output_after_a_return_leaves_an_output_only_session_to_its_idle_detector() {
 #[test]
 fn working_qualifying_members_are_deliverable_and_every_hold_still_blocks_them() {
     use crate::router::DeliveryReadiness as R;
-    use crate::session::state::agent::AgentEvent;
     let working = |runtime: Runtime| {
         let fixture = StartupFixture::new();
         let output = fixture.launch(runtime.key(), false, Instant::now());
-        if runtime == Runtime::Codex {
-            fixture.codex_status(runner_terminal::program_status::State::Idle);
-            fixture.codex_status(runner_terminal::program_status::State::Working);
-        } else {
-            fixture.event(runtime, AgentEvent::StartupReady);
-            fixture.event(runtime, AgentEvent::TurnStarted);
-        }
+        let app = crate::runtimes::adapter(runtime)
+            .status_semantics()
+            .program_status_root_app
+            .unwrap();
+        fixture.program_status(app, runner_terminal::program_status::State::Idle, None);
+        fixture.program_status(app, runner_terminal::program_status::State::Working, None);
         (fixture, output)
     };
     let readiness = |fixture: &StartupFixture| fixture.manager.delivery_readiness("session");
@@ -2108,45 +2095,20 @@ fn working_qualifying_members_are_deliverable_and_every_hold_still_blocks_them()
         }
 
         let (fixture, _output) = working(runtime);
-        if runtime == Runtime::Codex {
-            fixture.codex_status(runner_terminal::program_status::State::Blocked);
-        } else {
-            fixture
-                .manager
-                .session_state("session")
-                .unwrap()
-                .lock()
-                .unwrap()
-                .model
-                .set_native_attention(true);
-            let blocked = runner_terminal::program_status::Report {
-                state: runner_terminal::program_status::State::Blocked,
-                id: String::new(),
-                kind: Some("permission".into()),
-                progress: None,
-                app: Some("codex".into()),
-                title: None,
-                message: None,
-            };
-            fixture.manager.publish_model_event(
-                "session",
-                SessionEvent::ProgramStatus {
-                    seq: 1,
-                    subseq: 0,
-                    update: Box::new(runner_terminal::program_status::Update {
-                        current: Some(blocked.clone()),
-                        trigger: Some(blocked),
-                    }),
-                    live: true,
-                },
-                &Capture::default(),
-            );
-        }
+        let app = crate::runtimes::adapter(runtime)
+            .status_semantics()
+            .program_status_root_app
+            .unwrap();
+        fixture.program_status(
+            app,
+            runner_terminal::program_status::State::Blocked,
+            Some("permission"),
+        );
         assert_eq!(readiness(&fixture), R::NeedsYou, "{runtime:?}");
 
         let fixture = StartupFixture::new();
         let _output = fixture.launch(runtime.key(), false, Instant::now());
-        fixture.event(runtime, AgentEvent::TurnStarted);
+        fixture.program_status(app, runner_terminal::program_status::State::Working, None);
         assert_eq!(readiness(&fixture), R::Starting, "{runtime:?}");
     }
 }
@@ -2405,6 +2367,8 @@ fn a_chat_started_with_a_first_turn_takes_no_report_until_that_turn_completes() 
                 subseq: 0,
                 update: Box::new(runner_terminal::program_status::Update {
                     current: Some(report.clone()),
+                    root: Some(report.clone()),
+                    active_children: Vec::new(),
                     trigger: Some(report),
                 }),
                 live: true,
@@ -2449,39 +2413,46 @@ fn a_chat_started_with_a_first_turn_takes_no_report_until_that_turn_completes() 
 #[test]
 fn chat_without_status_hooks_uses_output_settle_even_with_identity_hooks() {
     let now = super::super::super::clock::now();
-    for runtime in [Runtime::ClaudeCode, Runtime::Pi] {
-        let mut gate =
-            super::super::startup::StartupDelivery::for_reports(runtime.key(), false, now)
-                .with_status_hooks(false);
-        assert!(!gate.status_hooks_enabled());
-        gate.output(b"ready", now);
-        assert!(!gate.output_settled(now + Duration::from_secs(1)));
-        assert!(gate.output_settled(now + Duration::from_secs(11)));
+    // Copilot keeps the toggleable StatusHooks switch: hooks off falls back to output settle,
+    // while hooks on waits for the hook rather than releasing early on OSC 7501 idle.
+    let mut copilot_off =
+        super::super::startup::StartupDelivery::for_reports(Runtime::Copilot.key(), false, now)
+            .with_status_hooks(false);
+    assert!(!copilot_off.status_hooks_enabled());
+    copilot_off.output(b"ready", now);
+    assert!(!copilot_off.output_settled(now + Duration::from_secs(1)));
+    assert!(copilot_off.output_settled(now + Duration::from_secs(11)));
 
-        // When hooks are enabled on a fresh gate, pre-hook OSC 7501 idle must not release early.
-        let mut hooked =
-            super::super::startup::StartupDelivery::for_reports(runtime.key(), false, now);
-        assert!(hooked.status_hooks_enabled());
-        assert!(!hooked.observation(&AgentObservation {
-            activity: Activity::Idle,
-            source: ObservationSource::Baseline,
-            program_status: Some(Default::default()),
-            ..Default::default()
-        }));
-    }
-
-    // Codex has no status hooks: an untrusted fresh gate holds on quiet trust prompts
-    // and releases on OSC 7501 idle, while a trusted/reopened gate also falls back to output settle.
-    let mut untrusted_codex =
-        super::super::startup::StartupDelivery::for_reports(Runtime::Codex.key(), false, now);
-    untrusted_codex.output(b"Do you trust the contents of this directory?", now);
-    assert!(!untrusted_codex.output_settled(now + Duration::from_secs(60)));
-    assert!(untrusted_codex.observation(&AgentObservation {
+    let mut copilot_on =
+        super::super::startup::StartupDelivery::for_reports(Runtime::Copilot.key(), false, now);
+    assert!(copilot_on.status_hooks_enabled());
+    assert!(!copilot_on.observation(&AgentObservation {
         activity: Activity::Idle,
         source: ObservationSource::Baseline,
         program_status: Some(Default::default()),
         ..Default::default()
     }));
+
+    // Codex, Claude Code, and pi have no status hooks: an untrusted fresh gate holds on quiet
+    // trust prompts and releases on OSC 7501 idle.
+    for runtime in [Runtime::Codex, Runtime::ClaudeCode, Runtime::Pi] {
+        let mut untrusted =
+            super::super::startup::StartupDelivery::for_reports(runtime.key(), false, now);
+        untrusted.output(b"Do you trust the contents of this directory?", now);
+        assert!(
+            !untrusted.output_settled(now + Duration::from_secs(60)),
+            "{runtime:?}"
+        );
+        assert!(
+            untrusted.observation(&AgentObservation {
+                activity: Activity::Idle,
+                source: ObservationSource::Baseline,
+                program_status: Some(Default::default()),
+                ..Default::default()
+            }),
+            "{runtime:?}"
+        );
+    }
 
     let mut trusted_codex = super::super::startup::StartupDelivery::for_trusted_reports(
         Runtime::Codex.key(),
@@ -2813,6 +2784,7 @@ fn codex_no_osc_startup_releases_queued_delivery_after_trust_and_first_turn_whil
         "session",
         AgentEvent::ProgramTurnConfirmed {
             conversation_changed: false,
+            prompt: None,
         },
         &Capture::default(),
     );
@@ -2963,6 +2935,7 @@ fn codex_no_osc_startup_releases_queued_delivery_after_trust_and_first_turn_whil
         &first_turn,
         AgentEvent::ProgramTurnConfirmed {
             conversation_changed: false,
+            prompt: None,
         },
         &Capture::default(),
     );

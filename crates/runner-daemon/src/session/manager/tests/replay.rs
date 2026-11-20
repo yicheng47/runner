@@ -186,6 +186,9 @@ fn attach_replay_program_terminal(manager: &SessionManager, runtime: &str) {
     state
         .model
         .set_program_status_transcript_outcomes(semantics.program_status_transcript_outcomes);
+    state
+        .model
+        .set_program_status_cancel_interrupt(semantics.program_status_cancel_interrupt);
     if let Some(previous) = state.terminal.replace(terminal) {
         for worker in previous.stop_workers() {
             let _ = worker.join();
@@ -459,6 +462,9 @@ fn replay(path: &Path) -> Value {
                         }
                         if report["transcript_path"] == "<TRANSCRIPT>" {
                             report["transcript_path"] = json!(transcript);
+                        }
+                        if report["session_file"] == "<TRANSCRIPT>" {
+                            report["session_file"] = json!(transcript);
                         }
                         let caller = report
                             .get("agent_id")

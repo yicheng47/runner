@@ -31,14 +31,8 @@ fn switch_copy(
         ),
         RuntimeLaunchOption::StatusHooks => (
             "ui.launch_status_hooks",
+            "ui.launch_activity_hooks_description",
             match runtime {
-                Runtime::ClaudeCode => "ui.launch_claude_hooks_description",
-                Runtime::Pi => "ui.launch_pi_hooks_description",
-                _ => "ui.launch_activity_hooks_description",
-            },
-            match runtime {
-                Runtime::ClaudeCode => "On: --settings {\"hooks\":{…}}",
-                Runtime::Pi => "On: -e <Runner status extension>",
                 Runtime::Copilot => "On: --plugin-dir <Runner status plugin>",
                 Runtime::OpenCode => "On: OPENCODE_CLI_CONFIG_CONTENT=<Runner status plugin>",
                 _ => "On: <Runner status hooks>",

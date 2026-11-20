@@ -89,6 +89,7 @@ impl SessionManager {
             state: event.state(),
             source: StatusSource::Forwarder,
             status: self.agent_status(session_id),
+            program_done: false,
         });
     }
 
@@ -115,6 +116,7 @@ impl SessionManager {
             state: event.state(),
             source: StatusSource::Forwarder,
             status: status.clone(),
+            program_done: false,
         });
         if let Some(sink) = sink {
             if let Err(error) =
@@ -274,6 +276,7 @@ impl SessionManager {
             state,
             source,
             status: self.agent_status(session_id),
+            program_done: false,
         });
     }
 
@@ -300,6 +303,7 @@ impl SessionManager {
             state,
             source,
             status: status.clone(),
+            program_done: false,
         });
         if let Some(sink) = sink {
             if let Err(error) = sink.append_session_status(state, source, &status) {
@@ -450,6 +454,7 @@ impl SessionManager {
                             state,
                             source,
                             status: session.model.status().clone(),
+                            program_done: false,
                         })
                 }
             };
@@ -579,8 +584,7 @@ impl SessionManager {
                     live: true
                 }
             );
-            #[cfg(all(test, unix))]
-            let program_turn_confirmed = matches!(
+            let program_turn_confirmed_event = matches!(
                 &event,
                 SessionEvent::Agent {
                     event: super::super::state::agent::AgentEvent::ProgramTurnConfirmed { .. },
@@ -596,9 +600,11 @@ impl SessionManager {
                 session.delivery_prompted |= prompted;
                 #[cfg(all(test, unix))]
                 session.turn_notify.notify_all();
+            } else if program_turn_confirmed_event && prompted {
+                session.delivery_prompted = true;
             }
             #[cfg(all(test, unix))]
-            if program_turn_confirmed {
+            if program_turn_confirmed_event {
                 session.program_turn_confirmed = session.program_turn_confirmed.wrapping_add(1);
                 session.turn_notify.notify_all();
             }
@@ -641,6 +647,7 @@ impl SessionManager {
                 state,
                 source,
                 status,
+                program_done: effects.program_done,
             });
             let status = self.agent_status(session_id);
             if let Some(sink) = sink {
@@ -718,6 +725,10 @@ fn agent_prompted(event: &super::super::state::agent::AgentEvent, line: &str) ->
     use super::super::state::agent::AgentEvent;
     match event {
         AgentEvent::PromptSubmitted { prompt } => prompt.trim() == line.trim(),
+        AgentEvent::ProgramTurnConfirmed {
+            prompt: Some(prompt),
+            ..
+        } => prompt.trim() == line.trim(),
         AgentEvent::Batch { events, .. } | AgentEvent::Transcript { events, .. } => {
             events.iter().any(|event| agent_prompted(event, line))
         }
