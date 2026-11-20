@@ -1,0 +1,15 @@
+runtime=grok name=first-turn-viewed rules=[8] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key="11111111-1111-4111-8111-111111111111" delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+150 status=running/idle/baseline observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
+  busy@input-submit [running/idle/baseline observation.program_status={"message":null}]
+400
+450 status=running/working/baseline observation.program_status={"message":"Thinking"}
+  busy@program-status [running/working/baseline observation.program_status={"message":"Thinking"}]
+550 status=running/idle/baseline outcome="completed" observation.program_status={"message":"Turn complete in 2.5s."} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="completed" observation.program_status={"message":"Turn complete in 2.5s."}]
+600 completion_armed=false result={"completion_consumed":true,"viewed":true}

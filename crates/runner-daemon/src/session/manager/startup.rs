@@ -112,6 +112,12 @@ impl StartupDelivery {
         }
     }
 
+    pub(super) fn outcome_source_unavailable(&mut self) {
+        if self.trust_cleared {
+            self.waits_for_program_status = false;
+        }
+    }
+
     pub(super) fn observation(
         &mut self,
         observation: &super::super::status::AgentObservation,

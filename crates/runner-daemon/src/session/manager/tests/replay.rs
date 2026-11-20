@@ -65,6 +65,7 @@ enum Event {
         source: String,
     },
     BridgeFailed,
+    IdentityUnavailable,
     Reserve,
     Finish,
     Wake,
@@ -118,7 +119,8 @@ fn watcher(
 ) -> Option<Box<dyn HookWatcher>> {
     use crate::runtimes::{
         claude_code::claude_status::ClaudeStatusWatcher, codex::codex_status::CodexStatusWatcher,
-        copilot::copilot_status::CopilotStatusWatcher, pi::pi_status::PiStatusWatcher,
+        copilot::copilot_status::CopilotStatusWatcher, grok::status::Watcher as GrokStatusWatcher,
+        opencode::status::Watcher as OpenCodeStatusWatcher, pi::pi_status::PiStatusWatcher,
     };
     if runtime == "antigravity" {
         return None;
@@ -135,9 +137,91 @@ fn watcher(
             receiver,
             home.join(".copilot"),
         )),
+        "grok" => Box::new(GrokStatusWatcher::with_home(
+            receiver,
+            Some(home.join(".grok")),
+            0,
+        )),
+        "opencode" => Box::new(OpenCodeStatusWatcher::from_receiver(
+            receiver,
+            Some(opencode_replay_db(home)),
+        )),
         "pi" => Box::new(PiStatusWatcher::from_receiver(receiver)),
         _ => panic!("unknown scenario runtime {runtime}"),
     })
+}
+
+fn opencode_replay_db(home: &Path) -> PathBuf {
+    home.join(".local/share/opencode/opencode.db")
+}
+
+fn ensure_opencode_replay_db(home: &Path) {
+    let path = opencode_replay_db(home);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS session_v2(
+            id TEXT PRIMARY KEY,
+            time_created INTEGER NOT NULL,
+            time_busy INTEGER,
+            time_idle INTEGER,
+            idle_outcome TEXT
+        );
+        CREATE TABLE IF NOT EXISTS session_message(
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );",
+    )
+    .unwrap();
+}
+
+fn apply_opencode_record(home: &Path, record: &Value) {
+    ensure_opencode_replay_db(home);
+    let conn = rusqlite::Connection::open(opencode_replay_db(home)).unwrap();
+    let id = record["id"].as_str().unwrap();
+    let time_created = record["time_created"].as_i64().unwrap_or_else(|| {
+        if record["preexisting"].as_bool() == Some(true) {
+            -1_000
+        } else {
+            1
+        }
+    });
+    let time_busy = record["time_busy"].as_i64();
+    let time_idle = record["time_idle"].as_i64();
+    let idle_outcome = record["idle_outcome"].as_str();
+    conn.execute(
+        "INSERT INTO session_v2(id, time_created, time_busy, time_idle, idle_outcome)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(id) DO UPDATE SET
+           time_busy = COALESCE(excluded.time_busy, session_v2.time_busy),
+           time_idle = COALESCE(excluded.time_idle, session_v2.time_idle),
+           idle_outcome = COALESCE(excluded.idle_outcome, session_v2.idle_outcome)",
+        params![id, time_created, time_busy, time_idle, idle_outcome],
+    )
+    .unwrap();
+    if let Some(message) = record.get("message") {
+        let seq = message["seq"].as_i64().unwrap_or(1);
+        let msg_id = message["id"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("msg_{id}_{seq}"));
+        let msg_type = message["type"].as_str().unwrap_or("assistant");
+        let msg_updated = message["time_updated"].as_i64().unwrap_or(time_created);
+        let msg_created = message["time_created"].as_i64().unwrap_or(msg_updated);
+        let data = message["data"].to_string();
+        conn.execute(
+            "INSERT INTO session_message(id, session_id, type, seq, time_created, time_updated, data)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET time_updated = excluded.time_updated, data = excluded.data",
+            params![msg_id, id, msg_type, seq, msg_created, msg_updated, data],
+        )
+        .unwrap();
+    }
 }
 
 struct ReplayTerminalHost;
@@ -189,6 +273,12 @@ fn attach_replay_program_terminal(manager: &SessionManager, runtime: &str) {
     state
         .model
         .set_program_status_cancel_interrupt(semantics.program_status_cancel_interrupt);
+    state
+        .model
+        .set_program_status_idle_completes(semantics.program_status_idle_completes);
+    state
+        .model
+        .set_program_status_suppress_child_tasks(semantics.program_status_suppress_child_tasks);
     if let Some(previous) = state.terminal.replace(terminal) {
         for worker in previous.stop_workers() {
             let _ = worker.join();
@@ -232,7 +322,7 @@ fn persist(
         .report_key(
             ID,
             PersistKey {
-                key: Some(key.into()),
+                key: (!key.is_empty()).then(|| key.into()),
                 generation: started.into(),
                 origin,
             },
@@ -368,6 +458,7 @@ fn replay(path: &Path) -> Value {
     let mut spawn_generation = 1;
     let mut generation = format!("spawn-{spawn_generation}");
     let mut current_start = START.to_owned();
+    let mut grok_used_explicit_transcript = false;
     let mut watcher = watcher(&header.runtime, &routes, &home, &generation);
     let fake = fake_runtime();
     let manager = mgr_with_fake(None, fake);
@@ -463,6 +554,10 @@ fn replay(path: &Path) -> Value {
                         if report["transcript_path"] == "<TRANSCRIPT>" {
                             report["transcript_path"] = json!(transcript);
                         }
+                        if report["transcriptPath"] == "<TRANSCRIPT>" {
+                            report["transcriptPath"] = json!(transcript);
+                            grok_used_explicit_transcript = true;
+                        }
                         if report["session_file"] == "<TRANSCRIPT>" {
                             report["session_file"] = json!(transcript);
                         }
@@ -471,8 +566,12 @@ fn replay(path: &Path) -> Value {
                             .and_then(Value::as_str)
                             .or_else(|| report.get("session_id").and_then(Value::as_str))
                             .map(str::to_owned);
+                        let bridge_unavailable = report
+                            .get("bridge_unavailable")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
                         let report = runner_core::protocol::hook::HookReport {
-                            bridge_unavailable: false,
+                            bridge_unavailable,
                             version: runner_core::protocol::hook::VERSION,
                             runtime: Runtime::parse(&header.runtime).unwrap(),
                             session_id: ID.into(),
@@ -483,7 +582,24 @@ fn replay(path: &Path) -> Value {
                         };
                         drop(routes.admit(report));
                     }
-                    Event::Record { record } => append(&transcript, &record),
+                    Event::Record { record } => {
+                        if header.runtime == "opencode" {
+                            apply_opencode_record(&home, &record);
+                        } else if header.runtime == "grok" && !grok_used_explicit_transcript {
+                            let session_id = record
+                                .pointer("/params/sessionId")
+                                .and_then(Value::as_str)
+                                .expect("grok record missing params.sessionId");
+                            let path = home
+                                .join(".grok/sessions/%2Fproject")
+                                .join(session_id)
+                                .join("updates.jsonl");
+                            fs::create_dir_all(path.parent().unwrap()).unwrap();
+                            append(&path, &record);
+                        } else {
+                            append(&transcript, &record);
+                        }
+                    }
                     Event::Observation { observation } => {
                         manager.publish_observation(ID, observation, events.as_ref())
                     }
@@ -505,6 +621,15 @@ fn replay(path: &Path) -> Value {
                         watcher = None;
                         detector.hooks_unavailable();
                         manager.status_bridge_failed(ID, events.as_ref());
+                    }
+                    Event::IdentityUnavailable => {
+                        watcher = None;
+                        detector.hooks_unavailable();
+                        manager.publish_agent_event(
+                            ID,
+                            crate::session::state::agent::AgentEvent::ProgramIdentityUnavailable,
+                            events.as_ref(),
+                        );
                     }
                     Event::Reserve => {
                         let reservation = manager.reserve_delivery(ID).unwrap();
@@ -604,17 +729,38 @@ fn replay(path: &Path) -> Value {
                     Event::Key { key, mode, stale } => {
                         result = json!({"key_written":persist(&manager, &conn,&key,&mode,stale,&current_start)})
                     }
-                    Event::History { key, alias } => {
-                        let path = history_path(&header.runtime, &home, &key, alias);
-                        fs::create_dir_all(path.parent().unwrap()).unwrap();
-                        fs::write(path, "").unwrap();
-                    }
+                    Event::History { key, alias } => match header.runtime.as_str() {
+                        "grok" => {
+                            let cwd = probe_cwd(&home, alias);
+                            let path = home
+                                .join(".grok/sessions/workspace")
+                                .join(&key)
+                                .join("summary.json");
+                            fs::create_dir_all(path.parent().unwrap()).unwrap();
+                            fs::write(path, json!({"info":{"id":key,"cwd":cwd}}).to_string())
+                                .unwrap();
+                        }
+                        "opencode" => {
+                            apply_opencode_record(&home, &json!({"id":key,"preexisting":true}));
+                        }
+                        _ => {
+                            let path = history_path(&header.runtime, &home, &key, alias);
+                            fs::create_dir_all(path.parent().unwrap()).unwrap();
+                            fs::write(path, "").unwrap();
+                        }
+                    },
                     Event::Probe { key, alias } => {
                         let cwd = probe_cwd(&home, alias);
-                        let env = HashMap::from([(
-                            "PI_CODING_AGENT_SESSION_DIR".into(),
-                            home.join("pi-sessions").to_string_lossy().into_owned(),
-                        )]);
+                        let env = HashMap::from([
+                            (
+                                "PI_CODING_AGENT_SESSION_DIR".into(),
+                                home.join("pi-sessions").to_string_lossy().into_owned(),
+                            ),
+                            (
+                                "OPENCODE_DB".into(),
+                                opencode_replay_db(&home).to_string_lossy().into_owned(),
+                            ),
+                        ]);
                         let adapter = crate::runtimes::for_key(&header.runtime);
                         result = json!({"history_exists":adapter.conversation_exists(&key, &crate::runtimes::ProbeContext {cwd:Some(&cwd),role_env:&env}),
                             "missing_reuses_key":adapter.missing_conversation().reuse_key,
@@ -678,7 +824,15 @@ fn replay(path: &Path) -> Value {
                         Ok(()) => {}
                         Err(_) => {
                             detector.hooks_unavailable();
-                            manager.status_bridge_failed(ID, events.as_ref());
+                            if uses_program_status {
+                                manager.publish_agent_event(
+                                    ID,
+                                    crate::session::state::agent::AgentEvent::ProgramIdentityUnavailable,
+                                    events.as_ref(),
+                                );
+                            } else {
+                                manager.status_bridge_failed(ID, events.as_ref());
+                            }
                             watcher = None;
                         }
                     }
@@ -723,7 +877,15 @@ fn replay(path: &Path) -> Value {
 fn session_scenario_goldens() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/session/fixtures");
     let mut paths = Vec::new();
-    for runtime in ["claude-code", "codex", "copilot", "pi", "antigravity"] {
+    for runtime in [
+        "claude-code",
+        "codex",
+        "copilot",
+        "pi",
+        "antigravity",
+        "grok",
+        "opencode",
+    ] {
         let mut runtime_paths = fs::read_dir(root.join("scenarios").join(runtime))
             .unwrap()
             .map(|entry| entry.unwrap().path())

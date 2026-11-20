@@ -191,6 +191,12 @@ impl SessionManager {
                     .set_program_status_cancel_interrupt(semantics.program_status_cancel_interrupt);
                 state_guard
                     .model
+                    .set_program_status_idle_completes(semantics.program_status_idle_completes);
+                state_guard.model.set_program_status_suppress_child_tasks(
+                    semantics.program_status_suppress_child_tasks,
+                );
+                state_guard
+                    .model
                     .set_native_attention(semantics.native_attention);
             }
             state_guard.handle = Some(handle);

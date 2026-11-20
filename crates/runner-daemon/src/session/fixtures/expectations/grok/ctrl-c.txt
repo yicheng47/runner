@@ -1,0 +1,19 @@
+runtime=grok name=ctrl-c rules=[8] bugs=[783] known_wrong=[]
+session_status_rows=published
+100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key="11111111-1111-4111-8111-111111111111" delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+150 status=running/idle/baseline observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
+  busy@input-submit [running/idle/baseline observation.program_status={"message":null}]
+400
+450 status=running/working/baseline observation.program_status={"message":"Thinking"}
+  busy@program-status [running/working/baseline observation.program_status={"message":"Thinking"}]
+500 delivery=["ReadinessChanged"]
+525 status=running/working/baseline observation.program_status={"message":"Cancelling"}
+  busy@program-status [running/working/baseline observation.program_status={"message":"Cancelling"}]
+550 status=running/idle/baseline outcome="interrupted" observation.program_status={"message":null} activity="idle" completion_armed=false delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="interrupted" observation.program_status={"message":null}]
+575
+600 result={"completion_consumed":false,"viewed":false}

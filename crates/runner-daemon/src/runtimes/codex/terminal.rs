@@ -131,9 +131,12 @@ impl TerminalAdapter for CodexTerminal {
             AgentEvent::ProgramSessionStarted { .. }
                 | AgentEvent::ProgramTurnConfirmed { .. }
                 | AgentEvent::ProgramTurnFinished
+                | AgentEvent::ProgramSessionFinished { .. }
                 | AgentEvent::ProgramTurnOutcome { .. }
+                | AgentEvent::ProgramSessionOutcome { .. }
                 | AgentEvent::ProgramWaitOverlay { .. }
                 | AgentEvent::ProgramIdentityUnavailable
+                | AgentEvent::ProgramOutcomeUnavailable
         ) {
             return true;
         }

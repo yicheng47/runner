@@ -38,7 +38,18 @@ pub use runner_core::protocol::runtime::RuntimeStatusResponse;
 pub use runner_core::protocol::runtime::OverrideValidationError;
 
 pub fn withholds_below_minimum(runtime: &crate::runtimes::RuntimeCatalog) -> bool {
-    runtime.min_version.is_some() && runtime.update_args.is_empty()
+    runner_core::protocol::runtime_metadata::withhold_below_version(runtime.name).is_some()
+}
+
+pub fn is_withheld_version(
+    runtime: &crate::runtimes::RuntimeCatalog,
+    installed: Option<&str>,
+) -> bool {
+    let Some(limit) = runner_core::protocol::runtime_metadata::withhold_below_version(runtime.name)
+    else {
+        return false;
+    };
+    versions::below_minimum(installed, Some(limit))
 }
 
 pub(crate) fn unsupported_version_message(
@@ -125,9 +136,7 @@ pub(crate) fn status_list_with_events(
                     ),
                     None => None,
                 };
-                if withholds_below_minimum(runtime)
-                    && versions::below_minimum(override_version.as_deref(), runtime.min_version)
-                {
+                if is_withheld_version(runtime, override_version.as_deref()) {
                     invalid_reason = Some(unsupported_version_message(
                         runtime,
                         override_version.as_deref().unwrap(),
@@ -146,8 +155,7 @@ pub(crate) fn status_list_with_events(
                 })
                 .flatten();
             let detected_below_minimum = override_path.is_none()
-                && withholds_below_minimum(runtime)
-                && versions::below_minimum(detected_version.as_deref(), runtime.min_version);
+                && is_withheld_version(runtime, detected_version.as_deref());
             let (effective_command, effective_source) =
                 if override_below_minimum || detected_below_minimum {
                     (None, None)
@@ -287,7 +295,7 @@ pub(crate) fn effective_runtime_command_with_events(
     if candidate.source != RuntimeCommandSource::Catalog && withholds_below_minimum(&definition) {
         let installed =
             versions::ensure_probed(runtime, &candidate.command, shell_env, discovery, events);
-        if versions::below_minimum(installed.as_deref(), definition.min_version) {
+        if is_withheld_version(&definition, installed.as_deref()) {
             return Err(runner_core::protocol::runtime::RuntimeVersionGate {
                 runtime,
                 installed_version: installed.unwrap(),
@@ -398,7 +406,7 @@ pub(crate) fn validate_and_probe_override(
         let version = versions::probe_command_version(path, env);
         if let Some(installed) = version
             .as_deref()
-            .filter(|version| versions::below_minimum(Some(version), definition.min_version))
+            .filter(|version| is_withheld_version(&definition, Some(version)))
         {
             return Err(validation_error(
                 "unsupported_version",
@@ -1033,15 +1041,15 @@ mod tests {
             panic!("expected RuntimeVersionGate, got {err}");
         };
         assert_eq!(gate.installed_version, "1.19.5");
-        assert_eq!(gate.min_version, "2.0.0");
+        assert_eq!(gate.min_version, "2.1.0");
 
-        // Candidate executable still probes after an in-place upgrade to v2.
-        std::fs::write(&bin, "#!/bin/sh\necho '2.0.29'\n").unwrap();
+        // Candidate executable still probes after an in-place upgrade to v2.1+.
+        std::fs::write(&bin, "#!/bin/sh\necho '2.1.0'\n").unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(
             versions::probe_now(Runtime::OpenCode, &pool, &shell_env, &discovery, &events)
                 .as_deref(),
-            Some("2.0.29")
+            Some("2.1.0")
         );
         let status = status_list(&pool, &shell_env, &discovery).unwrap();
         let row = status
@@ -1056,7 +1064,7 @@ mod tests {
         );
         assert_eq!(row.effective_source, Some(RuntimeCommandSource::Detected));
         assert!(!row.below_minimum);
-        assert_eq!(row.installed_version.as_deref(), Some("2.0.29"));
+        assert_eq!(row.installed_version.as_deref(), Some("2.1.0"));
     }
 
     #[test]
@@ -1071,7 +1079,7 @@ mod tests {
         assert_eq!(err.code, "unsupported_version");
         assert!(err.message.contains("1.19.5"), "{}", err.message);
         assert!(
-            err.message.contains("OpenCode v2 (2.0.0 or newer)"),
+            err.message.contains("OpenCode v2 (2.1.0 or newer)"),
             "{}",
             err.message
         );
@@ -1094,10 +1102,10 @@ mod tests {
             .invalid_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("1.19.5")
-                && reason.contains("OpenCode v2 (2.0.0 or newer)")));
+                && reason.contains("OpenCode v2 (2.1.0 or newer)")));
 
         let v2 = dir.path().join("opencode-v2");
-        std::fs::write(&v2, "#!/bin/sh\necho '2.0.29'\n").unwrap();
+        std::fs::write(&v2, "#!/bin/sh\necho '2.1.0'\n").unwrap();
         std::fs::set_permissions(&v2, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(validate_override(Runtime::OpenCode, v2.to_str().unwrap()).is_ok());
     }

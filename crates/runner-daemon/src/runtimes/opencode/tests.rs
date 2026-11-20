@@ -255,7 +255,7 @@ fn classify_startup_error_matches_v1_standalone_failures_only() {
         let classified = adapter.classify_startup_error(v1_output).unwrap();
         assert_eq!(classified.runtime, Runtime::OpenCode);
         assert!(classified.message.contains("--standalone"));
-        assert!(classified.message.contains("OpenCode v2 (2.0.0 or newer)"));
+        assert!(classified.message.contains("OpenCode v2 (2.1.0 or newer)"));
     }
 
     for non_v1_output in [
@@ -368,8 +368,7 @@ fn inherited_inline_config_and_data_home_are_not_discarded() {
 #[test]
 fn active_snapshots_rekey_home_and_ignore_children_stale_reload_and_generation() {
     use crate::session::hook_queue::TestHookRoute;
-    use crate::session::state::agent::AgentModel;
-    use crate::session::status::Activity;
+    use crate::session::state::agent::AgentEvent;
     let (route, receiver) = TestHookRoute::new(Runtime::OpenCode, "current".into());
     let mut watcher = status::Watcher::new(
         receiver,
@@ -379,63 +378,77 @@ fn active_snapshots_rekey_home_and_ignore_children_stale_reload_and_generation()
         },
     );
     let mut keys = Vec::new();
-    let mut model = AgentModel::default();
     let mut drain = |watcher: &mut status::Watcher| {
+        let mut events = Vec::new();
         watcher
             .drain_events(
                 0,
                 &mut |event| {
-                    model.reduce(event, 100);
+                    events.push(event);
                     Default::default()
                 },
                 &mut |key| keys.push(key),
             )
             .unwrap();
-        model.value.clone()
+        events
     };
-    let snapshot = |epoch, sequence, id, state| json!({"hook_event_name":"snapshot","epoch":epoch,"sequence":sequence,"session_id":id,"state":state});
-    drop(
-        route
-            .admit(snapshot(100, 1, "ses_first", "working"))
-            .unwrap(),
+    let snapshot = |epoch, sequence, id| json!({"hook_event_name":"snapshot","epoch":epoch,"sequence":sequence,"session_id":id});
+    drop(route.admit(snapshot(100, 1, "ses_first")).unwrap());
+    assert_eq!(
+        drain(&mut watcher),
+        vec![
+            AgentEvent::ProgramSessionStarted {
+                conversation_changed: false,
+                compacted: false,
+            },
+            AgentEvent::ProgramOutcomeUnavailable,
+        ]
     );
-    assert_eq!(drain(&mut watcher).activity, Activity::Working);
-    let mut child = snapshot(100, 2, "ses_child", "working");
+    let mut child = snapshot(100, 2, "ses_child");
     child["child"] = json!(true);
     drop(route.admit(child).unwrap());
-    drop(
-        route
-            .admit(snapshot(100, 3, "ses_next", "working"))
-            .unwrap(),
+    drop(route.admit(snapshot(100, 3, "ses_next")).unwrap());
+    assert_eq!(
+        drain(&mut watcher),
+        vec![AgentEvent::ProgramSessionStarted {
+            conversation_changed: true,
+            compacted: false,
+        }]
     );
-    drain(&mut watcher);
-    drop(
-        route
-            .admit(snapshot(100, 2, "ses_first", "working"))
-            .unwrap(),
+    // Out-of-order sequence is ignored.
+    drop(route.admit(snapshot(100, 2, "ses_first")).unwrap());
+    assert!(drain(&mut watcher).is_empty());
+    // Higher epoch reloads and rekeys.
+    drop(route.admit(snapshot(200, 1, "ses_loaded")).unwrap());
+    assert_eq!(
+        drain(&mut watcher),
+        vec![AgentEvent::ProgramSessionStarted {
+            conversation_changed: true,
+            compacted: false,
+        }]
     );
-    drain(&mut watcher);
-    drop(
-        route
-            .admit(snapshot(200, 1, "ses_loaded", "working"))
-            .unwrap(),
-    );
-    drain(&mut watcher);
-    drop(
-        route
-            .admit(snapshot(100, 99, "ses_first", "working"))
-            .unwrap(),
-    );
-    drain(&mut watcher);
-    let mut stale = snapshot(300, 1, "ses_stale", "working");
+    // Older epoch is ignored.
+    drop(route.admit(snapshot(100, 99, "ses_first")).unwrap());
+    assert!(drain(&mut watcher).is_empty());
+    // Stale generation is rejected at admission.
+    let mut stale = snapshot(300, 1, "ses_stale");
     stale["generation"] = json!("old");
     assert!(route.admit(stale).is_err());
-    let mut end = snapshot(200, 2, "ses_loaded", "idle");
-    end["outcome"] = json!("interrupted");
-    drop(route.admit(end).unwrap());
-    assert_eq!(drain(&mut watcher).activity, Activity::Ready);
-    drop(route.admit(snapshot(200, 3, "", "working")).unwrap());
-    drain(&mut watcher);
+    // Legacy state/outcome fields on snapshot never arm status hooks.
+    let mut legacy = snapshot(200, 2, "ses_loaded");
+    legacy["state"] = json!("idle");
+    legacy["outcome"] = json!("interrupted");
+    drop(route.admit(legacy).unwrap());
+    assert!(drain(&mut watcher).is_empty());
+    // Navigating to home clears key.
+    drop(route.admit(snapshot(200, 3, "")).unwrap());
+    assert_eq!(
+        drain(&mut watcher),
+        vec![AgentEvent::ProgramSessionStarted {
+            conversation_changed: true,
+            compacted: false,
+        }]
+    );
     assert_eq!(keys, ["ses_next", "ses_loaded", ""]);
 }
 
@@ -620,31 +633,30 @@ process.env.RUNNER_HOOK_EXECUTABLE = 'reporter';
 process.env.RUNNER_HOOK_GENERATION = 'generation';
 let route = {type:'session', sessionID:'ses_first'};
 const sessions = new Map([['ses_first', {time:{}}],['ses_next',{time:{created:1}}],['ses_child',{parentID:'ses_next',time:{created:1}}]]);
-let active = 'idle';
-const context = { ui:{router:{current:()=>route}},data:{session:{get:id=>sessions.get(id),status:()=>active}} };
+const context = { ui:{router:{current:()=>route}},data:{session:{get:id=>sessions.get(id)}} };
 const cleanup = setup(context);ack();
-sessions.get('ses_first').time = {created:1,idle:5};sessions.get('ses_first').outcome = 'succeeded';tick();ack();
-assert.ok(attempts.every(report=>report.payload.outcome === undefined)); // Late history is not live completion.
-route = {type:'session',sessionID:'ses_incomplete'};sessions.set('ses_incomplete',{time:{}});active = 'running';tick();ack();
-assert.equal(accepted.at(-1).state,'working');
-sessions.set('ses_incomplete',{time:{created:1,idle:2},outcome:'succeeded'});active = 'idle';tick();ack();
-assert.equal(accepted.at(-1).state,'ready');assert.equal(accepted.at(-1).outcome,undefined);
-for (let n=0;n<12;n++) { tick();ack();assert.equal(accepted.at(-1).state,'ready');assert.equal(accepted.at(-1).outcome,undefined); }
-route = {type:'session',sessionID:'ses_next'};active = 'running';tick();
-child.emit('close',1); // Lost working/identity report must retry current snapshot.
+assert.equal(accepted.at(-1).session_id,'ses_first');
+assert.equal(accepted.at(-1).state,undefined);
+assert.equal(accepted.at(-1).outcome,undefined);
+// Unchanged route does not emit heartbeats or status snapshots.
+const idleCount = attempts.length;
+for (let n=0;n<6;n++) tick();
+assert.equal(attempts.length,idleCount);
+route = {type:'session',sessionID:'ses_next'};tick();
+child.emit('close',1); // Lost identity report must retry current snapshot.
 tick();ack();
-assert.equal(accepted.at(-1).session_id,'ses_next');assert.equal(accepted.at(-1).state,'working');
-sessions.get('ses_next').time.idle = 10;sessions.get('ses_next').outcome = 'interrupted';active = 'idle';tick();
-child.emit('error',new Error('fixture failure'));child.emit('close',1);tick();ack();
-assert.equal(accepted.at(-1).outcome,'interrupted');
+assert.equal(accepted.at(-1).session_id,'ses_next');
+assert.equal(accepted.at(-1).state,undefined);
 route = {type:'session',sessionID:'ses_child'};tick();ack();
 assert.equal(accepted.at(-1).session_id,'');
-route = {type:'session',sessionID:'ses_unknown'};tick();ack();assert.equal(accepted.at(-1).session_id,'');
-sessions.set('ses_unknown',{time:{created:1,idle:42},outcome:'succeeded'});tick();ack();assert.equal(accepted.at(-1).session_id,'ses_unknown');assert.equal(accepted.at(-1).outcome,undefined);
-route = {type:'home'};tick();ack();
-route = {type:'session',sessionID:'ses_first'};active = 'running';tick();
+const beforeUnknown = attempts.length;
+route = {type:'session',sessionID:'ses_unknown'};tick();assert.equal(attempts.length,beforeUnknown); // Still empty key -> no duplicate report.
+sessions.set('ses_unknown',{time:{created:1,idle:42},outcome:'succeeded'});tick();ack();
+assert.equal(accepted.at(-1).session_id,'ses_unknown');
+assert.equal(accepted.at(-1).outcome,undefined);
+route = {type:'home'};tick();ack();assert.equal(accepted.at(-1).session_id,'');
+route = {type:'session',sessionID:'ses_first'};tick();
 timeout();assert.ok(killed);tick();ack();assert.equal(accepted.at(-1).session_id,'ses_first');
-const count = attempts.length;tick();ack();assert.equal(attempts.at(-1).payload.sequence,accepted.at(-2).sequence); // Heartbeat is idempotent.
 // Three admission failures emit explicit bridge loss, then shut down telemetry.
 route = {type:'home'};tick();child.emit('close',1);tick();child.emit('close',1);tick();child.emit('close',1);tick();
 assert.ok(attempts.at(-1).args.includes('--bridge-unavailable'));ack();assert.ok(cleared);

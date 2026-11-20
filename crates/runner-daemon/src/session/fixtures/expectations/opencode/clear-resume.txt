@@ -1,0 +1,16 @@
+runtime=opencode name=clear-resume rules=[] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key=null delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+200 key="ses_111111111111"
+300 status=running/idle/baseline observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
+400 quiescent=false delivery=["InputQueueDrained"]
+500 activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
+  busy@input-submit [running/idle/baseline observation.program_status={"message":null}]
+600 key=null
+700
+800 key="ses_222222222222"
+900 result={"history_exists":true,"missing_reuses_key":false,"missing_resume_on_launch":false}
+950 status=running/working/baseline observation.program_status={"message":null}
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]

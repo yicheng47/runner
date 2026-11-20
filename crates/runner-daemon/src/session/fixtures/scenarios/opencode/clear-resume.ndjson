@@ -1,0 +1,11 @@
+{"runtime":"opencode","name":"clear-resume","rules":[],"bugs":[],"known_wrong":[],"pending_turn":false}
+{"ms":100,"event":"history","key":"ses_111111111111"}
+{"ms":200,"event":"hook","report":{"hook_event_name":"snapshot","epoch":1,"sequence":1,"session_id":"ses_111111111111"}}
+{"ms":300,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\"}
+{"ms":400,"event":"input","bytes":"/new"}
+{"ms":500,"event":"input","bytes":"\r"}
+{"ms":600,"event":"hook","report":{"hook_event_name":"snapshot","epoch":1,"sequence":2,"session_id":""}}
+{"ms":700,"event":"history","key":"ses_222222222222"}
+{"ms":800,"event":"hook","report":{"hook_event_name":"snapshot","epoch":1,"sequence":3,"session_id":"ses_222222222222"}}
+{"ms":900,"event":"probe","key":"ses_222222222222"}
+{"ms":950,"event":"output","bytes":"\u001b]7501;state=working:app=opencode\u001b\\\u001b]7501;id=ses_222222222222:app=opencode:state=working\u001b\\"}

@@ -171,6 +171,10 @@ pub trait SessionEvents: Send + Sync + 'static {
     /// Live direct-chat activity projection. Mission sessions keep using
     /// `session_status` rows in the mission log instead.
     fn status(&self, _ev: &SessionActivityEvent) {}
+    /// Undo only the latest optimistic unread completion written from an OSC
+    /// 7501 `working` → `idle` transition when a native outcome store reports
+    /// that turn as failed or interrupted.
+    fn revert_completion(&self, _session_id: &str) {}
     /// Live activity counter for a role — emitted on every spawn/reap so
     /// the Roles list can update its "N sessions / M missions" badges
     /// without polling. Default no-op so test fakes don't have to opt in.
@@ -229,11 +233,17 @@ pub struct SessionActivityEvent {
     pub state: SessionActivityState,
     pub source: StatusSource,
     pub status: AgentStatus,
-    /// True only when an authoritative OSC 7501 root `State::Done` report
-    /// produced this publication, so wait/detail-only republications cannot
-    /// duplicate or suppress unread completion bookkeeping.
+    /// True only when an authoritative OSC 7501 root turn end (`State::Done`,
+    /// or `working` → `idle` under `program_status_idle_completes`) produced
+    /// this publication, so wait/detail-only republications cannot duplicate or
+    /// suppress unread completion bookkeeping.
     #[serde(skip)]
     pub(crate) program_done: bool,
+    /// True when `program_done` came from an idle-inferred completion
+    /// (`working` → `idle`) that may be reverted if a late native outcome
+    /// reports the turn failed or interrupted.
+    #[serde(skip)]
+    pub(crate) program_idle_completed: bool,
 }
 
 /// Lifecycle and metadata emitter. Terminal frames use the manager's
@@ -325,6 +335,18 @@ impl SessionEvents for CoreSessionEvents {
         }
         self.events.emit("session/updated", ev);
     }
+    fn revert_completion(&self, session_id: &str) {
+        if let Some(sessions) = self.sessions.upgrade() {
+            if let Err(error) = crate::ops::node::revert_session_completion(
+                &self.db,
+                &sessions,
+                &self.events,
+                session_id,
+            ) {
+                log::warn!("revert direct-chat completion for {session_id} failed: {error}");
+            }
+        }
+    }
     fn status(&self, ev: &SessionActivityEvent) {
         if ev.source != StatusSource::CodexAttention
             && ev.source != StatusSource::Unavailable
@@ -355,6 +377,7 @@ impl SessionEvents for CoreSessionEvents {
                         &self.windows,
                         &self.events,
                         &ev.session_id,
+                        ev.program_idle_completed,
                     ) {
                         log::warn!(
                             "record direct-chat completion for {} failed: {error}",

@@ -1159,7 +1159,7 @@ mod tests {
         // Rejected v1 override leaves DB unset AND preserves the active PATH cache.
         let err = runtime_set_override(&state, Runtime::OpenCode, other_v1.to_str().unwrap())
             .unwrap_err();
-        assert!(err.to_string().contains("2.0.0"), "{err}");
+        assert!(err.to_string().contains("2.1.0"), "{err}");
         assert!(!crate::db::runtime_overrides(&state.db)
             .unwrap()
             .contains_key("opencode"));
@@ -1368,7 +1368,7 @@ mod tests {
         std::fs::set_permissions(&slow_v1, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let fast_v2 = dir.path().join("fast-v2");
-        std::fs::write(&fast_v2, "#!/bin/sh\necho '2.0.29'\n").unwrap();
+        std::fs::write(&fast_v2, "#!/bin/sh\necho '2.1.0'\n").unwrap();
         std::fs::set_permissions(&fast_v2, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let state2 = crate::test_support::test_core();
@@ -1407,7 +1407,7 @@ mod tests {
                 .unwrap()
                 .versions
                 .installed(Runtime::OpenCode, fast_v2.to_str().unwrap()),
-            Some("2.0.29")
+            Some("2.1.0")
         );
     }
 
@@ -1544,7 +1544,7 @@ mod tests {
         };
         assert_eq!(gate.runtime, Runtime::OpenCode);
         assert_eq!(gate.installed_version, "1.19.5");
-        assert_eq!(gate.min_version, "2.0.0");
+        assert_eq!(gate.min_version, "2.1.0");
         assert_eq!(
             state
                 .runtime_discovery
@@ -1664,7 +1664,7 @@ mod tests {
             std::fs::rename(&tmp, &opencode).unwrap();
         };
 
-        write_script("opencode.v2", "2.0.29");
+        write_script("opencode.v2", "2.1.0");
 
         let state = crate::test_support::test_core();
         state.runtime_shell_env.write().unwrap().path = Some(dir.path().display().to_string());
@@ -1677,7 +1677,7 @@ mod tests {
                 None,
             )
             .as_deref(),
-            Some("2.0.29")
+            Some("2.1.0")
         );
 
         // Replace binary on disk with v1.19.5 without clicking Refresh first.
@@ -1704,7 +1704,7 @@ mod tests {
         };
         assert_eq!(gate.runtime, Runtime::OpenCode);
         assert_eq!(gate.installed_version, "1.19.5");
-        assert_eq!(gate.min_version, "2.0.0");
+        assert_eq!(gate.min_version, "2.1.0");
         assert!(
             !standalone_called.exists(),
             "opencode v1 must not be spawned when binary changed on disk before Refresh"
@@ -1723,7 +1723,7 @@ mod tests {
         std::fs::write(
             &opencode,
             format!(
-                "#!/bin/sh\nmode=$(cat '{}')\nif [ \"$1\" = --version ]; then\n  if [ \"$mode\" = v2 ]; then\n    echo '2.0.29'\n  else\n    echo '1.19.5'\n  fi\n  exit 0\nfi\nif [ \"$mode\" = v1 ]; then\n  echo \"error: unknown option '--standalone'\"\n  exit 1\nfi\nexit 0\n",
+                "#!/bin/sh\nmode=$(cat '{}')\nif [ \"$1\" = --version ]; then\n  if [ \"$mode\" = v2 ]; then\n    echo '2.1.0'\n  else\n    echo '1.19.5'\n  fi\n  exit 0\nfi\nif [ \"$mode\" = v1 ]; then\n  echo \"error: unknown option '--standalone'\"\n  exit 1\nfi\nexit 0\n",
                 mode_file.display()
             ),
         )
@@ -1749,10 +1749,10 @@ mod tests {
                 Some(&state.events),
             )
             .as_deref(),
-            Some("2.0.29")
+            Some("2.1.0")
         );
 
-        // Flip mode behind an untouched wrapper script so cached 2.0.29 allows spawn once,
+        // Flip mode behind an untouched wrapper script so cached 2.1.0 allows spawn once,
         // then v1 rejects --standalone.
         std::fs::write(&mode_file, "v1").unwrap();
         let mut rx = state.events.subscribe();
@@ -1835,7 +1835,7 @@ mod tests {
                 &state.events,
             )
             .as_deref(),
-            Some("2.0.29")
+            Some("2.1.0")
         );
         let status = runtime_status_list(&state).unwrap();
         let row = status
@@ -1843,7 +1843,7 @@ mod tests {
             .into_iter()
             .find(|entry| entry.name == Runtime::OpenCode)
             .unwrap();
-        assert_eq!(row.installed_version.as_deref(), Some("2.0.29"));
+        assert_eq!(row.installed_version.as_deref(), Some("2.1.0"));
         assert!(!row.below_minimum);
         assert!(
             state

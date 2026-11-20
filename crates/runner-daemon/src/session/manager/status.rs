@@ -90,6 +90,7 @@ impl SessionManager {
             source: StatusSource::Forwarder,
             status: self.agent_status(session_id),
             program_done: false,
+            program_idle_completed: false,
         });
     }
 
@@ -117,6 +118,7 @@ impl SessionManager {
             source: StatusSource::Forwarder,
             status: status.clone(),
             program_done: false,
+            program_idle_completed: false,
         });
         if let Some(sink) = sink {
             if let Err(error) =
@@ -277,6 +279,7 @@ impl SessionManager {
             source,
             status: self.agent_status(session_id),
             program_done: false,
+            program_idle_completed: false,
         });
     }
 
@@ -304,6 +307,7 @@ impl SessionManager {
             source,
             status: status.clone(),
             program_done: false,
+            program_idle_completed: false,
         });
         if let Some(sink) = sink {
             if let Err(error) = sink.append_session_status(state, source, &status) {
@@ -349,9 +353,9 @@ impl SessionManager {
     pub fn mark_status_viewed(&self, session_ids: &[String]) {
         for id in session_ids {
             if let Some(session) = self.session_state(id) {
+                let mut session = session.lock().unwrap();
+                session.optimistic_completion = None;
                 session
-                    .lock()
-                    .unwrap()
                     .model
                     .apply(SessionEvent::Viewed, super::super::clock::state_now());
             }
@@ -367,6 +371,33 @@ impl SessionManager {
         }
     }
 
+    pub(crate) fn set_optimistic_completion(
+        &self,
+        session_id: &str,
+        snapshot: Option<OptimisticCompletion>,
+    ) {
+        if let Some(session) = self.session_state(session_id) {
+            session.lock().unwrap().optimistic_completion = snapshot;
+        }
+    }
+
+    pub(crate) fn take_optimistic_completion(
+        &self,
+        session_id: &str,
+    ) -> Option<OptimisticCompletion> {
+        self.session_state(session_id)
+            .and_then(|session| session.lock().unwrap().optimistic_completion.take())
+    }
+
+    pub(crate) fn restore_unread_since(&self, session_id: &str, unread_since: Option<i64>) {
+        if let Some(session) = self.session_state(session_id) {
+            session.lock().unwrap().model.apply(
+                SessionEvent::RestoreUnread(unread_since),
+                super::super::clock::state_now(),
+            );
+        }
+    }
+
     pub(super) fn record_exit_status(
         &self,
         session_id: &str,
@@ -375,6 +406,7 @@ impl SessionManager {
     ) {
         if let Some(session) = self.session_state(session_id) {
             let mut session = session.lock().unwrap();
+            session.optimistic_completion = None;
             session.finish_companion_terminals();
             if let Some(terminal) = &session.terminal {
                 terminal.clear_program_status();
@@ -455,6 +487,7 @@ impl SessionManager {
                             source,
                             status: session.model.status().clone(),
                             program_done: false,
+                            program_idle_completed: false,
                         })
                 }
             };
@@ -573,7 +606,11 @@ impl SessionManager {
             let program_turn_finished = matches!(
                 &event,
                 SessionEvent::Agent {
-                    event: super::super::state::agent::AgentEvent::ProgramTurnFinished,
+                    event: super::super::state::agent::AgentEvent::ProgramTurnFinished
+                        | super::super::state::agent::AgentEvent::ProgramSessionFinished {
+                            superseded: false,
+                            ..
+                        },
                     live: true
                 }
             );
@@ -581,6 +618,13 @@ impl SessionManager {
                 &event,
                 SessionEvent::Agent {
                     event: super::super::state::agent::AgentEvent::ProgramIdentityUnavailable,
+                    live: true
+                }
+            );
+            let program_outcome_unavailable = matches!(
+                &event,
+                SessionEvent::Agent {
+                    event: super::super::state::agent::AgentEvent::ProgramOutcomeUnavailable,
                     live: true
                 }
             );
@@ -595,6 +639,9 @@ impl SessionManager {
                 if session.delivery_line.as_deref().is_some_and(|line| agent_prompted(event, line)));
             let was_idle = session.model.activity() == Some(SessionActivityState::Idle);
             let effects = session.model.apply(event, super::super::clock::state_now());
+            if effects.clear_optimistic_completion {
+                session.optimistic_completion = None;
+            }
             if (agent_turn && effects.agent_feedback.accepted) || effects.program_turn_started {
                 session.turn_started = session.turn_started.wrapping_add(1);
                 session.delivery_prompted |= prompted;
@@ -624,6 +671,9 @@ impl SessionManager {
                 if program_identity_unavailable {
                     startup.identity_bridge_unavailable();
                 }
+                if program_outcome_unavailable {
+                    startup.outcome_source_unavailable();
+                }
                 if (program_turn_finished && startup.program_turn_finished())
                     || startup.observation(&status.observation)
                 {
@@ -641,13 +691,22 @@ impl SessionManager {
                 became_idle,
             )
         };
+        if effects.revert_unread {
+            events.revert_completion(session_id);
+        }
         if let Some((state, source)) = effects.publication {
+            let status = if effects.revert_unread {
+                self.agent_status(session_id)
+            } else {
+                status
+            };
             events.status(&SessionActivityEvent {
                 session_id: session_id.to_owned(),
                 state,
                 source,
                 status,
                 program_done: effects.program_done,
+                program_idle_completed: effects.program_idle_completed,
             });
             let status = self.agent_status(session_id);
             if let Some(sink) = sink {

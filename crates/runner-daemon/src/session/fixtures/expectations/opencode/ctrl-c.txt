@@ -1,0 +1,25 @@
+runtime=opencode name=ctrl-c rules=[8] bugs=[783] known_wrong=[]
+session_status_rows=published
+100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key="ses_111111111111" delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+150 status=running/idle/baseline observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
+  busy@input-submit [running/idle/baseline observation.program_status={"message":null}]
+450 status=running/working/baseline observation.program_status={"message":null}
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+500 delivery=["ReadinessChanged"]
+550 status=running/idle/baseline outcome="interrupted" observation.program_status={"message":null} activity="idle" completion_armed=false delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="interrupted" observation.program_status={"message":null}]
+575
+600 result={"completion_consumed":false,"viewed":false}
+700 quiescent=false delivery=["InputQueueDrained"]
+750 activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
+  busy@input-submit [running/idle/baseline outcome="interrupted" observation.program_status={"message":null}]
+800 status=running/working/baseline observation.program_status={"message":null}
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+900 status=running/idle/baseline outcome="completed" observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="completed" observation.program_status={"message":null}]
+950 status=running/idle/baseline outcome="completed" unread_since=1767225600950 observation.program_status={"message":null} completion_armed=false result={"completion_consumed":true,"viewed":false}
+975

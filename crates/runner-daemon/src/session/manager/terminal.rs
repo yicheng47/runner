@@ -501,6 +501,12 @@ impl SessionManager {
             state
                 .model
                 .set_program_status_cancel_interrupt(semantics.program_status_cancel_interrupt);
+            state
+                .model
+                .set_program_status_idle_completes(semantics.program_status_idle_completes);
+            state.model.set_program_status_suppress_child_tasks(
+                semantics.program_status_suppress_child_tasks,
+            );
             state.model.set_native_attention(semantics.native_attention);
         }
         let host = Arc::new(Host {

@@ -161,9 +161,48 @@ mod tests {
         assert_eq!(Runtime::OpenCode.key(), "opencode");
         let catalog = crate::protocol::runtime_metadata::opencode::catalog().unwrap();
         assert_eq!(catalog.display_name, "OpenCode v2");
-        assert_eq!(catalog.min_version, Some("2.0.0"));
+        assert_eq!(catalog.min_version, Some("2.1.0"));
         assert_eq!(catalog.install_url, "https://opencode.ai/v2/docs");
-        assert!(catalog.update_args.is_empty());
+        assert_eq!(catalog.update_args, &["upgrade"]);
+        assert!(
+            !crate::protocol::runtime_metadata::runtime_updatable_for_version(
+                Runtime::OpenCode,
+                Some("1.19.5")
+            )
+        );
+        assert!(
+            !crate::protocol::runtime_metadata::runtime_updatable_for_version(
+                Runtime::OpenCode,
+                Some("2.0.0-rc.1")
+            )
+        );
+        assert!(
+            crate::protocol::runtime_metadata::runtime_updatable_for_version(
+                Runtime::OpenCode,
+                Some("2.0.0")
+            )
+        );
+        assert!(
+            crate::protocol::runtime_metadata::runtime_updatable_for_version(
+                Runtime::OpenCode,
+                Some("2.1.0-rc.1")
+            )
+        );
+        assert!(
+            crate::protocol::runtime_metadata::runtime_updatable_for_version(
+                Runtime::OpenCode,
+                Some("2.0.29")
+            )
+        );
+        let grok = crate::protocol::runtime_metadata::grok::catalog().unwrap();
+        assert_eq!(grok.min_version, Some("1.0.89"));
+        assert_eq!(grok.update_args, &["update"]);
+        assert!(
+            crate::protocol::runtime_metadata::runtime_updatable_for_version(
+                Runtime::Grok,
+                Some("1.0.88")
+            )
+        );
         let client = crate::protocol::McpClientId::OpenCode;
         assert_eq!(client.key(), "opencode");
         assert_eq!(client.label(), "OpenCode v2");

@@ -1,0 +1,9 @@
+{"runtime":"opencode","name":"crew-idle","rules":[9],"bugs":[],"known_wrong":[],"pending_turn":false}
+{"ms":100,"event":"hook","report":{"hook_event_name":"snapshot","epoch":1,"sequence":1,"session_id":"ses_111111111111"}}
+{"ms":200,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\"}
+{"ms":2400,"event":"tick"}
+{"ms":2500,"event":"composer","state":"idle"}
+{"ms":2600,"event":"reserve"}
+{"ms":2700,"event":"reserve"}
+{"ms":2800,"event":"wake"}
+{"ms":2900,"event":"finish"}

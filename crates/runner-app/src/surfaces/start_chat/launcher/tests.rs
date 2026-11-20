@@ -225,6 +225,84 @@ fn non_updatable_gated_launch_offers_open_settings_and_never_starts_target_updat
 }
 
 #[test]
+fn grok_and_opencode_v2_below_minimum_show_update_needed_and_start_update_on_launch() {
+    for (runtime, display_name, installed, min_version) in [
+        (Runtime::Grok, "Grok", "1.0.88", "1.0.89"),
+        (Runtime::OpenCode, "OpenCode v2", "2.0.29", "2.1.0"),
+    ] {
+        let mut catalog = RuntimeCatalogEntry::for_runtime(runtime).unwrap();
+        catalog.available = true;
+        catalog.below_minimum = true;
+        catalog.installed_version = Some(installed.into());
+        let mut harness = modal_harness(1200., 900., Vec::new(), vec![catalog], ChatMode::Runtime);
+        let starts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut page = None;
+        harness.act(|root, window, cx| {
+            root.start_chat_modal = None;
+            root.app_store.update(cx, |store, _| {
+                store.client =
+                    runner_core::protocol::DaemonClient::new(std::sync::Arc::new(UpdateFixture {
+                        inner: runner_daemon::daemon::InProcessTransport(store.test_core.clone()),
+                        starts: starts.clone(),
+                    }));
+            });
+            root.open_launcher_page(ProjectScope::Root, Step::Start, false, window, cx);
+            let launcher = root.render_launcher(None, true, window, cx);
+            launcher.update(cx, |view, cx| {
+                let mut choice = agent();
+                choice.name = runtime;
+                choice.display_name = display_name.into();
+                choice.command = Some(runtime.key().into());
+                choice.available = true;
+                choice.installed_version = Some(installed.into());
+                choice.min_version = Some(min_version.into());
+                choice.below_minimum = true;
+                view.runtimes = vec![choice];
+                view.roles = Vec::new();
+                cx.notify();
+            });
+            page = Some(launcher);
+        });
+        assert!(
+            harness
+                .bounds(&format!("LAUNCHER_UPDATE_NEEDED:{display_name}"))
+                .is_some(),
+            "{runtime:?} {installed} must show Update needed in launcher"
+        );
+        assert!(
+            harness.bounds("LAUNCHER_VERSION_NOTICE").is_some(),
+            "{runtime:?} {installed} must show version notice"
+        );
+        let launcher = page.unwrap();
+        let key = EntryKey::Agent(runtime.key().into());
+        harness.act(|root, window, cx| {
+            launcher.update(cx, |view, _| view.pending = Some(Choice::Chat(key.clone())));
+            root.launch_from_launcher(
+                launcher.clone(),
+                Some(key.clone()),
+                None,
+                ProjectScope::Root,
+                None,
+                None,
+                false,
+                window,
+                cx,
+            );
+            let retry = launcher.read(cx).update_retry.as_ref().unwrap();
+            assert_eq!(retry.runtime, runtime);
+            assert!(retry.requested);
+            assert_eq!(retry.gate.as_ref().unwrap().installed_version, installed);
+            assert_eq!(retry.gate.as_ref().unwrap().min_version, min_version);
+        });
+        assert_eq!(
+            starts.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "{runtime:?} {installed} launch must start its runtime update task"
+        );
+    }
+}
+
+#[test]
 fn a_gated_pane_launches_after_success_without_replacing_new_work_or_focus() {
     use runner_core::protocol::{RuntimeUpdateState, RuntimeUpdateTask};
     let mut harness = modal_harness(1200., 900., Vec::new(), Vec::new(), ChatMode::Runtime);

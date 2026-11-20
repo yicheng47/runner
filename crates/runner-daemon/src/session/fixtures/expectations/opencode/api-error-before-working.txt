@@ -1,0 +1,16 @@
+runtime=opencode name=api-error-before-working rules=[7,8] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key="ses_111111111111" delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+150 status=running/idle/baseline observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
+  busy@input-submit [running/idle/baseline observation.program_status={"message":null}]
+400
+450 status=running/working/baseline observation.program_status={"message":null}
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+550 status=running/idle/baseline outcome="failed" failed_since=1767225600550 observation.program_status={"message":null} activity="idle" completion_armed=false delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="failed" failed_since=1767225600550 observation.program_status={"message":null}]
+600 result={"completion_consumed":false,"viewed":false}
+700 status=running/idle/baseline outcome="failed" observation.program_status={"message":null}

@@ -1,4 +1,27 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
+
+pub fn unread_since(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<i64>> {
+    conn.query_row(
+        "SELECT unread_since FROM session_attention WHERE session_id = ?1",
+        [session_id],
+        |row| row.get::<_, Option<i64>>(0),
+    )
+    .optional()
+    .map(Option::flatten)
+}
+
+pub fn restore_unread_if_matches(
+    conn: &Connection,
+    session_id: &str,
+    expected: i64,
+    previous: Option<i64>,
+) -> rusqlite::Result<bool> {
+    let updated = conn.execute(
+        "UPDATE session_attention SET unread_since = ?3 WHERE session_id = ?1 AND unread_since = ?2",
+        params![session_id, expected, previous],
+    )?;
+    Ok(updated > 0)
+}
 
 pub fn any_unread(conn: &Connection, session_ids: &[String]) -> rusqlite::Result<bool> {
     for id in session_ids {

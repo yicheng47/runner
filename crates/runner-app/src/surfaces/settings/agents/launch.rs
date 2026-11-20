@@ -34,7 +34,6 @@ fn switch_copy(
             "ui.launch_activity_hooks_description",
             match runtime {
                 Runtime::Copilot => "On: --plugin-dir <Runner status plugin>",
-                Runtime::OpenCode => "On: OPENCODE_CLI_CONFIG_CONTENT=<Runner status plugin>",
                 _ => "On: <Runner status hooks>",
             },
         ),

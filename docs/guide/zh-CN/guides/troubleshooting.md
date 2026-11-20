@@ -12,7 +12,7 @@ Runner 在显示窗口前启动后台服务。若失败，会将原因写入 `ru
 
 Codex 可能在每次启动时下载远程插件目录。关闭 **设置 → 智能体 → Codex → 启动 → 远程插件目录** 可跳过下载，目录中的插件也将不再加载。更改在新会话启动时生效。
 
-对于提供 **状态钩子** 开关的运行时（Copilot CLI、OpenCode v2 和 Grok），关闭后聊天会改用终端活动；重新开启 **状态钩子** 即可恢复详细报告，且恢复仍使用会话标识钩子、任务仍保持状态钩子。Codex（0.164.0+）、Claude Code（2.1.295+）、pi（1.1.0+）与 Antigravity CLI 在聊天和任务中均直接使用原生 OSC 7501 终端状态，不提供 **状态钩子** 开关。如果 Claude Code 或 pi 回退到了估算的终端活动，请检查 Shell 或角色环境变量中是否设置了 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`（Claude Code）或 `PI_PROGRAM_STATUS=0`（pi）。
+对于提供 **状态钩子** 开关的运行时（Copilot CLI），关闭后聊天会改用终端活动；重新开启 **状态钩子** 即可恢复详细报告，且恢复仍使用会话标识钩子、任务仍保持状态钩子。Codex（0.164.0+）、Claude Code（2.1.295+）、pi（1.1.0+）、Grok（1.0.89+）、OpenCode v2（2.1.0+）与 Antigravity CLI 在聊天和任务中均直接使用原生 OSC 7501 终端状态，不提供 **状态钩子** 开关。如果 Claude Code、pi 或 Grok 回退到了估算的终端活动，请检查 Shell 或角色环境变量中是否设置了 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`（Claude Code）或 `PI_PROGRAM_STATUS=0`（pi），或者 `~/.grok/config.toml` 中是否设置了 `program_status = "off"`（Grok）。
 
 ## 找不到智能体或无法启动
 
@@ -81,7 +81,7 @@ Linux 通知权限由桌面管理。Runner 无法查询通用权限状态；请�
 
 ## 智能体 CLI 版本过旧，无法用于 Runner
 
-Runner 要求 Codex **0.164.0 或更新版本**、Claude Code **2.1.295 或更新版本**以及 pi **1.1.0 或更新版本**。启动器只在对应智能体行显示 **需要更新（Update needed）**；角色行不显示更新标签或操作。启动该智能体或任何使用它的角色时，会先更新 CLI 再启动聊天；也可以在被拒绝的聊天卡片上选择 **更新（Update）** 按钮。更新成功后窗格自动启动。如果仍显示旧版本，请检查 **设置 → 智能体** 中的可执行文件覆盖路径，并刷新检测。
+Runner 要求 Codex **0.164.0 或更新版本**、Claude Code **2.1.295 或更新版本**、pi **1.1.0 或更新版本**、Grok **1.0.89 或更新版本**以及 OpenCode v2 **2.1.0 或更新版本**。启动器只在对应智能体行显示 **需要更新（Update needed）**；角色行不显示更新标签或操作。启动该智能体或任何使用它的角色时，会先更新 CLI 再启动聊天（`codex update`、`claude update`、`pi update`、`grok update`，或针对 OpenCode 2.0.x 的 `opencode upgrade`）；也可以在被拒绝的聊天卡片上选择 **更新（Update）** 按钮，更新成功后窗格自动启动。如果仍显示旧版本，请检查 **设置 → 智能体** 中的可执行文件覆盖路径并刷新检测。
 
 ## Codex 不接受 Runner 的启动参数
 
@@ -89,7 +89,7 @@ Codex 拒绝启动配置且在首轮对话前退出时，已停止卡片会解�
 
 ## 安装了 OpenCode v1 而非 OpenCode v2
 
-Runner 仅支持 **OpenCode v2（2.0.0 或更新版本）** 并以 `opencode --standalone` 启动。OpenCode v1（`0.15.x` 与 `1.x`）同样使用 `opencode` 命令名但不支持 `--standalone`，因此当 `PATH` 中为旧版 `opencode` 时，Runner 会在 **设置 → 智能体** 中将 **OpenCode v2** 列在 **未安装（Not installed）** 下，拒绝低于 2.0.0 的覆盖路径，并在启动或恢复被拒绝时提供 **打开设置（Open Settings）**。请按 [opencode.ai/v2/docs](https://opencode.ai/v2/docs) 安装 OpenCode v2，或在 **设置 → 智能体 → OpenCode v2 → 可执行文件** 中指定 2.0.0+ 二进制文件后点击 **刷新（Refresh）**。
+Runner 仅支持 **OpenCode v2（2.1.0 或更新版本）** 并以 `opencode --standalone` 启动。OpenCode v1（`0.15.x` 与 `1.x`）同样使用 `opencode` 命令名但不支持 `--standalone`，因此当 `PATH` 中为 OpenCode v1 可执行文件时，Runner 会在 **设置 → 智能体** 中将 **OpenCode v2** 列在 **未安装（Not installed）** 下，拒绝低于 2.0.0 的覆盖路径，并在 v1 启动或恢复被拒绝时提供 **打开设置（Open Settings）**。请按 [opencode.ai/v2/docs](https://opencode.ai/v2/docs) 安装 OpenCode v2，或在 **设置 → 智能体 → OpenCode v2 → 可执行文件** 中指定 2.1.0+ 二进制文件后点击 **刷新（Refresh）**。OpenCode v2（`2.0.x`）已支持 `opencode upgrade`，因此 Runner 会显示 **需要更新（Update needed）** 并在启动时自动升级。
 
 ## 智能体更新需要处理
 

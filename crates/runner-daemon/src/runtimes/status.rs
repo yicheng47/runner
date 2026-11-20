@@ -33,6 +33,8 @@ pub struct StatusSemantics {
     pub program_status_root_app: Option<&'static str>,
     pub program_status_transcript_outcomes: bool,
     pub program_status_cancel_interrupt: bool,
+    pub program_status_idle_completes: bool,
+    pub program_status_suppress_child_tasks: bool,
     pub interruption_ends_invocation: bool,
     pub reject_events_after_interruption: bool,
     pub reject_completions_after_outcome: bool,

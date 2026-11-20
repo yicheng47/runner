@@ -1,0 +1,10 @@
+{"runtime":"opencode","name":"api-error-after-idle","rules":[7,8],"bugs":[],"known_wrong":[],"pending_turn":false,"evidence":"When opencode.db session_v2 idle_outcome=failed arrives after OSC working -> idle, the reducer overrides idle-inferred Completed to Failed and clears unread_since."}
+{"ms":100,"event":"hook","report":{"hook_event_name":"snapshot","epoch":1,"sequence":1,"session_id":"ses_111111111111"}}
+{"ms":150,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\"}
+{"ms":200,"event":"input","bytes":"sample"}
+{"ms":300,"event":"input","bytes":"\r"}
+{"ms":450,"event":"output","bytes":"\u001b]7501;state=working:app=opencode\u001b\\\u001b]7501;id=ses_111111111111:app=opencode:state=working\u001b\\"}
+{"ms":550,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\\u001b]7501;state=clear:id=ses_111111111111\u001b\\"}
+{"ms":575,"event":"completion"}
+{"ms":600,"event":"record","record":{"id":"ses_111111111111","time_idle":600,"idle_outcome":"failed"}}
+{"ms":700,"event":"viewed"}

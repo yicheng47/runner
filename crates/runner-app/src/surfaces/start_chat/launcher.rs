@@ -1380,8 +1380,10 @@ impl Render for ChatLauncher {
                                 if !matches!(row.choice, Choice::Chat(EntryKey::Agent(_))) {
                                     return None;
                                 }
-                                if !crate::surfaces::agent_recovery::runtime_updatable(runtime.name)
-                                {
+                                if !crate::surfaces::agent_recovery::runtime_updatable_for_version(
+                                    runtime.name,
+                                    runtime.installed_version.as_deref(),
+                                ) {
                                     return None;
                                 }
                                 if runtime.below_minimum {
@@ -1746,8 +1748,9 @@ impl Render for ChatLauncher {
                             .find(|runtime| {
                                 runtime.available
                                     && runtime.below_minimum
-                                    && crate::surfaces::agent_recovery::runtime_updatable(
+                                    && crate::surfaces::agent_recovery::runtime_updatable_for_version(
                                         runtime.name,
+                                        runtime.installed_version.as_deref(),
                                     )
                             })
                             .map(|runtime| {
@@ -1839,7 +1842,13 @@ impl Render for ChatLauncher {
 impl ChatLauncher {
     fn render_update_wait(&self, cx: &mut Context<Self>) -> gpui::Div {
         let retry = self.update_retry.as_ref().unwrap();
-        let updatable = crate::surfaces::agent_recovery::runtime_updatable(retry.runtime);
+        let updatable = crate::surfaces::agent_recovery::runtime_updatable_for_version(
+            retry.runtime,
+            retry
+                .gate
+                .as_ref()
+                .map(|gate| gate.installed_version.as_str()),
+        );
         let remote = self.client.is_remote();
         let task = updatable
             .then(|| {
@@ -2814,7 +2823,16 @@ impl NativeRoot {
                     task.state == runner_core::protocol::RuntimeUpdateState::Succeeded
                 })
         }) {
-            let updatable = crate::surfaces::agent_recovery::runtime_updatable(runtime);
+            let installed = launcher
+                .read(cx)
+                .runtimes
+                .iter()
+                .find(|entry| entry.name == runtime)
+                .and_then(|entry| entry.installed_version.clone());
+            let updatable = crate::surfaces::agent_recovery::runtime_updatable_for_version(
+                runtime,
+                installed.as_deref(),
+            );
             let pane = self.reserve_update_pane(&launcher, pane, &scope, cx);
             launcher.update(cx, |view, cx| {
                 view.pending = None;

@@ -339,14 +339,27 @@ pub(super) fn version_caption(runtime: &RuntimeExecutableStatus) -> Option<Strin
     })
 }
 
-/// Update is offered only while npm has a newer version, and never for a
-/// runtime without an update command. Running sessions only earn a caption.
+/// Update is offered while npm has a newer version, or while an updatable
+/// runtime is installed below Runner's minimum version (even without an npm
+/// package). Never offered for a runtime without an update command or a
+/// withheld major version. Running sessions only earn a caption.
 pub(super) fn update_action(
     runtime: &RuntimeExecutableStatus,
     running: usize,
 ) -> Option<UpdateAction> {
     let installed = runtime.installed_version.as_deref()?;
-    runtime.available_version.as_ref()?;
+    let needs_update = runtime.below_minimum
+        && matches!(
+            runtime.state,
+            RuntimeRowState::Detected | RuntimeRowState::Override
+        )
+        && crate::surfaces::agent_recovery::runtime_updatable_for_version(
+            runtime.name,
+            Some(installed),
+        );
+    if runtime.available_version.is_none() && !needs_update {
+        return None;
+    }
     let name = &runtime.display_name;
     let caption = match running {
         0 => None,

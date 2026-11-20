@@ -7,9 +7,8 @@ use super::front_page::{FrontPageClient, FrontPageTarget};
 use crate::i18n::{text, tf};
 use crate::NativeRoot;
 
-pub(crate) fn runtime_updatable(runtime: Runtime) -> bool {
-    runner_core::protocol::runtime_metadata::catalog_for(runtime)
-        .is_some_and(|catalog| !catalog.update_args.is_empty())
+pub(crate) fn runtime_updatable_for_version(runtime: Runtime, installed: Option<&str>) -> bool {
+    runner_core::protocol::runtime_metadata::runtime_updatable_for_version(runtime, installed)
 }
 
 pub(crate) fn installed_runtime_name(runtime: Runtime) -> &'static str {
@@ -82,10 +81,10 @@ impl NativeRoot {
             for status in store.session_statuses.values_mut() {
                 let obsolete = status.startup_error.as_ref().is_some_and(|error| {
                     verified_supported.contains(&error.runtime)
-                        && runner_core::protocol::runtime_metadata::catalog_for(error.runtime)
-                            .is_some_and(|catalog| {
-                                catalog.min_version.is_some() && catalog.update_args.is_empty()
-                            })
+                        && runner_core::protocol::runtime_metadata::withhold_below_version(
+                            error.runtime,
+                        )
+                        .is_some()
                 });
                 if obsolete {
                     status.startup_error = None;
@@ -134,7 +133,12 @@ impl NativeRoot {
         if gate.is_none() && startup.is_none() {
             return None;
         }
-        let updatable = runtime_updatable(runtime);
+        let updatable = startup.as_ref().is_none_or(|err| {
+            runner_core::protocol::runtime_metadata::withhold_below_version(err.runtime).is_none()
+        }) && runtime_updatable_for_version(
+            runtime,
+            gate.map(|g| g.installed_version.as_str()),
+        );
         let remote = client.is_remote();
         let task = updatable
             .then(|| self.target_task(&client.target, runtime))
@@ -234,10 +238,22 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !runtime_updatable(runtime) {
+        let client = self.front_page_client(cx);
+        let key = (client.target.clone(), session.into());
+        let installed = self
+            .agent_tasks
+            .gates
+            .get(&key)
+            .map(|entry| entry.gate.installed_version.as_str())
+            .or_else(|| {
+                (!client.is_remote())
+                    .then(|| self.agent_tasks.minimums.get(&runtime))
+                    .flatten()
+                    .map(|gate| gate.installed_version.as_str())
+            });
+        if !runtime_updatable_for_version(runtime, installed) {
             return;
         }
-        let client = self.front_page_client(cx);
         let size = self
             .attached
             .get(session)
@@ -247,7 +263,6 @@ impl NativeRoot {
                     .map(|layout| self.estimated_terminal_size(layout, pane, window, cx))
             })
             .unwrap_or((80, 24));
-        let key = (client.target.clone(), session.into());
         let action = self
             .agent_tasks
             .gates
@@ -682,7 +697,7 @@ mod tests {
         std::fs::write(
             &opencode,
             format!(
-                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '2.0.29'; exit 0; fi\nprintf '%s\\n' \"$@\" > \"{}\"\nsleep 2\n",
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '2.1.0'; exit 0; fi\nprintf '%s\\n' \"$@\" > \"{}\"\nsleep 2\n",
                 log.display()
             ),
         )
@@ -694,7 +709,7 @@ mod tests {
             assert_eq!(
                 runner_daemon::ops::runtime::runtime_probe_version(&core, Runtime::OpenCode)
                     .as_deref(),
-                Some("2.0.29")
+                Some("2.1.0")
             );
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -728,5 +743,121 @@ mod tests {
             assert!(root.agent_tasks.tasks.is_empty());
             assert!(root.agent_tasks.waiting_sessions.is_empty());
         });
+    }
+
+    #[test]
+    fn grok_and_opencode_v2_below_minimum_offer_update_recovery_action() {
+        for (runtime, session_id, installed, min_version, expected_cause) in [
+            (
+                Runtime::Grok,
+                "grok-old",
+                "1.0.88",
+                "1.0.89",
+                "AGENT_RECOVERY_CAUSE:Runner needs 1.0.89 or newer. Grok 1.0.88 is installed.",
+            ),
+            (
+                Runtime::OpenCode,
+                "opencode-20",
+                "2.0.29",
+                "2.1.0",
+                "AGENT_RECOVERY_CAUSE:Runner needs 2.1.0 or newer. OpenCode 2.0.29 is installed.",
+            ),
+        ] {
+            let mut harness = modal_harness(1200., 900., Vec::new(), Vec::new(), ChatMode::Runtime);
+            harness.act(|root, _, cx| {
+                root.start_chat_modal = None;
+                let core = root.app_store.read(cx).test_core.clone();
+                core.db
+                    .get()
+                    .unwrap()
+                    .execute(
+                        "INSERT INTO sessions(id, status, agent_runtime, agent_command) VALUES (?1, 'stopped', ?2, ?2)",
+                        [session_id, runtime.key()],
+                    )
+                    .unwrap();
+                let mut layout =
+                    crate::PaneLayout::single(Some(session_id), &[session_id.to_owned()]);
+                layout.id = runner_core::event_log::UlidGen::new().next().unwrap();
+                root.front_page_client(cx)
+                    .launcher_layout(&layout, None)
+                    .unwrap();
+                root.refresh_sessions(cx);
+                root.reload_tabs(cx).unwrap();
+                root.tabs.activate_session(session_id);
+                root.set_route(crate::AppRoute::Chat, cx);
+                root.record_session_gate(
+                    &FrontPageTarget::Local,
+                    session_id,
+                    Some(RuntimeVersionGate {
+                        runtime,
+                        installed_version: installed.into(),
+                        min_version: min_version.into(),
+                    }),
+                    RecoveryAction::Resume,
+                    false,
+                );
+                cx.notify();
+            });
+            assert!(
+                harness.bounds(expected_cause).is_some(),
+                "{runtime:?}: missing {expected_cause}"
+            );
+            assert!(
+                harness
+                    .bounds(&format!("AGENT_RECOVERY_UPDATE:{session_id}"))
+                    .is_some(),
+                "{runtime:?} {installed} must offer Update action"
+            );
+            assert!(
+                harness
+                    .bounds(&format!("AGENT_RECOVERY_OPEN_SETTINGS:{session_id}"))
+                    .is_none(),
+                "{runtime:?} {installed} must not fall back to Open Settings"
+            );
+        }
+
+        // OpenCode prerelease below 2.0.0 (2.0.0-rc.1) matches the daemon's semver rule
+        // and stays withheld behind Open Settings instead of offering an update that fails.
+        let mut harness = modal_harness(1200., 900., Vec::new(), Vec::new(), ChatMode::Runtime);
+        harness.act(|root, _, cx| {
+            root.start_chat_modal = None;
+            let core = root.app_store.read(cx).test_core.clone();
+            core.db
+                .get()
+                .unwrap()
+                .execute(
+                    "INSERT INTO sessions(id, status, agent_runtime, agent_command) VALUES ('opencode-rc', 'stopped', 'opencode', 'opencode')",
+                    [],
+                )
+                .unwrap();
+            let mut layout =
+                crate::PaneLayout::single(Some("opencode-rc"), &["opencode-rc".into()]);
+            layout.id = runner_core::event_log::UlidGen::new().next().unwrap();
+            root.front_page_client(cx)
+                .launcher_layout(&layout, None)
+                .unwrap();
+            root.refresh_sessions(cx);
+            root.reload_tabs(cx).unwrap();
+            root.tabs.activate_session("opencode-rc");
+            root.set_route(crate::AppRoute::Chat, cx);
+            root.record_session_gate(
+                &FrontPageTarget::Local,
+                "opencode-rc",
+                Some(RuntimeVersionGate {
+                    runtime: Runtime::OpenCode,
+                    installed_version: "2.0.0-rc.1".into(),
+                    min_version: "2.1.0".into(),
+                }),
+                RecoveryAction::Resume,
+                false,
+            );
+            cx.notify();
+        });
+        assert!(harness
+            .bounds("AGENT_RECOVERY_UPDATE:opencode-rc")
+            .is_none());
+        assert!(harness
+            .bounds("AGENT_RECOVERY_OPEN_SETTINGS:opencode-rc")
+            .is_some());
     }
 }

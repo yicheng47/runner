@@ -1,0 +1,9 @@
+{"runtime":"grok","name":"crew-idle","rules":[9],"bugs":[],"known_wrong":[],"pending_turn":false}
+{"ms":100,"event":"hook","report":{"hook_event_name":"SessionStart","sessionId":"11111111-1111-4111-8111-111111111111","transcriptPath":"<TRANSCRIPT>"}}
+{"ms":200,"event":"output","bytes":"\u001b]7501;state=idle:app=grok\u001b\\"}
+{"ms":2400,"event":"tick"}
+{"ms":2500,"event":"composer","state":"idle"}
+{"ms":2600,"event":"reserve"}
+{"ms":2700,"event":"reserve"}
+{"ms":2800,"event":"wake"}
+{"ms":2900,"event":"finish"}

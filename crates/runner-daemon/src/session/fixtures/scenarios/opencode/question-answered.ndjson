@@ -1,0 +1,12 @@
+{"runtime":"opencode","name":"question-answered","rules":[6],"bugs":[],"known_wrong":[],"pending_turn":false}
+{"ms":100,"event":"hook","report":{"hook_event_name":"snapshot","epoch":1,"sequence":1,"session_id":"ses_111111111111"}}
+{"ms":150,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\"}
+{"ms":200,"event":"input","bytes":"sample"}
+{"ms":300,"event":"input","bytes":"\r"}
+{"ms":450,"event":"output","bytes":"\u001b]7501;state=working:app=opencode\u001b\\\u001b]7501;id=ses_111111111111:app=opencode:state=working\u001b\\"}
+{"ms":600,"event":"output","bytes":"\u001b]7501;state=blocked:app=opencode:kind=question:msg=V2hpY2ggb3B0aW9uPw\u001b\\"}
+{"ms":800,"event":"reserve"}
+{"ms":900,"event":"output","bytes":"\u001b]7501;state=working:app=opencode\u001b\\"}
+{"ms":1000,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\\u001b]7501;state=clear:id=ses_111111111111\u001b\\"}
+{"ms":1100,"event":"reserve"}
+{"ms":1200,"event":"finish"}

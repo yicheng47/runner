@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::hook_feed::HookWatcher;
 
 #[test]
 fn stream_status_publishes_without_panes_and_holds_delivery_for_chats_and_missions() {
@@ -2046,4 +2047,3009 @@ fn pi_custom_prompt_overlay_holds_and_releases_mission_delivery_with_dedup_and_s
     );
 
     core.sessions.kill(&id).unwrap();
+}
+
+#[test]
+fn grok_and_opencode_osc7501_chats_and_missions_cover_waits_delivery_outcomes_cancel_children_legacy_switch_and_fallback(
+) {
+    use crate::session::state::agent::{AgentEvent as A, ProgramOutcomePolicy};
+    use crate::session::status::WaitReason;
+    use runner_core::protocol::runtime::RuntimeLaunchOption;
+
+    for (runtime, app) in [(Runtime::Grok, "grok"), (Runtime::OpenCode, "opencode")] {
+        for mission in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let core = crate::test_support::test_core_with_runtime(fake_runtime());
+            let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+
+            // Legacy status_hooks = false DB rows are ignored for both Grok and OpenCode.
+            db::set_runtime_launch_option(
+                &core.db,
+                runtime,
+                RuntimeLaunchOption::StatusHooks,
+                false,
+            )
+            .unwrap();
+
+            let mut agent_role = role(runtime.key(), &[]);
+            agent_role.runtime = runtime.key().into();
+            agent_role.command = "fake".into();
+
+            let (id, mission_id) = if mission {
+                let mut m = crate::session::manager::tests::mission();
+                m.crew_id = Some("c".into());
+                let slot_id = insert_crew_role(&core.db, &m.id, &agent_role.id);
+                let mut slot = crate::session::manager::tests::slot_for(&agent_role);
+                slot.id = slot_id;
+                slot.slot_handle = runtime.key().into();
+                let pending = core
+                    .sessions
+                    .register_mission_session(
+                        &m,
+                        &agent_role,
+                        &slot,
+                        dir.path(),
+                        dir.path().join("events.ndjson"),
+                        Arc::clone(&core.db),
+                        None,
+                        None,
+                        None,
+                        "goal",
+                    )
+                    .unwrap();
+                let session_id = pending.session_id.clone();
+                core.sessions
+                    .complete_mission_session_spawn(
+                        pending,
+                        Arc::clone(&events),
+                        Arc::new(AtomicBool::new(false)),
+                    )
+                    .unwrap();
+                let terminal = core
+                    .sessions
+                    .create_terminal(&session_id, 80, 24, &core.db, &events)
+                    .unwrap();
+                core.sessions
+                    .session_state(&session_id)
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .terminal = Some(terminal);
+                (session_id, Some(m.id))
+            } else {
+                insert_role_row(&core.db.get().unwrap(), &agent_role);
+                let spawned = core
+                    .sessions
+                    .spawn_direct(
+                        &agent_role,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(dir.path().to_str().unwrap()),
+                        None,
+                        None,
+                        dir.path(),
+                        Arc::clone(&core.db),
+                        Arc::clone(&events),
+                        None,
+                    )
+                    .unwrap();
+                let terminal = core
+                    .sessions
+                    .create_terminal(&spawned.id, 80, 24, &core.db, &events)
+                    .unwrap();
+                core.sessions
+                    .session_state(&spawned.id)
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .terminal = Some(terminal);
+                (spawned.id, None)
+            };
+
+            let state = core.sessions.session_state(&id).unwrap();
+            assert!(
+                state.lock().unwrap().model.program_status_authority(),
+                "{runtime:?} mission={mission}: OSC 7501 authority must be active"
+            );
+
+            let ingest = |seq: &str| {
+                core.sessions.ingest_output_chunk(
+                    &id,
+                    mission_id.as_deref(),
+                    format!("\x1b]7501;{seq}\x1b\\").as_bytes(),
+                    events.as_ref(),
+                );
+            };
+            let clear_unread = || {
+                crate::repo::session_attention::mark_viewed(
+                    &core.db.get().unwrap(),
+                    &id,
+                    "2026-11-21T00:00:00Z",
+                )
+                .unwrap();
+                state
+                    .lock()
+                    .unwrap()
+                    .model
+                    .apply(SessionEvent::Viewed, crate::session::clock::state_now());
+            };
+
+            // Release startup gate with OSC 7501 idle without fabricating Completed.
+            ingest(&format!("state=idle:app={app}"));
+            assert_eq!(
+                core.sessions.delivery_readiness(&id),
+                router::DeliveryReadiness::Ready { idle: true },
+                "{runtime:?} mission={mission}"
+            );
+            assert_eq!(core.sessions.agent_status(&id).unread_since, None);
+
+            // 1. Every blocked kind holds crew delivery and releases when cleared.
+            ingest(&format!("state=working:app={app}"));
+            for (kind, expected) in [
+                (Some("permission"), WaitReason::Approval),
+                (Some("question"), WaitReason::Answer),
+                (Some("auth"), WaitReason::Unknown),
+                (None, WaitReason::Unknown),
+            ] {
+                let seq = match kind {
+                    Some(k) => format!("state=blocked:app={app}:kind={k}"),
+                    None => format!("state=blocked:app={app}"),
+                };
+                ingest(&seq);
+                let status = core.sessions.agent_status(&id);
+                assert!(status.observation.needs_you(), "{runtime:?} {kind:?}");
+                assert_eq!(
+                    status.observation.interactions[0].reason, expected,
+                    "{runtime:?} {kind:?}"
+                );
+                assert_eq!(
+                    core.sessions.delivery_readiness(&id),
+                    router::DeliveryReadiness::NeedsYou,
+                    "{runtime:?} {kind:?}"
+                );
+                assert_eq!(
+                    core.sessions.reserve_delivery(&id).unwrap(),
+                    router::DeliveryReservation::HumanInteraction,
+                    "{runtime:?} {kind:?}"
+                );
+                // Foreign root idle cannot release this runtime's wait.
+                ingest("state=idle:app=other");
+                assert!(core.sessions.agent_status(&id).observation.needs_you());
+            }
+
+            // 2. Child records never alter root status/delivery/badge. Grok exposes subagent
+            // background_tasks detail; OpenCode suppresses per-session child counts.
+            ingest(&format!("state=working:app={app}"));
+            assert!(!core.sessions.agent_status(&id).observation.needs_you());
+            ingest(&format!("id=child-1:app={app}:state=working"));
+            ingest(&format!(
+                "id=child-2:app={app}:state=blocked:kind=permission"
+            ));
+            let with_children = core.sessions.agent_status(&id);
+            assert_eq!(with_children.observation.activity, Activity::Working);
+            assert!(!with_children.observation.needs_you());
+            let expected_bg = if runtime == Runtime::Grok { 2 } else { 0 };
+            assert_eq!(
+                with_children
+                    .observation
+                    .program_status
+                    .as_ref()
+                    .unwrap()
+                    .background_tasks,
+                expected_bg,
+                "{runtime:?} mission={mission}"
+            );
+
+            // 3. Completion: Grok on `done`; OpenCode on root `working` -> `idle` (with children clearing).
+            if runtime == Runtime::Grok {
+                ingest("state=done:app=grok:msg=VHVybiBjb21wbGV0ZSBpbiAyLjVzLg");
+            } else {
+                ingest("state=idle:app=opencode");
+                ingest("state=clear:id=child-1");
+                ingest("state=clear:id=child-2");
+            }
+            let done = core.sessions.agent_status(&id);
+            assert_eq!(
+                done.observation.outcome,
+                Some(TurnOutcome::Completed),
+                "{runtime:?} mission={mission}"
+            );
+            assert!(
+                done.unread_since.is_some(),
+                "{runtime:?} mission={mission} must record unread badge"
+            );
+            assert!(
+                crate::repo::session_attention::any_unread(
+                    &core.db.get().unwrap(),
+                    std::slice::from_ref(&id),
+                )
+                .unwrap(),
+                "{runtime:?} mission={mission}"
+            );
+            assert_eq!(
+                core.sessions.delivery_readiness(&id),
+                router::DeliveryReadiness::Ready { idle: true }
+            );
+            if runtime == Runtime::Grok {
+                ingest("state=clear:id=child-1");
+                ingest("state=clear:id=child-2");
+            }
+            clear_unread();
+
+            // 4. Cancel key mid-turn (Ctrl+C and Esc, including Grok Working("Cancelling") -> Idle)
+            // settles Interrupted with no unread badge.
+            for cancel_bytes in [b"\x03".as_slice(), b"\x1b".as_slice()] {
+                ingest(&format!("state=working:app={app}"));
+                core.sessions
+                    .inject_direct_stdin(&id, cancel_bytes, events.as_ref())
+                    .unwrap();
+                if runtime == Runtime::Grok {
+                    ingest("state=working:app=grok:msg=Q2FuY2VsbGluZw");
+                }
+                ingest(&format!("state=idle:app={app}"));
+                let interrupted = core.sessions.agent_status(&id);
+                assert_eq!(
+                    interrupted.observation.outcome,
+                    Some(TurnOutcome::Interrupted),
+                    "{runtime:?} cancel={cancel_bytes:?}"
+                );
+                assert_eq!(interrupted.unread_since, None);
+                assert_eq!(interrupted.failed_since, None);
+                assert!(!crate::repo::session_attention::any_unread(
+                    &core.db.get().unwrap(),
+                    std::slice::from_ref(&id),
+                )
+                .unwrap());
+            }
+
+            // 5. Failed outcome:
+            // - Grok uses OSC 7501 state=error (surviving trailing idle) AND updates.jsonl
+            //   turn_completed failure when Grok exits working -> idle without OSC error.
+            // - OpenCode uses opencode.db session_v2 idle_outcome="failed" both before and after
+            //   OSC idle, reverting the optimistic unread badge in SQLite when arriving late.
+            if runtime == Runtime::Grok {
+                ingest("state=working:app=grok");
+                ingest("state=error:app=grok");
+                ingest("state=idle:app=grok");
+                let failed = core.sessions.agent_status(&id);
+                assert_eq!(failed.observation.outcome, Some(TurnOutcome::Failed));
+                assert!(failed.failed_since.is_some());
+                assert_eq!(failed.unread_since, None);
+
+                // Grok working -> idle (no OSC error) + updates.jsonl failure before idle.
+                ingest("state=working:app=grok");
+                core.sessions.publish_agent_event(
+                    &id,
+                    A::ProgramTurnOutcome {
+                        outcome: TurnOutcome::Failed,
+                        policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                    },
+                    events.as_ref(),
+                );
+                assert_eq!(
+                    core.sessions.agent_status(&id).observation.activity,
+                    Activity::Working
+                );
+                ingest("state=idle:app=grok");
+                let grok_before_idle = core.sessions.agent_status(&id);
+                assert_eq!(
+                    grok_before_idle.observation.outcome,
+                    Some(TurnOutcome::Failed)
+                );
+                assert!(grok_before_idle.failed_since.is_some());
+                assert_eq!(grok_before_idle.unread_since, None);
+
+                // Grok working -> idle (no OSC error) + updates.jsonl failure after idle.
+                ingest("state=working:app=grok");
+                ingest("state=idle:app=grok");
+                assert_eq!(core.sessions.agent_status(&id).observation.outcome, None);
+                core.sessions.publish_agent_event(
+                    &id,
+                    A::ProgramTurnOutcome {
+                        outcome: TurnOutcome::Failed,
+                        policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                    },
+                    events.as_ref(),
+                );
+                let grok_after_idle = core.sessions.agent_status(&id);
+                assert_eq!(
+                    grok_after_idle.observation.outcome,
+                    Some(TurnOutcome::Failed)
+                );
+                assert!(grok_after_idle.failed_since.is_some());
+                assert_eq!(grok_after_idle.unread_since, None);
+            } else {
+                // (a) Before OSC idle: deferred while working, applied on idle with no badge.
+                ingest("state=working:app=opencode");
+                ingest("id=ses_main:app=opencode:state=working");
+                let before_ms = crate::session::clock::state_now().wall_millis;
+                core.sessions.publish_agent_event(
+                    &id,
+                    A::ProgramSessionOutcome {
+                        outcome: TurnOutcome::Failed,
+                        policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                        session_id: "ses_main".into(),
+                        ended_at_ms: before_ms,
+                        superseded: false,
+                    },
+                    events.as_ref(),
+                );
+                assert_eq!(
+                    core.sessions.agent_status(&id).observation.activity,
+                    Activity::Working
+                );
+                ingest("state=idle:app=opencode");
+                ingest("state=clear:id=ses_main");
+                let before_idle = core.sessions.agent_status(&id);
+                assert_eq!(before_idle.observation.outcome, Some(TurnOutcome::Failed));
+                assert!(before_idle.failed_since.is_some());
+                assert_eq!(before_idle.unread_since, None);
+                assert!(!crate::repo::session_attention::any_unread(
+                    &core.db.get().unwrap(),
+                    std::slice::from_ref(&id),
+                )
+                .unwrap());
+
+                // (b) After OSC idle: idle-inferred Completed records unread, then late
+                // opencode.db Failed overrides to Failed AND reverts SQLite unread attention.
+                ingest("state=working:app=opencode");
+                ingest("id=ses_main:app=opencode:state=working");
+                ingest("state=idle:app=opencode");
+                ingest("state=clear:id=ses_main");
+                assert!(core.sessions.agent_status(&id).unread_since.is_some());
+                assert!(crate::repo::session_attention::any_unread(
+                    &core.db.get().unwrap(),
+                    std::slice::from_ref(&id),
+                )
+                .unwrap());
+                let after_ms = crate::session::clock::state_now().wall_millis;
+                core.sessions.publish_agent_event(
+                    &id,
+                    A::ProgramSessionOutcome {
+                        outcome: TurnOutcome::Failed,
+                        policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                        session_id: "ses_main".into(),
+                        ended_at_ms: after_ms,
+                        superseded: false,
+                    },
+                    events.as_ref(),
+                );
+                let after_idle = core.sessions.agent_status(&id);
+                assert_eq!(after_idle.observation.outcome, Some(TurnOutcome::Failed));
+                assert!(after_idle.failed_since.is_some());
+                assert_eq!(after_idle.unread_since, None);
+                assert!(
+                    !crate::repo::session_attention::any_unread(
+                        &core.db.get().unwrap(),
+                        std::slice::from_ref(&id),
+                    )
+                    .unwrap(),
+                    "late OpenCode DB Failed must revert optimistic unread badge in DB"
+                );
+
+                // (c) Multi-session OpenCode TUI root messages.
+                ingest("state=working:app=opencode:msg=MiBzZXNzaW9ucyB3b3JraW5n");
+                ingest("id=ses_a:app=opencode:state=working");
+                ingest("id=ses_b:app=opencode:state=working");
+                let multi = core.sessions.agent_status(&id);
+                assert_eq!(
+                    multi
+                        .observation
+                        .program_status
+                        .as_ref()
+                        .unwrap()
+                        .message
+                        .as_deref(),
+                    Some("2 sessions working")
+                );
+                assert_eq!(
+                    multi
+                        .observation
+                        .program_status
+                        .as_ref()
+                        .unwrap()
+                        .background_tasks,
+                    0
+                );
+                ingest("state=blocked:app=opencode:msg=MiBzZXNzaW9ucyBuZWVkIGlucHV0");
+                let multi_blocked = core.sessions.agent_status(&id);
+                assert!(multi_blocked.observation.needs_you());
+                assert_eq!(
+                    multi_blocked.observation.interactions[0].reason,
+                    WaitReason::Unknown
+                );
+                assert_eq!(
+                    multi_blocked
+                        .observation
+                        .program_status
+                        .as_ref()
+                        .unwrap()
+                        .message
+                        .as_deref(),
+                    Some("2 sessions need input")
+                );
+                ingest("state=idle:app=opencode");
+                ingest("state=clear:id=ses_a");
+                ingest("state=clear:id=ses_b");
+                assert_eq!(
+                    core.sessions.agent_status(&id).observation.outcome,
+                    Some(TurnOutcome::Completed)
+                );
+                clear_unread();
+            }
+
+            core.sessions.kill(&id).unwrap();
+        }
+
+        // 6. No-OSC fallback (Grok program_status="off" / OpenCode unanswered probe):
+        // direct chat with pending first turn releases on ProgramTurnFinished and tracks terminal
+        // activity via Forwarder transitions.
+        let dir = tempfile::tempdir().unwrap();
+        let core = crate::test_support::test_core_with_runtime(fake_runtime());
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        let mut agent_role = role(runtime.key(), &[]);
+        agent_role.runtime = runtime.key().into();
+        agent_role.command = "fake".into();
+        insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &agent_role,
+                None,
+                None,
+                None,
+                None,
+                Some(dir.path().to_str().unwrap()),
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+                Some("first turn".into()),
+            )
+            .unwrap();
+        let id = spawned.id;
+        let stop = core
+            .sessions
+            .session_state(&id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .handle
+            .as_ref()
+            .unwrap()
+            .stop
+            .clone();
+        let now = Instant::now();
+        core.sessions.note_forwarder_transition(
+            &id,
+            SessionActivityState::Idle,
+            StatusSource::Forwarder,
+        );
+        core.sessions.startup_output(&id, &stop, b"ready", now);
+        core.sessions
+            .release_settled_startup(&id, &stop, now + Duration::from_secs(60));
+        assert_eq!(
+            core.sessions.report_readiness(&id),
+            router::DeliveryReadiness::Starting,
+            "{runtime:?}: first turn without OSC stays Starting until turn finishes"
+        );
+        core.sessions
+            .publish_agent_event(&id, A::ProgramTurnFinished, events.as_ref());
+        assert_eq!(
+            core.sessions.report_readiness(&id),
+            router::DeliveryReadiness::Ready { idle: true },
+            "{runtime:?}: no-OSC first turn releases on ProgramTurnFinished"
+        );
+        core.sessions.note_forwarder_transition(
+            &id,
+            SessionActivityState::Busy,
+            StatusSource::Forwarder,
+        );
+        assert_eq!(
+            core.sessions.agent_status(&id).observation.activity,
+            Activity::Working
+        );
+        core.sessions.note_forwarder_transition(
+            &id,
+            SessionActivityState::Idle,
+            StatusSource::Forwarder,
+        );
+        assert_eq!(
+            core.sessions.agent_status(&id).observation.activity,
+            Activity::Idle
+        );
+        core.sessions.kill(&id).unwrap();
+    }
+}
+
+#[test]
+fn grok_without_transcript_and_opencode_without_db_release_no_osc_first_turn_while_holding_live_osc_waits(
+) {
+    use crate::session::hook_queue::TestHookRoute;
+
+    for (runtime, app) in [(Runtime::Grok, "grok"), (Runtime::OpenCode, "opencode")] {
+        for mission in [false, true] {
+            for with_osc_wait in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let core = crate::test_support::test_core_with_runtime(fake_runtime());
+                let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+                let mut agent_role = role(runtime.key(), &[]);
+                agent_role.runtime = runtime.key().into();
+                agent_role.command = "fake".into();
+
+                let (id, mission_id) = if mission {
+                    let mut m = crate::session::manager::tests::mission();
+                    m.crew_id = Some("c".into());
+                    let slot_id = insert_crew_role(&core.db, &m.id, &agent_role.id);
+                    let mut slot = crate::session::manager::tests::slot_for(&agent_role);
+                    slot.id = slot_id;
+                    slot.slot_handle = runtime.key().into();
+                    let pending = core
+                        .sessions
+                        .register_mission_session(
+                            &m,
+                            &agent_role,
+                            &slot,
+                            dir.path(),
+                            dir.path().join("events.ndjson"),
+                            Arc::clone(&core.db),
+                            None,
+                            None,
+                            None,
+                            "goal",
+                        )
+                        .unwrap();
+                    let sid = pending.session_id.clone();
+                    core.sessions
+                        .complete_mission_session_spawn(
+                            pending,
+                            Arc::clone(&events),
+                            Arc::new(AtomicBool::new(false)),
+                        )
+                        .unwrap();
+                    let terminal = core
+                        .sessions
+                        .create_terminal(&sid, 80, 24, &core.db, &events)
+                        .unwrap();
+                    core.sessions
+                        .session_state(&sid)
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .terminal = Some(terminal);
+                    (sid, Some(m.id))
+                } else {
+                    insert_role_row(&core.db.get().unwrap(), &agent_role);
+                    let spawned = core
+                        .sessions
+                        .spawn_direct(
+                            &agent_role,
+                            None,
+                            None,
+                            None,
+                            None,
+                            Some(dir.path().to_str().unwrap()),
+                            None,
+                            None,
+                            dir.path(),
+                            Arc::clone(&core.db),
+                            Arc::clone(&events),
+                            Some("first turn".into()),
+                        )
+                        .unwrap();
+                    let terminal = core
+                        .sessions
+                        .create_terminal(&spawned.id, 80, 24, &core.db, &events)
+                        .unwrap();
+                    core.sessions
+                        .session_state(&spawned.id)
+                        .unwrap()
+                        .lock()
+                        .unwrap()
+                        .terminal = Some(terminal);
+                    (spawned.id, None)
+                };
+
+                let stop = core
+                    .sessions
+                    .session_state(&id)
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .handle
+                    .as_ref()
+                    .unwrap()
+                    .stop
+                    .clone();
+                let now = Instant::now();
+                core.sessions.note_forwarder_transition(
+                    &id,
+                    SessionActivityState::Idle,
+                    StatusSource::Forwarder,
+                );
+                core.sessions.startup_output(&id, &stop, b"ready", now);
+
+                // Drive the real runtime watcher with missing native outcome source:
+                // - Grok host-server SessionStart without transcriptPath
+                // - OpenCode snapshot with db_path = None (:memory:)
+                if runtime == Runtime::Grok {
+                    let (route, receiver) = TestHookRoute::new(Runtime::Grok, "current".into());
+                    let mut watcher = crate::runtimes::grok::status::Watcher::new(
+                        receiver,
+                        &SpawnSpec::default(),
+                    );
+                    let grok_session_id = uuid::Uuid::new_v4().to_string();
+                    drop(
+                        route
+                            .admit(serde_json::json!({
+                                "hook_event_name": "SessionStart",
+                                "sessionId": grok_session_id,
+                            }))
+                            .unwrap(),
+                    );
+                    watcher
+                        .drain_events(
+                            0,
+                            &mut |ev| core.sessions.publish_agent_event(&id, ev, events.as_ref()),
+                            &mut |_| {},
+                        )
+                        .unwrap();
+                    route.retire();
+                } else {
+                    let (route, receiver) = TestHookRoute::new(Runtime::OpenCode, "current".into());
+                    let mut watcher = crate::runtimes::opencode::status::Watcher::with_db(
+                        receiver, None, None, 0,
+                    );
+                    drop(
+                        route
+                            .admit(serde_json::json!({
+                                "hook_event_name": "snapshot",
+                                "epoch": 1,
+                                "sequence": 1,
+                                "session_id": "ses_mem",
+                            }))
+                            .unwrap(),
+                    );
+                    watcher
+                        .drain_events(
+                            0,
+                            &mut |ev| core.sessions.publish_agent_event(&id, ev, events.as_ref()),
+                            &mut |_| {},
+                        )
+                        .unwrap();
+                    route.retire();
+                }
+
+                if with_osc_wait {
+                    core.sessions.ingest_output_chunk(
+                        &id,
+                        mission_id.as_deref(),
+                        format!(
+                            "\x1b]7501;state=working:app={app}\x1b\\\x1b]7501;state=blocked:app={app}:kind=permission\x1b\\"
+                        )
+                        .as_bytes(),
+                        events.as_ref(),
+                    );
+                }
+
+                core.sessions
+                    .release_settled_startup(&id, &stop, now + Duration::from_secs(60));
+                if with_osc_wait {
+                    assert_eq!(
+                        core.sessions.report_readiness(&id),
+                        router::DeliveryReadiness::Starting,
+                        "{runtime:?} mission={mission}: live OSC blocked wait must keep startup held"
+                    );
+                    assert!(
+                        core.sessions.agent_status(&id).observation.needs_you(),
+                        "{runtime:?} mission={mission}: live OSC blocked wait must surface NeedsYou"
+                    );
+                    assert_eq!(
+                        core.sessions.reserve_delivery(&id).unwrap(),
+                        if mission {
+                            router::DeliveryReservation::Starting
+                        } else {
+                            router::DeliveryReservation::HumanInteraction
+                        }
+                    );
+                    // Once the root OSC wait releases to idle, startup finishes cleanly.
+                    core.sessions.ingest_output_chunk(
+                        &id,
+                        mission_id.as_deref(),
+                        format!("\x1b]7501;state=idle:app={app}\x1b\\").as_bytes(),
+                        events.as_ref(),
+                    );
+                    assert_eq!(
+                        core.sessions.report_readiness(&id),
+                        router::DeliveryReadiness::Ready { idle: true },
+                        "{runtime:?} mission={mission}: releasing live OSC wait finishes startup"
+                    );
+                } else {
+                    assert_eq!(
+                        core.sessions.report_readiness(&id),
+                        router::DeliveryReadiness::Ready { idle: true },
+                        "{runtime:?} mission={mission}: missing outcome source + no OSC must release after settled output"
+                    );
+                }
+                core.sessions.kill(&id).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn opencode_watcher_reports_background_failure_after_route_switch_and_isolates_delayed_outcome_across_next_turn(
+) {
+    use crate::session::hook_queue::TestHookRoute;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("opencode/opencode.db");
+    std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE session_v2(
+            id TEXT PRIMARY KEY,
+            time_created INTEGER NOT NULL,
+            time_busy INTEGER,
+            time_idle INTEGER,
+            idle_outcome TEXT
+        );",
+    )
+    .unwrap();
+
+    let core = crate::test_support::test_core_with_runtime(fake_runtime());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    let mut agent_role = role("opencode", &[]);
+    agent_role.runtime = "opencode".into();
+    agent_role.command = "fake".into();
+    insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+    let spawned = core
+        .sessions
+        .spawn_direct(
+            &agent_role,
+            None,
+            None,
+            None,
+            None,
+            Some(dir.path().to_str().unwrap()),
+            None,
+            None,
+            dir.path(),
+            Arc::clone(&core.db),
+            Arc::clone(&events),
+            None,
+        )
+        .unwrap();
+    let id = spawned.id;
+    let terminal = core
+        .sessions
+        .create_terminal(&id, 80, 24, &core.db, &events)
+        .unwrap();
+    core.sessions
+        .session_state(&id)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .terminal = Some(terminal);
+
+    let launched_ms = crate::session::clock::state_now().wall_millis - 10_000;
+    let (route, receiver) = TestHookRoute::new(Runtime::OpenCode, "current".into());
+    let mut watcher = crate::runtimes::opencode::status::Watcher::with_db(
+        receiver,
+        None,
+        Some(db_path.clone()),
+        launched_ms,
+    );
+    let ingest = |seq: &str| {
+        core.sessions.ingest_output_chunk(
+            &id,
+            None,
+            format!("\x1b]7501;{seq}\x1b\\").as_bytes(),
+            events.as_ref(),
+        );
+    };
+    let mut drain = || {
+        watcher
+            .drain_events(
+                0,
+                &mut |ev| core.sessions.publish_agent_event(&id, ev, events.as_ref()),
+                &mut |_| {},
+            )
+            .unwrap();
+    };
+
+    // 1. Start work in ses_a, navigate away to home ("") and idle ses_b; ses_a finishes as
+    // failed in SQLite after root goes idle -> must still settle Failed and revert unread.
+    ingest("state=idle:app=opencode");
+    conn.execute(
+        "INSERT INTO session_v2(id, time_created, time_busy) VALUES ('ses_a', ?1, ?1)",
+        [launched_ms + 100],
+    )
+    .unwrap();
+    drop(
+        route
+            .admit(serde_json::json!({
+                "hook_event_name": "snapshot",
+                "epoch": 1,
+                "sequence": 1,
+                "session_id": "ses_a",
+            }))
+            .unwrap(),
+    );
+    drain();
+    ingest("state=working:app=opencode");
+    ingest("id=ses_a:app=opencode:state=working");
+    // Navigate away to home ("") and then idle ses_b while ses_a is still running.
+    drop(
+        route
+            .admit(serde_json::json!({
+                "hook_event_name": "snapshot",
+                "epoch": 1,
+                "sequence": 2,
+                "session_id": "",
+            }))
+            .unwrap(),
+    );
+    drain();
+    drop(
+        route
+            .admit(serde_json::json!({
+                "hook_event_name": "snapshot",
+                "epoch": 1,
+                "sequence": 3,
+                "session_id": "ses_b",
+            }))
+            .unwrap(),
+    );
+    drain();
+    ingest("state=idle:app=opencode");
+    ingest("state=clear:id=ses_a");
+    assert!(core.sessions.agent_status(&id).unread_since.is_some());
+    conn.execute(
+        "UPDATE session_v2 SET time_idle = ?1, idle_outcome = 'failed' WHERE id = 'ses_a'",
+        [launched_ms + 200],
+    )
+    .unwrap();
+    drain();
+    let bg_fail = core.sessions.agent_status(&id);
+    assert_eq!(bg_fail.observation.outcome, Some(TurnOutcome::Failed));
+    assert!(bg_fail.failed_since.is_some());
+    assert_eq!(bg_fail.unread_since, None);
+    assert!(!crate::repo::session_attention::any_unread(
+        &core.db.get().unwrap(),
+        std::slice::from_ref(&id),
+    )
+    .unwrap());
+
+    // 2. Navigate back to ses_a; Turn 1 completes optimistically (unread recorded), Turn 2
+    // starts immediately in ses_a (time_busy > time_idle), then watcher polls Turn 1's delayed
+    // failure: Turn 1's unread is reverted in SQLite AND Turn 2 is NOT poisoned when it succeeds.
+    drop(
+        route
+            .admit(serde_json::json!({
+                "hook_event_name": "snapshot",
+                "epoch": 1,
+                "sequence": 4,
+                "session_id": "ses_a",
+            }))
+            .unwrap(),
+    );
+    drain();
+    ingest("state=working:app=opencode");
+    ingest("id=ses_a:app=opencode:state=working");
+    ingest("state=idle:app=opencode");
+    ingest("state=clear:id=ses_a");
+    let t1_idle = crate::session::clock::state_now().wall_millis;
+    assert!(core.sessions.agent_status(&id).unread_since.is_some());
+    assert!(crate::repo::session_attention::any_unread(
+        &core.db.get().unwrap(),
+        std::slice::from_ref(&id),
+    )
+    .unwrap());
+
+    // Turn 2 starts before Turn 1's failure is polled; time_busy advances past Turn 1's time_idle.
+    ingest("state=working:app=opencode");
+    ingest("id=ses_a:app=opencode:state=working");
+    let t2_busy = crate::session::clock::state_now().wall_millis.max(t1_idle) + 100;
+    conn.execute(
+        "UPDATE session_v2 SET time_idle = ?1, time_busy = ?2, idle_outcome = 'failed' WHERE id = 'ses_a'",
+        rusqlite::params![t1_idle, t2_busy],
+    )
+    .unwrap();
+    drain();
+    assert_eq!(
+        core.sessions.agent_status(&id).observation.activity,
+        Activity::Working
+    );
+    assert_eq!(
+        core.sessions.agent_status(&id).unread_since,
+        None,
+        "delayed Turn 1 failure must revert Turn 1's optimistic unread in memory"
+    );
+    assert!(
+        !crate::repo::session_attention::any_unread(
+            &core.db.get().unwrap(),
+            std::slice::from_ref(&id),
+        )
+        .unwrap(),
+        "delayed Turn 1 failure must revert Turn 1's optimistic unread in DB"
+    );
+
+    // Turn 2 finishes cleanly -> Completed + new unread badge!
+    ingest("state=idle:app=opencode");
+    ingest("state=clear:id=ses_a");
+    conn.execute(
+        "UPDATE session_v2 SET time_idle = ?1, idle_outcome = 'succeeded' WHERE id = 'ses_a'",
+        [t2_busy + 100],
+    )
+    .unwrap();
+    drain();
+    let turn2 = core.sessions.agent_status(&id);
+    assert_eq!(turn2.observation.outcome, Some(TurnOutcome::Completed));
+    assert_eq!(turn2.failed_since, None);
+    assert!(turn2.unread_since.is_some());
+
+    route.retire();
+    core.sessions.kill(&id).unwrap();
+}
+
+#[test]
+fn opencode_late_failure_cas_undo_preserves_prior_durable_unread_error_ack_and_tab_viewed_state() {
+    use crate::session::state::agent::{AgentEvent as A, ProgramOutcomePolicy};
+
+    // Case A: Daemon restart / fresh SessionModel with pre-existing durable unread,
+    // error_acknowledged_at, and a tab row whose last_viewed_at is NULL.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let core = crate::test_support::test_core_with_runtime(fake_runtime());
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        let mut agent_role = role("opencode", &[]);
+        agent_role.runtime = "opencode".into();
+        agent_role.command = "fake".into();
+        insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &agent_role,
+                None,
+                None,
+                None,
+                None,
+                Some(dir.path().to_str().unwrap()),
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+                None,
+            )
+            .unwrap();
+        let id = spawned.id;
+        let terminal = core
+            .sessions
+            .create_terminal(&id, 80, 24, &core.db, &events)
+            .unwrap();
+        core.sessions
+            .session_state(&id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal);
+
+        let prior_unread_ms = 1_700_000_000_000i64;
+        let prior_ack = "2026-11-20T00:00:00Z";
+        let prior_tab_completed = "2026-11-20T00:05:00Z";
+        let tab_id = {
+            let conn = core.db.get().unwrap();
+            conn.execute(
+                "INSERT INTO session_attention(session_id, unread_since, error_acknowledged_at)
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![&id, prior_unread_ms, prior_ack],
+            )
+            .unwrap();
+            let layout = serde_json::json!({"session_id": id}).to_string();
+            let tab =
+                crate::repo::node::create_tab(&conn, None, "OpenCode tab", 1, &layout).unwrap();
+            conn.execute(
+                "UPDATE nodes SET last_completed_at = ?1, last_viewed_at = NULL WHERE id = ?2",
+                rusqlite::params![prior_tab_completed, &tab.id],
+            )
+            .unwrap();
+            tab.id
+        };
+
+        // Notice fresh SessionModel has unread_since == None in memory, just like after daemon restart.
+        assert_eq!(core.sessions.agent_status(&id).unread_since, None);
+
+        let ingest = |seq: &str| {
+            core.sessions.ingest_output_chunk(
+                &id,
+                None,
+                format!("\x1b]7501;{seq}\x1b\\").as_bytes(),
+                events.as_ref(),
+            );
+        };
+        ingest("state=idle:app=opencode");
+        ingest("state=working:app=opencode");
+        ingest("id=ses_restart:app=opencode:state=working");
+        ingest("state=idle:app=opencode");
+        ingest("state=clear:id=ses_restart");
+
+        // Late Failed from opencode.db arrives after optimistic completion wrote Turn 2's unread.
+        let now_ms = crate::session::clock::state_now().wall_millis;
+        core.sessions.publish_agent_event(
+            &id,
+            A::ProgramSessionOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                session_id: "ses_restart".into(),
+                ended_at_ms: now_ms + 50,
+                superseded: false,
+            },
+            events.as_ref(),
+        );
+
+        let conn = core.db.get().unwrap();
+        let (db_unread, db_ack): (Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT unread_since, error_acknowledged_at FROM session_attention WHERE session_id = ?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            db_unread,
+            Some(prior_unread_ms),
+            "CAS rollback must restore Turn 1's durable unread_since instead of wiping it"
+        );
+        assert_eq!(
+            db_ack.as_deref(),
+            Some(prior_ack),
+            "CAS rollback must never overwrite error_acknowledged_at"
+        );
+        let (tab_completed, tab_viewed): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT last_completed_at, last_viewed_at FROM nodes WHERE id = ?1",
+                [&tab_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tab_completed.as_deref(), Some(prior_tab_completed));
+        assert_eq!(
+            tab_viewed, None,
+            "CAS rollback must never fabricate a last_viewed_at user view"
+        );
+        drop(conn);
+
+        let snapshot = crate::ops::session::session_status_snapshot(&core).unwrap();
+        let snap = &snapshot[&id];
+        assert_eq!(snap.unread_since, Some(prior_unread_ms));
+        assert_eq!(snap.observation.outcome, Some(TurnOutcome::Failed));
+        assert!(snap.failed_since.is_some());
+
+        core.sessions.kill(&id).unwrap();
+    }
+
+    // Case B: Fresh session with no prior unread, pre-existing error_acknowledged_at, and
+    // tab last_viewed_at = NULL -> late Failed clears unread back to NULL without touching
+    // error_acknowledged_at or fabricating last_viewed_at.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let core = crate::test_support::test_core_with_runtime(fake_runtime());
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        let mut agent_role = role("opencode", &[]);
+        agent_role.runtime = "opencode".into();
+        agent_role.command = "fake".into();
+        insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &agent_role,
+                None,
+                None,
+                None,
+                None,
+                Some(dir.path().to_str().unwrap()),
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+                None,
+            )
+            .unwrap();
+        let id = spawned.id;
+        let terminal = core
+            .sessions
+            .create_terminal(&id, 80, 24, &core.db, &events)
+            .unwrap();
+        core.sessions
+            .session_state(&id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal);
+
+        let prior_ack = "2026-11-20T00:00:00Z";
+        let tab_id = {
+            let conn = core.db.get().unwrap();
+            conn.execute(
+                "INSERT INTO session_attention(session_id, unread_since, error_acknowledged_at)
+                 VALUES (?1, NULL, ?2)",
+                rusqlite::params![&id, prior_ack],
+            )
+            .unwrap();
+            let layout = serde_json::json!({"session_id": id}).to_string();
+            let tab = crate::repo::node::create_tab(&conn, None, "Fresh tab", 1, &layout).unwrap();
+            conn.execute(
+                "UPDATE nodes SET last_completed_at = NULL, last_viewed_at = NULL WHERE id = ?1",
+                [&tab.id],
+            )
+            .unwrap();
+            tab.id
+        };
+
+        let ingest = |seq: &str| {
+            core.sessions.ingest_output_chunk(
+                &id,
+                None,
+                format!("\x1b]7501;{seq}\x1b\\").as_bytes(),
+                events.as_ref(),
+            );
+        };
+        ingest("state=idle:app=opencode");
+        ingest("state=working:app=opencode");
+        ingest("id=ses_fresh:app=opencode:state=working");
+        ingest("state=idle:app=opencode");
+        ingest("state=clear:id=ses_fresh");
+
+        let now_ms = crate::session::clock::state_now().wall_millis;
+        core.sessions.publish_agent_event(
+            &id,
+            A::ProgramSessionOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                session_id: "ses_fresh".into(),
+                ended_at_ms: now_ms + 50,
+                superseded: false,
+            },
+            events.as_ref(),
+        );
+
+        let conn = core.db.get().unwrap();
+        let (db_unread, db_ack): (Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT unread_since, error_acknowledged_at FROM session_attention WHERE session_id = ?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(db_unread, None);
+        assert_eq!(db_ack.as_deref(), Some(prior_ack));
+        let (tab_completed, tab_viewed): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT last_completed_at, last_viewed_at FROM nodes WHERE id = ?1",
+                [&tab_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tab_completed, None);
+        assert_eq!(tab_viewed, None);
+        drop(conn);
+        assert_eq!(core.sessions.agent_status(&id).unread_since, None);
+
+        core.sessions.kill(&id).unwrap();
+    }
+}
+
+#[test]
+fn opencode_mixed_multi_session_turn_reverts_false_durable_unread_in_both_store_orderings() {
+    use crate::session::hook_queue::TestHookRoute;
+
+    // Cover both lexicographic orderings:
+    // (1) ses_a=succeeded, ses_b=failed (BTreeSet polls succeeded BEFORE failed)
+    // (2) ses_a=failed, ses_b=succeeded (BTreeSet polls failed BEFORE succeeded)
+    for (outcome_a, outcome_b) in [("succeeded", "failed"), ("failed", "succeeded")] {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("opencode/opencode.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_v2(
+                id TEXT PRIMARY KEY,
+                time_created INTEGER NOT NULL,
+                time_busy INTEGER,
+                time_idle INTEGER,
+                idle_outcome TEXT
+            );",
+        )
+        .unwrap();
+
+        let core = crate::test_support::test_core_with_runtime(fake_runtime());
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        let mut agent_role = role("opencode", &[]);
+        agent_role.runtime = "opencode".into();
+        agent_role.command = "fake".into();
+        insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &agent_role,
+                None,
+                None,
+                None,
+                None,
+                Some(dir.path().to_str().unwrap()),
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+                None,
+            )
+            .unwrap();
+        let id = spawned.id;
+        let terminal = core
+            .sessions
+            .create_terminal(&id, 80, 24, &core.db, &events)
+            .unwrap();
+        core.sessions
+            .session_state(&id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal);
+
+        let launched_ms = crate::session::clock::state_now().wall_millis - 10_000;
+        let (route, receiver) = TestHookRoute::new(Runtime::OpenCode, "mixed".into());
+        let mut watcher = crate::runtimes::opencode::status::Watcher::with_db(
+            receiver,
+            None,
+            Some(db_path.clone()),
+            launched_ms,
+        );
+        let ingest = |seq: &str| {
+            core.sessions.ingest_output_chunk(
+                &id,
+                None,
+                format!("\x1b]7501;{seq}\x1b\\").as_bytes(),
+                events.as_ref(),
+            );
+        };
+        let mut drain = || {
+            watcher
+                .drain_events(
+                    0,
+                    &mut |ev| core.sessions.publish_agent_event(&id, ev, events.as_ref()),
+                    &mut |_| {},
+                )
+                .unwrap();
+        };
+
+        ingest("state=idle:app=opencode");
+        conn.execute(
+            "INSERT INTO session_v2(id, time_created, time_busy) VALUES ('ses_a', ?1, ?1)",
+            [launched_ms + 10],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_v2(id, time_created, time_busy) VALUES ('ses_b', ?1, ?1)",
+            [launched_ms + 20],
+        )
+        .unwrap();
+        // Visit ses_a (busy), then switch to ses_b (busy) so both run concurrently in one TUI.
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "snapshot",
+                    "epoch": 1,
+                    "sequence": 1,
+                    "session_id": "ses_a",
+                }))
+                .unwrap(),
+        );
+        drain();
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "snapshot",
+                    "epoch": 1,
+                    "sequence": 2,
+                    "session_id": "ses_b",
+                }))
+                .unwrap(),
+        );
+        drain();
+
+        ingest("state=working:app=opencode:msg=MiBzZXNzaW9ucyB3b3JraW5n");
+        ingest("id=ses_a:app=opencode:state=working");
+        ingest("id=ses_b:app=opencode:state=working");
+        // Root goes idle (unfocused) -> optimistic unread written to SQLite.
+        ingest("state=idle:app=opencode");
+        ingest("state=clear:id=ses_a");
+        ingest("state=clear:id=ses_b");
+        assert!(crate::repo::session_attention::any_unread(
+            &core.db.get().unwrap(),
+            std::slice::from_ref(&id),
+        )
+        .unwrap());
+
+        // Both rows settle in SQLite and are read in the SAME watcher poll.
+        let end_ms = crate::session::clock::state_now().wall_millis + 50;
+        conn.execute(
+            "UPDATE session_v2 SET time_idle = ?1, idle_outcome = ?2 WHERE id = 'ses_a'",
+            rusqlite::params![end_ms, outcome_a],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE session_v2 SET time_idle = ?1, idle_outcome = ?2 WHERE id = 'ses_b'",
+            rusqlite::params![end_ms + 1, outcome_b],
+        )
+        .unwrap();
+        drain();
+
+        let snap = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+        assert_eq!(
+            snap.observation.outcome,
+            Some(TurnOutcome::Failed),
+            "order=({outcome_a}, {outcome_b}) must settle Failed"
+        );
+        assert!(snap.failed_since.is_some());
+        assert_eq!(
+            snap.unread_since, None,
+            "order=({outcome_a}, {outcome_b}): fresh status snapshot must not restore false durable unread"
+        );
+        assert!(
+            !crate::repo::session_attention::any_unread(
+                &core.db.get().unwrap(),
+                std::slice::from_ref(&id),
+            )
+            .unwrap(),
+            "order=({outcome_a}, {outcome_b}): SQLite session_attention must have no durable unread"
+        );
+
+        route.retire();
+        core.sessions.kill(&id).unwrap();
+    }
+}
+
+#[test]
+fn opencode_ignores_delayed_superseded_turn1_after_turn2_idle_and_foreign_db_change_on_idle_tui() {
+    use crate::session::state::agent::{AgentEvent as A, ProgramOutcomePolicy};
+
+    let dir = tempfile::tempdir().unwrap();
+    let core = crate::test_support::test_core_with_runtime(fake_runtime());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    let mut agent_role = role("opencode", &[]);
+    agent_role.runtime = "opencode".into();
+    agent_role.command = "fake".into();
+    insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+    let spawned = core
+        .sessions
+        .spawn_direct(
+            &agent_role,
+            None,
+            None,
+            None,
+            None,
+            Some(dir.path().to_str().unwrap()),
+            None,
+            None,
+            dir.path(),
+            Arc::clone(&core.db),
+            Arc::clone(&events),
+            None,
+        )
+        .unwrap();
+    let id = spawned.id;
+    let terminal = core
+        .sessions
+        .create_terminal(&id, 80, 24, &core.db, &events)
+        .unwrap();
+    core.sessions
+        .session_state(&id)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .terminal = Some(terminal);
+
+    let ingest = |seq: &str| {
+        core.sessions.ingest_output_chunk(
+            &id,
+            None,
+            format!("\x1b]7501;{seq}\x1b\\").as_bytes(),
+            events.as_ref(),
+        );
+    };
+
+    // 1. TUI has only ever shown root idle: a foreign DB failure on a visited session must be ignored.
+    ingest("state=idle:app=opencode");
+    let now_ms = crate::session::clock::state_now().wall_millis;
+    core.sessions.publish_agent_event(
+        &id,
+        A::ProgramSessionOutcome {
+            outcome: TurnOutcome::Failed,
+            policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+            session_id: "ses_visited".into(),
+            ended_at_ms: now_ms + 10,
+            superseded: false,
+        },
+        events.as_ref(),
+    );
+    let idle_snap = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+    assert_eq!(idle_snap.observation.outcome, None);
+    assert_eq!(idle_snap.failed_since, None);
+
+    // 2. Turn 1 in ses_a finishes, Turn 2 in ses_a runs and finishes cleanly (working -> idle),
+    // then delayed Turn 1 failure arrives with superseded=true: Turn 2 keeps Completed + durable unread.
+    ingest("state=working:app=opencode");
+    ingest("id=ses_a:app=opencode:state=working");
+    ingest("state=idle:app=opencode");
+    ingest("state=clear:id=ses_a");
+
+    ingest("state=working:app=opencode");
+    ingest("id=ses_a:app=opencode:state=working");
+    ingest("state=idle:app=opencode");
+    ingest("state=clear:id=ses_a");
+
+    let turn2_unread = core.sessions.agent_status(&id).unread_since;
+    assert!(turn2_unread.is_some());
+    core.sessions.publish_agent_event(
+        &id,
+        A::ProgramSessionOutcome {
+            outcome: TurnOutcome::Failed,
+            policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+            session_id: "ses_a".into(),
+            ended_at_ms: now_ms,
+            superseded: true,
+        },
+        events.as_ref(),
+    );
+    let snap = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+    assert_eq!(snap.observation.outcome, Some(TurnOutcome::Completed));
+    assert_eq!(snap.failed_since, None);
+    assert!(snap.unread_since.is_some());
+    assert!(crate::repo::session_attention::any_unread(
+        &core.db.get().unwrap(),
+        std::slice::from_ref(&id),
+    )
+    .unwrap());
+
+    core.sessions.kill(&id).unwrap();
+}
+
+#[test]
+fn grok_unreadable_transcript_path_releases_no_osc_first_turn_while_holding_live_osc_waits() {
+    use crate::session::hook_queue::TestHookRoute;
+
+    for with_osc_wait in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let missing_path = dir.path().join("does-not-exist/updates.jsonl");
+        let core = crate::test_support::test_core_with_runtime(fake_runtime());
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        let mut agent_role = role("grok", &[]);
+        agent_role.runtime = "grok".into();
+        agent_role.command = "fake".into();
+        insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &agent_role,
+                None,
+                None,
+                None,
+                None,
+                Some(dir.path().to_str().unwrap()),
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+                Some("first turn".into()),
+            )
+            .unwrap();
+        let id = spawned.id;
+        let terminal = core
+            .sessions
+            .create_terminal(&id, 80, 24, &core.db, &events)
+            .unwrap();
+        core.sessions
+            .session_state(&id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal);
+        let stop = core
+            .sessions
+            .session_state(&id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .handle
+            .as_ref()
+            .unwrap()
+            .stop
+            .clone();
+        let now = Instant::now();
+        core.sessions.note_forwarder_transition(
+            &id,
+            SessionActivityState::Idle,
+            StatusSource::Forwarder,
+        );
+        core.sessions.startup_output(&id, &stop, b"ready", now);
+
+        let (route, receiver) = TestHookRoute::new(Runtime::Grok, "unreadable".into());
+        let mut watcher =
+            crate::runtimes::grok::status::Watcher::new(receiver, &SpawnSpec::default());
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "SessionStart",
+                    "sessionId": uuid::Uuid::new_v4().to_string(),
+                    "transcriptPath": missing_path,
+                }))
+                .unwrap(),
+        );
+        watcher
+            .drain_events(
+                0,
+                &mut |ev| core.sessions.publish_agent_event(&id, ev, events.as_ref()),
+                &mut |_| {},
+            )
+            .unwrap();
+        route.retire();
+
+        if with_osc_wait {
+            core.sessions.ingest_output_chunk(
+                &id,
+                None,
+                b"\x1b]7501;state=working:app=grok\x1b\\\x1b]7501;state=blocked:app=grok:kind=permission\x1b\\",
+                events.as_ref(),
+            );
+        }
+        core.sessions
+            .release_settled_startup(&id, &stop, now + Duration::from_secs(60));
+        if with_osc_wait {
+            assert_eq!(
+                core.sessions.report_readiness(&id),
+                router::DeliveryReadiness::Starting
+            );
+            assert!(core.sessions.agent_status(&id).observation.needs_you());
+        } else {
+            assert_eq!(
+                core.sessions.report_readiness(&id),
+                router::DeliveryReadiness::Ready { idle: true }
+            );
+        }
+        core.sessions.kill(&id).unwrap();
+    }
+}
+
+#[test]
+fn opencode_viewed_idle_completion_and_db_leading_pty_reconcile_without_false_unread_or_foreign_bleed(
+) {
+    use crate::session::hook_queue::TestHookRoute;
+
+    // 1. working -> idle -> Viewed -> matching DB Failed / Interrupted updates the displayed
+    // outcome while keeping unread cleared in BOTH memory and SQLite.
+    for (db_outcome, expected) in [
+        ("failed", TurnOutcome::Failed),
+        ("interrupted", TurnOutcome::Interrupted),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("opencode/opencode.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_v2(
+                id TEXT PRIMARY KEY,
+                time_created INTEGER NOT NULL,
+                time_busy INTEGER,
+                time_idle INTEGER,
+                idle_outcome TEXT
+            );",
+        )
+        .unwrap();
+
+        let core = crate::test_support::test_core_with_runtime(fake_runtime());
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        let mut agent_role = role("opencode", &[]);
+        agent_role.runtime = "opencode".into();
+        agent_role.command = "fake".into();
+        insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &agent_role,
+                None,
+                None,
+                None,
+                None,
+                Some(dir.path().to_str().unwrap()),
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+                None,
+            )
+            .unwrap();
+        let id = spawned.id;
+        let terminal = core
+            .sessions
+            .create_terminal(&id, 80, 24, &core.db, &events)
+            .unwrap();
+        core.sessions
+            .session_state(&id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal);
+
+        let launched_ms = crate::session::clock::state_now().wall_millis - 5_000;
+        let (route, receiver) = TestHookRoute::new(Runtime::OpenCode, "viewed".into());
+        let mut watcher = crate::runtimes::opencode::status::Watcher::with_db(
+            receiver,
+            None,
+            Some(db_path.clone()),
+            launched_ms,
+        );
+        let ingest = |seq: &str| {
+            core.sessions.ingest_output_chunk(
+                &id,
+                None,
+                format!("\x1b]7501;{seq}\x1b\\").as_bytes(),
+                events.as_ref(),
+            );
+        };
+        let mut drain = || {
+            watcher
+                .drain_events(
+                    0,
+                    &mut |ev| core.sessions.publish_agent_event(&id, ev, events.as_ref()),
+                    &mut |_| {},
+                )
+                .unwrap();
+        };
+
+        ingest("state=idle:app=opencode");
+        conn.execute(
+            "INSERT INTO session_v2(id, time_created, time_busy) VALUES ('ses_view', ?1, ?1)",
+            [launched_ms + 10],
+        )
+        .unwrap();
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "snapshot",
+                    "epoch": 1,
+                    "sequence": 1,
+                    "session_id": "ses_view",
+                }))
+                .unwrap(),
+        );
+        drain();
+
+        ingest("state=working:app=opencode");
+        ingest("id=ses_view:app=opencode:state=working");
+        ingest("state=idle:app=opencode");
+        ingest("state=clear:id=ses_view");
+        assert!(crate::repo::session_attention::any_unread(
+            &core.db.get().unwrap(),
+            std::slice::from_ref(&id),
+        )
+        .unwrap());
+
+        // User views the chat before opencode.db writes the outcome.
+        crate::ops::node::mark_direct_sessions_viewed(&core, std::slice::from_ref(&id)).unwrap();
+        assert_eq!(core.sessions.agent_status(&id).unread_since, None);
+        assert!(!crate::repo::session_attention::any_unread(
+            &core.db.get().unwrap(),
+            std::slice::from_ref(&id),
+        )
+        .unwrap());
+
+        let end_ms = crate::session::clock::state_now().wall_millis + 50;
+        conn.execute(
+            "UPDATE session_v2 SET time_idle = ?1, idle_outcome = ?2 WHERE id = 'ses_view'",
+            rusqlite::params![end_ms, db_outcome],
+        )
+        .unwrap();
+        drain();
+
+        let snap = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+        assert_eq!(
+            snap.observation.outcome,
+            Some(expected),
+            "viewed turn must still reconcile late DB {db_outcome}"
+        );
+        assert_eq!(snap.failed_since.is_some(), expected == TurnOutcome::Failed);
+        assert_eq!(snap.unread_since, None);
+        assert!(!crate::repo::session_attention::any_unread(
+            &core.db.get().unwrap(),
+            std::slice::from_ref(&id),
+        )
+        .unwrap());
+
+        route.retire();
+        core.sessions.kill(&id).unwrap();
+    }
+
+    // 2. DB outcome polled ahead of PTY working/child/idle stays plain Idle until the matching
+    // turn arrives, then settles Failed with no unread; foreign session failures never bleed
+    // into another session's turn, and explicit completion stays protected.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("opencode/opencode.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_v2(
+                id TEXT PRIMARY KEY,
+                time_created INTEGER NOT NULL,
+                time_busy INTEGER,
+                time_idle INTEGER,
+                idle_outcome TEXT
+            );",
+        )
+        .unwrap();
+
+        let core = crate::test_support::test_core_with_runtime(fake_runtime());
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        let mut agent_role = role("opencode", &[]);
+        agent_role.runtime = "opencode".into();
+        agent_role.command = "fake".into();
+        insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &agent_role,
+                None,
+                None,
+                None,
+                None,
+                Some(dir.path().to_str().unwrap()),
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+                None,
+            )
+            .unwrap();
+        let id = spawned.id;
+        let terminal = core
+            .sessions
+            .create_terminal(&id, 80, 24, &core.db, &events)
+            .unwrap();
+        core.sessions
+            .session_state(&id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal);
+
+        let launched_ms = crate::session::clock::state_now().wall_millis - 5_000;
+        let (route, receiver) = TestHookRoute::new(Runtime::OpenCode, "lead".into());
+        let mut watcher = crate::runtimes::opencode::status::Watcher::with_db(
+            receiver,
+            None,
+            Some(db_path.clone()),
+            launched_ms,
+        );
+        let ingest = |seq: &str| {
+            core.sessions.ingest_output_chunk(
+                &id,
+                None,
+                format!("\x1b]7501;{seq}\x1b\\").as_bytes(),
+                events.as_ref(),
+            );
+        };
+        let mut drain = || {
+            watcher
+                .drain_events(
+                    0,
+                    &mut |ev| core.sessions.publish_agent_event(&id, ev, events.as_ref()),
+                    &mut |_| {},
+                )
+                .unwrap();
+        };
+
+        ingest("state=idle:app=opencode");
+        let now_ms = crate::session::clock::state_now().wall_millis;
+        conn.execute(
+            "INSERT INTO session_v2(id, time_created, time_busy, time_idle, idle_outcome)
+             VALUES ('ses_lead', ?1, ?1, ?2, 'failed')",
+            rusqlite::params![now_ms, now_ms + 10],
+        )
+        .unwrap();
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "snapshot",
+                    "epoch": 1,
+                    "sequence": 1,
+                    "session_id": "ses_lead",
+                }))
+                .unwrap(),
+        );
+        drain();
+
+        // DB record arrived while TUI is still at startup root idle -> remains plain Idle.
+        let before_pty = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+        assert_eq!(before_pty.observation.outcome, None);
+        assert_eq!(before_pty.failed_since, None);
+
+        // Matching PTY turn arrives -> reconciles with buffered DB failure, no unread written.
+        ingest("state=working:app=opencode");
+        ingest("id=ses_lead:app=opencode:state=working");
+        ingest("state=idle:app=opencode");
+        ingest("state=clear:id=ses_lead");
+        let after_pty = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+        assert_eq!(after_pty.observation.outcome, Some(TurnOutcome::Failed));
+        assert!(after_pty.failed_since.is_some());
+        assert_eq!(after_pty.unread_since, None);
+        assert!(!crate::repo::session_attention::any_unread(
+            &core.db.get().unwrap(),
+            std::slice::from_ref(&id),
+        )
+        .unwrap());
+
+        // Foreign session failure buffered while idle must NOT poison a turn on ses_clean,
+        // and explicit ProgramSessionFinished keeps Completed protected.
+        let t2_ms = crate::session::clock::state_now().wall_millis + 100;
+        conn.execute(
+            "INSERT INTO session_v2(id, time_created, time_busy, time_idle, idle_outcome)
+             VALUES ('ses_foreign', ?1, ?1, ?2, 'failed')",
+            rusqlite::params![t2_ms, t2_ms + 10],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_v2(id, time_created, time_busy)
+             VALUES ('ses_clean', ?1, ?1)",
+            [t2_ms + 20],
+        )
+        .unwrap();
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "snapshot",
+                    "epoch": 1,
+                    "sequence": 2,
+                    "session_id": "ses_foreign",
+                }))
+                .unwrap(),
+        );
+        drain();
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "snapshot",
+                    "epoch": 1,
+                    "sequence": 3,
+                    "session_id": "ses_clean",
+                }))
+                .unwrap(),
+        );
+        drain();
+        ingest("state=working:app=opencode");
+        ingest("id=ses_clean:app=opencode:state=working");
+        ingest("state=idle:app=opencode");
+        ingest("state=clear:id=ses_clean");
+        let clean = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+        assert_eq!(clean.observation.outcome, Some(TurnOutcome::Completed));
+        assert!(clean.unread_since.is_some());
+
+        // Explicit success confirms ses_clean; a later idle-only DB failure leaves Completed intact.
+        let clean_end_ms = crate::session::clock::state_now().wall_millis.max(t2_ms) + 50;
+        conn.execute(
+            "UPDATE session_v2 SET time_idle = ?1, idle_outcome = 'succeeded' WHERE id = 'ses_clean'",
+            [clean_end_ms],
+        )
+        .unwrap();
+        drain();
+        conn.execute(
+            "UPDATE session_v2 SET time_idle = ?1, idle_outcome = 'failed' WHERE id = 'ses_clean'",
+            [clean_end_ms + 30],
+        )
+        .unwrap();
+        drain();
+        let protected = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+        assert_eq!(protected.observation.outcome, Some(TurnOutcome::Completed));
+        assert!(protected.unread_since.is_some());
+
+        route.retire();
+        core.sessions.kill(&id).unwrap();
+    }
+}
+
+#[test]
+fn opencode_cancel_confirmation_and_between_root_and_child_db_outcomes_attribute_to_right_turn() {
+    use crate::session::hook_queue::TestHookRoute;
+
+    // 1. Ctrl+C settles Interrupted, DB confirms interrupted, and the following successful turn
+    // on the same session still settles Completed with an unread badge before its own DB
+    // succeeded record is polled.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("opencode/opencode.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_v2(
+                id TEXT PRIMARY KEY,
+                time_created INTEGER NOT NULL,
+                time_busy INTEGER,
+                time_idle INTEGER,
+                idle_outcome TEXT
+            );",
+        )
+        .unwrap();
+
+        let core = crate::test_support::test_core_with_runtime(fake_runtime());
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        let mut agent_role = role("opencode", &[]);
+        agent_role.runtime = "opencode".into();
+        agent_role.command = "fake".into();
+        insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &agent_role,
+                None,
+                None,
+                None,
+                None,
+                Some(dir.path().to_str().unwrap()),
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+                None,
+            )
+            .unwrap();
+        let id = spawned.id;
+        let terminal = core
+            .sessions
+            .create_terminal(&id, 80, 24, &core.db, &events)
+            .unwrap();
+        core.sessions
+            .session_state(&id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal);
+
+        let launched_ms = crate::session::clock::state_now().wall_millis - 5_000;
+        let (route, receiver) = TestHookRoute::new(Runtime::OpenCode, "cancel-next".into());
+        let mut watcher = crate::runtimes::opencode::status::Watcher::with_db(
+            receiver,
+            None,
+            Some(db_path.clone()),
+            launched_ms,
+        );
+        let ingest = |seq: &str| {
+            core.sessions.ingest_output_chunk(
+                &id,
+                None,
+                format!("\x1b]7501;{seq}\x1b\\").as_bytes(),
+                events.as_ref(),
+            );
+        };
+        let mut drain = || {
+            watcher
+                .drain_events(
+                    0,
+                    &mut |ev| core.sessions.publish_agent_event(&id, ev, events.as_ref()),
+                    &mut |_| {},
+                )
+                .unwrap();
+        };
+
+        ingest("state=idle:app=opencode");
+        conn.execute(
+            "INSERT INTO session_v2(id, time_created, time_busy) VALUES ('ses_c', ?1, ?1)",
+            [launched_ms + 10],
+        )
+        .unwrap();
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "snapshot",
+                    "epoch": 1,
+                    "sequence": 1,
+                    "session_id": "ses_c",
+                }))
+                .unwrap(),
+        );
+        drain();
+
+        // Turn 1: cancelled via Ctrl+C, then DB confirms interrupted after root idle.
+        ingest("state=working:app=opencode");
+        ingest("id=ses_c:app=opencode:state=working");
+        core.sessions
+            .inject_direct_stdin(&id, b"\x03", events.as_ref())
+            .unwrap();
+        ingest("state=idle:app=opencode");
+        ingest("state=clear:id=ses_c");
+        assert_eq!(
+            core.sessions.agent_status(&id).observation.outcome,
+            Some(TurnOutcome::Interrupted)
+        );
+        let cancel_db_ms = crate::session::clock::state_now().wall_millis + 25;
+        conn.execute(
+            "UPDATE session_v2 SET time_idle = ?1, idle_outcome = 'interrupted' WHERE id = 'ses_c'",
+            [cancel_db_ms],
+        )
+        .unwrap();
+        drain();
+
+        // Turn 2: succeeds cleanly BEFORE its DB succeeded row is polled -> Completed + badge.
+        ingest("state=working:app=opencode");
+        ingest("id=ses_c:app=opencode:state=working");
+        ingest("state=idle:app=opencode");
+        ingest("state=clear:id=ses_c");
+        let snap = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+        assert_eq!(snap.observation.outcome, Some(TurnOutcome::Completed));
+        assert!(snap.unread_since.is_some());
+        assert!(crate::repo::session_attention::any_unread(
+            &core.db.get().unwrap(),
+            std::slice::from_ref(&id),
+        )
+        .unwrap());
+
+        route.retire();
+        core.sessions.kill(&id).unwrap();
+    }
+
+    // 2. DB failure polled strictly BETWEEN root working and child id=ses_b:state=working:
+    // foreign ses_a must not poison ses_b (Completed + badge), while matching ses_b settles
+    // Failed with no badge.
+    for (failing_session, expected_outcome, expect_unread) in [
+        ("ses_a", TurnOutcome::Completed, true),
+        ("ses_b", TurnOutcome::Failed, false),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("opencode/opencode.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_v2(
+                id TEXT PRIMARY KEY,
+                time_created INTEGER NOT NULL,
+                time_busy INTEGER,
+                time_idle INTEGER,
+                idle_outcome TEXT
+            );",
+        )
+        .unwrap();
+
+        let core = crate::test_support::test_core_with_runtime(fake_runtime());
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        let mut agent_role = role("opencode", &[]);
+        agent_role.runtime = "opencode".into();
+        agent_role.command = "fake".into();
+        insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &agent_role,
+                None,
+                None,
+                None,
+                None,
+                Some(dir.path().to_str().unwrap()),
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+                None,
+            )
+            .unwrap();
+        let id = spawned.id;
+        let terminal = core
+            .sessions
+            .create_terminal(&id, 80, 24, &core.db, &events)
+            .unwrap();
+        core.sessions
+            .session_state(&id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal);
+
+        let launched_ms = crate::session::clock::state_now().wall_millis - 5_000;
+        let (route, receiver) = TestHookRoute::new(Runtime::OpenCode, "between".into());
+        let mut watcher = crate::runtimes::opencode::status::Watcher::with_db(
+            receiver,
+            None,
+            Some(db_path.clone()),
+            launched_ms,
+        );
+        let ingest = |seq: &str| {
+            core.sessions.ingest_output_chunk(
+                &id,
+                None,
+                format!("\x1b]7501;{seq}\x1b\\").as_bytes(),
+                events.as_ref(),
+            );
+        };
+        let mut drain = || {
+            watcher
+                .drain_events(
+                    0,
+                    &mut |ev| core.sessions.publish_agent_event(&id, ev, events.as_ref()),
+                    &mut |_| {},
+                )
+                .unwrap();
+        };
+
+        ingest("state=idle:app=opencode");
+        conn.execute(
+            "INSERT INTO session_v2(id, time_created, time_busy) VALUES ('ses_a', ?1, ?1)",
+            [launched_ms + 10],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_v2(id, time_created, time_busy) VALUES ('ses_b', ?1, ?1)",
+            [launched_ms + 20],
+        )
+        .unwrap();
+        // Visit busy ses_a, then switch to ses_b so both rows are active in the watcher.
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "snapshot",
+                    "epoch": 1,
+                    "sequence": 1,
+                    "session_id": "ses_a",
+                }))
+                .unwrap(),
+        );
+        drain();
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "snapshot",
+                    "epoch": 1,
+                    "sequence": 2,
+                    "session_id": "ses_b",
+                }))
+                .unwrap(),
+        );
+        drain();
+
+        // Root working arrives FIRST, BEFORE child id=ses_b:state=working.
+        ingest("state=working:app=opencode");
+        let fail_ms = crate::session::clock::state_now().wall_millis + 10;
+        conn.execute(
+            "UPDATE session_v2 SET time_idle = ?1, idle_outcome = 'failed' WHERE id = ?2",
+            rusqlite::params![fail_ms, failing_session],
+        )
+        .unwrap();
+        drain();
+
+        // Now child id=ses_b identifies the active participant, then root goes idle.
+        ingest("id=ses_b:app=opencode:state=working");
+        ingest("state=idle:app=opencode");
+        ingest("state=clear:id=ses_b");
+
+        let snap = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+        assert_eq!(
+            snap.observation.outcome,
+            Some(expected_outcome),
+            "failing_session={failing_session}"
+        );
+        assert_eq!(
+            snap.unread_since.is_some(),
+            expect_unread,
+            "failing_session={failing_session}"
+        );
+        assert_eq!(
+            crate::repo::session_attention::any_unread(
+                &core.db.get().unwrap(),
+                std::slice::from_ref(&id),
+            )
+            .unwrap(),
+            expect_unread,
+            "failing_session={failing_session}"
+        );
+
+        route.retire();
+        core.sessions.kill(&id).unwrap();
+    }
+
+    // 3. Turn 1 succeeds on ses_a (with its DB succeeded poll preceding root idle) and leaves
+    // durable unread U1 standing; Turn 2 root working arrives, non-superseded DB Failed for
+    // ses_a lands BEFORE child ses_a working, then child ses_a working + root idle:
+    // Turn 1's exact unread timestamp U1 remains in memory and SQLite, Turn 2 settles Failed,
+    // and no second completion overwrites U1.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("opencode/opencode.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_v2(
+                id TEXT PRIMARY KEY,
+                time_created INTEGER NOT NULL,
+                time_busy INTEGER,
+                time_idle INTEGER,
+                idle_outcome TEXT
+            );",
+        )
+        .unwrap();
+
+        let core = crate::test_support::test_core_with_runtime(fake_runtime());
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        let mut agent_role = role("opencode", &[]);
+        agent_role.runtime = "opencode".into();
+        agent_role.command = "fake".into();
+        insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &agent_role,
+                None,
+                None,
+                None,
+                None,
+                Some(dir.path().to_str().unwrap()),
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+                None,
+            )
+            .unwrap();
+        let id = spawned.id;
+        let terminal = core
+            .sessions
+            .create_terminal(&id, 80, 24, &core.db, &events)
+            .unwrap();
+        core.sessions
+            .session_state(&id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal);
+
+        let launched_ms = crate::session::clock::state_now().wall_millis - 5_000;
+        let (route, receiver) = TestHookRoute::new(Runtime::OpenCode, "turn2-between".into());
+        let mut watcher = crate::runtimes::opencode::status::Watcher::with_db(
+            receiver,
+            None,
+            Some(db_path.clone()),
+            launched_ms,
+        );
+        let ingest = |seq: &str| {
+            core.sessions.ingest_output_chunk(
+                &id,
+                None,
+                format!("\x1b]7501;{seq}\x1b\\").as_bytes(),
+                events.as_ref(),
+            );
+        };
+        let mut drain = || {
+            watcher
+                .drain_events(
+                    0,
+                    &mut |ev| core.sessions.publish_agent_event(&id, ev, events.as_ref()),
+                    &mut |_| {},
+                )
+                .unwrap();
+        };
+
+        ingest("state=idle:app=opencode");
+        conn.execute(
+            "INSERT INTO session_v2(id, time_created, time_busy) VALUES ('ses_a', ?1, ?1)",
+            [launched_ms + 10],
+        )
+        .unwrap();
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "snapshot",
+                    "epoch": 1,
+                    "sequence": 1,
+                    "session_id": "ses_a",
+                }))
+                .unwrap(),
+        );
+        drain();
+
+        // Turn 1: DB succeeded poll precedes root idle; root idle records durable unread U1.
+        ingest("state=working:app=opencode");
+        ingest("id=ses_a:app=opencode:state=working");
+        let t1_db_ms = crate::session::clock::state_now().wall_millis;
+        conn.execute(
+            "UPDATE session_v2 SET time_idle = ?1, idle_outcome = 'succeeded' WHERE id = 'ses_a'",
+            [t1_db_ms],
+        )
+        .unwrap();
+        drain();
+        ingest("state=idle:app=opencode");
+        ingest("state=clear:id=ses_a");
+        let turn1_unread_mem = core.sessions.agent_status(&id).unread_since.unwrap();
+        let turn1_unread_db =
+            crate::repo::session_attention::unread_since(&core.db.get().unwrap(), &id)
+                .unwrap()
+                .unwrap();
+
+        // Turn 2: root working arrives first; non-superseded DB Failed lands after Turn 2 start
+        // and BEFORE child id=ses_a:state=working arrives.
+        ingest("state=working:app=opencode");
+        let t2_fail_ms = crate::session::clock::state_now().wall_millis.max(t1_db_ms) + 20;
+        conn.execute(
+            "UPDATE session_v2 SET time_busy = ?1, time_idle = ?2, idle_outcome = 'failed' WHERE id = 'ses_a'",
+            rusqlite::params![t2_fail_ms - 5, t2_fail_ms],
+        )
+        .unwrap();
+        drain();
+
+        ingest("id=ses_a:app=opencode:state=working");
+        ingest("state=idle:app=opencode");
+        ingest("state=clear:id=ses_a");
+
+        let snap = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+        assert_eq!(snap.observation.outcome, Some(TurnOutcome::Failed));
+        assert!(snap.failed_since.is_some());
+        assert_eq!(
+            core.sessions.agent_status(&id).unread_since,
+            Some(turn1_unread_mem),
+            "Turn 1's in-memory unread timestamp must stay intact"
+        );
+        assert_eq!(
+            crate::repo::session_attention::unread_since(&core.db.get().unwrap(), &id).unwrap(),
+            Some(turn1_unread_db),
+            "Turn 1's durable SQLite unread timestamp must stay intact without a second completion"
+        );
+        assert_eq!(snap.unread_since, Some(turn1_unread_db));
+
+        route.retire();
+        core.sessions.kill(&id).unwrap();
+    }
+}
+
+#[test]
+fn opencode_permission_reject_via_session_message_overrides_completed_focused_and_unfocused() {
+    use crate::session::hook_queue::TestHookRoute;
+
+    for focused in [true, false] {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("opencode/opencode.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_v2(
+                id TEXT PRIMARY KEY,
+                time_created INTEGER NOT NULL,
+                time_busy INTEGER,
+                time_idle INTEGER,
+                idle_outcome TEXT
+            );
+            CREATE TABLE session_message(
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL,
+                data TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+
+        let core = crate::test_support::test_core_with_runtime(fake_runtime());
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        let mut agent_role = role("opencode", &[]);
+        agent_role.runtime = "opencode".into();
+        agent_role.command = "fake".into();
+        insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &agent_role,
+                None,
+                None,
+                None,
+                None,
+                Some(dir.path().to_str().unwrap()),
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+                None,
+            )
+            .unwrap();
+        let id = spawned.id;
+        let terminal = core
+            .sessions
+            .create_terminal(&id, 80, 24, &core.db, &events)
+            .unwrap();
+        core.sessions
+            .session_state(&id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal);
+
+        if focused {
+            core.windows.register("main");
+            core.windows.set_subjects(
+                "main",
+                vec![crate::windows::Subject::DirectChat(id.clone())],
+            );
+            core.windows.set_viewed_session("main", Some(&id));
+            core.windows.mark_focused("main");
+        }
+
+        let launched_ms = crate::session::clock::state_now().wall_millis - 5_000;
+        let (route, receiver) = TestHookRoute::new(Runtime::OpenCode, format!("reject-{focused}"));
+        let mut watcher = crate::runtimes::opencode::status::Watcher::with_db(
+            receiver,
+            None,
+            Some(db_path.clone()),
+            launched_ms,
+        );
+        let ingest = |seq: &str| {
+            core.sessions.ingest_output_chunk(
+                &id,
+                None,
+                format!("\x1b]7501;{seq}\x1b\\").as_bytes(),
+                events.as_ref(),
+            );
+        };
+        let mut drain = || {
+            watcher
+                .drain_events(
+                    0,
+                    &mut |ev| core.sessions.publish_agent_event(&id, ev, events.as_ref()),
+                    &mut |_| {},
+                )
+                .unwrap();
+        };
+
+        ingest("state=idle:app=opencode");
+        let t1_busy = crate::session::clock::state_now().wall_millis;
+        conn.execute(
+            "INSERT INTO session_v2(id, time_created, time_busy) VALUES ('ses_r', ?1, ?1)",
+            [t1_busy],
+        )
+        .unwrap();
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "snapshot",
+                    "epoch": 1,
+                    "sequence": 1,
+                    "session_id": "ses_r",
+                }))
+                .unwrap(),
+        );
+        drain();
+
+        // Turn 1: permission approval appears, user clicks Reject (no Escape cancel key).
+        // OpenCode 2.3.2 leaves session_v2.time_idle NULL and writes an assistant error row.
+        ingest("state=working:app=opencode");
+        ingest("id=ses_r:app=opencode:state=working");
+        ingest("state=blocked:app=opencode:kind=permission:msg=UnVuIGJhc2g");
+        ingest("state=idle:app=opencode");
+        ingest("state=clear:id=ses_r");
+
+        let t1_reject = crate::session::clock::state_now().wall_millis.max(t1_busy) + 10;
+        let reject_data = serde_json::json!({
+            "time": { "created": t1_busy, "completed": t1_reject },
+            "finish": "error",
+            "error": { "type": "aborted", "message": "Step interrupted" },
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO session_message(id, session_id, type, seq, time_created, time_updated, data)
+             VALUES ('msg_1', 'ses_r', 'assistant', 1, ?1, ?2, ?3)",
+            rusqlite::params![t1_busy, t1_reject, reject_data],
+        )
+        .unwrap();
+        drain();
+
+        let snap = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+        assert_eq!(
+            snap.observation.outcome,
+            Some(TurnOutcome::Interrupted),
+            "focused={focused}: OpenCode Reject must reconcile to Interrupted"
+        );
+        assert_eq!(
+            snap.unread_since, None,
+            "focused={focused}: OpenCode Reject must leave no unread badge"
+        );
+        assert!(
+            !crate::repo::session_attention::any_unread(
+                &core.db.get().unwrap(),
+                std::slice::from_ref(&id),
+            )
+            .unwrap(),
+            "focused={focused}: SQLite attention must roll back optimistic unread on Reject"
+        );
+
+        // Turn 2 on the same session succeeds cleanly and (when unfocused) records unread.
+        let t2_busy = crate::session::clock::state_now()
+            .wall_millis
+            .max(t1_reject)
+            + 20;
+        conn.execute(
+            "UPDATE session_v2 SET time_busy = ?1 WHERE id = 'ses_r'",
+            [t2_busy],
+        )
+        .unwrap();
+        ingest("state=working:app=opencode");
+        ingest("id=ses_r:app=opencode:state=working");
+        drain();
+
+        let t2_idle = crate::session::clock::state_now().wall_millis.max(t2_busy) + 10;
+        conn.execute(
+            "UPDATE session_v2 SET time_idle = ?1, idle_outcome = 'succeeded' WHERE id = 'ses_r'",
+            [t2_idle],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message(id, session_id, type, seq, time_created, time_updated, data)
+             VALUES ('msg_2', 'ses_r', 'idle', 2, ?1, ?1, '{\"outcome\":\"succeeded\"}')",
+            [t2_idle],
+        )
+        .unwrap();
+        ingest("state=idle:app=opencode");
+        ingest("state=clear:id=ses_r");
+        drain();
+
+        let snap = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+        assert_eq!(
+            snap.observation.outcome,
+            Some(TurnOutcome::Completed),
+            "focused={focused}: subsequent turn must complete normally"
+        );
+        assert_eq!(
+            snap.unread_since.is_some(),
+            !focused,
+            "focused={focused}: unfocused subsequent completion must surface unread"
+        );
+        assert_eq!(
+            crate::repo::session_attention::any_unread(
+                &core.db.get().unwrap(),
+                std::slice::from_ref(&id),
+            )
+            .unwrap(),
+            !focused,
+            "focused={focused}: SQLite unread must match focus state on subsequent completion"
+        );
+
+        drop(conn);
+        route.retire();
+        core.sessions.kill(&id).unwrap();
+    }
+}
+
+#[test]
+fn opencode_turn1_failed_and_turn2_rejected_same_poll_reverts_turn1_unread() {
+    use crate::session::hook_queue::TestHookRoute;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("opencode/opencode.db");
+    std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE session_v2(
+            id TEXT PRIMARY KEY,
+            time_created INTEGER NOT NULL,
+            time_busy INTEGER,
+            time_idle INTEGER,
+            idle_outcome TEXT
+        );
+        CREATE TABLE session_message(
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );",
+    )
+    .unwrap();
+
+    let core = crate::test_support::test_core_with_runtime(fake_runtime());
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    let mut agent_role = role("opencode", &[]);
+    agent_role.runtime = "opencode".into();
+    agent_role.command = "fake".into();
+    insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+    let spawned = core
+        .sessions
+        .spawn_direct(
+            &agent_role,
+            None,
+            None,
+            None,
+            None,
+            Some(dir.path().to_str().unwrap()),
+            None,
+            None,
+            dir.path(),
+            Arc::clone(&core.db),
+            Arc::clone(&events),
+            None,
+        )
+        .unwrap();
+    let id = spawned.id;
+    let terminal = core
+        .sessions
+        .create_terminal(&id, 80, 24, &core.db, &events)
+        .unwrap();
+    core.sessions
+        .session_state(&id)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .terminal = Some(terminal);
+
+    let launched_ms = crate::session::clock::state_now().wall_millis - 5_000;
+    let (route, receiver) = TestHookRoute::new(Runtime::OpenCode, "both-same-poll".into());
+    let mut watcher = crate::runtimes::opencode::status::Watcher::with_db(
+        receiver,
+        None,
+        Some(db_path.clone()),
+        launched_ms,
+    );
+    let ingest = |seq: &str| {
+        core.sessions.ingest_output_chunk(
+            &id,
+            None,
+            format!("\x1b]7501;{seq}\x1b\\").as_bytes(),
+            events.as_ref(),
+        );
+    };
+    let mut drain = || {
+        watcher
+            .drain_events(
+                0,
+                &mut |ev| core.sessions.publish_agent_event(&id, ev, events.as_ref()),
+                &mut |_| {},
+            )
+            .unwrap();
+    };
+
+    ingest("state=idle:app=opencode");
+    let t1_busy = crate::session::clock::state_now().wall_millis;
+    conn.execute(
+        "INSERT INTO session_v2(id, time_created, time_busy) VALUES ('ses_r', ?1, ?1)",
+        [t1_busy],
+    )
+    .unwrap();
+    drop(
+        route
+            .admit(serde_json::json!({
+                "hook_event_name": "snapshot",
+                "epoch": 1,
+                "sequence": 1,
+                "session_id": "ses_r",
+            }))
+            .unwrap(),
+    );
+    drain();
+
+    // Turn 1 settles idle via OSC (recording optimistic unread) before opencode.db is polled.
+    ingest("state=working:app=opencode");
+    ingest("id=ses_r:app=opencode:state=working");
+    ingest("state=idle:app=opencode");
+    ingest("state=clear:id=ses_r");
+    assert!(
+        crate::repo::session_attention::any_unread(
+            &core.db.get().unwrap(),
+            std::slice::from_ref(&id),
+        )
+        .unwrap(),
+        "Turn 1 optimistic idle must record unread before DB reconciliation"
+    );
+    let t1_fail = crate::session::clock::state_now().wall_millis.max(t1_busy) + 10;
+
+    // Turn 2 starts and hits a permission Reject without advancing session_v2.time_idle
+    // BEFORE the watcher polls Turn 1's failure.
+    ingest("state=working:app=opencode");
+    ingest("id=ses_r:app=opencode:state=working");
+    ingest("state=blocked:app=opencode:kind=permission:msg=UnVuIGJhc2g");
+
+    let t2_busy = crate::session::clock::state_now().wall_millis.max(t1_fail) + 20;
+    let t2_reject = t2_busy + 10;
+    conn.execute(
+        "UPDATE session_v2 SET time_idle = ?1, idle_outcome = 'failed', time_busy = ?2 WHERE id = 'ses_r'",
+        rusqlite::params![t1_fail, t2_busy],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO session_message(id, session_id, type, seq, time_created, time_updated, data)
+         VALUES ('m_1', 'ses_r', 'idle', 1, ?1, ?1, '{\"outcome\":\"failed\"}')",
+        [t1_fail],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO session_message(id, session_id, type, seq, time_created, time_updated, data)
+         VALUES ('m_2', 'ses_r', 'assistant', 2, ?1, ?2, ?3)",
+        rusqlite::params![
+            t2_busy,
+            t2_reject,
+            serde_json::json!({
+                "time": { "created": t2_busy, "completed": t2_reject },
+                "finish": "error",
+                "error": { "type": "aborted", "message": "Step interrupted" },
+            })
+            .to_string(),
+        ],
+    )
+    .unwrap();
+
+    // Single poll sees BOTH Turn 1 Failed (rolling back Turn 1's optimistic unread) AND
+    // Turn 2 Interrupted (attaching to the active Turn 2).
+    drain();
+    ingest("state=idle:app=opencode");
+    ingest("state=clear:id=ses_r");
+    drain();
+
+    let snap = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+    assert_eq!(snap.observation.outcome, Some(TurnOutcome::Interrupted));
+    assert_eq!(
+        snap.unread_since, None,
+        "Turn 1's optimistic unread must be rolled back when Turn 1 Failed and Turn 2 Rejected arrive on the same poll"
+    );
+    assert!(
+        !crate::repo::session_attention::any_unread(
+            &core.db.get().unwrap(),
+            std::slice::from_ref(&id),
+        )
+        .unwrap(),
+        "SQLite attention must have no surviving false Turn 1 unread"
+    );
+
+    drop(conn);
+    route.retire();
+    core.sessions.kill(&id).unwrap();
+}
+
+#[test]
+fn grok_permission_reject_without_transcript_path_discovers_updates_jsonl_and_settles_interrupted()
+{
+    use crate::session::hook_queue::TestHookRoute;
+    use std::io::Write;
+
+    for (focused, transcript_before_idle) in [(true, false), (false, false), (false, true)] {
+        let dir = tempfile::tempdir().unwrap();
+        let grok_home = dir.path().join(".grok");
+        let core = crate::test_support::test_core_with_runtime(fake_runtime());
+        let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+        let mut agent_role = role("grok", &[]);
+        agent_role.runtime = "grok".into();
+        agent_role.command = "fake".into();
+        insert_role_row(&core.db.get().unwrap(), &agent_role);
+
+        let spawned = core
+            .sessions
+            .spawn_direct(
+                &agent_role,
+                None,
+                None,
+                None,
+                None,
+                Some(dir.path().to_str().unwrap()),
+                None,
+                None,
+                dir.path(),
+                Arc::clone(&core.db),
+                Arc::clone(&events),
+                None,
+            )
+            .unwrap();
+        let id = spawned.id;
+        let terminal = core
+            .sessions
+            .create_terminal(&id, 80, 24, &core.db, &events)
+            .unwrap();
+        core.sessions
+            .session_state(&id)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .terminal = Some(terminal);
+
+        if focused {
+            core.windows.register("main");
+            core.windows.set_subjects(
+                "main",
+                vec![crate::windows::Subject::DirectChat(id.clone())],
+            );
+            core.windows.set_viewed_session("main", Some(&id));
+            core.windows.mark_focused("main");
+        }
+
+        let grok_session_id = uuid::Uuid::new_v4().to_string();
+        let launched_ms = crate::session::clock::state_now().wall_millis - 5_000;
+        let (route, receiver) = TestHookRoute::new(
+            Runtime::Grok,
+            format!("grok-reject-{focused}-{transcript_before_idle}"),
+        );
+        let mut watcher = crate::runtimes::grok::status::Watcher::with_home(
+            receiver,
+            Some(grok_home.clone()),
+            launched_ms,
+        );
+        let ingest = |seq: &str| {
+            core.sessions.ingest_output_chunk(
+                &id,
+                None,
+                format!("\x1b]7501;{seq}\x1b\\").as_bytes(),
+                events.as_ref(),
+            );
+        };
+        let mut drain = || {
+            watcher
+                .drain_events(
+                    0,
+                    &mut |ev| core.sessions.publish_agent_event(&id, ev, events.as_ref()),
+                    &mut |_| {},
+                )
+                .unwrap();
+        };
+
+        // Grok 1.0.89 SessionStart omits transcriptPath and updates.jsonl is not yet created.
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "SessionStart",
+                    "sessionId": grok_session_id,
+                    "cwd": dir.path(),
+                }))
+                .unwrap(),
+        );
+        drain();
+        ingest("state=idle:app=grok");
+
+        // Turn 1: UserPromptSubmit omits transcriptPath; Grok creates updates.jsonl under
+        // <grok_home>/sessions/<encoded-cwd>/<session_id>/updates.jsonl.
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "UserPromptSubmit",
+                    "sessionId": grok_session_id,
+                    "promptId": "p_reject",
+                    "cwd": dir.path(),
+                    "prompt": "run bash",
+                }))
+                .unwrap(),
+        );
+        drain();
+
+        let canonical_cwd = dir
+            .path()
+            .canonicalize()
+            .unwrap_or_else(|_| dir.path().to_path_buf());
+        let encoded_cwd: String = canonical_cwd
+            .to_string_lossy()
+            .bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect();
+        let session_dir = grok_home
+            .join("sessions")
+            .join(&encoded_cwd)
+            .join(&grok_session_id);
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let updates_path = session_dir.join("updates.jsonl");
+        std::fs::write(&updates_path, "").unwrap();
+
+        ingest("state=working:app=grok:msg=VGhpbmtpbmc");
+        ingest("state=blocked:app=grok:kind=permission:msg=UnVuIENvbW1hbmQ");
+
+        // User presses '4' (No, reject) — NOT Ctrl+C or Escape.
+        core.sessions
+            .inject_direct_stdin(&id, b"4", events.as_ref())
+            .unwrap();
+        ingest("state=working:app=grok");
+
+        let now_ms = crate::session::clock::state_now().wall_millis;
+        let write_reject_record = || {
+            writeln!(
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&updates_path)
+                    .unwrap(),
+                "{}",
+                serde_json::json!({
+                    "timestamp": now_ms / 1_000,
+                    "timestamp_us": now_ms * 1_000,
+                    "method": "_x.ai/session/update",
+                    "params": {
+                        "sessionId": grok_session_id,
+                        "update": {
+                            "sessionUpdate": "turn_completed",
+                            "prompt_id": "p_reject",
+                            "stop_reason": "cancelled",
+                        },
+                        "_meta": {
+                            "agentTimestampMs": now_ms,
+                            "cancellationCategory": "PermissionRejected",
+                        }
+                    }
+                })
+            )
+            .unwrap();
+        };
+
+        if transcript_before_idle {
+            write_reject_record();
+            drain();
+            ingest("state=idle:app=grok");
+        } else {
+            ingest("state=idle:app=grok");
+            write_reject_record();
+            drain();
+        }
+
+        let snap = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+        assert_eq!(
+            snap.observation.outcome,
+            Some(TurnOutcome::Interrupted),
+            "focused={focused} transcript_before_idle={transcript_before_idle}: Grok Reject must settle Interrupted"
+        );
+        assert_eq!(snap.unread_since, None);
+        assert!(!crate::repo::session_attention::any_unread(
+            &core.db.get().unwrap(),
+            std::slice::from_ref(&id),
+        )
+        .unwrap());
+
+        // Turn 2 completes cleanly via OSC done and records unread when unfocused.
+        drop(
+            route
+                .admit(serde_json::json!({
+                    "hook_event_name": "UserPromptSubmit",
+                    "sessionId": grok_session_id,
+                    "promptId": "p_ok",
+                    "cwd": dir.path(),
+                }))
+                .unwrap(),
+        );
+        drain();
+        ingest("state=working:app=grok");
+        ingest("state=done:app=grok");
+
+        let snap = &crate::ops::session::session_status_snapshot(&core).unwrap()[&id];
+        assert_eq!(snap.observation.outcome, Some(TurnOutcome::Completed));
+        assert_eq!(snap.unread_since.is_some(), !focused);
+
+        route.retire();
+        core.sessions.kill(&id).unwrap();
+    }
 }

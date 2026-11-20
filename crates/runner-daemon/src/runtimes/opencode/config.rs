@@ -12,6 +12,7 @@ pub(super) fn effective_env(input: &BTreeMap<String, String>) -> BTreeMap<String
         "XDG_DATA_HOME",
         "OPENCODE_CONFIG_CONTENT",
         "OPENCODE_CLI_CONFIG_CONTENT",
+        "OPENCODE_DB",
     ] {
         if !env.contains_key(key) {
             if let Some(value) = var_os(key).and_then(|v| v.into_string().ok()) {
@@ -80,16 +81,8 @@ fn model_value(value: &Value) -> Option<String> {
         value["model"]["model"].as_str()?
     ))
 }
-pub(super) fn conversation_exists(key: &str, ctx: &ProbeContext<'_>) -> Option<bool> {
-    if !valid_key(key) {
-        return Some(false);
-    }
-    let env: BTreeMap<_, _> = ctx
-        .role_env
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    let env = effective_env(&env);
+pub(super) fn db_path(env: &BTreeMap<String, String>) -> Option<PathBuf> {
+    let env = effective_env(env);
     #[cfg(test)]
     let home = test_home();
     #[cfg(not(test))]
@@ -103,8 +96,32 @@ pub(super) fn conversation_exists(key: &str, ctx: &ProbeContext<'_>) -> Option<b
         .get("XDG_DATA_HOME")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .or_else(|| home.map(|home| home.join(".local/share")))?;
-    let path = data.join("opencode/opencode.db");
+        .or_else(|| home.map(|home| home.join(".local/share")))
+        .map(|data| data.join("opencode"));
+    if let Some(override_db) = env.get("OPENCODE_DB").filter(|v| !v.is_empty()) {
+        if override_db == ":memory:" {
+            return None;
+        }
+        let path = PathBuf::from(override_db);
+        return if path.is_absolute() {
+            Some(path)
+        } else {
+            data.map(|dir| dir.join(path))
+        };
+    }
+    data.map(|dir| dir.join("opencode.db"))
+}
+
+pub(super) fn conversation_exists(key: &str, ctx: &ProbeContext<'_>) -> Option<bool> {
+    if !valid_key(key) {
+        return Some(false);
+    }
+    let env: BTreeMap<_, _> = ctx
+        .role_env
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let path = db_path(&env)?;
     if !path.exists() {
         return Some(false);
     }

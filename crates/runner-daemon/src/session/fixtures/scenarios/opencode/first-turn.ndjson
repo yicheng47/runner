@@ -1,0 +1,12 @@
+{"runtime":"opencode","name":"first-turn","rules":[1,2,5,8],"bugs":[],"known_wrong":[],"pending_turn":false,"evidence":"OpenCode 2.1.0+ sends root app=opencode working -> idle (never done) plus per-session child id=ses_... records; completion is working -> idle and per-session children do not surface as background tasks."}
+{"ms":100,"event":"hook","report":{"hook_event_name":"snapshot","epoch":1,"sequence":1,"session_id":"ses_111111111111"}}
+{"ms":200,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\"}
+{"ms":2400,"event":"tick"}
+{"ms":2500,"event":"input","bytes":"sample"}
+{"ms":2600,"event":"input","bytes":"\r"}
+{"ms":2800,"event":"output","bytes":"\u001b]7501;state=working:app=opencode:title=U2FtcGxlIHR1cm4\u001b\\\u001b]7501;id=ses_111111111111:app=opencode:state=working:title=U2FtcGxlIHR1cm4\u001b\\sample reply"}
+{"ms":5000,"event":"tick"}
+{"ms":5100,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\\u001b]7501;state=clear:id=ses_111111111111\u001b\\"}
+{"ms":5200,"event":"completion"}
+{"ms":5300,"event":"record","record":{"id":"ses_111111111111","time_idle":5200,"idle_outcome":"succeeded"}}
+{"ms":5400,"event":"viewed"}
