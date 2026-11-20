@@ -74,7 +74,7 @@ runner mission archive <mission-id>
 
 Add `--note <text>`, or `--note-file <path>` (`-` reads stdin), when an answer needs a condition the choices don't carry. The member gets the choice and the note in one inbox message. A blank note is refused. The note goes to the member who asked: the app's mission feed shows only the choice.
 
-Inside a mission, members can use `runner msg post --to reviewer "Ready for review"` and `runner msg read` without supplying a mission ID. Outside a mission, writes need `--mission`. An outside caller without `--as` speaks as the person; do not use `--as` to impersonate another member.
+Inside a mission, members can use `runner msg post --to reviewer "Ready for review"` and `runner msg read` without supplying a mission ID. Inside a mission, `msg post`, `signal`, and `ask` apply only to the caller's own mission; passing `--mission` for another mission is refused. Outside a mission, writes need `--mission`. An outside caller without `--as` speaks as the person; do not use `--as` to impersonate another member.
 
 Runner pushes inbox notifications to every mission member. When waiting for a teammate and no independent work remains, finish your turn. Do not start a feed watcher, poll, or sleep-loop to wait for messages. Iterate with teammates across turns. Bounded diagnostic inspection, independent work and watching CI for an authorized PR remain valid.
 

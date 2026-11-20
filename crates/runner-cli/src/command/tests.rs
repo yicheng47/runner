@@ -275,6 +275,226 @@ fn role_change_flags_and_person_only_refusals() {
 }
 
 #[test]
+fn cross_mission_writes_are_refused_inside_a_mission() {
+    const OWN_ID: &str = "01M00000000000000000000000";
+    const OWN_PREFIX: &str = "01M000";
+    const OTHER_ID: &str = "01A00000000000000000000000";
+
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("events.ndjson");
+    std::fs::write(
+        dir.path().join("roster.json"),
+        r#"{"version":2,"crew_name":"Peer","crew_addendum":null,"slots":[{"id":"s1","role_id":"r1","position":0,"handle":"coder","lead":false}]}"#,
+    )
+    .unwrap();
+    let context = BusContext::Mission(MissionEnv {
+        crew_id: Some("c".into()),
+        mission_id: OWN_ID.into(),
+        handle: "coder".into(),
+        event_log: log.clone(),
+    });
+
+    let cross_cases: &[(&[&str], &str, &str)] = &[
+        (
+            &["runner", "msg", "post", "hello", "--mission", OTHER_ID],
+            "runner msg post",
+            "posting to another mission isn't allowed",
+        ),
+        (
+            &[
+                "runner",
+                "msg",
+                "post",
+                "hello",
+                "--mission",
+                "01A",
+                "--as",
+                "coder",
+            ],
+            "runner msg post",
+            "posting to another mission isn't allowed",
+        ),
+        (
+            &["runner", "signal", "ask_human", "--mission", OTHER_ID],
+            "runner signal",
+            "signaling another mission isn't allowed",
+        ),
+        (
+            &[
+                "runner",
+                "signal",
+                "ask_human",
+                "--mission",
+                "01A",
+                "--as",
+                "coder",
+            ],
+            "runner signal",
+            "signaling another mission isn't allowed",
+        ),
+        (
+            &["runner", "signal", "ask_lead", "--mission", OTHER_ID],
+            "runner signal",
+            "signaling another mission isn't allowed",
+        ),
+        (
+            &["runner", "ask", "Ship?", "--mission", OTHER_ID],
+            "runner ask",
+            "asking in another mission isn't allowed",
+        ),
+        (
+            &[
+                "runner",
+                "ask",
+                "Ship?",
+                "--mission",
+                "01A",
+                "--as",
+                "coder",
+            ],
+            "runner ask",
+            "asking in another mission isn't allowed",
+        ),
+        (
+            &[
+                "runner",
+                "ask",
+                "--human",
+                "Ship?",
+                "--choices",
+                "yes,no",
+                "--mission",
+                OTHER_ID,
+            ],
+            "runner ask",
+            "asking in another mission isn't allowed",
+        ),
+        (
+            &[
+                "runner",
+                "ask",
+                "--human",
+                "Ship?",
+                "--choices",
+                "yes,no",
+                "--mission",
+                "01A",
+                "--as",
+                "coder",
+            ],
+            "runner ask",
+            "asking in another mission isn't allowed",
+        ),
+    ];
+
+    for &(argv, command, action) in cross_cases {
+        let cli = Cli::try_parse_from(argv).unwrap();
+        assert_eq!(run_local(&cli, &context), None, "{argv:?}");
+        let with_title = validate_remote_with(&cli, &context, |id| {
+            assert_eq!(id, OWN_ID);
+            Some("3D优化".into())
+        })
+        .unwrap_err();
+        assert_eq!(with_title.code, 2, "{argv:?}");
+        assert_eq!(
+            with_title.message,
+            format!("{command}: you're in mission \"3D优化\"; {action} — ask the person"),
+            "{argv:?}"
+        );
+        for fallback_title in [None, Some("   ".to_owned())] {
+            let fallback = validate_remote_with(&cli, &context, |id| {
+                assert_eq!(id, OWN_ID);
+                fallback_title
+            })
+            .unwrap_err();
+            assert_eq!(fallback.code, 2, "{argv:?}");
+            assert_eq!(
+                fallback.message,
+                format!("{command}: you're in mission {OWN_ID}; {action} — ask the person"),
+                "{argv:?}"
+            );
+        }
+    }
+    assert!(
+        !log.exists(),
+        "refused cross-mission writes must not touch the event log"
+    );
+
+    for reference in [OWN_ID, OWN_PREFIX] {
+        for argv in [
+            vec!["runner", "msg", "post", "local", "--mission", reference],
+            vec!["runner", "signal", "mission_goal", "--mission", reference],
+            vec!["runner", "ask", "Ship?", "--mission", reference],
+            vec![
+                "runner",
+                "ask",
+                "--human",
+                "Ship?",
+                "--choices",
+                "yes,no",
+                "--mission",
+                reference,
+            ],
+        ] {
+            let cli = Cli::try_parse_from(&argv).unwrap();
+            assert_eq!(run_local(&cli, &context), Some(0), "{argv:?}");
+        }
+    }
+    let event_log = runner_core::event_log::EventLog::open(dir.path()).unwrap();
+    assert_eq!(event_log.read_from(0).unwrap().len(), 8);
+
+    for argv in [
+        &["runner", "msg", "post", "hello", "--mission", OTHER_ID][..],
+        &[
+            "runner",
+            "msg",
+            "post",
+            "hello",
+            "--mission",
+            OTHER_ID,
+            "--as",
+            "coder",
+        ],
+        &["runner", "signal", "ask_human", "--mission", OTHER_ID],
+        &[
+            "runner",
+            "signal",
+            "ask_human",
+            "--mission",
+            OTHER_ID,
+            "--as",
+            "coder",
+        ],
+        &[
+            "runner",
+            "ask",
+            "Ship?",
+            "--mission",
+            OTHER_ID,
+            "--as",
+            "coder",
+        ],
+        &[
+            "runner",
+            "ask",
+            "--human",
+            "Ship?",
+            "--choices",
+            "yes,no",
+            "--mission",
+            OTHER_ID,
+            "--as",
+            "coder",
+        ],
+    ] {
+        let cli = Cli::try_parse_from(argv).unwrap();
+        validate_remote(&cli, &BusContext::OffBus).unwrap_or_else(|error| {
+            panic!("off-bus {argv:?} should pass validation: {}", error.message);
+        });
+    }
+}
+
+#[test]
 fn answer_note_flags_parse_and_conflict() {
     let answer = ["runner", "mission", "answer", "m", "q", "yes"];
     let cli = Cli::try_parse_from(answer.into_iter().chain(["--note-file", "-"])).unwrap();

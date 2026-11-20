@@ -109,7 +109,8 @@ OUTPUT
   -q       print only result ids
 
 CONTEXT
-  Inside a mission, msg post/read, signal, and ask use the event log directly.
+  Inside a mission, msg post/read, signal, and ask apply only to the caller's own mission
+  and use the event log directly; --mission naming another mission is refused.
   msg read optionally queries the existing daemon for a read cursor; offline reads still work.
   Outside, mission-scoped writes require --mission; --as names a roster handle.
 
@@ -220,6 +221,8 @@ OUTSIDE RUNNER
 
 IDENTITY
   Inside a mission, mission commands carry the caller's own handle.
+  Inside a mission, msg post, signal, and ask apply only to your own mission; passing --mission
+  for another mission is refused — ask the person instead.
   Outside a mission, --as <handle> names a roster slot and is refused if that handle is not in the roster.
   Outside a mission with no --as, the caller is the person at the app.
   Do not use --as to speak as another agent's slot; it exists for a slot you hold.
@@ -1478,7 +1481,7 @@ Arguments:
 Options:
       --json               Print the tool result as exact JSON
       --to <TO>            Address a roster handle; repeat for several recipients
-      --mission <MISSION>  Mission ID or unique prefix; required outside a mission
+      --mission <MISSION>  Mission ID or unique prefix; required outside a mission; inside one, only the caller's own mission
   -q                       Print only result IDs
       --as <FROM>          Attribute the message to this roster handle
   -h, --help               Print help
@@ -1514,7 +1517,7 @@ Arguments:
 Options:
       --json               Print the tool result as exact JSON
       --payload <PAYLOAD>  JSON object carried by the signal
-      --mission <MISSION>  Mission ID or unique prefix; required outside a mission
+      --mission <MISSION>  Mission ID or unique prefix; required outside a mission; inside one, only the caller's own mission
   -q                       Print only result IDs
       --as <FROM>          Attribute the signal to this roster handle
   -h, --help               Print help
@@ -1535,7 +1538,7 @@ Options:
       --json               Print the tool result as exact JSON
       --choices <CHOICES>  Comma-separated choices for the person
   -q                       Print only result IDs
-      --mission <MISSION>  Mission ID or unique prefix; required outside a mission
+      --mission <MISSION>  Mission ID or unique prefix; required outside a mission; inside one, only the caller's own mission
       --as <FROM>          Attribute the question to this roster handle
   -h, --help               Print help
 ```
