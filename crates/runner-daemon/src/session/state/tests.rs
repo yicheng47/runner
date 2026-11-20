@@ -34,6 +34,7 @@ fn observed_draft_cap_uses_the_last_keystroke_and_composition_updates_refresh_it
         SessionEvent::Input {
             class: Some(LocalInputClass::SetPending),
             submitted: false,
+            cancel: false,
         },
         start,
     );
@@ -138,6 +139,7 @@ fn rejected_return_keeps_the_observed_drafts_keystroke_for_the_cap() {
         SessionEvent::Input {
             class: Some(LocalInputClass::ClearPending),
             submitted: true,
+            cancel: false,
         },
         start,
     );
@@ -216,6 +218,7 @@ fn recorded_drafts_keep_delivery_held_after_recent_input_expires() {
                         SessionEvent::Input {
                             class,
                             submitted: false,
+                            cancel: false,
                         },
                         Now {
                             monotonic: start.monotonic + Duration::from_millis(ms),
@@ -446,6 +449,7 @@ fn rule_5_typing_suppresses_echo_and_submit_uses_the_combined_draft_rule() {
         SessionEvent::Input {
             class: Some(LocalInputClass::SetPending),
             submitted: false,
+            cancel: false,
         },
         at,
     );
@@ -465,6 +469,7 @@ fn rule_5_typing_suppresses_echo_and_submit_uses_the_combined_draft_rule() {
         SessionEvent::Input {
             class: Some(LocalInputClass::ClearPending),
             submitted: true,
+            cancel: false,
         },
         at,
     );
@@ -549,6 +554,7 @@ fn native_draft_overrides_screen_and_clear_releases_once_without_status_change()
         SessionEvent::Input {
             class: Some(LocalInputClass::SetPending),
             submitted: false,
+            cancel: false,
         },
         at,
     );
@@ -594,6 +600,7 @@ fn native_submit_clears_only_the_draft_hold_and_preserves_the_working_turn() {
         SessionEvent::Input {
             class: Some(LocalInputClass::ClearPending),
             submitted: true,
+            cancel: false,
         },
         at,
     );
@@ -627,6 +634,7 @@ fn delayed_native_clear_preserves_recent_input_for_a_replacement_draft() {
             SessionEvent::Input {
                 class: Some(LocalInputClass::SetPending),
                 submitted: false,
+                cancel: false,
             },
             at(ms),
         );
@@ -843,6 +851,8 @@ fn codex_update(
     };
     Box::new(Update {
         current: (state != State::Clear).then(|| report.clone()),
+        root: (state != State::Clear).then(|| report.clone()),
+        active_children: Vec::new(),
         trigger: Some(report),
     })
 }
@@ -996,6 +1006,7 @@ fn codex_native_attention_is_independent_of_hooks_and_local_input() {
         SessionEvent::Input {
             class: Some(LocalInputClass::ClearPending),
             submitted: true,
+            cancel: false,
         },
         later,
     );
@@ -1051,6 +1062,7 @@ fn codex_native_attention_preserves_fallback_drafts_and_lifecycle_boundaries() {
             SessionEvent::Input {
                 class: Some(LocalInputClass::SetPending),
                 submitted: false,
+                cancel: false,
             },
             time,
         );
@@ -1235,6 +1247,15 @@ fn codex_overlay_filters_foreign_reports_and_retains_baseline_completion_without
             &mut model,
             Box::new(Update {
                 current: Some(foreign.clone()),
+                root: foreign.id.is_empty().then(|| foreign.clone()),
+                active_children: (!foreign.id.is_empty()
+                    && matches!(foreign.state, P::Working | P::Blocked))
+                .then(|| runner_terminal::program_status::ChildCount {
+                    app: foreign.app.clone(),
+                    active: 1,
+                })
+                .into_iter()
+                .collect(),
                 trigger: Some(foreign),
             }),
         );
@@ -1280,6 +1301,15 @@ fn codex_overlay_filters_foreign_reports_and_retains_baseline_completion_without
             &mut model,
             Box::new(Update {
                 current: Some(trigger.clone()),
+                root: trigger.id.is_empty().then(|| trigger.clone()),
+                active_children: (!trigger.id.is_empty()
+                    && matches!(trigger.state, P::Working | P::Blocked))
+                .then(|| runner_terminal::program_status::ChildCount {
+                    app: trigger.app.clone(),
+                    active: 1,
+                })
+                .into_iter()
+                .collect(),
                 trigger: Some(trigger),
             }),
         );
@@ -1292,7 +1322,12 @@ fn codex_overlay_filters_foreign_reports_and_retains_baseline_completion_without
     let released = send(
         &mut model,
         Box::new(Update {
-            current: Some(foreign_child),
+            current: Some(foreign_child.clone()),
+            root: None,
+            active_children: vec![runner_terminal::program_status::ChildCount {
+                app: foreign_child.app.clone(),
+                active: 1,
+            }],
             trigger: Some(report(P::Done, "", Some("codex"), None)),
         }),
     );
@@ -1331,6 +1366,8 @@ fn program(
             subseq: 0,
             update: Box::new(runner_terminal::program_status::Update {
                 current: report.clone(),
+                root: report.clone(),
+                active_children: Vec::new(),
                 trigger: report,
             }),
             live: true,
@@ -1402,6 +1439,8 @@ fn authoritative_program_status_arms_completion_on_work_and_disarms_on_interrupt
                 subseq: 0,
                 update: Box::new(Update {
                     current: report.clone(),
+                    root: report.clone(),
+                    active_children: Vec::new(),
                     trigger: report,
                 }),
                 live: true,
@@ -1543,6 +1582,8 @@ fn authoritative_program_status_arms_completion_on_work_and_disarms_on_interrupt
         };
         Box::new(Update {
             current: Some(report.clone()),
+            root: Some(report.clone()),
+            active_children: Vec::new(),
             trigger: Some(report),
         })
     };
@@ -1670,6 +1711,7 @@ fn submit(model: &mut SessionModel, at: Now) -> Effects {
         SessionEvent::Input {
             class: Some(LocalInputClass::ClearPending),
             submitted: true,
+            cancel: false,
         },
         at,
     )
@@ -1999,7 +2041,14 @@ fn a_failed_write_withdraws_only_what_its_input_still_holds() {
     let start = now();
     let typed = |model: &mut SessionModel, class, submitted, at| {
         let before = model.input_checkpoint();
-        model.apply(SessionEvent::Input { class, submitted }, at);
+        model.apply(
+            SessionEvent::Input {
+                class,
+                submitted,
+                cancel: false,
+            },
+            at,
+        );
         (before, model.input_checkpoint())
     };
 
@@ -2137,7 +2186,12 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
             SessionEvent::ProgramStatus {
                 seq,
                 subseq: 0,
-                update: Box::new(Update { current, trigger }),
+                update: Box::new(Update {
+                    current: current.clone(),
+                    root: current,
+                    active_children: Vec::new(),
+                    trigger,
+                }),
                 live: true,
             },
             at,
@@ -2155,6 +2209,7 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
             SessionEvent::Agent {
                 event: A::ProgramTurnConfirmed {
                     conversation_changed,
+                    prompt: None,
                 },
                 live: true,
             },
@@ -2247,6 +2302,7 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
                 SessionEvent::Agent {
                     event: A::ProgramTurnOutcome {
                         outcome: TurnOutcome::Interrupted,
+                        policy: agent::ProgramOutcomePolicy::Immediate,
                     },
                     live: true,
                 },
@@ -2257,6 +2313,7 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
                 SessionEvent::Agent {
                     event: A::ProgramTurnOutcome {
                         outcome: TurnOutcome::Interrupted,
+                        policy: agent::ProgramOutcomePolicy::Immediate,
                     },
                     live: true,
                 },
@@ -2298,6 +2355,7 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
                 SessionEvent::Agent {
                     event: A::ProgramTurnOutcome {
                         outcome: TurnOutcome::Failed,
+                        policy: agent::ProgramOutcomePolicy::Immediate,
                     },
                     live: true,
                 },
@@ -2308,6 +2366,7 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
                 SessionEvent::Agent {
                     event: A::ProgramTurnOutcome {
                         outcome: TurnOutcome::Failed,
+                        policy: agent::ProgramOutcomePolicy::Immediate,
                     },
                     live: true,
                 },
@@ -2369,6 +2428,7 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
             SessionEvent::Agent {
                 event: A::ProgramTurnOutcome {
                     outcome: TurnOutcome::Interrupted,
+                    policy: agent::ProgramOutcomePolicy::Immediate,
                 },
                 live: true,
             },
@@ -2462,6 +2522,7 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
         SessionEvent::Agent {
             event: A::ProgramTurnOutcome {
                 outcome: TurnOutcome::Interrupted,
+                policy: agent::ProgramOutcomePolicy::Immediate,
             },
             live: true,
         },
@@ -2550,6 +2611,8 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
                 subseq: 0,
                 update: Box::new(Update {
                     current: Some(work.clone()),
+                    root: Some(work.clone()),
+                    active_children: Vec::new(),
                     trigger: Some(work),
                 }),
                 live: true,
@@ -2562,6 +2625,14 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
                 subseq: 0,
                 update: Box::new(Update {
                     current: Some(foreign_child.clone()),
+                    root: Some(Report {
+                        state: P::Working,
+                        ..done.clone()
+                    }),
+                    active_children: vec![runner_terminal::program_status::ChildCount {
+                        app: foreign_child.app.clone(),
+                        active: 1,
+                    }],
                     trigger: Some(foreign_child.clone()),
                 }),
                 live: true,
@@ -2575,6 +2646,11 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
                 subseq: 0,
                 update: Box::new(Update {
                     current: Some(foreign_child.clone()),
+                    root: Some(done.clone()),
+                    active_children: vec![runner_terminal::program_status::ChildCount {
+                        app: foreign_child.app.clone(),
+                        active: 1,
+                    }],
                     trigger: Some(done),
                 }),
                 live: true,
@@ -2594,20 +2670,25 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
     );
     assert_eq!(agy.status().observation.outcome, None);
 
-    // 7. Non-Codex authoritative runtimes (Antigravity, hooks-off Claude Code and pi)
-    // dismiss OSC 7501 error on trailing idle to plain Idle (outcome == None), whereas
-    // Codex reconciles transcript/OSC errors and preserves Failed until new work.
-    for (runtime, app, status_hooks) in [
-        (crate::model::Runtime::Antigravity, "agy", true),
-        (crate::model::Runtime::ClaudeCode, "claude", false),
-        (crate::model::Runtime::Pi, "pi", false),
+    // 7. Antigravity dismisses OSC 7501 error on trailing idle to plain Idle (outcome == None),
+    // whereas Codex, Claude Code, and pi reconcile transcript/OSC errors and preserve Failed
+    // until new work.
+    for (runtime, app, expected_transcript_outcomes) in [
+        (crate::model::Runtime::Antigravity, "agy", false),
+        (crate::model::Runtime::Codex, "codex", true),
+        (crate::model::Runtime::ClaudeCode, "claude-code", true),
+        (crate::model::Runtime::Pi, "pi", true),
     ] {
         let semantics = crate::runtimes::adapter(runtime).status_semantics();
-        assert!(!semantics.program_status_transcript_outcomes, "{runtime:?}");
+        assert_eq!(
+            semantics.program_status_transcript_outcomes, expected_transcript_outcomes,
+            "{runtime:?}"
+        );
         let mut other = SessionModel::default();
-        other.set_program_status_authority(semantics.program_status_authoritative(status_hooks));
+        other.set_program_status_authority(semantics.program_status_authoritative(false));
         other.set_program_status_root_app(semantics.program_status_root_app);
         other.set_program_status_transcript_outcomes(semantics.program_status_transcript_outcomes);
+        other.set_program_status_cancel_interrupt(semantics.program_status_cancel_interrupt);
         for (seq, state) in [(1, P::Working), (2, P::Error), (3, P::Idle)] {
             let report = Report {
                 id: String::new(),
@@ -2624,6 +2705,8 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
                     subseq: 0,
                     update: Box::new(Update {
                         current: Some(report.clone()),
+                        root: Some(report.clone()),
+                        active_children: Vec::new(),
                         trigger: Some(report),
                     }),
                     live: true,
@@ -2638,10 +2721,14 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
         );
         assert_eq!(
             other.status().observation.outcome,
-            None,
-            "{runtime:?}: error -> idle must return plain Idle"
+            expected_transcript_outcomes.then_some(TurnOutcome::Failed),
+            "{runtime:?}: error -> idle outcome"
         );
-        assert_eq!(other.status().failed_since, None, "{runtime:?}");
+        assert_eq!(
+            other.status().failed_since.is_some(),
+            expected_transcript_outcomes,
+            "{runtime:?}"
+        );
     }
 }
 
@@ -2708,6 +2795,7 @@ fn codex_turn_confirmation_handles_every_interleaving_of_identity_and_osc7501() 
                         SessionEvent::Agent {
                             event: A::ProgramTurnConfirmed {
                                 conversation_changed: changed,
+                                prompt: None,
                             },
                             live: true,
                         },
@@ -2735,7 +2823,10 @@ fn codex_turn_confirmation_handles_every_interleaving_of_identity_and_osc7501() 
                 model
                     .apply(
                         SessionEvent::Agent {
-                            event: A::ProgramTurnOutcome { outcome },
+                            event: A::ProgramTurnOutcome {
+                                outcome,
+                                policy: agent::ProgramOutcomePolicy::Immediate,
+                            },
                             live: true,
                         },
                         at,
@@ -2767,6 +2858,8 @@ fn codex_turn_confirmation_handles_every_interleaving_of_identity_and_osc7501() 
                             subseq: 0,
                             update: Box::new(Update {
                                 current: Some(report.clone()),
+                                root: Some(report.clone()),
+                                active_children: Vec::new(),
                                 trigger: Some(report),
                             }),
                             live: true,
@@ -2869,6 +2962,7 @@ fn codex_turn_confirmation_handles_every_interleaving_of_identity_and_osc7501() 
                     SessionEvent::Agent {
                         event: A::ProgramTurnOutcome {
                             outcome: TurnOutcome::Interrupted,
+                            policy: agent::ProgramOutcomePolicy::Immediate,
                         },
                         live: true,
                     },
@@ -2916,6 +3010,8 @@ fn codex_turn_confirmation_handles_every_interleaving_of_identity_and_osc7501() 
                         subseq: 0,
                         update: Box::new(Update {
                             current: Some(idle.clone()),
+                            root: Some(idle.clone()),
+                            active_children: Vec::new(),
                             trigger: Some(idle),
                         }),
                         live: true,
@@ -3033,4 +3129,969 @@ fn codex_turn_confirmation_handles_every_interleaving_of_identity_and_osc7501() 
         Step::UserPrompt { changed: false },
         start
     ));
+}
+
+#[test]
+fn claude_child_records_only_add_background_task_detail_and_never_alter_root_status() {
+    use runner_terminal::program_status::{Report, State as P, Update};
+
+    let mut model = SessionModel::default();
+    let semantics = crate::runtimes::adapter(crate::model::Runtime::ClaudeCode).status_semantics();
+    model.set_program_status_authority(semantics.program_status_authority);
+    model.set_program_status_root_app(semantics.program_status_root_app);
+    model.set_program_status_transcript_outcomes(semantics.program_status_transcript_outcomes);
+    model.set_program_status_cancel_interrupt(semantics.program_status_cancel_interrupt);
+
+    let report = |id: &str, app: Option<&str>, state: P, kind: Option<&str>| Report {
+        id: id.into(),
+        state,
+        app: app.map(str::to_owned),
+        kind: kind.map(str::to_owned),
+        progress: None,
+        title: None,
+        message: None,
+    };
+    let start = now();
+    let mut seq = 0u64;
+    let mut apply = |model: &mut SessionModel,
+                     root: Option<Report>,
+                     children: Vec<Report>,
+                     trigger: Option<Report>| {
+        seq += 1;
+        let current = children
+            .iter()
+            .find(|r| r.state == P::Blocked)
+            .cloned()
+            .or_else(|| root.clone())
+            .or_else(|| children.first().cloned());
+        let mut active_children: Vec<runner_terminal::program_status::ChildCount> = Vec::new();
+        for child in &children {
+            if matches!(child.state, P::Working | P::Blocked) {
+                if let Some(entry) = active_children.iter_mut().find(|e| e.app == child.app) {
+                    entry.active += 1;
+                } else {
+                    active_children.push(runner_terminal::program_status::ChildCount {
+                        app: child.app.clone(),
+                        active: 1,
+                    });
+                }
+            }
+        }
+        model.apply(
+            SessionEvent::ProgramStatus {
+                seq,
+                subseq: 0,
+                update: Box::new(Update {
+                    current,
+                    root,
+                    active_children,
+                    trigger,
+                }),
+                live: true,
+            },
+            start,
+        )
+    };
+
+    // Start root turn.
+    let root_working = report("", Some("claude-code"), P::Working, None);
+    let started = apply(
+        &mut model,
+        Some(root_working.clone()),
+        vec![],
+        Some(root_working.clone()),
+    );
+    assert!(started.program_turn_started);
+    assert_eq!(model.status().observation.activity, Activity::Working);
+    assert_eq!(
+        model
+            .status()
+            .observation
+            .program_status
+            .as_ref()
+            .unwrap()
+            .background_tasks,
+        0
+    );
+
+    // Foreign child and foreign root reports are ignored completely.
+    let foreign_child = report("other-1", Some("other"), P::Blocked, Some("permission"));
+    let foreign = apply(
+        &mut model,
+        Some(root_working.clone()),
+        vec![foreign_child.clone()],
+        Some(foreign_child),
+    );
+    assert!(foreign.publication.is_none());
+    assert!(!model.status().observation.needs_you());
+    assert_eq!(
+        model
+            .status()
+            .observation
+            .program_status
+            .as_ref()
+            .unwrap()
+            .background_tasks,
+        0
+    );
+
+    // Claude child working + blocked records only increment background_tasks detail text;
+    // root stays Working with no WaitReason and completion still armed.
+    let bg1 = report("bg-1", Some("claude-code"), P::Working, None);
+    let bg2 = report("bg-2", Some("claude-code"), P::Blocked, Some("permission"));
+    let rev_before = model.revision();
+    let c1 = apply(
+        &mut model,
+        Some(root_working.clone()),
+        vec![bg1.clone()],
+        Some(bg1.clone()),
+    );
+    assert!(c1.publication.is_some());
+    assert!(!c1.program_turn_started);
+    assert_eq!(
+        model.revision(),
+        rev_before,
+        "child record must not bump activity_revision"
+    );
+    assert_eq!(model.status().observation.activity, Activity::Working);
+    assert!(!model.status().observation.needs_you());
+    assert_eq!(
+        model
+            .status()
+            .observation
+            .program_status
+            .as_ref()
+            .unwrap()
+            .background_tasks,
+        1
+    );
+
+    let c2 = apply(
+        &mut model,
+        Some(root_working.clone()),
+        vec![bg1.clone(), bg2.clone()],
+        Some(bg2.clone()),
+    );
+    assert!(c2.publication.is_some());
+    assert_eq!(model.revision(), rev_before);
+    assert_eq!(model.status().observation.activity, Activity::Working);
+    assert!(!model.status().observation.needs_you());
+    assert!(model.completion_armed());
+    assert_eq!(
+        model
+            .status()
+            .observation
+            .program_status
+            .as_ref()
+            .unwrap()
+            .background_tasks,
+        2
+    );
+
+    // Child error or done never turns root Failed/Completed or disarms completion.
+    let bg1_err = report("bg-1", Some("claude-code"), P::Error, None);
+    apply(
+        &mut model,
+        Some(root_working.clone()),
+        vec![bg1_err.clone(), bg2.clone()],
+        Some(bg1_err),
+    );
+    assert_eq!(model.status().observation.activity, Activity::Working);
+    assert_eq!(model.status().observation.outcome, None);
+    assert!(model.completion_armed());
+    assert_eq!(
+        model
+            .status()
+            .observation
+            .program_status
+            .as_ref()
+            .unwrap()
+            .background_tasks,
+        1
+    );
+
+    // Root done still marks Completed and consumes unread completion even with a child active.
+    let root_done = report("", Some("claude-code"), P::Done, None);
+    let done = apply(
+        &mut model,
+        Some(root_done.clone()),
+        vec![bg2.clone()],
+        Some(root_done.clone()),
+    );
+    assert_eq!(
+        done.publication,
+        Some((SessionActivityState::Idle, StatusSource::ProgramStatus))
+    );
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+    assert!(!model.status().observation.needs_you());
+    assert_eq!(
+        model
+            .status()
+            .observation
+            .program_status
+            .as_ref()
+            .unwrap()
+            .background_tasks,
+        1
+    );
+    assert!(
+        model
+            .apply(SessionEvent::TakeCompletion, start)
+            .completion_consumed
+    );
+
+    // Unscoped state=clear:id=bg-2 drops the last background task without erasing Completed.
+    let clear_bg2 = report("bg-2", None, P::Clear, None);
+    let cleared = apply(&mut model, Some(root_done.clone()), vec![], Some(clear_bg2));
+    assert!(cleared.publication.is_some());
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+    assert_eq!(
+        model
+            .status()
+            .observation
+            .program_status
+            .as_ref()
+            .unwrap()
+            .background_tasks,
+        0
+    );
+
+    // Mixed-record shell boundary 1: surviving Done root with cleared active children
+    // must reset background_tasks to 0 without erasing Completed.
+    apply(
+        &mut model,
+        Some(root_done.clone()),
+        vec![bg1.clone(), bg2.clone()],
+        Some(bg2.clone()),
+    );
+    assert_eq!(
+        model
+            .status()
+            .observation
+            .program_status
+            .as_ref()
+            .unwrap()
+            .background_tasks,
+        2
+    );
+    let boundary_done = apply(&mut model, Some(root_done), vec![], None);
+    assert!(boundary_done.publication.is_some());
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+    assert_eq!(
+        model
+            .status()
+            .observation
+            .program_status
+            .as_ref()
+            .unwrap()
+            .background_tasks,
+        0
+    );
+
+    // Mixed-record shell boundary 2: cleared Blocked root with a surviving terminal child
+    // (update.current is still Some(child)) must release the root wait.
+    let root_blocked = report("", Some("claude-code"), P::Blocked, Some("permission"));
+    let bg_done = report("bg-done", Some("claude-code"), P::Done, None);
+    apply(
+        &mut model,
+        Some(root_blocked.clone()),
+        vec![bg_done.clone()],
+        Some(root_blocked),
+    );
+    assert!(model.status().observation.needs_you());
+    let boundary_cleared = apply(&mut model, None, vec![bg_done], None);
+    assert!(boundary_cleared.publication.is_some());
+    assert!(!model.status().observation.needs_you());
+    assert!(model.status().observation.program_status.is_none());
+}
+
+#[test]
+fn claude_and_pi_cancel_key_converts_idle_and_pi_abort_error_into_interrupted_without_badge() {
+    use runner_terminal::program_status::{Report, State as P, Update};
+
+    let start = now();
+    for (runtime, app) in [
+        (crate::model::Runtime::ClaudeCode, "claude-code"),
+        (crate::model::Runtime::Pi, "pi"),
+    ] {
+        let semantics = crate::runtimes::adapter(runtime).status_semantics();
+        assert!(semantics.program_status_cancel_interrupt, "{runtime:?}");
+        let mut model = SessionModel::default();
+        model.set_program_status_authority(semantics.program_status_authority);
+        model.set_program_status_root_app(semantics.program_status_root_app);
+        model.set_program_status_transcript_outcomes(semantics.program_status_transcript_outcomes);
+        model.set_program_status_cancel_interrupt(semantics.program_status_cancel_interrupt);
+
+        let mut seq = 0u64;
+        let mut emit = |model: &mut SessionModel, state: P, msg: Option<&str>| {
+            seq += 1;
+            let report = Report {
+                id: String::new(),
+                state,
+                app: Some(app.into()),
+                kind: None,
+                progress: None,
+                title: None,
+                message: msg.map(str::to_owned),
+            };
+            model.apply(
+                SessionEvent::ProgramStatus {
+                    seq,
+                    subseq: 0,
+                    update: Box::new(Update {
+                        current: Some(report.clone()),
+                        root: Some(report.clone()),
+                        active_children: Vec::new(),
+                        trigger: Some(report),
+                    }),
+                    live: true,
+                },
+                start,
+            )
+        };
+
+        // 1. Esc mid-turn + OSC 7501 idle settles Interrupted with zero completion badge,
+        // even when no transcript abort line is emitted (e.g. pi mid-tool abort).
+        emit(&mut model, P::Working, None);
+        assert!(model.completion_armed());
+        model.apply(
+            SessionEvent::Input {
+                class: None,
+                submitted: false,
+                cancel: true,
+            },
+            start,
+        );
+        emit(&mut model, P::Idle, None);
+        assert_eq!(
+            model.status().observation.activity,
+            Activity::Idle,
+            "{runtime:?}"
+        );
+        assert_eq!(
+            model.status().observation.outcome,
+            Some(TurnOutcome::Interrupted),
+            "{runtime:?}"
+        );
+        assert!(!model.completion_armed(), "{runtime:?}");
+        assert_eq!(model.status().failed_since, None, "{runtime:?}");
+        assert!(
+            !model
+                .apply(SessionEvent::TakeCompletion, start)
+                .completion_consumed,
+            "{runtime:?}"
+        );
+
+        // 2. Failed write rolls back cancel_pending so a dropped Esc cannot misclassify a turn.
+        emit(&mut model, P::Working, None);
+        let before = model.input_checkpoint();
+        model.apply(
+            SessionEvent::Input {
+                class: None,
+                submitted: false,
+                cancel: true,
+            },
+            start,
+        );
+        let after = model.input_checkpoint();
+        model.apply(
+            SessionEvent::InputWriteFailed {
+                before: Box::new(before),
+                after: Box::new(after),
+            },
+            start,
+        );
+        emit(&mut model, P::Idle, None);
+        assert_eq!(
+            model.status().observation.outcome,
+            None,
+            "{runtime:?}: rolled-back Esc must not fabricate Interrupted"
+        );
+
+        // 3. pi bug #784: state=error("This operation was aborted") after Esc settles
+        // Interrupted in BOTH channel orders (OSC before transcript AND transcript before OSC)
+        // and survives trailing idle, while genuine errors still settle Failed.
+        for transcript_first in [false, true] {
+            emit(&mut model, P::Working, None);
+            model.apply(
+                SessionEvent::Input {
+                    class: None,
+                    submitted: false,
+                    cancel: true,
+                },
+                start,
+            );
+            let transcript_abort = SessionEvent::Agent {
+                event: agent::AgentEvent::ProgramTurnOutcome {
+                    outcome: TurnOutcome::Interrupted,
+                    policy: agent::ProgramOutcomePolicy::DeferWhileNativeActive,
+                },
+                live: true,
+            };
+            if transcript_first {
+                model.apply(transcript_abort, start);
+                assert_eq!(
+                    model.status().observation.activity,
+                    Activity::Working,
+                    "{runtime:?}: deferred transcript abort must keep active root until native boundary"
+                );
+                emit(&mut model, P::Error, Some("This operation was aborted"));
+            } else {
+                emit(&mut model, P::Error, Some("This operation was aborted"));
+                model.apply(transcript_abort, start);
+            }
+            assert_eq!(
+                model.status().observation.outcome,
+                Some(TurnOutcome::Interrupted),
+                "{runtime:?} transcript_first={transcript_first}: abort-shaped error must settle Interrupted"
+            );
+            assert_eq!(model.status().failed_since, None, "{runtime:?}");
+            assert!(
+                !model
+                    .apply(SessionEvent::TakeCompletion, start)
+                    .completion_consumed,
+                "{runtime:?} transcript_first={transcript_first}"
+            );
+            emit(&mut model, P::Idle, None);
+            assert_eq!(
+                model.status().observation.outcome,
+                Some(TurnOutcome::Interrupted),
+                "{runtime:?} transcript_first={transcript_first}: trailing idle preserves Interrupted"
+            );
+            assert_eq!(model.status().failed_since, None, "{runtime:?}");
+        }
+
+        // 3b. A genuine error after Esc + transcript abort (or an abort-shaped error while
+        // idle / on a fresh uncancelled turn) must still settle Failed.
+        emit(&mut model, P::Working, None);
+        model.apply(
+            SessionEvent::Input {
+                class: None,
+                submitted: false,
+                cancel: true,
+            },
+            start,
+        );
+        model.apply(
+            SessionEvent::Agent {
+                event: agent::AgentEvent::ProgramTurnOutcome {
+                    outcome: TurnOutcome::Interrupted,
+                    policy: agent::ProgramOutcomePolicy::DeferWhileNativeActive,
+                },
+                live: true,
+            },
+            start,
+        );
+        emit(&mut model, P::Error, Some("429 rate limited"));
+        assert_eq!(
+            model.status().observation.outcome,
+            Some(TurnOutcome::Failed),
+            "{runtime:?}: genuine non-abort error must settle Failed"
+        );
+        assert!(model.status().failed_since.is_some(), "{runtime:?}");
+        emit(&mut model, P::Idle, None);
+        assert_eq!(
+            model.status().observation.outcome,
+            Some(TurnOutcome::Failed),
+            "{runtime:?}: trailing idle preserves Failed"
+        );
+
+        // Uncancelled fresh turn hitting "This operation was aborted" settles Failed.
+        emit(&mut model, P::Working, None);
+        emit(&mut model, P::Error, Some("This operation was aborted"));
+        assert_eq!(
+            model.status().observation.outcome,
+            Some(TurnOutcome::Failed),
+            "{runtime:?}: uncancelled abort error without transcript abort must settle Failed"
+        );
+        assert!(model.status().failed_since.is_some(), "{runtime:?}");
+
+        // 4. Next turn clears prior outcome and records Completed on done.
+        emit(&mut model, P::Working, None);
+        assert_eq!(model.status().observation.outcome, None, "{runtime:?}");
+        assert_eq!(model.status().failed_since, None, "{runtime:?}");
+        emit(&mut model, P::Done, None);
+        assert_eq!(
+            model.status().observation.outcome,
+            Some(TurnOutcome::Completed),
+            "{runtime:?}"
+        );
+        assert!(
+            model
+                .apply(SessionEvent::TakeCompletion, start)
+                .completion_consumed
+        );
+    }
+}
+
+#[test]
+fn pi_retry_error_preserves_working_root_and_claude_auth_wait_stays_authoritative() {
+    use runner_terminal::program_status::{Report, State as P, Update};
+
+    let start = now();
+    let emit =
+        |model: &mut SessionModel, seq: &mut u64, app: &str, state: P, kind: Option<&str>| {
+            *seq += 1;
+            let report = Report {
+                id: String::new(),
+                state,
+                app: Some(app.into()),
+                kind: kind.map(str::to_owned),
+                progress: None,
+                title: None,
+                message: None,
+            };
+            model.apply(
+                SessionEvent::ProgramStatus {
+                    seq: *seq,
+                    subseq: 0,
+                    update: Box::new(Update {
+                        current: Some(report.clone()),
+                        root: Some(report.clone()),
+                        active_children: Vec::new(),
+                        trigger: Some(report),
+                    }),
+                    live: true,
+                },
+                start,
+            )
+        };
+
+    // 1. pi transient 429 retry persists stopReason="error" while native OSC 7501 stays
+    // Working and transitions straight to Done on retry success.
+    let mut pi = SessionModel::default();
+    let pi_sem = crate::runtimes::adapter(crate::model::Runtime::Pi).status_semantics();
+    pi.set_program_status_authority(pi_sem.program_status_authority);
+    pi.set_program_status_root_app(pi_sem.program_status_root_app);
+    pi.set_program_status_transcript_outcomes(pi_sem.program_status_transcript_outcomes);
+    pi.set_program_status_cancel_interrupt(pi_sem.program_status_cancel_interrupt);
+    let mut seq = 0;
+    emit(&mut pi, &mut seq, "pi", P::Working, None);
+    assert!(pi.completion_armed());
+    pi.apply(
+        SessionEvent::Agent {
+            event: agent::AgentEvent::ProgramTurnOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: agent::ProgramOutcomePolicy::NativeFallbackOnly,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert_eq!(pi.status().observation.activity, Activity::Working);
+    assert_eq!(pi.status().observation.outcome, None);
+    assert!(pi.completion_armed());
+    emit(&mut pi, &mut seq, "pi", P::Done, None);
+    assert_eq!(
+        pi.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+    assert!(
+        pi.apply(SessionEvent::TakeCompletion, start)
+            .completion_consumed
+    );
+    emit(&mut pi, &mut seq, "pi", P::Idle, None);
+    // Even a late transcript poll after Done -> Idle must not fabricate Failed.
+    pi.apply(
+        SessionEvent::Agent {
+            event: agent::AgentEvent::ProgramTurnOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: agent::ProgramOutcomePolicy::NativeFallbackOnly,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert_eq!(pi.status().observation.outcome, None);
+    assert_eq!(pi.status().failed_since, None);
+
+    // 2. Claude Code native blocked:auth stays authoritative when isApiErrorMessage arrives.
+    let mut claude = SessionModel::default();
+    let cc_sem = crate::runtimes::adapter(crate::model::Runtime::ClaudeCode).status_semantics();
+    claude.set_program_status_authority(cc_sem.program_status_authority);
+    claude.set_program_status_root_app(cc_sem.program_status_root_app);
+    claude.set_program_status_transcript_outcomes(cc_sem.program_status_transcript_outcomes);
+    claude.set_program_status_cancel_interrupt(cc_sem.program_status_cancel_interrupt);
+    let mut seq = 0;
+    emit(
+        &mut claude,
+        &mut seq,
+        "claude-code",
+        P::Blocked,
+        Some("auth"),
+    );
+    assert!(claude.status().observation.needs_you());
+    claude.apply(
+        SessionEvent::Agent {
+            event: agent::AgentEvent::ProgramTurnOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: agent::ProgramOutcomePolicy::NativeFallbackOnly,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert!(claude.status().observation.needs_you());
+    assert_eq!(claude.status().observation.outcome, None);
+
+    // 3. With OSC 7501 disabled (program_status == None), NativeFallbackOnly settles Failed.
+    let mut no_osc = SessionModel::default();
+    no_osc.set_program_status_authority(true);
+    no_osc.apply(
+        SessionEvent::Transition {
+            state: SessionActivityState::Busy,
+            source: StatusSource::Forwarder,
+            live: true,
+        },
+        start,
+    );
+    no_osc.apply(
+        SessionEvent::Agent {
+            event: agent::AgentEvent::ProgramTurnOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: agent::ProgramOutcomePolicy::NativeFallbackOnly,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert_eq!(no_osc.status().observation.activity, Activity::Idle);
+    assert_eq!(
+        no_osc.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+    assert!(no_osc.status().failed_since.is_some());
+    assert!(no_osc.status().observation.program_status.is_none());
+}
+
+#[test]
+fn pi_custom_prompt_wait_overlay_holds_deduplicates_clears_on_shutdown_and_keeps_osc_authority() {
+    use runner_terminal::program_status::{Report, State as P, Update};
+
+    let start = now();
+    let mut model = SessionModel::default();
+    let sem = crate::runtimes::adapter(crate::model::Runtime::Pi).status_semantics();
+    model.set_program_status_authority(sem.program_status_authority);
+    model.set_program_status_root_app(sem.program_status_root_app);
+    model.set_program_status_transcript_outcomes(sem.program_status_transcript_outcomes);
+    model.set_program_status_cancel_interrupt(sem.program_status_cancel_interrupt);
+
+    let seq = std::cell::Cell::new(0u64);
+    let emit = |model: &mut SessionModel, state: P, kind: Option<&str>| {
+        let next = seq.get() + 1;
+        seq.set(next);
+        let report = Report {
+            id: String::new(),
+            state,
+            app: Some("pi".into()),
+            kind: kind.map(str::to_owned),
+            progress: None,
+            title: None,
+            message: None,
+        };
+        model.apply(
+            SessionEvent::ProgramStatus {
+                seq: next,
+                subseq: 0,
+                update: Box::new(Update {
+                    current: Some(report.clone()),
+                    root: Some(report.clone()),
+                    active_children: Vec::new(),
+                    trigger: Some(report),
+                }),
+                live: true,
+            },
+            start,
+        )
+    };
+    let overlay = |model: &mut SessionModel, active: bool| {
+        model.apply(
+            SessionEvent::Agent {
+                event: agent::AgentEvent::ProgramWaitOverlay { active },
+                live: true,
+            },
+            start,
+        )
+    };
+
+    // 1. Unannotated custom prompt shows Needs you (Unknown) without arming hooks,
+    // preserves OSC Working/Done/Failed/Interrupted authority, and releases once on end.
+    emit(&mut model, P::Idle, None);
+    let opened = overlay(&mut model, true);
+    assert_eq!(
+        opened.publication,
+        Some((SessionActivityState::Busy, StatusSource::ProgramStatus))
+    );
+    assert!(!opened.input_cleared);
+    assert_eq!(model.status().observation.interactions.len(), 1);
+    assert_eq!(
+        model.status().observation.interactions[0].reason,
+        WaitReason::Unknown
+    );
+    assert_eq!(
+        model.status().observation.source,
+        ObservationSource::Baseline
+    );
+    assert!(!model.completion_armed());
+    // Idempotent duplicate start does not duplicate wait.
+    assert!(overlay(&mut model, true).publication.is_none());
+    assert_eq!(model.status().observation.interactions.len(), 1);
+
+    // OSC Working and Done retain authority while overlay is open and award completion once released.
+    emit(&mut model, P::Working, None);
+    assert_eq!(model.status().observation.activity, Activity::Working);
+    assert!(model.completion_armed());
+    assert_eq!(model.status().observation.interactions.len(), 1);
+    emit(&mut model, P::Done, None);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+    assert_eq!(model.status().observation.interactions.len(), 1);
+    let closed = overlay(&mut model, false);
+    assert!(closed.input_cleared);
+    assert_eq!(
+        closed.publication,
+        Some((SessionActivityState::Idle, StatusSource::ProgramStatus))
+    );
+    assert!(model.status().observation.interactions.is_empty());
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+    assert!(
+        model
+            .apply(SessionEvent::TakeCompletion, start)
+            .completion_consumed
+    );
+
+    // 2. OSC Failed and Interrupted retain authority across an open overlay.
+    emit(&mut model, P::Working, None);
+    overlay(&mut model, true);
+    emit(&mut model, P::Error, None);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+    assert!(model.status().failed_since.is_some());
+    assert_eq!(model.status().observation.interactions.len(), 1);
+    assert!(overlay(&mut model, false).input_cleared);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+    assert!(model.status().failed_since.is_some());
+
+    emit(&mut model, P::Working, None);
+    overlay(&mut model, true);
+    model.apply(
+        SessionEvent::Input {
+            class: None,
+            submitted: false,
+            cancel: true,
+        },
+        start,
+    );
+    emit(&mut model, P::Idle, None);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Interrupted)
+    );
+    assert_eq!(model.status().observation.interactions.len(), 1);
+    // session_shutdown / ProgramIdentityUnavailable also clears the overlay.
+    let shut = model.apply(
+        SessionEvent::Agent {
+            event: agent::AgentEvent::ProgramIdentityUnavailable,
+            live: true,
+        },
+        start,
+    );
+    assert!(shut.input_cleared);
+    assert!(model.status().observation.interactions.is_empty());
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Interrupted)
+    );
+
+    // 3. Annotated custom prompt (both OSC blocked + ui_prompt_start) deduplicates to a single
+    // wait and clears exactly once across all open/close orderings.
+    for osc_open_first in [true, false] {
+        for osc_close_first in [true, false] {
+            emit(&mut model, P::Working, None);
+            if osc_open_first {
+                emit(&mut model, P::Blocked, Some("question"));
+                assert_eq!(model.status().observation.interactions.len(), 1);
+                assert!(overlay(&mut model, true).publication.is_none());
+            } else {
+                assert!(overlay(&mut model, true).publication.is_some());
+                emit(&mut model, P::Blocked, Some("question"));
+            }
+            assert_eq!(
+                model.status().observation.interactions.len(),
+                1,
+                "osc_open_first={osc_open_first}: annotated custom must show one wait"
+            );
+            assert_eq!(
+                model.status().observation.interactions[0].reason,
+                WaitReason::Answer
+            );
+
+            let mut clears = 0usize;
+            if osc_close_first {
+                if emit(&mut model, P::Idle, None).input_cleared {
+                    clears += 1;
+                }
+                assert!(model.status().observation.needs_you());
+                assert_eq!(model.status().observation.interactions.len(), 1);
+                if overlay(&mut model, false).input_cleared {
+                    clears += 1;
+                }
+            } else {
+                if overlay(&mut model, false).input_cleared {
+                    clears += 1;
+                }
+                assert!(model.status().observation.needs_you());
+                assert_eq!(model.status().observation.interactions.len(), 1);
+                if emit(&mut model, P::Idle, None).input_cleared {
+                    clears += 1;
+                }
+            }
+            assert_eq!(
+                clears, 1,
+                "osc_open_first={osc_open_first} osc_close_first={osc_close_first}: must clear once"
+            );
+            assert!(!model.status().observation.needs_you());
+        }
+    }
+
+    // 4. Stacked dialog (confirm -> unannotated custom): confirm opens with OSC blocked +
+    // outer ui_prompt_start; unannotated custom drops OSC back to Working while both stay open.
+    // The outer overlay must retain Needs you (Unknown) until both close, clearing once.
+    emit(&mut model, P::Working, None);
+    let mut stack_clears = 0usize;
+    if emit(&mut model, P::Blocked, Some("permission")).input_cleared {
+        stack_clears += 1;
+    }
+    if overlay(&mut model, true).input_cleared {
+        stack_clears += 1;
+    }
+    assert_eq!(model.status().observation.interactions.len(), 1);
+    assert_eq!(
+        model.status().observation.interactions[0].reason,
+        WaitReason::Approval
+    );
+    // Unannotated custom opens on top -> native reporter publishes Working (no blocked).
+    if emit(&mut model, P::Working, None).input_cleared {
+        stack_clears += 1;
+    }
+    assert_eq!(
+        stack_clears, 0,
+        "opening stacked custom must not clear wait"
+    );
+    assert_eq!(model.status().observation.interactions.len(), 1);
+    assert_eq!(
+        model.status().observation.interactions[0].reason,
+        WaitReason::Unknown
+    );
+    // Unannotated custom closes -> confirm returns as native Blocked(permission).
+    if emit(&mut model, P::Blocked, Some("permission")).input_cleared {
+        stack_clears += 1;
+    }
+    assert_eq!(stack_clears, 0);
+    assert_eq!(model.status().observation.interactions.len(), 1);
+    assert_eq!(
+        model.status().observation.interactions[0].reason,
+        WaitReason::Approval
+    );
+    // Confirm closes -> native Working then outer ui_prompt_end.
+    if emit(&mut model, P::Working, None).input_cleared {
+        stack_clears += 1;
+    }
+    assert!(model.status().observation.needs_you());
+    if overlay(&mut model, false).input_cleared {
+        stack_clears += 1;
+    }
+    assert_eq!(stack_clears, 1, "stacked dialogs must clear exactly once");
+    assert!(!model.status().observation.needs_you());
+
+    // 5. OSC state=clear (e.g. pi terminal.stop on suspend) clears native evidence only and
+    // preserves an open hook wait overlay in both native-present and hook-only sessions.
+    let clear_native = |model: &mut SessionModel, seq: &std::cell::Cell<u64>| {
+        let next = seq.get() + 1;
+        seq.set(next);
+        let report = Report {
+            id: String::new(),
+            state: P::Clear,
+            app: None,
+            kind: None,
+            progress: None,
+            title: None,
+            message: None,
+        };
+        model.apply(
+            SessionEvent::ProgramStatus {
+                seq: next,
+                subseq: 0,
+                update: Box::new(Update {
+                    current: None,
+                    root: None,
+                    active_children: Vec::new(),
+                    trigger: Some(report),
+                }),
+                live: true,
+            },
+            start,
+        )
+    };
+    emit(&mut model, P::Working, None);
+    overlay(&mut model, true);
+    assert!(model.status().observation.program_status.is_some());
+    let cleared = clear_native(&mut model, &seq);
+    assert!(!cleared.input_cleared);
+    assert!(model.status().observation.program_status.is_none());
+    assert!(
+        model.status().observation.needs_you(),
+        "OSC clear must preserve active hook wait across suspend/resume"
+    );
+    emit(&mut model, P::Idle, None);
+    assert!(model.status().observation.needs_you());
+    assert!(overlay(&mut model, false).input_cleared);
+    assert!(!model.status().observation.needs_you());
+
+    // Hook-only session (no prior native observation): OSC clear must not orphan the wait.
+    let mut hook_only = SessionModel::default();
+    hook_only.set_program_status_authority(sem.program_status_authority);
+    hook_only.set_program_status_root_app(sem.program_status_root_app);
+    let hseq = std::cell::Cell::new(0u64);
+    assert!(overlay(&mut hook_only, true).publication.is_some());
+    assert!(hook_only.status().observation.program_status.is_none());
+    assert!(hook_only.status().observation.needs_you());
+    clear_native(&mut hook_only, &hseq);
+    assert!(hook_only.status().observation.needs_you());
+    assert!(overlay(&mut hook_only, false).input_cleared);
+    assert!(!hook_only.status().observation.needs_you());
+
+    // 6. program_done fires ONLY on a fresh authoritative root Done (even while overlay is
+    // open) and NEVER on overlay open/close republications of an old Completed status.
+    emit(&mut model, P::Working, None);
+    overlay(&mut model, true);
+    let done_eff = emit(&mut model, P::Done, None);
+    assert!(
+        done_eff.program_done,
+        "fresh root Done during custom wait must still signal program_done"
+    );
+    let close_eff = overlay(&mut model, false);
+    assert!(
+        !close_eff.program_done,
+        "closing overlay over already-settled Completed must not signal program_done"
+    );
 }

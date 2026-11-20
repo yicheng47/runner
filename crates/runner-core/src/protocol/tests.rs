@@ -122,7 +122,10 @@ record!(AgentObservation {
     program_status,
     background
 });
-record!(ProgramStatusEvidence { message });
+record!(ProgramStatusEvidence {
+    message,
+    background_tasks
+});
 record!(StartupError {
     runtime,
     message,

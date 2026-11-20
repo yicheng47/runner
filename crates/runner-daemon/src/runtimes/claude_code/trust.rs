@@ -31,6 +31,40 @@ pub(super) fn seed_project_trust(cwd: &Path, config_dir: Option<&str>) -> Result
     seed_project_trust_at(cwd, &config_path, Some(&home))
 }
 
+pub(super) fn has_project_trust(cwd: &Path, config_dir: Option<&str>) -> bool {
+    #[cfg(test)]
+    let Some(home) = crate::runtimes::test_home() else {
+        return false;
+    };
+    #[cfg(not(test))]
+    let Some(home) = runner_core::app_paths::home_dir() else {
+        return false;
+    };
+    let config_path = config_path(cwd, &home, agent_config_dir(config_dir));
+    has_project_trust_at(cwd, &config_path)
+}
+
+fn has_project_trust_at(cwd: &Path, config_path: &Path) -> bool {
+    let Ok(root) = resolve_project_trust_root(cwd) else {
+        return false;
+    };
+    let key = project_key(&root);
+    let Ok(raw) = std::fs::read_to_string(config_path) else {
+        return false;
+    };
+    let Ok(document) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return false;
+    };
+    document
+        .get("projects")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|projects| projects.get(&key))
+        .and_then(serde_json::Value::as_object)
+        .and_then(|project| project.get(ACCEPTED))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+}
+
 fn config_path(cwd: &Path, home: &Path, config_dir: Option<OsString>) -> PathBuf {
     match config_dir {
         Some(dir) => cwd.join(dir).join(".claude.json"),

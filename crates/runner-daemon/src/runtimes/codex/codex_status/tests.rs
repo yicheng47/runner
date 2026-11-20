@@ -109,7 +109,8 @@ fn only_identity_hook_events_are_registered_and_removed_status_hooks_are_ignored
     assert!(matches!(
         events.as_slice(),
         [AgentEvent::ProgramTurnConfirmed {
-            conversation_changed: false
+            conversation_changed: false,
+            ..
         }]
     ));
     assert!(starts.is_empty());
@@ -320,17 +321,20 @@ fn route_and_parser_isolate_generations_caller_threads_subagents_and_retired_ses
                 compacted: false,
             },
             AgentEvent::ProgramTurnConfirmed {
-                conversation_changed: false
+                conversation_changed: false,
+                ..
             },
             AgentEvent::ProgramTurnConfirmed {
-                conversation_changed: false
+                conversation_changed: false,
+                ..
             },
             AgentEvent::ProgramSessionStarted {
                 conversation_changed: true,
                 compacted: false,
             },
             AgentEvent::ProgramTurnConfirmed {
-                conversation_changed: false
+                conversation_changed: false,
+                ..
             }
         ]
     ));
@@ -354,21 +358,24 @@ fn active_turn_steer_reuses_turn_id_while_finished_and_retired_turns_are_rejecte
     assert!(matches!(
         parser.hook(prompt("turn-1")),
         Some(AgentEvent::ProgramTurnConfirmed {
-            conversation_changed: false
+            conversation_changed: false,
+            ..
         })
     ));
     // A mid-turn steer reuses the active turn_id while turn_finished is false without retiring it.
     assert!(matches!(
         parser.hook(prompt("turn-1")),
         Some(AgentEvent::ProgramTurnConfirmed {
-            conversation_changed: false
+            conversation_changed: false,
+            ..
         })
     ));
     assert!(parser.reads_transcript());
     assert!(matches!(
         parser.record(&abort_record("turn-1", "interrupted")),
         Some(AgentEvent::ProgramTurnOutcome {
-            outcome: TurnOutcome::Interrupted
+            outcome: TurnOutcome::Interrupted,
+            ..
         })
     ));
     assert!(!parser.reads_transcript());
@@ -379,7 +386,8 @@ fn active_turn_steer_reuses_turn_id_while_finished_and_retired_turns_are_rejecte
     assert!(matches!(
         parser.hook(prompt("turn-2")),
         Some(AgentEvent::ProgramTurnConfirmed {
-            conversation_changed: false
+            conversation_changed: false,
+            ..
         })
     ));
     assert!(parser.reads_transcript());
@@ -450,7 +458,8 @@ fn transcript_reports_interrupted_and_api_error_for_matching_turn_only() {
     assert!(matches!(
         events.as_slice(),
         [AgentEvent::ProgramTurnConfirmed {
-            conversation_changed: false
+            conversation_changed: false,
+            ..
         }]
     ));
     assert!(watcher.inner.parser.reads_transcript());
@@ -480,6 +489,7 @@ fn transcript_reports_interrupted_and_api_error_for_matching_turn_only() {
         events.as_slice(),
         [AgentEvent::ProgramTurnOutcome {
             outcome: TurnOutcome::Interrupted,
+            ..
         }]
     ));
     assert!(!watcher.inner.parser.reads_transcript());
@@ -497,7 +507,8 @@ fn transcript_reports_interrupted_and_api_error_for_matching_turn_only() {
     assert!(matches!(
         watcher.drain().0.as_slice(),
         [AgentEvent::ProgramTurnConfirmed {
-            conversation_changed: false
+            conversation_changed: false,
+            ..
         }]
     ));
     writeln!(file, "{}", task_complete_record("turn-2", None)).unwrap();
@@ -521,7 +532,8 @@ fn transcript_reports_interrupted_and_api_error_for_matching_turn_only() {
     assert!(matches!(
         watcher.drain().0.as_slice(),
         [AgentEvent::ProgramTurnConfirmed {
-            conversation_changed: false
+            conversation_changed: false,
+            ..
         }]
     ));
     writeln!(
@@ -541,6 +553,7 @@ fn transcript_reports_interrupted_and_api_error_for_matching_turn_only() {
         watcher.drain().0.as_slice(),
         [AgentEvent::ProgramTurnOutcome {
             outcome: TurnOutcome::Failed,
+            ..
         }]
     ));
     assert!(!watcher.inner.parser.reads_transcript());
@@ -578,10 +591,12 @@ fn large_transcript_opens_from_tail_without_missing_current_turn_abort() {
         events.as_slice(),
         [
             AgentEvent::ProgramTurnConfirmed {
-                conversation_changed: false
+                conversation_changed: false,
+                ..
             },
             AgentEvent::ProgramTurnOutcome {
                 outcome: TurnOutcome::Interrupted,
+                ..
             },
         ]
     ));

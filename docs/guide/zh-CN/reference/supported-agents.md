@@ -20,14 +20,14 @@ Runner 将智能体分为两级支持。**一级支持**的智能体是 Claude C
 | 跳过权限确认 | Claude Code | 关闭 | 所有账号的聊天 |
 | 跳过权限确认 | Antigravity CLI | 关闭 | 聊天 |
 | 远程插件目录 | Codex | 开启 | 聊天、恢复、任务和分叉 |
-| 状态钩子 | Claude Code、pi、Copilot CLI、OpenCode v2；macOS/Linux 上的 Grok | 开启 | 聊天 |
+| 状态钩子 | Copilot CLI、OpenCode v2；macOS/Linux 上的 Grok | 开启 | 聊天 |
 | 自定义参数 | 所有智能体 | 空 | 聊天、角色、任务、恢复和分叉 |
 
 Bypass 让聊天无需权限确认即可运行；Codex 还会跳过沙盒。仅对信任的文件夹开启。Bypass 开关适用于所有 Codex、Claude Code 和 Antigravity CLI 聊天，包括使用角色的聊天。聊天启动、恢复和分叉都会去除角色已保存的权限参数；关闭 Bypass 时，由智能体自身配置决定审批行为。任务始终使用宽松权限与（受支持运行时的）状态钩子，不受聊天开关影响。
 
 关闭 **远程插件目录** 可跳过 Codex 每次启动时的目录下载，但目录中的插件也将不再加载。Runner 仅为该进程添加 `-c features.remote_plugin=false`，不修改 Codex 配置文件。
 
-关闭 **状态钩子** 后，Claude Code（2.1.295+）和 pi（1.1.0+）通过 OSC 7501 终端状态报告活动、等待、失败以及未读完成徽标；不支持 OSC 7501 的旧版本与其他智能体使用终端活动判断状态。仅依赖终端活动的智能体无法报告详细等待和结果。会话标识钩子仍然开启，确保恢复时打开同一段对话。Codex（0.164.0+）与 Antigravity CLI 原生使用 OSC 7501 终端状态而不挂载状态钩子（Codex 仅保留 `SessionStart` 和 `UserPromptSubmit` 会话标识钩子以及对话记录中的中断/错误信号；Antigravity 的会话标题回调独立运行），Cursor 只有会话标识钩子，TRAE 没有钩子，因此四者均无此开关。
+关闭 **状态钩子** 后，Copilot CLI、OpenCode v2 和 Grok 会改用终端活动判断状态，不再提供详细等待和结果报告，但会话标识钩子仍然开启，确保恢复时打开同一段对话。Codex（0.164.0+）、Claude Code（2.1.295+）、pi（1.1.0+）与 Antigravity CLI 在聊天和任务中均原生使用 OSC 7501 终端状态而不挂载状态钩子（Codex 和 Claude Code 仅保留 `SessionStart` 和 `UserPromptSubmit` 会话标识钩子以及对话记录中的中断/错误信号；pi 保留 `session_start`、`input`、编辑器草稿与窄 UI 提示等待叠加扩展处理以及对话记录中的中断/错误信号；Antigravity 的会话标题回调独立运行），Cursor 只有会话标识钩子，TRAE 没有钩子，因此这六个运行时均无此开关。
 
 **自定义参数** 会添加到该智能体从下次启动开始的每一次会话中，包括普通聊天、角色聊天、任务、恢复和分叉。Runner 自身的辅助命令（如版本和帮助探测、模型发现、用量读取和无头分叉步骤）不会带上这些参数。按 Enter 或离开输入框保存，按 Escape 恢复已保存的值，清空输入框则移除所有自定义参数。
 
@@ -61,9 +61,9 @@ Runner 在全平台都按 shell 词法拆分 **自定义参数**，且不展开 
 | 原生对话切换更新恢复标识 | 是 | 是 | 是 | 是 | 否 | macOS/Linux 集成 | macOS/Linux 集成 |
 | Windows | 是 | 是 | 未验证 | 未验证 | 是 | 未验证 | 未验证 |
 | 分叉聊天 | 是 | 是 | 否 | 是 | 否 | 否 | 是 |
-| 智能体钩子报告工作中/空闲 | OSC 7501（0.164.0+） | 是 | OSC 7501（1.5.8+） | 是 | 是 | 终端活动 | macOS/Linux 集成 |
+| 智能体钩子报告工作中/空闲 | OSC 7501（0.164.0+） | OSC 7501（2.1.295+） | OSC 7501（1.5.8+） | OSC 7501（1.1.0+） | 是 | 终端活动 | macOS/Linux 集成 |
 | OSC 7501 程序状态 | 0.164.0+ | 2.1.295+ | 1.5.8+ | 1.1.0+ | 未声称支持 | 未声称支持 | 未声称支持 |
-| 需要输入报告 | 通过 OSC 7501 报告审批、问题与认证（0.164.0+） | 审批与问题 | 通过 OSC 7501 报告审批、问题与认证（1.5.8+） | 仅扩展报告 | 审批与问题 | 否 | macOS/Linux 上的审批 |
+| 需要输入报告 | 通过 OSC 7501 报告审批、问题与认证（0.164.0+） | 通过 OSC 7501 报告审批、问题与认证（2.1.295+） | 通过 OSC 7501 报告审批、问题与认证（1.5.8+） | 通过 OSC 7501 报告审批、问题与认证（1.1.0+），另含自定义对话框等待叠加 | 审批与问题 | 否 | macOS/Linux 上的审批 |
 | 从 CLI 发现模型 | 是 | 是 | 是 | 是 | 否 | 是 | 是 |
 | 通过设置 → 智能体更新 | 是 | 是 | 否 | 是 | 是 | 否 | 否 |
 | 用量指示器 | 是 | 是 | 1.5.8+（macOS 已检查） | 否 | 否 | 否 | 否 |
@@ -72,9 +72,9 @@ Runner 在全平台都按 shell 词法拆分 **自定义参数**，且不展开 
 | 任务权限 | Bypass | Bypass | Bypass | 受信任工作区 | Bypass | Bypass | Bypass |
 | 终端渲染有 fixture 覆盖 | 是 | 是 | 是 | 否 | 否 | 否 | 是 |
 
-**终端程序状态** 使用 [OSC 7501](https://www.superlogical.com/rex/docs/build/program-status)。Antigravity CLI 1.5.8+、Claude Code 2.1.295+ 与 pi 1.1.0+ 通过探测检测支持；Codex 0.164.0+ 无条件报告。在终端标签页手动启动这些智能体，可通过已有侧边栏和标题栏指示器显示工作中、空闲与需要你。标题栏有空间时，阻塞消息显示在状态详情。Codex 与 Antigravity CLI 聊天与任务直接以 OSC 7501 作为会话状态来源，报告已完成回复、失败，以及审批、提问和认证等待；不发送 OSC 7501 的会话回退到终端活动。对于带钩子的受管理智能体聊天，实时钩子桥接保持状态权威，流报告不能替代更新的钩子状态；终端标签页中的被动状态本身也不会产生未读回复。在启动卡片中为 Claude Code 或 pi 聊天关闭 **状态钩子** 时，会话标识钩子仍保留，OSC 7501 会接管权威状态，提供工作中、等待、失败以及 `done` 时的未读完成徽标；不发送报告的智能体保持终端活动回退。
+**终端程序状态** 使用 [OSC 7501](https://www.superlogical.com/rex/docs/build/program-status)。Antigravity CLI 1.5.8+、Claude Code 2.1.295+ 与 pi 1.1.0+ 通过探测检测支持；Codex 0.164.0+ 无条件报告。在终端标签页手动启动这些智能体，可通过已有侧边栏和标题栏指示器显示工作中、空闲与需要你。标题栏有空间时，阻塞消息显示在状态详情。Codex、Claude Code、pi 与 Antigravity CLI 聊天与任务均直接以 OSC 7501 作为会话状态来源，报告已完成回复、失败，以及审批、提问和认证等待；不发送 OSC 7501 的会话（例如设置了 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` 或 `PI_PROGRAM_STATUS=0`）回退到终端活动。对于带钩子的受管理智能体聊天（Copilot CLI、OpenCode v2 与 Grok），实时钩子桥接保持状态权威，流报告不能替代更新的钩子状态；终端标签页中的被动状态本身也不会产生未读回复。
 
-**Codex 状态与输入关注** 通过共享的程序状态解析器为聊天和任务读取 Codex 的原生 OSC 7501 报告，不再安装 Codex 状态钩子。在 Codex CLI 0.164.0+（已验证至 0.170.0）中，`working` 覆盖常规轮次、工具调用与上下文压缩，`blocked` 携带 `kind=permission`（**需要审批（Approval needed）**）、`kind=question`（**需要回答（Answer needed）**）或 `kind=auth`（通用 **需要你处理（Needs you）**）并在等待打开期间暂停小队投递，`done` 在未聚焦时记录完成未读徽标，`error` 显示 **回复失败（Response failed）**，`idle` 结束当前轮次。Runner 仅保留 Codex 的 `SessionStart` 和 `UserPromptSubmit` 会话标识钩子（用于会话标识、对话记录路径与任务轮次启动确认），并从 Codex 对话记录读取 **已中断（Interrupted）**（`reason` 为 `interrupted` 的 `turn_aborted`）与 API 错误（带 `error` 的 `task_complete`）结果。若自定义 Codex 会话无可用原生报告，将回退到终端活动，不声称提供对话框投递保护。
+**Codex、Claude Code 与 pi 状态与输入关注** 通过共享的程序状态解析器为聊天和任务读取各智能体的原生 OSC 7501 根记录报告，不再安装状态钩子。`working` 覆盖常规轮次、工具调用与上下文压缩；`blocked` 携带 `kind=permission`（**需要审批（Approval needed）**）、`kind=question`（**需要回答（Answer needed）**）或 `kind=auth`/缺省（通用 **需要你处理（Needs you）**）并在等待打开期间暂停小队投递；`done` 在未聚焦时记录完成未读徽标；`error` 显示 **回复失败（Response failed）**；`idle` 结束当前轮次。对于 Claude Code，带 `id=` 的子记录（后台任务和子智能体）绝不改变工作中、已完成、未读徽标或小队投递，仅补充例如“2 个后台任务”的详情文本。对于 pi，Runner 的扩展还在 `ui_prompt_start`/`ui_prompt_end`（及 `session_shutdown`）上保留去重于 OSC 7501 `blocked` 之下的窄等待叠加层，使独立打开或叠加在其它提示之上的未标注 `ctx.ui.custom(factory)` 对话框仍显示 **需要你处理** 并暂停小队投递，而原生与已标注的对话框去重为单一等待，且 OSC 7501 仍掌握工作中、已完成、失败和已中断的状态权威。除此之外 Runner 仅保留会话标识与协调钩子（Codex 和 Claude Code 保留 `SessionStart` 与 `UserPromptSubmit`；pi 保留 `session_start`、`input` 与原生编辑器草稿跟踪），并结合对话记录与取消按键识别 **已中断（Interrupted）** 与 API 错误 **回复失败** 结果。若禁用了 OSC 7501（例如 Claude Code 设置 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` 或 pi 设置 `PI_PROGRAM_STATUS=0`），会话将回退到终端活动，除 pi 的自定义对话框等待叠加外不声称提供对话框投递保护。
 
 **Antigravity CLI** 会将 `agy models` 中带思考力度后缀的条目合并为单一基础模型（例如 `gemini-4-hydrogen` 或 `claude-opus-5-5`），并通过独立的 **思考强度（Effort）** 选择器列出该模型支持的级别（`low`、`medium`、`high`、`xhigh` 及支持时的 `max`）。由于 Runner 仅在指定 `--model` 时才会传递 `--effort`，当没有显式或继承的启动模型时会禁用 **思考强度**（聊天或小队插槽中留空 **模型（Model）** 覆盖项时仍可继承角色的 **模型**）；选择不支持思考力度的模型或输入旧版带力度后缀的模型 ID（例如 `gemini-4-hydrogen-xhigh` 或 `gpt-oss-120b-medium`）时，也会禁用 **思考强度** 并省略冲突的 `--effort` 参数。
 
@@ -96,7 +96,7 @@ Runner 在全平台都按 shell 词法拆分 **自定义参数**，且不展开 
 
 ## 最低版本与智能体更新
 
-Codex 需要 **0.164.0 或更新版本**以提供 OSC 7501 的 `done`、`error` 与 `kind` 报告并配合 Runner 的会话标识钩子。启动器只在旧版 Codex 的智能体行标记 **需要更新（Update needed）**；角色行不显示更新标签或操作。提示说明启动 Codex 或使用它的角色时，会先更新 Codex，窗格显示等待卡片；更新成功后聊天自动启动。恢复或分叉被拒绝时也提供同样的恢复方式。无法确定版本时，Runner 仍允许尝试启动。
+Codex 需要 **0.164.0 或更新版本**、Claude Code 需要 **2.1.295 或更新版本**、pi 需要 **1.1.0 或更新版本**以提供 OSC 7501 的 `done`、`error` 与 `kind` 报告并配合 Runner 的会话标识钩子。启动器只在过旧智能体的智能体行标记 **需要更新（Update needed）**；角色行不显示更新标签或操作。提示说明启动该智能体或使用它的角色时，会先更新对应 CLI，窗格显示等待卡片；更新成功后聊天自动启动。恢复或分叉被拒绝时也提供同样的恢复方式。无法确定版本时，Runner 仍允许尝试启动。
 
 OpenCode v2 需要 **2.0.0 或更新版本**才能使用 Runner 的 `--standalone` 服务、模型发现和会话历史。当 `PATH` 中仅检测到旧版 `opencode`（`0.15.x` 或 `1.x`）时，Runner 会在 **设置 → 智能体** 中将 **OpenCode v2** 保留在 **未安装（Not installed）** 列表，说明检测到的版本并从启动器的已安装智能体中隐藏。低于 2.0.0 的显式可执行文件覆盖会被拒绝；由于 OpenCode v2 没有由 Runner 托管的更新命令，被拒绝的启动或恢复会提供 **打开设置（Open Settings）** 而非更新任务。
 

@@ -188,6 +188,9 @@ impl SessionManager {
                 );
                 state_guard
                     .model
+                    .set_program_status_cancel_interrupt(semantics.program_status_cancel_interrupt);
+                state_guard
+                    .model
                     .set_native_attention(semantics.native_attention);
             }
             state_guard.handle = Some(handle);

@@ -41,6 +41,7 @@ pub struct StatusPresentation {
     pub detail: Option<WorkDetail>,
     pub message: Option<SharedString>,
     pub program_status: bool,
+    pub background_tasks: usize,
     /// When runnerd stopped, for an interrupted mission member.
     pub interrupted_since: Option<i64>,
 }
@@ -103,6 +104,10 @@ impl StatusPresentation {
                 .and_then(|evidence| evidence.message.clone())
                 .map(Into::into),
             program_status: observation.program_status.is_some(),
+            background_tasks: observation
+                .program_status
+                .as_ref()
+                .map_or(0, |evidence| evidence.background_tasks),
             interrupted_since: status
                 .interrupted_since
                 .filter(|_| kind == StatusKind::Interrupted),
@@ -211,6 +216,11 @@ impl StatusPresentation {
                 return format!("{tooltip} · {}", format_elapsed(now.saturating_sub(since)));
             }
         }
+        if matches!(self.kind, StatusKind::Working | StatusKind::Idle) {
+            if let Some(bg) = background_tasks_label(self.background_tasks) {
+                return format!("{tooltip} · {bg}");
+            }
+        }
         tooltip
     }
 
@@ -220,9 +230,13 @@ impl StatusPresentation {
         } else if self.estimated {
             None
         } else if self.kind == StatusKind::Working {
-            self.detail.map(|detail| work_detail_label(detail).into())
+            self.detail
+                .map(|detail| work_detail_label(detail).into())
+                .or_else(|| background_tasks_label(self.background_tasks))
         } else if self.kind == StatusKind::Idle && self.outcome == Some(TurnOutcome::Interrupted) {
             Some(crate::i18n::text("ui.interrupted").into())
+        } else if self.kind == StatusKind::Idle {
+            background_tasks_label(self.background_tasks)
         } else if matches!(
             self.kind,
             StatusKind::Approval | StatusKind::Answer | StatusKind::NeedsYou
@@ -267,7 +281,8 @@ impl StatusPresentation {
     pub fn shows_detail(&self, width: f32) -> bool {
         let can_have_detail = self.kind == StatusKind::Working
             || self.needs_you()
-            || (self.kind == StatusKind::Idle && self.outcome == Some(TurnOutcome::Interrupted));
+            || (self.kind == StatusKind::Idle
+                && (self.outcome == Some(TurnOutcome::Interrupted) || self.background_tasks > 0));
         can_have_detail && width >= if self.needs_you() { 400. } else { 560. }
     }
 
@@ -297,6 +312,17 @@ fn work_detail_label(detail: WorkDetail) -> &'static str {
     match detail {
         WorkDetail::UsingTools => crate::i18n::text("ui.using_tools"),
         WorkDetail::CompactingContext => crate::i18n::text("ui.compacting_context"),
+    }
+}
+
+fn background_tasks_label(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some(crate::i18n::text("ui.background_task_one").into()),
+        count => Some(crate::i18n::tf(
+            "format.background_tasks",
+            &[("count", count.to_string())],
+        )),
     }
 }
 
@@ -638,6 +664,7 @@ mod tests {
             detail: None,
             message: None,
             program_status: false,
+            background_tasks: 0,
             interrupted_since: None,
         }
     }
@@ -662,6 +689,7 @@ mod tests {
                 source: ObservationSource::Baseline,
                 program_status: Some(runner_core::protocol::status::ProgramStatusEvidence {
                     message: Some("Allow this command?".into()),
+                    background_tasks: 0,
                 }),
                 ..Default::default()
             },
@@ -903,6 +931,7 @@ mod tests {
             detail: None,
             message: None,
             program_status: false,
+            background_tasks: 0,
             interrupted_since: None,
         };
         assert!(approval.shows_label(360.));
@@ -1851,7 +1880,13 @@ mod pane_control_tests {
             Activity, AgentObservation, AgentStatus, Lifecycle, ObservationSource,
             ProgramStatusEvidence, TurnOutcome,
         };
-        for program_status in [Some(ProgramStatusEvidence { message: None }), None] {
+        for program_status in [
+            Some(ProgramStatusEvidence {
+                message: None,
+                background_tasks: 0,
+            }),
+            None,
+        ] {
             let status = AgentStatus {
                 lifecycle: Lifecycle::Running,
                 observation: AgentObservation {
@@ -1873,6 +1908,72 @@ mod pane_control_tests {
                     crate::i18n::text("ui.idle"),
                     crate::i18n::text("ui.interrupted")
                 )
+            );
+        }
+    }
+
+    #[test]
+    fn background_tasks_add_detail_text_without_changing_root_status() {
+        use runner_core::protocol::status::{
+            Activity, AgentObservation, AgentStatus, Lifecycle, ObservationSource,
+            ProgramStatusEvidence, TurnOutcome,
+        };
+        for (activity, outcome, count, expected_short, expected_tooltip) in [
+            (
+                Activity::Idle,
+                Some(TurnOutcome::Completed),
+                1,
+                "Idle · 1 background task",
+                "Idle · 1 background task",
+            ),
+            (
+                Activity::Idle,
+                None,
+                2,
+                "Idle · 2 background tasks",
+                "Idle · 2 background tasks",
+            ),
+            (
+                Activity::Working,
+                None,
+                2,
+                "Working · 2 background tasks",
+                "Working · 2 background tasks",
+            ),
+        ] {
+            let status = AgentStatus {
+                lifecycle: Lifecycle::Running,
+                observation: AgentObservation {
+                    activity,
+                    source: ObservationSource::Baseline,
+                    outcome,
+                    program_status: Some(ProgramStatusEvidence {
+                        message: None,
+                        background_tasks: count,
+                    }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let presentation = StatusPresentation::new(&status);
+            assert_eq!(
+                presentation.kind,
+                if activity == Activity::Working {
+                    StatusKind::Working
+                } else {
+                    StatusKind::Idle
+                }
+            );
+            assert!(!presentation.estimated);
+            assert_eq!(presentation.short_label_at(0).text(), expected_short);
+            assert_eq!(presentation.tooltip_at(0), expected_tooltip);
+            assert_eq!(
+                presentation.visible_short_label_at(560., 0).as_deref(),
+                Some(expected_short)
+            );
+            assert_eq!(
+                presentation.visible_short_label_at(559., 0).as_deref(),
+                Some(presentation.label())
             );
         }
     }

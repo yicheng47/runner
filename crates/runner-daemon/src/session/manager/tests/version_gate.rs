@@ -267,3 +267,89 @@ fn unprobed_opencode_v1_is_probed_synchronously_and_refused_on_start_and_resume(
         "must refuse v1 before spawning opencode --standalone"
     );
 }
+
+#[test]
+fn claude_code_and_pi_enforce_osc7501_minimum_versions() {
+    for (runtime, below, at_min, min_version) in [
+        (Runtime::ClaudeCode, "2.1.294", "2.1.295", "2.1.295"),
+        (Runtime::Pi, "1.0.9", "1.1.0", "1.1.0"),
+    ] {
+        let pool = pool_with_schema();
+        let data = tempfile::tempdir().unwrap();
+        let fake = fake_runtime();
+        let manager = mgr_with_fake(None, fake);
+        let mut agent_role = role(&format!("fixture-{}", runtime.key()), &[]);
+        agent_role.runtime = runtime.key().into();
+
+        manager
+            .discovery_state
+            .write()
+            .unwrap()
+            .versions
+            .set_installed(runtime, &agent_role.command, Some(below));
+
+        let err = manager
+            .spawn_direct(
+                &agent_role,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                data.path(),
+                pool.clone(),
+                capture(),
+                None,
+            )
+            .unwrap_err();
+        let Error::RuntimeVersionGate(gate) = err else {
+            panic!("{runtime:?} expected RuntimeVersionGate, got {err}");
+        };
+        assert_eq!(gate.runtime, runtime);
+        assert_eq!(gate.installed_version, below);
+        assert_eq!(gate.min_version, min_version);
+
+        match manager.register_mission_session(
+            &mission(),
+            &agent_role,
+            &slot_for(&agent_role),
+            data.path(),
+            data.path().join("events.ndjson"),
+            pool.clone(),
+            None,
+            None,
+            None,
+            "test",
+        ) {
+            Err(Error::RuntimeVersionGate(mission_gate)) => {
+                assert_eq!(mission_gate, gate);
+            }
+            Err(other) => panic!("{runtime:?} mission launch returned wrong error: {other}"),
+            Ok(_) => panic!("{runtime:?} mission launch must gate old version"),
+        }
+
+        manager
+            .discovery_state
+            .write()
+            .unwrap()
+            .versions
+            .set_installed(runtime, &agent_role.command, Some(at_min));
+        assert!(
+            manager.resolve_role_executable(&agent_role, &pool).is_ok(),
+            "{runtime:?} at {at_min} must pass version gate"
+        );
+
+        manager
+            .discovery_state
+            .write()
+            .unwrap()
+            .versions
+            .set_installed(runtime, &agent_role.command, None);
+        assert!(
+            manager.resolve_role_executable(&agent_role, &pool).is_ok(),
+            "{runtime:?} unknown version remains allowed"
+        );
+    }
+}

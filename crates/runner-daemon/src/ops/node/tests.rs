@@ -1097,6 +1097,7 @@ fn provisional_escape_does_not_trigger_or_consume_completion() {
             },
             ..Default::default()
         },
+        program_done: false,
     });
     let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
         .unwrap()
@@ -1116,6 +1117,7 @@ fn provisional_escape_does_not_trigger_or_consume_completion() {
             },
             ..Default::default()
         },
+        program_done: false,
     });
     let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
         .unwrap()

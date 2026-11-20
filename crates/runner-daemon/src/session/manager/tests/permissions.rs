@@ -853,14 +853,14 @@ fn launch_switches_cover_chat_resume_mission_and_role_permissions() {
                                 .unwrap();
                             let settings: serde_json::Value =
                                 serde_json::from_str(&value[1]).unwrap();
-                            assert_eq!(
-                                settings["hooks"]
-                                    .as_object()
-                                    .unwrap()
-                                    .keys()
-                                    .collect::<Vec<_>>(),
-                                ["SessionStart"]
-                            );
+                            let mut keys: Vec<_> = settings["hooks"]
+                                .as_object()
+                                .unwrap()
+                                .keys()
+                                .map(String::as_str)
+                                .collect();
+                            keys.sort_unstable();
+                            assert_eq!(keys, ["SessionStart", "UserPromptSubmit"]);
                         }
                         Runtime::Pi | Runtime::OpenCode | Runtime::Copilot => {
                             assert!(

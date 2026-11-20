@@ -191,7 +191,8 @@ fn codex_observations_preserve_delivery_and_drafts_and_interrupt_attention() {
                 confirmed += usize::from(matches!(
                     event,
                     crate::session::state::agent::AgentEvent::ProgramTurnConfirmed {
-                        conversation_changed: false
+                        conversation_changed: false,
+                        ..
                     }
                 ));
                 core.sessions
@@ -1241,6 +1242,7 @@ fn codex_native_forwarder_publishes_without_a_mounted_client_for_chats_and_missi
                 RuntimeOutput::AgentEvent {
                     event: A::ProgramTurnConfirmed {
                         conversation_changed: false,
+                        prompt: None,
                     },
                     feedback: None,
                 },
@@ -1258,6 +1260,7 @@ fn codex_native_forwarder_publishes_without_a_mounted_client_for_chats_and_missi
                 RuntimeOutput::AgentEvent {
                     event: A::ProgramTurnOutcome {
                         outcome: TurnOutcome::Interrupted,
+                        policy: crate::session::state::agent::ProgramOutcomePolicy::Immediate,
                     },
                     feedback: None,
                 },
@@ -1415,6 +1418,7 @@ fn codex_native_attention_preserves_real_hook_completion_in_both_clear_orderings
                 id,
                 A::ProgramTurnConfirmed {
                     conversation_changed: false,
+                    prompt: None,
                 },
                 events.as_ref(),
             );
@@ -1439,6 +1443,8 @@ fn codex_native_attention_preserves_real_hook_completion_in_both_clear_orderings
                             id,
                             A::ProgramTurnOutcome {
                                 outcome: TurnOutcome::Failed,
+                                policy:
+                                    crate::session::state::agent::ProgramOutcomePolicy::Immediate,
                             },
                             events.as_ref(),
                         );
@@ -1447,6 +1453,8 @@ fn codex_native_attention_preserves_real_hook_completion_in_both_clear_orderings
                             id,
                             A::ProgramTurnOutcome {
                                 outcome: TurnOutcome::Failed,
+                                policy:
+                                    crate::session::state::agent::ProgramOutcomePolicy::Immediate,
                             },
                             events.as_ref(),
                         );
@@ -1464,6 +1472,8 @@ fn codex_native_attention_preserves_real_hook_completion_in_both_clear_orderings
                             id,
                             A::ProgramTurnOutcome {
                                 outcome: TurnOutcome::Interrupted,
+                                policy:
+                                    crate::session::state::agent::ProgramOutcomePolicy::Immediate,
                             },
                             events.as_ref(),
                         );
@@ -1472,6 +1482,8 @@ fn codex_native_attention_preserves_real_hook_completion_in_both_clear_orderings
                             id,
                             A::ProgramTurnOutcome {
                                 outcome: TurnOutcome::Interrupted,
+                                policy:
+                                    crate::session::state::agent::ProgramOutcomePolicy::Immediate,
                             },
                             events.as_ref(),
                         );
@@ -2166,6 +2178,7 @@ fn codex_mission_delivery_uses_user_prompt_submit_and_osc7501_for_busy_blocked_a
         id,
         A::ProgramTurnConfirmed {
             conversation_changed: false,
+            prompt: None,
         },
         events.as_ref(),
     );
@@ -2198,6 +2211,7 @@ fn codex_mission_delivery_uses_user_prompt_submit_and_osc7501_for_busy_blocked_a
         id,
         A::ProgramTurnConfirmed {
             conversation_changed: false,
+            prompt: None,
         },
         events.as_ref(),
     );
@@ -2229,6 +2243,7 @@ fn codex_mission_delivery_uses_user_prompt_submit_and_osc7501_for_busy_blocked_a
         id,
         A::ProgramTurnConfirmed {
             conversation_changed: false,
+            prompt: None,
         },
         events.as_ref(),
     );
@@ -2334,6 +2349,7 @@ fn codex_conversation_key_change_clears_saved_transcript_interrupted_outcome() {
         id,
         A::ProgramTurnOutcome {
             outcome: TurnOutcome::Interrupted,
+            policy: crate::session::state::agent::ProgramOutcomePolicy::Immediate,
         },
         events.as_ref(),
     );
@@ -2568,6 +2584,7 @@ fn codex_missed_session_start_user_prompt_submit_rekeys_before_confirming_once()
         id,
         crate::session::state::agent::AgentEvent::ProgramTurnOutcome {
             outcome: TurnOutcome::Interrupted,
+            policy: crate::session::state::agent::ProgramOutcomePolicy::Immediate,
         },
         events.as_ref(),
     );

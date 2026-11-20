@@ -311,7 +311,7 @@ pub mod claude_code {
         ];
         Some(RuntimeCatalog {
             name: Runtime::ClaudeCode,
-            min_version: None,
+            min_version: Some("2.1.295"),
             display_name: Runtime::ClaudeCode.display_name(),
             command: Runtime::ClaudeCode.command().unwrap(),
             capabilities: capabilities(),
@@ -580,7 +580,7 @@ pub mod pi {
     pub fn catalog() -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::Pi,
-            min_version: None,
+            min_version: Some("1.1.0"),
             display_name: Runtime::Pi.display_name(),
             command: Runtime::Pi.command().unwrap(),
             capabilities: capabilities(),

@@ -132,6 +132,7 @@ impl TerminalAdapter for CodexTerminal {
                 | AgentEvent::ProgramTurnConfirmed { .. }
                 | AgentEvent::ProgramTurnFinished
                 | AgentEvent::ProgramTurnOutcome { .. }
+                | AgentEvent::ProgramWaitOverlay { .. }
                 | AgentEvent::ProgramIdentityUnavailable
         ) {
             return true;

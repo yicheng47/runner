@@ -27,13 +27,12 @@ pub enum PermissionPromptPolicy {
 #[derive(Clone, Copy, Default)]
 pub struct StatusSemantics {
     pub interaction_prefix: Option<&'static str>,
-    pub batch_feedback: bool,
     pub startup_ready_batch: bool,
     pub native_attention: bool,
     pub program_status_authority: bool,
-    pub program_status_without_hooks: bool,
     pub program_status_root_app: Option<&'static str>,
     pub program_status_transcript_outcomes: bool,
+    pub program_status_cancel_interrupt: bool,
     pub interruption_ends_invocation: bool,
     pub reject_events_after_interruption: bool,
     pub reject_completions_after_outcome: bool,
@@ -54,8 +53,7 @@ pub struct StatusSemantics {
 }
 
 impl StatusSemantics {
-    pub fn program_status_authoritative(self, status_hooks_enabled: bool) -> bool {
+    pub fn program_status_authoritative(self, _status_hooks_enabled: bool) -> bool {
         self.program_status_authority
-            || (!status_hooks_enabled && self.program_status_without_hooks)
     }
 }

@@ -1,10 +1,13 @@
-{"runtime":"pi","name":"approve-cancel","rules":[6],"bugs":[],"known_wrong":[],"pending_turn":false}
-{"ms":100,"event":"hook","report":{"hook_event_name":"session_start","session_id":"11111111-1111-4111-8111-111111111111","reason":"startup"}}
+{"runtime":"pi","name":"approve-cancel","rules":[6],"bugs":[],"known_wrong":[],"pending_turn":false,"evidence":"pi 1.1.0+ settles Interrupted on Esc after a confirm prompt closes and state=idle arrives."}
+{"ms":100,"event":"hook","report":{"hook_event_name":"session_start","session_id":"11111111-1111-4111-8111-111111111111","session_file":"<TRANSCRIPT>","reason":"startup"}}
+{"ms":150,"event":"output","bytes":"\u001b]7501;state=idle:app=pi\u001b\\"}
 {"ms":200,"event":"input","bytes":"sample"}
 {"ms":300,"event":"input","bytes":"\r"}
-{"ms":400,"event":"hook","report":{"hook_event_name":"agent_start","session_id":"11111111-1111-4111-8111-111111111111"}}
-{"ms":500,"event":"hook","report":{"hook_event_name":"ui_prompt_start","session_id":"11111111-1111-4111-8111-111111111111","kind":"confirm","title":"Sample approval"}}
+{"ms":400,"event":"hook","report":{"hook_event_name":"input","session_id":"11111111-1111-4111-8111-111111111111","session_file":"<TRANSCRIPT>","text":"sample"}}
+{"ms":450,"event":"output","bytes":"\u001b]7501;state=working:app=pi\u001b\\"}
+{"ms":500,"event":"output","bytes":"\u001b]7501;state=blocked:kind=permission:app=pi\u001b\\"}
 {"ms":600,"event":"reserve"}
-{"ms":700,"event":"hook","report":{"hook_event_name":"ui_prompt_end","session_id":"11111111-1111-4111-8111-111111111111","kind":"confirm"}}
+{"ms":700,"event":"output","bytes":"\u001b]7501;state=working:app=pi\u001b\\"}
 {"ms":800,"event":"input","bytes":"\u001b"}
+{"ms":850,"event":"output","bytes":"\u001b]7501;state=idle:app=pi\u001b\\"}
 {"ms":900,"event":"completion"}

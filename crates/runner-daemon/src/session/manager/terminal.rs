@@ -480,11 +480,8 @@ impl SessionManager {
         events: &Arc<dyn SessionEvents>,
     ) -> Result<(Arc<TerminalModel>, TerminalStartedAt)> {
         let started_at = Arc::new(Mutex::new(binding.started_at));
-        let semantics = binding
-            .runtime
-            .map(|runtime| crate::runtimes::adapter(runtime).status_semantics())
-            .unwrap_or_default();
-        {
+        if let Some(runtime) = binding.runtime {
+            let semantics = crate::runtimes::adapter(runtime).status_semantics();
             let state = self.session_state_or_insert(id);
             let mut state = state.lock().unwrap();
             let status_hooks_enabled = state
@@ -501,6 +498,9 @@ impl SessionManager {
             state.model.set_program_status_transcript_outcomes(
                 semantics.program_status_transcript_outcomes,
             );
+            state
+                .model
+                .set_program_status_cancel_interrupt(semantics.program_status_cancel_interrupt);
             state.model.set_native_attention(semantics.native_attention);
         }
         let host = Arc::new(Host {

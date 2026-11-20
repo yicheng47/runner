@@ -1,10 +1,11 @@
-{"runtime":"claude-code","name":"compaction","rules":[7,8],"bugs":[],"known_wrong":[],"pending_turn":false}
+{"runtime":"claude-code","name":"compaction","rules":[7,8],"bugs":[],"known_wrong":[],"pending_turn":false,"evidence":"Claude Code stays Working across compaction via OSC 7501 without a separate PreCompact/PostCompact detail."}
 {"ms":100,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>"}}
+{"ms":150,"event":"output","bytes":"\u001b]7501;state=idle:app=claude-code\u001b\\"}
 {"ms":200,"event":"input","bytes":"sample"}
 {"ms":300,"event":"input","bytes":"\r"}
-{"ms":400,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111"}}
-{"ms":500,"event":"hook","report":{"hook_event_name":"PreCompact","session_id":"11111111-1111-4111-8111-111111111111"}}
-{"ms":600,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","source":"compact"}}
-{"ms":700,"event":"hook","report":{"hook_event_name":"PostCompact","session_id":"11111111-1111-4111-8111-111111111111"}}
-{"ms":800,"event":"hook","report":{"hook_event_name":"Stop","session_id":"11111111-1111-4111-8111-111111111111","stop_reason":"end_turn"}}
-{"ms":900,"event":"completion"}
+{"ms":400,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>","prompt":"sample"}}
+{"ms":450,"event":"output","bytes":"\u001b]7501;state=working:app=claude-code\u001b\\"}
+{"ms":600,"event":"hook","report":{"hook_event_name":"SessionStart","session_id":"11111111-1111-4111-8111-111111111111","transcript_path":"<TRANSCRIPT>","source":"compact"}}
+{"ms":2600,"event":"tick"}
+{"ms":2700,"event":"output","bytes":"\u001b]7501;state=done:app=claude-code\u001b\\"}
+{"ms":2800,"event":"completion"}

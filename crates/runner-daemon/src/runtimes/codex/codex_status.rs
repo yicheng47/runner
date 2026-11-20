@@ -78,6 +78,7 @@ impl CodexParser {
             // Codex 0.170 attaches mid-turn steered input to the active turn and reuses its turn_id.
             return Some(AgentEvent::ProgramTurnConfirmed {
                 conversation_changed: false,
+                prompt: None,
             });
         }
         if let Some(previous) = self.turn_id.replace(turn) {
@@ -86,6 +87,7 @@ impl CodexParser {
         self.turn_finished = false;
         Some(AgentEvent::ProgramTurnConfirmed {
             conversation_changed: new_session,
+            prompt: None,
         })
     }
 
@@ -102,6 +104,7 @@ impl CodexParser {
             self.turn_finished = true;
             return Some(AgentEvent::ProgramTurnOutcome {
                 outcome: TurnOutcome::Interrupted,
+                policy: crate::session::state::agent::ProgramOutcomePolicy::Immediate,
             });
         }
         if payload["type"] == "task_complete" {
@@ -109,6 +112,7 @@ impl CodexParser {
             if payload.get("error").is_some_and(|error| !error.is_null()) {
                 return Some(AgentEvent::ProgramTurnOutcome {
                     outcome: TurnOutcome::Failed,
+                    policy: crate::session::state::agent::ProgramOutcomePolicy::Immediate,
                 });
             }
             return Some(AgentEvent::ProgramTurnFinished);

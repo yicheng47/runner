@@ -2205,3 +2205,36 @@ fn settings_agents_renders_open_setup_and_not_installed_install_states() {
     assert!(window.debug_bounds("AGENT_TASK_CAPTION_codex").is_some());
     assert!(window.debug_bounds("AGENT_TASK_RETRY_codex").is_some());
 }
+
+#[test]
+fn claude_code_and_pi_hide_status_hooks_switch_while_hooked_runtimes_keep_it() {
+    for (runtime_name, expect_switch) in [
+        (Runtime::Codex, false),
+        (Runtime::ClaudeCode, false),
+        (Runtime::Pi, false),
+        (Runtime::Copilot, true),
+        (Runtime::OpenCode, true),
+    ] {
+        let mut cx = gpui::TestAppContext::single();
+        let mut row = runtime(RuntimeRowState::Detected);
+        row.name = runtime_name;
+        row.display_name = runtime_name.key().into();
+        let (_temp, pane) = test_pane(vec![row], false, &mut cx);
+        pane.update(&mut cx, |pane, _, cx| {
+            pane.selected_runtime = Some(runtime_name);
+            cx.notify();
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+        assert_eq!(
+            window
+                .debug_bounds(Box::leak(
+                    format!("AGENT_LAUNCH_SWITCH_{runtime_name}_StatusHooks").into_boxed_str()
+                ))
+                .is_some(),
+            expect_switch,
+            "{runtime_name:?} StatusHooks switch visibility mismatch"
+        );
+    }
+}

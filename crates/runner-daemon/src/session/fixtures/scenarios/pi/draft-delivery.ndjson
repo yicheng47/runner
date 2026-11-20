@@ -1,5 +1,6 @@
 {"runtime":"pi","name":"draft-delivery","rules":[5],"bugs":[766,753,799],"known_wrong":[],"pending_turn":false}
-{"ms":100,"event":"hook","report":{"hook_event_name":"session_start","session_id":"11111111-1111-4111-8111-111111111111","reason":"startup"}}
+{"ms":100,"event":"hook","report":{"hook_event_name":"session_start","session_id":"11111111-1111-4111-8111-111111111111","session_file":"<TRANSCRIPT>","reason":"startup"}}
+{"ms":105,"event":"output","bytes":"\u001b]7501;state=idle:app=pi\u001b\\"}
 {"ms":110,"event":"hook","report":{"hook_event_name":"editor_draft","drafting":false}}
 {"ms":120,"event":"composer","state":"idle"}
 {"ms":200,"event":"input","bytes":"full draft"}
@@ -28,9 +29,9 @@
 {"ms":8810,"event":"hook","report":{"hook_event_name":"editor_draft","drafting":true}}
 {"ms":8900,"event":"input","bytes":"\r"}
 {"ms":8910,"event":"hook","report":{"hook_event_name":"editor_draft","drafting":false}}
-{"ms":8920,"event":"hook","report":{"hook_event_name":"agent_start"}}
+{"ms":8920,"event":"hook","report":{"hook_event_name":"input","session_id":"11111111-1111-4111-8111-111111111111","session_file":"<TRANSCRIPT>","text":"prompt"}}
+{"ms":8930,"event":"output","bytes":"\u001b]7501;state=working:app=pi\u001b\\"}
 {"ms":11100,"event":"tick"}
-{"ms":11200,"event":"hook","report":{"hook_event_name":"message_end","stopReason":"stop"}}
-{"ms":11300,"event":"hook","report":{"hook_event_name":"agent_settled"}}
+{"ms":11300,"event":"output","bytes":"\u001b]7501;state=done:app=pi\u001b\\"}
 {"ms":11400,"event":"reserve"}
 {"ms":11410,"event":"finish"}

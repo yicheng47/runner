@@ -4,21 +4,23 @@ session_status_rows=published
   busy@spawn [running/working/baseline]
 200
 300 result={"history_exists":true,"missing_reuses_key":true,"missing_resume_on_launch":true}
-400 status=running/idle/hook activity="idle" delivery=["Idle"]
-  idle@hook [running/idle/hook]
-500 status=running/working/hook activity="busy" completion_armed=true
-  busy@hook [running/working/hook]
-600
-700 status=running/ready/hook outcome="completed" activity="idle" delivery=["Idle"]
-  idle@hook [running/ready/hook outcome="completed"]
-800 status=starting/unavailable/unavailable activity=null completion_armed=false quiescent=false delivery=["Exited"]
+400
+450 status=running/idle/baseline observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
+500
+550 status=running/working/baseline observation.program_status={"message":null} activity="busy" completion_armed=true
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+700 status=running/idle/baseline outcome="completed" observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="completed" observation.program_status={"message":null}]
+800 status=stopped/idle/baseline outcome="completed" exit_code=0 activity=null completion_armed=false quiescent=false delivery=["Exited"]
 900 status=running/working/baseline activity="busy" quiescent=true delivery=["Respawned"]
   busy@spawn [running/working/baseline]
 1000 result={"history_exists":true,"missing_reuses_key":true,"missing_resume_on_launch":true}
-1100 status=running/idle/hook activity="idle" delivery=["Idle"]
-  idle@hook [running/idle/hook]
-1200 status=running/working/hook activity="busy" completion_armed=true
-  busy@hook [running/working/hook]
-1300
-1400 status=running/ready/hook outcome="completed" activity="idle" delivery=["Idle"]
-  idle@hook [running/ready/hook outcome="completed"]
+1100
+1150 status=running/idle/baseline observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
+1200
+1250 status=running/working/baseline observation.program_status={"message":null} activity="busy" completion_armed=true
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+1400 status=running/idle/baseline outcome="completed" observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="completed" observation.program_status={"message":null}]

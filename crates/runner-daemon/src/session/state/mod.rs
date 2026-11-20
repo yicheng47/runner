@@ -161,6 +161,7 @@ pub(crate) enum SessionEvent {
     Input {
         class: Option<LocalInputClass>,
         submitted: bool,
+        cancel: bool,
     },
     /// Terminal output reached the session.
     Output,
@@ -206,6 +207,10 @@ pub(crate) struct Effects {
     pub input_cleared: bool,
     pub completion_consumed: bool,
     pub program_turn_started: bool,
+    /// True only when an authoritative OSC 7501 root `State::Done` report
+    /// just settled a turn, distinct from wait-overlay or child-detail
+    /// republications of an already-settled `Completed` observation.
+    pub program_done: bool,
     pub persist_key: Option<PersistKey>,
 }
 
@@ -230,6 +235,7 @@ pub(crate) struct InputCheckpoint {
     input_at: Option<Instant>,
     revision: u64,
     completion: bool,
+    cancel_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -313,14 +319,20 @@ pub(crate) struct SessionModel {
     program_status_authority: bool,
     program_status_root_app: Option<&'static str>,
     program_status_transcript_outcomes: bool,
+    program_status_cancel_interrupt: bool,
+    program_cancel_pending: bool,
+    program_error_is_abort: bool,
+    program_status_children: usize,
     program_turn: ProgramTurn,
     program_turn_outcome: Option<TurnOutcome>,
     program_status_seq: (u64, usize),
     program_status_wait: Option<(String, HumanInteraction)>,
+    program_wait_overlay: Option<HumanInteraction>,
     next_program_status_wait: u64,
 }
 
 impl SessionModel {
+    #[cfg(test)]
     pub fn program_status_authority(&self) -> bool {
         self.program_status_authority
     }
@@ -332,6 +344,9 @@ impl SessionModel {
     }
     pub fn set_program_status_transcript_outcomes(&mut self, enabled: bool) {
         self.program_status_transcript_outcomes = enabled;
+    }
+    pub fn set_program_status_cancel_interrupt(&mut self, enabled: bool) {
+        self.program_status_cancel_interrupt = enabled;
     }
     pub fn set_native_attention(&mut self, enabled: bool) {
         self.native_attention = enabled;
@@ -439,6 +454,7 @@ impl SessionModel {
             input_at: self.last_local_input_at,
             revision: self.activity_revision,
             completion: self.completion_armed,
+            cancel_pending: self.program_cancel_pending,
         }
     }
 
@@ -551,37 +567,112 @@ impl SessionModel {
                     return effects;
                 }
                 use runner_terminal::program_status::State;
+                let active_children = |app: &str| -> usize {
+                    update
+                        .active_children
+                        .iter()
+                        .filter(|entry| entry.app.as_deref() == Some(app))
+                        .map(|entry| entry.active)
+                        .sum()
+                };
                 let report = if let Some(app) = self.program_status_root_app {
                     match update.trigger {
                         Some(trigger) => {
                             if !trigger.id.is_empty() {
+                                if trigger.state == State::Clear {
+                                    if trigger.app.is_some() && trigger.app.as_deref() != Some(app)
+                                    {
+                                        return effects;
+                                    }
+                                } else if trigger.app.as_deref() != Some(app) {
+                                    return effects;
+                                }
+                                // Child records only contribute background-task detail text and
+                                // never alter root status, unread badges or crew delivery (#1051).
+                                let count = active_children(app);
+                                if count == self.program_status_children {
+                                    return effects;
+                                }
+                                self.program_status_children = count;
+                                if let Some(evidence) =
+                                    self.status.observation.program_status.as_mut()
+                                {
+                                    evidence.background_tasks = count;
+                                    let state = self.activity.unwrap_or(SessionActivityState::Idle);
+                                    effects.publication =
+                                        Some((state, StatusSource::ProgramStatus));
+                                }
                                 return effects;
                             }
                             if trigger.state == State::Clear {
                                 if trigger.app.is_some() && trigger.app.as_deref() != Some(app) {
                                     return effects;
                                 }
+                                self.program_status_children = 0;
                                 None
                             } else {
                                 if trigger.app.as_deref() != Some(app) {
                                     return effects;
                                 }
+                                self.program_status_children = active_children(app);
                                 Some(trigger)
                             }
                         }
-                        None if update.current.is_none() => None,
-                        None => return effects,
+                        None => match update.root {
+                            Some(root) if root.app.as_deref() == Some(app) => {
+                                // Root survived a prompt/reset boundary (e.g. Done/Error across
+                                // shell 133;D+133;A) while active children may have been cleared.
+                                let count = active_children(app);
+                                if count != self.program_status_children {
+                                    self.program_status_children = count;
+                                    if let Some(evidence) =
+                                        self.status.observation.program_status.as_mut()
+                                    {
+                                        evidence.background_tasks = count;
+                                        let state =
+                                            self.activity.unwrap_or(SessionActivityState::Idle);
+                                        effects.publication =
+                                            Some((state, StatusSource::ProgramStatus));
+                                    }
+                                }
+                                return effects;
+                            }
+                            _ => {
+                                self.program_status_children = 0;
+                                None
+                            }
+                        },
                     }
                 } else {
+                    self.program_status_children = 0;
                     update.current
                 };
                 let Some(report) = report else {
                     self.program_status_wait = None;
                     self.program_turn = ProgramTurn::default();
                     self.program_turn_outcome = None;
+                    self.program_cancel_pending = false;
+                    self.program_error_is_abort = false;
+                    self.program_status_children = 0;
                     if self.status.observation.program_status.is_some() {
                         let completion_armed = self.completion_armed;
-                        effects = self.apply(SessionEvent::BridgeFailed { live }, now);
+                        let mut fallback = AgentObservation {
+                            activity: match self.baseline_activity {
+                                Some(SessionActivityState::Busy) => Activity::Working,
+                                Some(SessionActivityState::Idle) => Activity::Idle,
+                                None => Activity::Unavailable,
+                            },
+                            source: if self.baseline_activity.is_some() {
+                                ObservationSource::Baseline
+                            } else {
+                                ObservationSource::Unavailable
+                            },
+                            ..Default::default()
+                        };
+                        if let Some(overlay) = &self.program_wait_overlay {
+                            fallback.interactions.push(overlay.clone());
+                        }
+                        effects = self.publish_snapshot(fallback, live, now);
                         self.completion_armed = if self.program_status_authority {
                             false
                         } else {
@@ -594,6 +685,8 @@ impl SessionModel {
                     return effects;
                 };
                 let report_state = report.state;
+                let was_native_active =
+                    self.program_turn.native_working || self.program_status_wait.is_some();
                 let started_turn = match report_state {
                     State::Working => self.program_turn.on_working(),
                     State::Blocked => false,
@@ -610,16 +703,46 @@ impl SessionModel {
                         false
                     }
                 };
+                let is_abort_message =
+                    report.message.as_deref() == Some("This operation was aborted");
+                let cancelled_abort_error = report_state == State::Error
+                    && self.program_status_cancel_interrupt
+                    && is_abort_message
+                    && (self.program_cancel_pending
+                        || (was_native_active
+                            && self.program_turn_outcome == Some(TurnOutcome::Interrupted)));
                 match report_state {
-                    State::Idle | State::Blocked => {}
+                    State::Idle => {
+                        if self.program_status_cancel_interrupt
+                            && std::mem::take(&mut self.program_cancel_pending)
+                        {
+                            self.program_turn_outcome = Some(TurnOutcome::Interrupted);
+                            self.program_error_is_abort = false;
+                        }
+                    }
+                    State::Blocked => {}
                     // Delayed Working pairing with an already-confirmed turn must not erase
                     // that same turn's transcript outcome (e.g. UserPromptSubmit -> turn_aborted
-                    // ahead of PTY Working -> Idle).
+                    // ahead of PTY Working -> Idle) or an in-flight Esc/Ctrl+C cancel.
                     State::Working if !started_turn => {}
+                    State::Error if cancelled_abort_error => {
+                        self.program_cancel_pending = false;
+                        self.program_error_is_abort = false;
+                        self.program_turn_outcome = Some(TurnOutcome::Interrupted);
+                    }
                     State::Error if self.program_status_transcript_outcomes => {
+                        self.program_cancel_pending = false;
+                        self.program_error_is_abort = is_abort_message;
                         self.program_turn_outcome = Some(TurnOutcome::Failed);
                     }
+                    State::Error => {
+                        self.program_cancel_pending = false;
+                        self.program_error_is_abort = is_abort_message;
+                        self.program_turn_outcome = None;
+                    }
                     _ => {
+                        self.program_cancel_pending = false;
+                        self.program_error_is_abort = false;
                         self.program_turn_outcome = None;
                     }
                 }
@@ -632,6 +755,7 @@ impl SessionModel {
                     source: ObservationSource::Baseline,
                     outcome: match report_state {
                         State::Done => Some(TurnOutcome::Completed),
+                        State::Error if cancelled_abort_error => Some(TurnOutcome::Interrupted),
                         State::Error => Some(TurnOutcome::Failed),
                         State::Idle => self.program_turn_outcome,
                         _ => None,
@@ -640,6 +764,7 @@ impl SessionModel {
                         message: report.message.map(|message| {
                             message.chars().filter(|c| !matches!(*c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}')).collect()
                         }),
+                        background_tasks: self.program_status_children,
                     }),
                     ..Default::default()
                 };
@@ -666,6 +791,9 @@ impl SessionModel {
                         .push(self.program_status_wait.as_ref().unwrap().1.clone());
                 } else {
                     self.program_status_wait = None;
+                    if let Some(overlay) = &self.program_wait_overlay {
+                        observation.interactions.push(overlay.clone());
+                    }
                 }
                 let completion_armed = self.completion_armed;
                 effects = self.publish_snapshot(observation, live, now);
@@ -677,6 +805,7 @@ impl SessionModel {
                     self.completion_armed = completion_armed;
                 }
                 effects.program_turn_started = started_turn && self.program_status_authority;
+                effects.program_done = self.program_status_authority && report_state == State::Done;
                 effects.publication = effects
                     .publication
                     .map(|(state, _)| (state, StatusSource::ProgramStatus));
@@ -703,8 +832,12 @@ impl SessionModel {
                 self.codex_attention = None;
                 self.program_turn = ProgramTurn::default();
                 self.program_turn_outcome = None;
+                self.program_cancel_pending = false;
+                self.program_error_is_abort = false;
+                self.program_status_children = 0;
                 self.program_status_seq = (0, 0);
                 self.program_status_wait = None;
+                self.program_wait_overlay = None;
                 self.baseline_activity = None;
                 self.hook_status_armed = false;
                 self.provisional_idle = false;
@@ -718,7 +851,11 @@ impl SessionModel {
                 self.codex_attention = None;
                 self.program_turn = ProgramTurn::default();
                 self.program_turn_outcome = None;
+                self.program_cancel_pending = false;
+                self.program_error_is_abort = false;
+                self.program_status_children = 0;
                 self.program_status_wait = None;
+                self.program_wait_overlay = None;
                 self.status.observation.program_status = None;
                 self.status.observation.interactions.clear();
                 self.activity = None;
@@ -779,10 +916,18 @@ impl SessionModel {
                     if compacted {
                         self.program_turn.on_compacted();
                     }
+                    if conversation_changed {
+                        let cleared = self.apply_program_wait_overlay(false, live, now);
+                        if cleared.publication.is_some() || cleared.input_cleared {
+                            effects = cleared;
+                        }
+                    }
                     if conversation_changed
                         && (!self.program_turn.has_unmatched_native()
                             || self.program_turn_outcome == Some(TurnOutcome::Interrupted))
                     {
+                        self.program_cancel_pending = false;
+                        self.program_error_is_abort = false;
                         self.program_turn_outcome = None;
                         if self.program_status_authority
                             && !self.hook_status_armed
@@ -794,7 +939,9 @@ impl SessionModel {
                         {
                             let mut observation = self.status.observation.clone();
                             observation.outcome = None;
+                            let input_cleared = effects.input_cleared;
                             effects = self.publish_snapshot(observation, live, now);
+                            effects.input_cleared |= input_cleared;
                             self.completion_armed = false;
                             effects.publication = effects
                                 .publication
@@ -806,6 +953,8 @@ impl SessionModel {
                 if let agent::AgentEvent::ProgramTurnConfirmed { .. } = event {
                     let started = self.program_turn.on_confirmed();
                     if started {
+                        self.program_cancel_pending = false;
+                        self.program_error_is_abort = false;
                         self.program_turn_outcome = None;
                     }
                     if self.program_status_authority
@@ -816,28 +965,56 @@ impl SessionModel {
                     effects.program_turn_started = started && self.program_status_authority;
                     return effects;
                 }
-                if matches!(
-                    event,
-                    agent::AgentEvent::ProgramTurnFinished
-                        | agent::AgentEvent::ProgramIdentityUnavailable
-                ) {
+                if matches!(event, agent::AgentEvent::ProgramTurnFinished) {
                     return effects;
                 }
-                if let agent::AgentEvent::ProgramTurnOutcome { outcome } = event {
+                if matches!(event, agent::AgentEvent::ProgramIdentityUnavailable) {
+                    return self.apply_program_wait_overlay(false, live, now);
+                }
+                if let agent::AgentEvent::ProgramWaitOverlay { active } = event {
+                    return self.apply_program_wait_overlay(active, live, now);
+                }
+                if let agent::AgentEvent::ProgramTurnOutcome { outcome, policy } = event {
                     if !self.program_status_authority
                         || self.hook_status_armed
                         || matches!(self.status.lifecycle, Lifecycle::Stopped | Lifecycle::Error)
                     {
                         return effects;
                     }
+                    let has_native = self.status.observation.program_status.is_some();
+                    match policy {
+                        agent::ProgramOutcomePolicy::NativeFallbackOnly if has_native => {
+                            return effects;
+                        }
+                        agent::ProgramOutcomePolicy::DeferWhileNativeActive if has_native => {
+                            if self.program_turn.native_working
+                                || self.program_status_wait.is_some()
+                            {
+                                self.program_turn_outcome = Some(outcome);
+                                return effects;
+                            }
+                            if self.status.observation.outcome == Some(TurnOutcome::Completed)
+                                || (self.status.observation.outcome == Some(TurnOutcome::Failed)
+                                    && !self.program_error_is_abort)
+                            {
+                                return effects;
+                            }
+                        }
+                        _ => {}
+                    }
                     self.program_turn.native_working = false;
                     self.program_status_wait = None;
+                    self.program_cancel_pending = false;
+                    self.program_error_is_abort = false;
                     self.program_turn_outcome = Some(outcome);
                     let mut observation = self.status.observation.clone();
                     observation.activity = Activity::Idle;
                     observation.source = ObservationSource::Baseline;
                     observation.outcome = Some(outcome);
                     observation.interactions.clear();
+                    if let Some(overlay) = &self.program_wait_overlay {
+                        observation.interactions.push(overlay.clone());
+                    }
                     observation.detail = None;
                     effects = self.publish_snapshot(observation, live, now);
                     self.completion_armed = false;
@@ -856,7 +1033,11 @@ impl SessionModel {
             SessionEvent::BridgeFailed { live } => {
                 self.program_turn = ProgramTurn::default();
                 self.program_turn_outcome = None;
+                self.program_cancel_pending = false;
+                self.program_error_is_abort = false;
+                self.program_status_children = 0;
                 self.program_status_wait = None;
+                self.program_wait_overlay = None;
                 self.native_input = None;
                 self.completion_armed = false;
                 let fallback = AgentObservation {
@@ -874,8 +1055,22 @@ impl SessionModel {
                 };
                 effects = self.publish_snapshot(fallback, live, now);
             }
-            SessionEvent::Input { class, submitted } => {
+            SessionEvent::Input {
+                class,
+                submitted,
+                cancel,
+            } => {
                 let completion_before = self.completion_armed;
+                if cancel
+                    && self.program_status_authority
+                    && self.program_status_cancel_interrupt
+                    && !self.hook_status_armed
+                    && (self.program_turn.native_working
+                        || self.program_turn.pending_hook > 0
+                        || self.status.observation.activity == Activity::Working)
+                {
+                    self.program_cancel_pending = true;
+                }
                 if self.activity.is_some() && submitted {
                     self.suppress_local_input_busy = false;
                     if self.activity == Some(SessionActivityState::Idle) {
@@ -939,6 +1134,11 @@ impl SessionModel {
                     &mut self.last_local_input_at,
                     before.input_at,
                     &after.input_at,
+                );
+                undo(
+                    &mut self.program_cancel_pending,
+                    before.cancel_pending,
+                    &after.cancel_pending,
                 );
                 // Every later activity report advances the revision, even one that agrees with
                 // the input's busy, and then owns the turn.
@@ -1061,7 +1261,11 @@ impl SessionModel {
                 self.codex_attention = None;
                 self.program_turn = ProgramTurn::default();
                 self.program_turn_outcome = None;
+                self.program_cancel_pending = false;
+                self.program_error_is_abort = false;
+                self.program_status_children = 0;
                 self.program_status_wait = None;
+                self.program_wait_overlay = None;
                 self.status.observation.program_status = None;
                 self.hook_status_armed = false;
                 self.submit_busy = None;
@@ -1079,6 +1283,59 @@ impl SessionModel {
                 self.key = Some(report);
             }
         }
+        effects
+    }
+
+    fn apply_program_wait_overlay(&mut self, active: bool, live: bool, now: Now) -> Effects {
+        if !self.program_status_authority
+            || self.hook_status_armed
+            || matches!(self.status.lifecycle, Lifecycle::Stopped | Lifecycle::Error)
+        {
+            return Effects::default();
+        }
+        if active {
+            if self.program_wait_overlay.is_some() {
+                return Effects::default();
+            }
+            self.next_program_status_wait += 1;
+            let overlay = HumanInteraction {
+                id: format!("program-wait:{}", self.next_program_status_wait),
+                reason: WaitReason::Unknown,
+                owners: Vec::new(),
+                since: now.wall_millis,
+            };
+            self.program_wait_overlay = Some(overlay.clone());
+            if self.program_status_wait.is_some() {
+                return Effects::default();
+            }
+            let mut observation = self.status.observation.clone();
+            observation.interactions = vec![overlay];
+            let completion_armed = self.completion_armed;
+            let mut effects = self.publish_snapshot(observation, live, now);
+            self.completion_armed = completion_armed;
+            effects.publication = effects
+                .publication
+                .map(|(state, _)| (state, StatusSource::ProgramStatus));
+            return effects;
+        }
+        if self.program_wait_overlay.take().is_none() || self.program_status_wait.is_some() {
+            return Effects::default();
+        }
+        let mut observation = self.status.observation.clone();
+        observation.interactions.clear();
+        if observation.program_status.is_none() && observation.outcome.is_none() {
+            observation.activity = match self.baseline_activity {
+                Some(SessionActivityState::Busy) => Activity::Working,
+                Some(SessionActivityState::Idle) => Activity::Idle,
+                None => Activity::Unavailable,
+            };
+        }
+        let completion_armed = self.completion_armed;
+        let mut effects = self.publish_snapshot(observation, live, now);
+        self.completion_armed = completion_armed;
+        effects.publication = effects
+            .publication
+            .map(|(state, _)| (state, StatusSource::ProgramStatus));
         effects
     }
 
@@ -1273,7 +1530,9 @@ impl SessionModel {
         }
         // Native attention outlives byte activity and local cancellation; only
         // a subsequent Codex status report or process lifecycle can release it.
-        if (self.codex_attention.is_some() || self.status.observation.program_status.is_some())
+        if (self.codex_attention.is_some()
+            || self.program_wait_overlay.is_some()
+            || self.status.observation.program_status.is_some())
             && source == StatusSource::Forwarder
         {
             return false;

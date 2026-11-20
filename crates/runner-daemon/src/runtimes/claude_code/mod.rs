@@ -42,15 +42,16 @@ pub(crate) fn inject_claude_settings(role_args: &[String]) -> bool {
         .any(|arg| arg == "--settings" || arg.starts_with("--settings="))
 }
 
+#[cfg(test)]
 pub(crate) fn claude_settings_args(
     role_args: &[String],
     app_data_dir: &Path,
     _runner_session_id: &str,
 ) -> Vec<String> {
-    claude_launch_settings(role_args, app_data_dir, true)
+    claude_launch_settings(role_args, app_data_dir)
 }
 
-fn claude_launch_settings(role_args: &[String], app_data_dir: &Path, status: bool) -> Vec<String> {
+fn claude_launch_settings(role_args: &[String], app_data_dir: &Path) -> Vec<String> {
     if !inject_claude_settings(role_args) {
         return Vec::new();
     }
@@ -63,42 +64,20 @@ fn claude_launch_settings(role_args: &[String], app_data_dir: &Path, status: boo
         "theme": "auto",
         "hooks": {},
     });
-    for event in [
-        "SessionStart",
-        "PermissionRequest",
-        "PermissionDenied",
-        "PostToolUseFailure",
-        "Elicitation",
-        "ElicitationResult",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "PreCompact",
-        "PostCompact",
-        "Notification",
-        "Stop",
-        "StopFailure",
-    ] {
-        if !status && event != "SessionStart" {
-            continue;
-        }
+    for &event in claude_status::EVENTS {
         if !ClaudeCode
             .status_hooks()
             .is_some_and(|hooks| hooks.supported(cfg!(windows)))
         {
             continue;
         }
-        let mut entry = serde_json::json!({
+        let entry = serde_json::json!({
             "hooks": [{
                 "type": "command",
                 "command": hook_report_command(app_data_dir, Runtime::ClaudeCode, event, false),
                 "timeout": HOOK_TIMEOUT_SECS,
             }],
         });
-        if event == "Notification" {
-            entry["matcher"] =
-                serde_json::json!("^(idle_prompt|permission_prompt|elicitation_dialog)$");
-        }
         if let Some(entries) = settings["hooks"][event].as_array_mut() {
             entries.push(entry);
         } else {
@@ -269,14 +248,10 @@ impl RuntimeAdapter for ClaudeCode {
     }
     fn status_semantics(&self) -> StatusSemantics {
         StatusSemantics {
-            interaction_prefix: Some("claude"),
-            batch_feedback: true,
-            program_status_without_hooks: true,
-            compaction: CompactionPolicy::ResumeUnfinishedTurn,
-            compaction_requires_start: true,
-            permission_prompt: PermissionPromptPolicy::VisibleCandidates,
-            elicitation_uses_requests: true,
-            idle_clears_compaction: true,
+            program_status_authority: true,
+            program_status_root_app: Some("claude-code"),
+            program_status_transcript_outcomes: true,
+            program_status_cancel_interrupt: true,
             ..Default::default()
         }
     }
@@ -334,7 +309,18 @@ impl RuntimeAdapter for ClaudeCode {
         crate::runtime_defaults::json_defaults(&settings_path(home), false)
     }
 
-    fn startup_delivery_uses_hooks(&self, _pending_turn: bool) -> bool {
+    fn terminal_adapter(&self, _pending_turn: Option<bool>) -> Option<Box<dyn TerminalAdapter>> {
+        Some(Box::new(ProgramStatusTerminal::default()))
+    }
+    fn starts_trusted(
+        &self,
+        cwd: Option<&Path>,
+        _args: &[String],
+        env: &std::collections::BTreeMap<String, String>,
+    ) -> bool {
+        cwd.is_some_and(|cwd| trust::has_project_trust(cwd, spawned_config_dir(env)))
+    }
+    fn startup_delivery_waits_for_program_status(&self, _pending_turn: bool) -> bool {
         true
     }
     fn status_hooks(&self) -> Option<&'static dyn StatusHooks> {
@@ -453,11 +439,7 @@ impl RuntimeAdapter for ClaudeCode {
     fn launch_args(&self, ctx: &LaunchContext<'_>) -> Vec<String> {
         let mut out = Vec::new();
         out.extend(self.model_effort_args(ctx.model, ctx.effort));
-        out.extend(if status_hooks_enabled(ctx.env) {
-            claude_settings_args(ctx.role_args, ctx.app_data_dir, ctx.session_id)
-        } else {
-            claude_launch_settings(ctx.role_args, ctx.app_data_dir, false)
-        });
+        out.extend(claude_launch_settings(ctx.role_args, ctx.app_data_dir));
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out
     }

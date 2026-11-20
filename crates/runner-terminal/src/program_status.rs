@@ -27,9 +27,17 @@ pub struct Report {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChildCount {
+    pub app: Option<String>,
+    pub active: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Update {
     pub current: Option<Report>,
     pub trigger: Option<Report>,
+    pub root: Option<Report>,
+    pub active_children: Vec<ChildCount>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -73,7 +81,7 @@ pub struct ActivityFilter(Parser);
 
 impl ActivityFilter {
     pub fn observe(&mut self, bytes: &[u8]) -> usize {
-        self.0.scan(bytes);
+        self.0.scan_activity(bytes);
         self.0.activity_bytes()
     }
 
@@ -133,13 +141,21 @@ impl Parser {
         }
     }
 
-    fn finish_osc(&mut self) -> Option<Event> {
+    fn finish_osc(&mut self, collect_events: bool) -> Option<Event> {
         if self.pending_bytes > 0 {
             self.pending_bytes += 1;
         } else {
             self.activity_bytes += 1;
         }
         let is_7501 = self.payload.starts_with(b"7501;");
+        if !collect_events {
+            if is_7501 && self.is_valid_7501() {
+                self.pending_bytes = 0;
+            } else {
+                self.release_activity();
+            }
+            return None;
+        }
         let event = self.finish();
         if is_7501 && event.is_some() {
             self.pending_bytes = 0;
@@ -149,9 +165,28 @@ impl Parser {
         event
     }
 
+    fn is_valid_7501(&self) -> bool {
+        if self.length > 4096 || self.discard_report {
+            return false;
+        }
+        let Some(payload) = self.payload.strip_prefix(b"7501;") else {
+            return false;
+        };
+        payload == b"?" || parse_report(payload).is_some()
+    }
+
+    pub(crate) fn scan_activity(&mut self, bytes: &[u8]) {
+        self.scan_inner(bytes, None);
+    }
+
     pub(crate) fn scan(&mut self, bytes: &[u8]) -> Vec<(usize, Event)> {
-        self.activity_bytes = 0;
         let mut events = Vec::new();
+        self.scan_inner(bytes, Some(&mut events));
+        events
+    }
+
+    fn scan_inner(&mut self, bytes: &[u8], mut events: Option<&mut Vec<(usize, Event)>>) {
+        self.activity_bytes = 0;
         for (index, &byte) in bytes.iter().enumerate() {
             let mut changed = false;
             self.mode = match self.mode {
@@ -175,9 +210,11 @@ impl Parser {
                     b'c' => {
                         self.release_activity();
                         self.activity_bytes += 1;
-                        changed = !self.records.is_empty();
-                        self.records.clear();
-                        self.shell_finished = false;
+                        if events.is_some() {
+                            changed = !self.records.is_empty();
+                            self.records.clear();
+                            self.shell_finished = false;
+                        }
                         Mode::Ground
                     }
                     0x1b => {
@@ -195,14 +232,18 @@ impl Parser {
                     self.length = (self.length + 1).min(4097);
                     match byte {
                         b'\\' if matches!(self.mode, Mode::OscEscape) => {
-                            if let Some(event) = self.finish_osc() {
-                                events.push((index + 1, event));
+                            if let Some(event) = self.finish_osc(events.is_some()) {
+                                if let Some(out) = events.as_deref_mut() {
+                                    out.push((index + 1, event));
+                                }
                             }
                             Mode::Ground
                         }
                         0x07 if matches!(self.mode, Mode::Osc) => {
-                            if let Some(event) = self.finish_osc() {
-                                events.push((index + 1, event));
+                            if let Some(event) = self.finish_osc(events.is_some()) {
+                                if let Some(out) = events.as_deref_mut() {
+                                    out.push((index + 1, event));
+                                }
                             }
                             Mode::Ground
                         }
@@ -240,9 +281,11 @@ impl Parser {
                                 b'c' => {
                                     self.release_activity();
                                     self.activity_bytes += 1;
-                                    changed = !self.records.is_empty();
-                                    self.records.clear();
-                                    self.shell_finished = false;
+                                    if events.is_some() {
+                                        changed = !self.records.is_empty();
+                                        self.records.clear();
+                                        self.shell_finished = false;
+                                    }
                                     Mode::Ground
                                 }
                                 _ => {
@@ -283,16 +326,12 @@ impl Parser {
                 }
             };
             if changed {
-                events.push((
-                    index + 1,
-                    Event::Changed(Box::new(Update {
-                        current: self.current(),
-                        trigger: None,
-                    })),
-                ));
+                let update = self.update(None);
+                if let Some(out) = events.as_deref_mut() {
+                    out.push((index + 1, Event::Changed(Box::new(update))));
+                }
             }
         }
-        events
     }
 
     fn finish(&mut self) -> Option<Event> {
@@ -315,12 +354,8 @@ impl Parser {
             let before = self.records.len();
             self.records
                 .retain(|report| matches!(report.state, State::Done | State::Error));
-            return (before != self.records.len()).then(|| {
-                Event::Changed(Box::new(Update {
-                    current: self.current(),
-                    trigger: None,
-                }))
-            });
+            return (before != self.records.len())
+                .then(|| Event::Changed(Box::new(self.update(None))));
         }
         let payload = self.payload.strip_prefix(b"7501;")?;
         if payload == b"?" {
@@ -330,7 +365,7 @@ impl Parser {
             return None;
         }
         let report = parse_report(payload)?;
-        let trigger = report.clone();
+        let mut trigger = report.clone();
         if report.state == State::Clear {
             self.records.retain(|entry| {
                 !report.id.is_empty()
@@ -343,11 +378,96 @@ impl Parser {
                 self.records.pop_front();
             }
             self.records.push_back(report);
+            self.resolve_app(&mut trigger);
         }
-        Some(Event::Changed(Box::new(Update {
+        Some(Event::Changed(Box::new(self.update(Some(trigger)))))
+    }
+
+    fn update(&self, trigger: Option<Report>) -> Update {
+        Update {
             current: self.current(),
-            trigger: Some(trigger),
-        })))
+            trigger,
+            root: self.root(),
+            active_children: self.active_children(),
+        }
+    }
+
+    fn resolve_app_ref<'a>(&'a self, report: &'a Report) -> Option<&'a str> {
+        if let Some(app) = report.app.as_deref() {
+            return Some(app);
+        }
+        let mut ancestor = report.id.as_str();
+        while !ancestor.is_empty() {
+            ancestor = ancestor.rsplit_once('/').map_or("", |(parent, _)| parent);
+            if let Some(app) = self
+                .records
+                .iter()
+                .find(|entry| entry.id == ancestor)
+                .and_then(|entry| entry.app.as_deref())
+            {
+                return Some(app);
+            }
+        }
+        None
+    }
+
+    fn resolve_app(&self, report: &mut Report) {
+        if report.app.is_none() {
+            report.app = self.resolve_app_ref(report).map(str::to_owned);
+        }
+    }
+
+    fn root(&self) -> Option<Report> {
+        self.records
+            .iter()
+            .find(|entry| entry.id.is_empty())
+            .cloned()
+    }
+
+    fn active_children(&self) -> Vec<ChildCount> {
+        let mut counts: Vec<ChildCount> = Vec::new();
+        let app_index: Option<std::collections::HashMap<&str, &str>> = if self.records.len() > 8 {
+            Some(
+                self.records
+                    .iter()
+                    .filter_map(|entry| Some((entry.id.as_str(), entry.app.as_deref()?)))
+                    .collect(),
+            )
+        } else {
+            None
+        };
+        for entry in &self.records {
+            if entry.id.is_empty() || !matches!(entry.state, State::Working | State::Blocked) {
+                continue;
+            }
+            let app = if let Some(index) = app_index.as_ref() {
+                if let Some(explicit) = entry.app.as_deref() {
+                    Some(explicit)
+                } else {
+                    let mut ancestor = entry.id.as_str();
+                    let mut found = None;
+                    while !ancestor.is_empty() {
+                        ancestor = ancestor.rsplit_once('/').map_or("", |(parent, _)| parent);
+                        if let Some(&inherited) = index.get(ancestor) {
+                            found = Some(inherited);
+                            break;
+                        }
+                    }
+                    found
+                }
+            } else {
+                self.resolve_app_ref(entry)
+            };
+            if let Some(existing) = counts.iter_mut().find(|item| item.app.as_deref() == app) {
+                existing.active += 1;
+            } else {
+                counts.push(ChildCount {
+                    app: app.map(str::to_owned),
+                    active: 1,
+                });
+            }
+        }
+        counts
     }
 
     fn current(&self) -> Option<Report> {
@@ -368,21 +488,7 @@ impl Parser {
             })?
             .1
             .clone();
-        if report.app.is_none() {
-            let mut ancestor = report.id.as_str();
-            while !ancestor.is_empty() {
-                ancestor = ancestor.rsplit_once('/').map_or("", |(parent, _)| parent);
-                if let Some(app) = self
-                    .records
-                    .iter()
-                    .find(|entry| entry.id == ancestor)
-                    .and_then(|entry| entry.app.clone())
-                {
-                    report.app = Some(app);
-                    break;
-                }
-            }
-        }
+        self.resolve_app(&mut report);
         Some(report)
     }
 }
@@ -961,5 +1067,99 @@ mod tests {
             }
             assert_eq!(count, aborted.len(), "{aborted:?}");
         }
+    }
+
+    #[test]
+    fn root_and_active_children_stay_separate_across_updates_clears_shell_marks_and_ris() {
+        let mut parser = Parser::default();
+        let mut scan_update = |bytes: &[u8]| -> Update {
+            parser
+                .scan(bytes)
+                .into_iter()
+                .find_map(|(_, event)| match event {
+                    Event::Changed(update) => Some(*update),
+                    _ => None,
+                })
+                .expect("expected Changed update")
+        };
+        let active_for = |update: &Update, app: &str| -> usize {
+            update
+                .active_children
+                .iter()
+                .filter(|c| c.app.as_deref() == Some(app))
+                .map(|c| c.active)
+                .sum()
+        };
+
+        let root_done = scan_update(b"\x1b]7501;state=done:app=claude-code\x1b\\");
+        assert_eq!(root_done.root.as_ref().unwrap().state, State::Done);
+        assert!(root_done.active_children.is_empty());
+
+        // Explicit app child + inherited app child + done child + foreign app child.
+        let one = scan_update(b"\x1b]7501;state=working:id=bg1:app=claude-code\x1b\\");
+        assert_eq!(one.root.as_ref().unwrap().state, State::Done);
+        assert_eq!(
+            one.trigger.as_ref().unwrap().app.as_deref(),
+            Some("claude-code")
+        );
+        assert_eq!(active_for(&one, "claude-code"), 1);
+
+        let two = scan_update(b"\x1b]7501;state=blocked:id=bg2:kind=question\x1b\\");
+        assert_eq!(two.root.as_ref().unwrap().state, State::Done);
+        assert_eq!(
+            two.trigger.as_ref().unwrap().app.as_deref(),
+            Some("claude-code"),
+            "child trigger inherits ancestor app"
+        );
+        assert_eq!(active_for(&two, "claude-code"), 2);
+
+        let done_child = scan_update(b"\x1b]7501;state=done:id=bg3\x1b\\");
+        assert_eq!(active_for(&done_child, "claude-code"), 2);
+
+        let foreign = scan_update(b"\x1b]7501;state=working:id=sub:app=other\x1b\\");
+        assert_eq!(active_for(&foreign, "claude-code"), 2);
+        assert_eq!(active_for(&foreign, "other"), 1);
+
+        // Clearing one child without app= drops only that child and keeps root + siblings.
+        let cleared_one = scan_update(b"\x1b]7501;state=clear:id=bg1\x1b\\");
+        assert_eq!(cleared_one.root.as_ref().unwrap().state, State::Done);
+        assert_eq!(active_for(&cleared_one, "claude-code"), 1);
+        assert_eq!(active_for(&cleared_one, "other"), 1);
+
+        // Shell prompt boundary (133;D + 133;A) keeps Done root and clears active children.
+        let boundary = scan_update(b"\x1b]133;D;0\x07\x1b]133;A\x07");
+        assert!(boundary.trigger.is_none());
+        assert_eq!(boundary.root.as_ref().unwrap().state, State::Done);
+        assert!(boundary.active_children.is_empty());
+
+        // Shell prompt boundary clears Blocked root even when a Done child survives.
+        scan_update(b"\x1b]7501;state=blocked:app=claude-code:kind=permission\x1b\\");
+        let blocked_cleared = scan_update(b"\x1b]133;D;0\x07\x1b]133;A\x07");
+        assert!(blocked_cleared.trigger.is_none());
+        assert!(blocked_cleared.root.is_none());
+        assert!(blocked_cleared.current.is_some());
+
+        // Unscoped root clear drops both root and children.
+        scan_update(b"\x1b]7501;state=done:app=claude-code\x1b\\");
+        scan_update(b"\x1b]7501;state=working:id=bg4:app=claude-code\x1b\\");
+        let cleared_all = scan_update(b"\x1b]7501;state=clear\x1b\\");
+        assert!(cleared_all.root.is_none());
+        assert!(cleared_all.active_children.is_empty());
+        assert!(cleared_all.current.is_none());
+
+        // RIS drops both root and children too.
+        scan_update(b"\x1b]7501;state=idle:app=claude-code\x1b\\");
+        scan_update(b"\x1b]7501;state=working:id=bg5:app=claude-code\x1b\\");
+        let ris = scan_update(b"\x1bc");
+        assert!(ris.root.is_none());
+        assert!(ris.active_children.is_empty());
+
+        // ActivityFilter drops valid OSC 7501 bytes without storing records.
+        let mut filter = ActivityFilter::default();
+        assert_eq!(
+            filter.observe(b"\x1b]7501;state=working:id=bg1:app=claude-code\x1b\\ok"),
+            2
+        );
+        assert!(filter.0.records.is_empty());
     }
 }

@@ -12,7 +12,7 @@ If a copy of Runner from another version or build is open on the same data, a ne
 
 Codex can download its remote plugin catalog on every start. Turn **Settings → Agents → Codex → Launch → Remote plugin catalog** off to skip that download; catalog plugins will no longer load. Start a new session to apply the change.
 
-For runtimes with a **Status hooks** switch (Claude Code, pi, Copilot CLI, OpenCode and Grok), turning it off switches chats to native terminal status or terminal activity. Update Claude Code to 2.1.295+ or pi to 1.1.0+ for native status, or turn **Status hooks** back on for detailed reports; resume still uses the identity hook, and missions keep status hooks for those runtimes. Codex (0.164.0+) and Antigravity CLI use native OSC 7501 terminal status in both chats and missions without a **Status hooks** switch.
+For runtimes with a **Status hooks** switch (Copilot CLI, OpenCode v2 and Grok), turning it off switches chats to terminal activity; turn **Status hooks** back on for detailed reports, while resume still uses the identity hook and missions keep status hooks for those runtimes. Codex (0.164.0+), Claude Code (2.1.295+), pi (1.1.0+) and Antigravity CLI use native OSC 7501 terminal status in both chats and missions without a **Status hooks** switch. If Claude Code or pi falls back to estimated terminal activity, check that `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` (Claude Code) or `PI_PROGRAM_STATUS=0` (pi) is not set in your shell or role environment.
 
 ## An agent is missing or fails to start
 
@@ -79,9 +79,9 @@ Linux notification permissions are managed by your desktop. Runner cannot query 
 
 In a normal Linux window, drag an edge or corner to resize. The middle caption button toggles maximize and restore; maximized/fullscreen windows have no resize border. New windows use the desktop's reported logical display bounds. If the compositor does not report a separate work area, panel/taskbar space may be included in those bounds. Include the desktop/session type and whether maximize, restore or edge dragging failed when reporting a window-control problem.
 
-## Codex is too old for Runner
+## An agent CLI is too old for Runner
 
-Runner requires Codex **0.164.0 or newer**. **Update needed** appears only on Codex’s agent row; role rows have no update labels or actions. Start Codex or any role using it to update Codex before launching, or choose **Update Codex** on a refused chat's card. The pane starts after a successful update. If an old version still appears, check the executable override in **Settings → Agents → Codex** and refresh detection.
+Runner requires Codex **0.164.0 or newer**, Claude Code **2.1.295 or newer**, and pi **1.1.0 or newer**. **Update needed** appears only on that agent’s row; role rows have no update labels or actions. Start the agent or any role using it to update before launching, or choose the **Update** button on a refused chat's card. The pane starts after a successful update. If an old version still appears, check the executable override in **Settings → Agents** and refresh detection.
 
 ## Codex didn't accept Runner's launch flags
 

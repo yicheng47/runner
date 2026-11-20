@@ -51,7 +51,8 @@ fn hook_startup_deadline_requires_output_and_quiet_and_stops_after_any_valid_rep
     startup.on_output_event_at(b"startup", false, start);
     assert!(startup.accept_event(
         &super::super::state::agent::AgentEvent::ProgramTurnConfirmed {
-            conversation_changed: false
+            conversation_changed: false,
+            prompt: None,
         }
     ));
     assert!(!startup.hook_startup_timed_out_at(start + Duration::from_secs(3600)));
@@ -234,6 +235,7 @@ fn codex_identity_watcher_confirms_turns_and_never_fails_program_status_bridge()
                 event:
                     super::super::state::agent::AgentEvent::ProgramTurnConfirmed {
                         conversation_changed: false,
+                        ..
                     },
                 ..
             }) => saw_confirmed = true,
@@ -272,73 +274,6 @@ fn codex_identity_watcher_confirms_turns_and_never_fails_program_status_bridge()
         saw_unavailable,
         "retired identity watcher must emit ProgramIdentityUnavailable for no-OSC startup fallback"
     );
-}
-
-#[test]
-#[cfg(unix)]
-fn claude_feedback_wait_releases_detector_and_ends_on_detach() {
-    struct Watcher(mpsc::Sender<()>);
-    impl HookWatcher for Watcher {
-        fn drain_events(
-            &mut self,
-            _cancel: u8,
-            emit: &mut dyn FnMut(
-                crate::session::state::agent::AgentEvent,
-            ) -> crate::session::state::agent::AdapterFeedback,
-            _session_start: &mut dyn FnMut(String),
-        ) -> crate::error::Result<()> {
-            emit(crate::session::state::agent::AgentEvent::Batch {
-                runtime: crate::model::Runtime::ClaudeCode,
-                events: vec![crate::session::state::agent::AgentEvent::TurnStarted],
-            });
-            self.0.send(()).unwrap();
-            Ok(())
-        }
-    }
-    let detector = Arc::new(Mutex::new(IdleDetector::new_at(
-        DEFAULT_IDLE_THRESHOLD,
-        Instant::now(),
-    )));
-    let stop = Arc::new(AtomicBool::new(false));
-    let (tx, rx) = mpsc::channel();
-    let (ended_tx, ended_rx) = mpsc::channel();
-    let (returned_tx, returned_rx) = mpsc::channel();
-    let monitor = thread::spawn({
-        let detector = Arc::clone(&detector);
-        let stop = Arc::clone(&stop);
-        move || {
-            idle_monitor_thread(
-                detector,
-                tx,
-                stop,
-                Arc::new(AtomicBool::new(false)),
-                Some(HookMonitor {
-                    watcher: Box::new(Watcher(returned_tx)),
-                    program_status_primary: false,
-                }),
-            );
-            ended_tx.send(()).unwrap();
-        }
-    });
-    let event = rx.recv_timeout(Duration::from_secs(2));
-    let has_feedback = matches!(
-        &event,
-        Ok(RuntimeOutput::AgentEvent {
-            feedback: Some(_),
-            ..
-        })
-    );
-    let unlocked = detector.try_lock().is_ok();
-    let waiting = returned_rx.try_recv() == Err(mpsc::TryRecvError::Empty);
-    stop.store(true, Ordering::Release);
-    let ended = ended_rx.recv_timeout(Duration::from_secs(2));
-    drop(event);
-    monitor.join().unwrap();
-    assert!(has_feedback);
-    assert!(unlocked);
-    assert!(waiting);
-    ended.unwrap();
-    returned_rx.try_recv().unwrap();
 }
 
 #[cfg(unix)]
@@ -1032,12 +967,14 @@ fn codex_startup_readiness_input_and_missing_hooks_are_baseline_only() {
     assert_eq!(detector.current, SessionActivityState::Busy);
     assert!(detector.accept_event(
         &super::super::state::agent::AgentEvent::ProgramTurnConfirmed {
-            conversation_changed: false
+            conversation_changed: false,
+            prompt: None,
         }
     ));
     assert!(detector.accept_event(
         &super::super::state::agent::AgentEvent::ProgramTurnOutcome {
             outcome: super::super::status::TurnOutcome::Interrupted,
+            policy: super::super::state::agent::ProgramOutcomePolicy::Immediate,
         }
     ));
     detector.hooks_unavailable();
@@ -1385,6 +1322,7 @@ fn codex_hook_runtime_events_bridge_failure_and_teardown() {
                 event:
                     AgentEvent::ProgramTurnConfirmed {
                         conversation_changed: false,
+                        ..
                     },
                 ..
             }) => confirmed += 1,
@@ -1519,7 +1457,7 @@ fn copilot_hook_runtime_uses_shared_reporter_interrupt_and_bridge_fallback() {
 #[test]
 #[cfg(unix)]
 fn pi_hook_runtime_uses_external_extension_without_an_input_interrupt_signal() {
-    use super::super::status::{Activity, TurnOutcome};
+    use super::super::state::agent::AgentEvent;
     let rt = PtyRuntime::new();
     let mut spawn = spec("pi-hooks", "/bin/cat", &[]);
     spawn.agent_runtime = Some(crate::model::Runtime::Pi);
@@ -1534,7 +1472,33 @@ fn pi_hook_runtime_uses_external_extension_without_an_input_interrupt_signal() {
         }),
         serde_json::json!({
             "generation":"current",
+            "hook_event_name":"editor_draft",
+            "drafting":true,
+        }),
+        serde_json::json!({
+            "generation":"current",
+            "hook_event_name":"input",
+            "session_id":"11111111-1111-4111-8111-111111111111",
+            "text":"hello",
+        }),
+        // Removed status hooks must be ignored.
+        serde_json::json!({
+            "generation":"current",
             "hook_event_name":"agent_start",
+        }),
+        serde_json::json!({
+            "generation":"current",
+            "hook_event_name":"tool_execution_start",
+        }),
+        serde_json::json!({
+            "generation":"current",
+            "hook_event_name":"ui_prompt_start",
+            "kind":"confirm",
+        }),
+        serde_json::json!({
+            "generation":"current",
+            "hook_event_name":"ui_prompt_end",
+            "kind":"confirm",
         }),
         serde_json::json!({
             "generation":"current",
@@ -1544,6 +1508,12 @@ fn pi_hook_runtime_uses_external_extension_without_an_input_interrupt_signal() {
         serde_json::json!({
             "generation":"current",
             "hook_event_name":"agent_settled",
+        }),
+        // FIFO fence proving all removed status hooks were drained.
+        serde_json::json!({
+            "generation":"current",
+            "hook_event_name":"editor_draft",
+            "drafting":false,
         }),
     ] {
         admit_hook(
@@ -1555,96 +1525,194 @@ fn pi_hook_runtime_uses_external_extension_without_an_input_interrupt_signal() {
         );
     }
     let deadline = Instant::now() + Duration::from_secs(3);
-    let mut values = Vec::new();
-    while values.len() < 3 && Instant::now() < deadline {
-        if let Ok(super::super::runtime::TestOutput::AgentObservation(value)) =
-            stream.recv_status_timeout(Duration::from_millis(50))
-        {
-            values.push(value);
+    let mut saw_key = false;
+    let mut started = 0usize;
+    let mut confirmed = 0usize;
+    let mut overlays = Vec::new();
+    let mut drafts = Vec::new();
+    while !(saw_key && started >= 1 && confirmed >= 1 && overlays.len() >= 2 && drafts.len() >= 2)
+        && Instant::now() < deadline
+    {
+        match stream.recv_timeout(Duration::from_millis(50)) {
+            Ok(RuntimeOutput::ConversationStart(id))
+                if id == "11111111-1111-4111-8111-111111111111" =>
+            {
+                saw_key = true;
+            }
+            Ok(RuntimeOutput::AgentEvent {
+                event:
+                    AgentEvent::ProgramSessionStarted {
+                        conversation_changed: false,
+                        compacted: false,
+                    },
+                ..
+            }) => started += 1,
+            Ok(RuntimeOutput::AgentEvent {
+                event:
+                    AgentEvent::ProgramTurnConfirmed {
+                        conversation_changed: false,
+                        prompt,
+                    },
+                ..
+            }) => {
+                assert_eq!(prompt.as_deref(), Some("hello"));
+                confirmed += 1;
+            }
+            Ok(RuntimeOutput::AgentEvent {
+                event: AgentEvent::ProgramWaitOverlay { active },
+                ..
+            }) => overlays.push(active),
+            Ok(RuntimeOutput::AgentEvent {
+                event: AgentEvent::EditorDraft { drafting },
+                ..
+            }) => drafts.push(drafting),
+            Ok(RuntimeOutput::AgentEvent { event, .. }) => {
+                panic!("removed pi status hook must not emit agent event: {event:?}")
+            }
+            Ok(RuntimeOutput::StatusBridgeFailed) => {
+                panic!("pi program-status runtime must not emit StatusBridgeFailed")
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
+    assert!(saw_key);
+    assert_eq!(started, 1);
+    assert_eq!(confirmed, 1);
+    assert_eq!(overlays, vec![true, false]);
+    assert_eq!(drafts, vec![true, false]);
+
+    // Retiring the identity route emits ProgramIdentityUnavailable, never StatusBridgeFailed.
     rt.hooks.retire(&session.session_id);
     let deadline = Instant::now() + Duration::from_secs(3);
-    let mut failed = false;
-    while !failed && Instant::now() < deadline {
-        failed = matches!(
-            stream.recv_status_timeout(Duration::from_millis(50)),
-            Ok(super::super::runtime::TestOutput::StatusBridgeFailed)
-        );
+    let mut saw_unavailable = false;
+    while !saw_unavailable && Instant::now() < deadline {
+        match stream.recv_timeout(Duration::from_millis(50)) {
+            Ok(RuntimeOutput::AgentEvent {
+                event: AgentEvent::ProgramIdentityUnavailable,
+                ..
+            }) => saw_unavailable = true,
+            Ok(RuntimeOutput::StatusBridgeFailed) => {
+                panic!("pi program-status runtime must not emit StatusBridgeFailed on retire")
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
     }
+    assert!(saw_unavailable);
+
     rt.stop(&session).unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
     let mut closed = false;
     while !closed && Instant::now() < deadline {
         closed = matches!(
-            stream.recv_status_timeout(Duration::from_millis(50)),
+            stream.recv_timeout(Duration::from_millis(50)),
             Err(mpsc::RecvTimeoutError::Disconnected)
         );
     }
-    assert!(failed);
     assert!(closed);
-    assert_eq!(
-        values
-            .iter()
-            .map(|value| value.activity)
-            .collect::<Vec<_>>(),
-        [Activity::Idle, Activity::Working, Activity::Ready]
-    );
-    assert_eq!(values[2].outcome, Some(TurnOutcome::Completed));
 }
 
 #[test]
 #[cfg(unix)]
 fn claude_hook_admission_feeds_runtime_output_and_closes_on_exit() {
+    use super::super::state::agent::AgentEvent;
     let rt = PtyRuntime::new();
     let mut spawn = spec("hooks", "/bin/cat", &[]);
     spawn.agent_runtime = Some(crate::model::Runtime::ClaudeCode);
     spawn.env.insert(GENERATION_ENV.into(), "current".into());
     let (session, stream) = rt.spawn(spawn).unwrap();
-    for event in [
-        "UserPromptSubmit",
-        "Stop",
-        "PreToolUse",
-        "StopFailure",
-        "Notification",
+    let sid = "11111111-1111-4111-8111-111111111111";
+    admit_hook(
+        &rt,
+        "hooks",
+        crate::model::Runtime::ClaudeCode,
+        "SessionStart",
+        serde_json::json!({"session_id": sid, "source": "startup"}),
+    );
+    for (event, payload) in [
+        (
+            "UserPromptSubmit",
+            serde_json::json!({"session_id": sid, "prompt": "first"}),
+        ),
+        ("PreToolUse", serde_json::json!({"session_id": sid})),
+        ("PermissionRequest", serde_json::json!({"session_id": sid})),
+        ("Elicitation", serde_json::json!({"session_id": sid})),
+        (
+            "Notification",
+            serde_json::json!({"session_id": sid, "notification_type": "idle_prompt"}),
+        ),
+        ("Stop", serde_json::json!({"session_id": sid})),
+        ("StopFailure", serde_json::json!({"session_id": sid})),
+        // FIFO fence proving all removed status hooks were drained.
+        (
+            "UserPromptSubmit",
+            serde_json::json!({"session_id": sid, "prompt": "second"}),
+        ),
     ] {
         admit_hook(
             &rt,
             "hooks",
             crate::model::Runtime::ClaudeCode,
             event,
-            serde_json::json!({"notification_type":"idle_prompt"}),
+            payload,
         );
     }
     let deadline = Instant::now() + Duration::from_secs(3);
-    let mut statuses = Vec::new();
-    while statuses.len() < 5 {
-        assert!(
-            Instant::now() < deadline,
-            "missing hook transitions: {statuses:?}"
-        );
-        if let Ok(super::super::runtime::TestOutput::AgentObservation(observation)) =
-            stream.recv_status_timeout(Duration::from_millis(50))
-        {
-            statuses.push(
-                if observation.activity == super::super::status::Activity::Working {
-                    SessionActivityState::Busy
-                } else {
-                    SessionActivityState::Idle
-                },
-            );
+    let mut saw_key = false;
+    let mut started = 0usize;
+    let mut prompts = Vec::new();
+    while !(saw_key && started >= 1 && prompts.len() >= 2) && Instant::now() < deadline {
+        match stream.recv_timeout(Duration::from_millis(50)) {
+            Ok(RuntimeOutput::ConversationStart(id)) if id == sid => saw_key = true,
+            Ok(RuntimeOutput::AgentEvent {
+                event:
+                    AgentEvent::ProgramSessionStarted {
+                        conversation_changed: false,
+                        compacted: false,
+                    },
+                ..
+            }) => started += 1,
+            Ok(RuntimeOutput::AgentEvent {
+                event:
+                    AgentEvent::ProgramTurnConfirmed {
+                        conversation_changed: false,
+                        prompt,
+                    },
+                ..
+            }) => prompts.push(prompt),
+            Ok(RuntimeOutput::AgentEvent { event, .. }) => {
+                panic!("removed Claude status hook must not emit agent event: {event:?}")
+            }
+            Ok(RuntimeOutput::StatusBridgeFailed) => {
+                panic!("Claude program-status runtime must not emit StatusBridgeFailed")
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
-    assert_eq!(
-        statuses,
-        [
-            SessionActivityState::Busy,
-            SessionActivityState::Idle,
-            SessionActivityState::Busy,
-            SessionActivityState::Idle,
-            SessionActivityState::Idle,
-        ]
-    );
+    assert!(saw_key);
+    assert_eq!(started, 1);
+    assert_eq!(prompts, vec![Some("first".into()), Some("second".into())]);
+
+    rt.hooks.retire(&session.session_id);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut saw_unavailable = false;
+    while !saw_unavailable && Instant::now() < deadline {
+        match stream.recv_timeout(Duration::from_millis(50)) {
+            Ok(RuntimeOutput::AgentEvent {
+                event: AgentEvent::ProgramIdentityUnavailable,
+                ..
+            }) => saw_unavailable = true,
+            Ok(RuntimeOutput::StatusBridgeFailed) => {
+                panic!("Claude program-status runtime must not emit StatusBridgeFailed on retire")
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    assert!(saw_unavailable);
+
     rt.stop(&session).unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
@@ -1653,7 +1721,7 @@ fn claude_hook_admission_feeds_runtime_output_and_closes_on_exit() {
             "hook watcher kept output channel alive"
         );
         if let Err(mpsc::RecvTimeoutError::Disconnected) =
-            stream.recv_status_timeout(Duration::from_millis(50))
+            stream.recv_timeout(Duration::from_millis(50))
         {
             break;
         }
@@ -1661,167 +1729,26 @@ fn claude_hook_admission_feeds_runtime_output_and_closes_on_exit() {
 }
 
 #[test]
-#[cfg(unix)]
-fn claude_interrupt_keys_go_idle_without_a_hook_and_allow_dialog_recovery() {
-    let rt = PtyRuntime::new();
-    let mut spawn = spec(
-        "interrupt",
-        "/bin/sh",
-        &["-c", "trap '' INT; printf ready; exec cat"],
-    );
-    spawn.agent_runtime = Some(crate::model::Runtime::ClaudeCode);
-    spawn.env.insert(GENERATION_ENV.into(), "current".into());
-    let (session, stream) = rt.spawn(spawn).unwrap();
-    let mut ready = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while !ready.windows(5).any(|bytes| bytes == b"ready") {
-        assert!(Instant::now() < deadline, "test child did not become ready");
-        if let Ok(super::super::runtime::TestOutput::Stream(bytes)) =
-            stream.recv_status_timeout(IDLE_MONITOR_POLL)
-        {
-            ready.extend(bytes);
-        }
-    }
-    let wait_for_status = |expected: SessionActivityState, expected_source: &str| {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            assert!(
-                Instant::now() < deadline,
-                "missing {expected_source} {expected:?}"
-            );
-            if let Ok(super::super::runtime::TestOutput::AgentObservation(observation)) =
-                stream.recv_status_timeout(IDLE_MONITOR_POLL)
-            {
-                let state = if observation.activity == super::super::status::Activity::Working {
-                    SessionActivityState::Busy
-                } else {
-                    SessionActivityState::Idle
-                };
-                if state == expected {
-                    assert_eq!(
-                        observation.activity,
-                        if expected == SessionActivityState::Busy {
-                            super::super::status::Activity::Working
-                        } else {
-                            super::super::status::Activity::Ready
-                        }
-                    );
-                    assert_eq!(
-                        observation.outcome == Some(super::super::status::TurnOutcome::Interrupted),
-                        expected_source != "hook"
-                    );
-                    break;
-                }
-            }
-        }
-    };
-    for (interrupt, source) in [
-        (b"\x03".as_slice(), "input-interrupt"),
-        (b"\x1b", "input-escape"),
-        (b"\x1b[99;5u", "input-interrupt"),
-        (b"\x1b[27u", "input-escape"),
+fn interrupt_key_recognizes_raw_and_kitty_cancel_keys_and_ignores_editing_and_pastes() {
+    for (bytes, expected) in [
+        (
+            b"\x03".as_slice(),
+            Some(super::super::state::CTRL_C_INTERRUPT),
+        ),
+        (b"\x1b", Some(super::super::state::ESCAPE_INTERRUPT)),
+        (b"\x1b[99;5u", Some(super::super::state::CTRL_C_INTERRUPT)),
+        (b"\x1b[27u", Some(super::super::state::ESCAPE_INTERRUPT)),
+        (b"\x1b[A", None),
+        (b"\x1bd", None),
+        (b"\x1b[100;3u", None),
+        (b"\x1b[13;2u", None),
+        (b"x", None),
+        (b"\x1b[200~\x03\x1b[201~", None),
+        (b"\x1b[200~\x1b\x1b[201~", None),
+        (b"\x1b[200~\x1b[27u\x1b[99;5u\x1b[201~", None),
     ] {
-        admit_hook(
-            &rt,
-            "interrupt",
-            crate::model::Runtime::ClaudeCode,
-            "PreToolUse",
-            serde_json::json!({"tool_name":"AskUserQuestion"}),
-        );
-        wait_for_status(SessionActivityState::Busy, "hook");
-        for bytes in [
-            b"\x1b[A".as_slice(),
-            b"\x1bd",
-            b"\x1b[100;3u",
-            b"\x1b[13;2u",
-            b"x",
-            b"\x1b[200~\x03\x1b[201~",
-            b"\x1b[200~\x1b\x1b[201~",
-            b"\x1b[200~\x1b[27u\x1b[99;5u\x1b[201~",
-        ] {
-            rt.send_bytes(&session, bytes).unwrap();
-        }
-        let deadline = Instant::now() + IDLE_MONITOR_POLL * 3;
-        while Instant::now() < deadline {
-            assert!(!matches!(
-                stream.recv_status_timeout(IDLE_MONITOR_POLL),
-                Ok(super::super::runtime::TestOutput::AgentObservation(
-                    super::super::status::AgentObservation {
-                        outcome: Some(super::super::status::TurnOutcome::Interrupted),
-                        ..
-                    }
-                ))
-            ));
-        }
-        rt.send_bytes(&session, interrupt).unwrap();
-        wait_for_status(SessionActivityState::Idle, source);
+        assert_eq!(interrupt_key(bytes), expected, "bytes={bytes:?}");
     }
-    // Cancelling a dialog can continue the turn without another prompt.
-    admit_hook(
-        &rt,
-        "interrupt",
-        crate::model::Runtime::ClaudeCode,
-        "PreToolUse",
-        serde_json::json!({}),
-    );
-    wait_for_status(SessionActivityState::Busy, "hook");
-    rt.stop(&session).unwrap();
-}
-
-#[test]
-#[cfg(unix)]
-fn claude_streamed_kitty_escape_without_stop_allows_a_recovery_turn() {
-    use super::super::status::{Activity, TurnOutcome};
-
-    let rt = PtyRuntime::new();
-    let mut spawn = spec("stream", "/bin/cat", &[]);
-    spawn.agent_runtime = Some(crate::model::Runtime::ClaudeCode);
-    spawn.env.insert(GENERATION_ENV.into(), "current".into());
-    let (session, stream) = rt.spawn(spawn).unwrap();
-    // The live #783 stream ended after UserPromptSubmit with no Stop or tool record.
-    admit_hook(
-        &rt,
-        "stream",
-        crate::model::Runtime::ClaudeCode,
-        "UserPromptSubmit",
-        serde_json::json!({"session_id":"main","prompt_id":"stream"}),
-    );
-    rt.send_bytes(&session, b"\x1b[27u").unwrap();
-    let read_observations = || {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let mut values = Vec::new();
-        while values.len() < 2 && Instant::now() < deadline {
-            if let Ok(super::super::runtime::TestOutput::AgentObservation(value)) =
-                stream.recv_status_timeout(IDLE_MONITOR_POLL)
-            {
-                values.push(value);
-            }
-        }
-        assert_eq!(values.len(), 2);
-        values
-    };
-    let values = read_observations();
-    assert_eq!(values[0].activity, Activity::Working);
-    assert_eq!(values[1].activity, Activity::Ready);
-    assert_eq!(values[1].outcome, Some(TurnOutcome::Interrupted));
-    assert!(values[1].interactions.is_empty());
-    assert_eq!(values[1].detail, None);
-
-    for event in ["UserPromptSubmit", "Stop"] {
-        admit_hook(
-            &rt,
-            "stream",
-            crate::model::Runtime::ClaudeCode,
-            event,
-            serde_json::json!({"session_id":"main","prompt_id":"recovery"}),
-        );
-    }
-    let values = read_observations();
-    assert_eq!(values[0].activity, Activity::Working);
-    assert_eq!(values[0].outcome, None);
-    assert_eq!(values[1].activity, Activity::Ready);
-    assert_eq!(values[1].outcome, Some(TurnOutcome::Completed));
-    rt.stop(&session).unwrap();
 }
 
 #[test]
@@ -2823,6 +2750,7 @@ fn codex_admitted_hooks_bridge_failure_and_teardown_windows() {
                 event:
                     AgentEvent::ProgramTurnConfirmed {
                         conversation_changed: false,
+                        ..
                     },
                 ..
             }) => confirmed += 1,

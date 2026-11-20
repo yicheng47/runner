@@ -97,6 +97,7 @@
     ]
   },
   {
+    "min_version": "2.1.295",
     "name": "claude-code",
     "display_name": "Claude Code",
     "command": "claude",
@@ -300,6 +301,7 @@
     ]
   },
   {
+    "min_version": "1.1.0",
     "name": "pi",
     "display_name": "pi",
     "command": "pi",

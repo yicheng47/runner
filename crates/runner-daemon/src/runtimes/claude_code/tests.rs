@@ -7,22 +7,7 @@ fn claude_settings_on_windows_quote_the_native_reporter_for_bash() {
     let root = Path::new(r"C:\Users\Jason Wang\it's runner app");
     let args = claude_settings_args_for(Runtime::ClaudeCode.key(), &[], root, "session");
     let settings: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
-    for event in [
-        "SessionStart",
-        "PermissionRequest",
-        "PermissionDenied",
-        "PostToolUseFailure",
-        "Elicitation",
-        "ElicitationResult",
-        "UserPromptSubmit",
-        "PreToolUse",
-        "PostToolUse",
-        "PreCompact",
-        "PostCompact",
-        "Notification",
-        "Stop",
-        "StopFailure",
-    ] {
+    for event in ["SessionStart", "UserPromptSubmit"] {
         let entries = settings["hooks"][event].as_array().unwrap();
         let status = entries.last().unwrap()["hooks"][0]["command"]
             .as_str()
@@ -38,6 +23,7 @@ fn claude_settings_on_windows_quote_the_native_reporter_for_bash() {
             hook_report_command(root, Runtime::ClaudeCode, event, false)
         );
     }
+    assert_eq!(settings["hooks"].as_object().unwrap().len(), 2);
 }
 
 #[test]
@@ -299,7 +285,7 @@ fn claude_settings_acknowledge_bypass_only_for_bypass_spawns() {
 }
 
 #[test]
-fn claude_status_hooks_have_short_timeouts_and_match_verified_notifications() {
+fn claude_identity_hooks_install_only_session_start_and_user_prompt_submit() {
     let args = claude_settings_args_for(
         Runtime::ClaudeCode.key(),
         &[],
@@ -307,9 +293,22 @@ fn claude_status_hooks_have_short_timeouts_and_match_verified_notifications() {
         "session",
     );
     let settings: serde_json::Value = serde_json::from_str(&args[1]).unwrap();
-    for event in [
-        "SessionStart",
-        "UserPromptSubmit",
+    let hooks = settings["hooks"].as_object().unwrap();
+    assert_eq!(hooks.len(), 2);
+    for event in ["SessionStart", "UserPromptSubmit"] {
+        let hook = &hooks[event][0]["hooks"][0];
+        assert_eq!(hook["type"], "command", "{event}");
+        assert_eq!(hook["timeout"], 10, "{event}");
+        assert!(hook["command"].as_str().unwrap().contains(&format!(
+            "hook report --runtime claude-code --event {event}"
+        )));
+    }
+    for removed in [
+        "PermissionRequest",
+        "PermissionDenied",
+        "PostToolUseFailure",
+        "Elicitation",
+        "ElicitationResult",
         "PreToolUse",
         "PostToolUse",
         "PreCompact",
@@ -317,20 +316,13 @@ fn claude_status_hooks_have_short_timeouts_and_match_verified_notifications() {
         "Notification",
         "Stop",
         "StopFailure",
+        "SubagentStop",
     ] {
-        let hook = &settings["hooks"][event][0]["hooks"][0];
-        assert_eq!(hook["type"], "command", "{event}");
-        assert_eq!(hook["timeout"], 10, "{event}");
-        assert!(hook["command"].as_str().unwrap().contains(&format!(
-            "hook report --runtime claude-code --event {event}"
-        )));
+        assert!(
+            hooks.get(removed).is_none(),
+            "removed status hook {removed} must not be installed"
+        );
     }
-    assert_eq!(
-        settings["hooks"]["Notification"][0]["matcher"],
-        "^(idle_prompt|permission_prompt|elicitation_dialog)$"
-    );
-    assert!(settings["hooks"]["StopFailure"][0].get("matcher").is_none());
-    assert!(settings["hooks"].get("SubagentStop").is_none());
 }
 
 #[test]
