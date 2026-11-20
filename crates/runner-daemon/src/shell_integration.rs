@@ -572,7 +572,7 @@ mod real_shells {
             160,
             40,
             runner_terminal::terminal::ModelOptions {
-                shell: true,
+                runtime: Some(runner_core::Runtime::Shell),
                 ..Default::default()
             },
         )

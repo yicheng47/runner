@@ -169,7 +169,7 @@ fn attach_replay_program_terminal(manager: &SessionManager, runtime: &str) {
         DEFAULT_PTY_SIZE.0,
         DEFAULT_PTY_SIZE.1,
         runner_terminal::terminal::ModelOptions {
-            agent: true,
+            runtime: runner_core::Runtime::parse(runtime),
             ..Default::default()
         },
     )

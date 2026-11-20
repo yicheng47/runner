@@ -517,8 +517,7 @@ impl SessionManager {
             cols,
             rows,
             ModelOptions {
-                agent: binding.agent,
-                shell: binding.runtime.is_some_and(Runtime::is_shell),
+                runtime: binding.runtime,
                 initial_title: binding.initial_title,
                 cwd: binding.cwd,
             },
