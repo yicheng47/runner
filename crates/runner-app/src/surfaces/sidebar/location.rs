@@ -193,18 +193,12 @@ pub(super) fn resolve_row_location(
         } else {
             format!("{prefix} › {status}")
         };
-        let path_display = compact_path(top, home);
-        let tooltip = if path_display.is_empty() {
-            status.clone()
-        } else {
-            format!("{status}\n{path_display}")
-        };
         return RowLocation {
-            projects_line: Some(status),
+            projects_line: Some(status.clone()),
             active_line,
             active_missing: Some((prefix, label)),
             kind: LocationKind::MissingWorktree,
-            tooltip: Some(tooltip),
+            tooltip: Some(status),
         };
     }
 
@@ -240,19 +234,13 @@ pub(super) fn resolve_row_location(
     } else {
         format!("{prefix} › {checkout_label}")
     };
-    let path_display = compact_path(top, home);
-    let tooltip = if path_display.is_empty() {
-        checkout_label.clone()
-    } else {
-        format!("{checkout_label}\n{path_display}")
-    };
 
     RowLocation {
-        projects_line: Some(checkout_label),
+        projects_line: Some(checkout_label.clone()),
         active_line,
         active_missing: None,
         kind: location_kind,
-        tooltip: Some(tooltip),
+        tooltip: Some(checkout_label),
     }
 }
 
