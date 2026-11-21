@@ -455,6 +455,40 @@ impl NativeRoot {
         }
     }
 
+    pub(super) fn toggle_session_info(
+        &mut self,
+        _: &crate::ToggleSessionInfo,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.route == AppRoute::Settings {
+            cx.propagate();
+            return;
+        }
+        if let Some(workspace) = self.remote_client.remote_mission_workspace() {
+            workspace.update(cx, |workspace, cx| {
+                workspace.toggle_mission_info_popover(window, cx);
+            });
+            return;
+        }
+        if self.remote_client.is_active() && self.route != AppRoute::ArchivedChat {
+            if self.front_page_is_chat() {
+                self.toggle_focused_pane_info_popover(window, cx);
+            } else {
+                cx.propagate();
+            }
+            return;
+        }
+        match self.route {
+            AppRoute::Chat => self.toggle_focused_pane_info_popover(window, cx),
+            AppRoute::ArchivedChat => self.toggle_archived_chat_info_popover(window, cx),
+            AppRoute::Mission(_) => self.mission_workspace.update(cx, |workspace, cx| {
+                workspace.toggle_mission_info_popover(window, cx);
+            }),
+            _ => cx.propagate(),
+        }
+    }
+
     pub(super) fn open_settings(
         &mut self,
         _: &OpenSettings,

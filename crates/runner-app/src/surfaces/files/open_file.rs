@@ -392,6 +392,12 @@ impl FilesView {
         if self.viewer.tabs.is_empty() {
             self.reset_viewer();
             self.focus.focus(window, cx);
+            if self.maximized {
+                self.maximized = false;
+                if let Some(request) = self.on_request_maximize.clone() {
+                    request(false, window, cx);
+                }
+            }
         }
         self.tab_shown(cx);
         self.keep_focus(window, cx);

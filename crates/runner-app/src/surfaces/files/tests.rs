@@ -10,7 +10,7 @@ use gpui::{
 use runner_core::protocol::files::{FilesRootSource, WorktreeKind};
 
 use super::tree::PreparedStatus;
-use super::{FilesEvent, FilesPanel, FilesSurface, FilesView};
+use super::{FilesEvent, FilesPanel, FilesView};
 use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelSurface, Widened};
 use crate::theme::{self, ThemeVariant};
 use crate::theme_snapshot::{assert_border, assert_fill_color, assert_text, ThemeGuard};
@@ -56,11 +56,13 @@ impl Render for Host {
                 });
                 let owner = cx.entity_id();
                 let weak = cx.weak_entity();
-                let on_request_maximize: crate::surfaces::side_panel::PanelCallback =
-                    std::rc::Rc::new(move |_, cx| {
+                let on_request_maximize: crate::surfaces::side_panel::PanelMaximizeCallback =
+                    std::rc::Rc::new(move |maximize, _, cx| {
                         let _ = weak.update(cx, |host, cx| {
-                            host.maximized = true;
-                            host.maximize_requests += 1;
+                            host.maximized = maximize;
+                            if maximize {
+                                host.maximize_requests += 1;
+                            }
                             cx.notify();
                         });
                     });
@@ -244,6 +246,7 @@ fn chat(id: &str) -> PanelContext {
         cwd: None,
         project: (id == "in-project").then(|| "runner".into()),
         remote: false,
+        following: None,
     }
 }
 
@@ -254,6 +257,7 @@ fn mission(id: &str) -> PanelContext {
         cwd: None,
         project: Some("runner".into()),
         remote: false,
+        following: None,
     }
 }
 
@@ -1223,7 +1227,7 @@ fn every_click_opens_a_tab_that_stays_and_an_open_file_switches_to_it() {
     for name in ["a.txt", "old.txt", ".gitignore"] {
         h.click(format!("FILE_TAB_CLOSE {name}"));
     }
-    h.wait("the empty view", |h| h.has("FILE_NO_FILE"));
+    h.wait("compact project tree", |h| !h.has("FILE_VIEWER"));
     assert!(!h.has("FILE_CODE"));
     assert!(h.has("FILES_ROW a.txt"));
 }
@@ -1572,119 +1576,98 @@ fn the_tree_toggle_hides_the_tree_beside_an_open_file() {
 
 #[test]
 fn an_open_file_widens_the_panel_into_the_room_the_mission_leaves() {
-    use crate::surfaces::side_panel::{PanelSurfaces, PanelViewId};
+    use crate::surfaces::side_panel::{PanelPresentation, PanelSelection, PanelViewId};
     let mut h = viewer(mission("on-worktree"));
     let subject = PanelSubject::Mission("on-worktree".into());
-    let surfaces = h
-        .visual
-        .update(|_, cx| PanelSurfaces::new(Default::default(), cx));
+    let mut selection = PanelSelection::default();
     let settings = crate::app_settings::AppSettings::default();
-    let panel_at = |h: &mut Harness, surfaces: &PanelSurfaces, surface: f32| {
+    let panel_at = |h: &mut Harness, selection: PanelSelection, surface: f32| {
         h.host
             .read_with(&h.visual, |host, cx| {
                 host.panel.surface.set(surface);
                 host.panel.panel_layout(
                     PanelSurface::Mission,
                     &settings,
-                    surfaces,
+                    &selection,
                     Some(&subject),
-                    288.,
+                    300.,
                     6.,
+                    1,
                     false,
                     cx,
                 )
             })
             .unwrap()
     };
-    assert_eq!(
-        panel_at(&mut h, &surfaces, 1200.),
-        (288., None),
-        "before Files or Changes widens the mission rail, the standard width"
-    );
-    let mut surfaces = surfaces;
-    surfaces.open.open(PanelViewId::Files);
-    assert!(
-        panel_at(&mut h, &surfaces, 1200.).0 > 288.,
-        "Files showing a root is wide before a file opens"
-    );
-    surfaces.open.select(PanelViewId::Sessions);
-    assert_eq!(
-        panel_at(&mut h, &surfaces, 1200.).0,
-        680.,
-        "switching to Sessions with no open file tab retains the widened width"
-    );
-    surfaces.open.select(PanelViewId::Files);
+    let initial = panel_at(&mut h, selection, 1200.);
+    assert_eq!(initial.width, 300.);
+    assert!(initial.widened.is_none());
+
+    // Selecting Files without opening a file stays compact at 300 px.
+    selection.select(PanelViewId::Files);
+    let tree_only = panel_at(&mut h, selection, 1200.);
+    assert_eq!(tree_only.width, 300.);
+    assert!(tree_only.widened.is_none());
+
     h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
     // 6 + 420 + 440 + 240: the tree fits beside the file.
-    let (width, widened) = panel_at(&mut h, &surfaces, 1106.);
-    assert_eq!(width, 680.);
-    assert!(widened.unwrap().tree);
+    let fit = panel_at(&mut h, selection, 1106.);
+    assert_eq!(fit.width, 680.);
+    assert_eq!(fit.presentation, PanelPresentation::Docked);
+    assert!(fit.widened.unwrap().tree);
     // Narrower: the file gives way to the mission first, and the tree stays.
-    let (width, widened) = panel_at(&mut h, &surfaces, 1105.);
-    assert_eq!(width, 679.);
-    assert!(widened.unwrap().tree);
-    assert_eq!(panel_at(&mut h, &surfaces, 1000.).0, 574.);
-    assert_eq!(
-        panel_at(&mut h, &surfaces, 600.).0,
-        528.,
-        "the file never below the standard width, the tree still shown"
-    );
-    assert!(panel_at(&mut h, &surfaces, 600.).1.unwrap().tree);
+    let tighter = panel_at(&mut h, selection, 1105.);
+    assert_eq!(tighter.width, 679.);
+    assert_eq!(tighter.presentation, PanelPresentation::Docked);
+    assert!(tighter.widened.unwrap().tree);
+    assert_eq!(panel_at(&mut h, selection, 1000.).width, 574.);
+    // Narrower than 420 px main room: promotes to overlay sheet instead of squeezing mission.
+    let sheet = panel_at(&mut h, selection, 800.);
+    assert_eq!(sheet.presentation, PanelPresentation::Sheet);
+    assert!(sheet.widened.unwrap().tree);
 
-    // Switching away or closing Files retains the widened width, with file tabs kept;
-    // only a fresh/reset surface state starts back at the standard width.
-    surfaces.open.select(PanelViewId::Sessions);
-    assert_eq!(panel_at(&mut h, &surfaces, 1200.).0, 680.);
-    surfaces.open.close(PanelViewId::Files, true);
-    assert_eq!(panel_at(&mut h, &surfaces, 1200.).0, 680.);
+    // Switching to Sessions keeps the panel compact (300 px) while preserving open file tabs.
+    selection.select(PanelViewId::Sessions);
+    let on_sessions = panel_at(&mut h, selection, 1200.);
+    assert_eq!(on_sessions.width, 300.);
+    assert!(on_sessions.widened.is_none());
     assert!(h.read(|view| view.has_tabs()));
-    surfaces.reset(Default::default());
-    assert_eq!(panel_at(&mut h, &surfaces, 1200.), (288., None));
-    surfaces.open.open(PanelViewId::Files);
-    assert_eq!(panel_at(&mut h, &surfaces, 1200.).0, 680.);
 
-    // An inactive tree-hidden Files tab does not override a tree-on retained width (unmaximized or maximized).
+    // Returning to Files restores the widened layout because a.txt is still open.
+    selection.select(PanelViewId::Files);
+    assert_eq!(panel_at(&mut h, selection, 1200.).width, 680.);
+
+    // Hiding the tree while a file is open narrows to the file viewer width (440 px).
     h.click("FILE_TREE_TOGGLE");
-    assert_eq!(panel_at(&mut h, &surfaces, 1200.).0, 440.);
-    surfaces.set_widened_tree(Some(true));
-    surfaces.open.select(PanelViewId::Sessions);
-    assert_eq!(panel_at(&mut h, &surfaces, 1200.).0, 680.);
-    let max = h
-        .host
-        .read_with(&h.visual, |host, cx| {
-            host.panel.surface.set(1200.);
-            host.panel.panel_layout(
-                PanelSurface::Mission,
-                &settings,
-                &surfaces,
-                Some(&subject),
-                288.,
-                6.,
-                true,
-                cx,
-            )
-        })
-        .unwrap();
-    assert_eq!(max.0, 1200.);
-    assert!(max.1.unwrap().tree);
+    let no_tree = panel_at(&mut h, selection, 1200.);
+    assert_eq!(no_tree.width, 440.);
+    assert!(!no_tree.widened.unwrap().tree);
 }
 
 #[test]
 fn a_saved_tree_width_widens_the_panel_and_narrows_the_file_sooner() {
+    use crate::surfaces::side_panel::{PanelPresentation, PanelSelection, PanelViewId};
     let mut h = viewer(mission("on-worktree"));
     let subject = PanelSubject::Mission("on-worktree".into());
+    let settings = crate::app_settings::AppSettings {
+        file_tree_width: 320.,
+        ..Default::default()
+    };
+    let selection = PanelSelection::new(PanelViewId::Files);
     let layout = |h: &mut Harness, surface: f32| {
         h.host
             .read_with(&h.visual, |host, cx| {
                 host.panel.surface.set(surface);
-                host.panel.layout(
+                host.panel.panel_layout(
+                    PanelSurface::Mission,
+                    &settings,
+                    &selection,
                     Some(&subject),
-                    FilesSurface::Shown,
-                    288.,
-                    440.,
-                    320.,
+                    300.,
                     6.,
+                    1,
+                    false,
                     cx,
                 )
             })
@@ -1693,15 +1676,17 @@ fn a_saved_tree_width_widens_the_panel_and_narrows_the_file_sooner() {
     h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
     // 6 + 420 + 440 + 320: the wider tree fits beside the file.
-    let (width, widened) = layout(&mut h, 1186.);
-    assert_eq!(width, 760.);
-    assert!(widened.unwrap().tree);
+    let fit = layout(&mut h, 1186.);
+    assert_eq!(fit.width, 760.);
+    assert_eq!(fit.presentation, PanelPresentation::Docked);
+    assert!(fit.widened.unwrap().tree);
     // Narrower: the file gives way to the mission, and the tree stays.
-    let (width, widened) = layout(&mut h, 1185.);
-    assert_eq!(width, 759.);
-    assert!(widened.unwrap().tree);
-    assert_eq!(layout(&mut h, 1000.).0, 608.);
-    assert_eq!(layout(&mut h, 600.).0, 608.);
+    let tighter = layout(&mut h, 1185.);
+    assert_eq!(tighter.width, 759.);
+    assert_eq!(tighter.presentation, PanelPresentation::Docked);
+    assert!(tighter.widened.unwrap().tree);
+    assert_eq!(layout(&mut h, 1080.).width, 654.);
+    assert_eq!(layout(&mut h, 900.).presentation, PanelPresentation::Sheet);
 }
 
 #[test]
@@ -3244,19 +3229,24 @@ fn the_tree_draws_the_chosen_icon_set() {
 
 #[test]
 fn a_chat_widens_by_the_same_rule_as_a_mission() {
+    use crate::surfaces::side_panel::{PanelPresentation, PanelSelection, PanelViewId};
     let mut h = viewer(chat("in-project"));
     let subject = PanelSubject::Session("in-project".into());
+    let settings = crate::app_settings::AppSettings::default();
+    let selection = PanelSelection::new(PanelViewId::Files);
     let layout = |h: &mut Harness, surface: f32| {
         h.host
             .read_with(&h.visual, |host, cx| {
                 host.panel.surface.set(surface);
-                host.panel.layout(
+                host.panel.panel_layout(
+                    PanelSurface::Chat,
+                    &settings,
+                    &selection,
                     Some(&subject),
-                    FilesSurface::Shown,
-                    288.,
-                    440.,
-                    240.,
+                    300.,
                     6.,
+                    1,
+                    false,
                     cx,
                 )
             })
@@ -3264,19 +3254,20 @@ fn a_chat_widens_by_the_same_rule_as_a_mission() {
     };
     h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
-    assert_eq!(layout(&mut h, 1106.).0, 680.);
+    assert_eq!(layout(&mut h, 1106.).width, 680.);
     // 6 + 420 + 334 + 240: the file narrows, the tree stays.
-    let (width, widened) = layout(&mut h, 1000.);
-    assert_eq!(width, 574.);
+    let tighter = layout(&mut h, 1000.);
+    assert_eq!(tighter.width, 574.);
+    assert_eq!(tighter.presentation, PanelPresentation::Docked);
     assert!(
-        widened.unwrap().tree,
+        tighter.widened.unwrap().tree,
         "the tree stays while the file narrows"
     );
-    assert_eq!(layout(&mut h, 600.).0, 528.);
+    assert_eq!(layout(&mut h, 800.).presentation, PanelPresentation::Sheet);
     h.click("FILE_TREE_TOGGLE");
-    let (width, widened) = layout(&mut h, 1000.);
-    assert_eq!(width, 440., "the tree's room goes to the file");
-    assert!(!widened.unwrap().tree);
+    let no_tree = layout(&mut h, 1000.);
+    assert_eq!(no_tree.width, 440., "the tree's room goes to the file");
+    assert!(!no_tree.widened.unwrap().tree);
 }
 
 fn link(path: PathBuf, line: Option<u32>) -> crate::file_links::FileLinkTarget {
@@ -3826,39 +3817,44 @@ fn the_tree_beside_an_open_file_sits_on_the_panel_colour_in_both_themes() {
             theme::panel().to_rgb()
         );
     }
-    // Beside the empty view too, and alone it keeps the panel's background.
+    // Closing the last file tab returns to the compact 300 px tree, inheriting the panel background.
     h.click("FILE_TAB_CLOSE a.txt");
     for variant in [ThemeVariant::Carbon, ThemeVariant::RunnerLight] {
         theme::set_active_variant(variant);
         h.redraw();
-        assert_fill_color(&mut h.visual, "FILES_TREE_COLUMN", Some(theme::panel()));
+        assert_fill_color(&mut h.visual, "FILES_TREE_COLUMN", None);
     }
-    h.host
-        .update(&mut h.visual, |host, _, cx| {
-            host.tree_fits = false;
-            cx.notify();
-        })
-        .unwrap();
-    h.settle();
-    assert_fill_color(&mut h.visual, "FILES_TREE_COLUMN", None);
 }
 
 #[test]
-fn a_root_opens_on_the_empty_view_and_lists_what_changed() {
+fn a_root_opens_compact_on_project_tree_and_filters_changed_files() {
     let mut h = viewer(chat("in-project"));
-    h.wait("the status", |h| h.has("FILE_NO_FILE"));
-    assert!(h.has("FILES_TREE_COLUMN"), "the tree stays beside it");
+    assert!(h.has("FILES_TREE_COLUMN"));
+    assert!(h.has("FILES_FILTER_TABS"));
+    assert!(
+        !h.has("FILE_VIEWER"),
+        "no blank file viewer before opening a file"
+    );
 
     std::fs::write(h.repo.join("a.txt"), "changed\n").unwrap();
     std::fs::write(h.repo.join("src/deep/x.rs"), "fn y() {}\n").unwrap();
-    h.wait("the changes", |h| h.has("FILE_CHANGED src/deep/x.rs"));
-    assert!(h.has("FILE_CHANGED_LIST") && !h.has("FILE_NO_FILE"));
-    h.click("FILE_CHANGED a.txt");
+    h.show(None);
+    h.show(Some(chat("in-project")));
+    h.wait("the status count", |h| h.has("FILES_CHANGED 2"));
+
+    h.click("FILES_FILTER_CHANGED");
+    h.wait("the changed list", |h| {
+        h.has("FILES_CHANGED_LIST") && h.has("FILES_CHANGED_ROW src/deep/x.rs")
+    });
+    h.click("FILES_CHANGED_ROW a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
     assert_eq!(h.tabs(), ["a.txt"]);
 
     h.click("FILE_TAB_CLOSE a.txt");
-    assert!(h.has("FILE_CHANGED_LIST"), "closing returns to the list");
+    assert!(
+        h.has("FILES_CHANGED_LIST") && !h.has("FILE_VIEWER"),
+        "closing the last tab returns to the compact changed list"
+    );
 }
 
 #[test]
@@ -3878,69 +3874,75 @@ fn a_tree_that_does_not_fit_takes_the_panel_until_a_file_opens() {
 }
 
 #[test]
-fn the_layout_gives_a_tree_with_no_room_the_panel_until_a_file_opens() {
-    use crate::surfaces::side_panel::{OpenSurfaces, PanelSurfaces, PanelViewId};
+fn the_layout_stays_compact_until_a_file_opens_and_shrinks_back_when_closed() {
+    use crate::surfaces::side_panel::{PanelPresentation, PanelSelection, PanelViewId};
     let mut h = viewer(chat("in-project"));
     let subject = PanelSubject::Session("in-project".into());
     let settings = crate::app_settings::AppSettings::default();
-    let mut open_files = OpenSurfaces::default();
-    open_files.open(PanelViewId::Files);
-    let mut surfaces = h
-        .visual
-        .update(|_, cx| PanelSurfaces::new(open_files.clone(), cx));
-    let layout = |h: &mut Harness, surfaces: &PanelSurfaces, surface: f32| {
+    let selection = PanelSelection::new(PanelViewId::Files);
+    let layout = |h: &mut Harness, surface: f32, split_columns: usize| {
         h.host
             .read_with(&h.visual, |host, cx| {
                 host.panel.surface.set(surface);
                 host.panel.panel_layout(
                     PanelSurface::Chat,
                     &settings,
-                    surfaces,
+                    &selection,
                     Some(&subject),
-                    288.,
+                    300.,
                     6.,
+                    split_columns,
                     false,
                     cx,
                 )
             })
             .unwrap()
     };
-    // 6 + 420 + 288 + 240: the narrowest that holds the file area and the tree.
-    assert_eq!(layout(&mut h, &surfaces, 953.), (288., None));
-    assert!(layout(&mut h, &surfaces, 954.).1.is_some());
 
-    surfaces.reset(open_files);
-    assert_eq!(layout(&mut h, &surfaces, 953.), (288., None));
+    // Without open file tabs, Files stays compact at 300 px (no blank file viewer).
+    let compact = layout(&mut h, 1200., 1);
+    assert_eq!(compact.width, 300.);
+    assert!(compact.widened.is_none());
+    assert_eq!(compact.presentation, PanelPresentation::Docked);
 
+    // Narrow window (< 420 px main left after 300 px panel) promotes to overlay sheet.
+    let narrow = layout(&mut h, 719., 1);
+    assert_eq!(narrow.width, 300.);
+    assert_eq!(narrow.presentation, PanelPresentation::Sheet);
+
+    // Opening a file widens the panel; closing the last file tab shrinks back to 300 px.
     h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
-    let (width, widened) = layout(&mut h, &surfaces, 953.);
-    assert_eq!(width, 528., "a file open keeps the tree beside it");
-    assert!(widened.unwrap().tree);
+    let wide = layout(&mut h, 1200., 1);
+    assert!(wide.width > 300.);
+    assert_eq!(wide.presentation, PanelPresentation::Docked);
+    assert!(wide.widened.unwrap().tree);
+
+    // Widening in a 2-column split where docking would leave < 680 px promotes to a sheet
+    // while reserving the 300 px docked width to avoid reflowing terminals.
+    let split_sheet = layout(&mut h, 1100., 2);
+    assert_eq!(split_sheet.presentation, PanelPresentation::Sheet);
+    assert_eq!(split_sheet.reserved_docked_width, 300.);
+    assert!(split_sheet.widened.is_some());
 
     h.click("FILE_TAB_CLOSE a.txt");
-    let (width, widened) = layout(&mut h, &surfaces, 953.);
+    let shrunk = layout(&mut h, 1200., 1);
     assert_eq!(
-        width, 528.,
-        "closing the last file tab keeps the widened panel"
+        shrunk.width, 300.,
+        "closing the last file tab returns to the 300 px project tree"
     );
-    assert!(widened.unwrap().tree);
+    assert!(shrunk.widened.is_none());
+    assert_eq!(shrunk.presentation, PanelPresentation::Docked);
 
+    // With the tree hidden while a file is open, widening reports Some(false) (tree hidden)
+    // and the widened width is only the file viewer.
+    h.open("a.txt");
+    h.wait("the file again", |h| h.has("FILE_CODE"));
     h.click("FILE_TREE_TOGGLE");
     assert_eq!(h.read(|view| view.widening()), Some(false));
-    let (width, widened) = layout(&mut h, &surfaces, 1000.);
-    assert_eq!(width, 440.);
-    assert!(!widened.unwrap().tree);
-    assert!(
-        layout(&mut h, &surfaces, 600.).1.is_some(),
-        "with the tree toggled off there is no tree to give the panel"
-    );
-    surfaces.open.close(PanelViewId::Files, false);
-    assert_eq!(
-        layout(&mut h, &surfaces, 1000.).0,
-        440.,
-        "closing Files down to Open a surface keeps the tree-off widened width"
-    );
+    let tree_hidden = layout(&mut h, 1200., 1);
+    assert_eq!(tree_hidden.width, 440.);
+    assert!(!tree_hidden.widened.unwrap().tree);
 }
 
 #[test]
@@ -3981,8 +3983,8 @@ fn the_finder_opens_centred_and_finds_a_file_by_name() {
     let view = h.visual.debug_bounds("FILES_FINDER").unwrap();
     let tree = h.visual.debug_bounds("FILES_TREE_COLUMN").unwrap();
     assert!(
-        view.left() < tree.left() && view.right() > tree.left(),
-        "over the whole view, not only the tree: {view:?} {tree:?}"
+        view.left() >= tree.left() && view.right() <= tree.right(),
+        "finder sits centered inside the compact view: {view:?} {tree:?}"
     );
     assert_eq!(view.size.width, px(520.));
     assert_eq!(
@@ -4044,28 +4046,50 @@ fn the_arrows_choose_the_match_enter_opens() {
 }
 
 #[test]
-fn files_stands_shown_open_or_closed_among_the_surfaces() {
-    use crate::surfaces::side_panel::{OpenSurfaces, PanelViewId};
-    let settings = crate::app_settings::AppSettings::default();
-    let of = |surface, open: &OpenSurfaces| FilesSurface::of(surface, &settings, open);
-    let mut open = OpenSurfaces::default();
-    assert_eq!(of(PanelSurface::Chat, &open), FilesSurface::Closed);
-    open.open(PanelViewId::Files);
-    assert_eq!(of(PanelSurface::Chat, &open), FilesSurface::Shown);
-    open.open(PanelViewId::Info);
-    assert_eq!(of(PanelSurface::Chat, &open), FilesSurface::Open);
-    open.close(PanelViewId::Files, false);
-    assert_eq!(of(PanelSurface::Chat, &open), FilesSurface::Closed);
-
-    // A terminal tab's only surface is Files, with no tab to close.
+fn panel_selection_resolves_active_tool_across_surfaces_and_settings() {
+    use crate::surfaces::side_panel::{PanelSelection, PanelViewId};
+    let mut settings = crate::app_settings::AppSettings::default();
+    let default = PanelSelection::default();
     assert_eq!(
-        of(PanelSurface::Terminal, &OpenSurfaces::default()),
-        FilesSurface::Shown
+        default.effective(PanelSurface::Chat, &settings),
+        Some(PanelViewId::Files)
     );
     assert_eq!(
-        of(PanelSurface::Mission, &OpenSurfaces::default()),
-        FilesSurface::Closed,
-        "a mission shows Sessions until Files opens"
+        default.effective(PanelSurface::Terminal, &settings),
+        Some(PanelViewId::Files)
+    );
+    assert_eq!(
+        default.effective(PanelSurface::Mission, &settings),
+        Some(PanelViewId::Sessions),
+        "a mission defaults to Sessions"
+    );
+
+    let changes = PanelSelection::new(PanelViewId::Changes);
+    assert_eq!(
+        changes.effective(PanelSurface::Chat, &settings),
+        Some(PanelViewId::Changes)
+    );
+    assert_eq!(
+        changes.effective(PanelSurface::Mission, &settings),
+        Some(PanelViewId::Changes)
+    );
+
+    settings.files_view = false;
+    assert_eq!(
+        default.effective(PanelSurface::Chat, &settings),
+        Some(PanelViewId::Changes)
+    );
+    assert_eq!(
+        default.effective(PanelSurface::Mission, &settings),
+        Some(PanelViewId::Sessions)
+    );
+
+    settings.changes_view = false;
+    assert_eq!(default.effective(PanelSurface::Chat, &settings), None);
+    assert_eq!(default.effective(PanelSurface::Terminal, &settings), None);
+    assert_eq!(
+        default.effective(PanelSurface::Mission, &settings),
+        Some(PanelViewId::Sessions)
     );
 }
 
@@ -4297,7 +4321,11 @@ fn a_status_past_its_limits_says_so() {
         },
     );
     assert!(h.has("FILES_STATUS_TRUNCATED"));
-    assert!(h.has("FILE_CHANGED a.txt"), "what it holds still lists");
+    h.click("FILES_FILTER_CHANGED");
+    assert!(
+        h.has("FILES_CHANGED_ROW a.txt"),
+        "what it holds still lists"
+    );
     receive_status(&mut h, GitStatus::default());
     assert!(!h.has("FILES_STATUS_TRUNCATED"));
 }
@@ -4322,15 +4350,16 @@ fn a_nested_repository_is_no_changed_file() {
             vec![],
         ),
     );
-    assert!(h.has("FILE_CHANGED a.txt"));
-    assert!(!h.has("FILE_CHANGED nested/"));
-    assert!(!h.has("FILE_CHANGED vendor/sub/"));
+    h.click("FILES_FILTER_CHANGED");
+    assert!(h.has("FILES_CHANGED_ROW a.txt"));
+    assert!(!h.has("FILES_CHANGED_ROW nested/"));
+    assert!(!h.has("FILES_CHANGED_ROW vendor/sub/"));
 
     receive_status(
         &mut h,
         GitStatus::new(vec![entry("nested/", FileStatus::Untracked)], vec![]),
     );
-    assert!(h.has("FILE_NO_FILE"), "nothing to list");
+    assert!(h.has("FILES_CHANGED_EMPTY"), "nothing to list");
 }
 
 #[test]
@@ -4845,5 +4874,143 @@ fn files_diff_toggle_reflects_working_tree_vs_head_when_staged_edit_is_reverted_
                 && !h.has("FILE_DIFF_COLUMN")
                 && !h.read(|v| v.showing_diff())
         },
+    );
+}
+
+#[test]
+fn changed_filter_virtualizes_large_lists_and_preserves_truncated_notice() {
+    use runner_core::protocol::files::{FileStatus, GitStatus, StatusEntry};
+
+    let mut h = viewer_after_startup_watcher(chat("in-project"));
+    let entries = (0..5_000)
+        .map(|i| StatusEntry {
+            path: format!("src/gen/file-{i:04}.rs"),
+            status: FileStatus::Modified,
+        })
+        .collect();
+    let mut status = GitStatus::new(entries, Vec::new());
+    status.truncated = true;
+    receive_status(&mut h, status);
+    h.wait("truncated status received", |h| {
+        h.has("FILES_STATUS_TRUNCATED") && h.has("FILES_CHANGED 5000")
+    });
+
+    h.click("FILES_FILTER_CHANGED");
+    h.wait(
+        "changed uniform list renders top slice and truncated notice",
+        |h| {
+            h.has("FILES_CHANGED_LIST")
+                && h.has("FILES_STATUS_TRUNCATED")
+                && h.has("FILES_CHANGED_ROW src/gen/file-0000.rs")
+        },
+    );
+    assert!(
+        !h.has("FILES_CHANGED_ROW src/gen/file-4999.rs"),
+        "changed filter must virtualize via uniform_list rather than building 5,000 rows eagerly"
+    );
+}
+
+#[test]
+fn open_file_survives_eviction_past_kept_views_without_active_watches() {
+    let mut h = harness(Some(chat("in-project")));
+    h.wait("initial project tree loaded", |h| h.has("FILES_ROW a.txt"));
+    h.click("FILES_ROW a.txt");
+    h.wait("a.txt opened", |h| {
+        h.has("FILE_CODE") && h.has("FILE_TAB a.txt")
+    });
+
+    let origin = PanelSubject::Session("in-project".into());
+    for i in 0..14 {
+        h.show(Some(chat(&format!("evict-other-{i}"))));
+    }
+    let evicted_and_widening = h
+        .host
+        .read_with(&h.visual, |host, cx| {
+            (
+                host.panel.view(&origin).is_none(),
+                host.panel.files_widening(&origin, cx),
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        evicted_and_widening,
+        (true, Some(true)),
+        "evicted subject must drop its live view while preserving widened tab metadata"
+    );
+    h.wait("evicted session watches released", |h| {
+        h.daemon_watches().is_empty()
+    });
+
+    // Re-evict before root resolution finishes: pending saved state must survive rather than drop.
+    h.host
+        .update(&mut h.visual, |host, _, cx| {
+            host.context = Some(chat("in-project"));
+            cx.notify();
+        })
+        .unwrap();
+    h.visual.update(|window, _| window.refresh());
+    assert!(
+        h.host
+            .read_with(&h.visual, |host, _| host.panel.view(&origin).is_some())
+            .unwrap(),
+        "revisiting evicted subject must instantiate a fresh view before re-eviction"
+    );
+    for i in 14..28 {
+        h.show(Some(chat(&format!("evict-other-{i}"))));
+    }
+    assert_eq!(
+        h.host
+            .read_with(&h.visual, |host, cx| (
+                host.panel.view(&origin).is_none(),
+                host.panel.files_widening(&origin, cx),
+            ))
+            .unwrap(),
+        (true, Some(true)),
+        "pending saved state must survive re-eviction before root resolution completes"
+    );
+    h.wait("re-evicted watches released", |h| {
+        h.daemon_watches().is_empty()
+    });
+
+    // Revisit on the SAME checkout -> a.txt restores automatically.
+    h.show(Some(chat("in-project")));
+    h.wait("evicted open file restores automatically on revisit", |h| {
+        h.has("FILE_CODE") && h.has("FILE_TAB a.txt")
+    });
+
+    // Evict again, then switch `in-project` to the linked worktree (which also has `a.txt`!):
+    // revisiting must NOT silently open the other checkout's `a.txt`.
+    for i in 28..42 {
+        h.show(Some(chat(&format!("evict-other-{i}"))));
+    }
+    h.wait("second eviction watches released", |h| {
+        h.daemon_watches().is_empty()
+    });
+    let worktree = real(&h.repo.join(".worktrees/feat-x"));
+    assert!(worktree.join("a.txt").exists());
+    h.store.read_with(&h.visual, |store, _| {
+        store
+            .client
+            .files_set_root(
+                &runner_core::protocol::files::FilesSubject::Session("in-project".into()),
+                Some(&worktree),
+            )
+            .unwrap();
+    });
+    h.show(Some(chat("in-project")));
+    h.wait(
+        "switched checkout loads tree without restoring old-root tab",
+        |h| {
+            h.has("FILES_ROW a.txt")
+                && h.read(|v| {
+                    v.root().is_some_and(|r| {
+                        runner_core::app_paths::same_checkout_path(&r.path, &worktree)
+                    })
+                })
+        },
+    );
+    assert!(
+        !h.has("FILE_CODE") && !h.has("FILE_TAB a.txt"),
+        "saved open files must not reopen under a different checkout root"
     );
 }

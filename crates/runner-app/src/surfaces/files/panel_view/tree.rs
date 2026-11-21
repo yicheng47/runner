@@ -477,6 +477,9 @@ impl FilesView {
         let Some(tree) = self.tree_ref() else {
             return div().into_any_element();
         };
+        if self.filter == TreeFilter::Changed && self.root_is_git() {
+            return self.render_changed_list(tree, cx);
+        }
         let focused = self.focus.contains_focused(window, cx);
         let count = tree.rows().len();
         let list = gpui::uniform_list(
@@ -519,21 +522,161 @@ impl FilesView {
                     .child(self.scrollbar.clone()),
             )
             .when(truncated, |element| {
-                element.child(
-                    div()
-                        .when(cfg!(test), |element| {
-                            element.debug_selector(|| "FILES_STATUS_TRUNCATED".into())
-                        })
-                        .flex_none()
-                        .px(px(12.))
-                        .py(px(6.))
-                        .border_t_1()
-                        .border_color(theme::border())
-                        .text_size(theme::text_meta())
-                        .text_color(theme::faint())
-                        .child(crate::i18n::text("ui.files_status_truncated")),
-                )
+                element.child(Self::render_status_truncated_notice())
             })
+            .into_any_element()
+    }
+
+    fn render_status_truncated_notice() -> AnyElement {
+        div()
+            .when(cfg!(test), |element| {
+                element.debug_selector(|| "FILES_STATUS_TRUNCATED".into())
+            })
+            .flex_none()
+            .px(px(12.))
+            .py(px(6.))
+            .border_t_1()
+            .border_color(theme::border())
+            .text_size(theme::text_meta())
+            .text_color(theme::faint())
+            .child(crate::i18n::text("ui.files_status_truncated"))
+            .into_any_element()
+    }
+
+    fn render_changed_list(&self, tree: &FileTree, cx: &mut Context<Self>) -> AnyElement {
+        let changed = tree.changed_files();
+        let truncated = tree.status().is_some_and(|status| status.truncated);
+        let body = if changed.is_empty() {
+            div()
+                .when(cfg!(test), |el| {
+                    el.debug_selector(|| "FILES_CHANGED_EMPTY".into())
+                })
+                .flex_1()
+                .min_h(px(0.))
+                .px_4()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_center()
+                .text_size(theme::text_ui())
+                .text_color(theme::faint())
+                .child(crate::i18n::text("files.no_changed_files"))
+                .into_any_element()
+        } else {
+            let count = changed.len();
+            let rows = changed;
+            div()
+                .id("files-changed-list")
+                .when(cfg!(test), |el| {
+                    el.debug_selector(|| "FILES_CHANGED_LIST".into())
+                })
+                .flex_1()
+                .min_h(px(0.))
+                .flex()
+                .flex_col()
+                .child(
+                    gpui::uniform_list(
+                        "files-changed-uniform-list",
+                        count,
+                        cx.processor(move |this, range: Range<usize>, _window, cx| {
+                            let selected = this
+                                .tree_ref()
+                                .and_then(FileTree::selected)
+                                .map(str::to_owned);
+                            rows[range]
+                                .iter()
+                                .enumerate()
+                                .map(|(offset, (path, letter))| {
+                                    this.render_changed_tree_row(
+                                        offset,
+                                        path,
+                                        *letter,
+                                        selected.as_deref() == Some(path.as_str()),
+                                        cx,
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                        }),
+                    )
+                    .py(px(6.))
+                    .flex_1()
+                    .min_h(px(0.)),
+                )
+                .into_any_element()
+        };
+        div()
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .child(body)
+            .when(truncated, |element| {
+                element.child(Self::render_status_truncated_notice())
+            })
+            .into_any_element()
+    }
+
+    fn render_changed_tree_row(
+        &self,
+        index: usize,
+        path: &str,
+        letter: Letter,
+        is_selected: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let (folder, name) = path.rsplit_once('/').unwrap_or(("", path));
+        let click_path = path.to_owned();
+        div()
+            .id(("files-changed-row", index))
+            .when(cfg!(test), |el| {
+                let selector = format!("FILES_CHANGED_ROW {path}");
+                el.debug_selector(move || selector)
+            })
+            .w_full()
+            .h(px(ROW_HEIGHT))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .cursor_pointer()
+            .text_size(theme::text_ui())
+            .when(is_selected, |el| el.bg(theme::sidebar_selected()))
+            .when(!is_selected, |el| {
+                el.hover(|el| el.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
+            })
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.focus.focus(window, cx);
+                if let Some(tree) = this.tree_mut() {
+                    tree.select(&click_path);
+                }
+                this.open_file(click_path.clone(), cx);
+            }))
+            .child(self.file_icon(name))
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(theme::text())
+                    .child(name.to_owned()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .truncate()
+                    .text_size(theme::text_meta())
+                    .text_color(theme::faint())
+                    .child(folder.to_owned()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(12.))
+                    .text_center()
+                    .font_family(theme::UI_MONOSPACE_FONT)
+                    .text_size(theme::text_meta())
+                    .text_color(letter_color(letter))
+                    .child(letter.text()),
+            )
             .into_any_element()
     }
 }

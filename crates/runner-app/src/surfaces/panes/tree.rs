@@ -220,8 +220,9 @@ impl NativeRoot {
         }
     }
 
-    /// The title's chat menu, or `None` when the client offers none of its
-    /// actions and the title is plain text.
+    /// The title's chat menu (S2 Title `▾` Info popover + actions for chat panes;
+    /// lightweight action menu for shell panes, or `None` when a shell pane has
+    /// no actions).
     pub(super) fn pane_title_menu(
         &mut self,
         entry: &SessionDisplay,
@@ -232,6 +233,7 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> Option<Entity<PopoverMenu>> {
         let session_id = &entry.session_id;
+        let is_chat = entry.agent_runtime != "shell";
         let secondary = self.cached_chat_secondary_state(session_id).secondary;
         let pinned = self.front_page_sidebar().read(cx).tab_pinned(tab_id, cx);
         let client = self.front_page_client(cx);
@@ -241,7 +243,7 @@ impl NativeRoot {
             pinned.is_some(),
             |features| client.supports(features),
         );
-        if actions.is_empty() {
+        if actions.is_empty() && !is_chat {
             return None;
         }
         let menu = self
@@ -265,7 +267,7 @@ impl NativeRoot {
                         }),
                         menu_cx,
                     )
-                    .min_width(px(196.))
+                    .min_width(px(if is_chat { 320. } else { 196. }))
                     .single_line_labels()
                     .on_trigger_press({
                         let root = root.clone();
@@ -308,7 +310,22 @@ impl NativeRoot {
                 HeaderForkState::Enabled | HeaderForkState::Hidden => None,
             },
         );
+        let header_renderer = is_chat.then(|| {
+            let root = cx.weak_entity();
+            let menu_weak = menu.downgrade();
+            let sid = session_id.to_owned();
+            Rc::new(move |_: &mut Window, cx: &mut App| {
+                let menu_weak = menu_weak.clone();
+                let sid = sid.clone();
+                root.update(cx, |this, cx| {
+                    this.render_pane_info_card_for_session(&sid, menu_weak, cx)
+                })
+                .unwrap_or_else(|_| div().into_any_element())
+            }) as runner_app::ui::menu::HeaderRenderer
+        });
         menu.update(cx, |menu, menu_cx| {
+            menu.set_min_width(px(if is_chat { 320. } else { 196. }), menu_cx);
+            menu.set_header_renderer(header_renderer, menu_cx);
             menu.set_items(items, menu_cx);
             menu.set_trigger_label(
                 runner_app::ui::MenuTriggerLabel { text: label, color },
@@ -356,6 +373,22 @@ impl NativeRoot {
                         sidebar.toggle_tab_pin(tab_id, pinned, window, sidebar_cx)
                     });
                 });
+            }
+            Some(PaneMenuAction::Archive) => {
+                if self.tab_close_guarded() {
+                    return;
+                }
+                let Some(pane_id) = self.front_page_layout().and_then(|layout| {
+                    layout
+                        .root
+                        .leaves()
+                        .into_iter()
+                        .find(|leaf| leaf.session_id.as_deref() == Some(session_id))
+                        .map(|leaf| leaf.id.clone())
+                }) else {
+                    return;
+                };
+                self.request_close_chat_pane(&pane_id, session_id, window, cx);
             }
             None => {}
         }

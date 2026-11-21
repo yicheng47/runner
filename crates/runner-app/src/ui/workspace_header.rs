@@ -11,6 +11,7 @@ pub struct WorkspaceHeader {
     left_padding: Pixels,
     icon: AnyElement,
     title: SharedString,
+    title_element: Option<AnyElement>,
     sidebar_toggle: Option<AnyElement>,
     title_actions: Vec<AnyElement>,
     trailing_actions: Vec<AnyElement>,
@@ -22,10 +23,16 @@ impl WorkspaceHeader {
             left_padding,
             icon,
             title: title.into(),
+            title_element: None,
             sidebar_toggle: None,
             title_actions: Vec::new(),
             trailing_actions: Vec::new(),
         }
+    }
+
+    pub fn title_element(mut self, element: AnyElement) -> Self {
+        self.title_element = Some(element);
+        self
     }
 
     pub fn sidebar_toggle(mut self, toggle: Option<AnyElement>) -> Self {
@@ -65,7 +72,18 @@ impl WorkspaceHeader {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
+                    .child(if let Some(element) = self.title_element {
+                        div()
+                            .min_w(px(0.))
+                            .h(rems(28. / 16.))
+                            .flex()
+                            .items_center()
+                            .debug_selector({
+                                let title = self.title.clone();
+                                move || format!("WORKSPACE_HEADER_TITLE:{title}")
+                            })
+                            .child(element)
+                    } else {
                         div()
                             .relative()
                             .top(rems(1. / 16.))
@@ -78,8 +96,8 @@ impl WorkspaceHeader {
                                 let title = self.title.clone();
                                 move || format!("WORKSPACE_HEADER_TITLE:{title}")
                             })
-                            .child(self.title),
-                    )
+                            .child(self.title)
+                    })
                     .children(self.title_actions),
             );
 

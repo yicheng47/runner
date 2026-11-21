@@ -209,24 +209,6 @@ impl NativeRoot {
                                     ),
                             ),
                     )
-                    .children(view.key.map(|key| {
-                        div()
-                            .flex_none()
-                            .debug_selector(move || {
-                                format!("{}_KEY", id.to_uppercase().replace('-', "_"))
-                            })
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .when(!shown, |key| key.opacity(DIMMED))
-                            .child(
-                                div()
-                                    .text_size(theme::text_ui())
-                                    .text_color(theme::faint())
-                                    .child(crate::i18n::text("side_panel.key")),
-                            )
-                            .child(panel::keycap(key))
-                    }))
                     .child(
                         div()
                             .flex_none()
@@ -249,14 +231,6 @@ impl NativeRoot {
                 .find(|view| view.id == id)
                 .expect("every surface has a view")
         };
-        let info_row = surface_row(
-            "settings-info-view",
-            view(panel::PanelViewId::Info),
-            "side_panel.info_description",
-            settings.info_view,
-            |settings| &mut settings.info_view,
-            cx,
-        );
         let files_row = surface_row(
             "settings-files-view",
             view(panel::PanelViewId::Files),
@@ -282,9 +256,26 @@ impl NativeRoot {
             .border_color(theme::border())
             .bg(theme::panel())
             .map(|card| snapshot("SETTINGS_SIDE_PANEL_SURFACES", card))
-            .child(info_row)
             .child(files_row)
-            .child(changes_row);
+            .child(
+                div()
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .child(changes_row),
+            );
+        let info_binding =
+            crate::keymap::effective_binding("toggle-session-info", &settings.keymap_overrides);
+        let info_note_bound = info_binding.is_some();
+        let info_note = info_binding
+            .map(|combo| {
+                crate::i18n::tf(
+                    "side_panel.info_popover_note",
+                    &[("shortcut", crate::keymap::format_combo(&combo))],
+                )
+            })
+            .unwrap_or_else(|| {
+                crate::i18n::text("side_panel.info_popover_note_unbound").to_owned()
+            });
 
         div()
             .flex()
@@ -312,7 +303,16 @@ impl NativeRoot {
                     .child(
                         page_note(crate::i18n::text("side_panel.sessions_note"))
                             .when(!shown, |note| note.opacity(DIMMED)),
-                    ),
+                    )
+                    .child(page_note(info_note).when(cfg!(test), |note| {
+                        note.debug_selector(move || {
+                            if info_note_bound {
+                                "SETTINGS_SIDE_PANEL_INFO_NOTE bound".into()
+                            } else {
+                                "SETTINGS_SIDE_PANEL_INFO_NOTE unbound".into()
+                            }
+                        })
+                    })),
             )
             .into_any_element()
     }
@@ -544,48 +544,40 @@ mod tests {
                     for selector in [
                         "SETTINGS_SIDE_PANEL_PANE",
                         "SETTINGS_SIDE_PANEL_SURFACES_HEADING",
+                        "SETTINGS_FILES_VIEW_TOGGLE",
+                        "SETTINGS_CHANGES_VIEW_TOGGLE",
+                    ] {
+                        assert!(page.has(selector), "{selector}");
+                    }
+                    for absent in [
+                        "SETTINGS_INFO_VIEW_TOGGLE",
                         "SETTINGS_INFO_VIEW_KEY",
                         "SETTINGS_FILES_VIEW_KEY",
                         "SETTINGS_CHANGES_VIEW_KEY",
                     ] {
-                        assert!(page.has(selector), "{selector}");
+                        assert!(!page.has(absent), "{absent} should be removed");
                     }
                     assert_fill_color(
                         &mut page.visual,
                         "SETTINGS_SIDE_PANEL_SURFACES",
                         Some(theme::panel()),
                     );
-                    // The key sits between the description and the switch.
-                    let key = page.visual.debug_bounds("SETTINGS_INFO_VIEW_KEY").unwrap();
-                    let toggle = page
-                        .visual
-                        .debug_bounds("SETTINGS_INFO_VIEW_TOGGLE")
-                        .unwrap();
-                    assert!(key.right() < toggle.left());
 
-                    page.click("SETTINGS_INFO_VIEW_TOGGLE");
-                    assert!(!page.settings().info_view);
                     page.click("SETTINGS_FILES_VIEW_TOGGLE");
                     assert!(!page.settings().files_view);
                     page.click("SETTINGS_CHANGES_VIEW_TOGGLE");
                     assert!(!page.settings().changes_view);
-                    page.click("SETTINGS_INFO_VIEW_TOGGLE");
                     page.click("SETTINGS_FILES_VIEW_TOGGLE");
                     page.click("SETTINGS_CHANGES_VIEW_TOGGLE");
-                    assert!(
-                        page.settings().info_view
-                            && page.settings().files_view
-                            && page.settings().changes_view
-                    );
+                    assert!(page.settings().files_view && page.settings().changes_view);
 
                     // Off: the switches keep their values and stop answering.
                     page.click("SETTINGS_SHOW_SIDE_PANEL_TOGGLE");
                     assert!(!page.settings().show_side_panel);
-                    page.click("SETTINGS_INFO_VIEW_TOGGLE");
                     page.click("SETTINGS_FILES_VIEW_TOGGLE");
                     page.click("SETTINGS_CHANGES_VIEW_TOGGLE");
                     let settings = page.settings();
-                    assert!(settings.info_view && settings.files_view && settings.changes_view);
+                    assert!(settings.files_view && settings.changes_view);
                     page.click("SETTINGS_SHOW_SIDE_PANEL_TOGGLE");
                     assert!(page.settings().show_side_panel);
                 }
@@ -803,5 +795,35 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["rendered", "source"]
         );
+    }
+
+    #[test]
+    fn side_panel_settings_hides_unbound_info_shortcut_and_matches_search() {
+        let _theme = ThemeGuard::new();
+        let terms = SettingsPane::SidePanel.search_terms();
+        assert!(
+            terms.contains(&crate::i18n::text("side_panel.show"))
+                && terms.contains(&crate::i18n::text("side_panel.surfaces"))
+                && terms.contains(&crate::i18n::text("ui.files"))
+                && terms.contains(&crate::i18n::text("ui.changes"))
+                && terms.contains(&crate::i18n::text("ui.sessions")),
+            "Panel settings search terms should match visible toggles: {terms:?}"
+        );
+
+        let mut page = Page::new(SettingsPane::SidePanel, ThemeIntent::Dark);
+        assert!(page.has("SETTINGS_SIDE_PANEL_INFO_NOTE bound"));
+        assert!(!page.has("SETTINGS_SIDE_PANEL_INFO_NOTE unbound"));
+
+        page.store.update(&mut page.visual, |store, cx| {
+            store
+                .settings
+                .keymap_overrides
+                .insert("toggle-session-info".into(), None);
+            cx.notify();
+        });
+        page.visual.refresh().unwrap();
+        page.visual.run_until_parked();
+        assert!(page.has("SETTINGS_SIDE_PANEL_INFO_NOTE unbound"));
+        assert!(!page.has("SETTINGS_SIDE_PANEL_INFO_NOTE bound"));
     }
 }

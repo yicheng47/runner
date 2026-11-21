@@ -48,8 +48,13 @@ fn terminal_drawer_binding_is_only_available_in_missions() {
 #[test]
 #[cfg(target_os = "macos")]
 fn registry_matches_the_shipped_defaults_and_fixed_entries() {
-    assert_eq!(entries().len(), 36);
+    assert_eq!(entries().len(), 37);
     assert_eq!(entries().iter().filter(|entry| entry.fixed).count(), 12);
+    assert_eq!(
+        format_combo(&entry("toggle-session-info").unwrap().default),
+        "⌘I"
+    );
+    assert!(!entry("toggle-session-info").unwrap().fixed);
     assert!(entry("new-window").unwrap().fixed);
     assert!(entry("close-pane").unwrap().fixed);
     assert!(entry("system-close-window").unwrap().fixed);
@@ -634,6 +639,10 @@ fn macos_registry_defaults_match_expected_combos() {
             key_combo("KeyO", true, false, false, true, None, false),
         ),
         (
+            "toggle-session-info",
+            key_combo("KeyI", true, false, false, false, None, false),
+        ),
+        (
             "toggle-sidebar",
             key_combo("KeyS", true, false, false, false, None, false),
         ),
@@ -831,6 +840,7 @@ fn windows_defaults_replace_command_with_control() {
         ("cmd-left", "ctrl-left"),
         ("ctrl-cmd-f", "f11"),
         ("cmd-f", "ctrl-shift-f"),
+        ("cmd-i", "ctrl-shift-i"),
         ("alt-f12", "alt-f12"),
     ] {
         let actual = windows_default(macos);
@@ -987,6 +997,7 @@ fn windows_table_has_no_command_modifier_or_quit_binding() {
         ("new-window", "Ctrl+Shift+N"),
         ("command-palette", "Ctrl+Shift+P"),
         ("search-files", "Ctrl+Shift+O"),
+        ("toggle-session-info", "Ctrl+Shift+I"),
         ("toggle-sidebar", "Ctrl+B"),
         ("switch-sidebar-view", "Ctrl+."),
         ("split-pane-right", "Ctrl+Shift+D"),

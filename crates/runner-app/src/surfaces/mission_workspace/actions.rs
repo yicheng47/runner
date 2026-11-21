@@ -16,47 +16,91 @@ impl MissionWorkspace {
         let Some(mission) = self.mission_view() else {
             return;
         };
-        let busy = self.lifecycle_busy() || self.secondary;
+        let busy = self.lifecycle_busy() || self.secondary || self.archived();
         let pinned = self.mission_pinned(&mission, cx);
         self.menu_pinned = pinned;
         let mut actions = Vec::new();
         let mut items = Vec::new();
-        for (feature, action, label, icon, destructive) in [
-            (
-                "pin",
-                MissionMenuAction::Pin,
-                if pinned { "ui.unpin" } else { "ui.pin" },
-                if pinned { "pin-off.svg" } else { "pin.svg" },
-                false,
-            ),
-            (
-                "rename",
-                MissionMenuAction::Rename,
-                "ui.rename",
-                "square-pen.svg",
-                false,
-            ),
-            (
-                "archive",
-                MissionMenuAction::Archive,
-                "ui.archive",
-                "archive.svg",
-                true,
-            ),
-        ] {
-            if self.remote_supports(&[feature]) {
-                actions.push(action);
+        let running = mission.status == MissionStatus::Running;
+        if running && !self.resuming {
+            for (feature, action, label, icon, destructive) in [
+                (
+                    "pin",
+                    MissionMenuAction::Pin,
+                    if pinned { "ui.unpin" } else { "ui.pin" },
+                    if pinned { "pin-off.svg" } else { "pin.svg" },
+                    false,
+                ),
+                (
+                    "rename",
+                    MissionMenuAction::Rename,
+                    "ui.rename",
+                    "square-pen.svg",
+                    false,
+                ),
+            ] {
+                if self.remote_supports(&[feature]) {
+                    actions.push(action);
+                    items.push(
+                        UiMenuItem::new(crate::i18n::message(label))
+                            .icon(icon)
+                            .destructive(destructive)
+                            .disabled(busy),
+                    );
+                }
+            }
+            if self.any_session_live() && self.remote_supports(&["stopMission"]) {
+                actions.push(MissionMenuAction::StopAll);
                 items.push(
-                    UiMenuItem::new(crate::i18n::message(label))
-                        .icon(icon)
-                        .destructive(destructive)
+                    UiMenuItem::new(crate::i18n::message("ui.stop_all_slots"))
+                        .icon("circle-stop.svg")
+                        .disabled(busy),
+                );
+            }
+            if self.remote_supports(&["archive"]) {
+                actions.push(MissionMenuAction::Archive);
+                items.push(
+                    UiMenuItem::new(crate::i18n::message("ui.archive"))
+                        .icon("archive.svg")
+                        .destructive(true)
                         .disabled(busy),
                 );
             }
         }
         self.menu_actions = actions;
+        let workspace = cx.weak_entity();
+        let header_renderer: runner_app::ui::menu::HeaderRenderer =
+            Rc::new(move |_: &mut Window, cx: &mut App| {
+                workspace
+                    .update(cx, |this, cx| this.render_mission_info_popover_card(cx))
+                    .unwrap_or_else(|_| div().into_any_element())
+            });
+        let title = mission.title;
+        self.action_menu.update(cx, |menu, cx| {
+            menu.set_header_renderer(Some(header_renderer), cx);
+            menu.set_trigger_label(
+                runner_app::ui::MenuTriggerLabel {
+                    text: title.into(),
+                    color: theme::text(),
+                },
+                cx,
+            );
+            menu.set_items(items, cx);
+        });
+    }
+
+    pub(crate) fn toggle_mission_info_popover(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mission_view().is_none() {
+            cx.propagate();
+            return;
+        }
+        self.configure_mission_action_menu(cx);
         self.action_menu
-            .update(cx, |menu, cx| menu.set_items(items, cx));
+            .update(cx, |menu, menu_cx| menu.toggle_open(window, menu_cx));
     }
 
     pub(super) fn handle_mission_menu_action(
@@ -74,6 +118,7 @@ impl MissionWorkspace {
         match action {
             MissionMenuAction::Pin => self.toggle_mission_pin(window, cx),
             MissionMenuAction::Rename => self.open_mission_rename(window, cx),
+            MissionMenuAction::StopAll => self.open_stop_all_confirm(window, cx),
             MissionMenuAction::Archive => self.archive_open_mission(window, cx),
         }
     }

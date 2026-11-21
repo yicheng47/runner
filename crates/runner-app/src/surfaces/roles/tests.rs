@@ -397,7 +397,7 @@ fn role_page_harness(label: &str) -> RolePageHarness {
     });
     let label = label.to_owned();
     let host = cx.add_window(|window, cx| {
-        let mut root = NativeRoot::new(
+        NativeRoot::new(
             label,
             temp.path().join("logs"),
             None,
@@ -405,11 +405,7 @@ fn role_page_harness(label: &str) -> RolePageHarness {
             store.clone(),
             window,
             cx,
-        );
-        root.chat_surfaces
-            .open
-            .open(crate::surfaces::side_panel::PanelViewId::Info);
-        root
+        )
     });
     let visual = VisualTestContext::from_window(host.into(), &cx);
     RolePageHarness {
@@ -512,14 +508,17 @@ fn selected_chat_panel_keeps_recorded_values_after_a_shared_role_edit() {
             root.tabs.activate_session("panel-chat");
             root.route = AppRoute::Chat;
             root.sync_active_chat_detail(cx);
-            root.chat_surfaces
-                .open
-                .open(crate::surfaces::side_panel::PanelViewId::Info);
             cx.notify();
         })
         .unwrap();
     page.visual
         .simulate_resize(gpui::size(gpui::px(3000.), gpui::px(900.)));
+    page.visual.run_until_parked();
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.toggle_focused_pane_info_popover(window, cx);
+        })
+        .unwrap();
     page.visual.run_until_parked();
     assert!(page.visual.debug_bounds("COLUMN_TEXT opus").is_some());
     assert!(page.visual.debug_bounds("COLUMN_TEXT default").is_some());
@@ -2177,52 +2176,63 @@ fn chat_panel_opens_role_clamps_toggles_and_resets_on_another_chat() {
             root.tabs.activate_session("first-panel-chat");
             root.route = AppRoute::Chat;
             root.sync_active_chat_detail(cx);
-            root.chat_surfaces
-                .open
-                .open(crate::surfaces::side_panel::PanelViewId::Info);
             cx.notify();
         })
         .unwrap();
     page.visual
         .simulate_resize(gpui::size(gpui::px(1440.), gpui::px(3000.)));
     page.visual.run_until_parked();
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.toggle_focused_pane_info_popover(window, cx);
+        })
+        .unwrap();
+    page.visual.run_until_parked();
     assert!(page.visual.debug_bounds("CHAT_PANEL_OPEN_ROLE").is_some());
     assert!(page
         .visual
         .debug_bounds("CHAT_PANEL_PROMPT_TOGGLE")
         .is_some());
-    let collapsed = page
-        .visual
-        .debug_bounds("CHAT_PANEL_PROMPT_TEXT")
-        .unwrap()
-        .size
-        .height;
-    page.click("CHAT_PANEL_PROMPT_TOGGLE");
-    assert!(page.read(|root| root.chat_panel_prompt_expanded));
     assert!(
-        page.visual
-            .debug_bounds("CHAT_PANEL_PROMPT_TEXT")
-            .unwrap()
-            .size
-            .height
-            > collapsed
+        page.visual.debug_bounds("CHAT_PANEL_PROMPT").is_none(),
+        "S2 system prompt starts collapsed by default"
     );
     page.click("CHAT_PANEL_PROMPT_TOGGLE");
-    assert!(!page.read(|root| root.chat_panel_prompt_expanded));
+    assert!(page.read(|root| root.chat_info_prompt_expanded.contains("first-panel-chat")));
+    assert!(page.visual.debug_bounds("CHAT_PANEL_PROMPT").is_some());
     page.click("CHAT_PANEL_PROMPT_TOGGLE");
+    assert!(!page.read(|root| root.chat_info_prompt_expanded.contains("first-panel-chat")));
+    assert!(page.visual.debug_bounds("CHAT_PANEL_PROMPT").is_none());
+    page.click("CHAT_PANEL_PROMPT_TOGGLE");
+    assert!(page.read(|root| root.chat_info_prompt_expanded.contains("first-panel-chat")));
+
+    // Switching to another chat starts collapsed independently.
     page.host
-        .update(&mut page.visual, |root, _, cx| {
+        .update(&mut page.visual, |root, window, cx| {
+            root.toggle_focused_pane_info_popover(window, cx);
             root.tabs.activate_session("second-panel-chat");
             root.sync_active_chat_detail(cx);
-            root.chat_surfaces
-                .open
-                .open(crate::surfaces::side_panel::PanelViewId::Info);
             cx.notify();
         })
         .unwrap();
     page.visual.run_until_parked();
-    assert!(!page.read(|root| root.chat_panel_prompt_expanded));
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.toggle_focused_pane_info_popover(window, cx);
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(!page.read(|root| root.chat_info_prompt_expanded.contains("second-panel-chat")));
+    assert!(page.visual.debug_bounds("CHAT_PANEL_PROMPT").is_none());
     page.click("CHAT_PANEL_PROMPT_TOGGLE");
+    assert!(page.read(|root| root.chat_info_prompt_expanded.contains("second-panel-chat")));
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.toggle_focused_pane_info_popover(window, cx);
+        })
+        .unwrap();
+
+    // Archived chats open their own S2 Info popover and toggle prompt independently.
     for id in ["first-archived-panel-chat", "second-archived-panel-chat"] {
         let archived = runner_daemon::ops::session::session_get(&page.core, id)
             .unwrap()
@@ -2234,54 +2244,61 @@ fn chat_panel_opens_role_clamps_toggles_and_resets_on_another_chat() {
             })
             .unwrap();
         page.visual.run_until_parked();
-        assert_eq!(
-            page.read(|root| root.chat_panel_prompt_session.clone()),
-            Some(id.into())
-        );
-        assert!(!page.read(|root| root.chat_panel_prompt_expanded));
-        page.click("CHAT_PANEL_PROMPT_TOGGLE");
         page.host
-            .update(&mut page.visual, |root, _, cx| {
-                root.sync_active_chat_detail(cx);
-                root.chat_surfaces
-                    .open
-                    .open(crate::surfaces::side_panel::PanelViewId::Info);
-                cx.notify();
+            .update(&mut page.visual, |root, window, cx| {
+                root.toggle_archived_chat_info_popover(window, cx);
             })
             .unwrap();
         page.visual.run_until_parked();
-        assert!(page.read(|root| root.chat_panel_prompt_expanded));
+        assert!(!page.read(|root| root.chat_info_prompt_expanded.contains(id)));
+        page.click("CHAT_PANEL_PROMPT_TOGGLE");
+        assert!(page.read(|root| root.chat_info_prompt_expanded.contains(id)));
+        assert!(page.visual.debug_bounds("CHAT_PANEL_PROMPT").is_some());
     }
+
+    // Open role link from the popover navigates to RoleDetail.
     page.host
         .update(&mut page.visual, |root, _, cx| {
             root.set_route(AppRoute::Chat, cx);
             root.sync_active_chat_detail(cx);
-            root.chat_surfaces
-                .open
-                .open(crate::surfaces::side_panel::PanelViewId::Info);
             cx.notify();
         })
         .unwrap();
     page.visual.run_until_parked();
-    assert!(!page.read(|root| root.chat_panel_prompt_expanded));
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.toggle_focused_pane_info_popover(window, cx);
+        })
+        .unwrap();
+    page.visual.run_until_parked();
     page.click("CHAT_PANEL_OPEN_ROLE");
     assert_eq!(
         page.read(|root| root.route.clone()),
         AppRoute::RoleDetail("panel-coder".into())
     );
+
+    // Runtime chat without a role has no Open role link or System prompt toggle.
     page.host
         .update(&mut page.visual, |root, _, cx| {
             root.tabs.activate_session("runtime-panel-chat");
             root.set_route(AppRoute::Chat, cx);
             root.sync_active_chat_detail(cx);
-            root.chat_surfaces
-                .open
-                .open(crate::surfaces::side_panel::PanelViewId::Info);
             cx.notify();
         })
         .unwrap();
     page.visual.run_until_parked();
-    assert!(!page.read(|root| root.chat_panel_prompt_expanded));
+    page.host
+        .update(&mut page.visual, |root, window, cx| {
+            root.toggle_focused_pane_info_popover(window, cx);
+        })
+        .unwrap();
+    page.visual.run_until_parked();
+    assert!(page.visual.debug_bounds("S2_CHAT_INFO_CARD").is_some());
+    assert!(page.visual.debug_bounds("CHAT_PANEL_OPEN_ROLE").is_none());
+    assert!(page
+        .visual
+        .debug_bounds("CHAT_PANEL_PROMPT_TOGGLE")
+        .is_none());
 }
 
 #[test]

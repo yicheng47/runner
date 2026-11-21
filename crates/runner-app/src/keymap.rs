@@ -13,8 +13,8 @@ use crate::{
     NewMission, NewTab, NewTerminal, NewWindow, OpenSettings, Paste, ResumeFocusedSession,
     SearchFiles, SelectTab1, SelectTab2, SelectTab3, SelectTab4, SelectTab5, SelectTab6,
     SelectTab7, SelectTab8, SelectTab9, SplitPaneDown, SplitPaneRight, StopFocusedSession,
-    SwitchSidebarView, ToggleFullscreen, ToggleMaximizePane, ToggleSidebar, ToggleTerminalDrawer,
-    ZoomIn, ZoomOut, ZoomReset,
+    SwitchSidebarView, ToggleFullscreen, ToggleMaximizePane, ToggleSessionInfo, ToggleSidebar,
+    ToggleTerminalDrawer, ZoomIn, ZoomOut, ZoomReset,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -139,9 +139,10 @@ fn windows_default(macos: &str) -> String {
         "cmd-f" => "ctrl-shift-f".into(),
         "cmd-w" => "ctrl-shift-w".into(),
         "cmd-t" => "ctrl-shift-t".into(),
-        // Ctrl+D, Ctrl+K and Ctrl+S are terminal editing keys.
+        // Ctrl+D, Ctrl+K, Ctrl+I (Tab) and Ctrl+S are terminal editing keys.
         "cmd-d" => "ctrl-shift-d".into(),
         "shift-cmd-d" => "alt-shift-d".into(),
+        "cmd-i" => "ctrl-shift-i".into(),
         "cmd-k" => "ctrl-shift-p".into(),
         "cmd-s" => "ctrl-b".into(),
         "shift-cmd-w" => "alt-f4".into(),
@@ -217,6 +218,14 @@ pub(crate) fn entries() -> &'static [KeymapEntry] {
                 description_key: "keymap.search-files.description",
                 scope: KeymapScope::Global,
                 default: default_combo("shift-cmd-o", None, false),
+                fixed: false,
+            },
+            KeymapEntry {
+                id: "toggle-session-info",
+                title_key: "keymap.toggle-session-info.title",
+                description_key: "keymap.toggle-session-info.description",
+                scope: KeymapScope::Global,
+                default: default_combo("cmd-i", None, false),
                 fixed: false,
             },
             KeymapEntry {
@@ -1068,7 +1077,9 @@ fn binding_context(entry: &KeymapEntry, combo: &KeyCombo) -> Option<&'static str
         "new-chat" | "command-palette" | "page-previous" | "page-next" => {
             Some("!TextInput && !Settings && !Terminal")
         }
-        "toggle-sidebar" | "switch-sidebar-view" => Some("!TextInput && !Settings"),
+        "toggle-sidebar" | "switch-sidebar-view" | "toggle-session-info" => {
+            Some("!TextInput && !Settings")
+        }
         // The open find bar sits beside the terminal, outside its context.
         "find-in-terminal" => Some("Terminal || TerminalFind"),
         _ => entry.scope.context(),
@@ -1194,6 +1205,7 @@ pub(crate) fn install_bindings(
                 "new-mission" => KeyBinding::new(&binding, NewMission, context),
                 "command-palette" => KeyBinding::new(&binding, CommandPalette, context),
                 "search-files" => KeyBinding::new(&binding, SearchFiles, context),
+                "toggle-session-info" => KeyBinding::new(&binding, ToggleSessionInfo, context),
                 "toggle-sidebar" => KeyBinding::new(&binding, ToggleSidebar, context),
                 "switch-sidebar-view" => KeyBinding::new(&binding, SwitchSidebarView, context),
                 "toggle-terminal-drawer" => {

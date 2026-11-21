@@ -267,7 +267,7 @@ impl NativeRoot {
         });
         let sidebar_collapsed = settings.sidebar_collapsed;
         let sidebar_visibility = SidebarVisibilityTransition::new(!sidebar_collapsed);
-        let chat_panel_visibility = SidebarVisibilityTransition::new(settings.chat_panel_shown());
+        let chat_panel_visibility = SidebarVisibilityTransition::new(settings.show_side_panel);
         let role_surfaces = RoleSurfaces::new(cx.entity(), settings.roles_page_size, cx);
         let crew_surfaces = CrewSurfaces::new(cx.entity(), settings.crews_page_size, cx);
         let sidebar_shell = cx.entity().downgrade();
@@ -350,6 +350,9 @@ impl NativeRoot {
             archived_chat_detail: None,
             session_key_copy,
             archived_session_key_copy,
+            pane_session_key_copies: HashMap::new(),
+            pane_worktree_copies: HashMap::new(),
+            archived_title_menu: None,
             pane_action_menus: HashMap::new(),
             split_menus: HashMap::new(),
             pane_bounds: HashMap::new(),
@@ -417,9 +420,14 @@ impl NativeRoot {
             sidebar_collapsed,
             sidebar_visibility,
             chat_panel_visibility,
-            chat_panel_prompt_session: None,
-            chat_panel_prompt_expanded: false,
-            chat_surfaces: crate::surfaces::side_panel::PanelSurfaces::new(Default::default(), cx),
+            chat_panel_width_anim: SidebarVisibilityTransition::at(
+                app_store.read(cx).settings.chat_panel_width,
+            ),
+            chat_panel_width_mode: None,
+            chat_sheet_anim: SidebarVisibilityTransition::new(false),
+            chat_panel_width_snap: true,
+            chat_info_prompt_expanded: HashSet::new(),
+            chat_surfaces: crate::surfaces::side_panel::PanelSurfaces::new(Default::default()),
             chat_panel_tab: None,
             chat_panel_open: None,
             chat_panel_maximized: false,

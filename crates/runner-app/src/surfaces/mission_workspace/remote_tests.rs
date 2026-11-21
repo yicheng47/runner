@@ -88,10 +88,7 @@ fn mission_drawer_island_stacks_below_mission_with_full_height_rail() {
                         root.set_sidebar_collapsed(collapsed, false, cx);
                         root.sidebar_visibility = SidebarVisibilityTransition::new(!collapsed);
                         workspace.update(cx, |workspace, cx| {
-                            workspace.update_app_settings(cx, false, |settings| {
-                                settings.mission_rail_open = rail_open;
-                                true
-                            });
+                            workspace.set_rail_open(rail_open, cx);
                             workspace.rail_visibility = SidebarVisibilityTransition::new(rail_open);
                             cx.notify();
                         });
@@ -1088,9 +1085,9 @@ fn deferred_remote_focus_does_not_steal_rename_focus_and_global_zoom_keeps_targe
     visual.update(|_, cx| {
         workspace.update(cx, |workspace, cx| {
             workspace.set_remote_sidebar_width(341., cx);
+            workspace.set_rail_open(false, cx);
             workspace.update_app_settings(cx, false, |settings| {
                 settings.mission_rail_width = 333.;
-                settings.mission_rail_open = false;
                 true
             });
         })
@@ -1110,7 +1107,7 @@ fn deferred_remote_focus_does_not_steal_rename_focus_and_global_zoom_keeps_targe
         assert_eq!(workspace.settings(cx).app_zoom, 1.2);
         assert_eq!(workspace.settings(cx).sidebar_width, 341.);
         assert_eq!(workspace.settings(cx).mission_rail_width, 333.);
-        assert!(!workspace.settings(cx).mission_rail_open);
+        assert!(!workspace.rail_is_open(cx));
     });
     store.read_with(&visual, |store, _| {
         assert_eq!(store.settings.mission_rail_width, local_width)
@@ -2170,8 +2167,7 @@ fn saved_presentation_survives_same_host_reconnect_and_receives_added_members() 
             workspace.layout.drawer.set_height(219.);
             workspace
                 .rail_surfaces
-                .open
-                .open(crate::surfaces::side_panel::PanelViewId::Info);
+                .select(crate::surfaces::side_panel::PanelViewId::Files);
         })
     });
     visual.run_until_parked();
@@ -2180,7 +2176,7 @@ fn saved_presentation_survives_same_host_reconnect_and_receives_added_members() 
         (
             w.client.target.clone(),
             w.generation,
-            w.rail_surfaces.open.clone(),
+            w.rail_surfaces.selection,
         )
     });
 
@@ -2243,7 +2239,7 @@ fn saved_presentation_survives_same_host_reconnect_and_receives_added_members() 
         assert!(workspace.layout.drawer.open());
         assert_eq!(workspace.layout.drawer.active_shell(), Some("shell-a"));
         assert_eq!(workspace.layout.drawer.height(), 219.);
-        assert_eq!(workspace.rail_surfaces.open, rail_before);
+        assert_eq!(workspace.rail_surfaces.selection, rail_before);
     });
 }
 
@@ -2272,17 +2268,9 @@ fn remote_mission_rail_branch_row_tracks_online_checkout_and_hides_offline() {
     cx.run_until_parked();
 
     let mut visual = VisualTestContext::from_window(window.into(), &cx);
-    visual.update(|_window, cx| {
+    visual.update(|window, cx| {
         workspace.update(cx, |workspace, cx| {
-            workspace.update_app_settings(cx, false, |settings| {
-                settings.mission_rail_open = true;
-                true
-            });
-            workspace.rail_visibility = SidebarVisibilityTransition::new(true);
-            workspace
-                .rail_surfaces
-                .open
-                .open(crate::surfaces::side_panel::PanelViewId::Info);
+            workspace.toggle_mission_info_popover(window, cx);
             cx.notify();
         });
     });
@@ -2833,6 +2821,33 @@ fn remote_mission_drawer_cmd_w_respects_close_capability_empty_fallback_and_non_
             assert_eq!(ws.layout.drawer.shells(), &["shell-1", "shell-2"]);
         });
         assert_eq!(fake.request_count("close"), 0);
+
+        // Dispatching ToggleSessionInfo (⌘I / Ctrl+Shift+I) on a remote mission opens and closes
+        // the Mission Title ▾ Info popover cleanly.
+        window
+            .update(&mut visual, |root, window, cx| {
+                root.root_focus.focus(window, cx);
+            })
+            .unwrap();
+        visual.run_until_parked();
+        visual.dispatch_action(crate::ToggleSessionInfo);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while visual.debug_bounds("MISSION_META_ID").is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for remote mission S2 Info popover to open"
+            );
+            visual.run_until_parked();
+        }
+        visual.dispatch_action(crate::ToggleSessionInfo);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while visual.debug_bounds("MISSION_META_ID").is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for remote mission S2 Info popover to close"
+            );
+            visual.run_until_parked();
+        }
 
         window
             .update(&mut visual, |_, window, _| window.remove_window())

@@ -13,7 +13,8 @@ struct SavedPresentation {
     open_handles: Vec<String>,
     known_handles: Vec<String>,
     selected_handle: Option<String>,
-    rail: crate::surfaces::side_panel::OpenSurfaces,
+    rail: crate::surfaces::side_panel::PanelSelection,
+    rail_open: Option<bool>,
 }
 
 fn reconcile_handles(
@@ -148,7 +149,8 @@ impl MissionWorkspace {
                     open_handles: open_handles.clone(),
                     known_handles: known_handles.clone(),
                     selected_handle: None,
-                    rail: self.rail_surfaces.open.clone(),
+                    rail: self.rail_surfaces.selection,
+                    rail_open: self.rail_open,
                 },
             );
             if let Some(id) = mission_id.clone() {
@@ -156,7 +158,8 @@ impl MissionWorkspace {
                 if let Some(saved) = saved {
                     self.layout = saved.layout;
                     self.active_tab = saved.active;
-                    self.rail_surfaces.open = saved.rail;
+                    self.rail_surfaces.selection = saved.rail;
+                    self.rail_open = saved.rail_open;
                     self.presentation.set_selected_handle(saved.selected_handle);
                     open_handles = saved.open_handles;
                     known_handles = saved.known_handles;
@@ -803,7 +806,6 @@ impl MissionPresentation {
         let own = remote.settings.read(cx);
         global.sidebar_width = own.sidebar_width;
         global.mission_rail_width = own.mission_rail_width;
-        global.mission_rail_open = own.mission_rail_open;
         global
             .last_mission_terminal_ids
             .clone_from(&own.last_mission_terminal_ids);

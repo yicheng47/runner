@@ -310,7 +310,7 @@ fn a_maximized_pane_fills_the_tab_and_its_toggle_restores_the_split() {
     let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
     let other = store.update(&mut cx, |store, cx| {
         crate::app_store::seed_mixed_working_sessions(store);
-        store.settings.chat_panel_open = false;
+        store.settings.show_side_panel = false;
         let conn = store.test_core.db.get().unwrap();
         let mut layout = PaneLayout::single(Some("direct-agent"), &[]);
         let other = layout.split("p1", SplitOrientation::Row).unwrap();
@@ -444,7 +444,7 @@ fn title_clicks_select_their_pane_and_maximize_respects_split_floors_and_disconn
     let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
     let right = store.update(&mut cx, |store, cx| {
             crate::app_store::seed_mixed_working_sessions(store);
-            store.settings.chat_panel_open = false;
+            store.settings.show_side_panel = false;
             let conn = store.test_core.db.get().unwrap();
             conn.execute_batch("UPDATE sessions SET title='Left chat' WHERE id='direct-agent'; UPDATE sessions SET title='Right shell' WHERE id='busy-shell';").unwrap();
             let mut layout = PaneLayout::single(Some("direct-agent"), &[]);
@@ -621,7 +621,7 @@ fn clicking_away_from_an_inline_rename_saves_it() {
     let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
     store.update(&mut cx, |store, cx| {
             crate::app_store::seed_mixed_working_sessions(store);
-            store.settings.chat_panel_open = false;
+            store.settings.show_side_panel = false;
             let conn = store.test_core.db.get().unwrap();
             conn.execute_batch("UPDATE sessions SET title='Before' WHERE id='direct-agent'; UPDATE sessions SET title='Right' WHERE id='busy-shell';").unwrap();
             let mut layout = PaneLayout::single(Some("direct-agent"), &[]);
@@ -755,6 +755,7 @@ fn pane_title_menu_labels_fit_one_line() {
                         ("POPOVER_LABEL_0", "ui.rename_chat_action"),
                         ("POPOVER_LABEL_1", "ui.fork_chat_action"),
                         ("POPOVER_LABEL_2", "ui.pin"),
+                        ("POPOVER_LABEL_3", "ui.archive"),
                     ] {
                         let bounds = visual.debug_bounds(label).unwrap();
                         let full_text_width = visual.update(|window, _| {
@@ -809,7 +810,7 @@ fn island_status_details_truncate_inside_the_header_without_displacing_controls(
                     [],
                 )
                 .unwrap();
-            store.settings.chat_panel_open = false;
+            store.settings.show_side_panel = false;
             store.settings.sidebar_collapsed = false;
             store.refresh(crate::app_store::StoreRefreshKind::All, cx);
         });
@@ -986,7 +987,7 @@ fn status_grows_leftward_and_the_lifecycle_slot_never_moves() {
                 [],
             )
             .unwrap();
-        store.settings.chat_panel_open = false;
+        store.settings.show_side_panel = false;
         store.settings.sidebar_collapsed = false;
         store.refresh(crate::app_store::StoreRefreshKind::All, cx);
     });
@@ -1140,7 +1141,6 @@ fn side_panel_keeps_the_last_focused_chat_while_a_split_terminal_has_focus() {
                 .unwrap();
             store.replace_nodes(runner_daemon::repo::node::list(&conn).unwrap(), cx);
             store.refresh(crate::app_store::StoreRefreshKind::All, cx);
-            store.settings.chat_panel_open = true;
         });
     cx.run_until_parked();
     let host = cx.add_window(|window, cx| {
@@ -1157,9 +1157,6 @@ fn side_panel_keeps_the_last_focused_chat_while_a_split_terminal_has_focus() {
         assert!(root.tabs.activate_session("direct-agent"));
         root.route = AppRoute::Chat;
         root.sync_active_chat_detail(cx);
-        root.chat_surfaces
-            .open
-            .open(crate::surfaces::side_panel::PanelViewId::Info);
         root
     });
     let mut visual = VisualTestContext::from_window(host.into(), &cx);
@@ -1194,8 +1191,9 @@ fn side_panel_keeps_the_last_focused_chat_while_a_split_terminal_has_focus() {
             "focused {focused}"
         );
         assert!(visual.debug_bounds("CHAT_SIDE_PANEL").is_some());
-        assert!(visual.debug_bounds("PANEL_TAB Info").is_some());
-        assert!(visual.debug_bounds("PANEL_ADD_SURFACE").is_some());
+        assert!(visual.debug_bounds("PANEL_ACTIVITY Files active").is_some());
+        assert!(visual.debug_bounds("PANEL_ACTIVITY Changes").is_some());
+        assert!(visual.debug_bounds("PANEL_ADD_SURFACE").is_none());
     }
 
     host.update(&mut visual, |root, _, cx| {
@@ -1248,7 +1246,6 @@ fn a_hovered_link_names_the_panel_its_own_pane_will_show() {
                 .unwrap();
             store.replace_nodes(runner_daemon::repo::node::list(&conn).unwrap(), cx);
             store.refresh(crate::app_store::StoreRefreshKind::All, cx);
-            store.settings.chat_panel_open = true;
         });
     cx.run_until_parked();
     let host = cx.add_window(|window, cx| {
@@ -1265,9 +1262,6 @@ fn a_hovered_link_names_the_panel_its_own_pane_will_show() {
         assert!(root.tabs.activate_session("direct-agent"));
         root.route = AppRoute::Chat;
         root.sync_active_chat_detail(cx);
-        root.chat_surfaces
-            .open
-            .open(crate::surfaces::side_panel::PanelViewId::Info);
         root
     });
     let mut visual = VisualTestContext::from_window(host.into(), &cx);
@@ -1369,7 +1363,6 @@ fn panel_root(
             )
             .unwrap();
         store.refresh(crate::app_store::StoreRefreshKind::All, cx);
-        store.settings.chat_panel_open = true;
     });
     cx.run_until_parked();
     let host = cx.add_window(|window, cx| {
@@ -1386,11 +1379,6 @@ fn panel_root(
         assert!(root.tabs.activate_session(session));
         root.route = crate::AppRoute::Chat;
         root.sync_active_chat_detail(cx);
-        if session == "direct-agent" {
-            root.chat_surfaces
-                .open
-                .open(crate::surfaces::side_panel::PanelViewId::Info);
-        }
         root
     });
     let visual = gpui::VisualTestContext::from_window(host.into(), &cx);
@@ -1425,10 +1413,10 @@ fn double_clicking_the_panel_collapse_control_does_not_zoom_the_window() {
     use crate::platform_ui::{take_titlebar_actions, TitlebarAction};
     use gpui::{point, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent};
 
-    let (_temp, _cx, store, host, mut visual) = panel_root("direct-agent");
+    let (_temp, _cx, _store, host, mut visual) = panel_root("direct-agent");
     let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
-    let info = visual.debug_bounds("PANEL_TAB Info").unwrap();
-    let collapse = point(panel.right() - px(22.), info.center().y);
+    let files = visual.debug_bounds("PANEL_ACTIVITY Files active").unwrap();
+    let collapse = point(panel.right() - px(22.), files.center().y);
     let click = |visual: &mut gpui::VisualTestContext, click_count| {
         visual.simulate_event(MouseDownEvent {
             position: collapse,
@@ -1447,7 +1435,9 @@ fn double_clicking_the_panel_collapse_control_does_not_zoom_the_window() {
     };
     take_titlebar_actions();
     click(&mut visual, 1);
-    assert!(!store.read_with(&visual, |store, _| store.settings.chat_panel_open));
+    assert!(!host
+        .read_with(&visual, |root, cx| root.chat_panel_is_open(cx))
+        .unwrap());
     assert!(take_titlebar_actions().is_empty());
     host.update(&mut visual, |root, _, cx| {
         // Hold the collapse halfway, where a real double-click's second
@@ -1478,21 +1468,9 @@ fn double_clicking_the_panel_collapse_control_does_not_zoom_the_window() {
 fn chat_surfaces(
     host: &gpui::WindowHandle<crate::NativeRoot>,
     visual: &mut gpui::VisualTestContext,
-) -> crate::surfaces::side_panel::OpenSurfaces {
-    host.read_with(visual, |root, _| root.chat_surfaces.open.clone())
+) -> crate::surfaces::side_panel::PanelSelection {
+    host.read_with(visual, |root, _| root.chat_surfaces.selection)
         .unwrap()
-}
-
-fn surfaces_of(
-    ids: &[crate::surfaces::side_panel::PanelViewId],
-    active: crate::surfaces::side_panel::PanelViewId,
-) -> crate::surfaces::side_panel::OpenSurfaces {
-    let mut surfaces = crate::surfaces::side_panel::OpenSurfaces::default();
-    for id in ids {
-        surfaces.open(*id);
-    }
-    surfaces.select(active);
-    surfaces
 }
 
 fn click_selector(visual: &mut gpui::VisualTestContext, selector: &'static str) {
@@ -1504,67 +1482,40 @@ fn click_selector(visual: &mut gpui::VisualTestContext, selector: &'static str) 
 }
 
 #[test]
-fn chat_panel_header_holds_the_open_surfaces_as_tabs_then_plus_in_both_themes() {
+fn chat_panel_activity_bar_switches_files_and_changes_in_both_themes() {
     use crate::i18n::{testing::with_locale, Locale};
-    use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelViewId};
+    use crate::surfaces::side_panel::{PanelContext, PanelSelection, PanelSubject, PanelViewId};
     use crate::theme::{self, ThemeIntent};
-    use crate::theme_snapshot::{assert_fill_color, assert_text};
+    use crate::theme_snapshot::assert_fill_color;
 
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     for locale in [Locale::English, Locale::SimplifiedChinese] {
         with_locale(locale, || {
             let (_temp, _cx, store, host, mut visual) = panel_root("direct-agent");
-            // Info open: its tab, `+`, then collapse.
+            // Wide chat defaults open on Files at 300 px with Orca activity bar icons.
             let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
-            let info = visual.debug_bounds("PANEL_TAB Info").unwrap();
-            let add = visual.debug_bounds("PANEL_ADD_SURFACE").unwrap();
-            assert!(visual.debug_bounds("PANEL_TAB Files").is_none());
-            assert!(visual.debug_bounds("PANEL_TAB Sessions").is_none());
-            assert!(visual.debug_bounds("PANEL_TAB_CLOSE Info").is_some());
-            assert!(info.left() - panel.left() <= px(12.), "{info:?} {panel:?}");
-            assert_eq!(info.size.height, px(28.));
-            assert_eq!(add.size, gpui::size(px(24.), px(24.)));
-            assert!(info.right() < add.left() && add.left() - info.right() <= px(6.));
-            assert_eq!(info.center().y, add.center().y);
+            assert!(visual.debug_bounds("PANEL_ACTIVITY Files active").is_some());
+            let files = visual.debug_bounds("PANEL_ACTIVITY Files").unwrap();
+            let changes = visual.debug_bounds("PANEL_ACTIVITY Changes").unwrap();
+            assert!(visual.debug_bounds("PANEL_ACTIVITY_BAR Files").is_some());
+            assert!(visual.debug_bounds("PANEL_TAB Info").is_none());
+            assert!(visual.debug_bounds("PANEL_ADD_SURFACE").is_none());
+            assert!(visual.debug_bounds("PANEL_EMPTY").is_none());
             assert!(
-                panel.right() - add.right() >= px(60.),
-                "a gap, then collapse on the right: {add:?} {panel:?}"
+                visual.debug_bounds("SIDE_PANEL_MAXIMIZE").is_none(),
+                "maximize is hidden while panel is compact at 300 px"
             );
-            assert!(visual.debug_bounds("CHAT_PANEL_META codex").is_some());
-            for intent in [ThemeIntent::Dark, ThemeIntent::Light] {
-                set_panel_theme(&store, &mut visual, intent);
-                assert_fill_color(&mut visual, "PANEL_TAB Info", Some(theme::raised()));
-                assert_text(&mut visual, "PANEL_TAB_INK Info", theme::text());
-            }
-
-            // `+` lists Info and Files, Info checked; Esc closes it.
-            click_selector(&mut visual, "PANEL_ADD_SURFACE");
-            let info_row = visual.debug_bounds("PANEL_MENU_ROW Info").unwrap();
-            let files_row = visual.debug_bounds("PANEL_MENU_ROW Files").unwrap();
-            assert!(info_row.bottom() <= files_row.top());
-            assert!(info_row.top() > add.bottom(), "below `+`");
-            assert!(visual.debug_bounds("PANEL_MENU_CHECK Info").is_some());
-            assert!(visual.debug_bounds("PANEL_MENU_CHECK Files").is_none());
-            for intent in [ThemeIntent::Dark, ThemeIntent::Light] {
-                set_panel_theme(&store, &mut visual, intent);
-                assert_fill_color(&mut visual, "PANEL_MENU", Some(theme::raised()));
-                assert_fill_color(
-                    &mut visual,
-                    "PANEL_MENU_ROW Info",
-                    Some(theme::sidebar_selected()),
-                );
-                assert_fill_color(&mut visual, "PANEL_MENU_ROW Files", None);
-            }
-            visual.simulate_keystrokes("escape");
-            assert!(visual.debug_bounds("PANEL_MENU").is_none());
-
-            // `F` while the menu has focus opens Files and closes it.
-            click_selector(&mut visual, "PANEL_ADD_SURFACE");
-            visual.simulate_keystrokes("f");
-            assert!(visual.debug_bounds("PANEL_MENU").is_none());
-            assert_eq!(
-                chat_surfaces(&host, &mut visual),
-                surfaces_of(&[PanelViewId::Info, PanelViewId::Files], PanelViewId::Files)
+            assert!(
+                files.left() - panel.left() <= px(16.),
+                "{files:?} {panel:?}"
+            );
+            assert_eq!(files.size, gpui::size(px(28.), px(28.)));
+            assert_eq!(changes.size, gpui::size(px(28.), px(28.)));
+            assert!(files.right() < changes.left());
+            assert_eq!(files.center().y, changes.center().y);
+            assert!(
+                panel.right() - changes.right() >= px(60.),
+                "a gap, then collapse on the right: {changes:?} {panel:?}"
             );
             let context = PanelContext {
                 subject: PanelSubject::Session("direct-agent".into()),
@@ -1572,35 +1523,39 @@ fn chat_panel_header_holds_the_open_surfaces_as_tabs_then_plus_in_both_themes() 
                 cwd: Some("/tmp/panel-direct-agent".into()),
                 project: None,
                 remote: false,
+                following: None,
             };
             assert!(visual
                 .debug_bounds(format!("FILES_VIEW {context:?}").leak())
                 .is_some());
-            assert!(visual.debug_bounds("CHAT_PANEL_META codex").is_none());
-            let info = visual.debug_bounds("PANEL_TAB Info").unwrap();
-            let files = visual.debug_bounds("PANEL_TAB Files").unwrap();
-            assert!(info.right() < files.left());
-            assert!(visual.debug_bounds("PANEL_TAB_CLOSE Info").is_none());
-            assert!(visual.debug_bounds("PANEL_TAB_CLOSE Files").is_some());
             for intent in [ThemeIntent::Dark, ThemeIntent::Light] {
                 set_panel_theme(&store, &mut visual, intent);
-                assert_fill_color(&mut visual, "PANEL_TAB Info", None);
-                assert_fill_color(&mut visual, "PANEL_TAB Files", Some(theme::raised()));
-                assert_text(&mut visual, "PANEL_TAB_INK Info", theme::muted());
-                assert_text(&mut visual, "PANEL_TAB_INK Files", theme::text());
+                assert_fill_color(&mut visual, "PANEL_ACTIVITY Files", Some(theme::raised()));
+                assert_fill_color(&mut visual, "PANEL_ACTIVITY Changes", None);
             }
 
-            // Picking an open surface switches to it; a tab click too.
-            click_selector(&mut visual, "PANEL_ADD_SURFACE");
-            assert!(visual.debug_bounds("PANEL_MENU_CHECK Files").is_some());
-            click_selector(&mut visual, "PANEL_MENU_ROW Info");
-            assert!(visual.debug_bounds("CHAT_PANEL_META codex").is_some());
+            // Clicking Changes switches cleanly in 1 click without widening.
+            click_selector(&mut visual, "PANEL_ACTIVITY Changes");
             assert_eq!(
                 chat_surfaces(&host, &mut visual),
-                surfaces_of(&[PanelViewId::Info, PanelViewId::Files], PanelViewId::Info),
-                "each surface opens once"
+                PanelSelection::new(PanelViewId::Changes)
             );
-            click_selector(&mut visual, "PANEL_TAB Files");
+            assert!(visual
+                .debug_bounds(format!("CHANGES_VIEW {context:?}").leak())
+                .is_some());
+            assert!(visual.debug_bounds("PANEL_ACTIVITY_BAR Changes").is_some());
+            for intent in [ThemeIntent::Dark, ThemeIntent::Light] {
+                set_panel_theme(&store, &mut visual, intent);
+                assert_fill_color(&mut visual, "PANEL_ACTIVITY Files", None);
+                assert_fill_color(&mut visual, "PANEL_ACTIVITY Changes", Some(theme::raised()));
+            }
+
+            // Clicking Files switches back.
+            click_selector(&mut visual, "PANEL_ACTIVITY Files");
+            assert_eq!(
+                chat_surfaces(&host, &mut visual),
+                PanelSelection::new(PanelViewId::Files)
+            );
             assert!(visual
                 .debug_bounds(format!("FILES_VIEW {context:?}").leak())
                 .is_some());
@@ -1611,14 +1566,14 @@ fn chat_panel_header_holds_the_open_surfaces_as_tabs_then_plus_in_both_themes() 
     {
         use crate::platform_ui::{take_titlebar_actions, TitlebarAction};
         let (_temp, _cx, _store, _host, mut visual) = panel_root("direct-agent");
-        let info = visual.debug_bounds("PANEL_TAB Info").unwrap();
-        let add = visual.debug_bounds("PANEL_ADD_SURFACE").unwrap();
-        let gap = gpui::point(add.right() + px(40.), info.center().y);
+        let files = visual.debug_bounds("PANEL_ACTIVITY Files active").unwrap();
+        let changes = visual.debug_bounds("PANEL_ACTIVITY Changes").unwrap();
+        let gap = gpui::point(changes.right() + px(40.), files.center().y);
         take_titlebar_actions();
         visual.simulate_mouse_down(gap, gpui::MouseButton::Left, gpui::Modifiers::default());
         visual.simulate_mouse_up(gap, gpui::MouseButton::Left, gpui::Modifiers::default());
         assert_eq!(take_titlebar_actions(), [TitlebarAction::Move]);
-        for at in [info.center(), add.center()] {
+        for at in [files.center(), changes.center()] {
             for click_count in [1, 2] {
                 visual.simulate_event(gpui::MouseDownEvent {
                     button: gpui::MouseButton::Left,
@@ -1641,139 +1596,13 @@ fn chat_panel_header_holds_the_open_surfaces_as_tabs_then_plus_in_both_themes() 
 }
 
 #[test]
-fn closing_the_last_surface_shows_the_focused_surface_list_whose_letters_open_them() {
-    use crate::i18n::{testing::with_locale, Locale};
-    use crate::surfaces::side_panel::PanelViewId;
-    use crate::theme::{self, ThemeIntent};
-    use crate::theme_snapshot::assert_fill_color;
-
-    let _theme = crate::theme_snapshot::ThemeGuard::new();
-    for locale in [Locale::English, Locale::SimplifiedChinese] {
-        with_locale(locale, || {
-            let (_temp, _cx, store, host, mut visual) = panel_root("direct-agent");
-            click_selector(&mut visual, "PANEL_ADD_SURFACE");
-            click_selector(&mut visual, "PANEL_MENU_ROW Files");
-            // Closing Files shows the tab before it, Info.
-            click_selector(&mut visual, "PANEL_TAB_CLOSE Files");
-            assert_eq!(
-                chat_surfaces(&host, &mut visual),
-                surfaces_of(&[PanelViewId::Info], PanelViewId::Info)
-            );
-            assert!(visual.debug_bounds("CHAT_PANEL_META codex").is_some());
-            // The last: the list, focused, with only `+` and collapse above.
-            click_selector(&mut visual, "PANEL_TAB_CLOSE Info");
-            assert!(visual.debug_bounds("PANEL_EMPTY").is_some());
-            assert!(visual.debug_bounds("PANEL_TAB Info").is_none());
-            assert!(visual.debug_bounds("PANEL_ADD_SURFACE").is_some());
-            assert!(visual.debug_bounds("CHAT_PANEL_META codex").is_none());
-            let focused = host
-                .update(&mut visual, |root, window, _| {
-                    root.chat_surfaces.list_focus().is_focused(window)
-                })
-                .unwrap();
-            assert!(focused, "the list takes focus");
-            let info = visual.debug_bounds("PANEL_EMPTY_ROW Info").unwrap();
-            let files = visual.debug_bounds("PANEL_EMPTY_ROW Files").unwrap();
-            assert!(info.bottom() <= files.top());
-            assert!(visual.debug_bounds("PANEL_MENU_CHECK Info").is_none());
-            for intent in [ThemeIntent::Dark, ThemeIntent::Light] {
-                set_panel_theme(&store, &mut visual, intent);
-                assert_fill_color(
-                    &mut visual,
-                    "PANEL_EMPTY_ROW Info",
-                    Some(theme::sidebar_selected()),
-                );
-                assert_fill_color(&mut visual, "PANEL_EMPTY_ROW Files", None);
-            }
-
-            // `I` opens Info; from the list again, `F` opens Files.
-            visual.simulate_keystrokes("i");
-            assert_eq!(
-                chat_surfaces(&host, &mut visual),
-                surfaces_of(&[PanelViewId::Info], PanelViewId::Info)
-            );
-            assert!(visual.debug_bounds("PANEL_EMPTY").is_none());
-            click_selector(&mut visual, "PANEL_TAB_CLOSE Info");
-            visual.simulate_keystrokes("f");
-            assert_eq!(
-                chat_surfaces(&host, &mut visual),
-                surfaces_of(&[PanelViewId::Files], PanelViewId::Files)
-            );
-            // The arrows and Enter pick from the list too.
-            click_selector(&mut visual, "PANEL_TAB_CLOSE Files");
-            visual.simulate_keystrokes("down enter");
-            assert_eq!(
-                chat_surfaces(&host, &mut visual),
-                surfaces_of(&[PanelViewId::Files], PanelViewId::Files)
-            );
-            let focus = |visual: &mut gpui::VisualTestContext| {
-                host.update(visual, |root, window, _| {
-                    (
-                        root.chat_surfaces.list_focus().is_focused(window),
-                        root.chat_focus.is_focused(window),
-                    )
-                })
-                .unwrap()
-            };
-            assert_eq!(focus(&mut visual), (false, true), "the chat takes the keys");
-
-            // `+` opened from the focused list: Esc returns to the list,
-            // and a pick hands the keys to the chat.
-            click_selector(&mut visual, "PANEL_TAB_CLOSE Files");
-            assert_eq!(focus(&mut visual), (true, false));
-            click_selector(&mut visual, "PANEL_ADD_SURFACE");
-            visual.simulate_keystrokes("escape");
-            assert!(visual.debug_bounds("PANEL_MENU").is_none());
-            assert_eq!(focus(&mut visual), (true, false), "Esc returns to the list");
-            click_selector(&mut visual, "PANEL_ADD_SURFACE");
-            visual.simulate_keystrokes("f");
-            assert_eq!(
-                chat_surfaces(&host, &mut visual),
-                surfaces_of(&[PanelViewId::Files], PanelViewId::Files)
-            );
-            assert_eq!(focus(&mut visual), (false, true), "a pick from `+` too");
-
-            // A collapsed panel reopened on the list gives it focus.
-            click_selector(&mut visual, "PANEL_TAB_CLOSE Files");
-            host.update(&mut visual, |root, window, cx| {
-                root.set_chat_panel_open(false, cx);
-                root.chat_panel_visibility =
-                    crate::surfaces::root::SidebarVisibilityTransition::new(false);
-                root.chat_focus.focus(window, cx);
-            })
-            .unwrap();
-            visual.refresh().unwrap();
-            click_selector(&mut visual, "CHAT_PANEL_TOGGLE");
-            let focused = host
-                .update(&mut visual, |root, window, _| {
-                    root.chat_surfaces.list_focus().is_focused(window)
-                })
-                .unwrap();
-            assert!(focused);
-            // The letters act only while the list has focus.
-            host.update(&mut visual, |root, window, cx| {
-                root.chat_focus.focus(window, cx)
-            })
-            .unwrap();
-            visual.simulate_keystrokes("i");
-            assert_eq!(
-                chat_surfaces(&host, &mut visual),
-                Default::default(),
-                "never globally"
-            );
-        });
-    }
-}
-
-#[test]
-fn a_new_chat_opens_on_the_surface_list_and_leaves_the_keys_with_the_chat() {
+fn a_new_chat_opens_on_files_project_tree_and_leaves_the_keys_with_the_chat() {
     use crate::surfaces::front_page::client::ChatLaunched;
-    use crate::surfaces::side_panel::{OpenSurfaces, PanelViewId};
+    use crate::surfaces::side_panel::{PanelSelection, PanelSurface, PanelViewId};
 
-    let (_temp, _cx, _store, host, mut visual) = panel_root("direct-agent");
+    let (_temp, _cx, store, host, mut visual) = panel_root("direct-agent");
     host.update(&mut visual, |root, window, cx| {
-        root.chat_surfaces.open =
-            surfaces_of(&[PanelViewId::Files, PanelViewId::Info], PanelViewId::Info);
+        root.chat_surfaces.select(PanelViewId::Changes);
         root.finish_local_chat_launch(
             Some("direct-agent".into()),
             Ok(ChatLaunched {
@@ -1786,63 +1615,23 @@ fn a_new_chat_opens_on_the_surface_list_and_leaves_the_keys_with_the_chat() {
     })
     .unwrap();
     visual.run_until_parked();
-    assert_eq!(chat_surfaces(&host, &mut visual), OpenSurfaces::default());
-    assert!(visual.debug_bounds("PANEL_EMPTY").is_some());
-    // Past the start transition, which focuses the terminal.
-    visual
-        .executor()
-        .advance_clock(std::time::Duration::from_secs(30));
-    visual.run_until_parked();
-    let focused = host
-        .update(&mut visual, |root, window, _| {
-            root.chat_surfaces.list_focus().is_focused(window)
-        })
-        .unwrap();
-    assert!(!focused, "typing goes to the new chat, not the list");
-
-    // A collapsed panel, or a terminal-only tab, never takes focus.
-    let (_temp, _cx, _store, host, mut visual) = panel_root("direct-agent");
-    host.update(&mut visual, |root, window, cx| {
-        root.set_chat_panel_open(false, cx);
-        root.chat_surfaces.open = OpenSurfaces::default();
-        root.focus_empty_chat_panel(window, cx);
-    })
-    .unwrap();
-    visual.run_until_parked();
-    let focused = host
-        .update(&mut visual, |root, window, _| {
-            root.chat_surfaces.list_focus().is_focused(window)
-        })
-        .unwrap();
-    assert!(!focused, "a collapsed panel leaves focus alone");
-    let (_temp, _cx, _store, host, mut visual) = panel_root("busy-shell");
-    host.update(&mut visual, |root, window, cx| {
-        root.chat_surfaces.open = OpenSurfaces::default();
-        root.focus_empty_chat_panel(window, cx);
-    })
-    .unwrap();
-    let focused = host
-        .update(&mut visual, |root, window, _| {
-            root.chat_surfaces.list_focus().is_focused(window)
-        })
-        .unwrap();
-    assert!(!focused, "a terminal-only tab shows Files, not the list");
+    assert_eq!(chat_surfaces(&host, &mut visual), PanelSelection::default());
+    let settings = store.read_with(&visual, |s, _| s.settings.clone());
+    assert_eq!(
+        chat_surfaces(&host, &mut visual).effective(PanelSurface::Chat, &settings),
+        Some(PanelViewId::Files)
+    );
+    assert!(visual.debug_bounds("PANEL_EMPTY").is_none());
+    assert!(visual.debug_bounds("PANEL_ACTIVITY Files active").is_some());
 }
 
 #[test]
-fn chat_panel_header_keeps_plus_and_collapse_at_the_narrowest_panel_in_both_locales() {
+fn chat_panel_activity_bar_keeps_icons_and_collapse_at_the_narrowest_panel_in_both_locales() {
     use crate::i18n::{testing::with_locale, Locale};
-    use crate::surfaces::side_panel::PanelViewId;
 
     for locale in [Locale::English, Locale::SimplifiedChinese] {
         with_locale(locale, || {
             let (_temp, _cx, _store, host, mut visual) = panel_root("direct-agent");
-            host.update(&mut visual, |root, _, cx| {
-                root.chat_surfaces.open =
-                    surfaces_of(&[PanelViewId::Info, PanelViewId::Files], PanelViewId::Files);
-                cx.notify();
-            })
-            .unwrap();
             for width in [
                 crate::app_settings::CHAT_PANEL_DEFAULT,
                 crate::app_settings::CHAT_PANEL_MIN,
@@ -1856,24 +1645,16 @@ fn chat_panel_header_keeps_plus_and_collapse_at_the_narrowest_panel_in_both_loca
                 .unwrap();
                 visual.run_until_parked();
                 let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
-                let close = visual.debug_bounds("PANEL_TAB_CLOSE Files").unwrap();
-                let add = visual.debug_bounds("PANEL_ADD_SURFACE").unwrap();
+                let files = visual.debug_bounds("PANEL_ACTIVITY Files active").unwrap();
+                let changes = visual.debug_bounds("PANEL_ACTIVITY Changes").unwrap();
                 let collapse = visual.debug_bounds("PANEL_COLLAPSE").unwrap();
-                assert!(close.right() <= add.left(), "{locale:?} {width}");
-                assert!(add.right() <= collapse.left(), "{locale:?} {width}");
+                assert!(files.left() >= panel.left(), "{locale:?} {width}");
+                assert!(files.right() < changes.left(), "{locale:?} {width}");
+                assert!(changes.right() <= collapse.left(), "{locale:?} {width}");
                 assert!(
                     collapse.right() <= panel.right(),
                     "{locale:?} {width}: {collapse:?} {panel:?}"
                 );
-                click_selector(&mut visual, "PANEL_TAB_CLOSE Files");
-                assert_eq!(
-                    chat_surfaces(&host, &mut visual),
-                    surfaces_of(&[PanelViewId::Info], PanelViewId::Info)
-                );
-                click_selector(&mut visual, "PANEL_ADD_SURFACE");
-                click_selector(&mut visual, "PANEL_MENU_ROW Files");
-                let info = visual.debug_bounds("PANEL_TAB Info").unwrap();
-                assert!(info.left() >= panel.left(), "{locale:?} {width}");
             }
         });
     }
@@ -1960,13 +1741,9 @@ fn a_file_link_opens_in_the_panel_preview_of_a_chat_or_a_terminal_tab() {
             "{session}: the collapsed panel opens"
         );
         assert_eq!(
-            chat_surfaces(&host, &mut visual),
-            if session == "direct-agent" {
-                surfaces_of(&[PanelViewId::Info, PanelViewId::Files], PanelViewId::Files)
-            } else {
-                surfaces_of(&[PanelViewId::Files], PanelViewId::Files)
-            },
-            "{session}: the closed Files tab opens only in its own tab"
+            chat_surfaces(&host, &mut visual).selected(),
+            Some(PanelViewId::Files),
+            "{session}: opening a file link selects Files"
         );
 
         for off in [
@@ -2023,7 +1800,7 @@ fn search_files_opens_the_collapsed_panel_on_files_and_its_finder() {
         .read_with(&visual, |root, cx| root.chat_panel_is_open(cx))
         .unwrap());
     assert_eq!(
-        chat_surfaces(&host, &mut visual).ids().1,
+        chat_surfaces(&host, &mut visual).selected(),
         Some(crate::surfaces::side_panel::PanelViewId::Files)
     );
 }
@@ -2123,10 +1900,10 @@ fn the_finder_key_goes_back_to_the_terminal_when_there_is_no_view_to_search() {
 }
 
 #[test]
-fn terminal_tab_panel_holds_files_alone_and_keeps_its_own_panel_state() {
+fn terminal_tab_panel_holds_files_and_changes_and_keeps_its_own_panel_state() {
     use crate::surfaces::side_panel::{PanelContext, PanelSubject};
     use crate::theme::{self, ThemeIntent};
-    use crate::theme_snapshot::assert_text;
+    use crate::theme_snapshot::assert_fill_color;
 
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let (_temp, _cx, store, host, mut visual) = panel_root("busy-shell");
@@ -2134,40 +1911,36 @@ fn terminal_tab_panel_holds_files_alone_and_keeps_its_own_panel_state() {
     let width = store.read_with(&visual, |store, _| store.settings.chat_panel_width);
     assert!((panel.size.width - px(width)).abs() <= px(1.), "{panel:?}");
     assert!(visual.debug_bounds("CHAT_PANEL_GUTTER").is_some());
-    // Two permanent surfaces on a terminal tab: Files and Changes, with no × or `+`.
-    for view in ["Info", "Sessions"] {
-        assert!(
-            visual
-                .debug_bounds(format!("PANEL_TAB {view}").leak())
-                .is_none(),
-            "{view}"
-        );
-    }
-    assert!(visual.debug_bounds("PANEL_TAB Files").is_some());
-    assert!(visual.debug_bounds("PANEL_TAB Changes").is_some());
-    assert!(visual.debug_bounds("PANEL_TAB_CLOSE Files").is_none());
-    assert!(visual.debug_bounds("PANEL_TAB_CLOSE Changes").is_none());
+    // Orca activity bar on a terminal tab: Files and Changes icons, no Info or Sessions or `+`.
+    assert!(visual.debug_bounds("PANEL_ACTIVITY Files active").is_some());
+    assert!(visual.debug_bounds("PANEL_ACTIVITY Changes").is_some());
+    assert!(visual.debug_bounds("PANEL_ACTIVITY Sessions").is_none());
+    assert!(visual.debug_bounds("PANEL_TAB Info").is_none());
     assert!(visual.debug_bounds("PANEL_ADD_SURFACE").is_none());
-    let tab = visual.debug_bounds("PANEL_TAB Files").unwrap();
-    assert!(tab.left() - panel.left() <= px(12.), "{tab:?} {panel:?}");
+    let files = visual.debug_bounds("PANEL_ACTIVITY Files active").unwrap();
+    assert!(
+        files.left() - panel.left() <= px(16.),
+        "{files:?} {panel:?}"
+    );
     let context = PanelContext {
         subject: PanelSubject::Session("busy-shell".into()),
         surface: crate::surfaces::side_panel::PanelSurface::Terminal,
         cwd: Some("/tmp/panel-busy-shell".into()),
         project: None,
         remote: false,
+        following: None,
     };
     assert!(visual
         .debug_bounds(format!("FILES_VIEW {context:?}").leak())
         .is_some());
-    click_selector(&mut visual, "PANEL_TAB Changes");
+    click_selector(&mut visual, "PANEL_ACTIVITY Changes");
     assert!(visual
         .debug_bounds(format!("CHANGES_VIEW {context:?}").leak())
         .is_some());
-    click_selector(&mut visual, "PANEL_TAB Files");
+    click_selector(&mut visual, "PANEL_ACTIVITY Files");
     for intent in [ThemeIntent::Dark, ThemeIntent::Light] {
         set_panel_theme(&store, &mut visual, intent);
-        assert_text(&mut visual, "PANEL_TAB_INK Files", theme::text());
+        assert_fill_color(&mut visual, "PANEL_ACTIVITY Files", Some(theme::raised()));
     }
 
     host.update(&mut visual, |root, _, cx| {
@@ -2197,7 +1970,7 @@ fn terminal_tab_panel_holds_files_alone_and_keeps_its_own_panel_state() {
 #[test]
 fn chat_tabs_restore_their_surfaces_open_state_and_file_after_a_delayed_link() {
     use crate::file_links::FileLinkTarget;
-    use crate::surfaces::side_panel::{PanelSubject, PanelViewId};
+    use crate::surfaces::side_panel::{PanelSelection, PanelSubject, PanelSurface, PanelViewId};
 
     let (temp, _cx, store, host, mut visual) = panel_root("direct-agent");
     let folder = temp.path().join("checkout");
@@ -2210,6 +1983,8 @@ fn chat_tabs_restore_their_surfaces_open_state_and_file_after_a_delayed_link() {
             ).unwrap();
             store.refresh(crate::app_store::StoreRefreshKind::All, cx);
         });
+    host.update(&mut visual, |root, _, cx| root.chat_files.release(cx))
+        .unwrap();
     visual.run_until_parked();
     let switch = |session: &str, visual: &mut gpui::VisualTestContext| {
         host.update(visual, |root, _, cx| {
@@ -2222,7 +1997,7 @@ fn chat_tabs_restore_their_surfaces_open_state_and_file_after_a_delayed_link() {
     };
     switch("busy-shell", &mut visual);
     host.update(&mut visual, |root, _, cx| {
-        root.chat_surfaces.open.open(PanelViewId::Info);
+        root.chat_surfaces.select(PanelViewId::Changes);
         cx.notify();
     })
     .unwrap();
@@ -2260,13 +2035,13 @@ fn chat_tabs_restore_their_surfaces_open_state_and_file_after_a_delayed_link() {
     }
     assert_eq!(
         chat_surfaces(&host, &mut visual),
-        surfaces_of(&[PanelViewId::Info], PanelViewId::Info)
+        PanelSelection::new(PanelViewId::Changes)
     );
     host.update(&mut visual, |root, _, cx| {
         assert!(root.chat_panel_is_open(cx));
         assert!(root
-            .chat_panel_layout(root.active_chat_detail.as_ref(), cx)
-            .1
+            .chat_panel_layout(root.active_chat_detail.as_ref(), 1, cx)
+            .widened
             .is_none());
         root.set_chat_panel_open(false, cx);
         cx.notify();
@@ -2275,13 +2050,13 @@ fn chat_tabs_restore_their_surfaces_open_state_and_file_after_a_delayed_link() {
     switch("direct-agent", &mut visual);
     assert_eq!(
         chat_surfaces(&host, &mut visual),
-        surfaces_of(&[PanelViewId::Info, PanelViewId::Files], PanelViewId::Files)
+        PanelSelection::new(PanelViewId::Files)
     );
     host.update(&mut visual, |root, _, cx| {
         assert!(root.chat_panel_is_open(cx));
         assert!(root
-            .chat_panel_layout(root.active_chat_detail.as_ref(), cx)
-            .1
+            .chat_panel_layout(root.active_chat_detail.as_ref(), 1, cx)
+            .widened
             .is_some());
         assert!(
             root.chat_panel_visibility.started_at.is_none(),
@@ -2295,7 +2070,8 @@ fn chat_tabs_restore_their_surfaces_open_state_and_file_after_a_delayed_link() {
     })
     .unwrap();
 
-    // A newly launched chat inherits the last collapse choice and cannot reset A.
+    // A newly launched chat is isolated from earlier tabs' collapse choices (#1403):
+    // on a wide window it starts open on Files without resetting earlier tabs.
     store.update(&mut visual, |store, cx| {
             let layout = PaneLayout::single(Some("new-agent"), &[]);
             let conn = store.test_core.db.get().unwrap();
@@ -2315,19 +2091,20 @@ fn chat_tabs_restore_their_surfaces_open_state_and_file_after_a_delayed_link() {
             window,
             cx,
         );
-        assert!(!root.chat_panel_is_open(cx));
-        assert_eq!(root.chat_surfaces.open, Default::default());
+        assert!(
+            root.chat_panel_is_open(cx),
+            "collapsing another tab must never collapse a new tab"
+        );
+        assert_eq!(root.chat_surfaces.selection, PanelSelection::default());
     })
     .unwrap();
     switch("direct-agent", &mut visual);
     assert_eq!(
         chat_surfaces(&host, &mut visual),
-        surfaces_of(&[PanelViewId::Info, PanelViewId::Files], PanelViewId::Files)
+        PanelSelection::new(PanelViewId::Files)
     );
-    // Settings closes disabled surfaces in both the shown and saved tabs.
-    switch("busy-shell", &mut visual);
+    // Turning off Files in Settings falls back to Changes on every tab.
     host.update(&mut visual, |root, _, cx| {
-        root.chat_surfaces.open.open(PanelViewId::Files);
         root.update_app_settings(cx, false, |settings| {
             settings.files_view = false;
             true
@@ -2335,15 +2112,15 @@ fn chat_tabs_restore_their_surfaces_open_state_and_file_after_a_delayed_link() {
     })
     .unwrap();
     visual.run_until_parked();
-    switch("direct-agent", &mut visual);
+    let settings = store.read_with(&visual, |s, _| s.settings.clone());
     assert_eq!(
-        chat_surfaces(&host, &mut visual),
-        surfaces_of(&[PanelViewId::Info], PanelViewId::Info)
+        chat_surfaces(&host, &mut visual).effective(PanelSurface::Chat, &settings),
+        Some(PanelViewId::Changes)
     );
     switch("busy-shell", &mut visual);
     assert_eq!(
-        chat_surfaces(&host, &mut visual),
-        surfaces_of(&[PanelViewId::Info], PanelViewId::Info)
+        chat_surfaces(&host, &mut visual).effective(PanelSurface::Chat, &settings),
+        Some(PanelViewId::Changes)
     );
 }
 
@@ -2380,9 +2157,8 @@ fn settings_remove_the_chat_panel_and_its_toggle() {
     set(&mut visual, |settings| settings.show_side_panel = true);
     assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_some());
 
-    // Every view off: the chat has no panel and no toggle.
+    // Every workspace tool off: the chat has no panel and no toggle.
     set(&mut visual, |settings| {
-        settings.info_view = false;
         settings.files_view = false;
         settings.changes_view = false;
     });
@@ -2398,18 +2174,17 @@ fn settings_remove_the_chat_panel_and_its_toggle() {
         0.
     );
 
-    // One surface back: the panel opens on its permanent tab, with no
-    // × and no `+`.
+    // One tool back: the panel opens with that single activity-bar icon.
     assert_eq!(set(&mut visual, |settings| settings.files_view = true), 1.);
-    assert!(visual.debug_bounds("PANEL_TAB Files").is_some());
-    assert!(visual.debug_bounds("PANEL_TAB_CLOSE Files").is_none());
+    assert!(visual.debug_bounds("PANEL_ACTIVITY Files active").is_some());
+    assert!(visual.debug_bounds("PANEL_ACTIVITY Changes").is_none());
     assert!(visual.debug_bounds("PANEL_ADD_SURFACE").is_none());
-    assert!(visual.debug_bounds("PANEL_TAB Info").is_none());
 
-    // Info back: Settings closed its tab, so the chat shows the list.
-    set(&mut visual, |settings| settings.info_view = true);
-    assert!(visual.debug_bounds("PANEL_EMPTY").is_some());
-    assert!(visual.debug_bounds("PANEL_ADD_SURFACE").is_some());
+    // Changes back: both activity-bar icons show without an empty screen.
+    set(&mut visual, |settings| settings.changes_view = true);
+    assert!(visual.debug_bounds("PANEL_ACTIVITY Files active").is_some());
+    assert!(visual.debug_bounds("PANEL_ACTIVITY Changes").is_some());
+    assert!(visual.debug_bounds("PANEL_EMPTY").is_none());
 }
 
 #[test]
@@ -2436,7 +2211,6 @@ fn cached_chat_header_spans_the_chat_column_with_or_without_the_side_panel() {
                     )
                     .unwrap();
                 store.refresh(crate::app_store::StoreRefreshKind::All, cx);
-                store.settings.chat_panel_open = panel_open;
                 store.settings.app_zoom = zoom;
             });
             cx.run_until_parked();
@@ -2454,11 +2228,14 @@ fn cached_chat_header_spans_the_chat_column_with_or_without_the_side_panel() {
                 assert!(root.tabs.activate_session("direct-agent"));
                 root.route = AppRoute::Chat;
                 root.sync_active_chat_detail(cx);
+                root.set_chat_panel_open(panel_open, cx);
+                root.chat_panel_visibility =
+                    crate::surfaces::root::SidebarVisibilityTransition::new(panel_open);
                 root
             });
             let mut visual = VisualTestContext::from_window(host.into(), &cx);
-            for width in [1000., 1600.] {
-                visual.simulate_resize(size(px(width), px(900.)));
+            for width in [1200., 1600.] {
+                visual.simulate_resize(size(px(width * zoom), px(900.)));
                 visual.run_until_parked();
                 let column = visual.debug_bounds("PANE_ISLAND:p1").unwrap();
                 let header = visual.debug_bounds("PANE_HEADER:direct-agent").unwrap();
@@ -2502,6 +2279,7 @@ struct ChatPanel {
     detail: DirectSessionEntry,
     role: Option<runner_core::protocol::model::Role>,
     width: f32,
+    expanded: bool,
     copy: gpui::Entity<runner_app::ui::CopyValueButton>,
 }
 
@@ -2514,20 +2292,20 @@ impl gpui::Render for ChatPanel {
         use gpui::prelude::*;
         gpui::div()
             .w(gpui::rems(self.width / 16.))
-            .p_5()
-            .child(super::chat_panel_content(
+            .child(super::panel::render_s2_chat_info_card(
                 &self.detail,
                 self.role.as_ref(),
-                self.width,
                 self.copy.clone(),
-                super::ChatPanelActions {
+                None,
+                super::panel::ChatInfoPopoverActions {
                     open_role: self.role.as_ref().map(|_| {
                         std::rc::Rc::new(|_: &mut gpui::Window, _: &mut gpui::App| {})
                             as super::ClickHandler
                     }),
                     toggle_prompt: std::rc::Rc::new(|_, _| {}),
-                    expanded: false,
+                    expanded: self.expanded,
                     view: cx.entity_id(),
+                    shortcut_hint: Some("⌘I".into()),
                 },
                 self.detail.claude_account.as_ref().map(|account| {
                     (
@@ -2547,6 +2325,15 @@ fn panel_harness(
     role: Option<runner_core::protocol::model::Role>,
     width: f32,
 ) -> (gpui::TestAppContext, gpui::VisualTestContext) {
+    panel_harness_expanded(detail, role, width, false)
+}
+
+fn panel_harness_expanded(
+    detail: DirectSessionEntry,
+    role: Option<runner_core::protocol::model::Role>,
+    width: f32,
+    expanded: bool,
+) -> (gpui::TestAppContext, gpui::VisualTestContext) {
     let mut cx = gpui::TestAppContext::single();
     let window = cx.add_window(move |_, cx| ChatPanel {
         copy: cx.new(|cx| {
@@ -2555,6 +2342,7 @@ fn panel_harness(
         detail,
         role,
         width,
+        expanded,
     });
     let visual = gpui::VisualTestContext::from_window(window.into(), &cx);
     visual.simulate_resize(size(px(500.), px(800.)));
@@ -2576,7 +2364,6 @@ fn claude_header_preserves_account_spacing_and_controls_in_narrow_panes() {
                 let accounts = serde_json::json!({"accounts":[{"id":"native","name":"Personal","folder":"/tmp/native","native":true},{"id":"work","name":"Work","folder":"/tmp/work","native":false}],"main_id":"native","active_id":"work"});
                 conn.execute("INSERT INTO _app_state(key,value) VALUES('claude_accounts',?1)",[accounts.to_string()]).unwrap();
             }
-            store.settings.chat_panel_open = true;
             store.settings.keymap_overrides.insert("resume-session".into(), Some(crate::keymap::KeyCombo { meta: false, ctrl: false, alt: false, shift: false, code: "F8".into(), label: None, shift_optional: false }));
             store.refresh(crate::app_store::StoreRefreshKind::All,cx);
         });
@@ -2597,9 +2384,8 @@ fn claude_header_preserves_account_spacing_and_controls_in_narrow_panes() {
         assert!(root.tabs.activate_session("direct-agent"));
         root.route = crate::AppRoute::Chat;
         root.sync_active_chat_detail(cx);
-        root.chat_surfaces
-            .open
-            .open(crate::surfaces::side_panel::PanelViewId::Info);
+        root.set_chat_panel_open(false, cx);
+        root.chat_panel_visibility = crate::surfaces::root::SidebarVisibilityTransition::new(false);
         root
     });
     let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
@@ -2609,10 +2395,7 @@ fn claude_header_preserves_account_spacing_and_controls_in_narrow_panes() {
         })
         .unwrap();
         for width in [240., 360., 640.] {
-            visual.simulate_resize(size(
-                px((width + sidebar_width + panel_width + 20.) * zoom),
-                px(900.),
-            ));
+            visual.simulate_resize(size(px((width + sidebar_width + 20.) * zoom), px(900.)));
             visual.run_until_parked();
             let header = visual.debug_bounds("PANE_HEADER:direct-agent").unwrap();
             let chip = visual.debug_bounds("CHAT_ACCOUNT_CHIP");
@@ -2644,9 +2427,9 @@ fn claude_header_preserves_account_spacing_and_controls_in_narrow_panes() {
             assert!(visual.debug_bounds("BUTTON_SHORTCUT:F8").is_some());
         }
     }
+    let _ = panel_width;
     host.update(&mut visual, |root, _, cx| {
         root.update_app_settings(cx, false, |settings| {
-            settings.chat_panel_open = false;
             settings
                 .keymap_overrides
                 .insert("resume-session".into(), None);
@@ -2666,7 +2449,7 @@ fn claude_header_preserves_account_spacing_and_controls_in_narrow_panes() {
 }
 
 #[test]
-fn account_is_beside_runtime_and_config_is_in_the_metadata_rows() {
+fn account_and_config_render_in_s2_info_card_metadata_rows() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let mut detail = direct_session("claude-code", true, true);
     detail.claude_account = Some(runner_core::protocol::ClaudeSessionAccount {
@@ -2679,46 +2462,45 @@ fn account_is_beside_runtime_and_config_is_in_the_metadata_rows() {
     });
     for role in [None, Some(panel_role())] {
         let (_cx, mut visual) = panel_harness(detail.clone(), role, 320.);
-        let runtime = visual.debug_bounds("SETUP_ROW RUNTIME").unwrap();
-        let account = visual.debug_bounds("SETUP_ROW Account").unwrap();
-        assert!((runtime.top() - account.top()).abs() <= px(1.));
-        assert!(account.left() > runtime.left());
+        assert!(visual.debug_bounds("S2_CHAT_INFO_CARD").is_some());
+        let account = visual.debug_bounds("CHAT_ACCOUNT_DETAIL").unwrap();
         let config = visual.debug_bounds("CHAT_PANEL_META /tmp/work").unwrap();
         assert!(config.top() > account.bottom());
     }
 }
 
 #[test]
-fn panel_prompt_only_shows_nonblank_text_and_only_long_prompts_have_a_toggle() {
+fn panel_prompt_only_shows_nonblank_text_and_expands_in_place() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     for prompt in ["", " \n ", "# Short\n\nPrompt", &"line\n".repeat(60)] {
         let mut role = panel_role();
         role.system_prompt = Some(prompt.into());
-        let (_cx, mut visual) = panel_harness(
+        let nonblank = !prompt.trim().is_empty();
+        let (_cx, mut visual) = panel_harness_expanded(
             direct_session("codex", true, true),
-            Some(role),
-            crate::app_settings::CHAT_PANEL_MIN,
+            Some(role.clone()),
+            320.,
+            false,
         );
         let link = visual.debug_bounds("CHAT_PANEL_OPEN_ROLE").unwrap();
-        let label = visual.debug_bounds("CHAT_PANEL_LABEL Role").unwrap();
-        assert!((label.center().y - link.center().y).abs() <= gpui::px(1.));
-        assert!(link.right() <= gpui::px(crate::app_settings::CHAT_PANEL_MIN));
-        if !prompt.trim().is_empty() {
-            let label = visual
-                .debug_bounds("CHAT_PANEL_LABEL System prompt")
-                .unwrap();
-            let meta = visual.debug_bounds("CHAT_PANEL_PROMPT_META").unwrap();
-            assert!((label.center().y - meta.center().y).abs() <= gpui::px(1.));
-            assert!(meta.right() <= gpui::px(crate::app_settings::CHAT_PANEL_MIN));
-        }
-        assert_eq!(
-            visual.debug_bounds("CHAT_PANEL_PROMPT_TEXT").is_some(),
-            !prompt.trim().is_empty()
-        );
+        assert!(link.right() <= gpui::px(320.));
         assert_eq!(
             visual.debug_bounds("CHAT_PANEL_PROMPT_TOGGLE").is_some(),
-            prompt.lines().count() > crate::surfaces::profile_page::PREVIEW_LINES
+            nonblank
         );
+        assert_eq!(
+            visual.debug_bounds("CHAT_PANEL_PROMPT_META").is_some(),
+            nonblank
+        );
+        assert!(
+            visual.debug_bounds("CHAT_PANEL_PROMPT").is_none(),
+            "collapsed by default"
+        );
+        if nonblank {
+            let (_cx, mut expanded_visual) =
+                panel_harness_expanded(direct_session("codex", true, true), Some(role), 320., true);
+            assert!(expanded_visual.debug_bounds("CHAT_PANEL_PROMPT").is_some());
+        }
     }
 }
 
@@ -2730,7 +2512,7 @@ fn role_chat_panel_renders_avatar_runtime_model_and_effort() {
     detail.agent_effort = Some("xhigh".into());
     let (_cx, mut visual) = panel_harness(detail, Some(panel_role()), 320.);
     let avatar = visual.debug_bounds("CHAT_PANEL_AVATAR architect").unwrap();
-    assert_eq!(avatar.size, size(px(40.), px(40.)));
+    assert_eq!(avatar.size, size(px(28.), px(28.)));
     for text in [
         "COLUMN_TEXT Architect",
         "COLUMN_TEXT @architect",
@@ -2743,43 +2525,33 @@ fn role_chat_panel_renders_avatar_runtime_model_and_effort() {
             "missing rendered {text}"
         );
     }
-    assert!(visual.debug_bounds("SETUP_ROW RUNTIME").is_some());
-    let model = visual.debug_bounds("SETUP_ROW MODEL").unwrap();
-    let effort = visual.debug_bounds("SETUP_ROW EFFORT").unwrap();
-    assert_eq!(model.top(), effort.top());
-    assert_eq!(model.size.width, effort.size.width);
 }
 
 #[test]
-fn runtime_chat_panel_renders_mark_and_defaults_without_runtime_row() {
+fn runtime_chat_panel_renders_mark_and_defaults_in_s2_card() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     for variant in [
         crate::theme::ThemeVariant::Carbon,
         crate::theme::ThemeVariant::RunnerLight,
     ] {
         crate::theme::set_active_variant(variant);
-        for (model, effort, default_row) in [
-            (None, None, "SETUP_ROW EFFORT"),
-            (None, Some("xhigh"), "SETUP_ROW MODEL"),
-            (Some("gpt-5.6-sol"), None, "SETUP_ROW EFFORT"),
+        for (model, effort) in [
+            (None, None),
+            (None, Some("xhigh")),
+            (Some("gpt-5.6-sol"), None),
         ] {
             let mut detail = direct_session("codex", true, true);
             detail.agent_model = model.map(str::to_owned);
             detail.agent_effort = effort.map(str::to_owned);
             let (_cx, mut visual) = panel_harness(detail, None, 320.);
             assert!(visual.debug_bounds("CHAT_PANEL_OPEN_ROLE").is_none());
-            assert!(visual.debug_bounds("CHAT_PANEL_PROMPT_TEXT").is_none());
+            assert!(visual.debug_bounds("CHAT_PANEL_PROMPT_TOGGLE").is_none());
             let mark = visual.debug_bounds("CHAT_PANEL_MARK codex").unwrap();
-            assert_eq!(mark.size, size(px(40.), px(40.)));
+            assert_eq!(mark.size, size(px(28.), px(28.)));
             assert!(visual.debug_bounds("COLUMN_TEXT Codex").is_some());
-            assert!(visual.debug_bounds("SETUP_ROW RUNTIME").is_none());
-            let model = visual.debug_bounds("SETUP_ROW MODEL").unwrap();
-            let effort = visual.debug_bounds("SETUP_ROW EFFORT").unwrap();
-            let row = visual.debug_bounds(default_row).unwrap();
-            let default = visual.debug_bounds("COLUMN_TEXT default").unwrap();
-            assert_eq!(model.top(), effort.top());
-            assert_eq!(model.size, effort.size);
-            assert!(default.top() >= row.top() && default.bottom() <= row.bottom());
+            assert!(visual.debug_bounds("COLUMN_TEXT default").is_some());
+            // Default `codex` command is hidden by #1360.
+            assert!(visual.debug_bounds("CHAT_PANEL_META codex").is_none());
         }
     }
 }
@@ -2834,7 +2606,7 @@ fn chat_panel_identity_and_setup_fit_at_minimum_width() {
     let mut detail = direct_session("antigravity", false, false);
     detail.agent_model = Some("a-very-long-model-name-that-must-truncate".into());
     detail.agent_effort = Some("xhigh".into());
-    let (_cx, mut visual) = panel_harness(detail, Some(role), crate::app_settings::CHAT_PANEL_MIN);
+    let (_cx, mut visual) = panel_harness(detail, Some(role), 320.);
     for text in [
         "COLUMN_TEXT A very long architect display name that must truncate",
         "COLUMN_TEXT @a-very-long-architect-handle",
@@ -2846,10 +2618,7 @@ fn chat_panel_identity_and_setup_fit_at_minimum_width() {
             .debug_bounds(text)
             .unwrap_or_else(|| panic!("missing rendered {text}"));
         assert!(bounds.size.width > px(0.), "{text}: {bounds:?}");
-        assert!(
-            bounds.left() >= px(35.) && bounds.right() <= px(165.),
-            "{text}: {bounds:?}"
-        );
+        assert!(bounds.right() <= px(320.), "{text}: {bounds:?}");
         assert!(bounds.size.height <= px(24.), "{text} wrapped: {bounds:?}");
     }
 }
@@ -3026,42 +2795,40 @@ fn pane_identity_branches_for_chat_terminal_and_empty_panes() {
     );
     assert_eq!(side_panel_surface(true), PanelSurface::Terminal);
     assert_eq!(side_panel_surface(false), PanelSurface::Chat);
-    let collapsed = AppSettings {
-        chat_panel_open: false,
-        ..AppSettings::default()
-    };
-    assert!(side_panel_available(&collapsed, PanelSurface::Chat));
-    assert!(side_panel_available(&collapsed, PanelSurface::Terminal));
+    let defaults = AppSettings::default();
+    assert!(side_panel_available(&defaults, PanelSurface::Chat));
+    assert!(side_panel_available(&defaults, PanelSurface::Terminal));
+    assert!(side_panel_available(&defaults, PanelSurface::Mission));
 
     // Settings → Side panel → Show the side panel off: no panel and no
-    // toggle anywhere, the open state and the switches kept.
+    // toggle anywhere, the switches kept.
     let hidden = AppSettings {
         show_side_panel: false,
         ..AppSettings::default()
     };
-    for surface in [PanelSurface::Chat, PanelSurface::Terminal] {
+    for surface in [
+        PanelSurface::Chat,
+        PanelSurface::Terminal,
+        PanelSurface::Mission,
+    ] {
         assert!(!side_panel_available(&hidden, surface));
     }
-    assert!(hidden.chat_panel_open && hidden.info_view && hidden.files_view);
-    assert!(!hidden.chat_panel_shown() && !hidden.mission_rail_shown());
+    assert!(hidden.files_view && hidden.changes_view);
 
-    // Every view a surface has turned off: that surface has no panel.
+    // Every tool a surface has turned off: chat/terminal have no panel; mission keeps Sessions.
     let files_off = AppSettings {
         files_view: false,
         ..AppSettings::default()
     };
     assert!(side_panel_available(&files_off, PanelSurface::Chat));
     assert!(side_panel_available(&files_off, PanelSurface::Terminal));
-    let terminal_off = AppSettings {
+    let both_off = AppSettings {
         changes_view: false,
         ..files_off
     };
-    assert!(!side_panel_available(&terminal_off, PanelSurface::Terminal));
-    let all_off = AppSettings {
-        info_view: false,
-        ..terminal_off
-    };
-    assert!(!side_panel_available(&all_off, PanelSurface::Chat));
+    assert!(!side_panel_available(&both_off, PanelSurface::Terminal));
+    assert!(!side_panel_available(&both_off, PanelSurface::Chat));
+    assert!(side_panel_available(&both_off, PanelSurface::Mission));
 
     assert_eq!(pane_identity_icon(None).asset_path(), "plus.svg");
     assert_eq!(pane_close_behavior(None), PaneCloseBehavior::LayoutOnly);
@@ -3076,12 +2843,12 @@ fn only_unfocused_panes_in_a_split_are_faded() {
 }
 
 #[test]
-fn title_menu_lists_rename_fork_and_pin_and_never_stop_or_archive() {
-    use super::PaneMenuAction::{Fork, Pin, Rename};
+fn title_menu_lists_rename_fork_pin_and_archive_for_chats_only() {
+    use super::PaneMenuAction::{Archive, Fork, Pin, Rename};
     let every = |_: &[&str]| true;
     assert_eq!(
         pane_menu_actions("codex", false, true, every),
-        [Rename, Fork, Pin]
+        [Rename, Fork, Pin, Archive]
     );
     assert_eq!(
         pane_menu_actions("shell", false, true, every),
@@ -3089,12 +2856,12 @@ fn title_menu_lists_rename_fork_and_pin_and_never_stop_or_archive() {
     );
     assert_eq!(
         pane_menu_actions("codex", true, true, every),
-        [Rename, Pin],
+        [Rename, Pin, Archive],
         "a secondary pane leaves forking to the window that controls it"
     );
     assert_eq!(
         pane_menu_actions("codex", false, false, every),
-        [Rename, Fork]
+        [Rename, Fork, Archive]
     );
 
     let only = |offered: &'static [&'static str]| {
@@ -3105,6 +2872,19 @@ fn title_menu_lists_rename_fork_and_pin_and_never_stop_or_archive() {
         [Rename]
     );
     assert_eq!(pane_menu_actions("codex", false, true, only(&["fork"])), []);
+    assert_eq!(
+        pane_menu_actions("codex", false, true, only(&["archive"])),
+        [],
+        "archiving a pane requires both archive and layout support"
+    );
+    assert_eq!(
+        pane_menu_actions("codex", false, true, only(&["archive", "layout"])),
+        [Archive]
+    );
+    assert_eq!(
+        pane_menu_actions("shell", false, true, only(&["archive", "layout"])),
+        []
+    );
     assert_eq!(
         pane_menu_actions("codex", false, true, only(&["catalog", "fork", "pin"])),
         [Fork, Pin]
@@ -3120,37 +2900,48 @@ fn title_menu_lists_rename_fork_and_pin_and_never_stop_or_archive() {
             .map(|item| item.label.to_string())
             .collect::<Vec<_>>()
     };
-    let chat = pane_menu_items(&[Rename, Fork, Pin], false, false, false, None);
-    assert_eq!(labels(&chat), ["Rename…", "Fork chat", "Pin"]);
+    let chat = pane_menu_items(&[Rename, Fork, Pin, Archive], false, false, false, None);
+    assert_eq!(labels(&chat), ["Rename…", "Fork chat", "Pin", "Archive"]);
     assert_eq!(
         chat.iter()
             .map(|item| item.icon.as_deref())
             .collect::<Vec<_>>(),
-        [Some("pencil.svg"), Some("git-fork.svg"), Some("pin.svg")]
+        [
+            Some("pencil.svg"),
+            Some("git-fork.svg"),
+            Some("pin.svg"),
+            Some("archive.svg"),
+        ]
     );
-    assert!(chat.iter().all(|item| !item.disabled
+    assert!(chat[..3].iter().all(|item| !item.disabled
         && !item.destructive
         && item.shortcut.is_none()
         && !item.separator_before));
+    assert!(!chat[3].disabled && chat[3].destructive && chat[3].separator_before);
 
-    let pinned = pane_menu_items(&[Rename, Pin], true, false, false, None);
-    assert_eq!(labels(&pinned), ["Rename…", "Unpin"]);
+    let archive_alone = pane_menu_items(&[Archive], false, false, false, None);
+    assert!(archive_alone[0].destructive && !archive_alone[0].separator_before);
+
+    let pinned = pane_menu_items(&[Rename, Pin, Archive], true, false, false, None);
+    assert_eq!(labels(&pinned), ["Rename…", "Unpin", "Archive"]);
     assert_eq!(pinned[1].icon.as_deref(), Some("pin-off.svg"));
 
     let waiting = pane_menu_items(
-        &[Rename, Fork, Pin],
+        &[Rename, Fork, Pin, Archive],
         false,
         false,
         true,
         Some("No session key captured yet"),
     );
-    assert!(!waiting[0].disabled && waiting[1].disabled && !waiting[2].disabled);
+    assert!(
+        !waiting[0].disabled && waiting[1].disabled && !waiting[2].disabled && !waiting[3].disabled
+    );
     assert_eq!(
         waiting[1].tooltip.as_deref(),
         Some("No session key captured yet")
     );
 
-    let secondary = pane_menu_items(&[Rename, Pin], false, true, false, None);
+    let secondary = pane_menu_items(&[Rename, Pin, Archive], false, true, false, None);
     assert!(secondary.iter().all(|item| item.disabled));
 }
 
@@ -3913,18 +3704,35 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
     use crate::{AppRoute, NativeRoot, ToggleMaximizePane};
 
     let (temp, mut cx, store, host, mut visual) = panel_root("direct-agent");
+    let root_dir = temp.path().join("checkout");
+    std::fs::create_dir_all(&root_dir).unwrap();
+    std::fs::write(root_dir.join("lib.rs"), "pub fn ok() {}\n").unwrap();
+    store.update(&mut visual, |store, cx| {
+        store
+            .test_core
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET files_root = ?1, cwd = ?1 WHERE id = 'direct-agent'",
+                [root_dir.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+    });
+    visual.run_until_parked();
+
     // Split the active chat tab into two panes (`direct-agent` + `busy-shell`) so WS-PANE-07
     // pane maximize and side-panel maximize coexist in the same tab.
     let right_pane = host
         .update(&mut visual, |root, _, cx| {
+            root.chat_files.release(cx);
             let layout = root.tabs.active_mut().unwrap();
             let right = layout.split("p1", SplitOrientation::Row).unwrap();
             layout.assign_session(&right, "busy-shell").unwrap();
             assert!(layout.focus_pane("p1"));
-            root.chat_surfaces.open = surfaces_of(
-                &[PanelViewId::Info, PanelViewId::Files, PanelViewId::Changes],
-                PanelViewId::Info,
-            );
+            root.sync_active_chat_detail(cx);
+            root.chat_surfaces.select(PanelViewId::Files);
             cx.notify();
             right
         })
@@ -3935,8 +3743,8 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
         Box::leak(format!("PANE_ISLAND:{right_pane}").into_boxed_str());
     assert!(visual.debug_bounds("PANE_ISLAND:p1").is_some());
     assert!(visual.debug_bounds(right_selector).is_some());
-    assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE").is_some());
-    assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE active").is_none());
+    // Compact 300 px tree hides the Maximize button until widened (Option O).
+    assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE").is_none());
 
     // 1. Focus in chat: `ToggleMaximizePane` (`⇧⌘↩`) maximizes the focused split pane (`p1`),
     // leaving the side panel unmaximized (`WS-PANE-07`).
@@ -3967,53 +3775,35 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
     visual.run_until_parked();
     assert!(visual.debug_bounds(right_selector).is_some());
 
-    // 2. Maximize button is present on Info, Files, and Changes; clicking it hides chat panes
-    // and the panel resize gutter, fills the tab, and turns into Restore chat (`active`).
-    for tab in ["PANEL_TAB Files", "PANEL_TAB Changes", "PANEL_TAB Info"] {
-        click_selector(&mut visual, tab);
-        assert!(
-            visual.debug_bounds("SIDE_PANEL_MAXIMIZE").is_some(),
-            "{tab}"
-        );
-    }
-    let panel_bounds = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
-    let info_bounds = visual.debug_bounds("CHAT_INFO_SCROLL").unwrap();
-    assert_eq!(
-        info_bounds.bottom(),
-        panel_bounds.bottom() - px(9.),
-        "Info keeps its 8 px bottom padding inside the 1 px island border"
-    );
-    let panel_ctx = host
-        .read_with(&visual, |root, cx| {
-            root.chat_panel_context(
-                root.active_chat_detail.as_ref().unwrap(),
-                crate::surfaces::side_panel::PanelSurface::Chat,
-                cx,
-            )
-        })
-        .unwrap();
-    let changes_selector: &'static str =
-        Box::leak(format!("CHANGES_VIEW {panel_ctx:?}").into_boxed_str());
-    let files_selector: &'static str =
-        Box::leak(format!("FILES_VIEW {panel_ctx:?}").into_boxed_str());
+    // 2. Opening a file widens Files and reveals `SIDE_PANEL_MAXIMIZE`; clicking it fills the tab
+    // and hides chat panes and the resize gutter.
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                ready: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !ready(visual) {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::yield_now();
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+        }
+    };
+    wait(&mut visual, "lib.rs row", &|v| {
+        v.debug_bounds("FILES_ROW lib.rs").is_some()
+    });
+    click_selector(&mut visual, "FILES_ROW lib.rs");
+    wait(&mut visual, "lib.rs open", &|v| {
+        v.debug_bounds("FILE_CODE").is_some()
+            && host
+                .read_with(v, |r, _| {
+                    r.chat_sheet_anim.started_at.is_none()
+                        && r.chat_panel_width_anim.started_at.is_none()
+                })
+                .unwrap()
+    });
+    assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE").is_some());
+    assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE active").is_none());
 
-    click_selector(&mut visual, "PANEL_TAB Changes");
-    let panel_bounds = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
-    let changes_view_bounds = visual.debug_bounds(changes_selector).unwrap();
-    assert_eq!(
-        changes_view_bounds.bottom(),
-        panel_bounds.bottom() - px(1.),
-        "Changes fills to the bottom of the island without an 8 px gap"
-    );
-    click_selector(&mut visual, "PANEL_TAB Files");
-    let panel_bounds = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
-    let files_view_bounds = visual.debug_bounds(files_selector).unwrap();
-    assert_eq!(
-        files_view_bounds.bottom(),
-        panel_bounds.bottom() - px(1.),
-        "Files fills to the bottom of the island without an 8 px gap"
-    );
-    click_selector(&mut visual, "PANEL_TAB Info");
     let unmax_panel_width = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap().size.width;
     click_selector(&mut visual, "SIDE_PANEL_MAXIMIZE");
     assert!(host
@@ -4025,11 +3815,11 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
     assert!(visual.debug_bounds("CHAT_PANEL_GUTTER").is_none());
     let max_panel_width = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap().size.width;
     assert!(
-        max_panel_width > unmax_panel_width + px(400.),
+        max_panel_width > unmax_panel_width + px(200.),
         "maximized panel fills the tab: {max_panel_width:?} vs {unmax_panel_width:?}"
     );
 
-    // 3. `ToggleMaximizePane` while maximized restores the chat with >= 420 px minimum intact.
+    // 3. `ToggleMaximizePane` while maximized restores the chat.
     host.update(&mut visual, |root, window, cx| {
         root.toggle_maximize_pane_action(&ToggleMaximizePane, window, cx);
     })
@@ -4041,11 +3831,10 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
     assert!(visual.debug_bounds("PANE_ISLAND:p1").is_some());
     assert!(visual.debug_bounds(right_selector).is_some());
 
-    // 4. Focus inside the side panel (`PANEL_EMPTY` surface list): `ToggleMaximizePane`
-    // maximizes the side panel rather than the split chat pane.
+    // 4. Focus inside the side panel (Files view): `ToggleMaximizePane` maximizes the side panel
+    // rather than the split chat pane.
     host.update(&mut visual, |root, window, cx| {
-        root.chat_surfaces.open = Default::default();
-        root.chat_surfaces.list_focus().focus(window, cx);
+        root.focus_chat_panel_shown(window, cx);
     })
     .unwrap();
     visual.run_until_parked();
@@ -4062,7 +3851,14 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
         (true, true)
     );
 
-    // 5. Maximize is ephemeral: a newly constructed window/restart starts unmaximized.
+    // 5. Closing the last file tab while maximized shrinks back and exits maximize.
+    click_selector(&mut visual, "FILE_TAB_CLOSE lib.rs");
+    assert!(!host
+        .read_with(&visual, |root, _| root.chat_panel_maximized)
+        .unwrap());
+    assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE").is_none());
+
+    // 6. Maximize is ephemeral: a newly constructed window/restart starts unmaximized.
     let restarted = cx.add_window(|window, cx| {
         let mut root = NativeRoot::new(
             "side-panel-restart".into(),
@@ -4089,8 +3885,7 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
 }
 
 #[test]
-fn chat_panel_retains_widened_width_across_tab_switches_closes_and_divider_drag() {
-    use crate::surfaces::side_panel::PanelViewId;
+fn chat_panel_progressively_widens_on_file_or_diff_and_shrinks_back_to_300px() {
     use std::process::Command;
 
     let (temp, _cx, store, host, mut visual) = panel_root("direct-agent");
@@ -4137,6 +3932,8 @@ fn chat_panel_retains_widened_width_across_tab_switches_closes_and_divider_drag(
             .unwrap()
             .success());
     }
+    // Modify lib.rs so Changes has an uncommitted diff to open.
+    std::fs::write(repo.join("lib.rs"), "pub fn run() { println!(\"hi\"); }\n").unwrap();
     let canonical = if cfg!(windows) {
         repo
     } else {
@@ -4157,6 +3954,7 @@ fn chat_panel_retains_widened_width_across_tab_switches_closes_and_divider_drag(
     });
     visual.run_until_parked();
     host.update(&mut visual, |root, _, cx| {
+        root.chat_files.release(cx);
         root.sync_active_chat_detail(cx);
         cx.notify();
     })
@@ -4172,126 +3970,98 @@ fn chat_panel_retains_widened_width_across_tab_switches_closes_and_divider_drag(
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         while !ready(visual) {
             assert!(std::time::Instant::now() < deadline, "timed out: {what}");
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::yield_now();
+            visual.update(|window, _| window.refresh());
             visual.run_until_parked();
         }
     };
 
-    // Brand-new panel on Info starts at standard width (320 px).
-    assert!((panel_width(&mut visual) - 320.).abs() <= 1.);
-
-    // Opening Changes widens to 680 px; switching to Info, closing Changes, and
-    // closing Info down to Open a surface all retain 680 px.
-    click_selector(&mut visual, "PANEL_ADD_SURFACE");
-    click_selector(&mut visual, "PANEL_MENU_ROW Changes");
-    wait(&mut visual, "Changes widens", &|v| {
-        (panel_width(v) - 680.).abs() <= 1.
-    });
-    click_selector(&mut visual, "PANEL_TAB Info");
-    assert!((panel_width(&mut visual) - 680.).abs() <= 1.);
-    click_selector(&mut visual, "PANEL_TAB Changes");
-    click_selector(&mut visual, "PANEL_TAB_CLOSE Changes");
-    assert!((panel_width(&mut visual) - 680.).abs() <= 1.);
-    click_selector(&mut visual, "PANEL_TAB_CLOSE Info");
-    assert!(visual.debug_bounds("PANEL_EMPTY").is_some());
-    assert!((panel_width(&mut visual) - 680.).abs() <= 1.);
-
-    // Freshly reset panel starts back at 320 px until Files widens it.
-    host.update(&mut visual, |root, _, cx| {
-        let mut open = crate::surfaces::side_panel::OpenSurfaces::default();
-        open.open(PanelViewId::Info);
-        root.chat_surfaces.reset(open);
-        cx.notify();
-    })
-    .unwrap();
-    visual.run_until_parked();
-    assert!((panel_width(&mut visual) - 320.).abs() <= 1.);
-
-    click_selector(&mut visual, "PANEL_ADD_SURFACE");
-    click_selector(&mut visual, "PANEL_MENU_ROW Files");
-    wait(&mut visual, "Files tree", &|v| {
-        v.debug_bounds("FILES_ROW lib.rs").is_some() && (panel_width(v) - 680.).abs() <= 1.
-    });
-    // Switching to Info with zero open file tabs retains 680 px.
-    click_selector(&mut visual, "PANEL_TAB Info");
-    assert!((panel_width(&mut visual) - 680.).abs() <= 1.);
-
-    // Opening and closing the last file tab inside Files (tree on and tree off) retains width.
-    click_selector(&mut visual, "PANEL_TAB Files");
-    wait(&mut visual, "Files row after tab switch", &|v| {
+    // 1. Brand-new wide chat starts compact at 300 px on Files project tree (no blank viewer).
+    wait(&mut visual, "Files tree loaded", &|v| {
         v.debug_bounds("FILES_ROW lib.rs").is_some()
     });
-    click_selector(&mut visual, "FILES_ROW lib.rs");
-    wait(&mut visual, "lib.rs open", &|v| {
-        v.debug_bounds("FILE_CODE").is_some()
-    });
-    click_selector(&mut visual, "FILE_TAB_CLOSE lib.rs");
-    assert!((panel_width(&mut visual) - 680.).abs() <= 1.);
+    assert!((panel_width(&mut visual) - 300.).abs() <= 1.);
+    assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE").is_none());
 
-    wait(&mut visual, "Files row after tab close", &|v| {
-        v.debug_bounds("FILES_ROW main.rs").is_some()
+    // 2. Clicking Changes stays compact at 300 px (C1 list-only, no auto-diff).
+    click_selector(&mut visual, "PANEL_ACTIVITY Changes");
+    wait(&mut visual, "Changes list loaded", &|v| {
+        v.debug_bounds("CHANGES_ROW lib.rs").is_some()
     });
-    click_selector(&mut visual, "FILES_ROW main.rs");
-    wait(&mut visual, "main.rs open", &|v| {
-        v.debug_bounds("FILE_CODE").is_some()
-    });
-    click_selector(&mut visual, "FILE_TREE_TOGGLE");
-    assert!((panel_width(&mut visual) - 440.).abs() <= 1.);
-    click_selector(&mut visual, "FILE_TAB_CLOSE main.rs");
-    assert!((panel_width(&mut visual) - 440.).abs() <= 1.);
-    click_selector(&mut visual, "PANEL_TAB Info");
-    assert!((panel_width(&mut visual) - 440.).abs() <= 1.);
-    click_selector(&mut visual, "PANEL_TAB Files");
-    click_selector(&mut visual, "FILE_TREE_TOGGLE");
-    assert!((panel_width(&mut visual) - 680.).abs() <= 1.);
+    assert!((panel_width(&mut visual) - 300.).abs() <= 1.);
+    assert!(visual.debug_bounds("CHANGES_CLOSE_DIFF").is_none());
 
-    // Combined Files (open file + tree hidden = 440 px) -> Changes (680 px) -> Info / close Changes:
-    // inactive Files must not override Changes' retained 680 px width, while shown Files keeps its toggle.
-    wait(&mut visual, "lib.rs row", &|v| {
-        v.debug_bounds("FILES_ROW lib.rs").is_some()
+    // 3. Clicking a changed file widens Changes smoothly to ~740 px (500 diff + 240 list) with `×`
+    // close-diff button; dragging the gutter saves `changes_viewer_width` independently of
+    // `file_viewer_width`; clicking `×` shrinks smoothly back to 300 px list-only.
+    click_selector(&mut visual, "CHANGES_ROW lib.rs");
+    wait(&mut visual, "Changes diff widens to 740 px", &|v| {
+        v.debug_bounds("CHANGES_CLOSE_DIFF").is_some()
+            && (panel_width(v) - 740.).abs() <= 0.5
+            && host
+                .read_with(v, |r, _| r.chat_panel_width_anim.started_at.is_none())
+                .unwrap()
     });
-    click_selector(&mut visual, "FILES_ROW lib.rs");
-    wait(&mut visual, "lib.rs open for combined check", &|v| {
-        v.debug_bounds("FILE_CODE").is_some()
-    });
-    click_selector(&mut visual, "FILE_TREE_TOGGLE");
-    assert!((panel_width(&mut visual) - 440.).abs() <= 1.);
-    // Arrange tab order [Files, Info, Changes] so closing Changes lands on Info while Files stays open.
-    click_selector(&mut visual, "PANEL_TAB Info");
-    click_selector(&mut visual, "PANEL_TAB_CLOSE Info");
-    click_selector(&mut visual, "PANEL_ADD_SURFACE");
-    click_selector(&mut visual, "PANEL_MENU_ROW Info");
-    assert!((panel_width(&mut visual) - 440.).abs() <= 1.);
-    click_selector(&mut visual, "PANEL_ADD_SURFACE");
-    click_selector(&mut visual, "PANEL_MENU_ROW Changes");
-    wait(&mut visual, "Changes re-widens to 680", &|v| {
-        (panel_width(v) - 680.).abs() <= 1.
-    });
-    click_selector(&mut visual, "PANEL_TAB Info");
-    assert!(
-        (panel_width(&mut visual) - 680.).abs() <= 1.,
-        "switching Changes -> Info keeps 680 px despite inactive tree-hidden Files"
+    assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE").is_some());
+    let changes_start = visual.debug_bounds("CHAT_PANEL_GUTTER").unwrap().center();
+    visual.simulate_mouse_down(
+        changes_start,
+        gpui::MouseButton::Left,
+        gpui::Modifiers::default(),
     );
-    click_selector(&mut visual, "PANEL_TAB Changes");
-    click_selector(&mut visual, "PANEL_TAB_CLOSE Changes");
-    assert!(
-        (panel_width(&mut visual) - 680.).abs() <= 1.,
-        "closing Changes to Info keeps 680 px despite inactive tree-hidden Files"
-    );
-
-    // Drag the outer divider on Info while tree-hidden Files remains open in the background:
-    // smooth resize from 680 px without snapping to 440 px or 480 px.
-    let start = visual.debug_bounds("CHAT_PANEL_GUTTER").unwrap().center();
-    visual.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
     for _ in 0..3 {
         visual.simulate_mouse_move(
-            start + gpui::point(px(40.), px(0.)),
+            changes_start + gpui::point(px(-40.), px(0.)),
             Some(gpui::MouseButton::Left),
             gpui::Modifiers::default(),
         );
         visual.run_until_parked();
     }
-    assert!((panel_width(&mut visual) - 640.).abs() <= 1.);
+    visual.simulate_mouse_up(
+        changes_start + gpui::point(px(-40.), px(0.)),
+        gpui::MouseButton::Left,
+        gpui::Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!((panel_width(&mut visual) - 780.).abs() <= 1.);
+    assert_eq!(
+        store.read_with(&visual, |s, _| (
+            s.settings.changes_viewer_width,
+            s.settings.file_viewer_width
+        )),
+        (540., 440.)
+    );
+    click_selector(&mut visual, "CHANGES_CLOSE_DIFF");
+    wait(&mut visual, "Changes diff closes back to 300 px", &|v| {
+        v.debug_bounds("CHANGES_CLOSE_DIFF").is_none() && (panel_width(v) - 300.).abs() <= 1.
+    });
+
+    // 4. Switching to Files stays compact at 300 px until clicking a file opens its tab (680 px);
+    // hiding tree narrows smoothly to 440 px; dragging the panel edge saves file_viewer_width (500 px);
+    // closing the last file tab shrinks smoothly back to 300 px.
+    click_selector(&mut visual, "PANEL_ACTIVITY Files");
+    assert!((panel_width(&mut visual) - 300.).abs() <= 1.);
+    wait(&mut visual, "Files row lib.rs", &|v| {
+        v.debug_bounds("FILES_ROW lib.rs").is_some()
+    });
+    click_selector(&mut visual, "FILES_ROW lib.rs");
+    wait(&mut visual, "lib.rs opens and widens smoothly", &|v| {
+        v.debug_bounds("FILE_CODE").is_some() && (panel_width(v) - 680.).abs() <= 1.
+    });
+    click_selector(&mut visual, "FILE_TREE_TOGGLE");
+    wait(&mut visual, "hiding tree narrows to 440 px", &|v| {
+        (panel_width(v) - 440.).abs() <= 1.
+    });
+    click_selector(&mut visual, "FILE_TREE_TOGGLE");
+    wait(&mut visual, "showing tree widens back to 680 px", &|v| {
+        (panel_width(v) - 680.).abs() <= 0.5
+            && host
+                .read_with(v, |r, _| r.chat_panel_width_anim.started_at.is_none())
+                .unwrap()
+    });
+
+    let start = visual.debug_bounds("CHAT_PANEL_GUTTER").unwrap().center();
+    visual.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
     for _ in 0..3 {
         visual.simulate_mouse_move(
             start + gpui::point(px(-60.), px(0.)),
@@ -4312,15 +4082,7 @@ fn chat_panel_retains_widened_width_across_tab_switches_closes_and_divider_drag(
         500.
     );
 
-    // Explicitly showing Files uses its tree-hidden toggle (500 px) and toggling tree back on restores 740 px.
-    click_selector(&mut visual, "PANEL_TAB Files");
-    assert!((panel_width(&mut visual) - 500.).abs() <= 1.);
-    click_selector(&mut visual, "FILE_TREE_TOGGLE");
-    assert!((panel_width(&mut visual) - 740.).abs() <= 1.);
-    click_selector(&mut visual, "PANEL_TAB_CLOSE Files");
-    assert!((panel_width(&mut visual) - 740.).abs() <= 1.);
-
-    // Switching workspace tabs keeps the other tab un-widened (320 px) and restores 740 px on return.
+    // Switching workspace tabs keeps the other tab compact (300 px) and restores 740 px on return.
     let switch = |session: &str, visual: &mut gpui::VisualTestContext| {
         host.update(visual, |root, _, cx| {
             assert!(root.tabs.activate_session(session));
@@ -4331,13 +4093,19 @@ fn chat_panel_retains_widened_width_across_tab_switches_closes_and_divider_drag(
         visual.run_until_parked();
     };
     switch("busy-shell", &mut visual);
-    assert!((panel_width(&mut visual) - 320.).abs() <= 1.);
+    assert!((panel_width(&mut visual) - 300.).abs() <= 1.);
     switch("direct-agent", &mut visual);
     assert!((panel_width(&mut visual) - 740.).abs() <= 1.);
+
+    // Closing the last file tab shrinks smoothly back to 300 px.
+    click_selector(&mut visual, "FILE_TAB_CLOSE lib.rs");
+    wait(&mut visual, "closing last file shrinks to 300 px", &|v| {
+        (panel_width(v) - 300.).abs() <= 1.
+    });
 }
 
 #[test]
-fn chat_info_panel_shows_branch_row_only_for_linked_worktrees() {
+fn chat_info_popover_shows_worktree_row_only_for_linked_worktrees_and_dedups_cwd() {
     use std::time::{Duration, Instant};
 
     let _theme = crate::theme_snapshot::ThemeGuard::new();
@@ -4412,8 +4180,7 @@ fn chat_info_panel_shows_branch_row_only_for_linked_worktrees() {
 
     store.update(&mut cx, |store, cx| {
         store.settings.show_side_panel = true;
-        store.settings.chat_panel_open = true;
-        store.settings.info_view = true;
+        store.roles = store.client.role_list().unwrap();
         store.refresh(crate::app_store::StoreRefreshKind::All, cx);
     });
     cx.run_until_parked();
@@ -4433,16 +4200,19 @@ fn chat_info_panel_shows_branch_row_only_for_linked_worktrees() {
         while !pred(visual) {
             assert!(Instant::now() < deadline, "timed out waiting for {what}");
             std::thread::yield_now();
+            visual.update(|window, _| window.refresh());
             visual.run_until_parked();
         }
     };
 
-    // Main checkout: no branch row in Info.
+    // Main checkout: S2 Title Info popover shows cwd and no worktree row.
+    wait(&mut visual, "store sessions and tabs loaded", &|v| {
+        store.read_with(v, |s, _| {
+            s.sessions.iter().any(|d| d.session_id == "wt-chat")
+                && s.nodes.iter().any(|n| n.id == wt_tab.id)
+        })
+    });
     host.update(&mut visual, |root, _, cx| {
-        root.set_chat_panel_open(true, cx);
-        let mut open = crate::surfaces::side_panel::OpenSurfaces::default();
-        open.open(crate::surfaces::side_panel::PanelViewId::Info);
-        root.chat_surfaces.reset(open);
         root.apply_tab_rows(cx);
         root.set_route(crate::AppRoute::Chat, cx);
         root.tabs.activate(&main_tab.id);
@@ -4450,40 +4220,1013 @@ fn chat_info_panel_shows_branch_row_only_for_linked_worktrees() {
         cx.notify();
     })
     .unwrap();
+    visual.run_until_parked();
+    host.update(&mut visual, |root, window, cx| {
+        root.toggle_focused_pane_info_popover(window, cx);
+    })
+    .unwrap();
+    let repo_cwd_selector = format!("CHAT_PANEL_META {}", repo.to_string_lossy()).leak();
     wait(
         &mut visual,
-        "main chat checkout cached and cwd rendered",
+        "main chat checkout cached and S2 Info popover rendered",
         &|v| {
             store.read_with(v, |s, _| {
                 s.worktree_checkout_for(repo.to_string_lossy().as_ref(), None)
                     .is_some()
-            }) && v.debug_bounds("CHAT_INFO_SCROLL").is_some()
+            }) && v.debug_bounds("S2_CHAT_INFO_CARD").is_some()
+                && v.debug_bounds(repo_cwd_selector).is_some()
         },
     );
-    assert!(visual.debug_bounds("CHAT_PANEL_BRANCH_ROW").is_none());
+    assert!(visual.debug_bounds("CHAT_PANEL_WORKTREE_ROW").is_none());
 
-    // Linked worktree: branch row + Worktree · from main marker.
-    host.update(&mut visual, |root, _, cx| {
+    // Linked worktree: S2 Title Info popover shows worktree row + `from main` marker,
+    // and omits redundant full-path cwd (#1360).
+    host.update(&mut visual, |root, window, cx| {
+        root.toggle_focused_pane_info_popover(window, cx);
         root.set_route(crate::AppRoute::Chat, cx);
         root.tabs.activate(&wt_tab.id);
         root.sync_active_chat_detail(cx);
-        root.set_chat_panel_open(true, cx);
-        let mut open = crate::surfaces::side_panel::OpenSurfaces::default();
-        open.open(crate::surfaces::side_panel::PanelViewId::Info);
-        root.chat_surfaces.reset(open);
         cx.notify();
     })
     .unwrap();
+    visual.run_until_parked();
+    host.update(&mut visual, |root, window, cx| {
+        root.toggle_focused_pane_info_popover(window, cx);
+    })
+    .unwrap();
+    let wt_cwd_selector = format!("CHAT_PANEL_META {}", wt.to_string_lossy()).leak();
     wait(
         &mut visual,
-        "worktree chat branch row and auto_base",
+        "worktree chat S2 Info row and auto_base",
         &|v| {
-            v.debug_bounds("CHAT_PANEL_BRANCH_ROW").is_some()
+            v.debug_bounds("CHAT_PANEL_WORKTREE_ROW").is_some()
                 && v.debug_bounds("CHAT_PANEL_META feat/info").is_some()
                 && v.debug_bounds("INFO_WORKTREE_MARKER Worktree · from main")
                     .is_some()
         },
     );
+    assert!(
+        visual.debug_bounds(wt_cwd_selector).is_none(),
+        "#1360 omits redundant cwd when cwd == worktree root"
+    );
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[test]
+fn per_tab_isolation_dirty_dot_narrow_sheet_split_auto_sheet_and_following_badge() {
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::Builder::new()
+        .prefix("1403-sheet-split-")
+        .tempdir()
+        .unwrap();
+    let dirty_repo = temp.path().join("dirty-repo");
+    let clean_repo = temp.path().join("clean-repo");
+    let init_repo = |dir: &std::path::Path| {
+        std::fs::create_dir_all(dir).unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "core.autocrlf", "false"][..],
+        ] {
+            assert!(Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .status()
+                .unwrap()
+                .success());
+        }
+        std::fs::write(dir.join("lib.rs"), "pub fn run() {}\n").unwrap();
+        for args in [
+            &["add", "-A"][..],
+            &[
+                "-c",
+                "user.name=Runner",
+                "-c",
+                "user.email=runner@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "init",
+            ][..],
+        ] {
+            assert!(Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .status()
+                .unwrap()
+                .success());
+        }
+    };
+    init_repo(&dirty_repo);
+    init_repo(&clean_repo);
+    std::fs::write(dirty_repo.join("lib.rs"), "pub fn run() { let _ = 1; }\n").unwrap();
+    let dirty_canon = runner_core::app_paths::normalize_checkout_path(&dirty_repo);
+    let clean_canon = runner_core::app_paths::normalize_checkout_path(&clean_repo);
+
+    let mut cx = gpui::TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    let conn = store.read_with(&cx, |s, _| s.test_core.db.get().unwrap());
+    conn.execute_batch(&format!(
+        "INSERT INTO sessions (id, title, status, agent_runtime, agent_command, cwd, files_root)
+             VALUES ('tab-dirty', 'Dirty Chat', 'stopped', 'codex', 'codex', '{dirty}', '{dirty}'),
+                    ('tab-clean', 'Clean Chat', 'stopped', 'codex', 'codex', '{clean}', '{clean}'),
+                    ('tab-narrow', 'Narrow Chat', 'stopped', 'codex', 'codex', '{clean}', '{clean}');",
+        dirty = dirty_canon.to_string_lossy(),
+        clean = clean_canon.to_string_lossy(),
+    ))
+    .unwrap();
+    let dirty_tab = runner_daemon::repo::node::create_tab(
+        &conn,
+        None,
+        "Dirty",
+        0,
+        &PaneLayout::single(Some("tab-dirty"), &["tab-dirty".into()])
+            .serialize()
+            .unwrap(),
+    )
+    .unwrap();
+    let clean_tab = runner_daemon::repo::node::create_tab(
+        &conn,
+        None,
+        "Clean",
+        1,
+        &PaneLayout::single(Some("tab-clean"), &["tab-clean".into()])
+            .serialize()
+            .unwrap(),
+    )
+    .unwrap();
+    let narrow_tab = runner_daemon::repo::node::create_tab(
+        &conn,
+        None,
+        "Narrow",
+        2,
+        &PaneLayout::single(Some("tab-narrow"), &["tab-narrow".into()])
+            .serialize()
+            .unwrap(),
+    )
+    .unwrap();
+    drop(conn);
+
+    store.update(&mut cx, |store, cx| {
+        store.settings.show_side_panel = true;
+        store.settings.sidebar_collapsed = true;
+        store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+    });
+    cx.run_until_parked();
+    let host = crate::surfaces::remote_client::tests::add_window(
+        &mut cx,
+        &store,
+        temp.path(),
+        "sheet-split",
+    );
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(size(px(1400.), px(800.)));
+
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                pred: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !pred(visual) {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::yield_now();
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+        }
+    };
+
+    wait(&mut visual, "store sessions and tabs loaded", &|v| {
+        store.read_with(v, |s, _| {
+            s.sessions.iter().any(|d| d.session_id == "tab-narrow")
+                && s.nodes.iter().any(|n| n.id == narrow_tab.id)
+        })
+    });
+
+    host.update(&mut visual, |root, _, cx| {
+        root.apply_tab_rows(cx);
+        root.set_route(crate::AppRoute::Chat, cx);
+        root.tabs.activate(&dirty_tab.id);
+        root.sync_active_chat_detail(cx);
+        cx.notify();
+    })
+    .unwrap();
+    visual.run_until_parked();
+
+    use runner_core::protocol::files::{
+        FilesChanged, FilesStatusChanged, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
+    };
+
+    let mut sent = store.read_with(&visual, |s, _| s.test_core.events.subscribe());
+    let watched_roots = |visual: &gpui::VisualTestContext| {
+        store.read_with(visual, |s, _| s.test_core.files.watched_roots())
+    };
+    let mut prove_watcher_live = |visual: &mut gpui::VisualTestContext,
+                                  stage: &str,
+                                  expect_changes_row: bool| {
+        wait(
+            visual,
+            &format!("{stage}: daemon watches dirty_repo"),
+            &|v| {
+                watched_roots(v)
+                    .iter()
+                    .any(|p| runner_core::app_paths::same_checkout_path(p, &dirty_canon))
+            },
+        );
+        while matches!(
+            sent.try_recv(),
+            Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+        ) {}
+        let sentinel = dirty_repo.join(".watch-ready");
+        let mut probe_attempt = 0u32;
+        let mut last_probe = Instant::now() - Duration::from_secs(2);
+        let mut saw_changed = false;
+        let mut saw_status = false;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline && !(saw_changed && saw_status) {
+            if last_probe.elapsed() >= Duration::from_secs(1) {
+                probe_attempt += 1;
+                std::fs::write(&sentinel, format!("ready-{probe_attempt}\n")).unwrap();
+                last_probe = Instant::now();
+            }
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+            loop {
+                match sent.try_recv() {
+                    Ok(event) if event.name == FILES_CHANGED_EVENT => {
+                        if serde_json::from_value::<FilesChanged>(event.payload).is_ok_and(
+                            |changed| {
+                                runner_core::app_paths::same_checkout_path(
+                                    &changed.root,
+                                    &dirty_canon,
+                                ) && (changed.paths.iter().any(|p| p == ".watch-ready")
+                                    || (changed.paths.is_empty() && changed.folders == [""]))
+                            },
+                        ) {
+                            saw_changed = true;
+                        }
+                    }
+                    Ok(event) if event.name == FILES_STATUS_EVENT => {
+                        if serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(
+                            |update| {
+                                runner_core::app_paths::same_checkout_path(
+                                    &update.root,
+                                    &dirty_canon,
+                                ) && update
+                                    .status
+                                    .entries
+                                    .iter()
+                                    .any(|e| e.path == ".watch-ready")
+                            },
+                        ) {
+                            saw_status = true;
+                        }
+                    }
+                    Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                    Err(_) => break,
+                }
+            }
+            if !(saw_changed && saw_status) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        assert!(
+            saw_changed && saw_status,
+            "{stage}: timed out waiting for sentinel readiness (saw_changed={saw_changed}, saw_status={saw_status})"
+        );
+        if expect_changes_row {
+            wait(visual, &format!("{stage}: Changes lists sentinel"), &|v| {
+                v.debug_bounds("CHANGES_ROW .watch-ready").is_some()
+            });
+        } else {
+            wait(
+                visual,
+                &format!("{stage}: sentinel dirties Files dot"),
+                &|v| v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_some(),
+            );
+        }
+        std::fs::remove_file(&sentinel).unwrap();
+        if expect_changes_row {
+            wait(
+                visual,
+                &format!("{stage}: Changes drops sentinel after removal"),
+                &|v| {
+                    v.debug_bounds("CHANGES_ROW lib.rs").is_some()
+                        && v.debug_bounds("CHANGES_ROW .watch-ready").is_none()
+                },
+            );
+        } else {
+            wait(
+                visual,
+                &format!("{stage}: Files clears dirty dot after sentinel removal"),
+                &|v| v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_none(),
+            );
+        }
+    };
+
+    // 1. Dirty repo displays amber dirty dot on Changes activity icon; no split Following badge.
+    wait(&mut visual, "dirty repo tree and dirty dot", &|v| {
+        v.debug_bounds("FILES_ROW lib.rs").is_some()
+            && v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_some()
+    });
+    assert!(visual.debug_bounds("FILES_FOLLOWING_BADGE").is_none());
+
+    // 1b. Switch to Changes (hiding Files), establish real watcher readiness, clean the checkout,
+    // and verify the dirty dot clears via real watcher delivery without stale hidden Files state
+    // overriding it, then stays clean when switching back to Files.
+    click_selector(&mut visual, "PANEL_ACTIVITY Changes");
+    wait(&mut visual, "Changes list loaded while dirty", &|v| {
+        v.debug_bounds("CHANGES_ROW lib.rs").is_some()
+            && v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_some()
+    });
+    prove_watcher_live(&mut visual, "Changes watching dirty_repo", true);
+    assert!(Command::new("git")
+        .current_dir(&dirty_repo)
+        .args(["checkout", "--", "lib.rs"])
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .status()
+        .unwrap()
+        .success());
+    wait(
+        &mut visual,
+        "dirty dot clears while Files is hidden after cleaning checkout",
+        &|v| {
+            v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_none()
+                && v.debug_bounds("CHANGES_ROW lib.rs").is_none()
+        },
+    );
+    click_selector(&mut visual, "PANEL_ACTIVITY Files");
+    wait(
+        &mut visual,
+        "Files stays clean after switching back",
+        &|v| {
+            v.debug_bounds("FILES_ROW lib.rs").is_some()
+                && v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_none()
+        },
+    );
+    // Restore dirty edit through the real Files watcher for the split checks below.
+    prove_watcher_live(&mut visual, "Files watching dirty_repo", false);
+    std::fs::write(dirty_repo.join("lib.rs"), "pub fn run() { let _ = 1; }\n").unwrap();
+    wait(&mut visual, "dirty dot returns after re-editing", &|v| {
+        v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_some()
+    });
+
+    // 2. Per-tab isolation: collapsing dirty_tab leaves clean_tab open at 300 px (and clean).
+    host.update(&mut visual, |root, _, cx| {
+        root.set_chat_panel_open(false, cx);
+        root.chat_panel_visibility = crate::surfaces::root::SidebarVisibilityTransition::new(false);
+    })
+    .unwrap();
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_some());
+
+    host.update(&mut visual, |root, _, cx| {
+        root.tabs.activate(&clean_tab.id);
+        root.sync_active_chat_detail(cx);
+        cx.notify();
+    })
+    .unwrap();
+    wait(&mut visual, "clean tab opens docked at 300 px", &|v| {
+        v.debug_bounds("FILES_ROW lib.rs").is_some()
+            && v.debug_bounds("CHAT_SIDE_PANEL")
+                .is_some_and(|b| (f32::from(b.size.width) - 300.).abs() <= 1.)
+    });
+    assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_none());
+    assert!(visual.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_none());
+
+    // Returning to dirty_tab keeps it collapsed; reopen it for split check later.
+    host.update(&mut visual, |root, _, cx| {
+        root.tabs.activate(&dirty_tab.id);
+        root.sync_active_chat_detail(cx);
+        cx.notify();
+    })
+    .unwrap();
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_some());
+    host.update(&mut visual, |root, _, cx| {
+        root.set_chat_panel_open(true, cx);
+        root.chat_panel_visibility = crate::surfaces::root::SidebarVisibilityTransition::new(true);
+    })
+    .unwrap();
+    visual.run_until_parked();
+
+    // 3. Narrow window (`available - 300 < 420`): brand-new tab starts collapsed, opens as
+    // elevated overlay sheet without crushing PTY, and dismisses via scrim click or Esc.
+    visual.simulate_resize(size(px(660.), px(800.)));
+    visual.run_until_parked();
+    host.update(&mut visual, |root, _, cx| {
+        root.tabs.activate(&narrow_tab.id);
+        root.sync_active_chat_detail(cx);
+        cx.notify();
+    })
+    .unwrap();
+    wait(&mut visual, "narrow tab defaults collapsed", &|v| {
+        v.debug_bounds("CHAT_PANEL_TOGGLE").is_some()
+            && v.debug_bounds("PANEL_OVERLAY_SHEET").is_none()
+    });
+    let narrow_pane_width = visual.debug_bounds("PANE_ISLAND:p1").unwrap().size.width;
+    click_selector(&mut visual, "CHAT_PANEL_TOGGLE");
+    wait(&mut visual, "narrow overlay sheet opens", &|v| {
+        v.debug_bounds("PANEL_OVERLAY_SHEET").is_some()
+    });
+    assert_eq!(
+        visual.debug_bounds("PANE_ISLAND:p1").unwrap().size.width,
+        narrow_pane_width,
+        "overlay sheet must not shrink the terminal pane"
+    );
+    // Click left side of overlay sheet (the backdrop scrim) to dismiss.
+    let sheet = visual.debug_bounds("PANEL_OVERLAY_SHEET").unwrap();
+    visual.simulate_click(
+        gpui::point(sheet.left() + px(16.), sheet.center().y),
+        gpui::Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("PANEL_OVERLAY_SHEET").is_none());
+    assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_some());
+
+    // Open again and dismiss via Escape.
+    click_selector(&mut visual, "CHAT_PANEL_TOGGLE");
+    wait(&mut visual, "narrow overlay sheet reopens", &|v| {
+        v.debug_bounds("PANEL_OVERLAY_SHEET").is_some()
+    });
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("PANEL_OVERLAY_SHEET").is_none());
+
+    // 4. Split tab (2 columns, different folders): docked 300 px at 1120 px width shows
+    // `Following <pane> · <target>` badge; widening a file auto-sheets without crushing split
+    // panes; closing the last file snaps back to docked 300 px.
+    visual.simulate_resize(size(px(1120.), px(800.)));
+    visual.run_until_parked();
+    let right_pane = host
+        .update(&mut visual, |root, _, cx| {
+            root.tabs.activate(&dirty_tab.id);
+            let layout = root.tabs.active_mut().unwrap();
+            let right = layout.split("p1", SplitOrientation::Row).unwrap();
+            layout.assign_session(&right, "tab-clean").unwrap();
+            assert!(layout.focus_pane("p1"));
+            root.sync_active_chat_detail(cx);
+            cx.notify();
+            right
+        })
+        .unwrap();
+    let right_selector: &'static str =
+        Box::leak(format!("PANE_ISLAND:{right_pane}").into_boxed_str());
+    wait(
+        &mut visual,
+        "split docked 300 px with Following badge",
+        &|v| {
+            v.debug_bounds("PANEL_OVERLAY_SHEET").is_none()
+                && v.debug_bounds("FILES_FOLLOWING_BADGE").is_some()
+                && v.debug_bounds("FILES_ROW lib.rs").is_some()
+                && v.debug_bounds("CHAT_SIDE_PANEL")
+                    .is_some_and(|b| (f32::from(b.size.width) - 300.).abs() <= 1.)
+        },
+    );
+    // Changes also shows the split Following badge.
+    click_selector(&mut visual, "PANEL_ACTIVITY Changes");
+    wait(&mut visual, "Changes Following badge", &|v| {
+        v.debug_bounds("CHANGES_FOLLOWING_BADGE").is_some()
+    });
+    click_selector(&mut visual, "PANEL_ACTIVITY Files");
+    wait(&mut visual, "back to Files tree", &|v| {
+        v.debug_bounds("FILES_ROW lib.rs").is_some()
+    });
+
+    let left_before = visual.debug_bounds("PANE_ISLAND:p1").unwrap().size.width;
+    let right_before = visual.debug_bounds(right_selector).unwrap().size.width;
+    click_selector(&mut visual, "FILES_ROW lib.rs");
+    wait(
+        &mut visual,
+        "split file open auto-sheets and slides in",
+        &|v| {
+            v.debug_bounds("FILE_CODE").is_some()
+                && v.debug_bounds("PANEL_OVERLAY_SHEET").is_some()
+                && v.debug_bounds("FILE_TAB_CLOSE lib.rs")
+                    .is_some_and(|b| b.right() <= px(1120.))
+                && host
+                    .read_with(v, |root, _| root.chat_sheet_anim.started_at.is_none())
+                    .unwrap()
+        },
+    );
+    assert_eq!(
+        visual.debug_bounds("PANE_ISLAND:p1").unwrap().size.width,
+        left_before,
+        "split auto-sheet reserves docked 300 px so left split column does not resize"
+    );
+    assert_eq!(
+        visual.debug_bounds(right_selector).unwrap().size.width,
+        right_before,
+        "split auto-sheet reserves docked 300 px so right split column does not resize"
+    );
+
+    // Closing last file tab snaps directly back to docked 300 px on the very first frame —
+    // never docking the 680 px sheet width or squeezing either split terminal column.
+    click_selector(&mut visual, "FILE_TAB_CLOSE lib.rs");
+    assert!(
+        visual.debug_bounds("PANEL_OVERLAY_SHEET").is_none(),
+        "closing last file tab in split auto-sheet must exit sheet immediately"
+    );
+    assert!(
+        host.read_with(&visual, |root, _| root.chat_panel_width_anim.started_at.is_none())
+            .unwrap(),
+        "exiting split auto-sheet back to docked 300 px must not animate from the 680 px sheet width"
+    );
+    assert!(
+        visual
+            .debug_bounds("CHAT_SIDE_PANEL")
+            .is_some_and(|b| (f32::from(b.size.width) - 300.).abs() <= 0.5),
+        "first docked frame after closing split Files sheet must be 300 px: {:?}",
+        visual.debug_bounds("CHAT_SIDE_PANEL")
+    );
+    assert_eq!(
+        visual.debug_bounds("PANE_ISLAND:p1").unwrap().size.width,
+        left_before,
+        "closing split Files sheet must not resize left split column on frame 0"
+    );
+    assert_eq!(
+        visual.debug_bounds(right_selector).unwrap().size.width,
+        right_before,
+        "closing split Files sheet must not resize right split column on frame 0"
+    );
+
+    // Same invariant for Changes C1 in the 2-column split: opening a diff auto-sheets without
+    // resizing split panes, and clicking `×` returns immediately to docked 300 px on frame 0
+    // without ever docking the 740 px sheet width or resizing either terminal column.
+    click_selector(&mut visual, "PANEL_ACTIVITY Changes");
+    wait(&mut visual, "Changes list ready in split", &|v| {
+        v.debug_bounds("CHANGES_ROW lib.rs").is_some()
+            && v.debug_bounds("PANEL_OVERLAY_SHEET").is_none()
+    });
+    click_selector(&mut visual, "CHANGES_ROW lib.rs");
+    wait(
+        &mut visual,
+        "split Changes diff auto-sheets and slides in",
+        &|v| {
+            v.debug_bounds("CHANGES_DIFF_CODE").is_some()
+                && v.debug_bounds("PANEL_OVERLAY_SHEET").is_some()
+                && v.debug_bounds("CHANGES_CLOSE_DIFF")
+                    .is_some_and(|b| b.right() <= px(1120.))
+                && host
+                    .read_with(v, |root, _| root.chat_sheet_anim.started_at.is_none())
+                    .unwrap()
+        },
+    );
+    assert_eq!(
+        visual.debug_bounds("PANE_ISLAND:p1").unwrap().size.width,
+        left_before,
+        "split Changes auto-sheet must not resize left split column"
+    );
+    assert_eq!(
+        visual.debug_bounds(right_selector).unwrap().size.width,
+        right_before,
+        "split Changes auto-sheet must not resize right split column"
+    );
+    click_selector(&mut visual, "CHANGES_CLOSE_DIFF");
+    assert!(
+        visual.debug_bounds("PANEL_OVERLAY_SHEET").is_none(),
+        "closing split Changes diff must exit sheet immediately"
+    );
+    assert!(
+        host.read_with(&visual, |root, _| root
+            .chat_panel_width_anim
+            .started_at
+            .is_none())
+            .unwrap(),
+        "exiting split Changes auto-sheet must not animate docked width from 740 px"
+    );
+    assert!(
+        visual
+            .debug_bounds("CHAT_SIDE_PANEL")
+            .is_some_and(|b| (f32::from(b.size.width) - 300.).abs() <= 0.5),
+        "first docked frame after closing split Changes sheet must be 300 px: {:?}",
+        visual.debug_bounds("CHAT_SIDE_PANEL")
+    );
+    assert_eq!(
+        visual.debug_bounds("PANE_ISLAND:p1").unwrap().size.width,
+        left_before,
+        "closing split Changes sheet must not resize left split column on frame 0"
+    );
+    assert_eq!(
+        visual.debug_bounds(right_selector).unwrap().size.width,
+        right_before,
+        "closing split Changes sheet must not resize right split column on frame 0"
+    );
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[test]
+fn narrow_archived_chat_reserves_zero_width_when_closed_and_isolates_live_tab_panel_state() {
+    use std::time::{Duration, Instant};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::Builder::new()
+        .prefix("1403-archived-isolation-")
+        .tempdir()
+        .unwrap();
+    let folder = temp.path().join("project");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("notes.txt"), "hello\n").unwrap();
+
+    let mut cx = gpui::TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    let conn = store.read_with(&cx, |s, _| s.test_core.db.get().unwrap());
+    conn.execute_batch(&format!(
+        "INSERT INTO sessions (id, title, status, agent_runtime, agent_command, cwd, files_root)
+             VALUES ('live-chat', 'Live Chat', 'stopped', 'codex', 'codex', '{dir}', '{dir}'),
+                    ('arch-chat', 'Archived Chat', 'stopped', 'codex', 'codex', '{dir}', '{dir}');
+         UPDATE sessions SET archived_at = '2026-11-20T00:00:00Z' WHERE id = 'arch-chat';",
+        dir = folder.to_string_lossy(),
+    ))
+    .unwrap();
+    let live_tab = runner_daemon::repo::node::create_tab(
+        &conn,
+        None,
+        "Live",
+        0,
+        &PaneLayout::single(Some("live-chat"), &["live-chat".into()])
+            .serialize()
+            .unwrap(),
+    )
+    .unwrap();
+    drop(conn);
+
+    store.update(&mut cx, |store, cx| {
+        store.settings.show_side_panel = true;
+        store.settings.sidebar_collapsed = true;
+        store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+    });
+    cx.run_until_parked();
+    let host = crate::surfaces::remote_client::tests::add_window(
+        &mut cx,
+        &store,
+        temp.path(),
+        "archived-isolation",
+    );
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(size(px(1400.), px(800.)));
+
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                pred: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !pred(visual) {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::yield_now();
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+        }
+    };
+    wait(&mut visual, "live tab loaded", &|v| {
+        store.read_with(v, |s, _| {
+            s.sessions.iter().any(|d| d.session_id == "live-chat")
+                && s.nodes.iter().any(|n| n.id == live_tab.id)
+        })
+    });
+
+    // 1. Live tab starts open on Files.
+    host.update(&mut visual, |root, _, cx| {
+        root.apply_tab_rows(cx);
+        root.set_route(crate::AppRoute::Chat, cx);
+        root.tabs.activate(&live_tab.id);
+        root.sync_active_chat_detail(cx);
+        cx.notify();
+    })
+    .unwrap();
+    wait(&mut visual, "live tab open on Files", &|v| {
+        v.debug_bounds("PANEL_ACTIVITY Files active").is_some()
+            && v.debug_bounds("FILES_ROW notes.txt").is_some()
+    });
+
+    // 2. Open archived chat on a wide window: switch its tool to Changes and collapse it;
+    // verify its activity bar is 40 px tall, then return to live tab and prove live tab kept
+    // its open state and Files selection untouched!
+    let archived_entry = crate::DirectSessionEntry {
+        session_id: "arch-chat".into(),
+        project_id: None,
+        role_id: None,
+        handle: None,
+        agent_runtime: "codex".into(),
+        agent_command: "codex".into(),
+        agent_model: None,
+        agent_effort: None,
+        display_name: "Codex".into(),
+        status: SessionStatus::Stopped,
+        title: Some("Archived Chat".into()),
+        live_title: None,
+        cwd: Some(folder.to_string_lossy().into_owned()),
+        started_at: None,
+        stopped_at: None,
+        resumable: false,
+        native_fork: false,
+        forkable: false,
+        agent_session_key: None,
+        claude_account: None,
+        pinned: false,
+        archived_at: Some(chrono::Utc::now()),
+    };
+    host.update(&mut visual, |root, window, cx| {
+        root.open_archived_chat(archived_entry.clone(), window, cx);
+    })
+    .unwrap();
+    wait(&mut visual, "archived chat wide panel open", &|v| {
+        v.debug_bounds("PANEL_ACTIVITY Files active").is_some()
+            && v.debug_bounds("CHAT_PANEL_HEADER").is_some()
+    });
+    let archived_header = visual.debug_bounds("CHAT_PANEL_HEADER").unwrap();
+    assert!(
+        (f32::from(archived_header.size.height) - 40.).abs() <= 1.,
+        "archived activity bar height must be 40 px: {archived_header:?}"
+    );
+    click_selector(&mut visual, "PANEL_ACTIVITY Changes");
+    assert!(visual
+        .debug_bounds("PANEL_ACTIVITY Changes active")
+        .is_some());
+    host.update(&mut visual, |root, _, cx| {
+        root.set_chat_panel_open(false, cx);
+    })
+    .unwrap();
+    visual.run_until_parked();
+
+    // Return to live tab: must still be open on Files!
+    host.update(&mut visual, |root, _, cx| {
+        root.archived_chat_detail = None;
+        root.set_route(crate::AppRoute::Chat, cx);
+        root.sync_active_chat_detail(cx);
+        cx.notify();
+    })
+    .unwrap();
+    wait(
+        &mut visual,
+        "live tab panel preserved after archived visit",
+        &|v| {
+            v.debug_bounds("PANEL_ACTIVITY Files active").is_some()
+                && v.debug_bounds("CHAT_PANEL_TOGGLE").is_none()
+        },
+    );
+
+    // 3. Narrow archived chat (`660 × 800`): starts collapsed with ZERO reserved panel width,
+    // opens as an elevated overlay sheet without shrinking the archived view, and dismisses back
+    // to ZERO reserved panel width!
+    visual.simulate_resize(size(px(660.), px(800.)));
+    visual.run_until_parked();
+    host.update(&mut visual, |root, window, cx| {
+        root.open_archived_chat(archived_entry, window, cx);
+    })
+    .unwrap();
+    wait(
+        &mut visual,
+        "narrow archived chat starts collapsed with 0 width",
+        &|v| {
+            v.debug_bounds("PANEL_OVERLAY_SHEET").is_none()
+                && v.debug_bounds("CHAT_SIDE_PANEL")
+                    .is_none_or(|b| f32::from(b.size.width) <= 0.5)
+        },
+    );
+    assert!(
+        visual.debug_bounds("CHAT_PANEL_HEADER").is_none(),
+        "collapsed narrow archived chat must not render a visible panel header"
+    );
+
+    // Open overlay sheet via set_chat_panel_open(true): sheet slides in cleanly.
+    host.update(&mut visual, |root, _, cx| {
+        root.set_chat_panel_open(true, cx);
+    })
+    .unwrap();
+    wait(
+        &mut visual,
+        "narrow archived chat opens overlay sheet",
+        &|v| {
+            v.debug_bounds("PANEL_OVERLAY_SHEET").is_some()
+                && v.debug_bounds("CHAT_SIDE_PANEL")
+                    .is_some_and(|b| (f32::from(b.size.width) - 300.).abs() <= 1.)
+        },
+    );
+
+    // Dismiss via scrim click: returns to ZERO reserved panel width.
+    let sheet = visual.debug_bounds("PANEL_OVERLAY_SHEET").unwrap();
+    visual.simulate_click(
+        gpui::point(sheet.left() + px(16.), sheet.center().y),
+        gpui::Modifiers::default(),
+    );
+    wait(
+        &mut visual,
+        "narrow archived sheet dismissed to 0 width",
+        &|v| {
+            v.debug_bounds("PANEL_OVERLAY_SHEET").is_none()
+                && v.debug_bounds("CHAT_SIDE_PANEL")
+                    .is_none_or(|b| f32::from(b.size.width) <= 0.5)
+        },
+    );
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[test]
+fn toggle_session_info_action_opens_per_pane_role_runtime_and_ignores_shell() {
+    use std::time::{Duration, Instant};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::Builder::new()
+        .prefix("1403-toggle-info-")
+        .tempdir()
+        .unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    let conn = store.read_with(&cx, |s, _| s.test_core.db.get().unwrap());
+    conn.execute_batch(
+        "INSERT INTO roles (id, handle, display_name, runtime, command, system_prompt, created_at, updated_at)
+             VALUES ('role-arch', 'architect', 'Architect', 'claude-code', '/custom/bin/claude-wrap', 'Keep diffs tiny and focused.', '2026-11-20T00:00:00Z', '2026-11-20T00:00:00Z');
+         INSERT INTO sessions (id, role_id, title, status, agent_runtime, agent_command, cwd)
+             VALUES ('role-chat', 'role-arch', 'Role Chat', 'stopped', 'claude-code', '/custom/bin/claude-wrap', '/tmp/role-chat'),
+                    ('runtime-chat', NULL, 'Runtime Chat', 'stopped', 'codex', 'codex', '/tmp/runtime-chat'),
+                    ('shell-chat', NULL, 'Shell Tab', 'stopped', 'shell', '/bin/zsh', '/tmp/shell-chat');",
+    )
+    .unwrap();
+    let mut split = PaneLayout::single(Some("role-chat"), &["role-chat".into()]);
+    let right = split.split("p1", SplitOrientation::Row).unwrap();
+    split.assign_session(&right, "runtime-chat").unwrap();
+    assert!(split.focus_pane("p1"));
+    let split_tab = runner_daemon::repo::node::create_tab(
+        &conn,
+        None,
+        "Split Info",
+        0,
+        &split.serialize().unwrap(),
+    )
+    .unwrap();
+    let shell_tab = runner_daemon::repo::node::create_tab(
+        &conn,
+        None,
+        "Shell",
+        1,
+        &PaneLayout::single(Some("shell-chat"), &["shell-chat".into()])
+            .serialize()
+            .unwrap(),
+    )
+    .unwrap();
+    drop(conn);
+
+    store.update(&mut cx, |store, cx| {
+        store.settings.show_side_panel = true;
+        store.roles = store.client.role_list().unwrap();
+        store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+    });
+    cx.run_until_parked();
+    let host = crate::surfaces::remote_client::tests::add_window(
+        &mut cx,
+        &store,
+        temp.path(),
+        "toggle-session-info",
+    );
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(size(px(1400.), px(900.)));
+
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                pred: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !pred(visual) {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::yield_now();
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+        }
+    };
+
+    wait(&mut visual, "store roles and sessions refreshed", &|v| {
+        store.read_with(v, |s, _| {
+            s.roles.iter().any(|r| r.id == "role-arch")
+                && s.sessions.iter().any(|d| d.session_id == "shell-chat")
+                && s.nodes.iter().any(|n| n.id == shell_tab.id)
+        })
+    });
+
+    host.update(&mut visual, |root, window, cx| {
+        root.apply_tab_rows(cx);
+        root.set_route(crate::AppRoute::Chat, cx);
+        root.tabs.activate(&split_tab.id);
+        root.sync_active_chat_detail(cx);
+        root.chat_focus.focus(window, cx);
+        cx.notify();
+    })
+    .unwrap();
+    visual.run_until_parked();
+
+    // 1. Focused role pane: dispatching ToggleSessionInfo opens its S2 Info card with custom cmd
+    // and collapsed System prompt; clicking prompt toggle expands in-place; second dispatch closes.
+    host.update(&mut visual, |root, window, cx| {
+        root.chat_focus.focus(window, cx);
+    })
+    .unwrap();
+    visual.run_until_parked();
+    visual.dispatch_action(crate::ToggleSessionInfo);
+    wait(&mut visual, "role pane S2 Info opens", &|v| {
+        v.debug_bounds("S2_CHAT_INFO_CARD").is_some()
+            && v.debug_bounds("CHAT_PANEL_OPEN_ROLE").is_some()
+    });
+    assert!(visual
+        .debug_bounds("CHAT_PANEL_META /custom/bin/claude-wrap")
+        .is_some());
+    assert!(visual.debug_bounds("CHAT_PANEL_PROMPT_TOGGLE").is_some());
+    assert!(visual.debug_bounds("CHAT_PANEL_PROMPT").is_none());
+    click_selector(&mut visual, "CHAT_PANEL_PROMPT_TOGGLE");
+    wait(&mut visual, "role system prompt expands in-place", &|v| {
+        v.debug_bounds("CHAT_PANEL_PROMPT").is_some()
+    });
+    visual.dispatch_action(crate::ToggleSessionInfo);
+    wait(&mut visual, "role pane S2 Info closes", &|v| {
+        v.debug_bounds("S2_CHAT_INFO_CARD").is_none()
+    });
+
+    // 2. Focus right split pane (runtime chat): ToggleSessionInfo opens its own S2 Info card,
+    // hiding default `codex` cmd and showing no role/prompt rows. Escape dismisses.
+    host.update(&mut visual, |root, window, cx| {
+        let layout = root.tabs.active_mut().unwrap();
+        assert!(layout.focus_pane(&right));
+        root.sync_active_chat_detail(cx);
+        root.chat_focus.focus(window, cx);
+        cx.notify();
+    })
+    .unwrap();
+    visual.run_until_parked();
+    visual.dispatch_action(crate::ToggleSessionInfo);
+    wait(&mut visual, "runtime pane S2 Info opens", &|v| {
+        v.debug_bounds("S2_CHAT_INFO_CARD").is_some()
+            && v.debug_bounds("COLUMN_TEXT Codex").is_some()
+    });
+    assert!(visual.debug_bounds("CHAT_PANEL_OPEN_ROLE").is_none());
+    assert!(visual.debug_bounds("CHAT_PANEL_PROMPT_TOGGLE").is_none());
+    assert!(
+        visual.debug_bounds("CHAT_PANEL_META codex").is_none(),
+        "default runtime command must stay hidden (#1360)"
+    );
+    visual.simulate_keystrokes("escape");
+    wait(&mut visual, "Escape closes S2 Info popover", &|v| {
+        v.debug_bounds("S2_CHAT_INFO_CARD").is_none()
+    });
+
+    // 2b. Reopen runtime pane Title ▾ menu and click Archive: opens archive confirmation for
+    // that pane's session cleanly, then Escape cancels it.
+    host.update(&mut visual, |root, window, cx| {
+        root.chat_focus.focus(window, cx);
+    })
+    .unwrap();
+    visual.run_until_parked();
+    visual.dispatch_action(crate::ToggleSessionInfo);
+    wait(
+        &mut visual,
+        "runtime pane S2 Info reopens with Archive",
+        &|v| {
+            v.debug_bounds("S2_CHAT_INFO_CARD").is_some()
+                && v.debug_bounds("POPOVER_LABEL_3").is_some()
+        },
+    );
+    click_selector(&mut visual, "POPOVER_LABEL_3");
+    wait(&mut visual, "Title menu Archive opens confirmation", &|v| {
+        host.read_with(v, |root, _| {
+            matches!(
+                root.terminal_close_confirm.as_ref().map(|c| &c.target),
+                Some(crate::TerminalCloseTarget::ArchiveChatPane { session_id, .. })
+                    if session_id == "runtime-chat"
+            )
+        })
+        .unwrap()
+    });
+    host.update(&mut visual, |root, _, cx| {
+        root.terminal_close_confirm = None;
+        cx.notify();
+    })
+    .unwrap();
+    visual.run_until_parked();
+
+    // 3. Plain shell pane: ToggleSessionInfo does not open an agent Info card.
+    host.update(&mut visual, |root, window, cx| {
+        root.tabs.activate(&shell_tab.id);
+        root.sync_active_chat_detail(cx);
+        root.chat_focus.focus(window, cx);
+        cx.notify();
+    })
+    .unwrap();
+    visual.run_until_parked();
+    visual.dispatch_action(crate::ToggleSessionInfo);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("S2_CHAT_INFO_CARD").is_none());
 
     host.update(&mut visual, |_, window, _| window.remove_window())
         .unwrap();

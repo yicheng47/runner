@@ -18,6 +18,7 @@ In macOS terminal panes, **Settings → Terminal → Option as Meta key** defaul
 | New mission: show the launcher page's crew step without creating a tab | ⇧⌘M | Ctrl+Shift+M |
 | Command palette | ⌘K | Ctrl+Shift+P |
 | Search files by name in the side panel's folder | ⇧⌘O | Ctrl+Shift+O |
+| Toggle session or mission info popover | ⌘I | Ctrl+Shift+I |
 | Toggle sidebar | ⌘S | Ctrl+B |
 | Switch sidebar view (Projects / Active) | ⌘. | Ctrl+. |
 | Toggle mission terminal drawer | ⌥F12 | Alt+F12 |
@@ -81,19 +82,6 @@ If you bind a Runner shortcut to one of these chords in **Settings → Keyboard 
 
 Find in terminal can be changed in **Settings → Keyboard shortcuts**; the keys inside the find bar are fixed. On Windows and Linux, **Ctrl+F** still reaches the terminal. Esc closes the find bar only while the bar has focus; once the terminal has focus, Esc goes to the program. See [Find in a terminal](../guides/chats-and-windows.md#find-in-a-terminal).
 
-## Side panel surfaces
-
-| Action | Keys |
-| --- | --- |
-| Open Info, or switch to it | I |
-| Open Files, or switch to it | F |
-| Open Changes, or switch to it | C |
-| Move through the surfaces | ↑ / ↓ |
-| Open the highlighted surface | Return (Enter) |
-| Close the **+** list | Esc |
-
-These keys act only while the **+** list of a side panel, or a panel's **Open a surface** list, has focus; they are fixed. See [Chats, tabs and windows](../guides/chats-and-windows.md).
-
 ## Files in the side panel
 
 | Action | macOS | Windows / Linux |
@@ -114,8 +102,8 @@ These keys act while the side panel's Files view has focus and, except for zoom,
 | --- | --- | --- |
 | Select previous / next file or commit; in the diff, move the cursor line | ↑ / ↓ or k / j | ↑ / ↓ or k / j |
 | Move focus through the changed files, Commits, Base and the checkout controls | Tab / ⇧Tab | Tab / Shift+Tab |
-| Move focus into the diff | Return | Enter |
-| Return focus from the diff to the list | Esc | Esc |
+| Open the highlighted file's diff or move focus into the diff | Return | Enter |
+| Return focus from the diff to the list (or close an overlay sheet) | Esc | Esc |
 | Mark or unmark the selected file as viewed, in the files list | Space | Space |
 | Next / previous hunk | ] / [ | ] / [ |
 | Scroll the diff sideways | ← / → | ← / → |

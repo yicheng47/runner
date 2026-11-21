@@ -10,6 +10,8 @@ Working and idle indicators help you find active agents. Supported runtimes repo
 
 Stopped and crashed sessions have no running agent to receive input. Read the terminal and any error before choosing the next action.
 
+Click a chat pane’s **Title ▾**—or press **⌘I** / **Ctrl+Shift+I**—to inspect the session’s metadata without giving up workspace width: role or runtime, model and effort, its **worktree** (branch, `from <base>` and path copy) or **cwd**, any non-default launch command, config, `session_key` with copy, and a collapsible scrollable **System prompt** for role chats.
+
 ## Open terminal links
 
 Hover a URL or file path to highlight it, then ⌘-click or Ctrl-click on macOS, or Ctrl-click on Windows, to open it. Web URLs (`http://` and `https://`) open in your browser. Local `file://` URLs (plain text or terminal hyperlinks targeting this machine or `localhost`, such as `file:///C:/...` on Windows) and file paths—including Windows drive-letter paths (`C:\...` and `C:/...`), UNC paths (`\\server\share\...`), and `:line[:column]`, `(line,column)`, or `#Lline` suffixes—open in a tab in the side panel at that line when the path is inside the folder its Files view shows, and otherwise in the editor picked with **Open in**; see [Read a file in the side panel](../guides/chats-and-windows.md#read-a-file-in-the-side-panel).

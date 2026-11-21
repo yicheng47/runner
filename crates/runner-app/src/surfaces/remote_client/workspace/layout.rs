@@ -66,24 +66,49 @@ impl RemoteClient {
         remote.layouts.get_mut(id)
     }
 
-    pub(crate) fn chat_info_is_open(&self) -> bool {
-        self.workspace.as_ref().is_some_and(|remote| {
-            matches!(&remote.active, Some(Item::Tab(id)) if remote.chat_info_tabs.contains(id))
-        })
+    pub(crate) fn chat_panel_explicit_open(&self) -> Option<bool> {
+        let remote = self.workspace.as_ref()?;
+        let Item::Tab(id) = remote.active.as_ref()? else {
+            return None;
+        };
+        remote.chat_panel_open_by_tab.get(id).copied()
     }
 
-    pub(crate) fn set_chat_info_open(&mut self, open: bool) {
+    pub(crate) fn set_chat_panel_open(&mut self, open: bool) {
         let Some(remote) = self.workspace.as_mut() else {
             return;
         };
         let Some(Item::Tab(id)) = &remote.active else {
             return;
         };
-        if open {
-            remote.chat_info_tabs.insert(id.clone());
-        } else {
-            remote.chat_info_tabs.remove(id);
-        }
+        remote.chat_panel_open_by_tab.insert(id.clone(), open);
+    }
+
+    pub(crate) fn chat_panel_selection(&self) -> crate::surfaces::side_panel::PanelSelection {
+        let Some(remote) = self.workspace.as_ref() else {
+            return Default::default();
+        };
+        let Some(Item::Tab(id)) = remote.active.as_ref() else {
+            return Default::default();
+        };
+        remote.chat_panel_modes.get(id).cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn select_chat_panel_mode(
+        &mut self,
+        mode: crate::surfaces::side_panel::PanelViewId,
+    ) {
+        let Some(remote) = self.workspace.as_mut() else {
+            return;
+        };
+        let Some(Item::Tab(id)) = &remote.active else {
+            return;
+        };
+        remote
+            .chat_panel_modes
+            .entry(id.clone())
+            .or_default()
+            .select(mode);
     }
 
     pub(crate) fn panel_chat_for(&self, tab: &str) -> Option<&String> {

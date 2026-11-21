@@ -21,12 +21,59 @@ impl NativeRoot {
                 .into_any_element();
         };
         let label = session_label(detail);
+        let session_id = detail.session_id.clone();
+        let is_chat = detail.agent_runtime != "shell";
         let back_label = if detail.handle.is_some() {
             crate::i18n::text("ui.back_to_role")
         } else {
             crate::i18n::text("ui.back_to_roles")
         };
         let handle = detail.handle.clone();
+        let archived_menu = is_chat.then(|| {
+            let menu = match &self.archived_title_menu {
+                Some((id, menu)) if id == &session_id => menu.clone(),
+                _ => {
+                    let menu = cx.new(|menu_cx| {
+                        PopoverMenu::new(
+                            SharedString::from(format!("archived-title-{session_id}")),
+                            menu_cx.focus_handle(),
+                            Vec::new(),
+                            Rc::new(|_, _, _| {}),
+                            menu_cx,
+                        )
+                        .min_width(px(320.))
+                        .single_line_labels()
+                    });
+                    self.archived_title_menu = Some((session_id.clone(), menu.clone()));
+                    menu
+                }
+            };
+            let root_weak = cx.weak_entity();
+            let menu_weak = menu.downgrade();
+            let sid = session_id.clone();
+            let header_renderer: runner_app::ui::menu::HeaderRenderer =
+                Rc::new(move |_: &mut Window, cx: &mut App| {
+                    let menu_weak = menu_weak.clone();
+                    let sid = sid.clone();
+                    root_weak
+                        .update(cx, |this, cx| {
+                            this.render_pane_info_card_for_session(&sid, menu_weak, cx)
+                        })
+                        .unwrap_or_else(|_| div().into_any_element())
+                });
+            let trigger_label = label.clone();
+            menu.update(cx, |menu, menu_cx| {
+                menu.set_header_renderer(Some(header_renderer), menu_cx);
+                menu.set_trigger_label(
+                    runner_app::ui::MenuTriggerLabel {
+                        text: trigger_label.into(),
+                        color: theme::text(),
+                    },
+                    menu_cx,
+                );
+            });
+            menu
+        });
         let root = cx.entity();
         let panel_root = root.clone();
         let sidebar_toggle = self.render_collapsed_titlebar_spacer();
@@ -63,14 +110,25 @@ impl NativeRoot {
                     .flex_none()
                     .text_color(theme::accent()),
             )
-            .child(
+            .child(if let Some(menu) = archived_menu {
+                div()
+                    .min_w(px(0.))
+                    .h(rems(28. / 16.))
+                    .flex()
+                    .items_center()
+                    .debug_selector({
+                        let label = label.clone();
+                        move || format!("PANE_TITLE:{label}")
+                    })
+                    .child(menu)
+            } else {
                 div()
                     .min_w(px(0.))
                     .truncate()
                     .text_size(theme::text_body())
                     .font_weight(FontWeight::MEDIUM)
-                    .child(label),
-            )
+                    .child(label)
+            })
             .child(
                 Button::new("archived-chat-back", back_label)
                     .size(ButtonSize::Sm)
@@ -79,6 +137,7 @@ impl NativeRoot {
                         let handle = handle.clone();
                         root.update(cx, |this, root_cx| {
                             this.archived_chat_detail = None;
+                            this.archived_title_menu = None;
                             if let Some(handle) = handle {
                                 this.open_role_detail(handle, window, root_cx);
                             } else {
@@ -98,7 +157,7 @@ impl NativeRoot {
                             .on_press(move |window, cx| {
                                 panel_root.update(cx, |this, cx| {
                                     this.set_chat_panel_open(true, cx);
-                                    this.focus_empty_chat_panel(window, cx);
+                                    this.focus_chat_panel_shown(window, cx);
                                     cx.notify();
                                 });
                             }),
@@ -153,45 +212,125 @@ impl NativeRoot {
             self.chat_panel_maximized = false;
         }
         let panel_maximized = panel_open && self.chat_panel_maximized;
-        let (panel_visibility, panel_animating) = if panel_maximized {
+        let panel_layout = self.chat_panel_layout(self.archived_chat_detail.as_ref(), 1, cx);
+        let panel_sheet = panel_open && !panel_maximized && panel_layout.is_sheet();
+        let now = Instant::now();
+        let (panel_visibility, panel_animating) = if panel_maximized || panel_sheet {
             (1., false)
+        } else if panel_layout.is_sheet() {
+            // Collapsed narrow sheet uses zero docked width rather than animating a docked rail.
+            self.chat_panel_visibility = SidebarVisibilityTransition::new(false);
+            (0., false)
         } else {
             self.chat_panel_visibility.animate_to(
                 if panel_open { 1. } else { 0. },
-                Instant::now(),
+                now,
                 Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
             )
         };
-        if panel_animating {
+        let (sheet_progress, sheet_animating) = if panel_sheet {
+            self.chat_sheet_anim.animate_to(
+                1.,
+                now,
+                Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
+            )
+        } else {
+            self.chat_sheet_anim = SidebarVisibilityTransition::new(false);
+            (0., false)
+        };
+        let target_width = panel_layout.width.round();
+        let width_mode = (
+            panel_layout.widened.is_some(),
+            panel_layout.widened.is_some_and(|w| w.tree),
+        );
+        let prev_mode = self.chat_panel_width_mode;
+        self.chat_panel_width_mode = Some(width_mode);
+        let mode_changed = prev_mode.is_some_and(|prev| prev != width_mode);
+        let (animated_width, width_animating) = if panel_sheet {
+            // Keep the docked width tracker at the reserved docked width (e.g.
+            // 300 px for a split auto-sheet, 0 px for a narrow sheet) so closing
+            // a sheet back to docked never starts a docked animation from the
+            // full sheet width and squeezes the terminal panes.
+            let docked = panel_layout.reserved_docked_width.round();
+            self.chat_panel_width_anim = SidebarVisibilityTransition::at(docked);
+            (target_width, false)
+        } else if std::mem::take(&mut self.chat_panel_width_snap)
+            || panel_maximized
+            || self.chat_panel_resizing
+            || !panel_open
+            || (!mode_changed && self.chat_panel_width_anim.started_at.is_none())
+        {
+            self.chat_panel_width_anim = SidebarVisibilityTransition::at(target_width);
+            (target_width, false)
+        } else {
+            self.chat_panel_width_anim.animate_to(
+                target_width,
+                now,
+                Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
+            )
+        };
+        if panel_animating || sheet_animating || width_animating {
+            let weak = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                let _ = weak.update(cx, |_, cx| cx.notify());
+            });
             window.request_animation_frame();
         }
-        self.reset_chat_panel_prompt(
-            self.archived_chat_detail
-                .as_ref()
-                .map(|chat| chat.session_id.clone()),
-        );
-        let panel_layout = self.chat_panel_layout(self.archived_chat_detail.as_ref(), cx);
+        if !panel_open && !panel_animating {
+            self.chat_files.hide(cx);
+        }
         let side_panel = self.render_chat_side_panel(
             self.archived_chat_detail.as_ref(),
             PanelSurface::Chat,
-            self.archived_session_key_copy.clone(),
             panel_layout,
-            panel_visibility,
-            panel_open || panel_animating,
-            panel_open && !panel_animating,
+            animated_width,
+            if panel_sheet { 1. } else { panel_visibility },
+            panel_sheet || panel_open || panel_animating,
+            panel_sheet || (panel_open && !panel_animating),
             window,
             cx,
         );
+        let dismiss_root = cx.entity();
+        let (docked_panel, sheet_overlay) = if panel_sheet {
+            (
+                None,
+                Some(side_panel::overlay_sheet(
+                    "archived-chat-panel-sheet",
+                    side_panel,
+                    panel_layout.width,
+                    sheet_progress,
+                    Rc::new(move |_, cx| {
+                        dismiss_root.update(cx, |this, cx| {
+                            this.set_chat_panel_open(false, cx);
+                            cx.notify();
+                        });
+                    }),
+                )),
+            )
+        } else {
+            (Some(side_panel), None)
+        };
         div()
             .relative()
             .track_focus(&self.chat_focus)
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _window, cx| {
+                if panel_sheet
+                    && event.keystroke.key == "escape"
+                    && !event.keystroke.modifiers.modified()
+                {
+                    cx.stop_propagation();
+                    this.set_chat_panel_open(false, cx);
+                    cx.notify();
+                }
+            }))
             .flex_1()
             .min_w(px(0.))
             .h_full()
             .flex()
             .child(self.chat_files.measure(self.settings(cx).app_zoom))
             .when(!panel_maximized, |el| el.child(chat_column))
-            .child(side_panel)
+            .children(docked_panel)
+            .children(sheet_overlay)
             .into_any_element()
     }
 
@@ -406,41 +545,98 @@ impl NativeRoot {
             .child(tab_body);
         let (surface, panel_available) = self.active_chat_panel_surface(cx);
         let local = self.remote_client.is_local();
+        let split_columns = side_panel::split_columns_for_layout(
+            Some(&layout),
+            maximized_leaf(&self.maximized_panes, &layout).is_some(),
+        );
         let panel_open = !show_start && panel_available && self.chat_panel_is_open(cx);
         if local && !panel_open && self.chat_panel_maximized {
             self.chat_panel_maximized = false;
         }
         let panel_maximized = local && panel_open && self.chat_panel_maximized;
-        let (panel_visibility, panel_animating) = if panel_maximized {
+        let panel_layout = self.chat_panel_layout(
+            local.then_some(self.active_chat_detail.as_ref()).flatten(),
+            split_columns,
+            cx,
+        );
+        let panel_sheet = panel_open && !panel_maximized && panel_layout.is_sheet();
+        let now = Instant::now();
+        let (panel_visibility, panel_animating) = if panel_maximized || panel_sheet {
             (1., false)
+        } else if panel_layout.is_sheet() {
+            self.chat_panel_visibility = SidebarVisibilityTransition::new(false);
+            (0., false)
         } else {
             self.chat_panel_visibility.animate_to(
                 if panel_open { 1. } else { 0. },
-                Instant::now(),
+                now,
                 Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
             )
         };
-        if panel_animating {
+        let (sheet_progress, sheet_animating) = if panel_sheet {
+            self.chat_sheet_anim.animate_to(
+                1.,
+                now,
+                Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
+            )
+        } else {
+            self.chat_sheet_anim = SidebarVisibilityTransition::new(false);
+            (0., false)
+        };
+        let target_width = panel_layout.width.round();
+        let width_mode = (
+            panel_layout.widened.is_some(),
+            panel_layout.widened.is_some_and(|w| w.tree),
+        );
+        let prev_mode = self.chat_panel_width_mode;
+        self.chat_panel_width_mode = Some(width_mode);
+        let mode_changed = prev_mode.is_some_and(|prev| prev != width_mode);
+        let (animated_width, width_animating) = if panel_sheet {
+            // Keep the docked width tracker at the reserved docked width (e.g.
+            // 300 px for a split auto-sheet, 0 px for a narrow sheet) so closing
+            // a sheet back to docked never starts a docked animation from the
+            // full sheet width and squeezes the terminal panes.
+            let docked = panel_layout.reserved_docked_width.round();
+            self.chat_panel_width_anim = SidebarVisibilityTransition::at(docked);
+            (target_width, false)
+        } else if std::mem::take(&mut self.chat_panel_width_snap)
+            || panel_maximized
+            || self.chat_panel_resizing
+            || !panel_open
+            || (!mode_changed && self.chat_panel_width_anim.started_at.is_none())
+        {
+            self.chat_panel_width_anim = SidebarVisibilityTransition::at(target_width);
+            (target_width, false)
+        } else {
+            self.chat_panel_width_anim.animate_to(
+                target_width,
+                now,
+                Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
+            )
+        };
+        if panel_animating || sheet_animating || width_animating {
+            let weak = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                let _ = weak.update(cx, |_, cx| cx.notify());
+            });
             window.request_animation_frame();
         }
-        self.reset_chat_panel_prompt(
-            self.active_chat_detail
-                .as_ref()
-                .map(|chat| chat.session_id.clone()),
-        );
-        let panel_layout = if local {
-            self.chat_panel_layout(self.active_chat_detail.as_ref(), cx)
-        } else {
-            (self.settings(cx).chat_panel_width, None)
-        };
+        if !panel_open && !panel_animating {
+            self.chat_files.hide(cx);
+        }
         let panel_region_style = if panel_maximized {
             gpui::StyleRefinement::default()
                 .flex_1()
                 .min_w(px(0.))
                 .h_full()
+        } else if panel_sheet {
+            gpui::StyleRefinement::default()
+                .w(rems(panel_layout.width / 16.))
+                .h_full()
+                .flex_none()
         } else {
             gpui::StyleRefinement::default()
-                .w(rems(panel_layout.0 * panel_visibility / 16.))
+                .w(rems(animated_width * panel_visibility / 16.))
                 .h_full()
                 .flex_none()
         };
@@ -451,8 +647,8 @@ impl NativeRoot {
                 root.render_chat_side_panel(
                     root.active_chat_detail.as_ref(),
                     surface,
-                    root.session_key_copy.clone(),
                     panel_layout,
+                    animated_width,
                     panel_visibility,
                     panel_open || panel_animating,
                     panel_open && !panel_animating,
@@ -462,10 +658,11 @@ impl NativeRoot {
             },
             cx,
         );
-        let widened = panel_layout.1;
-        let panel_resize = (!panel_maximized && (panel_open || panel_animating)).then(|| {
+        let widened = panel_layout.widened;
+        let docked_open = !panel_maximized && !panel_sheet && (panel_open || panel_animating);
+        let panel_resize = docked_open.then(|| {
             let zoom = self.settings(cx).app_zoom;
-            let panel_width = panel_layout.0 * panel_visibility * zoom;
+            let panel_width = animated_width * panel_visibility * zoom;
             resize_strip(
                 "chat-panel-resize",
                 ResizeAxis::Columns,
@@ -491,23 +688,60 @@ impl NativeRoot {
                 |drag: &ChatPanelResizeDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),
             )
         });
+        let sheet_dismiss_root = cx.entity();
+        let (docked_panel, sheet_overlay) = if panel_sheet {
+            (
+                None,
+                Some(side_panel::overlay_sheet(
+                    "chat-panel-sheet",
+                    side_panel,
+                    panel_layout.width,
+                    sheet_progress,
+                    Rc::new(move |window, cx| {
+                        sheet_dismiss_root.update(cx, |this, cx| {
+                            this.set_chat_panel_open(false, cx);
+                            this.focus_active_terminal(window, cx);
+                            cx.notify();
+                        });
+                    }),
+                )),
+            )
+        } else {
+            (Some(side_panel), None)
+        };
+        let reserved_spacer = (panel_sheet && panel_layout.reserved_docked_width > 0.).then(|| {
+            div()
+                .w(rems((panel_layout.reserved_docked_width + 6.) / 16.))
+                .h_full()
+                .flex_none()
+        });
 
         div()
             .relative()
             .when(grouped, |surface| surface.key_context("ChatSplit"))
             .track_focus(&self.chat_focus)
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                if panel_sheet
+                    && event.keystroke.key == "escape"
+                    && !event.keystroke.modifiers.modified()
+                {
+                    cx.stop_propagation();
+                    this.set_chat_panel_open(false, cx);
+                    this.focus_active_terminal(window, cx);
+                    cx.notify();
+                }
+            }))
             .flex_1()
             .min_w(px(0.))
             .h_full()
             .flex()
             .child(self.chat_files.measure(self.settings(cx).app_zoom))
             .when(!panel_maximized, |el| el.child(chat_column))
-            .children(
-                (!panel_maximized && (panel_open || panel_animating))
-                    .then(|| div().w(rems(6. / 16.)).h_full().flex_none()),
-            )
-            .child(side_panel)
+            .children(docked_open.then(|| div().w(rems(6. / 16.)).h_full().flex_none()))
+            .children(reserved_spacer)
+            .children(docked_panel)
             .children(panel_resize)
+            .children(sheet_overlay)
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
@@ -532,15 +766,25 @@ impl NativeRoot {
                         this.chat_panel_resizing = true;
                         cx.notify();
                     }
-                    // With a file open the drag sizes the file beside the tree.
+                    // With a file or diff open the drag sizes the viewer beside the tree/list.
                     if let Some(widened) = widened {
                         let tree = if widened.tree { widened.tree_width } else { 0. };
                         let width = app_settings::clamp_file_viewer_width(width - tree);
+                        let is_changes = side_panel::shown(
+                            surface,
+                            this.settings(cx),
+                            &this.chat_surfaces.selection,
+                        ) == Some(side_panel::PanelViewId::Changes);
                         this.update_app_settings(cx, false, |settings| {
-                            if settings.file_viewer_width == width {
+                            let target = if is_changes {
+                                &mut settings.changes_viewer_width
+                            } else {
+                                &mut settings.file_viewer_width
+                            };
+                            if *target == width {
                                 return false;
                             }
-                            settings.file_viewer_width = width;
+                            *target = width;
                             true
                         });
                         return;
