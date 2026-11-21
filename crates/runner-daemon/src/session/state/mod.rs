@@ -535,26 +535,12 @@ impl SessionModel {
     }
 
     pub fn draft_hold(&self, now: Instant) -> Option<crate::router::DeliveryReservation> {
-        self.draft_hold_capped(now, Some(OBSERVED_DRAFT_HOLD_CAP))
-    }
-
-    /// A report to a linked chat waits for a screen-observed draft for as long
-    /// as it stays (#748), unlike an inbox notice.
-    pub fn report_draft_hold(&self, now: Instant) -> Option<crate::router::DeliveryReservation> {
-        self.draft_hold_capped(now, None)
-    }
-
-    fn draft_hold_capped(
-        &self,
-        now: Instant,
-        cap: Option<Duration>,
-    ) -> Option<crate::router::DeliveryReservation> {
         use crate::router::DeliveryReservation;
         match self.native_input.or(self.observed_input) {
             Some(observed) if observed.state == InputState::Drafting => {
                 if self.native_input.is_some()
                     || self.last_local_input_at.is_some_and(|last| {
-                        cap.is_none_or(|cap| now.saturating_duration_since(last) < cap)
+                        now.saturating_duration_since(last) < OBSERVED_DRAFT_HOLD_CAP
                     })
                 {
                     return Some(DeliveryReservation::Drafting {
@@ -588,6 +574,12 @@ impl SessionModel {
             }
         }
         None
+    }
+
+    /// A report to a linked chat shares the screen-observed draft cap as a fallback when
+    /// empty-composer detection misses (#1409); native editor drafts keep holding without a cap.
+    pub fn report_draft_hold(&self, now: Instant) -> Option<crate::router::DeliveryReservation> {
+        self.draft_hold(now)
     }
 
     pub fn apply(&mut self, event: SessionEvent, now: Now) -> Effects {

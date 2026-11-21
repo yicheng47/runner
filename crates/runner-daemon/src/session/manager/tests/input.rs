@@ -299,7 +299,7 @@ impl router::SessionDeliveryListener for DeliveryEventCapture {
 }
 
 #[test]
-fn a_draft_holds_a_report_past_the_inbox_cap_until_it_is_cleared() {
+fn report_draft_hold_shares_the_observed_cap_while_native_drafts_stay_uncapped() {
     let manager =
         manager_with_runtime(crate::shell_path::LoginShellEnv::default(), inert_runtime());
     let id = "report-draft";
@@ -333,42 +333,63 @@ fn a_draft_holds_a_report_past_the_inbox_cap_until_it_is_cleared() {
         )
     };
     observe(InputState::Drafting);
-    for seconds in [599, 600, 24 * 3600] {
-        crate::session::clock::at(
-            start + Duration::from_secs(seconds),
-            1000 + seconds as i64 * 1000,
-            || {
-                assert_eq!(
-                    manager.report_readiness(id),
-                    router::DeliveryReadiness::Drafting,
-                    "{seconds}s"
-                );
-                assert_eq!(manager.reserve_report(id).unwrap(), None, "{seconds}s");
-            },
+    crate::session::clock::at(start + Duration::from_secs(599), 600_000, || {
+        assert_eq!(
+            manager.report_readiness(id),
+            router::DeliveryReadiness::Drafting,
+            "held before the 10-minute fallback cap"
         );
-    }
-    crate::session::clock::at(start + Duration::from_secs(600), 601000, || {
+        assert_eq!(manager.reserve_report(id).unwrap(), None);
+    });
+    crate::session::clock::at(start + Duration::from_secs(600), 601_000, || {
+        assert_eq!(
+            manager.report_readiness(id),
+            router::DeliveryReadiness::Ready { idle: true },
+            "fallback cap releases a stale screen-observed draft for reports"
+        );
         assert_eq!(
             manager.delivery_readiness(id),
             router::DeliveryReadiness::Ready { idle: true },
-            "an inbox notice still stops waiting at the cap"
-        );
-    });
-    observe(InputState::Idle);
-    crate::session::clock::at(start + Duration::from_secs(24 * 3600), 86_401_000, || {
-        assert_eq!(
-            manager.report_readiness(id),
-            router::DeliveryReadiness::Ready { idle: true }
+            "inbox delivery shares the same cap"
         );
         let token = manager
             .reserve_report(id)
             .unwrap()
-            .expect("an idle chat takes a report");
+            .expect("report reserves once the fallback cap expires");
         assert_eq!(
             manager.report_readiness(id),
             router::DeliveryReadiness::InFlight
         );
         manager.finish_delivery(id, token);
+    });
+
+    // Native editor drafts (e.g. pi) still hold reports past the 10-minute cap.
+    crate::session::clock::at(start + Duration::from_secs(24 * 3600), 86_401_000, || {
+        let state = manager.session_state(id).unwrap();
+        state.lock().unwrap().model.apply(
+            SessionEvent::Agent {
+                event: crate::session::state::agent::AgentEvent::EditorDraft { drafting: true },
+                live: true,
+            },
+            crate::session::clock::state_now(),
+        );
+        assert_eq!(
+            manager.report_readiness(id),
+            router::DeliveryReadiness::Drafting
+        );
+        assert_eq!(manager.reserve_report(id).unwrap(), None);
+
+        state.lock().unwrap().model.apply(
+            SessionEvent::Agent {
+                event: crate::session::state::agent::AgentEvent::EditorDraft { drafting: false },
+                live: true,
+            },
+            crate::session::clock::state_now(),
+        );
+        assert_eq!(
+            manager.report_readiness(id),
+            router::DeliveryReadiness::Ready { idle: true }
+        );
     });
 }
 

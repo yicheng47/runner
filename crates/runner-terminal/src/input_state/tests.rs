@@ -1679,6 +1679,785 @@ fn person_keys_keep_notice_ownership_until_the_composer_text_changes() {
 }
 
 #[test]
+fn claude_dim_prompt_suggestion_clears_after_blank_composer_turn() {
+    for suggestion in [
+        "\x1b[2mRun the tests\x1b[22m",
+        "\x1b[7mR\x1b[27m\x1b[2mun the tests\x1b[22m",
+    ] {
+        let start = Instant::now();
+        let mut term = new_term(60, 6);
+        feed(&mut term, "\x1b[4;1H❯\u{a0}\x1b[4;3H".as_bytes());
+        let mut tracker = InputTracker::new(start);
+        tracker.initial_observation(start);
+        tracker.observe_input(
+            &InputEvent::Key {
+                kind: InputKind::Content {
+                    text: "draft".into(),
+                },
+            },
+            start,
+            &term,
+        );
+        feed(&mut term, "\x1b[4;1H\x1b[K❯\u{a0}draft\x1b[4;8H".as_bytes());
+        assert_eq!(
+            tracker
+                .observe_output(start + Duration::from_millis(5), &term)
+                .unwrap()
+                .state,
+            InputState::Drafting
+        );
+        // Clearing the draft while Claude Code shows a dim prompt suggestion returns to Idle
+        // even though the composer started blank and never learned a prior placeholder style.
+        feed(
+            &mut term,
+            format!("\x1b[4;1H\x1b[K❯\u{a0}{suggestion}\x1b[4;3H").as_bytes(),
+        );
+        assert_eq!(
+            tracker
+                .observe_output(start + Duration::from_millis(10), &term)
+                .unwrap()
+                .state,
+            InputState::Idle,
+            "suggestion={suggestion:?}"
+        );
+    }
+}
+
+#[test]
+fn learned_placeholder_style_persists_across_turns() {
+    let start = Instant::now();
+    let mut term = new_term(60, 6);
+    feed(
+        &mut term,
+        "\x1b[4;1H› \x1b[38;5;8mAsk Codex\x1b[39m\x1b[4;3H".as_bytes(),
+    );
+    let mut tracker = InputTracker::new(start);
+    tracker.initial_observation(start);
+    tracker.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Content {
+                text: "first".into(),
+            },
+        },
+        start,
+        &term,
+    );
+    feed(&mut term, "\x1b[4;1H\x1b[K› first\x1b[4;8H".as_bytes());
+    tracker.observe_output(start + Duration::from_millis(1), &term);
+    // Turn 1 ends with a blank composer (no placeholder).
+    feed(&mut term, "\x1b[4;1H\x1b[K› \x1b[4;3H".as_bytes());
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(2), &term)
+            .unwrap()
+            .state,
+        InputState::Idle
+    );
+
+    // Turn 2 starts on the blank composer, then clears to a styled placeholder.
+    let turn2 = start + Duration::from_secs(5);
+    tracker.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Content {
+                text: "second".into(),
+            },
+        },
+        turn2,
+        &term,
+    );
+    feed(&mut term, "\x1b[4;1H\x1b[K› second\x1b[4;9H".as_bytes());
+    assert_eq!(
+        tracker
+            .observe_output(turn2 + Duration::from_millis(1), &term)
+            .unwrap()
+            .state,
+        InputState::Drafting
+    );
+    feed(
+        &mut term,
+        "\x1b[4;1H\x1b[K› \x1b[38;5;8mReview this repository\x1b[39m\x1b[4;3H".as_bytes(),
+    );
+    assert_eq!(
+        tracker
+            .observe_output(turn2 + Duration::from_millis(2), &term)
+            .unwrap()
+            .state,
+        InputState::Idle
+    );
+}
+
+#[test]
+fn nbsp_and_ascii_space_prefixes_match_across_transcript_and_live_composer() {
+    let start = Instant::now();
+    let mut term = new_term(60, 10);
+    // Blank Claude Code composer with NBSP; row_to_string trims it to "❯".
+    feed(&mut term, "\x1b[3;1H❯\u{a0}\x1b[3;3H".as_bytes());
+    let mut tracker = InputTracker::new(start);
+    tracker.initial_observation(start);
+    tracker.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Content {
+                text: "start review".into(),
+            },
+        },
+        start,
+        &term,
+    );
+    tracker.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Submit,
+        },
+        start + Duration::from_millis(5),
+        &term,
+    );
+    // Transcript row echoes with ASCII space while the cursor is parked away from the composer.
+    feed(
+        &mut term,
+        "\x1b[3;1H\x1b[K❯ start review\x1b[9;1H".as_bytes(),
+    );
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(10), &term)
+            .unwrap()
+            .state,
+        InputState::Drafting
+    );
+    // Turn ends: transcript copy stays on row 3, live composer at row 8 uses NBSP + dim suggestion.
+    feed(
+        &mut term,
+        "\x1b[8;1H\x1b[K❯\u{a0}\x1b[2mCommit these changes\x1b[22m\x1b[8;3H".as_bytes(),
+    );
+    assert_eq!(
+        tracker
+            .recheck_delivery(start + Duration::from_secs(10), &term)
+            .unwrap()
+            .state,
+        InputState::Idle
+    );
+}
+
+#[test]
+fn unframed_relocation_and_recheck_clear_hidden_draft_at_empty_composer() {
+    // Part A: an unframed composer that moves and clears to a trimmed empty prompt ("❯")
+    // relocates and transitions to Idle.
+    let start = Instant::now();
+    let mut term = new_term(60, 10);
+    feed(&mut term, "\x1b[3;1H❯\u{a0}\x1b[3;3H".as_bytes());
+    let mut tracker = InputTracker::new(start);
+    tracker.initial_observation(start);
+    tracker.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Content {
+                text: "draft".into(),
+            },
+        },
+        start,
+        &term,
+    );
+    feed(&mut term, "\x1b[3;1H\x1b[K❯\u{a0}draft\x1b[3;8H".as_bytes());
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(1), &term)
+            .unwrap()
+            .state,
+        InputState::Drafting
+    );
+    feed(
+        &mut term,
+        "\x1b[3;1H\x1b[K⏺ Done.\x1b[7;1H\x1b[K❯\u{a0}\x1b[7;3H".as_bytes(),
+    );
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(2), &term)
+            .unwrap()
+            .state,
+        InputState::Idle
+    );
+
+    // Part B: even when a composer was previously hidden (visible=false), recheck_delivery clears
+    // it once the cursor rests on an empty prompt, and keeps it held while the cursor is away.
+    let mut hidden_term = new_term(60, 10);
+    feed(&mut hidden_term, "\x1b[3;1H❯\u{a0}\x1b[3;3H".as_bytes());
+    let mut hidden = InputTracker::new(start);
+    hidden.initial_observation(start);
+    hidden.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Content {
+                text: "draft".into(),
+            },
+        },
+        start,
+        &hidden_term,
+    );
+    feed(
+        &mut hidden_term,
+        "\x1b[3;1H\x1b[K❯\u{a0}draft\x1b[3;8H".as_bytes(),
+    );
+    hidden.observe_output(start + Duration::from_millis(1), &hidden_term);
+    feed(&mut hidden_term, "\x1b[3;1H\x1b[Kmenu\x1b[3;5H".as_bytes());
+    let hidden_obs = hidden
+        .observe_output(start + Duration::from_millis(2), &hidden_term)
+        .unwrap();
+    assert_eq!(hidden_obs.state, InputState::Drafting);
+    assert!(!hidden_obs.composer_visible);
+    // Recheck while still on the menu keeps Drafting.
+    assert!(hidden
+        .recheck_delivery(start + Duration::from_secs(5), &hidden_term)
+        .is_none());
+    assert_eq!(hidden.current_reported_state().state, InputState::Drafting);
+    // Once the empty composer returns under the cursor, recheck_delivery clears it even without
+    // an intervening observe_output restoring composer.visible.
+    feed(
+        &mut hidden_term,
+        "\x1b[7;1H\x1b[K❯\u{a0}\x1b[7;3H".as_bytes(),
+    );
+    assert_eq!(
+        hidden
+            .recheck_delivery(start + Duration::from_secs(6), &hidden_term)
+            .unwrap()
+            .state,
+        InputState::Idle
+    );
+}
+
+#[test]
+fn inverse_cursor_on_placeholder_learns_underlying_style_and_keeps_edited_drafts_held() {
+    let start = Instant::now();
+    let mut term = new_term(60, 6);
+    // Initial placeholder has a fake inverse cursor on cell 0 and grey style on cell 1+.
+    feed(
+        &mut term,
+        "\x1b[4;1H› \x1b[7mA\x1b[27m\x1b[38;5;8msk Codex\x1b[39m\x1b[4;3H".as_bytes(),
+    );
+    let mut tracker = InputTracker::new(start);
+    tracker.initial_observation(start);
+    tracker.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Content { text: "abc".into() },
+        },
+        start,
+        &term,
+    );
+    feed(&mut term, "\x1b[4;1H\x1b[K› abc\x1b[4;6H".as_bytes());
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(1), &term)
+            .unwrap()
+            .state,
+        InputState::Drafting
+    );
+
+    // Editing a real draft with a fake inverse cursor on cell 0 must stay Drafting, both for
+    // multi-char and single-char drafts.
+    feed(
+        &mut term,
+        "\x1b[4;1H\x1b[K› \x1b[7mb\x1b[27mc\x1b[4;3H".as_bytes(),
+    );
+    assert!(tracker
+        .observe_output(start + Duration::from_millis(2), &term)
+        .is_none());
+    assert_eq!(tracker.current_reported_state().state, InputState::Drafting);
+
+    feed(
+        &mut term,
+        "\x1b[4;1H\x1b[K› \x1b[7mb\x1b[27m\x1b[4;3H".as_bytes(),
+    );
+    assert!(tracker
+        .observe_output(start + Duration::from_millis(3), &term)
+        .is_none());
+    assert_eq!(tracker.current_reported_state().state, InputState::Drafting);
+
+    // A rotated placeholder without a fake inverse cursor still matches the learned style.
+    feed(
+        &mut term,
+        "\x1b[4;1H\x1b[K› \x1b[38;5;8mReview this repository\x1b[39m\x1b[4;3H".as_bytes(),
+    );
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(4), &term)
+            .unwrap()
+            .state,
+        InputState::Idle
+    );
+}
+
+#[test]
+fn dim_draft_theme_and_inline_dim_ghost_completion_stay_drafting() {
+    // A theme where typed text itself is dim does not treat edited dim text as a placeholder.
+    let start = Instant::now();
+    let mut term = new_term(60, 6);
+    feed(&mut term, "\x1b[4;1H❯\u{a0}\x1b[4;3H".as_bytes());
+    let mut tracker = InputTracker::new(start);
+    tracker.initial_observation(start);
+    tracker.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Content {
+                text: "draft".into(),
+            },
+        },
+        start,
+        &term,
+    );
+    feed(
+        &mut term,
+        "\x1b[4;1H\x1b[K❯\u{a0}\x1b[2mdraft\x1b[22m\x1b[4;8H".as_bytes(),
+    );
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(1), &term)
+            .unwrap()
+            .state,
+        InputState::Drafting
+    );
+    feed(
+        &mut term,
+        "\x1b[4;1H\x1b[K❯\u{a0}\x1b[2mdraf\x1b[22m\x1b[4;7H".as_bytes(),
+    );
+    assert!(tracker
+        .observe_output(start + Duration::from_millis(2), &term)
+        .is_none());
+    assert_eq!(tracker.current_reported_state().state, InputState::Drafting);
+
+    // A normal draft cell followed by a dim inline ghost completion stays Drafting.
+    let mut ghost_term = new_term(60, 6);
+    feed(&mut ghost_term, "\x1b[4;1H❯\u{a0}\x1b[4;3H".as_bytes());
+    let mut ghost = InputTracker::new(start);
+    ghost.initial_observation(start);
+    ghost.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Content { text: "hi".into() },
+        },
+        start,
+        &ghost_term,
+    );
+    feed(
+        &mut ghost_term,
+        "\x1b[4;1H\x1b[K❯\u{a0}hi\x1b[4;5H".as_bytes(),
+    );
+    assert_eq!(
+        ghost
+            .observe_output(start + Duration::from_millis(1), &ghost_term)
+            .unwrap()
+            .state,
+        InputState::Drafting
+    );
+    feed(
+        &mut ghost_term,
+        "\x1b[4;1H\x1b[K❯\u{a0}h\x1b[2mello world\x1b[22m\x1b[4;4H".as_bytes(),
+    );
+    assert!(ghost
+        .observe_output(start + Duration::from_millis(2), &ghost_term)
+        .is_none());
+    assert_eq!(ghost.current_reported_state().state, InputState::Drafting);
+}
+
+#[test]
+fn nonempty_prefix_requires_content_and_normalizes_trailing_whitespace() {
+    assert!(row_matches_nonempty_prefix("❯\u{a0}hello", "❯ "));
+    assert!(row_matches_nonempty_prefix("❯ hello", "❯\u{a0}"));
+    assert!(!row_matches_nonempty_prefix("❯", "❯ "));
+    assert!(!row_matches_nonempty_prefix("❯ ", "❯ "));
+    assert!(!row_matches_nonempty_prefix("❯\u{a0}", "❯ "));
+    assert!(!row_matches_nonempty_prefix("❯   ", "❯\u{a0}"));
+    assert!(row_matches_prefix("❯", "❯\u{a0}"));
+    assert!(row_matches_prefix("❯\u{a0}", "❯ "));
+}
+
+#[test]
+fn unframed_dim_status_or_transcript_at_former_row_keeps_relocated_draft_held() {
+    for (case, former_row, cursor_after) in [
+        (
+            "dim non-prompt status, cursor on draft",
+            "\x1b[2mstatus moved\x1b[22m",
+            "\x1b[6;8H",
+        ),
+        (
+            "dim non-prompt status, cursor parked away",
+            "\x1b[2mstatus moved\x1b[22m",
+            "\x1b[9;1H",
+        ),
+        (
+            "dim transcript prompt, cursor on draft",
+            "❯ \x1b[2mold transcript prompt\x1b[22m",
+            "\x1b[6;8H",
+        ),
+        (
+            "dim transcript prompt, cursor on continuation",
+            "❯ \x1b[2mold transcript prompt\x1b[22m",
+            "\x1b[7;5H",
+        ),
+    ] {
+        let start = Instant::now();
+        let mut term = new_term(60, 10);
+        feed(&mut term, "\x1b[3;1H❯ \x1b[3;3H".as_bytes());
+        let mut tracker = InputTracker::new(start);
+        tracker.initial_observation(start);
+        tracker.observe_input(
+            &InputEvent::Key {
+                kind: InputKind::Content {
+                    text: "draft".into(),
+                },
+            },
+            start,
+            &term,
+        );
+        feed(&mut term, "\x1b[3;1H\x1b[K❯ draft\x1b[3;8H".as_bytes());
+        assert_eq!(
+            tracker
+                .observe_output(start + Duration::from_millis(1), &term)
+                .unwrap()
+                .state,
+            InputState::Drafting,
+            "{case}"
+        );
+
+        feed(
+            &mut term,
+            format!("\x1b[3;1H\x1b[K{former_row}\x1b[6;1H\x1b[K❯ draft{cursor_after}").as_bytes(),
+        );
+        assert!(
+            tracker
+                .observe_output(start + Duration::from_millis(2), &term)
+                .is_none(),
+            "{case}: relocated draft must not drop to Idle"
+        );
+        assert_eq!(
+            tracker.current_reported_state().state,
+            InputState::Drafting,
+            "{case}"
+        );
+
+        // Clearing the relocated composer under the cursor releases to Idle.
+        feed(
+            &mut term,
+            "\x1b[6;1H\x1b[K❯ \x1b[2mRun tests\x1b[22m\x1b[6;3H".as_bytes(),
+        );
+        if tracker
+            .observe_output(start + Duration::from_millis(3), &term)
+            .is_none()
+        {
+            tracker.recheck_delivery(start + Duration::from_secs(5), &term);
+        }
+        assert_eq!(
+            tracker.current_reported_state().state,
+            InputState::Idle,
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn current_draft_style_overrides_cached_placeholder_style_across_turns() {
+    let start = Instant::now();
+    let mut term = new_term(60, 6);
+    // Turn 1 learns DIM from a dim suggestion while normal text is non-dim.
+    feed(
+        &mut term,
+        "\x1b[4;1H❯\u{a0}\x1b[2mTry something\x1b[22m\x1b[4;3H".as_bytes(),
+    );
+    let mut tracker = InputTracker::new(start);
+    tracker.initial_observation(start);
+    tracker.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Content { text: "one".into() },
+        },
+        start,
+        &term,
+    );
+    feed(&mut term, "\x1b[4;1H\x1b[K❯\u{a0}one\x1b[4;6H".as_bytes());
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(1), &term)
+            .unwrap()
+            .state,
+        InputState::Drafting
+    );
+    feed(&mut term, "\x1b[4;1H\x1b[K❯\u{a0}\x1b[4;3H".as_bytes());
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(2), &term)
+            .unwrap()
+            .state,
+        InputState::Idle
+    );
+
+    // Turn 2 starts blank, echoes a DIM-styled draft "two", then extends it to "twos".
+    let turn2 = start + Duration::from_secs(5);
+    tracker.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Content { text: "two".into() },
+        },
+        turn2,
+        &term,
+    );
+    feed(
+        &mut term,
+        "\x1b[4;1H\x1b[K❯\u{a0}\x1b[2mtwo\x1b[22m\x1b[4;6H".as_bytes(),
+    );
+    assert_eq!(
+        tracker
+            .observe_output(turn2 + Duration::from_millis(1), &term)
+            .unwrap()
+            .state,
+        InputState::Drafting
+    );
+    tracker.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Content { text: "s".into() },
+        },
+        turn2 + Duration::from_millis(2),
+        &term,
+    );
+    feed(
+        &mut term,
+        "\x1b[4;1H\x1b[K❯\u{a0}\x1b[2mtwos\x1b[22m\x1b[4;7H".as_bytes(),
+    );
+    assert!(tracker
+        .observe_output(turn2 + Duration::from_millis(3), &term)
+        .is_none());
+    assert_eq!(tracker.current_reported_state().state, InputState::Drafting);
+
+    // Clearing to blank still returns to Idle.
+    feed(&mut term, "\x1b[4;1H\x1b[K❯\u{a0}\x1b[4;3H".as_bytes());
+    assert_eq!(
+        tracker
+            .observe_output(turn2 + Duration::from_millis(4), &term)
+            .unwrap()
+            .state,
+        InputState::Idle
+    );
+}
+
+#[test]
+fn two_chunk_clear_to_dim_suggestion_releases_when_cursor_returns_and_on_recheck() {
+    for release_via_recheck in [false, true] {
+        let start = Instant::now();
+        let mut term = new_term(60, 8);
+        feed(&mut term, "\x1b[4;1H❯\u{a0}\x1b[4;3H".as_bytes());
+        let mut tracker = InputTracker::new(start);
+        tracker.initial_observation(start);
+        tracker.observe_input(
+            &InputEvent::Key {
+                kind: InputKind::Content {
+                    text: "draft".into(),
+                },
+            },
+            start,
+            &term,
+        );
+        feed(&mut term, "\x1b[4;1H\x1b[K❯\u{a0}draft\x1b[4;8H".as_bytes());
+        assert_eq!(
+            tracker
+                .observe_output(start + Duration::from_millis(1), &term)
+                .unwrap()
+                .state,
+            InputState::Drafting,
+            "release_via_recheck={release_via_recheck}"
+        );
+
+        // Chunk 1: paints dim suggestion on the editor row and a footer elsewhere, leaving the
+        // cursor on the footer. Style-only clear defers without overwriting confirmed draft text.
+        feed(
+            &mut term,
+            "\x1b[4;1H\x1b[K❯\u{a0}\x1b[2mRun tests\x1b[22m\x1b[6;1H\x1b[Kstatus footer".as_bytes(),
+        );
+        assert!(tracker
+            .observe_output(start + Duration::from_millis(2), &term)
+            .is_none());
+        assert_eq!(
+            tracker.current_reported_state().state,
+            InputState::Drafting,
+            "release_via_recheck={release_via_recheck}"
+        );
+
+        // Chunk 2: only moves the cursor back to the start of the dim suggestion.
+        feed(&mut term, b"\x1b[4;3H");
+        if release_via_recheck {
+            assert_eq!(
+                tracker
+                    .recheck_delivery(start + Duration::from_secs(30), &term)
+                    .unwrap()
+                    .state,
+                InputState::Idle
+            );
+        } else {
+            assert_eq!(
+                tracker
+                    .observe_output(start + Duration::from_millis(3), &term)
+                    .unwrap()
+                    .state,
+                InputState::Idle
+            );
+            assert!(tracker
+                .recheck_delivery(start + Duration::from_secs(30), &term)
+                .is_none());
+        }
+        assert_eq!(tracker.current_reported_state().state, InputState::Idle);
+    }
+}
+
+#[test]
+fn transcript_repaint_with_parked_cursor_keeps_ignored_return_draft_held() {
+    let start = Instant::now();
+    let mut term = new_term(60, 8);
+    feed(
+        &mut term,
+        "\x1b[2;1H❯ older prompt\x1b[6;1H❯ \x1b[6;3H".as_bytes(),
+    );
+    let mut tracker = InputTracker::new(start);
+    tracker.initial_observation(start);
+    tracker.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Content {
+                text: "draft".into(),
+            },
+        },
+        start,
+        &term,
+    );
+    feed(&mut term, "\x1b[6;1H\x1b[K❯ draft\x1b[6;8H".as_bytes());
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(1), &term)
+            .unwrap()
+            .state,
+        InputState::Drafting
+    );
+    assert_eq!(
+        tracker
+            .observe_input(
+                &InputEvent::Key {
+                    kind: InputKind::Submit,
+                },
+                start + Duration::from_millis(2),
+                &term,
+            )
+            .unwrap()
+            .state,
+        InputState::Submitted
+    );
+    // Ignored Return leaves row 5 unchanged ("❯ draft").
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(3), &term)
+            .unwrap()
+            .state,
+        InputState::Drafting
+    );
+
+    // A chunk repaints transcript row 1 and leaves the cursor at the end of "older prompt"
+    // while row 5 still holds the intact draft.
+    feed(&mut term, "\x1b[2;1H\x1b[K❯ older prompt".as_bytes());
+    assert!(tracker
+        .observe_output(start + Duration::from_millis(4), &term)
+        .is_none());
+    assert_eq!(tracker.current_reported_state().state, InputState::Drafting);
+
+    // Restoring the cursor to the intact draft keeps Drafting across observe_output and recheck.
+    feed(&mut term, b"\x1b[6;8H");
+    assert!(tracker
+        .observe_output(start + Duration::from_millis(5), &term)
+        .is_none());
+    assert!(tracker
+        .recheck_delivery(start + Duration::from_secs(30), &term)
+        .is_none());
+    assert_eq!(tracker.current_reported_state().state, InputState::Drafting);
+
+    // Clearing the draft on row 5 still releases to Idle.
+    feed(&mut term, "\x1b[6;1H\x1b[K❯ \x1b[6;3H".as_bytes());
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_secs(31), &term)
+            .unwrap()
+            .state,
+        InputState::Idle
+    );
+}
+
+#[test]
+fn recheck_diagnostic_dedup_survives_visibility_flicker_during_resize() {
+    use alacritty_terminal::term::test::TermSize;
+
+    let start = Instant::now();
+    let mut term = new_term(76, 10);
+    feed(&mut term, "\x1b[6;1H❯\u{a0}\x1b[6;3H".as_bytes());
+    let mut tracker = InputTracker::new(start);
+    tracker.initial_observation(start);
+    tracker.observe_input(
+        &InputEvent::Key {
+            kind: InputKind::Content {
+                text: "draft".into(),
+            },
+        },
+        start,
+        &term,
+    );
+    feed(&mut term, "\x1b[6;1H\x1b[K❯\u{a0}draft\x1b[6;8H".as_bytes());
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_millis(1), &term)
+            .unwrap()
+            .state,
+        InputState::Drafting
+    );
+
+    // First recheck emits a diagnostic.
+    let first = tracker
+        .record_recheck_draft_hold(start + Duration::from_secs(10), &term)
+        .expect("initial recheck diagnostic");
+    assert!(first.visible);
+    assert_eq!(first.tracked_row, Some(5));
+    assert_eq!(first.cursor, Some((5, 7)));
+
+    // Simulate a pane resize that briefly clears the composer row (visible: true -> false -> true)
+    // within the same continuous Drafting hold.
+    term.resize(TermSize::new(69, 10));
+    feed(&mut term, b"\x1b[6;1H\x1b[K\x1b[1;1H");
+    let hidden = tracker
+        .observe_output(start + Duration::from_secs(20), &term)
+        .unwrap();
+    assert_eq!(hidden.state, InputState::Drafting);
+    assert!(!hidden.composer_visible);
+    feed(&mut term, "\x1b[6;1H\x1b[K❯\u{a0}draft\x1b[6;8H".as_bytes());
+    let restored = tracker
+        .observe_output(
+            start + Duration::from_secs(20) + Duration::from_millis(10),
+            &term,
+        )
+        .unwrap();
+    assert_eq!(restored.state, InputState::Drafting);
+    assert!(restored.composer_visible);
+
+    // Unchanged diagnostic fields after the resize redraw must not log again.
+    assert_eq!(
+        tracker.record_recheck_draft_hold(start + Duration::from_secs(40), &term),
+        None
+    );
+
+    // A genuine field change (e.g. cursor moves) still logs once.
+    feed(&mut term, b"\x1b[6;4H");
+    let moved = tracker
+        .record_recheck_draft_hold(start + Duration::from_secs(41), &term)
+        .expect("cursor change logs a new diagnostic");
+    assert_eq!(moved.cursor, Some((5, 3)));
+    assert_eq!(
+        tracker.record_recheck_draft_hold(start + Duration::from_secs(71), &term),
+        None
+    );
+
+    // Leaving Drafting clears the cache so a later hold logs again.
+    feed(&mut term, "\x1b[6;1H\x1b[K❯\u{a0}\x1b[6;3H".as_bytes());
+    assert_eq!(
+        tracker
+            .observe_output(start + Duration::from_secs(72), &term)
+            .unwrap()
+            .state,
+        InputState::Idle
+    );
+    assert_eq!(tracker.last_recheck_diag, None);
+}
+
+#[test]
 #[ignore = "manual M6.1 handoff measurement"]
 fn measure_tracker_cost_on_a_200_by_60_grid() {
     const ITERATIONS: u32 = 20_000;

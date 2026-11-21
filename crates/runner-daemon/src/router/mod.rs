@@ -71,7 +71,8 @@ pub trait StdinInjector: Send + Sync + 'static {
         listener: Weak<dyn SessionDeliveryListener>,
     );
 
-    /// Readiness for a report to a linked chat: idle only, and a draft holds it without a cap.
+    /// Readiness for a report to a linked chat: idle only, and a screen-observed draft shares the
+    /// ten-minute fallback cap while native editor drafts stay uncapped (#1409).
     fn report_readiness(&self, session_id: &str) -> DeliveryReadiness;
 
     /// The input gate for a report, or `None` unless the session is idle and free.

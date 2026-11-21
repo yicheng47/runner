@@ -14,7 +14,7 @@ use runner_core::protocol::session::SessionRow;
 use runner_core::protocol::MissionPhase;
 
 use crate::model::{Mission, MissionStatus, Runtime, SessionStatus};
-use crate::router::report::{Line, ReportDispatcher, ReportKind, ReportSource};
+use crate::router::report::{DropReason, Line, ReportDispatcher, ReportKind, ReportSource};
 use crate::router::{SessionDeliveryEvent, SessionDeliveryListener};
 use crate::{repo, AppCore};
 
@@ -643,29 +643,36 @@ impl ReportSource for LineSource<'_> {
         let Ok(conn) = self.core.db.get() else {
             return Line::Wait;
         };
-        let Ok(Some(mission)) = repo::mission::get(&conn, mission) else {
-            return Line::Drop;
+        let mission = match repo::mission::get(&conn, mission) {
+            Ok(Some(mission)) => mission,
+            Ok(None) => return Line::Drop(DropReason::MissionMissing),
+            Err(_) => return Line::Wait,
         };
+        if mission.archived_at.is_some() {
+            return Line::Drop(DropReason::MissionArchived);
+        }
         let linked = mission
             .linked_chat
             .as_ref()
             .filter(|linked| linked.session_id == chat && linked.reports && !linked.archived);
-        if mission.archived_at.is_some() || linked.is_none() {
-            return Line::Drop;
+        if linked.is_none() {
+            return Line::Drop(DropReason::Unlinked);
         }
         let Some(phase) = self.phases.get(&mission.id).copied() else {
             return Line::Wait;
         };
-        line(&mission, phase, kind).map_or(Line::Drop, Line::Send)
+        line(&mission, phase, kind).map_or(Line::Drop(DropReason::StateChanged(phase)), Line::Send)
     }
 
     fn chat_open(&self, chat: &str) -> bool {
-        self.core.db.get().ok().is_some_and(|conn| {
-            repo::session::get_direct(&conn, chat)
-                .ok()
-                .flatten()
-                .is_some_and(|chat| chat.row.archived_at.is_none())
-        })
+        let Ok(conn) = self.core.db.get() else {
+            return true;
+        };
+        match repo::session::get_direct(&conn, chat) {
+            Ok(Some(chat)) => chat.row.archived_at.is_none(),
+            Ok(None) => false,
+            Err(_) => true,
+        }
     }
 }
 

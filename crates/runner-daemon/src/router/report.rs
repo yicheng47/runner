@@ -27,12 +27,32 @@ pub(crate) enum ReportKind {
     Crashed,
 }
 
+/// Why a queued report no longer applies when delivery is ready.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DropReason {
+    MissionMissing,
+    MissionArchived,
+    Unlinked,
+    StateChanged(runner_core::protocol::MissionPhase),
+}
+
+impl std::fmt::Display for DropReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissionMissing => f.write_str("mission missing"),
+            Self::MissionArchived => f.write_str("mission archived"),
+            Self::Unlinked => f.write_str("unlinked"),
+            Self::StateChanged(phase) => write!(f, "state changed ({phase:?})"),
+        }
+    }
+}
+
 /// A report's line, read when it is sent.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Line {
     Send(String),
     /// The report no longer applies.
-    Drop,
+    Drop(DropReason),
     /// The mission's state is not known yet.
     Wait,
 }
@@ -391,7 +411,12 @@ impl ReportDispatcher {
             }
             let line = match source.line(chat_id, &pending.mission, pending.kind) {
                 Line::Send(line) => line,
-                Line::Drop => {
+                Line::Drop(reason) => {
+                    log::info!(
+                        "report dropped session={chat_id} mission={} kind={:?} reason={reason}",
+                        pending.mission,
+                        pending.kind
+                    );
                     chat.queue.remove(0);
                     continue;
                 }
