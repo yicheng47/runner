@@ -2102,10 +2102,7 @@ fn location_strings_cover_every_sidebar_worktree_and_edge_case() {
     assert_eq!(linked_loc.projects_line.as_deref(), Some("feat/887"));
     assert_eq!(linked_loc.active_line, "Runner › feat/887");
     assert_eq!(linked_loc.kind, LocationKind::Branch);
-    assert_eq!(
-        linked_loc.tooltip.as_deref(),
-        Some("feat/887\n~/repos/runner/.worktrees/feat-887")
-    );
+    assert_eq!(linked_loc.tooltip.as_deref(), Some("feat/887"));
 
     // Outside worktree (e.g. Codex) looks identical to Runner worktree.
     let outside_wt = WorktreeCheckout::Git {
@@ -2123,6 +2120,7 @@ fn location_strings_cover_every_sidebar_worktree_and_edge_case() {
     assert_eq!(outside_loc.projects_line.as_deref(), Some("fix/outside"));
     assert_eq!(outside_loc.active_line, "Runner › fix/outside");
     assert_eq!(outside_loc.kind, LocationKind::Branch);
+    assert_eq!(outside_loc.tooltip.as_deref(), Some("fix/outside"));
 
     // Detached HEAD shows short commit with commit icon.
     let detached_wt = WorktreeCheckout::Git {
@@ -2140,6 +2138,7 @@ fn location_strings_cover_every_sidebar_worktree_and_edge_case() {
     assert_eq!(detached_loc.projects_line.as_deref(), Some("c0ffee9"));
     assert_eq!(detached_loc.active_line, "Runner › c0ffee9");
     assert_eq!(detached_loc.kind, LocationKind::DetachedCommit);
+    assert_eq!(detached_loc.tooltip.as_deref(), Some("c0ffee9"));
 
     // Mixed checkouts across split panes -> "2 checkouts" + per-pane branch tooltip.
     let mixed = resolve_row_location(
@@ -2187,6 +2186,7 @@ fn location_strings_cover_every_sidebar_worktree_and_edge_case() {
     );
     assert_eq!(shared_split.projects_line.as_deref(), Some("feat/887"));
     assert_eq!(shared_split.kind, LocationKind::Branch);
+    assert_eq!(shared_split.tooltip.as_deref(), Some("feat/887"));
 
     // Missing worktree: surviving branch and gone/ambiguous fallback to folder name.
     let missing_surviving = WorktreeCheckout::Git {
@@ -2210,6 +2210,10 @@ fn location_strings_cover_every_sidebar_worktree_and_edge_case() {
     );
     assert_eq!(missing_loc.active_line, "Runner › missing · feat/missing");
     assert_eq!(missing_loc.kind, LocationKind::MissingWorktree);
+    assert_eq!(
+        missing_loc.tooltip.as_deref(),
+        Some("missing · feat/missing")
+    );
 
     let missing_gone = WorktreeCheckout::Git {
         top: "/home/j/repos/runner/.worktrees/feat-gone".into(),
@@ -2231,6 +2235,7 @@ fn location_strings_cover_every_sidebar_worktree_and_edge_case() {
         Some("missing · feat-gone")
     );
     assert_eq!(gone_loc.kind, LocationKind::MissingWorktree);
+    assert_eq!(gone_loc.tooltip.as_deref(), Some("missing · feat-gone"));
 
     // Unfiled rows (no project) compact home cleanly.
     assert_eq!(
@@ -2249,12 +2254,14 @@ fn location_strings_cover_every_sidebar_worktree_and_edge_case() {
     );
     assert_eq!(unfiled_wt.projects_line.as_deref(), Some("feat/887"));
     assert_eq!(unfiled_wt.active_line, "~/repos/runner › feat/887");
+    assert_eq!(unfiled_wt.tooltip.as_deref(), Some("feat/887"));
 
     // Before git answers and remote offline both fall back cleanly without a placeholder.
     let before_git = single(None, "/home/j/repos/runner/.worktrees/feat-887");
     assert_eq!(before_git.projects_line, None);
     assert_eq!(before_git.active_line, "Runner");
     assert_eq!(before_git.kind, LocationKind::Folder);
+    assert_eq!(before_git.tooltip, None);
 
     let remote_online = resolve_row_location(
         Some(&project),
@@ -2269,6 +2276,7 @@ fn location_strings_cover_every_sidebar_worktree_and_edge_case() {
     assert_eq!(remote_online.projects_line.as_deref(), Some("feat/887"));
     assert_eq!(remote_online.active_line, "Runner › feat/887");
     assert_eq!(remote_online.kind, LocationKind::Branch);
+    assert_eq!(remote_online.tooltip.as_deref(), Some("feat/887"));
 
     let remote_offline = resolve_row_location(
         Some(&project),
@@ -2283,6 +2291,7 @@ fn location_strings_cover_every_sidebar_worktree_and_edge_case() {
     assert_eq!(remote_offline.projects_line, None);
     assert_eq!(remote_offline.active_line, "Runner");
     assert_eq!(remote_offline.kind, LocationKind::Folder);
+    assert_eq!(remote_offline.tooltip, None);
 
     let win_main = PathBuf::from(r"C:\Users\dev\repo");
     let win_wt_dir = PathBuf::from(r"C:\Users\dev\repo\.worktrees\feat-win");
@@ -2309,6 +2318,7 @@ fn location_strings_cover_every_sidebar_worktree_and_edge_case() {
     );
     assert_eq!(win_loc.projects_line.as_deref(), Some("feat/win"));
     assert_eq!(win_loc.active_line, "Runner › feat/win");
+    assert_eq!(win_loc.tooltip.as_deref(), Some("feat/win"));
 
     let win_unfiled = resolve_row_location(
         None,
@@ -2322,6 +2332,7 @@ fn location_strings_cover_every_sidebar_worktree_and_edge_case() {
     );
     assert_eq!(win_unfiled.projects_line.as_deref(), Some("feat/win"));
     assert_eq!(win_unfiled.active_line, r"C:\Users\dev\repo › feat/win");
+    assert_eq!(win_unfiled.tooltip.as_deref(), Some("feat/win"));
 
     let win_missing = WorktreeCheckout::Git {
         top: win_wt_dir,
@@ -2352,6 +2363,10 @@ fn location_strings_cover_every_sidebar_worktree_and_edge_case() {
     assert_eq!(
         win_missing_loc.active_missing,
         Some(("Runner".into(), "feat-win".into()))
+    );
+    assert_eq!(
+        win_missing_loc.tooltip.as_deref(),
+        Some("missing · feat-win")
     );
 }
 
