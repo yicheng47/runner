@@ -74,7 +74,7 @@ runner mission archive <mission-id>
 
 如果回答需要附带选项无法表达的条件，请添加 `--note <text>` 或 `--note-file <path>`（`-` 表示从标准输入读取）。提问的成员会在同一条收件箱消息中收到选项和备注。空白备注会被拒绝。备注只发送给提问的成员：应用的任务消息流只显示所选选项。
 
-在任务内，成员可以使用 `runner msg post --to reviewer "Ready for review"` 和 `runner msg read`，无需任务 ID。任务外的写操作需要 `--mission`。外部调用者未使用 `--as` 时以操作者身份发言；不要用 `--as` 冒充其他成员。
+在任务内，成员可以使用 `runner msg post --to reviewer "Ready for review"` 和 `runner msg read`，无需任务 ID。在任务内，`msg post`、`signal` 和 `ask` 只作用于调用者所在的任务；传入其他任务的 `--mission` 会被拒绝。任务外的写操作需要 `--mission`。外部调用者未使用 `--as` 时以操作者身份发言；不要用 `--as` 冒充其他成员。
 
 Runner 向每个成员推送收件箱通知。等待队友且没有独立工作时，请结束当前轮次。不要启动消息流监控、轮询或睡眠循环来等待消息。团队协作通过后续轮次迭代。有限诊断检查、独立工作，以及为已授权 PR 等待 CI 仍可进行。
 

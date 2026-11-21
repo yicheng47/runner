@@ -86,6 +86,35 @@ fn mission_read_cursor_at(
     serde_json::from_value(response.value).ok().flatten()
 }
 
+pub fn mission_title(mission_id: &str) -> Option<String> {
+    mission_title_at(&endpoint()?, mission_id)
+}
+
+fn mission_title_at(endpoint: &IpcEndpoint, mission_id: &str) -> Option<String> {
+    let transport = SocketTransport::connect_with_timeout(
+        endpoint,
+        wire::Hello {
+            exe_sha256: String::new(),
+            client: "cli".into(),
+        },
+        Duration::from_secs(1),
+    )
+    .ok()?;
+    let response = call_daemon(
+        &transport.client(),
+        "mission_get",
+        json!({"id": mission_id}),
+    )
+    .ok()?;
+    response
+        .value
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .map(str::to_owned)
+}
+
 pub struct SocketClient {
     daemon: DaemonClient,
     transport: std::sync::Arc<SocketTransport>,
@@ -600,6 +629,80 @@ mod cursor_tests {
             result.value,
             json!({"start_offset":123,"ack_id":"ack","ack_offset":456})
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn title_query_reads_existing_socket_and_falls_back_on_missing_blank_or_error() {
+        use runner_core::protocol::{Mission, MissionStatus};
+        use wire::Frame;
+
+        let dir = tempfile::tempdir().unwrap();
+        let missing = IpcEndpoint(dir.path().join("missing.sock"));
+        assert_eq!(mission_title_at(&missing, "m"), None);
+        assert!(!missing.0.exists());
+
+        let mission = |title: &str| Mission {
+            id: "m".into(),
+            crew_id: None,
+            project_id: None,
+            title: title.into(),
+            status: MissionStatus::Running,
+            goal_override: None,
+            cwd: None,
+            started_at: chrono::Utc::now(),
+            stopped_at: None,
+            pinned_at: None,
+            archived_at: None,
+            linked_chat: None,
+        };
+
+        for (index, (reply, expected)) in [
+            (Ok(mission("  Fix login  ")), Some("Fix login")),
+            (Ok(mission("   ")), None),
+            (Err(ProtocolError::msg("mission does not exist")), None),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let endpoint = IpcEndpoint(dir.path().join(format!("title-{index}.sock")));
+            let listener = std::os::unix::net::UnixListener::bind(&endpoint.0).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let hello: wire::Hello = Frame::read(&mut stream).unwrap().decode().unwrap();
+                assert!(hello.exe_sha256.is_empty());
+                Frame::json(
+                    wire::WELCOME,
+                    &wire::Welcome {
+                        exe_sha256: "existing".into(),
+                        pid: 1,
+                        started_at: "now".into(),
+                        app_clients: 0,
+                    },
+                )
+                .unwrap()
+                .write(&mut stream)
+                .unwrap();
+                let call: wire::Call = Frame::read(&mut stream).unwrap().decode().unwrap();
+                assert!(matches!(call.request, Request::mission_get { id } if id == "m"));
+                Frame::json(
+                    wire::RESPONSE,
+                    &wire::Reply {
+                        id: call.id,
+                        response: Response::mission_get(reply),
+                    },
+                )
+                .unwrap()
+                .write(&mut stream)
+                .unwrap();
+            });
+            assert_eq!(
+                mission_title_at(&endpoint, "m").as_deref(),
+                expected,
+                "case {index}"
+            );
+            server.join().unwrap();
+        }
     }
 }
 

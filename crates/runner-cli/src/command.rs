@@ -68,10 +68,12 @@ pub fn run(cli: Cli) -> i32 {
         return code;
     }
     let session = env::session_id();
-    if let Err(error) = validate_remote(&cli, &context).and_then(|()| match &cli.command {
-        Command::Mission { command } => require_chat(command, session.as_deref()),
-        _ => Ok(()),
-    }) {
+    if let Err(error) = validate_remote_with(&cli, &context, runner_cli::client::mission_title)
+        .and_then(|()| match &cli.command {
+            Command::Mission { command } => require_chat(command, session.as_deref()),
+            _ => Ok(()),
+        })
+    {
         eprintln!("{}", error.message);
         return error.code;
     }
@@ -172,7 +174,74 @@ fn same_mission(target: Option<&str>, mission: &MissionEnv) -> bool {
     target.is_none_or(|target| mission.mission_id.starts_with(target))
 }
 
+fn cross_mission_write<'a>(
+    cli: &Cli,
+    context: &'a BusContext,
+) -> Option<(&'static str, &'static str, &'a MissionEnv)> {
+    let BusContext::Mission(mission) = context else {
+        return None;
+    };
+    let (command, action, target) = match &cli.command {
+        Command::Msg {
+            command: MsgCommand::Post {
+                mission: target, ..
+            },
+        } => (
+            "runner msg post",
+            "posting to another mission isn't allowed",
+            target.as_deref(),
+        ),
+        Command::Signal {
+            mission: target, ..
+        } => (
+            "runner signal",
+            "signaling another mission isn't allowed",
+            target.as_deref(),
+        ),
+        Command::Ask(args) => (
+            "runner ask",
+            "asking in another mission isn't allowed",
+            args.mission.as_deref(),
+        ),
+        _ => return None,
+    };
+    (!same_mission(target, mission)).then_some((command, action, mission))
+}
+
+fn cross_mission_error(
+    command: &str,
+    action: &str,
+    mission_id: &str,
+    title: Option<&str>,
+) -> CliError {
+    let current = match title.map(str::trim).filter(|title| !title.is_empty()) {
+        Some(title) => format!("{title:?}"),
+        None => mission_id.to_owned(),
+    };
+    CliError::usage(format!(
+        "{command}: you're in mission {current}; {action} — ask the person"
+    ))
+}
+
+#[cfg(test)]
 fn validate_remote(cli: &Cli, context: &BusContext) -> Result<(), CliError> {
+    validate_remote_with(cli, context, |_| None)
+}
+
+fn validate_remote_with(
+    cli: &Cli,
+    context: &BusContext,
+    lookup_title: impl FnOnce(&str) -> Option<String>,
+) -> Result<(), CliError> {
+    if let Some((command, action, mission)) = cross_mission_write(cli, context) {
+        let title = lookup_title(&mission.mission_id);
+        return Err(cross_mission_error(
+            command,
+            action,
+            &mission.mission_id,
+            title.as_deref(),
+        ));
+    }
     match &cli.command {
         Command::Mission {
             command: MissionCommand::AddRole { .. },

@@ -1349,3 +1349,162 @@ fn session_archive_with_missions_succeeds_with_empty_list_when_no_unarchived_lin
     assert_eq!(json["session_id"], SESSION);
     assert_eq!(json["archived_mission_ids"], serde_json::json!([]));
 }
+
+#[test]
+fn cross_mission_writes_are_refused_by_built_cli_with_title_and_offline_id_fallback() {
+    use runner_core::event_log::EventLog;
+    use runner_core::model::EventKind;
+
+    let mut fixture = Fixture::new();
+    let other_log = fixture
+        .data
+        .join("crews")
+        .join(CREW)
+        .join("missions/mission-running/events.ndjson");
+    let before_other = std::fs::read_to_string(&other_log).unwrap();
+    let before_own = std::fs::read_to_string(&fixture.log).unwrap();
+    let own_event_log = EventLog::open(fixture.log.parent().unwrap()).unwrap();
+    let other_event_log = EventLog::open(other_log.parent().unwrap()).unwrap();
+    let before_own_count = own_event_log.read_from(0).unwrap().len();
+    let before_other_count = other_event_log.read_from(0).unwrap().len();
+
+    let cases: &[(&[&str], &str, &str)] = &[
+        (
+            &["msg", "post", "hello", "--mission", "mission-running"],
+            "runner msg post",
+            "posting to another mission isn't allowed",
+        ),
+        (
+            &[
+                "msg",
+                "post",
+                "hello",
+                "--mission",
+                "mission-running",
+                "--as",
+                "coder",
+            ],
+            "runner msg post",
+            "posting to another mission isn't allowed",
+        ),
+        (
+            &["signal", "ask_human", "--mission", "mission-running"],
+            "runner signal",
+            "signaling another mission isn't allowed",
+        ),
+        (
+            &[
+                "signal",
+                "ask_human",
+                "--mission",
+                "mission-running",
+                "--as",
+                "coder",
+            ],
+            "runner signal",
+            "signaling another mission isn't allowed",
+        ),
+        (
+            &["ask", "Ship?", "--mission", "mission-running"],
+            "runner ask",
+            "asking in another mission isn't allowed",
+        ),
+        (
+            &[
+                "ask",
+                "--human",
+                "Ship?",
+                "--choices",
+                "yes,no",
+                "--mission",
+                "mission-running",
+                "--as",
+                "coder",
+            ],
+            "runner ask",
+            "asking in another mission isn't allowed",
+        ),
+    ];
+
+    // Daemon not running: remove SSH_CONNECTION so local autostart would run if the refusal path
+    // fell through to SocketClient::connect, then verify exit 2, ID fallback, and no daemon start.
+    for &(args, command, action) in cases {
+        let output = fixture
+            .command(true)
+            .env_remove("SSH_CONNECTION")
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "offline {args:?}");
+        assert!(output.stdout.is_empty(), "offline {args:?}");
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap().trim(),
+            format!("{command}: you're in mission {MISSION}; {action} — ask the person"),
+            "offline {args:?}"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&other_log).unwrap(), before_other);
+    assert_eq!(std::fs::read_to_string(&fixture.log).unwrap(), before_own);
+    assert!(
+        matches!(
+            SocketTransport::connect(&fixture.endpoint, hello()),
+            Err(ConnectError::NotRunning)
+        ),
+        "refused cross-mission writes must not start the daemon"
+    );
+    #[cfg(unix)]
+    assert!(
+        !fixture.endpoint.0.exists(),
+        "refused cross-mission writes must not create the daemon socket"
+    );
+
+    // Daemon running: resolves the caller's mission title, refuses with exit 2, and leaves other log untouched.
+    fixture.start();
+    for &(args, command, action) in cases {
+        let output = fixture.command(true).args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "online {args:?}");
+        assert!(output.stdout.is_empty(), "online {args:?}");
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap().trim(),
+            format!("{command}: you're in mission \"Fixture mission\"; {action} — ask the person"),
+            "online {args:?}"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&other_log).unwrap(), before_other);
+    assert_eq!(std::fs::read_to_string(&fixture.log).unwrap(), before_own);
+
+    // Own mission prefix still takes the local path; off-bus writes to mission-running still succeed.
+    let own = fixture
+        .command(true)
+        .args(["msg", "post", "own-mission-ok", "--mission", "mission-f"])
+        .output()
+        .unwrap();
+    assert!(
+        own.status.success(),
+        "own prefix failed: {}",
+        String::from_utf8_lossy(&own.stderr)
+    );
+    let own_events = own_event_log.read_from(0).unwrap();
+    assert_eq!(own_events.len(), before_own_count + 1);
+    let own_appended = &own_events.last().unwrap().event;
+    assert_eq!(own_appended.kind, EventKind::Message);
+    assert_eq!(own_appended.from, "coder");
+    assert_eq!(own_appended.payload["text"], "own-mission-ok");
+
+    let off_bus = fixture
+        .command(false)
+        .args(["msg", "post", "from-person", "--mission", "mission-running"])
+        .output()
+        .unwrap();
+    assert!(
+        off_bus.status.success(),
+        "off-bus post failed: {}",
+        String::from_utf8_lossy(&off_bus.stderr)
+    );
+    let other_events = other_event_log.read_from(0).unwrap();
+    assert_eq!(other_events.len(), before_other_count + 1);
+    let other_appended = &other_events.last().unwrap().event;
+    assert_eq!(other_appended.kind, EventKind::Message);
+    assert_eq!(other_appended.from, "human");
+    assert_eq!(other_appended.payload["text"], "from-person");
+}

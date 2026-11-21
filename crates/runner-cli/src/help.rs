@@ -29,7 +29,8 @@ OUTPUT
   -q       print only result ids
 
 CONTEXT
-  Inside a mission, msg post/read, signal, and ask use the event log directly.
+  Inside a mission, msg post/read, signal, and ask apply only to the caller's own mission
+  and use the event log directly; --mission naming another mission is refused.
   msg read optionally queries the existing daemon for a read cursor; offline reads still work.
   Outside, mission-scoped writes require --mission; --as names a roster handle.
 
@@ -145,6 +146,8 @@ OUTSIDE RUNNER
 
 IDENTITY
   Inside a mission, mission commands carry the caller's own handle.
+  Inside a mission, msg post, signal, and ask apply only to your own mission; passing --mission
+  for another mission is refused — ask the person instead.
   Outside a mission, --as <handle> names a roster slot and is refused if that handle is not in the roster.
   Outside a mission with no --as, the caller is the person at the app.
   Do not use --as to speak as another agent's slot; it exists for a slot you hold.
@@ -214,6 +217,9 @@ mod tests {
         }
         assert!(AGENT_GUIDE
             .contains("runner msg post --mission \"$mission\" --to <handle> \"message\""));
+        assert!(AGENT_GUIDE.contains(
+            "Inside a mission, msg post, signal, and ask apply only to your own mission; passing --mission\n  for another mission is refused"
+        ));
         assert!(!AGENT_GUIDE.contains("--as <roster_handle>"));
     }
 

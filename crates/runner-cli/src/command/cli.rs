@@ -88,7 +88,7 @@ pub(super) enum Command {
         /// JSON object carried by the signal.
         #[arg(long)]
         payload: Option<String>,
-        /// Mission ID or unique prefix; required outside a mission.
+        /// Mission ID or unique prefix; required outside a mission; inside one, only the caller's own mission.
         #[arg(long)]
         mission: Option<String>,
         /// Attribute the signal to this roster handle.
@@ -534,7 +534,7 @@ pub(super) enum MsgCommand {
         /// Address a roster handle; repeat for several recipients.
         #[arg(long)]
         to: Vec<String>,
-        /// Mission ID or unique prefix; required outside a mission.
+        /// Mission ID or unique prefix; required outside a mission; inside one, only the caller's own mission.
         #[arg(long)]
         mission: Option<String>,
         /// Attribute the message to this roster handle.
@@ -568,7 +568,7 @@ pub(super) struct AskArgs {
     /// Comma-separated choices for the person.
     #[arg(long)]
     pub(super) choices: Option<String>,
-    /// Mission ID or unique prefix; required outside a mission.
+    /// Mission ID or unique prefix; required outside a mission; inside one, only the caller's own mission.
     #[arg(long)]
     pub(super) mission: Option<String>,
     /// Attribute the question to this roster handle.
