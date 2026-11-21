@@ -246,6 +246,8 @@ fn router_holds_startup_deliveries_until_hook_turn_completion_and_resets_on_resu
         Runtime::Codex,
         Runtime::Copilot,
         Runtime::Pi,
+        Runtime::Grok,
+        Runtime::OpenCode,
     ] {
         let fixture = StartupFixture::new();
         fixture.queue("join broadcast before process launch");
@@ -253,9 +255,8 @@ fn router_holds_startup_deliveries_until_hook_turn_completion_and_resets_on_resu
         let now = Instant::now();
         let output = fixture.launch(runtime.key(), true, now);
         fixture.held();
-        let app = crate::runtimes::adapter(runtime)
-            .status_semantics()
-            .program_status_root_app;
+        let semantics = crate::runtimes::adapter(runtime).status_semantics();
+        let app = semantics.program_status_root_app;
         if let Some(app) = app {
             fixture.program_status(app, P::Idle, None);
         } else {
@@ -294,7 +295,12 @@ fn router_holds_startup_deliveries_until_hook_turn_completion_and_resets_on_resu
         );
         fixture.held();
         if let Some(app) = app {
-            fixture.program_status(app, P::Done, None);
+            let end_state = if semantics.program_status_idle_completes {
+                P::Idle
+            } else {
+                P::Done
+            };
+            fixture.program_status(app, end_state, None);
         } else {
             fixture.event(
                 runtime,
@@ -338,7 +344,7 @@ fn router_output_fallback_requires_output_startup_grace_and_idle_including_bridg
         let now = Instant::now();
         let output = fixture.launch(runtime.key(), true, now);
         let launch = output.stop_flag();
-        if runtime == Runtime::Codex {
+        if matches!(runtime, Runtime::Codex | Runtime::Grok | Runtime::OpenCode) {
             fixture
                 .manager
                 .status_bridge_failed("session", &Capture::default());
@@ -2433,9 +2439,15 @@ fn chat_without_status_hooks_uses_output_settle_even_with_identity_hooks() {
         ..Default::default()
     }));
 
-    // Codex, Claude Code, and pi have no status hooks: an untrusted fresh gate holds on quiet
-    // trust prompts and releases on OSC 7501 idle.
-    for runtime in [Runtime::Codex, Runtime::ClaudeCode, Runtime::Pi] {
+    // Codex, Claude Code, pi, Grok, and OpenCode have no status hooks: an untrusted fresh gate
+    // holds on quiet trust prompts and releases on OSC 7501 idle.
+    for runtime in [
+        Runtime::Codex,
+        Runtime::ClaudeCode,
+        Runtime::Pi,
+        Runtime::Grok,
+        Runtime::OpenCode,
+    ] {
         let mut untrusted =
             super::super::startup::StartupDelivery::for_reports(runtime.key(), false, now);
         untrusted.output(b"Do you trust the contents of this directory?", now);

@@ -1098,6 +1098,7 @@ fn provisional_escape_does_not_trigger_or_consume_completion() {
             ..Default::default()
         },
         program_done: false,
+        program_idle_completed: false,
     });
     let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
         .unwrap()
@@ -1118,6 +1119,7 @@ fn provisional_escape_does_not_trigger_or_consume_completion() {
             ..Default::default()
         },
         program_done: false,
+        program_idle_completed: false,
     });
     let row = repo::node::get(&state.db.get().unwrap(), &tab.id)
         .unwrap()
@@ -1531,6 +1533,7 @@ fn viewed_completion_counts_and_companion_terminal_release_db_before_session_loc
             &completion_state.windows,
             &completion_state.events,
             "wedged",
+            false,
         )
         .unwrap();
         let _ = comp_done_tx.send(());

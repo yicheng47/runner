@@ -30,7 +30,7 @@ pub enum ProgramOutcomePolicy {
     NativeFallbackOnly,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
     ConversationRecovered,
     EditorDraft {
@@ -63,6 +63,24 @@ pub enum AgentEvent {
         outcome: TurnOutcome,
         policy: ProgramOutcomePolicy,
     },
+    /// Session-correlated native outcome (OpenCode `opencode.db` `session_v2`)
+    /// carrying the originating session ID, `time_idle` timestamp, and whether
+    /// `time_busy > time_idle` already shows a newer turn started on that row.
+    ProgramSessionOutcome {
+        outcome: TurnOutcome,
+        policy: ProgramOutcomePolicy,
+        session_id: String,
+        ended_at_ms: i64,
+        superseded: bool,
+    },
+    /// Session-correlated native turn completion (OpenCode `session_v2`
+    /// `idle_outcome = "succeeded"`), releasing no-OSC first-turn startup and
+    /// confirming that session's idle-inferred completion.
+    ProgramSessionFinished {
+        session_id: String,
+        ended_at_ms: i64,
+        superseded: bool,
+    },
     /// Narrow runtime wait overlay (pi `ui_prompt_start`/`ui_prompt_end` for
     /// `kind == "custom"` and `session_shutdown`) that surfaces unannotated
     /// custom dialogs as Needs you (`WaitReason::Unknown`) and holds delivery
@@ -75,6 +93,11 @@ pub enum AgentEvent {
     /// primary status comes from OSC 7501; lets startup fall back to output
     /// settle when no OSC 7501 arrives without invalidating live OSC 7501.
     ProgramIdentityUnavailable,
+    /// Native non-hook outcome source (e.g. Grok `updates.jsonl` or OpenCode
+    /// `opencode.db`) is absent or unreadable; lets trusted first-turn startup
+    /// fall back to bounded output settle if OSC 7501 never arrives, while
+    /// keeping live OSC 7501 turns and waits held.
+    ProgramOutcomeUnavailable,
     TurnStarted,
     Working {
         detail: Option<WorkDetail>,
@@ -308,8 +331,11 @@ impl AgentModel {
             | AgentEvent::ProgramTurnConfirmed { .. }
             | AgentEvent::ProgramTurnFinished
             | AgentEvent::ProgramTurnOutcome { .. }
+            | AgentEvent::ProgramSessionOutcome { .. }
+            | AgentEvent::ProgramSessionFinished { .. }
             | AgentEvent::ProgramWaitOverlay { .. }
-            | AgentEvent::ProgramIdentityUnavailable => return false,
+            | AgentEvent::ProgramIdentityUnavailable
+            | AgentEvent::ProgramOutcomeUnavailable => return false,
             AgentEvent::StartupReady => {
                 self.clear_turn(true);
                 self.value.activity = Activity::Idle;

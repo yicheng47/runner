@@ -6,7 +6,6 @@
 //! endpoint covers native, npm and Homebrew installs. Every failure degrades
 //! to showing the version alone.
 
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -446,40 +445,12 @@ impl VersionDiscovery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Version {
-    core: [u64; 3],
-    prerelease: bool,
-}
-
-fn parse_semver(token: &str) -> Option<Version> {
-    let token = token.strip_prefix('v').unwrap_or(token);
-    let token = token.split('+').next()?;
-    let (core, prerelease) = match token.split_once('-') {
-        Some((core, prerelease)) if !prerelease.is_empty() => (core, true),
-        Some(_) => return None,
-        None => (token, false),
-    };
-    let mut parts = core.split('.');
-    let mut numbers = [0; 3];
-    for number in &mut numbers {
-        let part = parts.next()?;
-        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
-            return None;
-        }
-        *number = part.parse().ok()?;
-    }
-    parts.next().is_none().then_some(Version {
-        core: numbers,
-        prerelease,
-    })
+fn parse_semver(token: &str) -> Option<()> {
+    runner_core::protocol::runtime_metadata::version_is_semver(token).then_some(())
 }
 
 pub(crate) fn below_minimum(installed: Option<&str>, minimum: Option<&str>) -> bool {
-    match (installed, minimum) {
-        (Some(installed), Some(minimum)) => is_newer(minimum, installed),
-        _ => false,
-    }
+    runner_core::protocol::runtime_metadata::version_below(installed, minimum)
 }
 
 /// The first semver-looking token in `--version` output: `2.1.266 (Claude
@@ -496,14 +467,7 @@ pub(crate) fn parse_version(output: &[u8]) -> Option<String> {
 /// Whether `latest` is a newer release than `installed`. A prerelease of the
 /// same version counts as older; two prereleases of it count as equal.
 pub(crate) fn is_newer(latest: &str, installed: &str) -> bool {
-    let (Some(latest), Some(installed)) = (parse_semver(latest), parse_semver(installed)) else {
-        return false;
-    };
-    match latest.core.cmp(&installed.core) {
-        Ordering::Greater => true,
-        Ordering::Less => false,
-        Ordering::Equal => installed.prerelease && !latest.prerelease,
-    }
+    runner_core::protocol::runtime_metadata::version_is_newer(latest, installed)
 }
 
 pub(crate) fn installed_command(

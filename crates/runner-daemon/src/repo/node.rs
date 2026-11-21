@@ -601,6 +601,19 @@ pub fn record_completion(
     get(conn, id)
 }
 
+pub fn restore_completion_if_matches(
+    conn: &Connection,
+    id: &str,
+    expected_completed_at: &str,
+    previous_completed_at: Option<&str>,
+) -> rusqlite::Result<bool> {
+    let updated = conn.execute(
+        "UPDATE nodes SET last_completed_at = ?3 WHERE id = ?1 AND last_completed_at = ?2",
+        rusqlite::params![id, expected_completed_at, previous_completed_at],
+    )?;
+    Ok(updated > 0)
+}
+
 pub fn mark_viewed(
     conn: &Connection,
     id: &str,

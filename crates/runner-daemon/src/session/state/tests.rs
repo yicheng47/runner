@@ -2678,6 +2678,8 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
         (crate::model::Runtime::Codex, "codex", true),
         (crate::model::Runtime::ClaudeCode, "claude-code", true),
         (crate::model::Runtime::Pi, "pi", true),
+        (crate::model::Runtime::Grok, "grok", true),
+        (crate::model::Runtime::OpenCode, "opencode", true),
     ] {
         let semantics = crate::runtimes::adapter(runtime).status_semantics();
         assert_eq!(
@@ -2689,6 +2691,9 @@ fn codex_program_turn_confirmed_and_transcript_outcomes_cooperate_with_osc7501()
         other.set_program_status_root_app(semantics.program_status_root_app);
         other.set_program_status_transcript_outcomes(semantics.program_status_transcript_outcomes);
         other.set_program_status_cancel_interrupt(semantics.program_status_cancel_interrupt);
+        other.set_program_status_idle_completes(semantics.program_status_idle_completes);
+        other
+            .set_program_status_suppress_child_tasks(semantics.program_status_suppress_child_tasks);
         for (seq, state) in [(1, P::Working), (2, P::Error), (3, P::Idle)] {
             let report = Report {
                 id: String::new(),
@@ -4093,5 +4098,1324 @@ fn pi_custom_prompt_wait_overlay_holds_deduplicates_clears_on_shutdown_and_keeps
     assert!(
         !close_eff.program_done,
         "closing overlay over already-settled Completed must not signal program_done"
+    );
+}
+
+#[test]
+fn grok_osc7501_turns_waits_cancel_subagents_and_transcript_fallback() {
+    use agent::{AgentEvent as A, ProgramOutcomePolicy};
+    use runner_terminal::program_status::{ChildCount, Report, State as P, Update};
+
+    let start = now();
+    let sem = crate::runtimes::adapter(crate::model::Runtime::Grok).status_semantics();
+    assert!(sem.program_status_authority);
+    assert_eq!(sem.program_status_root_app, Some("grok"));
+    assert!(sem.program_status_transcript_outcomes);
+    assert!(sem.program_status_cancel_interrupt);
+    assert!(!sem.program_status_idle_completes);
+    assert!(!sem.program_status_suppress_child_tasks);
+
+    let mut model = SessionModel::default();
+    model.set_program_status_authority(sem.program_status_authority);
+    model.set_program_status_root_app(sem.program_status_root_app);
+    model.set_program_status_transcript_outcomes(sem.program_status_transcript_outcomes);
+    model.set_program_status_cancel_interrupt(sem.program_status_cancel_interrupt);
+    model.set_program_status_idle_completes(sem.program_status_idle_completes);
+    model.set_program_status_suppress_child_tasks(sem.program_status_suppress_child_tasks);
+
+    let mut seq = 0u64;
+    let mut emit_root = |model: &mut SessionModel,
+                         state: P,
+                         kind: Option<&str>,
+                         msg: Option<&str>,
+                         children: Vec<ChildCount>| {
+        seq += 1;
+        let report = Report {
+            id: String::new(),
+            state,
+            app: Some("grok".into()),
+            kind: kind.map(str::to_owned),
+            progress: None,
+            title: None,
+            message: msg.map(str::to_owned),
+        };
+        let is_clear = state == P::Clear;
+        model.apply(
+            SessionEvent::ProgramStatus {
+                seq,
+                subseq: 0,
+                update: Box::new(Update {
+                    current: (!is_clear).then(|| report.clone()),
+                    root: (!is_clear).then(|| report.clone()),
+                    active_children: children,
+                    trigger: Some(report),
+                }),
+                live: true,
+            },
+            start,
+        )
+    };
+
+    // 1. Probed sequence: idle at start -> working ("Thinking") -> blocked:permission ->
+    // working -> done ("Turn complete in 2.5s.") records Completed + program_done once.
+    emit_root(&mut model, P::Idle, None, None, vec![]);
+    assert_eq!(model.status().observation.activity, Activity::Idle);
+    assert_eq!(model.status().observation.outcome, None);
+    let started = emit_root(&mut model, P::Working, None, Some("Thinking"), vec![]);
+    assert!(started.program_turn_started);
+    assert_eq!(model.status().observation.activity, Activity::Working);
+    assert_eq!(
+        model
+            .status()
+            .observation
+            .program_status
+            .as_ref()
+            .unwrap()
+            .message
+            .as_deref(),
+        Some("Thinking")
+    );
+
+    for (kind, expected) in [
+        (Some("permission"), WaitReason::Approval),
+        (Some("question"), WaitReason::Answer),
+        (Some("auth"), WaitReason::Unknown),
+        (None, WaitReason::Unknown),
+    ] {
+        emit_root(&mut model, P::Blocked, kind, Some("bash: ls"), vec![]);
+        assert!(model.status().observation.needs_you(), "kind={kind:?}");
+        assert_eq!(
+            model.status().observation.interactions[0].reason,
+            expected,
+            "kind={kind:?}"
+        );
+    }
+
+    // Subagent child adds background_tasks detail only and never alters root status or done.
+    let sub = vec![ChildCount {
+        app: Some("grok".into()),
+        active: 2,
+    }];
+    emit_root(
+        &mut model,
+        P::Working,
+        None,
+        Some("Responding"),
+        sub.clone(),
+    );
+    assert!(!model.status().observation.needs_you());
+    assert_eq!(
+        model
+            .status()
+            .observation
+            .program_status
+            .as_ref()
+            .unwrap()
+            .background_tasks,
+        2
+    );
+    let done = emit_root(
+        &mut model,
+        P::Done,
+        None,
+        Some("Turn complete in 2.5s."),
+        sub,
+    );
+    assert!(done.program_done);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+    assert!(
+        model
+            .apply(SessionEvent::TakeCompletion, start)
+            .completion_consumed
+    );
+
+    // 2. Probed Ctrl+C sequence: working -> Ctrl+C -> working("Cancelling") -> idle settles
+    // Interrupted with no unread completion badge.
+    emit_root(
+        &mut model,
+        P::Working,
+        None,
+        Some("Waiting for response…"),
+        vec![],
+    );
+    model.apply(
+        SessionEvent::Input {
+            class: None,
+            submitted: false,
+            cancel: true,
+        },
+        start,
+    );
+    emit_root(&mut model, P::Working, None, Some("Cancelling"), vec![]);
+    assert_eq!(model.status().observation.activity, Activity::Working);
+    let cancelled = emit_root(&mut model, P::Idle, None, None, vec![]);
+    assert!(!cancelled.program_done);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Interrupted)
+    );
+    assert_eq!(model.status().failed_since, None);
+    assert!(
+        !model
+            .apply(SessionEvent::TakeCompletion, start)
+            .completion_consumed
+    );
+
+    // 3. Error settles Failed and survives trailing idle; clear on exit drops program_status.
+    emit_root(&mut model, P::Working, None, None, vec![]);
+    emit_root(&mut model, P::Error, None, Some("API error"), vec![]);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+    assert!(model.status().failed_since.is_some());
+    emit_root(&mut model, P::Idle, None, None, vec![]);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+    // 3b. Grok working -> idle (without OSC error) reconciles with updates.jsonl Failed both
+    // before and after idle, while live Working/Blocked and explicit OSC done stay authoritative.
+    emit_root(&mut model, P::Working, None, None, vec![]);
+    model.apply(
+        SessionEvent::Agent {
+            event: A::ProgramTurnOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert_eq!(model.status().observation.activity, Activity::Working);
+    emit_root(&mut model, P::Blocked, Some("permission"), None, vec![]);
+    assert!(model.status().observation.needs_you());
+    emit_root(&mut model, P::Idle, None, None, vec![]);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+    assert!(model.status().failed_since.is_some());
+
+    // Late updates.jsonl Failed arriving after working -> idle (no OSC error) sets Failed.
+    emit_root(&mut model, P::Working, None, None, vec![]);
+    emit_root(&mut model, P::Idle, None, None, vec![]);
+    assert_eq!(model.status().observation.outcome, None);
+    model.apply(
+        SessionEvent::Agent {
+            event: A::ProgramTurnOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+    assert!(model.status().failed_since.is_some());
+
+    // Explicit OSC done stays Completed even if a stale updates.jsonl Failed arrives afterward.
+    emit_root(&mut model, P::Working, None, None, vec![]);
+    let explicit_done = emit_root(&mut model, P::Done, None, None, vec![]);
+    assert!(explicit_done.program_done);
+    model.apply(
+        SessionEvent::Agent {
+            event: A::ProgramTurnOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+    emit_root(&mut model, P::Clear, None, None, vec![]);
+    assert!(model.status().observation.program_status.is_none());
+
+    // 4. Grok program_status="off" (no OSC 7501) still surfaces updates.jsonl Failed outcome.
+    let mut no_osc = SessionModel::default();
+    no_osc.set_program_status_authority(sem.program_status_authority);
+    no_osc.set_program_status_root_app(sem.program_status_root_app);
+    no_osc.set_program_status_transcript_outcomes(sem.program_status_transcript_outcomes);
+    no_osc.set_program_status_cancel_interrupt(sem.program_status_cancel_interrupt);
+    no_osc.apply(
+        SessionEvent::Transition {
+            state: SessionActivityState::Busy,
+            source: StatusSource::Forwarder,
+            live: true,
+        },
+        start,
+    );
+    no_osc.apply(
+        SessionEvent::Agent {
+            event: A::ProgramTurnOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert_eq!(no_osc.status().observation.activity, Activity::Idle);
+    assert_eq!(
+        no_osc.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+    assert!(no_osc.status().failed_since.is_some());
+}
+
+#[test]
+fn opencode_osc7501_idle_completion_late_outcome_reversal_multi_session_and_suppressed_children() {
+    use agent::{AgentEvent as A, ProgramOutcomePolicy};
+    use runner_terminal::program_status::{ChildCount, Report, State as P, Update};
+
+    let start = now();
+    let sem = crate::runtimes::adapter(crate::model::Runtime::OpenCode).status_semantics();
+    assert!(sem.program_status_authority);
+    assert_eq!(sem.program_status_root_app, Some("opencode"));
+    assert!(sem.program_status_transcript_outcomes);
+    assert!(sem.program_status_cancel_interrupt);
+    assert!(sem.program_status_idle_completes);
+    assert!(sem.program_status_suppress_child_tasks);
+
+    let make_model = || {
+        let mut model = SessionModel::default();
+        model.set_program_status_authority(sem.program_status_authority);
+        model.set_program_status_root_app(sem.program_status_root_app);
+        model.set_program_status_transcript_outcomes(sem.program_status_transcript_outcomes);
+        model.set_program_status_cancel_interrupt(sem.program_status_cancel_interrupt);
+        model.set_program_status_idle_completes(sem.program_status_idle_completes);
+        model.set_program_status_suppress_child_tasks(sem.program_status_suppress_child_tasks);
+        model
+    };
+
+    let emit = |model: &mut SessionModel,
+                seq: &mut u64,
+                state: P,
+                kind: Option<&str>,
+                msg: Option<&str>,
+                children: usize| {
+        *seq += 1;
+        let report = Report {
+            id: String::new(),
+            state,
+            app: Some("opencode".into()),
+            kind: kind.map(str::to_owned),
+            progress: None,
+            title: None,
+            message: msg.map(str::to_owned),
+        };
+        let active_children = if children > 0 {
+            vec![ChildCount {
+                app: Some("opencode".into()),
+                active: children,
+            }]
+        } else {
+            Vec::new()
+        };
+        model.apply(
+            SessionEvent::ProgramStatus {
+                seq: *seq,
+                subseq: 0,
+                update: Box::new(Update {
+                    current: Some(report.clone()),
+                    root: Some(report.clone()),
+                    active_children,
+                    trigger: Some(report),
+                }),
+                live: true,
+            },
+            start,
+        )
+    };
+
+    // 1. Startup Idle and startup Blocked -> Idle (never Working) must NOT fabricate Completed.
+    let mut model = make_model();
+    let mut seq = 0u64;
+    let boot = emit(&mut model, &mut seq, P::Idle, None, None, 0);
+    assert!(!boot.program_done);
+    assert_eq!(model.status().observation.outcome, None);
+    emit(
+        &mut model,
+        &mut seq,
+        P::Blocked,
+        Some("permission"),
+        None,
+        1,
+    );
+    assert!(model.status().observation.needs_you());
+    assert_eq!(
+        model.status().observation.interactions[0].reason,
+        WaitReason::Approval
+    );
+    let unblocked = emit(&mut model, &mut seq, P::Idle, None, None, 0);
+    assert!(!unblocked.program_done);
+    assert_eq!(model.status().observation.outcome, None);
+    assert!(
+        !model
+            .apply(SessionEvent::TakeCompletion, start)
+            .completion_consumed
+    );
+
+    // 2. Normal single-session turn: per-session child is suppressed (background_tasks == 0),
+    // root working -> idle produces Completed + program_done once; duplicate idle does not repeat.
+    let started = emit(&mut model, &mut seq, P::Working, None, None, 1);
+    assert!(started.program_turn_started);
+    assert_eq!(
+        model
+            .status()
+            .observation
+            .program_status
+            .as_ref()
+            .unwrap()
+            .background_tasks,
+        0,
+        "OpenCode single-session child must not display as a background task"
+    );
+    // Child-only updates while root is unchanged never alter root or background_tasks.
+    seq += 1;
+    let child_only = Report {
+        id: "ses_abc123".into(),
+        state: P::Blocked,
+        app: Some("opencode".into()),
+        kind: Some("permission".into()),
+        progress: None,
+        title: None,
+        message: None,
+    };
+    let root_working = Report {
+        id: String::new(),
+        state: P::Working,
+        app: Some("opencode".into()),
+        kind: None,
+        progress: None,
+        title: None,
+        message: None,
+    };
+    let child_eff = model.apply(
+        SessionEvent::ProgramStatus {
+            seq,
+            subseq: 0,
+            update: Box::new(Update {
+                current: Some(child_only.clone()),
+                root: Some(root_working),
+                active_children: vec![ChildCount {
+                    app: Some("opencode".into()),
+                    active: 1,
+                }],
+                trigger: Some(child_only),
+            }),
+            live: true,
+        },
+        start,
+    );
+    assert!(child_eff.publication.is_none());
+    assert!(!model.status().observation.needs_you());
+
+    let done = emit(&mut model, &mut seq, P::Idle, None, None, 0);
+    assert!(done.program_done);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+    assert!(
+        model
+            .apply(SessionEvent::TakeCompletion, start)
+            .completion_consumed
+    );
+    model.apply(SessionEvent::Unread { viewed: false }, start);
+    // Duplicate idle does not re-trigger program_done.
+    let dup = emit(&mut model, &mut seq, P::Idle, None, None, 0);
+    assert!(!dup.program_done);
+    model.apply(SessionEvent::Viewed, start);
+
+    // 3. Multi-session root summaries + blocked kinds (permission, question, mixed/absent).
+    emit(
+        &mut model,
+        &mut seq,
+        P::Working,
+        None,
+        Some("2 sessions working"),
+        2,
+    );
+    assert_eq!(
+        model
+            .status()
+            .observation
+            .program_status
+            .as_ref()
+            .unwrap()
+            .message
+            .as_deref(),
+        Some("2 sessions working")
+    );
+    assert_eq!(
+        model
+            .status()
+            .observation
+            .program_status
+            .as_ref()
+            .unwrap()
+            .background_tasks,
+        0
+    );
+    for (kind, msg, expected) in [
+        (Some("permission"), Some("Run bash"), WaitReason::Approval),
+        (Some("question"), Some("Which option?"), WaitReason::Answer),
+        (None, Some("2 sessions need input"), WaitReason::Unknown),
+    ] {
+        emit(&mut model, &mut seq, P::Blocked, kind, msg, 2);
+        assert!(model.status().observation.needs_you());
+        assert_eq!(model.status().observation.interactions[0].reason, expected);
+    }
+    let multi_done = emit(&mut model, &mut seq, P::Idle, None, None, 0);
+    assert!(multi_done.program_done);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+    model.apply(SessionEvent::TakeCompletion, start);
+
+    // 4. Esc/Ctrl+C mid-turn prevents idle-inferred Completed and settles Interrupted.
+    emit(&mut model, &mut seq, P::Working, None, None, 1);
+    model.apply(
+        SessionEvent::Input {
+            class: None,
+            submitted: false,
+            cancel: true,
+        },
+        start,
+    );
+    let interrupted = emit(&mut model, &mut seq, P::Idle, None, None, 0);
+    assert!(!interrupted.program_done);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Interrupted)
+    );
+    assert!(
+        !model
+            .apply(SessionEvent::TakeCompletion, start)
+            .completion_consumed
+    );
+
+    // 5. opencode.db Failed arriving BEFORE OSC idle is deferred until idle and prevents Completed.
+    emit(&mut model, &mut seq, P::Working, None, None, 1);
+    seq += 1;
+    let working_child = Report {
+        id: "ses_abc123".into(),
+        state: P::Working,
+        app: Some("opencode".into()),
+        kind: None,
+        progress: None,
+        title: None,
+        message: None,
+    };
+    let root_work = Report {
+        id: String::new(),
+        state: P::Working,
+        app: Some("opencode".into()),
+        kind: None,
+        progress: None,
+        title: None,
+        message: None,
+    };
+    model.apply(
+        SessionEvent::ProgramStatus {
+            seq,
+            subseq: 0,
+            update: Box::new(Update {
+                current: Some(working_child.clone()),
+                root: Some(root_work),
+                active_children: vec![ChildCount {
+                    app: Some("opencode".into()),
+                    active: 1,
+                }],
+                trigger: Some(working_child),
+            }),
+            live: true,
+        },
+        start,
+    );
+    model.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                session_id: "ses_abc123".into(),
+                ended_at_ms: start.wall_millis + 10,
+                superseded: false,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert_eq!(model.status().observation.activity, Activity::Working);
+    let failed_idle = emit(&mut model, &mut seq, P::Idle, None, None, 0);
+    assert!(!failed_idle.program_done);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+    assert!(model.status().failed_since.is_some());
+    assert!(
+        !model
+            .apply(SessionEvent::TakeCompletion, start)
+            .completion_consumed
+    );
+
+    // 6. opencode.db Failed arriving AFTER OSC working -> idle overrides Completed and sets
+    // revert_unread = true when no prior unread existed.
+    emit(&mut model, &mut seq, P::Working, None, None, 1);
+    let optimistic = emit(&mut model, &mut seq, P::Idle, None, None, 0);
+    assert!(optimistic.program_done);
+    assert!(
+        model
+            .apply(SessionEvent::TakeCompletion, start)
+            .completion_consumed
+    );
+    model.apply(SessionEvent::Unread { viewed: false }, start);
+    assert!(model.status().unread_since.is_some());
+    let late_fail = model.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                session_id: "ses_abc123".into(),
+                ended_at_ms: start.wall_millis + 20,
+                superseded: false,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert!(late_fail.revert_unread);
+    assert_eq!(model.status().unread_since, None);
+    assert_eq!(
+        model.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+    assert!(model.status().failed_since.is_some());
+
+    // 7. When Turn 1 already left an unread badge, Turn 2 records its own optimistic Unread
+    // at a later timestamp; a late Failed on Turn 2 restores Turn 1's unread_since in memory
+    // AND signals revert_unread = true so the manager can CAS-restore durable DB state.
+    let mut prior = make_model();
+    let mut pseq = 0u64;
+    let t1 = start;
+    let t2 = Now {
+        monotonic: start.monotonic + Duration::from_secs(5),
+        wall_millis: start.wall_millis + 5_000,
+    };
+    emit(&mut prior, &mut pseq, P::Working, None, None, 1);
+    assert!(emit(&mut prior, &mut pseq, P::Idle, None, None, 0).program_done);
+    prior.apply(SessionEvent::TakeCompletion, t1);
+    prior.apply(SessionEvent::Unread { viewed: false }, t1);
+    let prior_unread = prior.status().unread_since;
+    assert_eq!(prior_unread, Some(t1.wall_millis));
+    prior.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionFinished {
+                session_id: "ses_abc123".into(),
+                ended_at_ms: t1.wall_millis + 10,
+                superseded: false,
+            },
+            live: true,
+        },
+        t1,
+    );
+    // Turn 2 completes optimistically and records Turn 2's Unread at t2, then fails late.
+    emit(&mut prior, &mut pseq, P::Working, None, None, 1);
+    assert!(emit(&mut prior, &mut pseq, P::Idle, None, None, 0).program_done);
+    prior.apply(SessionEvent::TakeCompletion, t2);
+    prior.apply(SessionEvent::Unread { viewed: false }, t2);
+    assert_eq!(prior.status().unread_since, Some(t2.wall_millis));
+    let late_turn2 = prior.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                session_id: "ses_abc123".into(),
+                ended_at_ms: t2.wall_millis + 50,
+                superseded: false,
+            },
+            live: true,
+        },
+        t2,
+    );
+    assert!(
+        late_turn2.revert_unread,
+        "Turn 2's optimistic completion must trigger CAS rollback in the manager"
+    );
+    assert_eq!(
+        prior.status().unread_since,
+        prior_unread,
+        "Turn 2's rollback must restore Turn 1's unread_since rather than wiping it"
+    );
+    assert_eq!(
+        prior.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+
+    // 8. Delayed Turn 1 failure arriving AFTER Turn 2 is already Working reverts Turn 1's
+    // optimistic unread without poisoning Turn 2's subsequent Completed outcome.
+    let mut adj = make_model();
+    let mut aseq = 0u64;
+    let emit_at =
+        |model: &mut SessionModel, seq: &mut u64, state: P, child_id: Option<&str>, at: Now| {
+            *seq += 1;
+            let root = Report {
+                id: String::new(),
+                state,
+                app: Some("opencode".into()),
+                kind: None,
+                progress: None,
+                title: None,
+                message: None,
+            };
+            let eff = model.apply(
+                SessionEvent::ProgramStatus {
+                    seq: *seq,
+                    subseq: 0,
+                    update: Box::new(Update {
+                        current: Some(root.clone()),
+                        root: Some(root.clone()),
+                        active_children: Vec::new(),
+                        trigger: Some(root.clone()),
+                    }),
+                    live: true,
+                },
+                at,
+            );
+            if let Some(cid) = child_id {
+                *seq += 1;
+                let child = Report {
+                    id: cid.into(),
+                    state,
+                    app: Some("opencode".into()),
+                    kind: None,
+                    progress: None,
+                    title: None,
+                    message: None,
+                };
+                model.apply(
+                    SessionEvent::ProgramStatus {
+                        seq: *seq,
+                        subseq: 0,
+                        update: Box::new(Update {
+                            current: Some(child.clone()),
+                            root: Some(root),
+                            active_children: vec![ChildCount {
+                                app: Some("opencode".into()),
+                                active: 1,
+                            }],
+                            trigger: Some(child),
+                        }),
+                        live: true,
+                    },
+                    at,
+                );
+            }
+            eff
+        };
+    let turn1_at = t1;
+    let turn2_at = t2;
+    emit_at(&mut adj, &mut aseq, P::Working, Some("ses_a"), turn1_at);
+    assert!(emit_at(&mut adj, &mut aseq, P::Idle, None, turn1_at).program_done);
+    adj.apply(SessionEvent::TakeCompletion, turn1_at);
+    adj.apply(SessionEvent::Unread { viewed: false }, turn1_at);
+    assert_eq!(adj.status().unread_since, Some(turn1_at.wall_millis));
+    // Turn 2 starts immediately before Turn 1's DB failure is polled.
+    emit_at(&mut adj, &mut aseq, P::Working, Some("ses_a"), turn2_at);
+    let delayed = adj.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                session_id: "ses_a".into(),
+                ended_at_ms: turn1_at.wall_millis + 50,
+                superseded: true,
+            },
+            live: true,
+        },
+        turn2_at,
+    );
+    assert!(
+        delayed.revert_unread,
+        "delayed Turn 1 failure must revert Turn 1's optimistic unread"
+    );
+    assert_eq!(adj.status().unread_since, None);
+    assert_eq!(adj.status().observation.activity, Activity::Working);
+    // Turn 2 itself succeeds cleanly -> Completed (not poisoned by Turn 1's delayed failure!).
+    let turn2_done = emit_at(&mut adj, &mut aseq, P::Idle, None, turn2_at);
+    assert!(turn2_done.program_done);
+    assert_eq!(
+        adj.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+    assert_eq!(adj.status().failed_since, None);
+
+    // 9. Turn 1 failed, Turn 2 in the SAME ses_a went working -> idle cleanly, THEN Turn 1's
+    // delayed failure (superseded=true or ended_at_ms < Turn 1 idle) arrives while idle:
+    // Turn 2 must stay Completed with its unread badge intact; delayed Turn 1 success must
+    // also never finalize Turn 2's idle_turn prematurely.
+    let mut same_ses = make_model();
+    let mut sseq = 0u64;
+    let t1_idle_at = Now {
+        monotonic: start.monotonic + Duration::from_secs(1),
+        wall_millis: start.wall_millis + 1_000,
+    };
+    let t2_work_at = Now {
+        monotonic: start.monotonic + Duration::from_secs(2),
+        wall_millis: start.wall_millis + 2_000,
+    };
+    let t2_idle_at = Now {
+        monotonic: start.monotonic + Duration::from_secs(3),
+        wall_millis: start.wall_millis + 3_000,
+    };
+    emit_at(&mut same_ses, &mut sseq, P::Working, Some("ses_a"), start);
+    assert!(emit_at(&mut same_ses, &mut sseq, P::Idle, None, t1_idle_at).program_done);
+    same_ses.apply(SessionEvent::TakeCompletion, t1_idle_at);
+    same_ses.apply(SessionEvent::Unread { viewed: false }, t1_idle_at);
+    // Turn 2 runs and goes idle cleanly before Turn 1's DB failure event is consumed.
+    emit_at(
+        &mut same_ses,
+        &mut sseq,
+        P::Working,
+        Some("ses_a"),
+        t2_work_at,
+    );
+    assert!(emit_at(&mut same_ses, &mut sseq, P::Idle, None, t2_idle_at).program_done);
+    same_ses.apply(SessionEvent::TakeCompletion, t2_idle_at);
+    same_ses.apply(SessionEvent::Unread { viewed: false }, t2_idle_at);
+    assert_eq!(same_ses.status().unread_since, Some(t2_idle_at.wall_millis));
+
+    for (superseded, ended_at_ms) in [
+        (true, t1_idle_at.wall_millis + 50),
+        (false, t1_idle_at.wall_millis - 10),
+    ] {
+        let stale_fail = same_ses.apply(
+            SessionEvent::Agent {
+                event: A::ProgramSessionOutcome {
+                    outcome: TurnOutcome::Failed,
+                    policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                    session_id: "ses_a".into(),
+                    ended_at_ms,
+                    superseded,
+                },
+                live: true,
+            },
+            t2_idle_at,
+        );
+        assert!(
+            !stale_fail.revert_unread,
+            "delayed Turn 1 failure (superseded={superseded}) must not revert Turn 2's unread"
+        );
+        assert_eq!(
+            same_ses.status().observation.outcome,
+            Some(TurnOutcome::Completed)
+        );
+        assert_eq!(same_ses.status().unread_since, Some(t2_idle_at.wall_millis));
+    }
+    let stale_fin = same_ses.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionFinished {
+                session_id: "ses_a".into(),
+                ended_at_ms: t1_idle_at.wall_millis - 10,
+                superseded: true,
+            },
+            live: true,
+        },
+        t2_idle_at,
+    );
+    assert!(!stale_fin.clear_optimistic_completion);
+
+    // 10. Foreign DB failure when this TUI has ONLY EVER shown root idle must be ignored.
+    let mut idle_only = make_model();
+    let mut iseq = 0u64;
+    emit_at(&mut idle_only, &mut iseq, P::Idle, None, start);
+    let foreign = idle_only.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                session_id: "ses_visited".into(),
+                ended_at_ms: start.wall_millis + 500,
+                superseded: false,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert!(foreign.publication.is_none());
+    assert_eq!(idle_only.status().observation.outcome, None);
+    assert_eq!(idle_only.status().failed_since, None);
+
+    // 11. Viewing the chat between idle-inferred Completed and the matching DB Failed /
+    // Interrupted outcome clears unread and drops rollback state while still correcting
+    // the displayed outcome (and never restoring unread).
+    for expected in [TurnOutcome::Failed, TurnOutcome::Interrupted] {
+        let mut viewed = make_model();
+        let mut vseq = 0u64;
+        emit_at(&mut viewed, &mut vseq, P::Idle, None, start);
+        emit_at(&mut viewed, &mut vseq, P::Working, Some("ses_v"), start);
+        assert!(emit_at(&mut viewed, &mut vseq, P::Idle, None, start).program_done);
+        viewed.apply(SessionEvent::TakeCompletion, start);
+        viewed.apply(SessionEvent::Unread { viewed: false }, start);
+        assert!(viewed.status().unread_since.is_some());
+        let view_eff = viewed.apply(SessionEvent::Viewed, start);
+        assert!(view_eff.clear_optimistic_completion);
+        assert_eq!(viewed.status().unread_since, None);
+
+        let late = viewed.apply(
+            SessionEvent::Agent {
+                event: A::ProgramSessionOutcome {
+                    outcome: expected,
+                    policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                    session_id: "ses_v".into(),
+                    ended_at_ms: start.wall_millis + 25,
+                    superseded: false,
+                },
+                live: true,
+            },
+            start,
+        );
+        assert!(
+            !late.revert_unread,
+            "viewed turn must not trigger unread rollback on late {expected:?}"
+        );
+        assert_eq!(viewed.status().unread_since, None);
+        assert_eq!(viewed.status().observation.outcome, Some(expected));
+        assert_eq!(
+            viewed.status().failed_since.is_some(),
+            expected == TurnOutcome::Failed
+        );
+    }
+
+    // 12. DB outcome leading the PTY stream stays buffered while idle, reconciles when the
+    // matching working/child/idle sequence arrives, and never lets a foreign session bleed
+    // into another session's turn or overwrite an explicit completion.
+    let mut lead = make_model();
+    let mut lseq = 0u64;
+    emit_at(&mut lead, &mut lseq, P::Idle, None, start);
+    let early_db = lead.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                session_id: "ses_lead".into(),
+                ended_at_ms: start.wall_millis + 10,
+                superseded: false,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert!(early_db.publication.is_none());
+    assert_eq!(lead.status().observation.outcome, None);
+    emit_at(&mut lead, &mut lseq, P::Working, Some("ses_lead"), start);
+    let settled = emit_at(&mut lead, &mut lseq, P::Idle, None, start);
+    assert!(!settled.program_done);
+    assert_eq!(lead.status().observation.outcome, Some(TurnOutcome::Failed));
+    assert!(lead.status().failed_since.is_some());
+    assert!(
+        !lead
+            .apply(SessionEvent::TakeCompletion, start)
+            .completion_consumed
+    );
+
+    // Foreign buffered failure on ses_foreign does NOT poison a turn on ses_other.
+    let mut foreign_guard = make_model();
+    let mut fseq = 0u64;
+    emit_at(&mut foreign_guard, &mut fseq, P::Idle, None, start);
+    foreign_guard.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                session_id: "ses_foreign".into(),
+                ended_at_ms: start.wall_millis + 10,
+                superseded: false,
+            },
+            live: true,
+        },
+        start,
+    );
+    emit_at(
+        &mut foreign_guard,
+        &mut fseq,
+        P::Working,
+        Some("ses_other"),
+        start,
+    );
+    let other_done = emit_at(&mut foreign_guard, &mut fseq, P::Idle, None, start);
+    assert!(other_done.program_done);
+    assert_eq!(
+        foreign_guard.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+    // Explicit ProgramSessionFinished protects Completed against a later idle-only DB Failed.
+    let confirmed = foreign_guard.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionFinished {
+                session_id: "ses_other".into(),
+                ended_at_ms: start.wall_millis + 20,
+                superseded: false,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert!(confirmed.clear_optimistic_completion);
+    let after_confirm = foreign_guard.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                session_id: "ses_other".into(),
+                ended_at_ms: start.wall_millis + 30,
+                superseded: false,
+            },
+            live: true,
+        },
+        start,
+    );
+    assert!(after_confirm.publication.is_none());
+    assert_eq!(
+        foreign_guard.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+
+    // 13. Cancelled turn consumes its matching DB Interrupted confirmation instead of leaking
+    // into the next successful turn, while genuinely early evidence for a newer turn still
+    // reconciles cleanly.
+    let mut cancelled_next = make_model();
+    let mut cseq = 0u64;
+    let c1_idle = Now {
+        monotonic: start.monotonic + Duration::from_secs(1),
+        wall_millis: start.wall_millis + 1_000,
+    };
+    let c2_at = Now {
+        monotonic: start.monotonic + Duration::from_secs(2),
+        wall_millis: start.wall_millis + 2_000,
+    };
+    emit_at(&mut cancelled_next, &mut cseq, P::Idle, None, start);
+    emit_at(
+        &mut cancelled_next,
+        &mut cseq,
+        P::Working,
+        Some("ses_c"),
+        start,
+    );
+    cancelled_next.apply(
+        SessionEvent::Input {
+            class: None,
+            submitted: false,
+            cancel: true,
+        },
+        c1_idle,
+    );
+    assert!(!emit_at(&mut cancelled_next, &mut cseq, P::Idle, None, c1_idle).program_done);
+    assert_eq!(
+        cancelled_next.status().observation.outcome,
+        Some(TurnOutcome::Interrupted)
+    );
+    // Matching DB confirmation for the cancelled turn arrives after root idle -> consumed.
+    cancelled_next.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionOutcome {
+                outcome: TurnOutcome::Interrupted,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                session_id: "ses_c".into(),
+                ended_at_ms: c1_idle.wall_millis + 25,
+                superseded: false,
+            },
+            live: true,
+        },
+        c1_idle,
+    );
+    // Next successful turn on the same session must complete cleanly with program_done = true.
+    emit_at(
+        &mut cancelled_next,
+        &mut cseq,
+        P::Working,
+        Some("ses_c"),
+        c2_at,
+    );
+    let c2_done = emit_at(&mut cancelled_next, &mut cseq, P::Idle, None, c2_at);
+    assert!(
+        c2_done.program_done,
+        "Turn 2 after Ctrl+C must complete cleanly rather than consuming Turn 1's DB confirmation"
+    );
+    assert_eq!(
+        cancelled_next.status().observation.outcome,
+        Some(TurnOutcome::Completed)
+    );
+
+    // Genuinely early Failed for Turn 2 arriving after Turn 1's cancel (before Turn 2's PTY)
+    // is NOT swallowed by program_cancelled_sessions and still reconciles to Failed.
+    let mut cancel_then_early_fail = make_model();
+    let mut cfseq = 0u64;
+    emit_at(
+        &mut cancel_then_early_fail,
+        &mut cfseq,
+        P::Idle,
+        None,
+        start,
+    );
+    emit_at(
+        &mut cancel_then_early_fail,
+        &mut cfseq,
+        P::Working,
+        Some("ses_c"),
+        start,
+    );
+    cancel_then_early_fail.apply(
+        SessionEvent::Input {
+            class: None,
+            submitted: false,
+            cancel: true,
+        },
+        c1_idle,
+    );
+    emit_at(
+        &mut cancel_then_early_fail,
+        &mut cfseq,
+        P::Idle,
+        None,
+        c1_idle,
+    );
+    cancel_then_early_fail.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                session_id: "ses_c".into(),
+                ended_at_ms: c1_idle.wall_millis + 50,
+                superseded: false,
+            },
+            live: true,
+        },
+        c1_idle,
+    );
+    emit_at(
+        &mut cancel_then_early_fail,
+        &mut cfseq,
+        P::Working,
+        Some("ses_c"),
+        c2_at,
+    );
+    let early_fail_done = emit_at(
+        &mut cancel_then_early_fail,
+        &mut cfseq,
+        P::Idle,
+        None,
+        c2_at,
+    );
+    assert!(!early_fail_done.program_done);
+    assert_eq!(
+        cancel_then_early_fail.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+
+    // 14. DB outcome arriving strictly BETWEEN root Working (unknown membership) and the
+    // first child id=ses_b record is buffered until the child identifies the participant:
+    // foreign ses_a leaves ses_b Completed, while matching ses_b settles Failed.
+    for (db_session, expected_outcome, expect_done) in [
+        ("ses_a", TurnOutcome::Completed, true),
+        ("ses_b", TurnOutcome::Failed, false),
+    ] {
+        let mut between = make_model();
+        let mut bseq = 0u64;
+        emit_at(&mut between, &mut bseq, P::Idle, None, start);
+        // Root Working ONLY (no child yet -> program_turn_sessions is empty).
+        emit_at(&mut between, &mut bseq, P::Working, None, start);
+        between.apply(
+            SessionEvent::Agent {
+                event: A::ProgramSessionOutcome {
+                    outcome: TurnOutcome::Failed,
+                    policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                    session_id: db_session.into(),
+                    ended_at_ms: start.wall_millis + 10,
+                    superseded: false,
+                },
+                live: true,
+            },
+            start,
+        );
+        // Now child ses_b arrives and identifies the active participant.
+        bseq += 1;
+        let child_b = Report {
+            id: "ses_b".into(),
+            state: P::Working,
+            app: Some("opencode".into()),
+            kind: None,
+            progress: None,
+            title: None,
+            message: None,
+        };
+        let root_w = Report {
+            id: String::new(),
+            state: P::Working,
+            app: Some("opencode".into()),
+            kind: None,
+            progress: None,
+            title: None,
+            message: None,
+        };
+        between.apply(
+            SessionEvent::ProgramStatus {
+                seq: bseq,
+                subseq: 0,
+                update: Box::new(Update {
+                    current: Some(child_b.clone()),
+                    root: Some(root_w),
+                    active_children: vec![ChildCount {
+                        app: Some("opencode".into()),
+                        active: 1,
+                    }],
+                    trigger: Some(child_b),
+                }),
+                live: true,
+            },
+            start,
+        );
+        let done = emit_at(&mut between, &mut bseq, P::Idle, None, start);
+        assert_eq!(done.program_done, expect_done, "db_session={db_session}");
+        assert_eq!(
+            between.status().observation.outcome,
+            Some(expected_outcome),
+            "db_session={db_session}"
+        );
+    }
+
+    // 14b. Same-session Turn 2 failure arriving between root Working and child id=ses_a after
+    // a completed Turn 1 (whose unread badge U1 still stands) must preserve U1, settle Turn 2
+    // as Failed, and not fire a second completion.
+    let mut second_turn = make_model();
+    let mut stseq = 0u64;
+    let st1_at = Now {
+        monotonic: start.monotonic + Duration::from_secs(1),
+        wall_millis: start.wall_millis + 1_000,
+    };
+    let st2_at = Now {
+        monotonic: start.monotonic + Duration::from_secs(2),
+        wall_millis: start.wall_millis + 2_000,
+    };
+    emit_at(&mut second_turn, &mut stseq, P::Idle, None, start);
+    emit_at(
+        &mut second_turn,
+        &mut stseq,
+        P::Working,
+        Some("ses_a"),
+        st1_at,
+    );
+    // Turn 1's DB succeeded poll can arrive ahead of Turn 1's root idle, leaving idle_turn
+    // active once root idle runs and records Turn 1's unread U1.
+    second_turn.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionFinished {
+                session_id: "ses_a".into(),
+                ended_at_ms: st1_at.wall_millis + 10,
+                superseded: false,
+            },
+            live: true,
+        },
+        st1_at,
+    );
+    assert!(emit_at(&mut second_turn, &mut stseq, P::Idle, None, st1_at).program_done);
+    assert!(
+        second_turn
+            .apply(SessionEvent::TakeCompletion, st1_at)
+            .completion_consumed
+    );
+    second_turn.apply(SessionEvent::Unread { viewed: false }, st1_at);
+    let turn1_unread = second_turn.status().unread_since;
+    assert_eq!(turn1_unread, Some(st1_at.wall_millis));
+
+    // Turn 2 root Working arrives BEFORE child ses_a; non-superseded DB Failed for ses_a
+    // arrives with ended_at_ms after Turn 2 started.
+    emit_at(&mut second_turn, &mut stseq, P::Working, None, st2_at);
+    let mid = second_turn.apply(
+        SessionEvent::Agent {
+            event: A::ProgramSessionOutcome {
+                outcome: TurnOutcome::Failed,
+                policy: ProgramOutcomePolicy::DeferWhileNativeActive,
+                session_id: "ses_a".into(),
+                ended_at_ms: st2_at.wall_millis + 20,
+                superseded: false,
+            },
+            live: true,
+        },
+        st2_at,
+    );
+    assert!(
+        !mid.revert_unread,
+        "Turn 2 failure must not roll back Turn 1's unread badge"
+    );
+    assert_eq!(second_turn.status().unread_since, turn1_unread);
+
+    // Child ses_a arrives, then root idle settles Turn 2 as Failed with Turn 1's unread intact.
+    stseq += 1;
+    let child_a = Report {
+        id: "ses_a".into(),
+        state: P::Working,
+        app: Some("opencode".into()),
+        kind: None,
+        progress: None,
+        title: None,
+        message: None,
+    };
+    let root_a = Report {
+        id: String::new(),
+        state: P::Working,
+        app: Some("opencode".into()),
+        kind: None,
+        progress: None,
+        title: None,
+        message: None,
+    };
+    second_turn.apply(
+        SessionEvent::ProgramStatus {
+            seq: stseq,
+            subseq: 0,
+            update: Box::new(Update {
+                current: Some(child_a.clone()),
+                root: Some(root_a),
+                active_children: vec![ChildCount {
+                    app: Some("opencode".into()),
+                    active: 1,
+                }],
+                trigger: Some(child_a),
+            }),
+            live: true,
+        },
+        st2_at,
+    );
+    let st2_done = emit_at(&mut second_turn, &mut stseq, P::Idle, None, st2_at);
+    assert!(!st2_done.program_done);
+    assert_eq!(
+        second_turn.status().observation.outcome,
+        Some(TurnOutcome::Failed)
+    );
+    assert!(second_turn.status().failed_since.is_some());
+    assert_eq!(
+        second_turn.status().unread_since,
+        turn1_unread,
+        "Turn 1's unread timestamp must stay preserved"
+    );
+    assert!(
+        !second_turn
+            .apply(SessionEvent::TakeCompletion, st2_at)
+            .completion_consumed,
+        "failed Turn 2 must not arm a second completion"
     );
 }

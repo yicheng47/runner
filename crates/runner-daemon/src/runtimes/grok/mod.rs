@@ -4,15 +4,32 @@ use runner_core::protocol::runtime_metadata::grok::{PERMISSIONS, SKILL_DIRS};
 
 mod conversation;
 mod models;
-mod status;
+pub(crate) mod status;
 
 pub struct Grok;
 impl RuntimeAdapter for Grok {
     fn status_semantics(&self) -> StatusSemantics {
         StatusSemantics {
-            interaction_prefix: Some("grok"),
+            program_status_authority: true,
+            program_status_root_app: Some("grok"),
+            program_status_transcript_outcomes: true,
+            program_status_cancel_interrupt: true,
             ..Default::default()
         }
+    }
+    fn terminal_adapter(&self, _pending_turn: Option<bool>) -> Option<Box<dyn TerminalAdapter>> {
+        Some(Box::new(ProgramStatusTerminal::default()))
+    }
+    fn starts_trusted(
+        &self,
+        _cwd: Option<&Path>,
+        _args: &[String],
+        _env: &std::collections::BTreeMap<String, String>,
+    ) -> bool {
+        true
+    }
+    fn startup_delivery_waits_for_program_status(&self, _pending_turn: bool) -> bool {
+        true
     }
     fn probe_uses_shell_env(&self) -> bool {
         true

@@ -1,0 +1,17 @@
+{"runtime":"grok","name":"background-tasks","rules":[2,8],"bugs":[],"known_wrong":[],"pending_turn":false,"evidence":"Grok subagent child records add background_tasks detail only and never change root Working, Done, unread badges or crew delivery."}
+{"ms":100,"event":"hook","report":{"hook_event_name":"SessionStart","sessionId":"11111111-1111-4111-8111-111111111111","transcriptPath":"<TRANSCRIPT>"}}
+{"ms":150,"event":"output","bytes":"\u001b]7501;state=idle:app=grok\u001b\\"}
+{"ms":200,"event":"input","bytes":"sample"}
+{"ms":300,"event":"input","bytes":"\r"}
+{"ms":400,"event":"hook","report":{"hook_event_name":"UserPromptSubmit","sessionId":"11111111-1111-4111-8111-111111111111","transcriptPath":"<TRANSCRIPT>","promptId":"p1","prompt":"sample"}}
+{"ms":450,"event":"output","bytes":"\u001b]7501;state=working:app=grok:msg=VGhpbmtpbmc\u001b\\"}
+{"ms":500,"event":"output","bytes":"\u001b]7501;id=sub-1:app=grok:state=working\u001b\\"}
+{"ms":550,"event":"output","bytes":"\u001b]7501;id=sub-2:app=grok:state=blocked:kind=permission\u001b\\"}
+{"ms":600,"event":"reserve"}
+{"ms":650,"event":"finish"}
+{"ms":700,"event":"output","bytes":"\u001b]7501;state=done:app=grok:msg=VHVybiBjb21wbGV0ZSBpbiAyLjVzLg\u001b\\"}
+{"ms":800,"event":"completion"}
+{"ms":850,"event":"reserve"}
+{"ms":875,"event":"finish"}
+{"ms":900,"event":"output","bytes":"\u001b]7501;state=clear:id=sub-1\u001b\\"}
+{"ms":1000,"event":"output","bytes":"\u001b]7501;state=clear:id=sub-2\u001b\\"}

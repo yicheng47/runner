@@ -562,6 +562,7 @@ pub(crate) fn record_session_completion(
     windows: &WindowRegistry,
     events: &EventChannel,
     session_id: &str,
+    optimistic: bool,
 ) -> Result<()> {
     let is_shell = {
         let conn = db.get()?;
@@ -578,27 +579,101 @@ pub(crate) fn record_session_completion(
     }
     let viewed = windows.any_focused_displaying(&[session_id.to_owned()]);
     sessions.record_unread(session_id, viewed);
-    let updated_tab = {
+    let now = Utc::now();
+    let since_ms = now.timestamp_millis();
+    let (updated_tab, snapshot) = {
         let mut conn = db.get()?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        repo::session_attention::record_completion(
+        let prev_session_unread = repo::session_attention::unread_since(&tx, session_id)?;
+        repo::session_attention::record_completion(&tx, session_id, viewed, since_ms)?;
+        repo::node::ensure_active_sessions(&tx)?;
+        let tab = repo::node::find_for_session(&tx, session_id)?;
+        let (updated_tab, tab_snapshot) = if let Some(tab) = tab {
+            let prev_tab_completed_at = tab.last_completed_at.clone();
+            let tab_viewed = viewed
+                && !repo::session_attention::any_unread(&tx, &repo::node::session_ids(&tab))?;
+            let row = repo::node::record_completion(&tx, &tab.id, tab_viewed, now)?;
+            let written_tab_completed_at = row.as_ref().and_then(|r| r.last_completed_at.clone());
+            (
+                row.map(|_| tab.id.clone()),
+                Some((tab.id, prev_tab_completed_at, written_tab_completed_at)),
+            )
+        } else {
+            (None, None)
+        };
+        tx.commit()?;
+        let snapshot = (optimistic && !viewed).then(|| {
+            let (tab_id, prev_tab_completed_at, written_tab_completed_at) = match tab_snapshot {
+                Some((id, prev, written)) => (Some(id), prev, written),
+                None => (None, None, None),
+            };
+            crate::session::manager::OptimisticCompletion {
+                prev_session_unread,
+                written_session_unread: since_ms,
+                tab_id,
+                prev_tab_completed_at,
+                written_tab_completed_at,
+            }
+        });
+        (updated_tab, snapshot)
+    };
+    sessions.set_optimistic_completion(session_id, snapshot);
+    if let Some(tab_id) = updated_tab {
+        events.emit(
+            ATTENTION_CHANGED_EVENT,
+            &serde_json::json!({ "tab_id": tab_id }),
+        );
+    }
+    Ok(())
+}
+
+/// Undoes only the latest optimistic unread completion written from an OSC 7501
+/// `working` → `idle` transition when a native outcome store reports that same
+/// turn as failed or interrupted moments later, preserving prior durable unread
+/// attention, `error_acknowledged_at`, and `last_viewed_at`.
+pub(crate) fn revert_session_completion(
+    db: &DbPool,
+    sessions: &SessionManager,
+    events: &EventChannel,
+    session_id: &str,
+) -> Result<()> {
+    let Some(snapshot) = sessions.take_optimistic_completion(session_id) else {
+        return Ok(());
+    };
+    let (restored, tab_changed) = {
+        let mut conn = db.get()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let session_restored = repo::session_attention::restore_unread_if_matches(
             &tx,
             session_id,
-            viewed,
-            Utc::now().timestamp_millis(),
+            snapshot.written_session_unread,
+            snapshot.prev_session_unread,
         )?;
-        repo::node::ensure_active_sessions(&tx)?;
-        let Some(tab) = repo::node::find_for_session(&tx, session_id)? else {
-            tx.commit()?;
-            return Ok(());
+        let tab_changed = match (
+            snapshot.tab_id.as_deref(),
+            snapshot.written_tab_completed_at.as_deref(),
+        ) {
+            (Some(tab_id), Some(written)) => {
+                if repo::node::restore_completion_if_matches(
+                    &tx,
+                    tab_id,
+                    written,
+                    snapshot.prev_tab_completed_at.as_deref(),
+                )? {
+                    Some(tab_id.to_owned())
+                } else {
+                    None
+                }
+            }
+            _ => None,
         };
-        let viewed =
-            viewed && !repo::session_attention::any_unread(&tx, &repo::node::session_ids(&tab))?;
-        let row = repo::node::record_completion(&tx, &tab.id, viewed, Utc::now())?;
         tx.commit()?;
-        row.map(|_| tab.id)
+        (session_restored, tab_changed)
     };
-    if let Some(tab_id) = updated_tab {
+    if restored {
+        sessions.restore_unread_since(session_id, snapshot.prev_session_unread);
+    }
+    if let Some(tab_id) = tab_changed {
         events.emit(
             ATTENTION_CHANGED_EVENT,
             &serde_json::json!({ "tab_id": tab_id }),

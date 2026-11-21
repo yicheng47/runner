@@ -108,6 +108,19 @@ impl TestHookRoute {
         self.admit(payload)
     }
 
+    pub(crate) fn admit_bridge_unavailable(&self) -> Result<Admission> {
+        self.routes.admit(HookReport {
+            version: runner_core::protocol::hook::VERSION,
+            runtime: self.runtime,
+            session_id: "fixture".into(),
+            generation: self.generation.clone(),
+            event: "bridge_unavailable".into(),
+            caller_thread_id: None,
+            payload: serde_json::json!({}),
+            bridge_unavailable: true,
+        })
+    }
+
     pub(crate) fn retire(&self) {
         self.routes.retire("fixture");
     }

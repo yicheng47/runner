@@ -332,6 +332,7 @@ impl SessionManager {
                                 source,
                                 status: manager_t.agent_status(&session_id),
                                 program_done: false,
+                                program_idle_completed: false,
                             });
                             let outcome = ctx.try_append_session_status(
                                 state,
@@ -896,6 +897,7 @@ impl SessionManager {
                     source,
                     status: session.model.status().clone(),
                     program_done: false,
+                    program_idle_completed: false,
                 });
             let input_cleared = effects
                 .input_cleared
@@ -1424,7 +1426,9 @@ fn has_started_turn(event: &crate::session::state::agent::AgentEvent) -> bool {
         AgentEvent::TurnStarted
         | AgentEvent::ProgramTurnConfirmed { .. }
         | AgentEvent::ProgramTurnFinished
+        | AgentEvent::ProgramSessionFinished { .. }
         | AgentEvent::ProgramTurnOutcome { .. }
+        | AgentEvent::ProgramSessionOutcome { .. }
         | AgentEvent::Working { .. }
         | AgentEvent::TurnEnded { .. } => true,
         AgentEvent::Batch { events, .. } => events.iter().any(has_started_turn),

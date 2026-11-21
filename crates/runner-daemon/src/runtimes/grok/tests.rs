@@ -185,7 +185,7 @@ fn capabilities_and_platform_hooks_are_honest() {
     assert!(catalog.default_enabled);
     assert_eq!(catalog.models.len(), 1);
     assert_eq!(catalog.efforts.len(), 1);
-    assert!(catalog.update_args.is_empty());
+    assert_eq!(catalog.update_args, &["update"]);
     assert!(catalog.npm_package.is_none());
     assert!(Grok.skills().toggle.is_none());
     assert!(Grok.usage().is_none());

@@ -631,6 +631,7 @@
     ]
   },
   {
+    "min_version": "1.0.89",
     "name": "grok",
     "display_name": "Grok",
     "command": "grok",
@@ -657,7 +658,7 @@
     ]
   },
   {
-    "min_version": "2.0.0",
+    "min_version": "2.1.0",
     "name": "opencode",
     "display_name": "OpenCode v2",
     "command": "opencode",

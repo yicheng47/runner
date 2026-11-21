@@ -1,0 +1,14 @@
+{"runtime":"opencode","name":"approval-denied","rules":[6],"bugs":[],"known_wrong":[],"pending_turn":false,"evidence":"OpenCode 2.3.2 permission Reject writes session_message assistant finish=error error.type=aborted without advancing session_v2.time_idle; rejecting via Enter (no Escape cancel key) still settles Interrupted with no badge."}
+{"ms":100,"event":"hook","report":{"hook_event_name":"snapshot","epoch":1,"sequence":1,"session_id":"ses_111111111111"}}
+{"ms":150,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\"}
+{"ms":200,"event":"input","bytes":"sample"}
+{"ms":300,"event":"input","bytes":"\r"}
+{"ms":450,"event":"output","bytes":"\u001b]7501;state=working:app=opencode\u001b\\\u001b]7501;id=ses_111111111111:app=opencode:state=working\u001b\\"}
+{"ms":600,"event":"output","bytes":"\u001b]7501;state=blocked:app=opencode:kind=permission:msg=UnVuIGJhc2g\u001b\\"}
+{"ms":800,"event":"reserve"}
+{"ms":850,"event":"input","bytes":"\r"}
+{"ms":900,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\\u001b]7501;state=clear:id=ses_111111111111\u001b\\"}
+{"ms":925,"event":"record","record":{"id":"ses_111111111111","time_busy":1767225600450,"message":{"seq":61,"type":"assistant","time_updated":1767225600900,"data":{"time":{"created":1767225600455,"completed":1767225600900},"finish":"error","error":{"type":"aborted","message":"Step interrupted"}}}}}
+{"ms":1000,"event":"completion"}
+{"ms":1100,"event":"reserve"}
+{"ms":1200,"event":"finish"}

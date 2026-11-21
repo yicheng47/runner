@@ -762,7 +762,7 @@ pub mod grok {
     pub fn catalog() -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::Grok,
-            min_version: None,
+            min_version: Some("1.0.89"),
             display_name: Runtime::Grok.display_name(),
             command: Runtime::Grok.command().unwrap(),
             capabilities: RuntimeCapabilities::default(),
@@ -773,7 +773,7 @@ pub mod grok {
             models: vec![default_model_option()],
             efforts: vec![default_effort()],
             skills_dirs: SKILL_DIRS,
-            update_args: &[],
+            update_args: &["update"],
             npm_package: None,
         })
     }
@@ -808,7 +808,7 @@ pub mod opencode {
     pub fn catalog() -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::OpenCode,
-            min_version: Some("2.0.0"),
+            min_version: Some("2.1.0"),
             display_name: Runtime::OpenCode.display_name(),
             command: "opencode",
             capabilities: RuntimeCapabilities {
@@ -822,7 +822,7 @@ pub mod opencode {
             models: vec![default_model_option()],
             efforts: vec![default_effort()],
             skills_dirs: SKILL_DIRS,
-            update_args: &[],
+            update_args: &["upgrade"],
             npm_package: None,
         })
     }
@@ -840,6 +840,83 @@ pub fn catalog_for(runtime: Runtime) -> Option<RuntimeCatalog> {
         Runtime::OpenCode => opencode::catalog(),
         Runtime::Shell => None,
     }
+}
+
+/// Minimum version below which a detected or overridden binary is withheld as an
+/// incompatible generation (e.g. OpenCode v1 < 2.0.0) rather than offered in-place update.
+pub fn withhold_below_version(runtime: Runtime) -> Option<&'static str> {
+    let catalog = catalog_for(runtime)?;
+    if catalog.min_version.is_some() && catalog.update_args.is_empty() {
+        catalog.min_version
+    } else if runtime == Runtime::OpenCode {
+        Some("2.0.0")
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Semver {
+    core: [u64; 3],
+    prerelease: bool,
+}
+
+fn parse_semver(token: &str) -> Option<Semver> {
+    let token = token.trim();
+    let token = token.strip_prefix('v').unwrap_or(token);
+    let token = token.split('+').next()?;
+    let (core, prerelease) = match token.split_once('-') {
+        Some((core, prerelease)) if !prerelease.is_empty() => (core, true),
+        Some(_) => return None,
+        None => (token, false),
+    };
+    let mut parts = core.split('.');
+    let mut numbers = [0; 3];
+    for number in &mut numbers {
+        let part = parts.next()?;
+        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        *number = part.parse().ok()?;
+    }
+    parts.next().is_none().then_some(Semver {
+        core: numbers,
+        prerelease,
+    })
+}
+
+/// Whether `latest` is a newer release than `installed`. A prerelease of the
+/// same version counts as older; two prereleases of it count as equal.
+pub fn version_is_newer(latest: &str, installed: &str) -> bool {
+    let (Some(latest), Some(installed)) = (parse_semver(latest), parse_semver(installed)) else {
+        return false;
+    };
+    match latest.core.cmp(&installed.core) {
+        std::cmp::Ordering::Greater => true,
+        std::cmp::Ordering::Less => false,
+        std::cmp::Ordering::Equal => installed.prerelease && !latest.prerelease,
+    }
+}
+
+pub fn version_is_semver(token: &str) -> bool {
+    parse_semver(token).is_some()
+}
+
+pub fn version_below(installed: Option<&str>, minimum: Option<&str>) -> bool {
+    match (installed, minimum) {
+        (Some(installed), Some(minimum)) => version_is_newer(minimum, installed),
+        _ => false,
+    }
+}
+
+pub fn runtime_updatable_for_version(runtime: Runtime, installed: Option<&str>) -> bool {
+    let Some(catalog) = catalog_for(runtime) else {
+        return false;
+    };
+    if catalog.update_args.is_empty() {
+        return false;
+    }
+    !version_below(installed, withhold_below_version(runtime))
 }
 static NO_PERMISSIONS: Permissions = Permissions {
     offered: &[],

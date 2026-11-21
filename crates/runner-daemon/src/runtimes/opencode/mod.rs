@@ -7,12 +7,37 @@ use std::collections::BTreeMap;
 mod config;
 pub(crate) mod mcp;
 mod models;
-mod status;
+pub(crate) mod status;
 #[cfg(test)]
 mod tests;
 
 pub struct OpenCode;
 impl RuntimeAdapter for OpenCode {
+    fn status_semantics(&self) -> StatusSemantics {
+        StatusSemantics {
+            program_status_authority: true,
+            program_status_root_app: Some("opencode"),
+            program_status_transcript_outcomes: true,
+            program_status_cancel_interrupt: true,
+            program_status_idle_completes: true,
+            program_status_suppress_child_tasks: true,
+            ..Default::default()
+        }
+    }
+    fn terminal_adapter(&self, _pending_turn: Option<bool>) -> Option<Box<dyn TerminalAdapter>> {
+        Some(Box::new(ProgramStatusTerminal::default()))
+    }
+    fn starts_trusted(
+        &self,
+        _cwd: Option<&Path>,
+        _args: &[String],
+        _env: &std::collections::BTreeMap<String, String>,
+    ) -> bool {
+        true
+    }
+    fn startup_delivery_waits_for_program_status(&self, _pending_turn: bool) -> bool {
+        true
+    }
     fn probe_uses_shell_env(&self) -> bool {
         true
     }
@@ -30,7 +55,7 @@ impl RuntimeAdapter for OpenCode {
         }
         Some(runner_core::protocol::status::StartupError {
             runtime: Runtime::OpenCode,
-            message: "This OpenCode executable does not support --standalone. Runner only supports OpenCode v2 (2.0.0 or newer).".into(),
+            message: "This OpenCode executable does not support --standalone. Runner only supports OpenCode v2 (2.1.0 or newer).".into(),
             output: plain.trim().chars().take(512).collect(),
         })
     }

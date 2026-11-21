@@ -1,0 +1,22 @@
+runtime=opencode name=approval-denied rules=[6] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key="ses_111111111111" delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+150 status=running/idle/baseline observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
+  busy@input-submit [running/idle/baseline observation.program_status={"message":null}]
+450 status=running/working/baseline observation.program_status={"message":null}
+  busy@program-status [running/working/baseline observation.program_status={"message":null}]
+600 status=running/idle/baseline interactions=[{"id":"program-status:1","reason":"approval","owners":[],"since":1767225600600}] observation.program_status={"message":"Run bash"} quiescent=false
+  busy@program-status [running/idle/baseline interactions=[{"id":"program-status:1","reason":"approval","owners":[],"since":1767225600600}] observation.program_status={"message":"Run bash"}]
+800 result={"gate":"human_interaction"}
+850 delivery=["ReadinessChanged"]
+900 status=running/idle/baseline outcome="completed" observation.program_status={"message":null} activity="idle" quiescent=true delivery=["Idle","ReadinessChanged"]
+  idle@program-status [running/idle/baseline outcome="completed" observation.program_status={"message":null}]
+925 status=running/idle/baseline outcome="interrupted" observation.program_status={"message":null} completion_armed=false
+  idle@program-status [running/idle/baseline outcome="interrupted" observation.program_status={"message":null}]
+1000 result={"completion_consumed":false,"viewed":false}
+1100 quiescent=false result={"gate":"ready"}
+1200 quiescent=true delivery=["DeliveryFinished"]

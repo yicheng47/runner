@@ -1,0 +1,11 @@
+{"runtime":"opencode","name":"multi-session","rules":[2,6,8],"bugs":[],"known_wrong":[],"pending_turn":false,"evidence":"Multiple pending sessions in one OpenCode TUI summarize on root (2 sessions working / 2 sessions need input with omitted kind on mixed waits) while per-session child records do not set background_tasks or override root."}
+{"ms":100,"event":"hook","report":{"hook_event_name":"snapshot","epoch":1,"sequence":1,"session_id":"ses_111111111111"}}
+{"ms":150,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\"}
+{"ms":200,"event":"output","bytes":"\u001b]7501;state=working:app=opencode:msg=MiBzZXNzaW9ucyB3b3JraW5n\u001b\\\u001b]7501;id=ses_111111111111:app=opencode:state=working\u001b\\\u001b]7501;id=ses_222222222222:app=opencode:state=working\u001b\\"}
+{"ms":400,"event":"output","bytes":"\u001b]7501;state=blocked:app=opencode:msg=MiBzZXNzaW9ucyBuZWVkIGlucHV0\u001b\\\u001b]7501;id=ses_111111111111:app=opencode:state=blocked:kind=permission\u001b\\\u001b]7501;id=ses_222222222222:app=opencode:state=blocked:kind=question\u001b\\"}
+{"ms":500,"event":"reserve"}
+{"ms":600,"event":"output","bytes":"\u001b]7501;state=working:app=opencode:msg=MiBzZXNzaW9ucyB3b3JraW5n\u001b\\"}
+{"ms":800,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\\u001b]7501;state=clear:id=ses_111111111111\u001b\\\u001b]7501;state=clear:id=ses_222222222222\u001b\\"}
+{"ms":900,"event":"completion"}
+{"ms":950,"event":"reserve"}
+{"ms":1000,"event":"finish"}

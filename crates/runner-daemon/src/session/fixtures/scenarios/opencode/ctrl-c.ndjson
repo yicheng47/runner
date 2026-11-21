@@ -1,0 +1,16 @@
+{"runtime":"opencode","name":"ctrl-c","rules":[8],"bugs":[783],"known_wrong":[],"pending_turn":false}
+{"ms":100,"event":"hook","report":{"hook_event_name":"snapshot","epoch":1,"sequence":1,"session_id":"ses_111111111111"}}
+{"ms":150,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\"}
+{"ms":200,"event":"input","bytes":"sample"}
+{"ms":300,"event":"input","bytes":"\r"}
+{"ms":450,"event":"output","bytes":"\u001b]7501;state=working:app=opencode\u001b\\\u001b]7501;id=ses_111111111111:app=opencode:state=working\u001b\\"}
+{"ms":500,"event":"input","bytes":"\u0003"}
+{"ms":550,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\\u001b]7501;state=clear:id=ses_111111111111\u001b\\"}
+{"ms":575,"event":"record","record":{"id":"ses_111111111111","time_idle":1767225600575,"idle_outcome":"interrupted"}}
+{"ms":600,"event":"completion"}
+{"ms":700,"event":"input","bytes":"next"}
+{"ms":750,"event":"input","bytes":"\r"}
+{"ms":800,"event":"output","bytes":"\u001b]7501;state=working:app=opencode\u001b\\\u001b]7501;id=ses_111111111111:app=opencode:state=working\u001b\\"}
+{"ms":900,"event":"output","bytes":"\u001b]7501;state=idle:app=opencode\u001b\\\u001b]7501;state=clear:id=ses_111111111111\u001b\\"}
+{"ms":950,"event":"completion"}
+{"ms":975,"event":"record","record":{"id":"ses_111111111111","time_idle":1767225600975,"idle_outcome":"succeeded"}}

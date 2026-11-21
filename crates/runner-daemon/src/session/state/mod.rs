@@ -190,6 +190,7 @@ pub(crate) enum SessionEvent {
     Unread {
         viewed: bool,
     },
+    RestoreUnread(Option<i64>),
     Exited {
         code: Option<i32>,
         crashed: bool,
@@ -207,10 +208,23 @@ pub(crate) struct Effects {
     pub input_cleared: bool,
     pub completion_consumed: bool,
     pub program_turn_started: bool,
-    /// True only when an authoritative OSC 7501 root `State::Done` report
-    /// just settled a turn, distinct from wait-overlay or child-detail
+    /// True only when an authoritative OSC 7501 root turn end (`State::Done`,
+    /// or `working` → `idle` under `program_status_idle_completes`) just
+    /// settled a turn, distinct from wait-overlay or child-detail
     /// republications of an already-settled `Completed` observation.
     pub program_done: bool,
+    /// True when `program_done` was optimistically inferred from root
+    /// `working` → `idle` (OpenCode) and may be undone if a late native outcome
+    /// reports that same turn as failed or interrupted.
+    pub program_idle_completed: bool,
+    /// True when a late native failure/interruption overrides an unread
+    /// completion inferred from `working` → `idle`.
+    pub revert_unread: bool,
+    /// True when the reducer confirms the pending optimistic idle completion
+    /// has been finalized (every participating session succeeded, or the user
+    /// viewed the session) so the manager may drop its durable CAS rollback
+    /// snapshot.
+    pub clear_optimistic_completion: bool,
     pub persist_key: Option<PersistKey>,
 }
 
@@ -295,6 +309,27 @@ impl ProgramTurn {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct IdleCompletedTurn {
+    sessions: std::collections::BTreeSet<String>,
+    /// Earliest timestamp (`wall_millis` of the previous turn's root `idle`,
+    /// if any) that a DB outcome for this turn can legitimately carry; rejects
+    /// delayed outcomes belonging to an earlier turn on the same session.
+    min_ended_at: Option<i64>,
+    prev_unread: Option<i64>,
+    written_unread: Option<i64>,
+    /// Set once the user views this session: suppresses unread rollback while
+    /// preserving turn identity so a late Failed/Interrupted DB record still
+    /// corrects the displayed outcome.
+    viewed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingSessionOutcome {
+    outcome: TurnOutcome,
+    ended_at_ms: i64,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct SessionModel {
     activity: Option<SessionActivityState>,
@@ -320,8 +355,18 @@ pub(crate) struct SessionModel {
     program_status_root_app: Option<&'static str>,
     program_status_transcript_outcomes: bool,
     program_status_cancel_interrupt: bool,
+    program_status_idle_completes: bool,
+    program_status_suppress_child_tasks: bool,
     program_cancel_pending: bool,
     program_error_is_abort: bool,
+    program_idle_completed: bool,
+    program_idle_turn: Option<IdleCompletedTurn>,
+    program_cancelled_sessions: std::collections::BTreeSet<String>,
+    program_pending_session_outcomes: std::collections::BTreeMap<String, PendingSessionOutcome>,
+    program_active_children: std::collections::BTreeSet<String>,
+    program_turn_sessions: std::collections::BTreeSet<String>,
+    program_turn_started_at: Option<i64>,
+    program_last_turn_idle_at: Option<i64>,
     program_status_children: usize,
     program_turn: ProgramTurn,
     program_turn_outcome: Option<TurnOutcome>,
@@ -347,6 +392,12 @@ impl SessionModel {
     }
     pub fn set_program_status_cancel_interrupt(&mut self, enabled: bool) {
         self.program_status_cancel_interrupt = enabled;
+    }
+    pub fn set_program_status_idle_completes(&mut self, enabled: bool) {
+        self.program_status_idle_completes = enabled;
+    }
+    pub fn set_program_status_suppress_child_tasks(&mut self, enabled: bool) {
+        self.program_status_suppress_child_tasks = enabled;
     }
     pub fn set_native_attention(&mut self, enabled: bool) {
         self.native_attention = enabled;
@@ -567,7 +618,11 @@ impl SessionModel {
                     return effects;
                 }
                 use runner_terminal::program_status::State;
+                let suppress_child_tasks = self.program_status_suppress_child_tasks;
                 let active_children = |app: &str| -> usize {
+                    if suppress_child_tasks {
+                        return 0;
+                    }
                     update
                         .active_children
                         .iter()
@@ -584,8 +639,17 @@ impl SessionModel {
                                     {
                                         return effects;
                                     }
-                                } else if trigger.app.as_deref() != Some(app) {
-                                    return effects;
+                                    self.program_active_children.remove(&trigger.id);
+                                } else {
+                                    if trigger.app.as_deref() != Some(app) {
+                                        return effects;
+                                    }
+                                    if matches!(trigger.state, State::Working | State::Blocked) {
+                                        self.program_active_children.insert(trigger.id.clone());
+                                        self.program_turn_sessions.insert(trigger.id.clone());
+                                    } else {
+                                        self.program_active_children.remove(&trigger.id);
+                                    }
                                 }
                                 // Child records only contribute background-task detail text and
                                 // never alter root status, unread badges or crew delivery (#1051).
@@ -609,6 +673,7 @@ impl SessionModel {
                                     return effects;
                                 }
                                 self.program_status_children = 0;
+                                self.program_active_children.clear();
                                 None
                             } else {
                                 if trigger.app.as_deref() != Some(app) {
@@ -653,6 +718,14 @@ impl SessionModel {
                     self.program_turn_outcome = None;
                     self.program_cancel_pending = false;
                     self.program_error_is_abort = false;
+                    self.program_idle_completed = false;
+                    self.program_idle_turn = None;
+                    self.program_cancelled_sessions.clear();
+                    self.program_pending_session_outcomes.clear();
+                    self.program_active_children.clear();
+                    self.program_turn_sessions.clear();
+                    self.program_turn_started_at = None;
+                    self.program_last_turn_idle_at = None;
                     self.program_status_children = 0;
                     if self.status.observation.program_status.is_some() {
                         let completion_armed = self.completion_armed;
@@ -685,6 +758,7 @@ impl SessionModel {
                     return effects;
                 };
                 let report_state = report.state;
+                let was_working = self.program_turn.native_working;
                 let was_native_active =
                     self.program_turn.native_working || self.program_status_wait.is_some();
                 let started_turn = match report_state {
@@ -711,38 +785,119 @@ impl SessionModel {
                     && (self.program_cancel_pending
                         || (was_native_active
                             && self.program_turn_outcome == Some(TurnOutcome::Interrupted)));
+                let mut idle_completed_now = false;
                 match report_state {
                     State::Idle => {
+                        let prev_turn_idle_at = self.program_last_turn_idle_at;
+                        if was_working {
+                            self.program_last_turn_idle_at = Some(now.wall_millis);
+                        }
                         if self.program_status_cancel_interrupt
                             && std::mem::take(&mut self.program_cancel_pending)
                         {
+                            let mut sessions = std::mem::take(&mut self.program_turn_sessions);
+                            sessions.extend(self.program_active_children.iter().cloned());
                             self.program_turn_outcome = Some(TurnOutcome::Interrupted);
                             self.program_error_is_abort = false;
+                            self.program_idle_completed = false;
+                            self.program_idle_turn = None;
+                            self.program_cancelled_sessions = sessions;
+                            self.program_pending_session_outcomes
+                                .retain(|_, pending| pending.ended_at_ms >= now.wall_millis);
+                        } else if was_working {
+                            self.program_cancelled_sessions.clear();
+                            let mut sessions = std::mem::take(&mut self.program_turn_sessions);
+                            sessions.extend(self.program_active_children.iter().cloned());
+                            if self.program_turn_outcome.is_none() && !sessions.is_empty() {
+                                let mut matched: Option<TurnOutcome> = None;
+                                for sid in &sessions {
+                                    if let Some(pending) =
+                                        self.program_pending_session_outcomes.remove(sid)
+                                    {
+                                        if prev_turn_idle_at
+                                            .is_none_or(|prev| pending.ended_at_ms >= prev)
+                                        {
+                                            matched = match (matched, pending.outcome) {
+                                                (Some(TurnOutcome::Failed), _)
+                                                | (_, TurnOutcome::Failed) => {
+                                                    Some(TurnOutcome::Failed)
+                                                }
+                                                (_, other) => Some(other),
+                                            };
+                                        }
+                                    }
+                                }
+                                if let Some(outcome) = matched {
+                                    self.program_turn_outcome = Some(outcome);
+                                }
+                            }
+                            self.program_pending_session_outcomes
+                                .retain(|_, pending| pending.ended_at_ms >= now.wall_millis);
+                            if self.program_status_idle_completes
+                                && self.program_turn_outcome.is_none()
+                            {
+                                idle_completed_now = true;
+                                self.program_idle_completed = true;
+                                self.program_idle_turn = Some(IdleCompletedTurn {
+                                    sessions,
+                                    min_ended_at: prev_turn_idle_at,
+                                    prev_unread: self.status.unread_since,
+                                    written_unread: None,
+                                    viewed: false,
+                                });
+                            } else {
+                                self.program_idle_completed = false;
+                                self.program_idle_turn = None;
+                            }
                         }
                     }
                     State::Blocked => {}
                     // Delayed Working pairing with an already-confirmed turn must not erase
                     // that same turn's transcript outcome (e.g. UserPromptSubmit -> turn_aborted
                     // ahead of PTY Working -> Idle) or an in-flight Esc/Ctrl+C cancel.
-                    State::Working if !started_turn => {}
+                    State::Working if !started_turn => {
+                        if self.program_turn_started_at.is_none() {
+                            self.program_turn_started_at = Some(now.wall_millis);
+                        }
+                    }
+                    State::Working => {
+                        self.program_cancel_pending = false;
+                        self.program_error_is_abort = false;
+                        self.program_idle_completed = false;
+                        self.program_turn_outcome = None;
+                        self.program_turn_started_at = Some(now.wall_millis);
+                        self.program_turn_sessions = self.program_active_children.clone();
+                    }
                     State::Error if cancelled_abort_error => {
                         self.program_cancel_pending = false;
                         self.program_error_is_abort = false;
+                        self.program_idle_completed = false;
+                        self.program_idle_turn = None;
+                        self.program_turn_sessions.clear();
                         self.program_turn_outcome = Some(TurnOutcome::Interrupted);
                     }
                     State::Error if self.program_status_transcript_outcomes => {
                         self.program_cancel_pending = false;
                         self.program_error_is_abort = is_abort_message;
+                        self.program_idle_completed = false;
+                        self.program_idle_turn = None;
+                        self.program_turn_sessions.clear();
                         self.program_turn_outcome = Some(TurnOutcome::Failed);
                     }
                     State::Error => {
                         self.program_cancel_pending = false;
                         self.program_error_is_abort = is_abort_message;
+                        self.program_idle_completed = false;
+                        self.program_idle_turn = None;
+                        self.program_turn_sessions.clear();
                         self.program_turn_outcome = None;
                     }
                     _ => {
                         self.program_cancel_pending = false;
                         self.program_error_is_abort = false;
+                        self.program_idle_completed = false;
+                        self.program_idle_turn = None;
+                        self.program_turn_sessions.clear();
                         self.program_turn_outcome = None;
                     }
                 }
@@ -757,6 +912,9 @@ impl SessionModel {
                         State::Done => Some(TurnOutcome::Completed),
                         State::Error if cancelled_abort_error => Some(TurnOutcome::Interrupted),
                         State::Error => Some(TurnOutcome::Failed),
+                        State::Idle if idle_completed_now || self.program_idle_completed => {
+                            Some(TurnOutcome::Completed)
+                        }
                         State::Idle => self.program_turn_outcome,
                         _ => None,
                     },
@@ -798,14 +956,17 @@ impl SessionModel {
                 let completion_armed = self.completion_armed;
                 effects = self.publish_snapshot(observation, live, now);
                 if self.program_status_authority {
-                    if report_state == State::Idle {
+                    if report_state == State::Idle && !idle_completed_now {
                         self.completion_armed = false;
                     }
                 } else {
                     self.completion_armed = completion_armed;
                 }
                 effects.program_turn_started = started_turn && self.program_status_authority;
-                effects.program_done = self.program_status_authority && report_state == State::Done;
+                effects.program_done = self.program_status_authority
+                    && (report_state == State::Done || idle_completed_now);
+                effects.program_idle_completed =
+                    self.program_status_authority && idle_completed_now;
                 effects.publication = effects
                     .publication
                     .map(|(state, _)| (state, StatusSource::ProgramStatus));
@@ -834,6 +995,14 @@ impl SessionModel {
                 self.program_turn_outcome = None;
                 self.program_cancel_pending = false;
                 self.program_error_is_abort = false;
+                self.program_idle_completed = false;
+                self.program_idle_turn = None;
+                self.program_cancelled_sessions.clear();
+                self.program_pending_session_outcomes.clear();
+                self.program_active_children.clear();
+                self.program_turn_sessions.clear();
+                self.program_turn_started_at = None;
+                self.program_last_turn_idle_at = None;
                 self.program_status_children = 0;
                 self.program_status_seq = (0, 0);
                 self.program_status_wait = None;
@@ -853,6 +1022,14 @@ impl SessionModel {
                 self.program_turn_outcome = None;
                 self.program_cancel_pending = false;
                 self.program_error_is_abort = false;
+                self.program_idle_completed = false;
+                self.program_idle_turn = None;
+                self.program_cancelled_sessions.clear();
+                self.program_pending_session_outcomes.clear();
+                self.program_active_children.clear();
+                self.program_turn_sessions.clear();
+                self.program_turn_started_at = None;
+                self.program_last_turn_idle_at = None;
                 self.program_status_children = 0;
                 self.program_status_wait = None;
                 self.program_wait_overlay = None;
@@ -928,6 +1105,7 @@ impl SessionModel {
                     {
                         self.program_cancel_pending = false;
                         self.program_error_is_abort = false;
+                        self.program_idle_completed = false;
                         self.program_turn_outcome = None;
                         if self.program_status_authority
                             && !self.hook_status_armed
@@ -955,7 +1133,9 @@ impl SessionModel {
                     if started {
                         self.program_cancel_pending = false;
                         self.program_error_is_abort = false;
+                        self.program_idle_completed = false;
                         self.program_turn_outcome = None;
+                        self.program_turn_started_at = Some(now.wall_millis);
                     }
                     if self.program_status_authority
                         && (started || self.program_turn.native_working)
@@ -966,13 +1146,222 @@ impl SessionModel {
                     return effects;
                 }
                 if matches!(event, agent::AgentEvent::ProgramTurnFinished) {
+                    self.program_idle_completed = false;
+                    self.program_idle_turn = None;
+                    effects.clear_optimistic_completion = true;
+                    return effects;
+                }
+                if let agent::AgentEvent::ProgramSessionFinished {
+                    session_id,
+                    ended_at_ms,
+                    superseded,
+                } = event
+                {
+                    if superseded {
+                        return effects;
+                    }
+                    self.program_cancelled_sessions.remove(&session_id);
+                    if self
+                        .program_pending_session_outcomes
+                        .get(&session_id)
+                        .is_some_and(|pending| pending.ended_at_ms <= ended_at_ms)
+                    {
+                        self.program_pending_session_outcomes.remove(&session_id);
+                    }
+                    if let Some(idle_turn) = self.program_idle_turn.as_mut() {
+                        if idle_turn.min_ended_at.is_some_and(|min| ended_at_ms < min) {
+                            return effects;
+                        }
+                        if !idle_turn.sessions.is_empty() && !idle_turn.sessions.remove(&session_id)
+                        {
+                            return effects;
+                        }
+                        if idle_turn.sessions.is_empty() {
+                            self.program_idle_turn = None;
+                            self.program_idle_completed = false;
+                            effects.clear_optimistic_completion = true;
+                        }
+                    } else if !self.program_turn.native_working
+                        && self.program_status_wait.is_none()
+                    {
+                        self.program_idle_completed = false;
+                        effects.clear_optimistic_completion = true;
+                    }
                     return effects;
                 }
                 if matches!(event, agent::AgentEvent::ProgramIdentityUnavailable) {
                     return self.apply_program_wait_overlay(false, live, now);
                 }
+                if matches!(event, agent::AgentEvent::ProgramOutcomeUnavailable) {
+                    return effects;
+                }
                 if let agent::AgentEvent::ProgramWaitOverlay { active } = event {
                     return self.apply_program_wait_overlay(active, live, now);
+                }
+                if let agent::AgentEvent::ProgramSessionOutcome {
+                    outcome,
+                    policy,
+                    session_id,
+                    ended_at_ms,
+                    superseded,
+                } = event
+                {
+                    if !self.program_status_authority
+                        || self.hook_status_armed
+                        || matches!(self.status.lifecycle, Lifecycle::Stopped | Lifecycle::Error)
+                    {
+                        return effects;
+                    }
+                    let has_native = self.status.observation.program_status.is_some();
+                    if has_native
+                        && (self.program_turn.native_working || self.program_status_wait.is_some())
+                    {
+                        // Only treat the session as a confirmed participant of the active turn
+                        // once its child record has identified it; when program_turn_sessions is
+                        // empty (between root working and the first child record), buffer the
+                        // outcome per session_id so foreign sessions cannot poison the turn.
+                        let matches_current_session =
+                            self.program_turn_sessions.contains(&session_id);
+                        let matches_idle = self.program_idle_turn.as_ref().is_some_and(|turn| {
+                            (turn.sessions.is_empty() || turn.sessions.contains(&session_id))
+                                && turn.min_ended_at.is_none_or(|min| ended_at_ms >= min)
+                        });
+                        let predates_current_turn = self
+                            .program_turn_started_at
+                            .is_some_and(|started| ended_at_ms < started);
+                        if outcome == TurnOutcome::Interrupted
+                            && predates_current_turn
+                            && self.program_cancelled_sessions.remove(&session_id)
+                        {
+                            return effects;
+                        }
+                        let belongs_to_current = !superseded
+                            && matches_current_session
+                            && !(matches_idle && predates_current_turn);
+                        if belongs_to_current {
+                            self.program_cancelled_sessions.remove(&session_id);
+                            if policy != agent::ProgramOutcomePolicy::NativeFallbackOnly {
+                                self.program_turn_outcome = Some(outcome);
+                            }
+                            return effects;
+                        }
+                        // Only roll back the previous idle-completed turn when the DB record
+                        // clearly belongs to that earlier turn (superseded by newer work or
+                        // predating the current turn's start); otherwise buffer ambiguous
+                        // current-session evidence until child membership identifies the turn.
+                        if matches_idle && (superseded || predates_current_turn) {
+                            if let Some(idle_turn) = self.program_idle_turn.take() {
+                                if !idle_turn.viewed {
+                                    if idle_turn.written_unread.is_some()
+                                        && self.status.unread_since == idle_turn.written_unread
+                                    {
+                                        self.status.unread_since = idle_turn.prev_unread;
+                                    }
+                                    effects.revert_unread = true;
+                                }
+                            }
+                            return effects;
+                        }
+                        if !superseded
+                            && policy != agent::ProgramOutcomePolicy::NativeFallbackOnly
+                            && self
+                                .program_last_turn_idle_at
+                                .is_none_or(|prev| ended_at_ms >= prev)
+                        {
+                            self.program_pending_session_outcomes.insert(
+                                session_id,
+                                PendingSessionOutcome {
+                                    outcome,
+                                    ended_at_ms,
+                                },
+                            );
+                        }
+                        return effects;
+                    }
+                    if has_native {
+                        match policy {
+                            agent::ProgramOutcomePolicy::NativeFallbackOnly => return effects,
+                            agent::ProgramOutcomePolicy::DeferWhileNativeActive => {
+                                if superseded {
+                                    return effects;
+                                }
+                                // Reconcile immediately only against an observed idle-completed
+                                // turn on this TUI. Consume a matching DB Interrupted confirmation
+                                // against an already-settled cancelled turn instead of buffering it
+                                // onto the next turn; otherwise buffer per session_id so genuinely
+                                // early outcomes for a newer turn reconcile when its OSC arrives.
+                                let matches_idle_turn = self.program_idle_completed
+                                    && self.program_idle_turn.as_ref().is_some_and(|idle_turn| {
+                                        (idle_turn.sessions.is_empty()
+                                            || idle_turn.sessions.contains(&session_id))
+                                            && idle_turn
+                                                .min_ended_at
+                                                .is_none_or(|min| ended_at_ms >= min)
+                                    });
+                                if !matches_idle_turn {
+                                    if outcome == TurnOutcome::Interrupted
+                                        && self.program_cancelled_sessions.remove(&session_id)
+                                    {
+                                        return effects;
+                                    }
+                                    self.program_cancelled_sessions.remove(&session_id);
+                                    if self
+                                        .program_last_turn_idle_at
+                                        .is_none_or(|prev| ended_at_ms >= prev)
+                                    {
+                                        self.program_pending_session_outcomes.insert(
+                                            session_id,
+                                            PendingSessionOutcome {
+                                                outcome,
+                                                ended_at_ms,
+                                            },
+                                        );
+                                    }
+                                    return effects;
+                                }
+                            }
+                            agent::ProgramOutcomePolicy::Immediate => {}
+                        }
+                    } else if superseded {
+                        return effects;
+                    }
+                    let reverted_idle = self.program_idle_completed;
+                    self.program_idle_completed = false;
+                    let idle_turn = self.program_idle_turn.take();
+                    self.program_turn.native_working = false;
+                    self.program_status_wait = None;
+                    self.program_cancel_pending = false;
+                    self.program_error_is_abort = false;
+                    self.program_turn_outcome = Some(outcome);
+                    let mut observation = self.status.observation.clone();
+                    observation.activity = Activity::Idle;
+                    observation.source = ObservationSource::Baseline;
+                    observation.outcome = Some(outcome);
+                    observation.interactions.clear();
+                    if let Some(overlay) = &self.program_wait_overlay {
+                        observation.interactions.push(overlay.clone());
+                    }
+                    observation.detail = None;
+                    effects = self.publish_snapshot(observation, live, now);
+                    if reverted_idle {
+                        if let Some(idle_turn) = idle_turn {
+                            if !idle_turn.viewed {
+                                if idle_turn.written_unread.is_some()
+                                    && self.status.unread_since == idle_turn.written_unread
+                                {
+                                    self.status.unread_since = idle_turn.prev_unread;
+                                }
+                                effects.revert_unread = true;
+                            }
+                        } else {
+                            effects.revert_unread = true;
+                        }
+                    }
+                    self.completion_armed = false;
+                    effects.publication = effects
+                        .publication
+                        .map(|(state, _)| (state, StatusSource::ProgramStatus));
+                    return effects;
                 }
                 if let agent::AgentEvent::ProgramTurnOutcome { outcome, policy } = event {
                     if !self.program_status_authority
@@ -993,7 +1382,8 @@ impl SessionModel {
                                 self.program_turn_outcome = Some(outcome);
                                 return effects;
                             }
-                            if self.status.observation.outcome == Some(TurnOutcome::Completed)
+                            if (self.status.observation.outcome == Some(TurnOutcome::Completed)
+                                && !self.program_idle_completed)
                                 || (self.status.observation.outcome == Some(TurnOutcome::Failed)
                                     && !self.program_error_is_abort)
                             {
@@ -1002,6 +1392,8 @@ impl SessionModel {
                         }
                         _ => {}
                     }
+                    let reverted_idle_completion = std::mem::take(&mut self.program_idle_completed);
+                    let idle_turn = self.program_idle_turn.take();
                     self.program_turn.native_working = false;
                     self.program_status_wait = None;
                     self.program_cancel_pending = false;
@@ -1017,6 +1409,16 @@ impl SessionModel {
                     }
                     observation.detail = None;
                     effects = self.publish_snapshot(observation, live, now);
+                    if reverted_idle_completion {
+                        if let Some(idle_turn) = idle_turn {
+                            if idle_turn.written_unread.is_some()
+                                && self.status.unread_since == idle_turn.written_unread
+                            {
+                                self.status.unread_since = idle_turn.prev_unread;
+                            }
+                        }
+                        effects.revert_unread = true;
+                    }
                     self.completion_armed = false;
                     effects.publication = effects
                         .publication
@@ -1035,6 +1437,14 @@ impl SessionModel {
                 self.program_turn_outcome = None;
                 self.program_cancel_pending = false;
                 self.program_error_is_abort = false;
+                self.program_idle_completed = false;
+                self.program_idle_turn = None;
+                self.program_cancelled_sessions.clear();
+                self.program_pending_session_outcomes.clear();
+                self.program_active_children.clear();
+                self.program_turn_sessions.clear();
+                self.program_turn_started_at = None;
+                self.program_last_turn_idle_at = None;
                 self.program_status_children = 0;
                 self.program_status_wait = None;
                 self.program_wait_overlay = None;
@@ -1238,6 +1648,12 @@ impl SessionModel {
                 self.status.error_since = None;
                 self.status.failed_since = None;
                 self.status.unread_since = None;
+                if let Some(idle_turn) = self.program_idle_turn.as_mut() {
+                    idle_turn.prev_unread = None;
+                    idle_turn.written_unread = None;
+                    idle_turn.viewed = true;
+                }
+                effects.clear_optimistic_completion = true;
                 if self.compaction_failed_since.is_some() {
                     self.compaction_failed_since = Some(None);
                 }
@@ -1245,7 +1661,13 @@ impl SessionModel {
             SessionEvent::Unread { viewed } => {
                 if !viewed {
                     self.status.unread_since = Some(now.wall_millis);
+                    if let Some(idle_turn) = self.program_idle_turn.as_mut() {
+                        idle_turn.written_unread = Some(now.wall_millis);
+                    }
                 }
+            }
+            SessionEvent::RestoreUnread(unread_since) => {
+                self.status.unread_since = unread_since;
             }
             SessionEvent::Exited { code, crashed } => {
                 self.native_input = None;
@@ -1263,6 +1685,14 @@ impl SessionModel {
                 self.program_turn_outcome = None;
                 self.program_cancel_pending = false;
                 self.program_error_is_abort = false;
+                self.program_idle_completed = false;
+                self.program_idle_turn = None;
+                self.program_cancelled_sessions.clear();
+                self.program_pending_session_outcomes.clear();
+                self.program_active_children.clear();
+                self.program_turn_sessions.clear();
+                self.program_turn_started_at = None;
+                self.program_last_turn_idle_at = None;
                 self.program_status_children = 0;
                 self.program_status_wait = None;
                 self.program_wait_overlay = None;

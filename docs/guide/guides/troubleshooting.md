@@ -12,7 +12,7 @@ If a copy of Runner from another version or build is open on the same data, a ne
 
 Codex can download its remote plugin catalog on every start. Turn **Settings → Agents → Codex → Launch → Remote plugin catalog** off to skip that download; catalog plugins will no longer load. Start a new session to apply the change.
 
-For runtimes with a **Status hooks** switch (Copilot CLI, OpenCode v2 and Grok), turning it off switches chats to terminal activity; turn **Status hooks** back on for detailed reports, while resume still uses the identity hook and missions keep status hooks for those runtimes. Codex (0.164.0+), Claude Code (2.1.295+), pi (1.1.0+) and Antigravity CLI use native OSC 7501 terminal status in both chats and missions without a **Status hooks** switch. If Claude Code or pi falls back to estimated terminal activity, check that `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` (Claude Code) or `PI_PROGRAM_STATUS=0` (pi) is not set in your shell or role environment.
+For runtimes with a **Status hooks** switch (Copilot CLI), turning it off switches chats to terminal activity; turn **Status hooks** back on for detailed reports, while resume still uses the identity hook and missions keep status hooks. Codex (0.164.0+), Claude Code (2.1.295+), pi (1.1.0+), Grok (1.0.89+), OpenCode v2 (2.1.0+) and Antigravity CLI use native OSC 7501 terminal status in both chats and missions without a **Status hooks** switch. If Claude Code, pi or Grok falls back to estimated terminal activity, check that `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` (Claude Code) or `PI_PROGRAM_STATUS=0` (pi) is not set in your shell or role environment, or `program_status = "off"` in `~/.grok/config.toml` (Grok).
 
 ## An agent is missing or fails to start
 
@@ -81,7 +81,7 @@ In a normal Linux window, drag an edge or corner to resize. The middle caption b
 
 ## An agent CLI is too old for Runner
 
-Runner requires Codex **0.164.0 or newer**, Claude Code **2.1.295 or newer**, and pi **1.1.0 or newer**. **Update needed** appears only on that agent’s row; role rows have no update labels or actions. Start the agent or any role using it to update before launching, or choose the **Update** button on a refused chat's card. The pane starts after a successful update. If an old version still appears, check the executable override in **Settings → Agents** and refresh detection.
+Runner requires Codex **0.164.0 or newer**, Claude Code **2.1.295 or newer**, pi **1.1.0 or newer**, Grok **1.0.89 or newer**, and OpenCode v2 **2.1.0 or newer**. **Update needed** appears only on that agent’s row; role rows have no update labels or actions. Start the agent or any role using it to update before launching (`codex update`, `claude update`, `pi update`, `grok update`, or `opencode upgrade` for OpenCode 2.0.x), or choose the **Update** button on a refused chat's card. The pane starts after a successful update. If an old version still appears, check the executable override in **Settings → Agents** and refresh detection.
 
 ## Codex didn't accept Runner's launch flags
 
@@ -89,7 +89,7 @@ If Codex rejects its startup configuration and exits before the first turn, the 
 
 ## OpenCode v1 is installed instead of OpenCode v2
 
-Runner supports **OpenCode v2 (2.0.0 or newer)** and launches `opencode --standalone`. OpenCode v1 (`0.15.x` and `1.x`) uses the same `opencode` command name without `--standalone`, so Runner lists **OpenCode v2** under **Not installed** in **Settings → Agents** when an older `opencode` is on `PATH`, rejects overrides below 2.0.0, and offers **Open Settings** on refused launches or resumes. Install OpenCode v2 from [opencode.ai/v2/docs](https://opencode.ai/v2/docs) or point **Settings → Agents → OpenCode v2 → Executable** at a 2.0.0+ binary, then click **Refresh**.
+Runner supports **OpenCode v2 (2.1.0 or newer)** and launches `opencode --standalone`. OpenCode v1 (`0.15.x` and `1.x`) uses the same `opencode` command name without `--standalone`, so Runner lists **OpenCode v2** under **Not installed** in **Settings → Agents** when an OpenCode v1 executable is on `PATH`, rejects overrides below 2.0.0, and offers **Open Settings** on refused v1 launches or resumes. Install OpenCode v2 from [opencode.ai/v2/docs](https://opencode.ai/v2/docs) or point **Settings → Agents → OpenCode v2 → Executable** at a 2.1.0+ binary, then click **Refresh**. OpenCode v2 (`2.0.x`) already supports `opencode upgrade`, so Runner shows **Update needed** and upgrades it on start.
 
 ## An agent update needs attention
 

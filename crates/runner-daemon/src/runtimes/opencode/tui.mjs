@@ -7,31 +7,25 @@ export function setup(context) {
   const epoch = Number(process.hrtime.bigint() / 1000n);
   let sequence = 0;
   let key = null;
-  let state;
-  let idle;
-  let live = false;
-  let knownBaseline = false;
   let stopped = false;
   let reporter;
   let latest;
   let acknowledged;
   let retryAt = 0;
-  let lastSent = 0;
   let failures = 0;
   let bridgeLost = false;
-  const send = (fields) => {
-    latest = { epoch, sequence: ++sequence, session_id: key ?? "", ...fields };
+  const send = () => {
+    latest = { epoch, sequence: ++sequence, session_id: key ?? "" };
   };
   const flush = () => {
     const now = performance.now();
     if (stopped || reporter || !latest || now < retryAt) return;
-    if (acknowledged === latest.sequence && (process.env.RUNNER_STATUS_HOOKS === "false" || now - lastSent < 1000)) return;
+    if (acknowledged === latest.sequence) return;
     const payload = latest;
     const args = ["hook", "report", "--runtime", "opencode", "--event", "snapshot", "--acknowledge"];
     if (bridgeLost) args.push("--bridge-unavailable");
     const child = spawn(executable, args, { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
     reporter = child;
-    lastSent = now;
     let failed = false;
     let expired = false;
     const deadline = setTimeout(() => { expired = true; child.kill(); }, 1500);
@@ -60,37 +54,14 @@ export function setup(context) {
       const next = route?.type === "session" ? route.sessionID : undefined;
       const info = next ? context.data.session.get(next) : undefined;
       if (next && !info) {
-        if (key !== undefined) { key = undefined; state = undefined; idle = undefined; live = false; send({}); }
+        if (key !== undefined) { key = undefined; send(); }
         flush(); return;
       }
       const root = info?.parentID ? undefined : next;
-      const changed = root !== key;
-      if (changed) { key = root; state = undefined; idle = info?.time?.idle; live = false; knownBaseline = false; }
-      if (!root) { if (changed) send({}); flush(); return; }
-      if (process.env.RUNNER_STATUS_HOOKS === "false") {
-        if (changed) send({});
-        flush(); return;
+      if (root !== key) {
+        key = root;
+        send();
       }
-      const current = context.data.session.status(root);
-      if (!live) idle = info.time?.idle;
-      if (live && !knownBaseline && current === "running" && Number.isFinite(info.time?.created)) { knownBaseline = true; idle = info.time.idle; }
-      if (current === "running" && state !== "working") {
-        live = true;
-        // Require a complete native time record before interpreting an outcome.
-        knownBaseline = Number.isFinite(info.time?.created);
-        state = "working";
-        send({ state });
-      } else if (live && knownBaseline && current !== "running" && info.time?.idle && info.outcome && idle !== info.time.idle) {
-        idle = info.time.idle;
-        live = false;
-        state = `idle:${idle}`;
-        send({ state: "idle", outcome: info.outcome });
-      } else if (live && current !== "running") {
-        live = false;
-        idle = info.time?.idle;
-        state = "ready";
-        send({ state });
-      } else if (changed) send({});
     } catch {}
     flush();
   };

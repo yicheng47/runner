@@ -1,0 +1,22 @@
+runtime=grok name=bridge-failure rules=[3,6] bugs=[] known_wrong=[]
+session_status_rows=published
+100 status=running/working/baseline activity="busy" completion_armed=false quiescent=true key="11111111-1111-4111-8111-111111111111" delivery=["Respawned"]
+  busy@spawn [running/working/baseline]
+150 status=running/idle/baseline observation.program_status={"message":null} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline observation.program_status={"message":null}]
+200 quiescent=false delivery=["InputQueueDrained"]
+300 activity="busy" completion_armed=true quiescent=true delivery=["ReadinessChanged"]
+  busy@input-submit [running/idle/baseline observation.program_status={"message":null}]
+400
+450 status=running/working/baseline observation.program_status={"message":"Thinking"}
+  busy@program-status [running/working/baseline observation.program_status={"message":"Thinking"}]
+500 status=running/idle/baseline interactions=[{"id":"program-status:1","reason":"approval","owners":[],"since":1767225600500}] observation.program_status={"message":"bash: echo hi"} quiescent=false
+  busy@program-status [running/idle/baseline interactions=[{"id":"program-status:1","reason":"approval","owners":[],"since":1767225600500}] observation.program_status={"message":"bash: echo hi"}]
+600
+650 result={"gate":"human_interaction"}
+700 status=running/working/baseline observation.program_status={"message":"Responding"} quiescent=true delivery=["ReadinessChanged"]
+  busy@program-status [running/working/baseline observation.program_status={"message":"Responding"}]
+800 status=running/idle/baseline outcome="completed" observation.program_status={"message":"Turn complete in 2.5s."} activity="idle" delivery=["Idle"]
+  idle@program-status [running/idle/baseline outcome="completed" observation.program_status={"message":"Turn complete in 2.5s."}]
+850 quiescent=false result={"gate":"ready"}
+900 quiescent=true delivery=["DeliveryFinished"]

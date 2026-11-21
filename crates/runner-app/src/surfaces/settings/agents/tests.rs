@@ -283,6 +283,26 @@ fn update_button_shows_only_with_a_newer_version_and_allows_running_sessions() {
             caption: Some("3 running Codex sessions keep 0.153.4 until they relaunch.".into()),
         })
     );
+
+    // Non-npm self-updatable runtimes below minimum (Grok 1.0.88, OpenCode 2.0.29) still offer
+    // Update in Settings -> Agents, while withheld OpenCode v1 (1.19.5) does not.
+    for (runtime, display_name, installed) in [
+        (Runtime::Grok, "Grok", "1.0.88"),
+        (Runtime::OpenCode, "OpenCode v2", "2.0.29"),
+    ] {
+        let mut old = versioned(RuntimeRowState::Detected, Some(installed), None);
+        old.name = runtime;
+        old.display_name = display_name.into();
+        old.below_minimum = true;
+        assert_eq!(update_action(&old, 0), Some(UpdateAction { caption: None }));
+    }
+    for withheld in ["1.19.5", "2.0.0-rc.1"] {
+        let mut opencode_v1 = versioned(RuntimeRowState::Detected, Some(withheld), None);
+        opencode_v1.name = Runtime::OpenCode;
+        opencode_v1.display_name = "OpenCode v2".into();
+        opencode_v1.below_minimum = true;
+        assert_eq!(update_action(&opencode_v1, 0), None);
+    }
 }
 
 #[test]
@@ -2207,13 +2227,14 @@ fn settings_agents_renders_open_setup_and_not_installed_install_states() {
 }
 
 #[test]
-fn claude_code_and_pi_hide_status_hooks_switch_while_hooked_runtimes_keep_it() {
+fn osc7501_runtimes_hide_status_hooks_switch_while_copilot_keeps_it() {
     for (runtime_name, expect_switch) in [
         (Runtime::Codex, false),
         (Runtime::ClaudeCode, false),
         (Runtime::Pi, false),
+        (Runtime::Grok, false),
+        (Runtime::OpenCode, false),
         (Runtime::Copilot, true),
-        (Runtime::OpenCode, true),
     ] {
         let mut cx = gpui::TestAppContext::single();
         let mut row = runtime(RuntimeRowState::Detected);

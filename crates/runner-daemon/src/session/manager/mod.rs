@@ -243,6 +243,15 @@ impl PendingResizePersist {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OptimisticCompletion {
+    pub(crate) prev_session_unread: Option<i64>,
+    pub(crate) written_session_unread: i64,
+    pub(crate) tab_id: Option<String>,
+    pub(crate) prev_tab_completed_at: Option<String>,
+    pub(crate) written_tab_completed_at: Option<String>,
+}
+
 #[derive(Default)]
 struct SessionState {
     // Retain pre-attachment keys without exposing a runtime state that did not exist before.
@@ -259,6 +268,7 @@ struct SessionState {
     delivery_prompted: bool,
     handle: Option<SessionHandle>,
     model: SessionModel,
+    optimistic_completion: Option<OptimisticCompletion>,
     delivery_gate: Arc<DeliveryGate>,
     mission_status_sink: Option<ForwarderEmitCtx>,
     output_seq: u64,
