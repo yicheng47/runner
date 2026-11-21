@@ -865,6 +865,8 @@ fn local_mission_resume_preserves_concurrent_refresh_partial_failure_and_dimensi
         handle: id.into(),
         role_handle: "role".into(),
         runtime: "codex".into(),
+        agent_model: None,
+        agent_effort: None,
         lead: false,
         agent_session_key: None,
     };

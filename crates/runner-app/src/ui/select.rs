@@ -1431,20 +1431,34 @@ pub fn runtime_description(
     crate::i18n::message(key)
 }
 
+fn effort_label_key(value: &str) -> Option<&'static str> {
+    match value {
+        "" | "default" => Some("word.default"),
+        "low" => Some("effort.low"),
+        "medium" => Some("effort.medium"),
+        "high" => Some("effort.high"),
+        "xhigh" => Some("effort.xhigh"),
+        "max" => Some("effort.max"),
+        "ultra" => Some("effort.ultra"),
+        "minimal" => Some("effort.minimal"),
+        "none" => Some("effort.none"),
+        _ => None,
+    }
+}
+
 pub fn effort_label(value: &str, fallback: &str) -> crate::i18n::Text {
-    let key = match value {
-        "" | "default" => "word.default",
-        "low" => "effort.low",
-        "medium" => "effort.medium",
-        "high" => "effort.high",
-        "xhigh" => "effort.xhigh",
-        "max" => "effort.max",
-        "ultra" => "effort.ultra",
-        "minimal" => "effort.minimal",
-        "none" => "effort.none",
-        _ => return fallback.into(),
-    };
-    crate::i18n::localized_label(key, fallback)
+    match effort_label_key(value) {
+        Some(key) => crate::i18n::localized_label(key, fallback),
+        None => fallback.into(),
+    }
+}
+
+/// Display label for a stored effort id, resolved from the active locale catalog.
+pub fn effort_display_label(value: &str) -> crate::i18n::Text {
+    match effort_label_key(value) {
+        Some(key) => crate::i18n::message(key),
+        None => value.into(),
+    }
 }
 
 pub fn effort_option(

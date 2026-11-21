@@ -590,3 +590,86 @@ fn one_and_three_slot_crews_share_the_goal_and_allow_removing_every_member() {
         }
     }
 }
+
+#[test]
+fn session_list_carries_added_role_overrides_and_omits_unset_slot_values() {
+    let data = tempfile::tempdir().unwrap();
+    let fake = fake_runtime();
+    let manager = mgr_with_fake(None, fake);
+    let mut core = crate::test_support::test_core_in(data.path().into());
+    core.sessions = manager.clone();
+    {
+        let conn = core.db.get().unwrap();
+        conn.execute_batch(
+            "INSERT INTO crews (id,name,created_at,updated_at) VALUES ('c-rt','Team','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z');
+             INSERT INTO missions (id,crew_id,title,status,started_at) VALUES ('m-rt','c-rt','Runtime rows','running','2026-10-01T00:00:00Z');",
+        )
+        .unwrap();
+        crate::test_support::insert_test_role(&conn, "r-coder", "coder", "claude-code", "claude");
+        crate::test_support::insert_test_slot(
+            &conn, "sl-coder", "c-rt", "r-coder", "coder", 0, false,
+        );
+        let mut coder_row = crate::test_support::test_session_row(
+            "sess-coder",
+            crate::model::SessionStatus::Stopped,
+        );
+        coder_row.mission_id = Some("m-rt".into());
+        coder_row.slot_id = Some("sl-coder".into());
+        coder_row.role_id = Some("r-coder".into());
+        coder_row.agent_runtime = Some("claude-code".into());
+        coder_row.launch_definition = Some(crate::test_support::session_definition(
+            "claude-code",
+            "claude",
+        ));
+        crate::test_support::insert_session_row(&conn, &coder_row).unwrap();
+        crate::test_support::insert_test_role(
+            &conn,
+            "r-reviewer",
+            "reviewer",
+            "claude-code",
+            "claude",
+        );
+        conn.execute(
+            "UPDATE roles SET model='role-default', effort='medium' WHERE id='r-reviewer'",
+            [],
+        )
+        .unwrap();
+    }
+    let added = crate::ops::mission::roles::add_role(
+        &core,
+        MissionAddRoleInput {
+            mission_id: "m-rt".into(),
+            role_id: "r-reviewer".into(),
+            handle: None,
+            runtime: Some(Runtime::Codex),
+            model: Some("gpt-6-astra".into()),
+            effort: Some("xhigh".into()),
+            speed: None,
+            task: Some("review".into()),
+        },
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while manager.has_pending_mission_spawns("m-rt") && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!manager.has_pending_mission_spawns("m-rt"));
+
+    let rows = crate::ops::session::session_list(&core, "m-rt").unwrap();
+    let coder = rows.iter().find(|r| r.handle == "coder").unwrap();
+    assert_eq!(coder.runtime, "claude-code");
+    assert_eq!(coder.agent_model, None);
+    assert_eq!(coder.agent_effort, None);
+
+    let reviewer = rows
+        .iter()
+        .find(|r| r.session.id == added.session_id)
+        .unwrap();
+    assert_eq!(reviewer.handle, "reviewer");
+    assert_eq!(reviewer.runtime, "codex");
+    assert_eq!(reviewer.agent_model.as_deref(), Some("gpt-6-astra"));
+    assert_eq!(reviewer.agent_effort.as_deref(), Some("xhigh"));
+
+    crate::ops::mission::roles::remove_role(&core, "m-rt", &added.handle).unwrap();
+    assert!(manager.live_session_ids().is_empty());
+}

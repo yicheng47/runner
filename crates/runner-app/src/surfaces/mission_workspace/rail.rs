@@ -423,16 +423,59 @@ impl MissionWorkspace {
             let open_root = root.clone();
             let card_key_id = session_id.clone();
             let card_key_root = root.clone();
-            let status = self
-                .presentation
-                .status_presentation(&self.slot_agent_status(&session_id, cx));
-            let subtitle = runner_app::ui::agent_status::status_indicator(
-                status,
-                true,
-                SharedString::from(format!("mission-card-status-{session_id}")),
-                window,
-                cx,
-            );
+            let is_shell = runner_core::protocol::model::Runtime::parse(&session.runtime)
+                .is_some_and(runner_core::protocol::model::Runtime::is_shell);
+            let subtitle = (!is_shell).then(|| {
+                let status = self
+                    .presentation
+                    .status_presentation(&self.slot_agent_status(&session_id, cx));
+                runner_app::ui::agent_status::status_indicator(
+                    status,
+                    true,
+                    SharedString::from(format!("mission-card-status-{session_id}")),
+                    window,
+                    cx,
+                )
+            });
+            let runtime_line = session_runtime_line(session).map(|runtime_text| {
+                div().w_full().min_w(px(0.)).flex().child(
+                    Tooltip::new(
+                        SharedString::from(format!("mission-card-runtime-{session_id}")),
+                        runtime_text.clone(),
+                        div()
+                            .debug_selector(|| format!("MISSION_CARD_RUNTIME {session_id}"))
+                            .min_w(px(0.))
+                            .flex_1()
+                            .flex()
+                            .items_center()
+                            .gap(rems(6. / 16.))
+                            .child(
+                                div()
+                                    .debug_selector(|| {
+                                        format!("MISSION_CARD_RUNTIME_MARK {session_id}")
+                                    })
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .child(crate::chat_icon::runtime_mark(&session.runtime, 12.)),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(|| {
+                                        format!("MISSION_CARD_RUNTIME_TEXT {session_id}")
+                                    })
+                                    .min_w(px(0.))
+                                    .flex_initial()
+                                    .truncate()
+                                    .text_size(theme::text_meta())
+                                    .line_height(rems(14. / 16.))
+                                    .text_color(theme::muted())
+                                    .child(runtime_text),
+                            ),
+                    )
+                    .expand(),
+                )
+            });
             let disabled = self.stopping
                 || self.resuming
                 || self.archiving
@@ -632,7 +675,7 @@ impl MissionWorkspace {
                             .child(
                                 div()
                                     .min_w(px(0.))
-                                    .flex_initial()
+                                    .flex_1()
                                     .flex()
                                     .items_center()
                                     .gap(header_gap)
@@ -645,42 +688,64 @@ impl MissionWorkspace {
                                             .child(RoleAvatar::new(session.handle.clone(), 25.)),
                                     )
                                     .child(
-                                        Tooltip::new(
-                                            SharedString::from(format!(
-                                                "mission-role-title-{session_id}"
-                                            )),
-                                            self.session_title_tooltip(session, cx),
-                                            div()
-                                                .debug_selector(|| {
-                                                    format!("MISSION_CARD_HANDLE {session_id}")
-                                                })
-                                                .min_w(px(0.))
-                                                .flex_1()
-                                                .truncate()
-                                                .font_family(theme::UI_MONOSPACE_FONT)
-                                                .text_size(theme::text_body())
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(
-                                                    runner_app::ui::hue_for_seed(&session.handle)
-                                                        .color(),
+                                        div()
+                                            .min_w(px(0.))
+                                            .flex_1()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(rems(3. / 16.))
+                                            .child(
+                                                div().w_full().min_w(px(0.)).flex().child(
+                                                    Tooltip::new(
+                                                        SharedString::from(format!(
+                                                            "mission-role-title-{session_id}"
+                                                        )),
+                                                        self.session_title_tooltip(session, cx),
+                                                        div()
+                                                            .debug_selector(|| {
+                                                                format!(
+                                                                    "MISSION_CARD_HANDLE {session_id}"
+                                                                )
+                                                            })
+                                                            .min_w(px(0.))
+                                                            .flex_initial()
+                                                            .truncate()
+                                                            .font_family(theme::UI_MONOSPACE_FONT)
+                                                            .text_size(theme::text_body())
+                                                            .line_height(rems(1.))
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .text_color(
+                                                                runner_app::ui::hue_for_seed(
+                                                                    &session.handle,
+                                                                )
+                                                                .color(),
+                                                            )
+                                                            .child(handle_title),
+                                                    )
+                                                    .expand(),
+                                                ),
+                                            )
+                                            .when_some(subtitle, |col, subtitle| {
+                                                col.child(
+                                                    div()
+                                                        .debug_selector(|| {
+                                                            format!(
+                                                                "MISSION_CARD_STATUS {session_id}"
+                                                            )
+                                                        })
+                                                        .w_full()
+                                                        .min_w(px(0.))
+                                                        .text_size(theme::text_meta())
+                                                        .line_height(rems(14. / 16.))
+                                                        .text_color(theme::muted())
+                                                        .child(subtitle),
                                                 )
-                                                .child(handle_title),
-                                        )
-                                        .expand(),
+                                            }),
                                     ),
                             )
                             .children(controls),
                     )
-                    .child(
-                        div()
-                            .text_size(theme::text_meta())
-                            .text_color(theme::muted())
-                            .when(
-                                !runner_core::protocol::model::Runtime::parse(&session.runtime)
-                                    .is_some_and(runner_core::protocol::model::Runtime::is_shell),
-                                |card| card.child(subtitle),
-                            ),
-                    )
+                    .when_some(runtime_line, |card, line| card.child(line))
                     .when(!self.presentation.is_remote(), |card| {
                         card.child(
                             div()
@@ -713,6 +778,9 @@ impl MissionWorkspace {
                                             div()
                                                 .debug_selector(|| {
                                                     format!("MISSION_CARD_KEY_COPY {session_id}")
+                                                })
+                                                .when(session.agent_session_key.is_some(), |el| {
+                                                    el.my(rems(-3. / 16.))
                                                 })
                                                 .flex_none()
                                                 .child(copy)
@@ -1147,6 +1215,41 @@ impl MissionWorkspace {
         .footer(footer)
         .into_any_element()
     }
+}
+
+pub(super) fn session_runtime_line(
+    session: &crate::surfaces::front_page::model::MissionMemberDisplay,
+) -> Option<String> {
+    let runtime = session.runtime.trim();
+    let parsed = runner_core::protocol::model::Runtime::parse(runtime);
+    if runtime.is_empty() || parsed.is_some_and(runner_core::protocol::model::Runtime::is_shell) {
+        return None;
+    }
+    let display_name = parsed
+        .map(runner_core::protocol::model::Runtime::display_name)
+        .unwrap_or(runtime);
+    let mut parts = vec![display_name.to_owned()];
+    if let Some(model) = session
+        .agent_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("default"))
+    {
+        parts.push(model.to_owned());
+    }
+    if let Some(effort) = session
+        .agent_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("default"))
+    {
+        parts.push(
+            runner_app::ui::select::effort_display_label(effort)
+                .resolve()
+                .to_string(),
+        );
+    }
+    Some(parts.join(" · "))
 }
 
 fn rail_section_label(label: &'static str) -> AnyElement {

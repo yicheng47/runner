@@ -993,6 +993,128 @@ fn session_list_prefers_recorded_effective_runtime() {
 }
 
 #[test]
+fn session_list_returns_launch_definition_model_and_effort() {
+    let pool = db::open_in_memory().unwrap();
+    let conn = pool.get().unwrap();
+    let role_id = seed_role(&conn);
+    let crew_id = ulid::Ulid::new().to_string();
+    let slot_set = ulid::Ulid::new().to_string();
+    let slot_unset = ulid::Ulid::new().to_string();
+    let slot_blank = ulid::Ulid::new().to_string();
+    let slot_default_model = ulid::Ulid::new().to_string();
+    let slot_default_effort = ulid::Ulid::new().to_string();
+    let mission_id = ulid::Ulid::new().to_string();
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO crews (id, name, created_at, updated_at)
+             VALUES (?1, 'C', ?2, ?2)",
+        params![crew_id, now],
+    )
+    .unwrap();
+    crate::test_support::insert_test_slot(
+        &conn, &slot_set, &crew_id, &role_id, "reviewer", 0, false,
+    );
+    crate::test_support::insert_test_slot(
+        &conn,
+        &slot_unset,
+        &crew_id,
+        &role_id,
+        "coder",
+        1,
+        false,
+    );
+    crate::test_support::insert_test_slot(&conn, &slot_blank, &crew_id, &role_id, "qa", 2, false);
+    crate::test_support::insert_test_slot(
+        &conn,
+        &slot_default_model,
+        &crew_id,
+        &role_id,
+        "def-model",
+        3,
+        false,
+    );
+    crate::test_support::insert_test_slot(
+        &conn,
+        &slot_default_effort,
+        &crew_id,
+        &role_id,
+        "def-effort",
+        4,
+        false,
+    );
+    conn.execute(
+        "INSERT INTO missions
+                (id, crew_id, title, status, started_at)
+             VALUES (?1, ?2, 't', 'running', ?3)",
+        params![mission_id, crew_id, now],
+    )
+    .unwrap();
+
+    for (id, slot_id, runtime, model, effort) in [
+        (
+            "sess-set",
+            &slot_set,
+            "codex",
+            Some(" gpt-6-astra "),
+            Some(" xhigh "),
+        ),
+        ("sess-unset", &slot_unset, "claude-code", None, None),
+        ("sess-blank", &slot_blank, "pi", Some("  "), Some("\t")),
+        (
+            "sess-default-model",
+            &slot_default_model,
+            "claude-code",
+            Some(" default "),
+            Some("high"),
+        ),
+        (
+            "sess-default-effort",
+            &slot_default_effort,
+            "codex",
+            Some("gpt-6-astra"),
+            Some("DEFAULT"),
+        ),
+    ] {
+        let mut session = crate::test_support::test_session_row(id, SessionStatus::Running);
+        session.mission_id = Some(mission_id.clone());
+        session.role_id = Some(role_id.clone());
+        session.slot_id = Some(slot_id.clone());
+        session.agent_runtime = Some(runtime.into());
+        let mut def = crate::test_support::session_definition(runtime, runtime);
+        def.model = model.map(str::to_owned);
+        def.effort = effort.map(str::to_owned);
+        session.launch_definition = Some(def);
+        crate::test_support::insert_session_row(&conn, &session).unwrap();
+    }
+
+    // Later edits to the role template must not alter the launched session's row.
+    conn.execute(
+        "UPDATE roles SET model = 'edited-later', effort = 'low' WHERE id = ?1",
+        params![role_id],
+    )
+    .unwrap();
+
+    let rows = list_for_mission(&conn, tempfile::tempdir().unwrap().path(), &mission_id).unwrap();
+    let row = |id: &str| rows.iter().find(|r| r.session.id == id).unwrap();
+    assert_eq!(row("sess-set").agent_model.as_deref(), Some("gpt-6-astra"));
+    assert_eq!(row("sess-set").agent_effort.as_deref(), Some("xhigh"));
+    assert_eq!(row("sess-unset").agent_model, None);
+    assert_eq!(row("sess-unset").agent_effort, None);
+    assert_eq!(row("sess-blank").agent_model, None);
+    assert_eq!(row("sess-blank").agent_effort, None);
+    assert_eq!(row("sess-default-model").agent_model, None);
+    assert_eq!(
+        row("sess-default-model").agent_effort.as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        row("sess-default-effort").agent_model.as_deref(),
+        Some("gpt-6-astra")
+    );
+    assert_eq!(row("sess-default-effort").agent_effort, None);
+}
+
+#[test]
 fn session_get_returns_none_for_unknown_id() {
     let pool = db::open_in_memory().unwrap();
     let conn = pool.get().unwrap();

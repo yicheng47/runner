@@ -543,7 +543,7 @@ fn render_status_indicator(
     let row = div()
         .flex_none()
         .flex()
-        .when(!header, |row| row.w_full().min_w(px(0.)))
+        .when(!header, |row| row.w_full().min_w(px(0.)).overflow_hidden())
         .when(header && !island && label && !detail, |row| {
             row.min_w(rems(header_status_width(label, detail) / 16.))
         })
@@ -557,19 +557,20 @@ fn render_status_indicator(
         })
         .child(status_glyph(status.clone(), (id.clone(), "glyph")))
         .when(label, |row| {
-            row.child(
-                div()
-                    .flex_none()
-                    .text_size(text_size)
-                    .when(island, |label| {
-                        label
-                            .font_weight(FontWeight::MEDIUM)
-                            .debug_selector(|| "ISLAND_STATUS_LABEL".into())
-                    })
-                    .text_color(color)
-                    .whitespace_nowrap()
-                    .child(short_label.base),
-            )
+            let label_el = div()
+                .text_size(text_size)
+                .when(island, |label| {
+                    label
+                        .font_weight(FontWeight::MEDIUM)
+                        .debug_selector(|| "ISLAND_STATUS_LABEL".into())
+                })
+                .text_color(color);
+            let label_el = if !header && short_label.detail.is_none() {
+                label_el.min_w(px(0.)).flex_initial().truncate()
+            } else {
+                label_el.flex_none().whitespace_nowrap()
+            };
+            row.child(label_el.child(short_label.base))
         })
         .children(
             (label && (!header || detail))
