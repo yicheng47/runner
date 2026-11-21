@@ -45,9 +45,9 @@ const CHECKOUT_PICKER_WIDTH: f32 = 420.;
 
 impl Render for ChangesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let reported = self.widening();
-        if reported != self.reported_wide {
-            self.reported_wide = reported;
+        let reported = (self.widening(), self.has_dirty_changes());
+        if reported != self.reported {
+            self.reported = reported;
             if let Some(owner) = self.owner {
                 cx.defer(move |cx| cx.notify(owner));
             }
@@ -185,13 +185,45 @@ impl ChangesView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let diff_open = matches!(&self.body, Body::Root(state) if state.selected_path.is_some());
         let tree_width = self
             .widened
             .map_or(crate::app_settings::FILE_TREE_DEFAULT, |w| w.tree_width);
-        let diff_column = self.render_diff_column(window, cx);
-        let list_column = self.render_list_column(tree_width, window, cx);
         let base_picker = self.render_base_picker(window, cx);
         let checkout_picker = self.render_checkout_picker(window, cx);
+
+        if !diff_open {
+            let list_column = self.render_list_column(None, window, cx);
+            return div()
+                .flex_1()
+                .min_h(px(0.))
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .relative()
+                .child(list_column)
+                .children(base_picker)
+                .children(checkout_picker)
+                .into_any_element();
+        }
+
+        let diff_column = self.render_diff_column(window, cx);
+        let show_list = self.widened.is_none_or(|w| w.tree);
+        if !show_list {
+            return div()
+                .flex_1()
+                .min_h(px(0.))
+                .min_w(px(0.))
+                .flex()
+                .flex_row()
+                .relative()
+                .child(diff_column)
+                .children(base_picker)
+                .children(checkout_picker)
+                .into_any_element();
+        }
+
+        let list_column = self.render_list_column(Some(tree_width), window, cx);
         let resize = resize_strip(
             "changes-tree-resize",
             ResizeAxis::Columns,
@@ -236,7 +268,7 @@ impl ChangesView {
 
     fn render_list_column(
         &mut self,
-        tree_width: f32,
+        fixed_width: Option<f32>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -250,6 +282,22 @@ impl ChangesView {
         };
 
         let branch_header = self.render_branch_header(state, window, cx);
+        let following_bar = self.context.following.clone().map(|following| {
+            div()
+                .when(cfg!(test), |el| {
+                    el.debug_selector(|| "CHANGES_FOLLOWING_BADGE".into())
+                })
+                .flex_none()
+                .px(px(10.))
+                .py(px(4.))
+                .bg(theme::with_alpha(theme::raised(), 0.45))
+                .border_b_1()
+                .border_color(theme::border())
+                .text_size(theme::text_caption())
+                .text_color(theme::muted())
+                .truncate()
+                .child(following)
+        });
         let base_row = self.render_base_row(state, window, cx);
         let commits_section = self.render_commits_section(state, commits_focused, cx);
         let summary_row = self.render_files_summary(state, tree_view, cx);
@@ -296,17 +344,23 @@ impl ChangesView {
             .tab_index(0)
             .tab_stop(true)
             .on_key_down(cx.listener(Self::on_list_key))
-            .flex_none()
-            .w(rems(tree_width / 16.))
+            .when_some(fixed_width, |col, width| {
+                col.flex_none()
+                    .w(rems(width / 16.))
+                    .bg(theme::panel())
+                    .border_l_1()
+                    .border_color(theme::border())
+                    .rounded_br(rems(11. / 16.))
+            })
+            .when(fixed_width.is_none(), |col| {
+                col.flex_1().min_w(px(0.)).bg(theme::bg())
+            })
             .h_full()
             .min_h(px(0.))
-            .bg(theme::panel())
-            .border_l_1()
-            .border_color(theme::border())
-            .rounded_br(rems(11. / 16.))
             .flex()
             .flex_col()
             .child(branch_header)
+            .children(following_bar)
             .child(base_row)
             .children(error_banner)
             .child(commits_section)
@@ -1483,6 +1537,35 @@ impl ChangesView {
             (effective_mode, handler)
         });
 
+        let viewed = match &state.diff_state {
+            ActiveDiff::Loaded(loaded) => {
+                let weak = cx.weak_entity();
+                let on_toggle: super::diff::DiffCallback = Rc::new(move |_, cx| {
+                    let _ = weak.update(cx, |this, cx| this.toggle_viewed_for_loaded_diff(cx));
+                });
+                Some((loaded.viewed, loaded.changed_since_viewed, on_toggle))
+            }
+            _ => None,
+        };
+
+        let open_external = path_opt
+            .filter(|_| status_opt != Some(&FileStatus::Deleted))
+            .map(|rel| {
+                let full_path = absolute(&state.root.path, rel);
+                let weak = cx.weak_entity();
+                Rc::new(move |_: &mut Window, cx: &mut App| {
+                    let path = full_path.clone();
+                    let _ = weak.update(cx, |this, cx| this.launch_external(None, path, cx));
+                }) as crate::surfaces::side_panel::PanelCallback
+            });
+
+        let on_close = path_opt.map(|_| {
+            let weak = cx.weak_entity();
+            Rc::new(move |window: &mut Window, cx: &mut App| {
+                let _ = weak.update(cx, |this, cx| this.close_diff(window, cx));
+            }) as crate::surfaces::side_panel::PanelCallback
+        });
+
         render_shared_diff_header(DiffHeaderProps {
             path: path_opt,
             status: status_opt,
@@ -1491,6 +1574,9 @@ impl ChangesView {
             conflicted,
             compare_label: None,
             mode_switch,
+            viewed,
+            open_external,
+            on_close,
         })
     }
 
@@ -1825,6 +1911,9 @@ pub(crate) struct DiffHeaderProps<'a> {
     pub(crate) conflicted: bool,
     pub(crate) compare_label: Option<String>,
     pub(crate) mode_switch: Option<(DiffViewMode, DiffModeCallback)>,
+    pub(crate) viewed: Option<(bool, bool, super::diff::DiffCallback)>,
+    pub(crate) open_external: Option<crate::surfaces::side_panel::PanelCallback>,
+    pub(crate) on_close: Option<crate::surfaces::side_panel::PanelCallback>,
 }
 
 pub(crate) struct PlaceholderViewedFooter {
@@ -2037,6 +2126,76 @@ pub(crate) fn render_shared_diff_header(props: DiffHeaderProps<'_>) -> AnyElemen
         .border_color(theme::border())
         .child(left_group)
         .children(mode_switch)
+        .children(props.viewed.map(|(viewed, changed_since, on_toggle)| {
+            div()
+                .id("changes-header-viewed")
+                .when(cfg!(test), move |d| {
+                    d.debug_selector(move || {
+                        if viewed {
+                            "CHANGES_HEADER_VIEWED checked".into()
+                        } else {
+                            "CHANGES_HEADER_VIEWED".into()
+                        }
+                    })
+                })
+                .flex_none()
+                .h(px(24.))
+                .px(px(7.))
+                .rounded(px(5.))
+                .border_1()
+                .border_color(if viewed {
+                    theme::with_alpha(theme::accent(), 0.45)
+                } else {
+                    theme::border()
+                })
+                .bg(if viewed {
+                    theme::with_alpha(theme::accent(), 0.1)
+                } else {
+                    theme::panel()
+                })
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .cursor_pointer()
+                .hover(|el| el.bg(theme::with_alpha(theme::raised(), 0.8)))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, window, cx| on_toggle(window, cx))
+                .child(render_viewed_checkbox(viewed, changed_since))
+                .child(
+                    div()
+                        .text_size(theme::text_meta())
+                        .text_color(if viewed {
+                            theme::text()
+                        } else {
+                            theme::muted()
+                        })
+                        .child(crate::i18n::text("changes.viewed")),
+                )
+        }))
+        .children(props.open_external.map(|on_open| {
+            div()
+                .id("changes-header-open-in")
+                .when(cfg!(test), |d| {
+                    d.debug_selector(|| "CHANGES_HEADER_OPEN_IN".into())
+                })
+                .flex_none()
+                .size(px(24.))
+                .rounded(px(5.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|el| el.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
+                .tooltip(|_, cx| tooltip_view(crate::i18n::t("ui.open_in_editor"), cx))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, window, cx| on_open(window, cx))
+                .child(
+                    svg()
+                        .size(px(13.))
+                        .path("external-link.svg")
+                        .text_color(theme::muted()),
+                )
+        }))
         .children(props.compare_label.map(|label| {
             div()
                 .when(cfg!(test), |d| {
@@ -2053,6 +2212,30 @@ pub(crate) fn render_shared_diff_header(props: DiffHeaderProps<'_>) -> AnyElemen
                 .text_size(theme::text_meta())
                 .text_color(theme::muted())
                 .child(label)
+        }))
+        .children(props.on_close.map(|on_close| {
+            div()
+                .id("changes-close-diff")
+                .when(cfg!(test), |d| {
+                    d.debug_selector(|| "CHANGES_CLOSE_DIFF".into())
+                })
+                .flex_none()
+                .size(px(24.))
+                .rounded(px(5.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|el| el.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
+                .tooltip(|_, cx| tooltip_view(crate::i18n::t("changes.close_diff"), cx))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, window, cx| on_close(window, cx))
+                .child(
+                    svg()
+                        .size(px(13.))
+                        .path("close.svg")
+                        .text_color(theme::muted()),
+                )
         }))
         .into_any_element()
 }

@@ -50,6 +50,13 @@ impl Render for FileTreeResizeDrag {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum TreeFilter {
+    #[default]
+    All,
+    Changed,
+}
+
 enum Body {
     Loading,
     Remote,
@@ -84,6 +91,15 @@ pub(super) struct Picker {
     /// Scroll the highlighted item into view on the next frame.
     reveal: Cell<bool>,
     _observe: Subscription,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct SavedFilesState {
+    pub(super) root: PathBuf,
+    pub(super) open_paths: Vec<String>,
+    pub(super) active_path: Option<String>,
+    pub(super) tree_hidden: bool,
+    pub(super) filter: TreeFilter,
 }
 
 pub(crate) struct FilesView {
@@ -127,13 +143,18 @@ pub(crate) struct FilesView {
     scrollbar: Entity<Scrollbar>,
     pub(super) viewer: Viewer,
     pub(super) links: Links,
+    pub(super) filter: TreeFilter,
     pub(super) maximized: bool,
-    pub(super) on_request_maximize: Option<crate::surfaces::side_panel::PanelCallback>,
+    pub(super) on_request_maximize: Option<crate::surfaces::side_panel::PanelMaximizeCallback>,
     pub(super) diff_mode_pref: crate::app_settings::DiffViewMode,
     /// Redrawn when the panel's width should change.
     owner: Option<gpui::EntityId>,
-    /// The widening and open file last told to the owner, whose layout reads both.
-    reported: (Option<bool>, bool),
+    /// The widening, open-file, and dirty-changes state last told to the owner.
+    reported: (Option<bool>, bool, bool),
+    /// Set when the view hides (watch stopped) and cleared when fresh status lands.
+    pub(super) status_stale: bool,
+    /// Open file tabs / filter preserved across LRU view eviction (#1403).
+    pub(super) pending_restore: Option<SavedFilesState>,
     /// Whether the divider between the file and the tree is being dragged.
     tree_resizing: bool,
     /// Settings → Side panel → Files as last drawn.
@@ -235,6 +256,7 @@ impl FilesView {
             scrollbar,
             viewer: Viewer::default(),
             links: Links::default(),
+            filter: TreeFilter::All,
             maximized: false,
             on_request_maximize: None,
             diff_mode_pref: super::settings(cx)
@@ -242,7 +264,9 @@ impl FilesView {
                     settings.changes_diff_mode
                 }),
             owner: None,
-            reported: (None, false),
+            reported: (None, false, false),
+            status_stale: false,
+            pending_restore: None,
             tree_resizing: false,
             look: super::Look::current(cx),
             ignored_refresh: None,
@@ -317,7 +341,7 @@ impl FilesView {
 
     pub(crate) fn set_on_request_maximize(
         &mut self,
-        handler: Option<crate::surfaces::side_panel::PanelCallback>,
+        handler: Option<crate::surfaces::side_panel::PanelMaximizeCallback>,
     ) {
         self.on_request_maximize = handler;
     }
@@ -377,7 +401,7 @@ impl FilesView {
             && let Some(request) = self.on_request_maximize.clone()
         {
             self.maximized = true;
-            request(window, cx);
+            request(true, window, cx);
         }
         self.sync_effective_diff_mode(cx);
         cx.notify();
@@ -385,6 +409,12 @@ impl FilesView {
 
     pub(crate) fn set_owner(&mut self, owner: Option<gpui::EntityId>) {
         self.owner = owner;
+    }
+
+    pub(super) fn notify_owner(&self, cx: &mut Context<Self>) {
+        if let Some(owner) = self.owner {
+            cx.defer(move |cx| cx.notify(owner));
+        }
     }
 
     /// Sizes the tree `tree` wide from the divider's drag, trading width
@@ -440,15 +470,9 @@ impl FilesView {
         }
     }
 
-    /// With a root to show, the view is the file area and the tree.
-    pub(super) fn wide(&self) -> bool {
-        self.has_tabs() || matches!(self.body, Body::Root(_))
-    }
-
-    /// Whether the view draws the file area: with a file open, or a root the
-    /// owner found room to widen for.
+    /// Whether the view draws the file viewer area beside the tree.
     pub(super) fn shows_file_area(&self) -> bool {
-        self.has_tabs() || (self.wide() && self.viewer.widened.is_some())
+        self.has_tabs()
     }
 
     /// Whether a root is shown or loading, for the finder to search.
@@ -456,9 +480,133 @@ impl FilesView {
         matches!(self.body, Body::Root(_) | Body::Loading)
     }
 
-    /// The panel widens for the file area: whether the tree toggle is on.
+    /// The panel widens only when a file tab is open: whether the tree toggle is on.
     pub(crate) fn widening(&self) -> Option<bool> {
-        self.wide().then_some(!self.viewer.tree_hidden)
+        if self.has_tabs() {
+            return Some(!self.viewer.tree_hidden);
+        }
+        if matches!(self.body, Body::Loading) {
+            return self
+                .pending_restore
+                .as_ref()
+                .filter(|saved| !saved.open_paths.is_empty())
+                .map(|saved| !saved.tree_hidden);
+        }
+        None
+    }
+
+    pub(crate) fn has_dirty_changes(&self) -> bool {
+        self.tree_ref().is_some_and(FileTree::is_dirty)
+    }
+
+    /// Authoritative live git-status dirty flag while this view is watching.
+    pub(crate) fn fresh_dirty_changes(&self) -> Option<bool> {
+        if !self.shown || self.status_stale {
+            return None;
+        }
+        match &self.body {
+            Body::Root(state) if state.root.git.is_some() => {
+                state.tree.status().map(|status| status.changed > 0)
+            }
+            Body::Root(_) | Body::Choose | Body::Missing { .. } | Body::Remote => Some(false),
+            Body::Loading | Body::Failed(_) => None,
+        }
+    }
+
+    pub(super) fn saved_state(&self) -> Option<SavedFilesState> {
+        match &self.body {
+            Body::Root(state) => {
+                let open_paths: Vec<String> = self
+                    .viewer
+                    .tabs
+                    .tabs()
+                    .iter()
+                    .map(|tab| tab.path.clone())
+                    .collect();
+                let active_path = self.viewer.tabs.active().map(|tab| tab.path.clone());
+                if open_paths.is_empty()
+                    && !self.viewer.tree_hidden
+                    && self.filter == TreeFilter::All
+                {
+                    return None;
+                }
+                Some(SavedFilesState {
+                    root: state.root.path.clone(),
+                    open_paths,
+                    active_path,
+                    tree_hidden: self.viewer.tree_hidden,
+                    filter: self.filter,
+                })
+            }
+            Body::Loading => self.pending_restore.clone(),
+            _ => None,
+        }
+    }
+
+    pub(super) fn restore_saved_state(&mut self, saved: SavedFilesState, cx: &mut Context<Self>) {
+        if matches!(self.body, Body::Root(_)) {
+            self.apply_saved_files(saved, cx);
+        } else {
+            self.pending_restore = Some(saved);
+        }
+    }
+
+    pub(super) fn apply_saved_files(&mut self, saved: SavedFilesState, cx: &mut Context<Self>) {
+        let same_root = matches!(
+            &self.body,
+            Body::Root(state)
+                if runner_core::app_paths::same_normalized_checkout_path(
+                    &state.root.path,
+                    &saved.root,
+                )
+        );
+        if !same_root {
+            self.notify_owner(cx);
+            cx.notify();
+            return;
+        }
+        self.filter = saved.filter;
+        self.viewer.tree_hidden = saved.tree_hidden;
+        for path in &saved.open_paths {
+            self.open_file(path.clone(), cx);
+        }
+        if let Some(active) = saved.active_path
+            && let Some(index) = self.viewer.tabs.position(&active)
+        {
+            self.viewer.tabs.activate(index);
+        }
+        self.notify_owner(cx);
+        cx.notify();
+    }
+
+    pub(super) fn collapse_all_folders(&mut self, cx: &mut Context<Self>) {
+        if let Some(tree) = self.tree_mut()
+            && tree.collapse_all()
+        {
+            cx.notify();
+        }
+    }
+
+    pub(super) fn refresh_tree(&mut self, cx: &mut Context<Self>) {
+        let Some(root) = self.root_path().map(Path::to_path_buf) else {
+            return;
+        };
+        if let Some(tree) = self.tree_ref() {
+            let folders = tree.loaded_folders();
+            self.load(folders, cx);
+            self.reload_changed(None, cx);
+        }
+        self.request(
+            cx,
+            move |client| client.files_status(&root).map(PreparedStatus::new),
+            |this, result, cx| match result {
+                Ok(status) => this.apply_status(status, cx),
+                Err(error) => {
+                    this.status_error = Some(error.to_string().into());
+                    cx.notify();
+                }
+            },
+        );
     }
 
     /// Runs `call` against the daemon off the UI thread and hands its result
@@ -526,7 +674,7 @@ impl FilesView {
 
 impl Render for FilesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let reported = (self.widening(), self.has_tabs());
+        let reported = (self.widening(), self.has_tabs(), self.has_dirty_changes());
         if reported != self.reported {
             self.reported = reported;
             if let Some(owner) = self.owner {

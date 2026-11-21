@@ -70,7 +70,7 @@ pub(crate) struct Moved {
 /// every view of the root.
 #[derive(Debug)]
 pub(crate) struct PreparedStatus {
-    status: GitStatus,
+    pub(crate) status: GitStatus,
     /// The files the status letters mark, in git's order.
     changed: Arc<Vec<(String, Letter)>>,
     letters: HashMap<String, Letter>,
@@ -171,6 +171,21 @@ impl FileTree {
 
     pub(crate) fn status(&self) -> Option<&GitStatus> {
         self.status.as_ref().map(|prepared| &prepared.status)
+    }
+
+    pub(crate) fn is_dirty(&self) -> bool {
+        self.status
+            .as_ref()
+            .is_some_and(|prepared| prepared.status.changed > 0)
+    }
+
+    pub(crate) fn collapse_all(&mut self) -> bool {
+        if self.expanded.is_empty() {
+            return false;
+        }
+        self.expanded.clear();
+        self.rebuild();
+        true
     }
 
     pub(crate) fn selected(&self) -> Option<&str> {

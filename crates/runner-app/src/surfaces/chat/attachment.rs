@@ -161,8 +161,18 @@ impl NativeRoot {
         } else {
             self.front_page_sidebar_width(cx) * self.settings(cx).app_zoom
         };
-        let chat_panel_width = if self.settings(cx).chat_panel_shown() {
-            self.settings(cx).chat_panel_width * self.settings(cx).app_zoom
+        let settings = self.settings(cx);
+        let available_px = (f32::from(bounds.width) - sidebar_width).max(0.) / settings.app_zoom;
+        let split_columns = side_panel::split_columns_for_layout(
+            Some(layout),
+            crate::surfaces::panes::maximized_leaf(&self.maximized_panes, layout).is_some(),
+        );
+        let (_, panel_available) = self.active_chat_panel_surface(cx);
+        let chat_panel_width = if panel_available
+            && self.chat_panel_is_open(cx)
+            && !side_panel::is_narrow(available_px, settings.chat_panel_width, split_columns)
+        {
+            settings.chat_panel_width * settings.app_zoom
         } else {
             0.
         };
@@ -193,8 +203,18 @@ impl NativeRoot {
         } else {
             self.front_page_sidebar_width(cx) * self.settings(cx).app_zoom
         };
-        let chat_panel_width = if self.settings(cx).chat_panel_shown() {
-            self.settings(cx).chat_panel_width * self.settings(cx).app_zoom
+        let settings = self.settings(cx);
+        let available_px = (f32::from(bounds.width) - sidebar_width).max(0.) / settings.app_zoom;
+        let split_columns = side_panel::split_columns_for_layout(
+            Some(layout),
+            crate::surfaces::panes::maximized_leaf(&self.maximized_panes, layout).is_some(),
+        );
+        let (_, panel_available) = self.active_chat_panel_surface(cx);
+        let chat_panel_width = if panel_available
+            && self.chat_panel_is_open(cx)
+            && !side_panel::is_narrow(available_px, settings.chat_panel_width, split_columns)
+        {
+            settings.chat_panel_width * settings.app_zoom
         } else {
             0.
         };

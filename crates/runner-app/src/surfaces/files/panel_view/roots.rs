@@ -155,20 +155,29 @@ impl FilesView {
                     let base = self.scroll.0.borrow().base_handle.clone();
                     self.scrollbar = cx.new(|_| Scrollbar::app(base, owner));
                     self.load(loads, cx);
+                    if let Some(saved) = self.pending_restore.take() {
+                        self.apply_saved_files(saved, cx);
+                    }
                 }
             },
             Ok(FilesRootOutcome::ChooseFolder) => {
+                self.pending_restore = None;
                 self.reset_viewer();
                 self.body = Body::Choose;
                 self.load_recent(cx);
+                self.notify_owner(cx);
             }
             Ok(FilesRootOutcome::Missing { path }) => {
+                self.pending_restore = None;
                 self.reset_viewer();
                 self.body = Body::Missing { path };
+                self.notify_owner(cx);
             }
             Err(error) => {
+                self.pending_restore = None;
                 self.reset_viewer();
                 self.body = Body::Failed(error.to_string().into());
+                self.notify_owner(cx);
             }
         }
         if same {
@@ -473,6 +482,78 @@ impl FilesView {
         }
     }
 
+    fn open_root_overflow_menu(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root_path) = self.root_path().map(Path::to_path_buf) else {
+            return;
+        };
+        type RootMenuAction = Box<dyn Fn(&mut FilesView, &mut Window, &mut Context<FilesView>)>;
+        let mut items = Vec::new();
+        let mut actions: Vec<RootMenuAction> = Vec::new();
+        items.push(MenuItem::new(crate::i18n::message("ui.copy_path")).icon("copy.svg"));
+        let copied = root_path.clone();
+        actions.push(Box::new(move |_, _, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(
+                copied.to_string_lossy().into_owned(),
+            ));
+        }));
+        items.push(MenuItem::new(reveal_label()).icon("app-window.svg"));
+        let reveal_path = root_path;
+        actions.push(Box::new(move |_, _, cx| {
+            let path = reveal_path.clone();
+            let task = cx.background_spawn(async move { reveal(path) });
+            cx.spawn(async move |this, cx| {
+                if let Err(error) = task.await {
+                    let _ = this.update(cx, |this, cx| {
+                        this.error = Some(error.into());
+                        cx.notify();
+                    });
+                }
+            })
+            .detach();
+        }));
+        items.push(
+            MenuItem::new(crate::i18n::message("ui.choose_another_folder")).icon("folder.svg"),
+        );
+        actions.push(Box::new(|this, _, cx| {
+            this.browse(cx);
+        }));
+        let actions = Rc::new(actions);
+        let root = cx.weak_entity();
+        let dismiss_root = root.clone();
+        let return_focus = self.focus.clone();
+        let menu = cx.new(move |menu_cx| {
+            ContextMenu::new(
+                "files-root-overflow-menu",
+                menu_cx.focus_handle(),
+                event.position,
+                items,
+                Rc::new(move |index, window, cx| {
+                    let actions = actions.clone();
+                    let _ = root.update(cx, |this, cx| {
+                        if let Some(action) = actions.get(index) {
+                            action(this, window, cx);
+                        }
+                    });
+                }),
+                Rc::new(move |_, cx| {
+                    let _ = dismiss_root.update(cx, |this, cx| {
+                        this.menu = None;
+                        cx.notify();
+                    });
+                }),
+            )
+            .return_focus(Some(return_focus))
+        });
+        menu.read(cx).focus_handle().focus(window, cx);
+        self.menu = Some(menu);
+        cx.notify();
+    }
+
     pub(super) fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let (name, icon, missing) = match &self.body {
             Body::Root(state) => (
@@ -502,7 +583,7 @@ impl FilesView {
             .relative()
             .min_w(px(0.))
             .h(px(28.))
-            .px(px(8.))
+            .px(px(6.))
             .flex()
             .items_center()
             .gap(px(6.))
@@ -535,93 +616,316 @@ impl FilesView {
                     .path("chevron-down.svg")
                     .text_color(theme::muted()),
             );
-        let status = match self.tree_ref() {
-            Some(tree) if self.root_is_git() => Some(match tree.status() {
-                None => div()
-                    .when(cfg!(test), |element| {
-                        element.debug_selector(|| "FILES_STATUS_READING".into())
-                    })
-                    .flex()
-                    .items_center()
-                    .gap(px(5.))
-                    .text_color(theme::faint())
-                    .child(
-                        svg()
-                            .size(px(12.))
-                            .path("loader.svg")
-                            .text_color(theme::faint()),
-                    )
-                    .child(crate::i18n::text("ui.reading_status"))
-                    .into_any_element(),
-                Some(status) if status.changed > 0 => div()
-                    .when(cfg!(test), |element| {
-                        let count = status.changed;
-                        element.debug_selector(move || format!("FILES_CHANGED {count}"))
-                    })
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .text_color(theme::muted())
-                    .child(div().size(px(6.)).rounded_full().bg(theme::warning()))
-                    .child(crate::i18n::tn("count.changed", status.changed))
-                    .into_any_element(),
-                Some(_) => div().into_any_element(),
-            }),
-            _ => None,
+
+        let action_btn = |id: &'static str,
+                          selector: &'static str,
+                          icon_path: &'static str,
+                          tip_key: &'static str| {
+            div()
+                .id(id)
+                .when(cfg!(test), move |element| {
+                    element.debug_selector(move || selector.into())
+                })
+                .flex_none()
+                .size(px(24.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_md()
+                .cursor_pointer()
+                .hover(|element| element.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
+                .tooltip(move |_, cx| {
+                    runner_app::ui::tooltip::tooltip_view(crate::i18n::t(tip_key), cx)
+                })
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    svg()
+                        .size(px(13.))
+                        .path(icon_path)
+                        .text_color(theme::muted()),
+                )
         };
-        div()
+
+        let top_row = div()
             .when(cfg!(test), |element| {
                 element.debug_selector(|| "FILES_ROOT_HEADER".into())
             })
             .flex_none()
-            .h(px(44.))
-            .pl(px(10.))
-            .pr(px(16.))
+            .h(px(38.))
+            .pl(px(8.))
+            .pr(px(8.))
             .flex()
             .items_center()
-            .gap_2()
-            .border_b_1()
-            .border_color(theme::border())
+            .gap_1()
             .text_size(theme::text_meta())
             .child(div().min_w(px(0.)).flex_shrink(1.).child(trigger))
             .child(div().flex_1())
-            .children(status)
             .when(!missing, |element| {
-                element.child(
+                element
+                    .child(
+                        action_btn(
+                            "files-collapse-all",
+                            "FILES_COLLAPSE_ALL",
+                            "chevrons-down-up.svg",
+                            "ui.collapse_all_folders",
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.collapse_all_folders(cx))),
+                    )
+                    .child(
+                        action_btn(
+                            "files-refresh",
+                            "FILES_REFRESH",
+                            "refresh-cw.svg",
+                            "ui.refresh",
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh_tree(cx))),
+                    )
+                    .child(
+                        div()
+                            .id("files-root-more")
+                            .when(cfg!(test), |el| {
+                                el.debug_selector(|| "FILES_ROOT_MORE".into())
+                            })
+                            .flex_none()
+                            .size(px(24.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|el| el.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
+                            .tooltip(|_, cx| {
+                                runner_app::ui::tooltip::tooltip_view(
+                                    crate::i18n::t("ui.more_actions"),
+                                    cx,
+                                )
+                            })
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    this.open_root_overflow_menu(event, window, cx);
+                                }),
+                            )
+                            .child(
+                                svg()
+                                    .size(px(13.))
+                                    .path("more-horizontal.svg")
+                                    .text_color(theme::muted()),
+                            ),
+                    )
+            });
+
+        let following_bar = self.context.following.clone().map(|following| {
+            div()
+                .when(cfg!(test), |el| {
+                    el.debug_selector(|| "FILES_FOLLOWING_BADGE".into())
+                })
+                .flex_none()
+                .px(px(10.))
+                .py(px(4.))
+                .bg(theme::with_alpha(theme::raised(), 0.45))
+                .border_t_1()
+                .border_color(theme::border())
+                .text_size(theme::text_caption())
+                .text_color(theme::muted())
+                .truncate()
+                .child(following)
+        });
+
+        let controls = (!missing).then(|| {
+            let is_git = self.root_is_git();
+            let status = self.tree_ref().and_then(|tree| tree.status());
+            let changed_count = status.map_or(0, |s| s.changed);
+            let reading_status = is_git && status.is_none();
+            let active_filter = if is_git { self.filter } else { TreeFilter::All };
+
+            let segmented = is_git.then(|| {
+                let seg = |id: &'static str,
+                           selector: &'static str,
+                           active: bool,
+                           target: TreeFilter,
+                           label: AnyElement| {
                     div()
-                        .id("files-search")
-                        .when(cfg!(test), |element| {
-                            element.debug_selector(|| "FILES_SEARCH".into())
+                        .id(id)
+                        .when(cfg!(test), move |el| {
+                            el.debug_selector(move || {
+                                if active {
+                                    format!("{selector} active")
+                                } else {
+                                    selector.into()
+                                }
+                            })
                         })
-                        .flex_none()
-                        .size(px(24.))
+                        .flex_1()
+                        .min_w(px(0.))
+                        .h(px(22.))
+                        .px(px(6.))
+                        .rounded(px(4.))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded_md()
+                        .gap(px(5.))
                         .cursor_pointer()
-                        .when(self.finder.is_some(), |element| {
-                            element.bg(theme::sidebar_selected())
+                        .text_size(theme::text_meta())
+                        .when(active, |el| {
+                            el.bg(theme::raised())
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme::text())
                         })
-                        .hover(|element| {
-                            element.bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
+                        .when(!active, |el| {
+                            el.text_color(theme::muted())
+                                .hover(|h| h.text_color(theme::text()))
                         })
-                        .tooltip(|_, cx| {
-                            runner_app::ui::tooltip::tooltip_view(
-                                crate::i18n::t("ui.search_files"),
-                                cx,
-                            )
-                        })
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(cx.listener(|this, _, window, cx| this.toggle_finder(window, cx)))
-                        .child(
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.filter != target {
+                                this.filter = target;
+                                cx.notify();
+                            }
+                        }))
+                        .child(label)
+                };
+
+                let changed_label = div()
+                    .when(cfg!(test) && changed_count > 0, |el| {
+                        el.debug_selector(move || format!("FILES_CHANGED {changed_count}"))
+                    })
+                    .when(cfg!(test) && reading_status, |el| {
+                        el.debug_selector(|| "FILES_STATUS_READING".into())
+                    })
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .truncate()
+                    .when(changed_count > 0, |el| {
+                        el.child(
+                            div()
+                                .flex_none()
+                                .size(px(5.))
+                                .rounded_full()
+                                .bg(theme::warning()),
+                        )
+                    })
+                    .when(reading_status, |el| {
+                        el.child(
                             svg()
-                                .size(px(14.))
-                                .path("search.svg")
-                                .text_color(theme::muted()),
-                        ),
+                                .flex_none()
+                                .size(px(11.))
+                                .path("loader.svg")
+                                .text_color(theme::faint()),
+                        )
+                    })
+                    .child(if changed_count > 0 {
+                        crate::i18n::tf(
+                            "files.changed_count",
+                            &[("count", changed_count.to_string())],
+                        )
+                    } else {
+                        crate::i18n::text("files.changed_tab").to_owned()
+                    })
+                    .into_any_element();
+
+                div()
+                    .when(cfg!(test), |el| {
+                        el.debug_selector(|| "FILES_FILTER_TABS".into())
+                    })
+                    .p(px(2.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(theme::border())
+                    .bg(theme::panel())
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .child(seg(
+                        "files-filter-all",
+                        "FILES_FILTER_ALL",
+                        active_filter == TreeFilter::All,
+                        TreeFilter::All,
+                        div()
+                            .truncate()
+                            .child(crate::i18n::text("files.all_files"))
+                            .into_any_element(),
+                    ))
+                    .child(seg(
+                        "files-filter-changed",
+                        "FILES_FILTER_CHANGED",
+                        active_filter == TreeFilter::Changed,
+                        TreeFilter::Changed,
+                        changed_label,
+                    ))
+            });
+
+            let shortcut = crate::surfaces::files::settings(cx)
+                .and_then(|s| crate::keymap::effective_binding("search-files", &s.keymap_overrides))
+                .map(|combo| crate::keymap::format_combo(&combo));
+
+            let find_bar = div()
+                .id("files-search")
+                .when(cfg!(test), |element| {
+                    element.debug_selector(|| "FILES_SEARCH".into())
+                })
+                .h(px(28.))
+                .px(px(8.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::panel())
+                .cursor_pointer()
+                .when(self.finder.is_some(), |element| {
+                    element.bg(theme::sidebar_selected())
+                })
+                .hover(|element| element.bg(theme::with_alpha(theme::raised(), 0.7)))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_finder(window, cx)))
+                .child(
+                    svg()
+                        .flex_none()
+                        .size(px(13.))
+                        .path("search.svg")
+                        .text_color(theme::faint()),
                 )
-            })
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .truncate()
+                        .text_size(theme::text_meta())
+                        .text_color(theme::faint())
+                        .child(crate::i18n::text("ui.find_files")),
+                )
+                .children(shortcut.map(|combo| {
+                    div()
+                        .flex_none()
+                        .font_family(theme::UI_MONOSPACE_FONT)
+                        .text_size(theme::text_micro())
+                        .text_color(theme::faint())
+                        .child(combo)
+                }));
+
+            div()
+                .flex_none()
+                .px(px(8.))
+                .pb(px(8.))
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .children(segmented)
+                .child(find_bar)
+        });
+
+        div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .border_b_1()
+            .border_color(theme::border())
+            .child(top_row)
+            .children(following_bar)
+            .children(controls)
             .into_any_element()
     }
 

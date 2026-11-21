@@ -814,6 +814,9 @@ impl FilesView {
             conflicted,
             compare_label,
             mode_switch: Some((effective_mode, mode_handler)),
+            viewed: None,
+            open_external: None,
+            on_close: None,
         });
 
         let body = match &file.diff {

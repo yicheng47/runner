@@ -6,10 +6,10 @@ fn shortcut_rows_keep_registry_order_with_one_tab_row_and_display_only_system_ke
     let overrides = keymap::KeymapOverrides::new();
     let rows = shortcut_rows("", &overrides);
     let titles = rows.iter().map(|row| row.title()).collect::<Vec<_>>();
-    assert_eq!(titles.len(), 31);
+    assert_eq!(titles.len(), 32);
     assert_eq!(titles[0], "New window");
     assert_eq!(
-        titles[28..],
+        titles[29..],
         ["Copy selection", "Paste", "Toggle fullscreen"]
     );
     let after = |title: &str| titles[titles.iter().position(|t| *t == title).unwrap() + 1];
@@ -34,7 +34,7 @@ fn shortcut_rows_keep_registry_order_with_one_tab_row_and_display_only_system_ke
     );
     assert_eq!(ShortcutRow::TabSelection.binding_label(&overrides), "⌘1–⌘9");
     assert_eq!(
-        rows[28..]
+        rows[29..]
             .iter()
             .map(|row| row.binding_label(&overrides))
             .collect::<Vec<_>>(),
@@ -74,6 +74,7 @@ fn shortcut_sections_follow_the_guide_and_hide_sections_without_a_match() {
                     "new-mission",
                     "command-palette",
                     "search-files",
+                    "toggle-session-info",
                     "toggle-sidebar",
                     "switch-sidebar-view",
                     "open-settings",
@@ -1877,7 +1878,18 @@ fn nav_search_filters_labels_and_removes_empty_groups() {
         );
         assert_eq!(
             filtered_nav_groups("files"),
-            vec![("Side panel", vec![SettingsPane::Files])]
+            vec![(
+                "Side panel",
+                vec![SettingsPane::SidePanel, SettingsPane::Files]
+            )]
+        );
+        assert_eq!(
+            filtered_nav_groups("changes"),
+            vec![("Side panel", vec![SettingsPane::SidePanel])]
+        );
+        assert_eq!(
+            filtered_nav_groups("workspace tools"),
+            vec![("Side panel", vec![SettingsPane::SidePanel])]
         );
         assert_eq!(
             SettingsPane::from_route(Some("side-panel")),

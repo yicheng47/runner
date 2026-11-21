@@ -1409,15 +1409,9 @@ fn remote_chat_info_shows_host_worktree_on_open_and_tracks_connection() {
     });
     fake.set_overview(data.clone());
     let window = add_window(&mut cx, &store, temp.path(), "remote-chat-info");
-    let local_panel = store.read_with(&cx, |store, _| store.settings.chat_panel_open);
     window.update(&mut cx, choose_host).unwrap();
-    window
-        .update(&mut cx, |root, _, _| {
-            root.chat_panel_visibility =
-                crate::surfaces::root::SidebarVisibilityTransition::new(false);
-        })
-        .unwrap();
     let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.simulate_resize(gpui::size(px(1400.), px(900.)));
     fn wait(
         visual: &mut VisualTestContext,
         what: &str,
@@ -1438,34 +1432,40 @@ fn remote_chat_info_shows_host_worktree_on_open_and_tracks_connection() {
             std::thread::yield_now();
         }
     }
-    wait(&mut visual, "remote chat side-panel toggle", |v| {
-        v.debug_bounds("CHAT_PANEL_TOGGLE").is_some()
+    wait(&mut visual, "remote chat pane header", |v| {
+        v.debug_bounds("PANE_HEADER:s").is_some()
     });
-    let toggle = visual.debug_bounds("CHAT_PANEL_TOGGLE").unwrap();
-    visual.simulate_click(toggle.center(), gpui::Modifiers::default());
+    // Right side panel shows the Orca activity bar (Files / Changes) with compact unavailable notice.
+    assert!(visual.debug_bounds("PANEL_ACTIVITY Files active").is_some());
+    assert!(visual.debug_bounds("PANEL_ACTIVITY Changes").is_some());
+    assert!(visual.debug_bounds("PANEL_TAB Info").is_none());
+    assert!(visual.debug_bounds("PANEL_ADD_SURFACE").is_none());
+
+    // Dispatch the real ToggleSessionInfo action (⌘I / Ctrl+Shift+I) on a remote chat while the
+    // local background route is Roles: must open the remote chat's S2 Title Info popover (#1403).
     window
-        .update(&mut visual, |root, _, _| {
-            assert!(root.remote_client.chat_info_is_open());
-            root.chat_panel_visibility =
-                crate::surfaces::root::SidebarVisibilityTransition::new(true);
+        .update(&mut visual, |root, window, cx| {
+            root.chat_focus.focus(window, cx);
         })
         .unwrap();
-    visual.refresh().unwrap();
+    visual.run_until_parked();
+    visual.dispatch_action(crate::ToggleSessionInfo);
     let cwd_selector = format!("CHAT_PANEL_META {host_path}").leak();
     wait(
         &mut visual,
-        "host worktree metadata on remote chat Info",
+        "host worktree metadata on remote chat S2 Info popover",
         |v| {
-            v.debug_bounds(cwd_selector).is_some()
+            v.debug_bounds("S2_CHAT_INFO_CARD").is_some()
+                && v.debug_bounds("CHAT_PANEL_WORKTREE_ROW").is_some()
                 && v.debug_bounds("CHAT_PANEL_META feat/chat").is_some()
                 && v.debug_bounds("INFO_WORKTREE_MARKER Worktree · from origin/main")
                     .is_some()
         },
     );
-    assert!(visual.debug_bounds("PANEL_TAB Info").is_some());
-    assert!(visual.debug_bounds("PANEL_ADD_SURFACE").is_none());
-    assert!(visual.debug_bounds("PANEL_TAB Files").is_none());
-    assert!(visual.debug_bounds("PANEL_TAB Changes").is_none());
+    assert!(
+        visual.debug_bounds(cwd_selector).is_none(),
+        "#1360 omits redundant cwd when equal to worktree root"
+    );
 
     fake.emit(
         "remote/connection",
@@ -1473,11 +1473,11 @@ fn remote_chat_info_shows_host_worktree_on_open_and_tracks_connection() {
     );
     wait(
         &mut visual,
-        "offline chat Info drops the host branch",
+        "offline chat Info drops the host worktree row and shows cwd",
         |v| {
             clients.read_with(v, |state, _| state.connection("host")) == Connection::Reconnecting
                 && v.debug_bounds(cwd_selector).is_some()
-                && v.debug_bounds("CHAT_PANEL_BRANCH_ROW").is_none()
+                && v.debug_bounds("CHAT_PANEL_WORKTREE_ROW").is_none()
         },
     );
     fake.emit(
@@ -1498,6 +1498,14 @@ fn remote_chat_info_shows_host_worktree_on_open_and_tracks_connection() {
         "reconnected chat Info restores the host branch",
         |v| v.debug_bounds("CHAT_PANEL_META feat/reconnected").is_some(),
     );
+
+    // Close first popover before switching panes.
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.toggle_focused_pane_info_popover(window, cx);
+        })
+        .unwrap();
+    visual.run_until_parked();
 
     let mut other_chat = data.sessions["s"].clone();
     let Some(Checkout::Git { top, branch, .. }) = &mut other_chat.checkout else {
@@ -1546,47 +1554,55 @@ fn remote_chat_info_shows_host_worktree_on_open_and_tracks_connection() {
             .unwrap();
     };
     focus(&mut visual, "second");
-    wait(&mut visual, "second remote chat branch", |v| {
-        v.debug_bounds("CHAT_PANEL_META feat/second").is_some()
-    });
-    focus(&mut visual, "terminal");
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.toggle_focused_pane_info_popover(window, cx);
+        })
+        .unwrap();
     wait(
         &mut visual,
-        "last focused chat Info with terminal focused",
-        |v| {
-            window
-                .read_with(v, |root, _| {
-                    root.active_focused_session_id().as_deref() == Some("terminal")
-                })
-                .unwrap()
-                && v.debug_bounds("CHAT_PANEL_META feat/second").is_some()
-        },
+        "second remote chat branch in S2 popover",
+        |v| v.debug_bounds("CHAT_PANEL_META feat/second").is_some(),
     );
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.toggle_focused_pane_info_popover(window, cx);
+        })
+        .unwrap();
 
     focus(&mut visual, "s");
     data.sessions.get_mut("s").unwrap().checkout = None;
     fake.set_overview(data);
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.toggle_focused_pane_info_popover(window, cx);
+        })
+        .unwrap();
     wait(
         &mut visual,
         "older host Info without checkout metadata",
         |v| {
             v.debug_bounds(cwd_selector).is_some()
-                && v.debug_bounds("CHAT_PANEL_BRANCH_ROW").is_none()
+                && v.debug_bounds("CHAT_PANEL_WORKTREE_ROW").is_none()
         },
     );
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.toggle_focused_pane_info_popover(window, cx);
+        })
+        .unwrap();
+    wait(&mut visual, "S2 Info popover closed before collapse", |v| {
+        v.debug_bounds("S2_CHAT_INFO_CARD").is_none()
+    });
 
     let collapse = visual.debug_bounds("PANEL_COLLAPSE").unwrap();
     visual.simulate_click(collapse.center(), gpui::Modifiers::default());
     wait(&mut visual, "collapsed remote chat panel", |v| {
         window
-            .read_with(v, |root, _| !root.remote_client.chat_info_is_open())
+            .read_with(v, |root, cx| !root.chat_panel_is_open(cx))
             .unwrap()
             && v.debug_bounds("CHAT_PANEL_TOGGLE").is_some()
     });
-    assert_eq!(
-        store.read_with(&visual, |store, _| store.settings.chat_panel_open),
-        local_panel,
-    );
 }
 
 #[test]
@@ -7758,13 +7774,28 @@ fn remote_title_menu_pin_runs_after_the_root_update() {
         .unwrap()
         .expect("the remote chat's title menu");
     visual.update(|window, cx| menu.read(cx).focus_handle(cx).focus(window, cx));
-    visual.simulate_keystrokes("down end enter");
+    visual.simulate_keystrokes("down end up enter");
     visual.run_until_parked();
     let pins = action_trace(&fake, "pin");
     assert_eq!(pins.len(), 1, "{pins:?}");
     assert_eq!(
         pins[0]["pinned"], false,
         "the pinned remote tab is unpinned"
+    );
+
+    // The trailing Archive item opens the remote archive confirmation dialog cleanly.
+    visual.update(|window, cx| menu.read(cx).focus_handle(cx).focus(window, cx));
+    visual.simulate_keystrokes("down end enter");
+    visual.run_until_parked();
+    assert!(
+        window
+            .read_with(&visual, |root, _| matches!(
+                root.terminal_close_confirm.as_ref().map(|c| &c.target),
+                Some(crate::TerminalCloseTarget::ArchiveChatPane { session_id, .. })
+                    if session_id == "s"
+            ))
+            .unwrap(),
+        "activating Archive from the remote Title menu must open remote archive confirmation"
     );
 }
 
@@ -10853,7 +10884,7 @@ fn settings_visit_from_remote_mission_keeps_attachments_and_restores_focus() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();
     let mut cx = TestAppContext::single();
-    let (store, fake, _) = fixture(&mut cx, temp.path());
+    let (store, fake, clients) = fixture(&mut cx, temp.path());
     enable_missions(&fake);
     fake.features.lock().unwrap().push("markViewed".into());
     *fake.on_mark_viewed.lock().unwrap() = Some(Box::new(|fake, session| {
@@ -10888,6 +10919,20 @@ fn settings_visit_from_remote_mission_keeps_attachments_and_restores_focus() {
     }))
     .unwrap();
     fake.set_overview(data.clone());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !clients.read_with(&cx, |state, _| {
+        state
+            .overviews
+            .get("host")
+            .is_some_and(|overview| overview.sessions.contains_key("member"))
+    }) {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for host mission overview"
+        );
+        std::thread::yield_now();
+        cx.run_until_parked();
+    }
 
     let window = add_window(&mut cx, &store, temp.path(), "settings-remote-mission");
     window

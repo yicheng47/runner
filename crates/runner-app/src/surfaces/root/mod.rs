@@ -242,7 +242,10 @@ impl Render for ChatPanelResizeDrag {
 
 impl SidebarVisibilityTransition {
     pub(crate) fn new(visible: bool) -> Self {
-        let value = if visible { 1. } else { 0. };
+        Self::at(if visible { 1. } else { 0. })
+    }
+
+    pub(crate) fn at(value: f32) -> Self {
         Self {
             start: value,
             target: value,
@@ -318,6 +321,9 @@ pub(crate) struct NativeRoot {
     pub(crate) archived_chat_detail: Option<DirectSessionEntry>,
     pub(crate) session_key_copy: Entity<CopyValueButton>,
     pub(crate) archived_session_key_copy: Entity<CopyValueButton>,
+    pub(crate) pane_session_key_copies: HashMap<String, Entity<CopyValueButton>>,
+    pub(crate) pane_worktree_copies: HashMap<String, Entity<CopyValueButton>>,
+    pub(crate) archived_title_menu: Option<(String, Entity<PopoverMenu>)>,
     pub(crate) pane_action_menus: HashMap<String, Entity<PopoverMenu>>,
     pub(crate) split_menus: HashMap<SplitMenuKey, Entity<PopoverMenu>>,
     pub(crate) pane_bounds: HashMap<PaneKey, Size<Pixels>>,
@@ -368,8 +374,11 @@ pub(crate) struct NativeRoot {
     pub(crate) sidebar_collapsed: bool,
     pub(crate) sidebar_visibility: SidebarVisibilityTransition,
     pub(crate) chat_panel_visibility: SidebarVisibilityTransition,
-    pub(crate) chat_panel_prompt_session: Option<String>,
-    pub(crate) chat_panel_prompt_expanded: bool,
+    pub(crate) chat_panel_width_anim: SidebarVisibilityTransition,
+    pub(crate) chat_panel_width_mode: Option<(bool, bool)>,
+    pub(crate) chat_sheet_anim: SidebarVisibilityTransition,
+    pub(crate) chat_panel_width_snap: bool,
+    pub(crate) chat_info_prompt_expanded: HashSet<String>,
     pub(crate) chat_surfaces: crate::surfaces::side_panel::PanelSurfaces,
     pub(crate) chat_panel_tab: Option<String>,
     pub(crate) chat_panel_open: Option<bool>,

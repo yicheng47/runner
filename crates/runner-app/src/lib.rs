@@ -163,6 +163,7 @@ actions!(
         StopFocusedSession,
         ToggleFullscreen,
         ToggleMaximizePane,
+        ToggleSessionInfo,
         ToggleTerminalDrawer,
         ToggleSidebar,
         SwitchSidebarView,

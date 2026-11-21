@@ -1,16 +1,13 @@
-//! The side panel's surfaces: what each one declares, the context it
-//! renders from, and the header that holds the open ones as tabs with a `+`
-//! menu of the rest.
+//! The right side panel's tools, Orca-style 40 px icon activity bar, and
+//! docked-vs-overlay-sheet geometry (#1403, #1331).
 
-use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    canvas, div, prelude::*, px, rems, svg, AnyElement, App, Bounds, Div, ElementId, FocusHandle,
-    FontWeight, KeyDownEvent, MouseButton, Pixels, Window,
+    div, prelude::*, px, rems, svg, AnyElement, App, BoxShadow, Div, ElementId, MouseButton, Window,
 };
-use runner_app::ui::menu::popup_layer;
-use runner_app::ui::{ButtonVariant, IconButton, IconButtonSize};
+use runner_app::ui::{ButtonVariant, IconButton, Tooltip};
+use runner_core::pane_layout::{PaneLayout, PaneNode, SplitOrientation};
 
 use crate::app_settings::{AppSettings, DiffViewMode};
 use crate::theme;
@@ -19,7 +16,6 @@ use crate::theme;
 pub(crate) enum PanelViewId {
     #[default]
     Sessions,
-    Info,
     Files,
     Changes,
 }
@@ -36,8 +32,6 @@ pub(crate) struct PanelView {
     pub(crate) id: PanelViewId,
     label: &'static str,
     pub(crate) icon: &'static str,
-    /// The letter that opens it from the `+` menu or the empty list.
-    pub(crate) key: Option<&'static str>,
     surfaces: &'static [PanelSurface],
 }
 
@@ -46,38 +40,28 @@ impl PanelView {
         crate::i18n::text(self.label)
     }
 
-    /// Whether Settings → Side panel turns the view on; a mission's
-    /// Sessions always is.
+    /// Whether Settings → Side panel enables the view; a mission's Sessions
+    /// roster is always enabled while the side panel is on.
     pub(crate) fn on(&self, settings: &AppSettings) -> bool {
         match self.id {
             PanelViewId::Sessions => true,
-            PanelViewId::Info => settings.info_view,
             PanelViewId::Files => settings.files_view,
             PanelViewId::Changes => settings.changes_view,
         }
     }
 }
 
-pub(crate) const VIEWS: [PanelView; 4] = [
+pub(crate) const VIEWS: [PanelView; 3] = [
     PanelView {
         id: PanelViewId::Sessions,
         label: "ui.sessions",
         icon: "users.svg",
-        key: None,
         surfaces: &[PanelSurface::Mission],
-    },
-    PanelView {
-        id: PanelViewId::Info,
-        label: "ui.info",
-        icon: "info.svg",
-        key: Some("I"),
-        surfaces: &[PanelSurface::Chat, PanelSurface::Mission],
     },
     PanelView {
         id: PanelViewId::Files,
         label: "ui.files",
-        icon: "folder.svg",
-        key: Some("F"),
+        icon: "files.svg",
         surfaces: &[
             PanelSurface::Chat,
             PanelSurface::Terminal,
@@ -88,7 +72,6 @@ pub(crate) const VIEWS: [PanelView; 4] = [
         id: PanelViewId::Changes,
         label: "ui.changes",
         icon: "git-compare.svg",
-        key: Some("C"),
         surfaces: &[
             PanelSurface::Chat,
             PanelSurface::Terminal,
@@ -106,7 +89,7 @@ pub(crate) fn views(
         .filter(move |view| view.on(settings) && view.surfaces.contains(&surface))
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum PanelSubject {
     Session(String),
     Mission(String),
@@ -119,11 +102,18 @@ pub(crate) struct PanelContext {
     pub(crate) cwd: Option<String>,
     pub(crate) project: Option<String>,
     pub(crate) remote: bool,
+    /// Split-pane "Following <pane> · <branch/folder>" indicator when panes in
+    /// the same tab work in different folders or worktrees.
+    pub(crate) following: Option<String>,
 }
 
-/// Beside a panel widened by an open file, the chat or the mission with its
-/// terminal drawer keeps at least this much.
+/// Beside a docked panel on a single-pane chat or mission, the main workspace
+/// keeps at least this much width.
 pub(crate) const MAIN_MIN_WIDTH: f32 = 420.;
+/// Minimum width preserved per horizontal column in a split chat tab.
+pub(crate) const SPLIT_COL_MIN_WIDTH: f32 = 340.;
+/// Minimum backdrop margin kept visible to the left of an overlay sheet.
+pub(crate) const SHEET_MIN_SCRIM_WIDTH: f32 = 48.;
 /// From this width the mission's Sessions roster places two cards per row.
 pub(crate) const ROSTER_TWO_UP_WIDTH: f32 = 560.;
 /// Each side of a Split diff takes at least this much unmaximized; narrower
@@ -143,8 +133,81 @@ pub(crate) fn effective_diff_mode(
     }
 }
 
-/// A panel widened by an open file: the file's width, whether the tree
-/// beside it is on, the tree's width, and the panel's standard width.
+pub(crate) fn min_main_width(split_columns: usize) -> f32 {
+    if split_columns <= 1 {
+        MAIN_MIN_WIDTH
+    } else {
+        split_columns as f32 * SPLIT_COL_MIN_WIDTH
+    }
+}
+
+pub(crate) fn node_split_columns(node: &PaneNode) -> usize {
+    match node {
+        PaneNode::Leaf(_) => 1,
+        PaneNode::Split(split) => match split.orientation {
+            SplitOrientation::Row => node_split_columns(&split.a) + node_split_columns(&split.b),
+            SplitOrientation::Column => {
+                node_split_columns(&split.a).max(node_split_columns(&split.b))
+            }
+        },
+    }
+}
+
+pub(crate) fn split_columns_for_layout(layout: Option<&PaneLayout>, has_maximized: bool) -> usize {
+    if has_maximized {
+        return 1;
+    }
+    layout.map_or(1, |layout| node_split_columns(&layout.root))
+}
+
+/// Whether a window with `available` workspace width is too narrow to dock a
+/// compact `compact_width` side panel beside `split_columns` main columns.
+pub(crate) fn is_narrow(available: f32, compact_width: f32, split_columns: usize) -> bool {
+    available > 0. && (available - compact_width) < min_main_width(split_columns)
+}
+
+/// Default open state for a tab whose user has not explicitly opened or
+/// collapsed the panel yet: open on wide windows, collapsed on narrow ones.
+pub(crate) fn default_open(available: f32, compact_width: f32, split_columns: usize) -> bool {
+    !is_narrow(available, compact_width, split_columns)
+}
+
+pub(crate) fn resolved_open(
+    explicit: Option<bool>,
+    available: f32,
+    compact_width: f32,
+    split_columns: usize,
+) -> bool {
+    explicit.unwrap_or_else(|| default_open(available, compact_width, split_columns))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PanelPresentation {
+    Docked,
+    Sheet,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PanelLayout {
+    pub(crate) width: f32,
+    pub(crate) widened: Option<Widened>,
+    pub(crate) presentation: PanelPresentation,
+    /// Docked width reserved in the flex row when `presentation == Sheet`:
+    /// `0` on narrow windows (terminal stays full width, zero SIGWINCH) and
+    /// `standard` when widening overflowed an already-docked compact rail
+    /// (split panes keep their docked width, zero SIGWINCH).
+    pub(crate) reserved_docked_width: f32,
+}
+
+impl PanelLayout {
+    pub(crate) fn is_sheet(self) -> bool {
+        self.presentation == PanelPresentation::Sheet
+    }
+}
+
+/// A panel widened by an open file or diff: the viewer's width, whether the
+/// tree/list column beside it is on, that column's width, and the compact
+/// width.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Widened {
     pub(crate) file: f32,
@@ -172,18 +235,17 @@ impl Widened {
     }
 }
 
-/// How a panel showing a file of width `file` beside a tree `tree_width`
-/// wide fits in `available`, the width it shares with the chat or mission:
-/// the file narrows first, never below the panel's `standard` width, and a
-/// tree that is turned on always shows (Jason, 2026-11-05).
-pub(crate) fn widened(
+/// How a docked panel showing a file of width `file` beside a tree `tree_width`
+/// wide fits in `available` while keeping `min_main` for the workspace.
+pub(crate) fn widened_for(
     available: f32,
+    min_main: f32,
     standard: f32,
     file: f32,
     tree_width: f32,
     tree: bool,
 ) -> Widened {
-    let room = available - MAIN_MIN_WIDTH - if tree { tree_width } else { 0. };
+    let room = available - min_main - if tree { tree_width } else { 0. };
     let file = file.max(standard);
     Widened {
         file: room.clamp(standard, file),
@@ -193,370 +255,260 @@ pub(crate) fn widened(
     }
 }
 
-/// The surfaces a panel has opened as tabs, in the order they opened, and
-/// the one it shows; kept where the panel keeps its state.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct OpenSurfaces {
-    open: Vec<PanelViewId>,
+#[cfg(test)]
+pub(crate) fn widened(
+    available: f32,
+    standard: f32,
+    file: f32,
+    tree_width: f32,
+    tree: bool,
+) -> Widened {
+    widened_for(available, MAIN_MIN_WIDTH, standard, file, tree_width, tree)
+}
+
+/// Computes the panel's width, widened geometry, and Docked vs Sheet
+/// presentation for a workspace of `available` width (already minus any docked
+/// gap, or `0` before first measurement).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_panel_layout(
+    available: f32,
+    split_columns: usize,
+    standard: f32,
+    file: f32,
+    tree_width: f32,
+    widened_tree: Option<bool>,
+    maximized: bool,
+    maximized_full: f32,
+) -> PanelLayout {
+    if maximized {
+        let widened = widened_tree.map(|tree| {
+            let file_width = (maximized_full - if tree { tree_width } else { 0. }).max(standard);
+            Widened {
+                file: file_width,
+                tree,
+                tree_width,
+                standard,
+            }
+        });
+        return PanelLayout {
+            width: maximized_full,
+            widened,
+            presentation: PanelPresentation::Docked,
+            reserved_docked_width: maximized_full,
+        };
+    }
+
+    let min_main = min_main_width(split_columns);
+    let narrow = is_narrow(available, standard, split_columns);
+    let max_sheet = if available > 0. {
+        (available - SHEET_MIN_SCRIM_WIDTH).max(standard.min(available))
+    } else {
+        standard
+    };
+
+    let Some(tree) = widened_tree else {
+        if narrow {
+            let width = standard.min(max_sheet);
+            return PanelLayout {
+                width,
+                widened: None,
+                presentation: PanelPresentation::Sheet,
+                reserved_docked_width: 0.,
+            };
+        }
+        return PanelLayout {
+            width: standard,
+            widened: None,
+            presentation: PanelPresentation::Docked,
+            reserved_docked_width: standard,
+        };
+    };
+
+    let desired_file = file.max(standard);
+    let desired_tree = if tree { tree_width } else { 0. };
+    // Splits promote to an overlay sheet whenever docking the requested widened
+    // width would drop any split column below 340 px; single-pane views narrow
+    // smoothly down to `standard + tree` before promoting (#1331, #1403).
+    let docked_threshold = if split_columns > 1 {
+        desired_file + desired_tree
+    } else {
+        standard + desired_tree
+    };
+
+    if available > 0. && (narrow || (available - docked_threshold) < min_main) {
+        let (sheet_tree, sheet_file) = if tree && max_sheet < standard + tree_width {
+            (
+                false,
+                desired_file.min(max_sheet).max(standard.min(max_sheet)),
+            )
+        } else {
+            let room = max_sheet - if tree { tree_width } else { 0. };
+            (tree, desired_file.min(room).max(standard.min(room)))
+        };
+        let layout = Widened {
+            file: sheet_file,
+            tree: sheet_tree,
+            tree_width,
+            standard,
+        };
+        return PanelLayout {
+            width: layout.width(),
+            widened: Some(layout),
+            presentation: PanelPresentation::Sheet,
+            reserved_docked_width: if narrow { 0. } else { standard },
+        };
+    }
+
+    let layout = if available > 0. {
+        widened_for(
+            available,
+            min_main,
+            standard,
+            desired_file,
+            tree_width,
+            tree,
+        )
+    } else {
+        Widened {
+            file: desired_file,
+            tree,
+            tree_width,
+            standard,
+        }
+    };
+    PanelLayout {
+        width: layout.width(),
+        widened: Some(layout),
+        presentation: PanelPresentation::Docked,
+        reserved_docked_width: layout.width(),
+    }
+}
+
+/// The active mode selected in a panel's activity bar; defaults to the first
+/// enabled view (`Files` on chats/terminals, `Sessions` on missions).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct PanelSelection {
     active: Option<PanelViewId>,
 }
 
-impl OpenSurfaces {
-    /// Opens `id` as a tab once, and switches to it.
-    pub(crate) fn open(&mut self, id: PanelViewId) {
-        if id != PanelViewId::Sessions && !self.open.contains(&id) {
-            self.open.push(id);
-        }
-        self.active = Some(id);
+impl PanelSelection {
+    #[cfg(test)]
+    pub(crate) fn new(id: PanelViewId) -> Self {
+        Self { active: Some(id) }
     }
 
     pub(crate) fn select(&mut self, id: PanelViewId) {
         self.active = Some(id);
     }
 
-    /// Closes `id`'s tab; when it was showing, the tab before it shows:
-    /// the permanent one of a panel with one, else the previous, else the
-    /// next, else none.
-    pub(crate) fn close(&mut self, id: PanelViewId, permanent: bool) {
-        let Some(index) = self.open.iter().position(|open| *open == id) else {
-            return;
-        };
-        self.open.remove(index);
-        if self.active == Some(id) {
-            self.active = match index.checked_sub(1) {
-                Some(before) => self.open.get(before).copied(),
-                None if permanent => None,
-                None => self.open.first().copied(),
-            };
-        }
-    }
-
-    /// Closes the tabs of the surfaces Settings turned off.
-    pub(crate) fn close_off(&mut self, settings: &AppSettings, permanent: bool) {
-        let off = VIEWS
-            .iter()
-            .filter(|view| !view.on(settings))
-            .map(|view| view.id)
-            .collect::<Vec<_>>();
-        for id in &off {
-            if self.open.contains(id) {
-                self.close(*id, permanent);
-            }
-        }
-        if self.active.is_some_and(|active| off.contains(&active)) {
-            self.active = None;
-        }
+    #[cfg(test)]
+    pub(crate) fn selected(&self) -> Option<PanelViewId> {
+        self.active
     }
 
     #[cfg(test)]
-    pub(crate) fn ids(&self) -> (&[PanelViewId], Option<PanelViewId>) {
-        (&self.open, self.active)
+    pub(crate) fn effective(
+        &self,
+        surface: PanelSurface,
+        settings: &AppSettings,
+    ) -> Option<PanelViewId> {
+        shown(surface, settings, self)
     }
 }
 
-/// An inactive tab's panel; an unset open state follows the setting until shown.
+/// An inactive tab's or mission's panel state; `open: None` follows wide/narrow
+/// defaults until explicitly opened or collapsed.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SavedPanel {
-    pub(crate) surfaces: OpenSurfaces,
+    pub(crate) selection: PanelSelection,
     pub(crate) open: Option<bool>,
     pub(crate) maximized: bool,
-    pub(crate) widened_tree: Option<bool>,
 }
 
-/// The surfaces `surface` offers to open: those Settings turns on, a
-/// mission's Sessions roster aside.
-fn offered(surface: PanelSurface, settings: &AppSettings) -> Vec<&'static PanelView> {
-    views(surface, settings)
-        .filter(|view| view.id != PanelViewId::Sessions)
-        .collect()
-}
-
-/// The tabs that cannot close: a mission's Sessions, a terminal tab's
-/// offered surfaces, or the one surface on offer.
-fn permanents(surface: PanelSurface, settings: &AppSettings) -> Vec<PanelViewId> {
-    match surface {
-        PanelSurface::Mission => vec![PanelViewId::Sessions],
-        PanelSurface::Terminal => offered(surface, settings)
-            .into_iter()
-            .map(|view| view.id)
-            .collect(),
-        PanelSurface::Chat => match offered(surface, settings).as_slice() {
-            [only] => vec![only.id],
-            _ => Vec::new(),
-        },
-    }
-}
-
-/// What the `+` menu and the empty list offer; nothing where a surface's
-/// tabs are permanent.
-pub(crate) fn menu_views(surface: PanelSurface, settings: &AppSettings) -> Vec<&'static PanelView> {
-    if surface == PanelSurface::Terminal {
-        return Vec::new();
-    }
-    let offered = offered(surface, settings);
-    if surface != PanelSurface::Mission && offered.len() < 2 {
-        return Vec::new();
-    }
-    offered
-}
-
-/// The header's tabs, each with whether it closes: the permanent ones
-/// first, then the open surfaces on offer.
-pub(crate) fn tabs(
-    surface: PanelSurface,
-    settings: &AppSettings,
-    surfaces: &OpenSurfaces,
-) -> Vec<(PanelViewId, bool)> {
-    let permanents = permanents(surface, settings);
-    let offered = offered(surface, settings);
-    permanents
-        .iter()
-        .map(|id| (*id, false))
-        .chain(
-            surfaces
-                .open
-                .iter()
-                .filter(|id| !permanents.contains(id) && offered.iter().any(|view| view.id == **id))
-                .map(|id| (*id, true)),
-        )
-        .collect()
-}
-
-/// The surface a panel shows: the active tab, else the first; `None` for
-/// the empty list.
+/// The view a panel shows: the selected mode if still enabled on `surface`,
+/// otherwise the first enabled view (`Files` on chats/terminals, `Sessions` on
+/// missions). `None` only when Settings disabled every tool for this surface.
 pub(crate) fn shown(
     surface: PanelSurface,
     settings: &AppSettings,
-    surfaces: &OpenSurfaces,
+    selection: &PanelSelection,
 ) -> Option<PanelViewId> {
-    let tabs = tabs(surface, settings, surfaces);
-    surfaces
-        .active
-        .filter(|active| tabs.iter().any(|(id, _)| id == active))
-        .or_else(|| tabs.first().map(|(id, _)| *id))
+    let mut enabled = views(surface, settings);
+    let first = enabled.next()?.id;
+    if let Some(active) = selection.active {
+        if active == first || enabled.any(|view| view.id == active) {
+            return Some(active);
+        }
+    }
+    Some(first)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SurfaceAction {
     Select(PanelViewId),
-    Open(PanelViewId),
-    Close(PanelViewId),
-    ToggleMenu,
-    DismissMenu,
-    HighlightMenu(usize),
-    HighlightList(usize),
-    FocusList,
 }
 
 pub(crate) type SurfaceHandler = Rc<dyn Fn(SurfaceAction, &mut Window, &mut App)>;
 
-/// A panel's surfaces and its `+` menu: whether it is open, the rows the
-/// keyboard highlights there and in the empty list, and their focus.
+/// Per-panel activity-bar state.
+#[derive(Default)]
 pub(crate) struct PanelSurfaces {
-    pub(crate) open: OpenSurfaces,
-    widened_tree: Cell<Option<bool>>,
-    menu_open: bool,
-    menu_highlighted: usize,
-    list_highlighted: usize,
-    menu_focus: FocusHandle,
-    list_focus: FocusHandle,
-    return_focus: Option<FocusHandle>,
-    anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
+    pub(crate) selection: PanelSelection,
 }
 
 impl PanelSurfaces {
-    pub(crate) fn new(open: OpenSurfaces, cx: &mut App) -> Self {
-        Self {
-            open,
-            widened_tree: Cell::new(None),
-            menu_open: false,
-            menu_highlighted: 0,
-            list_highlighted: 0,
-            menu_focus: cx.focus_handle(),
-            list_focus: cx.focus_handle(),
-            return_focus: None,
-            anchor: Rc::default(),
-        }
+    pub(crate) fn new(selection: PanelSelection) -> Self {
+        Self { selection }
     }
 
-    /// Starts over on `open`, with the menu closed and widened state cleared.
-    pub(crate) fn reset(&mut self, open: OpenSurfaces) {
-        self.open = open;
-        self.widened_tree.set(None);
-        self.menu_open = false;
-        self.return_focus = None;
-        self.list_highlighted = 0;
+    pub(crate) fn reset(&mut self, selection: PanelSelection) {
+        self.selection = selection;
     }
 
-    /// Restores a saved panel's surfaces and retained widened state.
-    pub(crate) fn restore(&mut self, open: OpenSurfaces, widened_tree: Option<bool>) {
-        self.reset(open);
-        self.widened_tree.set(widened_tree);
+    pub(crate) fn restore(&mut self, selection: PanelSelection) {
+        self.selection = selection;
     }
 
-    pub(crate) fn widened_tree(&self) -> Option<bool> {
-        self.widened_tree.get()
-    }
-
-    pub(crate) fn set_widened_tree(&self, tree: Option<bool>) {
-        self.widened_tree.set(tree);
-    }
-
-    pub(crate) fn list_focus(&self) -> &FocusHandle {
-        &self.list_focus
-    }
-
-    pub(crate) fn menu_focused(&self, window: &Window) -> bool {
-        self.menu_open && self.menu_focus.is_focused(window)
-    }
-
-    pub(crate) fn apply(
-        &mut self,
-        surface: PanelSurface,
-        settings: &AppSettings,
-        action: SurfaceAction,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
+    pub(crate) fn apply(&mut self, action: SurfaceAction) {
         match action {
-            SurfaceAction::Select(id) => self.open.select(id),
-            SurfaceAction::Open(id) => {
-                self.close_menu(window, cx);
-                self.open.open(id);
-            }
-            SurfaceAction::Close(id) => {
-                self.open.close(id, surface == PanelSurface::Mission);
-                if shown(surface, settings, &self.open).is_none() {
-                    self.list_highlighted = 0;
-                    self.list_focus.focus(window, cx);
-                }
-            }
-            SurfaceAction::ToggleMenu if self.menu_open => self.close_menu(window, cx),
-            SurfaceAction::ToggleMenu => {
-                self.return_focus = window.focused(cx);
-                self.menu_open = true;
-                self.menu_highlighted = 0;
-                self.menu_focus.focus(window, cx);
-            }
-            SurfaceAction::DismissMenu => self.close_menu(window, cx),
-            SurfaceAction::HighlightMenu(index) => self.menu_highlighted = index,
-            SurfaceAction::HighlightList(index) => self.list_highlighted = index,
-            SurfaceAction::FocusList => self.list_focus.focus(window, cx),
+            SurfaceAction::Select(id) => self.selection.select(id),
         }
     }
 
-    fn close_menu(&mut self, window: &mut Window, cx: &mut App) {
-        if !self.menu_open {
-            return;
-        }
-        self.menu_open = false;
-        if let Some(focus) = self.return_focus.take() {
-            if self.menu_focus.is_focused(window) {
-                focus.focus(window, cx);
-            }
-        }
-    }
-}
-
-/// What a key pressed in the menu or the empty list does: a surface's
-/// letter opens it, the arrows move the highlight, Enter opens the
-/// highlighted row and Esc closes the menu.
-fn surface_key(
-    event: &KeyDownEvent,
-    rows: &[&'static PanelView],
-    highlighted: usize,
-    menu: bool,
-) -> Option<SurfaceAction> {
-    let keystroke = &event.keystroke;
-    let modifiers = keystroke.modifiers;
-    if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
-        return None;
-    }
-    let highlight = |index| {
-        if menu {
-            SurfaceAction::HighlightMenu(index)
-        } else {
-            SurfaceAction::HighlightList(index)
-        }
-    };
-    let last = rows.len().checked_sub(1)?;
-    match keystroke.key.as_str() {
-        "escape" if menu => Some(SurfaceAction::DismissMenu),
-        "down" => Some(highlight(if highlighted >= last {
-            0
-        } else {
-            highlighted + 1
-        })),
-        "up" => Some(highlight(
-            highlighted.checked_sub(1).unwrap_or(last).min(last),
-        )),
-        "enter" | "space" => rows
-            .get(highlighted)
-            .map(|view| SurfaceAction::Open(view.id)),
-        key => rows
-            .iter()
-            .find(|view| {
-                view.key
-                    .is_some_and(|letter| letter.eq_ignore_ascii_case(key))
-            })
-            .map(|view| SurfaceAction::Open(view.id)),
+    #[cfg(test)]
+    pub(crate) fn select(&mut self, id: PanelViewId) {
+        self.selection.select(id);
     }
 }
 
 pub(crate) type PanelCallback = Rc<dyn Fn(&mut Window, &mut App)>;
+pub(crate) type PanelMaximizeCallback = Rc<dyn Fn(bool, &mut Window, &mut App)>;
 
 pub(crate) struct MaximizeControl {
     pub(crate) maximized: bool,
     pub(crate) on_toggle: PanelCallback,
 }
 
-/// The header (Jason, 2026-11-05, after t3code): the open surfaces as tabs,
-/// the shown one raised with a × where it closes, then `+` for the surface
-/// menu, then `maximize` and `collapse` on the right.
-pub(crate) fn header_tabs(
+/// Orca-style 40 px top icon activity bar: fixed icon buttons (`Sessions`,
+/// `Files`, `Changes` with amber dirty dot), active raised tile + 2 px bottom
+/// accent indicator, optional `Maximize` (shown only when widened or already
+/// maximized), and `Collapse`.
+pub(crate) fn activity_bar(
     surface: PanelSurface,
     settings: &AppSettings,
-    surfaces: &OpenSurfaces,
-    (menu, window): (&PanelSurfaces, &Window),
+    selection: &PanelSelection,
+    dirty_changes: bool,
     handler: SurfaceHandler,
     maximize: Option<MaximizeControl>,
     collapse: impl IntoElement,
 ) -> Div {
-    let shown = shown(surface, settings, surfaces);
-    let rows = menu_views(surface, settings);
-    let tabs = tabs(surface, settings, surfaces)
-        .into_iter()
-        .filter_map(|(id, closable)| {
-            let view = VIEWS.iter().find(|view| view.id == id)?;
-            Some(surface_tab(view, shown == Some(id), closable, handler.clone()).into_any_element())
+    let active = shown(surface, settings, selection);
+    let buttons = views(surface, settings)
+        .map(|view| {
+            let dot = view.id == PanelViewId::Changes && dirty_changes;
+            activity_button(view, active == Some(view.id), dot, handler.clone())
         })
         .collect::<Vec<_>>();
-    let add =
-        (!rows.is_empty()).then(|| {
-            let toggle = handler.clone();
-            let anchor = menu.anchor.clone();
-            div()
-                .relative()
-                .flex_none()
-                .debug_selector(|| "PANEL_ADD_SURFACE".into())
-                .child(
-                    IconButton::new("side-panel-add-surface", "plus.svg")
-                        .size(IconButtonSize::Sm)
-                        .tooltip(crate::i18n::text("ui.open_a_surface"))
-                        .on_press(move |window, cx| toggle(SurfaceAction::ToggleMenu, window, cx)),
-                )
-                .child(
-                    canvas(
-                        |_, _, _| {},
-                        move |bounds, _, _, _| anchor.set(Some(bounds)),
-                    )
-                    .absolute()
-                    .inset_0(),
-                )
-                .children(menu.anchor.get().filter(|_| menu.menu_open).map(|anchor| {
-                    surface_menu(&rows, surfaces, menu, anchor, handler.clone(), window)
-                }))
-        });
     let maximize = maximize.map(|control| {
         let maximized = control.maximized;
         let on_toggle = control.on_toggle;
@@ -595,23 +547,21 @@ pub(crate) fn header_tabs(
                 .on_press(move |window, cx| on_toggle(window, cx)),
             )
     });
-    // Tabs shrink, their names first, so `+`, maximize and collapse always show.
     div()
         .flex_1()
         .min_w(px(0.))
+        .h_full()
         .flex()
         .items_center()
         .gap(rems(4. / 16.))
         .child(
             div()
-                .min_w(px(0.))
-                .overflow_hidden()
+                .h_full()
                 .flex()
                 .items_center()
                 .gap(rems(4. / 16.))
-                .children(tabs),
+                .children(buttons),
         )
-        .children(add)
         .child(div().flex_1().min_w(px(0.)).h_full())
         .children(maximize)
         .child(
@@ -644,310 +594,136 @@ fn record(
     element
 }
 
-#[cfg_attr(not(test), allow(unused_variables))]
-fn record_ink(prefix: &'static str, view: &PanelView, ink: Div) -> Div {
-    #[cfg(test)]
-    let ink = {
-        let id: &'static str = format!("{prefix} {:?}", view.id).leak();
-        crate::theme_snapshot::record_text(id, ink)
-    };
-    ink
-}
-
-const TAB_PADDING: f32 = 8.;
-const TAB_GAP: f32 = 6.;
-
-/// A surface's 28 px tab: its icon and name, raised, semibold and with a ×
-/// while shown, the × only where it closes.
-fn surface_tab(
-    view: &PanelView,
+/// One activity-bar icon button: 28×28 tile (`theme::raised()` when active),
+/// optional amber dirty dot on Changes, and a 2 px bottom `theme::accent()` bar
+/// flush with the 40 px header divider when active.
+fn activity_button(
+    view: &'static PanelView,
     active: bool,
-    closable: bool,
+    dirty_dot: bool,
     handler: SurfaceHandler,
-) -> gpui::Stateful<Div> {
+) -> AnyElement {
     let id = view.id;
     let ink = if active {
         theme::text()
     } else {
         theme::muted()
     };
-    let select = handler.clone();
-    // Short of room the names truncate; the shown tab keeps its icon and ×.
-    let floor = match (active, closable) {
-        (true, true) => TAB_PADDING * 2. + 14. + TAB_GAP * 2. + 16.,
-        (true, false) => TAB_PADDING * 2. + 14.,
-        (false, _) => 0.,
-    };
-    stop_titlebar_drag(div().id(view_element_id("tab", view)))
-        .flex_shrink(1.)
-        .min_w(rems(floor / 16.))
-        .overflow_hidden()
-        .h(rems(28. / 16.))
-        .px(rems(TAB_PADDING / 16.))
+    let tile = stop_titlebar_drag(div().id(view_element_id("activity", view)))
+        .relative()
+        .size(rems(28. / 16.))
         .flex()
         .items_center()
-        .gap(rems(TAB_GAP / 16.))
+        .justify_center()
         .rounded_md()
         .cursor_pointer()
-        .when(active, |tab| tab.bg(theme::raised()))
-        .when(!active, |tab| {
-            tab.hover(|tab| tab.bg(theme::with_alpha(theme::raised(), 0.6)))
+        .when(active, |el| el.bg(theme::raised()))
+        .when(!active, |el| {
+            el.hover(|el| el.bg(theme::with_alpha(theme::raised(), 0.6)))
         })
-        .map(|tab| record("PANEL_TAB", view, tab))
-        .on_click(move |_, window, cx| select(SurfaceAction::Select(id), window, cx))
+        .map(|el| record("PANEL_ACTIVITY", view, el))
+        .on_click(move |_, window, cx| handler(SurfaceAction::Select(id), window, cx))
         .child(
             svg()
                 .flex_none()
                 .path(view.icon)
-                .size(rems(14. / 16.))
+                .size(rems(15. / 16.))
                 .text_color(ink),
         )
-        .child(
-            div()
-                .min_w(px(0.))
-                .truncate()
-                .text_size(rems(13. / 16.))
-                .when(active, |label| label.font_weight(FontWeight::SEMIBOLD))
-                .text_color(ink)
-                .map(|label| record_ink("PANEL_TAB_INK", view, label))
-                .child(view.label()),
-        )
-        .when(active && closable, |tab| {
-            tab.child(
+        .when(dirty_dot, |el| {
+            el.child(
                 div()
-                    .id(view_element_id("tab-close", view))
-                    .debug_selector(move || format!("PANEL_TAB_CLOSE {id:?}"))
-                    .flex_none()
-                    .size(rems(1.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .hover(|close| close.bg(theme::with_alpha(theme::text(), 0.08)))
-                    .on_click(move |_, window, cx| {
-                        cx.stop_propagation();
-                        handler(SurfaceAction::Close(id), window, cx);
+                    .when(cfg!(test), |dot| {
+                        dot.debug_selector(|| "PANEL_CHANGES_DIRTY_DOT".into())
                     })
-                    .child(
-                        svg()
-                            .path("close.svg")
-                            .size(rems(12. / 16.))
-                            .text_color(theme::muted()),
-                    ),
+                    .absolute()
+                    .top(rems(4. / 16.))
+                    .right(rems(4. / 16.))
+                    .size(rems(6. / 16.))
+                    .rounded_full()
+                    .bg(theme::warning()),
             )
-        })
-}
+        });
 
-/// A surface's letter in a keycap.
-pub(crate) fn keycap(letter: &'static str) -> Div {
-    div()
-        .flex_none()
-        .size(rems(20. / 16.))
+    let wrapped = div()
+        .relative()
+        .h_full()
         .flex()
         .items_center()
-        .justify_center()
-        .rounded(rems(4. / 16.))
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::bg())
-        .font_family(theme::UI_MONOSPACE_FONT)
-        .text_size(rems(11. / 16.))
-        .text_color(theme::muted())
-        .child(letter)
-}
-
-/// One row of the menu or the empty list: the surface's icon and name, a
-/// check mark when it is open (the menu only), and its key.
-fn surface_row(
-    prefix: &'static str,
-    view: &'static PanelView,
-    index: usize,
-    highlighted: bool,
-    checked: Option<bool>,
-    handler: SurfaceHandler,
-    menu: bool,
-) -> gpui::Stateful<Div> {
-    let id = view.id;
-    let hover = handler.clone();
-    div()
-        .id(view_element_id(prefix, view))
-        .w_full()
-        .h(rems(32. / 16.))
-        .px(rems(10. / 16.))
-        .flex()
-        .items_center()
-        .gap(rems(10. / 16.))
-        .rounded(rems(6. / 16.))
-        .cursor_pointer()
-        .when(highlighted, |row| row.bg(theme::sidebar_selected()))
-        .map(|row| record(prefix, view, row))
-        .on_hover(move |hovered, window, cx| {
-            if *hovered {
-                hover(
-                    if menu {
-                        SurfaceAction::HighlightMenu(index)
-                    } else {
-                        SurfaceAction::HighlightList(index)
-                    },
-                    window,
-                    cx,
-                );
-            }
+        .when(cfg!(test) && active, |el| {
+            el.debug_selector(move || format!("PANEL_ACTIVITY {id:?} active"))
         })
-        .on_click(move |_, window, cx| handler(SurfaceAction::Open(id), window, cx))
-        .child(
-            svg()
-                .flex_none()
-                .path(view.icon)
-                .size(rems(14. / 16.))
-                .text_color(theme::muted()),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.))
-                .truncate()
-                .text_size(theme::text_body())
-                .text_color(theme::text())
-                .child(view.label()),
-        )
-        .children(checked.filter(|checked| *checked).map(|_| {
-            svg()
-                .flex_none()
-                .debug_selector(move || format!("PANEL_MENU_CHECK {id:?}"))
-                .path("check.svg")
-                .size(rems(14. / 16.))
-                .text_color(theme::muted())
-        }))
-        .children(view.key.map(keycap))
-}
-
-fn surface_menu(
-    rows: &[&'static PanelView],
-    surfaces: &OpenSurfaces,
-    menu: &PanelSurfaces,
-    anchor: Bounds<Pixels>,
-    handler: SurfaceHandler,
-    window: &Window,
-) -> AnyElement {
-    let key_rows = rows.to_vec();
-    let highlighted = menu.menu_highlighted.min(rows.len().saturating_sub(1));
-    let keys = handler.clone();
-    let content = div()
-        .id("side-panel-surface-menu")
-        .track_focus(&menu.menu_focus)
-        .on_key_down(move |event: &KeyDownEvent, window, cx| {
-            if let Some(action) = surface_key(event, &key_rows, highlighted, true) {
-                cx.stop_propagation();
-                keys(action, window, cx);
-            }
-        })
-        .rounded(rems(8. / 16.))
-        .border_1()
-        .border_color(theme::border())
-        .bg(theme::raised())
-        .shadow_2xl()
-        .p(rems(6. / 16.))
-        .flex()
-        .flex_col()
-        .gap(rems(1. / 16.))
-        .map(|menu| {
-            #[cfg(test)]
-            let menu = crate::theme_snapshot::record_fill("PANEL_MENU", menu);
-            menu
-        })
-        .children(rows.iter().enumerate().map(|(index, view)| {
-            surface_row(
-                "PANEL_MENU_ROW",
-                view,
-                index,
-                index == highlighted,
-                Some(surfaces.open.contains(&view.id)),
-                handler.clone(),
-                true,
+        .child(Tooltip::new(
+            view_element_id("activity-tip", view),
+            view.label(),
+            tile,
+        ))
+        .when(active, |el| {
+            el.child(
+                div()
+                    .when(cfg!(test), |bar| {
+                        bar.debug_selector(move || format!("PANEL_ACTIVITY_BAR {id:?}"))
+                    })
+                    .absolute()
+                    .bottom_0()
+                    .left(rems(4. / 16.))
+                    .right(rems(4. / 16.))
+                    .h(rems(2. / 16.))
+                    .rounded_full()
+                    .bg(theme::accent()),
             )
-        }))
-        .into_any_element();
-    let dismiss = handler;
-    popup_layer(
-        anchor,
-        window,
-        px(MENU_WIDTH) * (window.rem_size() / px(16.)),
-        content,
-        Rc::new(move |window, cx| dismiss(SurfaceAction::DismissMenu, window, cx)),
-    )
+        });
+    wrapped.into_any_element()
 }
 
-const MENU_WIDTH: f32 = 240.;
-
-/// A chat's panel with nothing open: "Open a surface" over the surfaces on
-/// offer and their keys, which act while the list has focus.
-pub(crate) fn empty_list(
-    surface: PanelSurface,
-    settings: &AppSettings,
-    surfaces: &PanelSurfaces,
-    handler: SurfaceHandler,
+/// Elevated overlay sheet backdrop + right-anchored sheet wrapper for narrow
+/// windows and split-widening overflow (#1331). Clicking the scrim dismisses
+/// the sheet. `progress` (`0.0..=1.0`) drives the smooth slide-in/out and
+/// scrim fade without changing the reserved terminal width behind it.
+pub(crate) fn overlay_sheet(
+    id: &'static str,
+    panel: AnyElement,
+    width: f32,
+    progress: f32,
+    on_dismiss: PanelCallback,
 ) -> AnyElement {
-    let rows = menu_views(surface, settings);
-    let highlighted = surfaces.list_highlighted.min(rows.len().saturating_sub(1));
-    let key_rows = rows.clone();
-    let keys = handler.clone();
-    let focus = handler.clone();
+    let progress = progress.clamp(0., 1.);
+    let scrim_alpha = if theme::active_variant().is_light() {
+        0.16
+    } else {
+        0.38
+    } * progress;
+    let slide_offset = -width * (1. - progress);
     div()
-        .id("side-panel-empty")
-        .debug_selector(|| "PANEL_EMPTY".into())
-        .track_focus(&surfaces.list_focus)
-        .on_key_down(move |event: &KeyDownEvent, window, cx| {
-            if let Some(action) = surface_key(event, &key_rows, highlighted, false) {
-                cx.stop_propagation();
-                keys(action, window, cx);
-            }
+        .id(id)
+        .when(cfg!(test), |el| {
+            el.debug_selector(|| "PANEL_OVERLAY_SHEET".into())
         })
+        .absolute()
+        .inset_0()
+        .overflow_hidden()
+        .flex()
+        .justify_end()
+        .bg(theme::with_alpha(theme::scrim(), scrim_alpha))
         .on_mouse_down(MouseButton::Left, move |_, window, cx| {
-            focus(SurfaceAction::FocusList, window, cx)
+            cx.stop_propagation();
+            on_dismiss(window, cx);
         })
-        .flex_1()
-        .min_h(px(0.))
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .px_5()
         .child(
             div()
-                .w_full()
-                .max_w(rems(260. / 16.))
+                .h_full()
+                .mr(rems(slide_offset / 16.))
                 .flex()
-                .flex_col()
-                .items_center()
-                .gap(rems(4. / 16.))
-                .child(
-                    div()
-                        .pb(rems(12. / 16.))
-                        .text_size(rems(15. / 16.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(theme::text())
-                        .child(crate::i18n::text("ui.open_a_surface")),
-                )
-                .children(rows.iter().enumerate().map(|(index, view)| {
-                    surface_row(
-                        "PANEL_EMPTY_ROW",
-                        view,
-                        index,
-                        index == highlighted,
-                        None,
-                        handler.clone(),
-                        false,
-                    )
-                }))
-                .child(
-                    div()
-                        .pt(rems(1.))
-                        .text_size(theme::text_ui())
-                        .text_color(theme::faint())
-                        .child(crate::i18n::text("ui.surface_letter_hint")),
-                ),
+                .flex_none()
+                .shadow(vec![BoxShadow {
+                    color: theme::with_alpha(theme::scrim(), 0.45 * progress),
+                    offset: gpui::point(px(-8.), px(0.)),
+                    blur_radius: px(28.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }])
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(panel),
         )
         .into_any_element()
 }
@@ -955,290 +731,246 @@ pub(crate) fn empty_list(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn ids(surface: PanelSurface) -> Vec<PanelViewId> {
-        ids_with(&AppSettings::default(), surface)
-    }
+    use runner_core::pane_layout::{PaneLeaf, PaneSplit};
 
     fn ids_with(settings: &AppSettings, surface: PanelSurface) -> Vec<PanelViewId> {
         views(surface, settings).map(|view| view.id).collect()
     }
 
-    #[test]
-    fn views_keep_one_order_and_filter_by_surface() {
-        use PanelSurface::*;
-        use PanelViewId::*;
-        assert_eq!(ids(Mission), [Sessions, Info, Files, Changes]);
-        assert_eq!(ids(Chat), [Info, Files, Changes]);
-        assert_eq!(ids(Terminal), [Files, Changes]);
-        assert!(VIEWS.iter().all(|view| view.on(&AppSettings::default())));
+    fn leaf(id: &str) -> PaneNode {
+        PaneNode::Leaf(PaneLeaf {
+            id: id.into(),
+            session_id: None,
+        })
+    }
+
+    fn split(orientation: SplitOrientation, a: PaneNode, b: PaneNode) -> PaneNode {
+        PaneNode::Split(PaneSplit {
+            id: "s".into(),
+            orientation,
+            sizes: [50., 50.],
+            a: Box::new(a),
+            b: Box::new(b),
+        })
     }
 
     #[test]
-    fn settings_turn_info_and_files_off_but_never_sessions() {
-        use PanelSurface::*;
+    fn activity_bar_views_match_surface_and_settings() {
         use PanelViewId::*;
-        let off = AppSettings {
-            info_view: false,
+        let defaults = AppSettings::default();
+        assert_eq!(ids_with(&defaults, PanelSurface::Chat), [Files, Changes]);
+        assert_eq!(
+            ids_with(&defaults, PanelSurface::Terminal),
+            [Files, Changes]
+        );
+        assert_eq!(
+            ids_with(&defaults, PanelSurface::Mission),
+            [Sessions, Files, Changes]
+        );
+
+        let files_off = AppSettings {
+            files_view: false,
+            ..defaults.clone()
+        };
+        assert_eq!(ids_with(&files_off, PanelSurface::Chat), [Changes]);
+        assert_eq!(
+            ids_with(&files_off, PanelSurface::Mission),
+            [Sessions, Changes]
+        );
+
+        let both_off = AppSettings {
             files_view: false,
             changes_view: false,
-            ..AppSettings::default()
+            ..defaults
         };
-        assert_eq!(ids_with(&off, Mission), [Sessions]);
-        assert_eq!(views(Chat, &off).count(), 0);
-        assert_eq!(views(Terminal, &off).count(), 0);
-        let files_only = AppSettings {
-            info_view: false,
-            changes_view: false,
-            ..AppSettings::default()
-        };
-        assert_eq!(ids_with(&files_only, Mission), [Sessions, Files]);
+        assert!(ids_with(&both_off, PanelSurface::Chat).is_empty());
+        assert!(ids_with(&both_off, PanelSurface::Terminal).is_empty());
+        assert_eq!(ids_with(&both_off, PanelSurface::Mission), [Sessions]);
     }
 
     #[test]
-    fn a_widened_panel_narrows_the_file_first_and_keeps_the_tree() {
-        let fit = |available| widened(available, 320., 440., 240., true);
-        let laid = |file| Widened {
-            file,
-            tree: true,
-            tree_width: 240.,
-            standard: 320.,
-        };
-        // 420 + 440 + 240: everything fits.
-        assert_eq!(fit(1100.), laid(440.));
-        assert_eq!(fit(1100.).width(), 680.);
-        // Short of room, the file narrows and the tree stays.
-        assert_eq!(fit(1099.), laid(439.));
-        assert_eq!(fit(1000.).width() + MAIN_MIN_WIDTH, 1000.);
-        // The file stops at the standard width; the tree still shows.
-        assert_eq!(fit(980.), laid(320.));
-        assert_eq!(fit(600.), laid(320.));
-        // A tree turned off gives its room to the file.
-        let off = widened(800., 320., 440., 240., false);
-        assert!(!off.tree);
-        assert_eq!(off.file, 380.);
-        assert_eq!(widened(5000., 480., 440., 240., true).file, 480.);
-    }
-
-    #[test]
-    fn a_wider_tree_narrows_the_file_sooner_and_still_shows() {
-        let fit = |available| widened(available, 288., 440., 360., true);
-        // 420 + 440 + 360: the saved tree width fits beside the file.
-        assert_eq!(fit(1220.).width(), 800.);
-        // Short of room, the file narrows to the standard width, the tree stays.
-        assert!(fit(1219.).tree);
-        assert_eq!(fit(1219.).file, 439.);
-        assert_eq!(fit(1000.).file, 288.);
-        assert_eq!(fit(800.).width(), 648.);
-        // A narrower tree leaves the file more room.
-        assert_eq!(widened(1100., 288., 440., 160., true).file, 440.);
-        assert_eq!(widened(1100., 288., 440., 360., true).file, 320.);
-    }
-
-    #[test]
-    fn dragging_the_tree_divider_trades_width_with_the_file() {
-        let panel = widened(2000., 320., 440., 240., true);
-        // Toward the file: the tree widens, the file narrows, the panel holds.
-        assert_eq!(panel.resize_tree(300.), (380., 300.));
-        // The file stops at the standard width.
-        assert_eq!(panel.resize_tree(400.), (320., 360.));
-        // Toward the edge: the tree stops at its minimum.
-        assert_eq!(panel.resize_tree(100.), (520., 160.));
-        // A file wide enough lets the tree reach its maximum, no further.
-        let wide = widened(3000., 320., 1000., 240., true);
-        assert_eq!(wide.resize_tree(900.), (760., 480.));
-        // A file at its maximum gives the tree no less than the panel holds.
-        let widest = widened(3000., 320., 1200., 240., true);
-        assert_eq!(widest.resize_tree(160.), (1200., 240.));
-        let wider = widened(3000., 320., 1100., 300., true);
-        assert_eq!(wider.resize_tree(160.), (1200., 200.));
-    }
-
-    fn open(ids: &[PanelViewId], active: Option<PanelViewId>) -> OpenSurfaces {
-        OpenSurfaces {
-            open: ids.to_vec(),
-            active,
-        }
-    }
-
-    fn menu_ids(surface: PanelSurface, settings: &AppSettings) -> Vec<PanelViewId> {
-        menu_views(surface, settings)
-            .iter()
-            .map(|view| view.id)
-            .collect()
-    }
-
-    #[test]
-    fn a_chat_holds_its_open_surfaces_as_closable_tabs_and_offers_the_rest() {
-        use PanelSurface::*;
+    fn default_shown_view_and_selection_fallback_on_settings_change() {
         use PanelViewId::*;
-        let settings = AppSettings::default();
-        assert_eq!(menu_ids(Chat, &settings), [Info, Files, Changes]);
-        let both = open(&[Info, Files], Some(Files));
-        assert_eq!(tabs(Chat, &settings, &both), [(Info, true), (Files, true)]);
-        assert_eq!(shown(Chat, &settings, &both), Some(Files));
-        let none = OpenSurfaces::default();
-        assert!(tabs(Chat, &settings, &none).is_empty());
-        assert_eq!(shown(Chat, &settings, &none), None, "the empty list");
-        assert_eq!(
-            VIEWS.iter().map(|view| view.key).collect::<Vec<_>>(),
-            [None, Some("I"), Some("F"), Some("C")]
-        );
-    }
+        let defaults = AppSettings::default();
+        let mut selection = PanelSelection::default();
 
-    #[test]
-    fn a_mission_keeps_sessions_first_and_never_offers_it() {
-        use PanelSurface::*;
-        use PanelViewId::*;
-        let settings = AppSettings::default();
-        assert_eq!(menu_ids(Mission, &settings), [Info, Files, Changes]);
-        let none = OpenSurfaces::default();
-        assert_eq!(tabs(Mission, &settings, &none), [(Sessions, false)]);
-        assert_eq!(shown(Mission, &settings, &none), Some(Sessions));
-        let files = open(&[Files], Some(Files));
         assert_eq!(
-            tabs(Mission, &settings, &files),
-            [(Sessions, false), (Files, true)]
+            shown(PanelSurface::Chat, &defaults, &selection),
+            Some(Files)
         );
-        // A mission with one surface on offer still has `+` for it.
-        let files_only = AppSettings {
-            info_view: false,
-            changes_view: false,
-            ..AppSettings::default()
-        };
-        assert_eq!(menu_ids(Mission, &files_only), [Files]);
-        let off = AppSettings {
-            info_view: false,
-            files_view: false,
-            changes_view: false,
-            ..AppSettings::default()
-        };
-        assert!(menu_ids(Mission, &off).is_empty());
-        assert_eq!(tabs(Mission, &off, &files), [(Sessions, false)]);
-        assert_eq!(shown(Mission, &off, &files), Some(Sessions));
-    }
+        assert_eq!(
+            shown(PanelSurface::Terminal, &defaults, &selection),
+            Some(Files)
+        );
+        assert_eq!(
+            shown(PanelSurface::Mission, &defaults, &selection),
+            Some(Sessions)
+        );
 
-    #[test]
-    fn one_surface_on_offer_is_a_permanent_tab_with_no_menu() {
-        use PanelSurface::*;
-        use PanelViewId::*;
-        let settings = AppSettings::default();
-        let info = open(&[Info], Some(Info));
-        assert!(menu_ids(Terminal, &settings).is_empty());
+        selection.select(Changes);
         assert_eq!(
-            tabs(Terminal, &settings, &info),
-            [(Files, false), (Changes, false)]
+            shown(PanelSurface::Chat, &defaults, &selection),
+            Some(Changes)
         );
-        assert_eq!(shown(Terminal, &settings, &info), Some(Files));
-        let mut terminal = OpenSurfaces::default();
-        terminal.select(Changes);
-        assert_eq!(shown(Terminal, &settings, &terminal), Some(Changes));
+        assert_eq!(
+            shown(PanelSurface::Mission, &defaults, &selection),
+            Some(Changes)
+        );
+
         let changes_off = AppSettings {
             changes_view: false,
-            ..AppSettings::default()
+            ..defaults.clone()
         };
-        terminal.close_off(&changes_off, false);
-        assert_eq!(tabs(Terminal, &changes_off, &terminal), [(Files, false)]);
-        assert_eq!(shown(Terminal, &changes_off, &terminal), Some(Files));
-
-        let files_only = AppSettings {
-            info_view: false,
-            changes_view: false,
-            ..AppSettings::default()
-        };
-        assert!(menu_ids(Chat, &files_only).is_empty());
-        let none = OpenSurfaces::default();
-        assert_eq!(tabs(Chat, &files_only, &none), [(Files, false)]);
-        assert_eq!(shown(Chat, &files_only, &none), Some(Files));
-        let info_only = AppSettings {
-            files_view: false,
-            changes_view: false,
-            ..AppSettings::default()
-        };
-        assert_eq!(tabs(Chat, &info_only, &none), [(Info, false)]);
-        let changes_only = AppSettings {
-            info_view: false,
-            files_view: false,
-            ..AppSettings::default()
-        };
-        assert_eq!(tabs(Chat, &changes_only, &none), [(Changes, false)]);
-    }
-
-    #[test]
-    fn opening_switches_to_a_surface_open_once_and_closing_shows_the_one_before() {
-        use PanelViewId::*;
-        let mut surfaces = OpenSurfaces::default();
-        surfaces.open(Info);
-        surfaces.open(Files);
-        assert_eq!(surfaces.ids(), (&[Info, Files][..], Some(Files)));
-        surfaces.open(Info);
-        assert_eq!(surfaces.ids(), (&[Info, Files][..], Some(Info)), "once");
-        surfaces.open(Sessions);
-        assert_eq!(surfaces.ids(), (&[Info, Files][..], Some(Sessions)));
-
-        // The surface before it, the next when it was first, then none.
-        surfaces.select(Files);
-        surfaces.close(Files, false);
-        assert_eq!(surfaces.ids(), (&[Info][..], Some(Info)));
-        surfaces.open(Files);
-        surfaces.select(Info);
-        surfaces.close(Info, false);
-        assert_eq!(surfaces.ids(), (&[Files][..], Some(Files)));
-        surfaces.close(Files, false);
-        assert_eq!(surfaces.ids(), (&[][..], None));
-        // A closed tab that was not showing leaves the shown one.
-        let mut both = open(&[Info, Files], Some(Files));
-        both.close(Info, false);
-        assert_eq!(both.ids(), (&[Files][..], Some(Files)));
-        // In a mission the tab before the first is Sessions.
-        let mut mission = open(&[Info, Files], Some(Info));
-        mission.close(Info, true);
-        assert_eq!(mission.ids(), (&[Files][..], None));
         assert_eq!(
-            shown(PanelSurface::Mission, &AppSettings::default(), &mission),
+            shown(PanelSurface::Chat, &changes_off, &selection),
+            Some(Files)
+        );
+        assert_eq!(
+            shown(PanelSurface::Mission, &changes_off, &selection),
+            Some(Sessions)
+        );
+
+        let both_off = AppSettings {
+            files_view: false,
+            changes_view: false,
+            ..defaults
+        };
+        assert_eq!(shown(PanelSurface::Chat, &both_off, &selection), None);
+        assert_eq!(
+            shown(PanelSurface::Mission, &both_off, &selection),
             Some(Sessions)
         );
     }
 
     #[test]
-    fn settings_turning_a_surface_off_close_its_tab() {
-        use PanelViewId::*;
-        let mut surfaces = open(&[Info, Files], Some(Files));
-        let files_off = AppSettings {
-            files_view: false,
-            ..AppSettings::default()
-        };
-        surfaces.close_off(&files_off, false);
-        assert_eq!(surfaces.ids(), (&[Info][..], Some(Info)));
-        surfaces.close_off(&AppSettings::default(), false);
-        assert_eq!(surfaces.ids(), (&[Info][..], Some(Info)));
+    fn split_columns_counts_horizontal_columns_and_ignores_vertical_rows() {
+        assert_eq!(node_split_columns(&leaf("p1")), 1);
+        let two_cols = split(SplitOrientation::Row, leaf("p1"), leaf("p2"));
+        assert_eq!(node_split_columns(&two_cols), 2);
+        let two_rows = split(SplitOrientation::Column, leaf("p1"), leaf("p2"));
+        assert_eq!(node_split_columns(&two_rows), 1);
+        let mixed = split(
+            SplitOrientation::Column,
+            split(SplitOrientation::Row, leaf("p1"), leaf("p2")),
+            leaf("p3"),
+        );
+        assert_eq!(node_split_columns(&mixed), 2);
+        let three_cols = split(
+            SplitOrientation::Row,
+            leaf("p1"),
+            split(SplitOrientation::Row, leaf("p2"), leaf("p3")),
+        );
+        assert_eq!(node_split_columns(&three_cols), 3);
     }
 
     #[test]
-    fn a_surface_key_opens_moves_or_closes_only_without_modifiers() {
-        let rows = menu_views(PanelSurface::Chat, &AppSettings::default());
-        let key = |key: &str, highlighted, menu| {
-            let event = KeyDownEvent {
-                keystroke: gpui::Keystroke::parse(key).unwrap(),
-                is_held: false,
-                prefer_character_input: false,
-            };
-            surface_key(&event, &rows, highlighted, menu)
-        };
-        use PanelViewId::*;
-        use SurfaceAction::*;
-        assert_eq!(key("i", 0, true), Some(Open(Info)));
-        assert_eq!(key("f", 0, false), Some(Open(Files)));
-        assert_eq!(key("shift-f", 0, true), Some(Open(Files)));
-        assert_eq!(key("c", 0, true), Some(Open(Changes)));
-        assert_eq!(key("c", 0, false), Some(Open(Changes)));
-        assert_eq!(key("cmd-f", 0, true), None);
-        assert_eq!(key("ctrl-f", 0, false), None);
-        assert_eq!(key("escape", 0, true), Some(DismissMenu));
-        assert_eq!(key("escape", 0, false), None);
-        assert_eq!(key("down", 0, true), Some(HighlightMenu(1)));
-        assert_eq!(key("down", 2, false), Some(HighlightList(0)));
-        assert_eq!(key("up", 0, true), Some(HighlightMenu(2)));
-        assert_eq!(key("enter", 2, true), Some(Open(Changes)));
+    fn narrow_and_split_layout_math_follows_420_single_and_340_per_split_column() {
+        assert_eq!(min_main_width(1), 420.);
+        assert_eq!(min_main_width(2), 680.);
+        assert_eq!(min_main_width(3), 1020.);
+
+        // Single-pane: 720 available => 720 - 300 = 420 >= 420 (wide, docked open).
+        assert!(default_open(720., 300., 1));
+        assert!(!is_narrow(720., 300., 1));
+        let wide_compact = compute_panel_layout(720., 1, 300., 440., 240., None, false, 720.);
+        assert_eq!(wide_compact.presentation, PanelPresentation::Docked);
+        assert_eq!(wide_compact.width, 300.);
+
+        // Single-pane: 719 available => 719 - 300 = 419 < 420 (narrow, default collapsed, sheet).
+        assert!(!default_open(719., 300., 1));
+        assert!(is_narrow(719., 300., 1));
+        let narrow_compact = compute_panel_layout(719., 1, 300., 440., 240., None, false, 719.);
+        assert_eq!(narrow_compact.presentation, PanelPresentation::Sheet);
+        assert_eq!(narrow_compact.width, 300.);
+        assert_eq!(narrow_compact.reserved_docked_width, 0.);
+
+        // Single-pane on 1440 px screen (available = 1194): widened 680 fits docked (1194 - 680 = 514 >= 420).
+        let wide_file = compute_panel_layout(1194., 1, 300., 440., 240., Some(true), false, 1194.);
+        assert_eq!(wide_file.presentation, PanelPresentation::Docked);
+        assert_eq!(wide_file.width, 680.);
+
+        // 2-column split on 1440 px screen (available = 1194, min_main = 680):
+        // Compact 300 docks (1194 - 300 = 894 >= 680).
+        assert!(default_open(1194., 300., 2));
+        let split_compact = compute_panel_layout(1194., 2, 300., 440., 240., None, false, 1194.);
+        assert_eq!(split_compact.presentation, PanelPresentation::Docked);
+        assert_eq!(split_compact.width, 300.);
+
+        // Widening a file (680) would leave 514 < 680 => auto-sheets, reserving 300 docked so
+        // split terminals never SIGWINCH.
+        let split_file = compute_panel_layout(1194., 2, 300., 440., 240., Some(true), false, 1194.);
+        assert_eq!(split_file.presentation, PanelPresentation::Sheet);
+        assert_eq!(split_file.width, 680.);
+        assert_eq!(split_file.reserved_docked_width, 300.);
+
+        // Intermediate split band: 1300 px available with 2 columns (min_main = 680) and default
+        // 680 px Files viewer => 1300 - 680 = 620 < 680 => must promote to Sheet rather than
+        // docking at 620 and resizing both split terminals (#1331, #1403).
+        let split_mid_files =
+            compute_panel_layout(1300., 2, 300., 440., 240., Some(true), false, 1300.);
+        assert_eq!(split_mid_files.presentation, PanelPresentation::Sheet);
+        assert_eq!(split_mid_files.width, 680.);
+        assert_eq!(split_mid_files.reserved_docked_width, 300.);
+
+        // Same for signed-off ~740 px Changes diff (500 + 240) at 1400 px available:
+        // 1400 - 740 = 660 < 680 => promotes to Sheet; at 1420 px => docks at 740 px.
+        let split_mid_changes =
+            compute_panel_layout(1400., 2, 300., 500., 240., Some(true), false, 1400.);
+        assert_eq!(split_mid_changes.presentation, PanelPresentation::Sheet);
+        assert_eq!(split_mid_changes.width, 740.);
+        assert_eq!(split_mid_changes.reserved_docked_width, 300.);
+        let split_wide_changes =
+            compute_panel_layout(1420., 2, 300., 500., 240., Some(true), false, 1420.);
+        assert_eq!(split_wide_changes.presentation, PanelPresentation::Docked);
+        assert_eq!(split_wide_changes.width, 740.);
+
+        // Very narrow window (500 px available): widened sheet drops the 240 px tree/list column
+        // (`widened.tree == false`) so the viewer/diff gets full sheet width.
+        let tiny_sheet = compute_panel_layout(500., 1, 300., 500., 240., Some(true), false, 500.);
+        assert_eq!(tiny_sheet.presentation, PanelPresentation::Sheet);
+        assert!(!tiny_sheet.widened.unwrap().tree);
+        assert_eq!(tiny_sheet.reserved_docked_width, 0.);
+
+        // Closing the file snaps back to docked 300; widening window to 1360 docks the file.
+        let split_wide_file =
+            compute_panel_layout(1360., 2, 300., 440., 240., Some(true), false, 1360.);
+        assert_eq!(split_wide_file.presentation, PanelPresentation::Docked);
+        assert_eq!(split_wide_file.width, 680.);
+    }
+
+    #[test]
+    fn a_widened_panel_narrows_the_file_first_and_keeps_the_tree() {
+        let fit = |available| widened(available, 300., 440., 240., true);
+        let full = fit(2000.);
+        assert_eq!((full.file, full.tree, full.width()), (440., true, 680.));
+
+        let tight = fit(1000.);
+        assert!(tight.tree);
+        assert_eq!(tight.file, 340.);
+        assert_eq!(tight.width() + MAIN_MIN_WIDTH, 1000.);
+
+        let floor = fit(600.);
+        assert_eq!((floor.file, floor.tree, floor.width()), (300., true, 540.));
+
+        let off = widened(800., 300., 440., 240., false);
+        assert_eq!((off.file, off.tree, off.width()), (380., false, 380.));
+        assert_eq!(widened(5000., 480., 440., 240., true).file, 480.);
+    }
+
+    #[test]
+    fn resizing_the_tree_divider_keeps_the_panel_width() {
+        let panel = widened(2000., 300., 440., 240., true);
+        assert_eq!(panel.resize_tree(280.), (400., 280.));
+        assert_eq!(panel.resize_tree(100.), (520., 160.));
+        assert_eq!(panel.resize_tree(500.), (300., 380.));
+        assert_eq!(panel.resize_tree(600.), (300., 380.));
+
+        let wide = widened(3000., 300., 1000., 240., true);
+        assert_eq!(wide.resize_tree(160.), (1080., 160.));
+
+        let widest = widened(3000., 300., 1200., 240., true);
+        assert_eq!(widest.resize_tree(160.), (1200., 240.));
+        let wider = widened(3000., 300., 1100., 300., true);
+        assert_eq!(wider.resize_tree(160.), (1200., 200.));
     }
 }

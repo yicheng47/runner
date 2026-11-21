@@ -12,7 +12,10 @@ mod tree;
 pub(crate) use dialogs::{single_chat_with_missions_confirm_copy, tab_with_missions_confirm_copy};
 pub(crate) use drawer::*;
 use panel::*;
-pub(crate) use panel::{ensure_info_branch_row, info_worktree_marker, remote_info_branch_row};
+pub(crate) use panel::{
+    ensure_info_branch_row, info_worktree_marker, remote_info_branch_row,
+    resolve_info_location_rows,
+};
 use start::*;
 
 use super::*;
@@ -35,9 +38,7 @@ use crate::surfaces::chat_lifecycle::{
 
 use crate::surfaces::front_page::model::SessionDisplay;
 
-use crate::surfaces::profile_page::{
-    clamped_markdown, column_text, prompt_meta, setup_row, setup_value, ClickHandler,
-};
+use crate::surfaces::profile_page::{prompt_meta, ClickHandler};
 
 use crate::surfaces::roles::logic::{role_setting_label, runtime_display_name};
 
@@ -55,15 +56,6 @@ pub(crate) const MIN_SPLIT_PANE_WIDTH: f32 = 240.;
 pub(crate) const MIN_SPLIT_PANE_HEIGHT: f32 = 160.;
 
 const TOO_SMALL_TO_SPLIT: &str = "ui.too_small_to_split";
-
-impl NativeRoot {
-    pub(crate) fn reset_chat_panel_prompt(&mut self, selected: Option<String>) {
-        if self.chat_panel_prompt_session != selected {
-            self.chat_panel_prompt_session = selected;
-            self.chat_panel_prompt_expanded = false;
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum SplitMenuSurface {
@@ -383,11 +375,12 @@ enum PaneMenuAction {
     Rename,
     Fork,
     Pin,
+    Archive,
 }
 
-/// The title menu's actions: the sidebar row's chat operations minus
-/// Archive, which the pane's × already does. A terminal cannot be forked,
-/// and a secondary pane leaves forking to the window that controls it.
+/// The title menu's actions: chat panes offer Rename, Fork, Pin, and Archive
+/// below the S2 Info card (#1403); terminals cannot be forked or archived.
+/// A secondary pane leaves forking to the window that controls it.
 fn pane_menu_actions(
     runtime: &str,
     secondary: bool,
@@ -404,6 +397,9 @@ fn pane_menu_actions(
     if pinnable && supports(&["pin"]) {
         actions.push(PaneMenuAction::Pin);
     }
+    if runtime != "shell" && supports(&["archive", "layout"]) {
+        actions.push(PaneMenuAction::Archive);
+    }
     actions
 }
 
@@ -416,7 +412,8 @@ fn pane_menu_items(
 ) -> Vec<UiMenuItem> {
     actions
         .iter()
-        .map(|action| match action {
+        .enumerate()
+        .map(|(index, action)| match action {
             PaneMenuAction::Rename => {
                 UiMenuItem::new(crate::i18n::message("ui.rename_chat_action"))
                     .icon("pencil.svg")
@@ -438,6 +435,11 @@ fn pane_menu_items(
             })
             .icon(if pinned { "pin-off.svg" } else { "pin.svg" })
             .disabled(disabled),
+            PaneMenuAction::Archive => UiMenuItem::new(crate::i18n::message("ui.archive"))
+                .icon("archive.svg")
+                .separator_before(index > 0)
+                .destructive(true)
+                .disabled(disabled),
         })
         .collect()
 }

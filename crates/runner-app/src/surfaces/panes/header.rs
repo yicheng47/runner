@@ -4,10 +4,16 @@ use crate::surfaces::files::FilesView;
 
 impl NativeRoot {
     pub(crate) fn sync_chat_panel(&mut self, cx: &App) {
-        if !self.remote_client.is_local() {
+        if !self.remote_client.is_local() && self.route != AppRoute::ArchivedChat {
             return;
         }
-        let tab = self.tabs.active_tab_id().map(str::to_owned);
+        let tab = if self.route == AppRoute::ArchivedChat {
+            self.archived_chat_detail
+                .as_ref()
+                .map(|detail| format!("archived:{}", detail.session_id))
+        } else {
+            self.tabs.active_tab_id().map(str::to_owned)
+        };
         if self.chat_panel_tab == tab {
             return;
         }
@@ -19,10 +25,9 @@ impl NativeRoot {
             self.chat_panels_by_tab.insert(
                 previous,
                 side_panel::SavedPanel {
-                    surfaces: self.chat_surfaces.open.clone(),
+                    selection: self.chat_surfaces.selection,
                     open: self.chat_panel_open,
                     maximized: self.chat_panel_maximized,
-                    widened_tree: self.chat_surfaces.widened_tree(),
                 },
             );
         }
@@ -30,8 +35,7 @@ impl NativeRoot {
             .as_ref()
             .and_then(|id| self.chat_panels_by_tab.remove(id));
         if let Some(saved) = saved {
-            self.chat_surfaces
-                .restore(saved.surfaces, saved.widened_tree);
+            self.chat_surfaces.restore(saved.selection);
             self.chat_panel_open = saved.open;
             self.chat_panel_maximized = saved.maximized;
         } else {
@@ -40,15 +44,18 @@ impl NativeRoot {
             self.chat_panel_maximized = false;
         }
         self.chat_panel_tab = tab;
-        let open = self
-            .chat_panel_open
-            .unwrap_or(self.settings(cx).chat_panel_open);
-        self.chat_panel_open = Some(open);
+        self.chat_panel_width_snap = true;
+        self.chat_sheet_anim = SidebarVisibilityTransition::new(false);
+        let open = self.chat_panel_is_open(cx);
         let visible = open
-            && !start_surface_visible(self.tabs.active())
+            && (self.route == AppRoute::ArchivedChat || !start_surface_visible(self.tabs.active()))
             && side_panel_available(
                 self.settings(cx),
-                side_panel_surface(self.active_tab_is_terminal(cx)),
+                if self.route == AppRoute::ArchivedChat {
+                    PanelSurface::Chat
+                } else {
+                    side_panel_surface(self.active_tab_is_terminal(cx))
+                },
             );
         if !open {
             self.chat_panel_maximized = false;
@@ -56,17 +63,43 @@ impl NativeRoot {
         self.chat_panel_visibility = SidebarVisibilityTransition::new(visible);
     }
 
-    pub(crate) fn chat_panel_is_open(&self, cx: &App) -> bool {
-        if self.remote_client.is_active() {
-            return self.remote_client.chat_info_is_open();
+    pub(super) fn active_chat_split_columns(&self) -> usize {
+        if self.route == AppRoute::ArchivedChat || !self.front_page_is_chat() {
+            return 1;
         }
-        self.chat_panel_open
-            .unwrap_or(self.settings(cx).chat_panel_open)
+        let layout = self.front_page_layout();
+        let has_maximized =
+            layout.is_some_and(|l| maximized_leaf(&self.maximized_panes, l).is_some());
+        side_panel::split_columns_for_layout(layout, has_maximized)
+    }
+
+    fn chat_panel_available_width(&self) -> f32 {
+        let measured = self.chat_files.measured_width();
+        if measured > 0. {
+            (measured - 6.).max(0.)
+        } else {
+            0.
+        }
+    }
+
+    pub(crate) fn chat_panel_is_open(&self, cx: &App) -> bool {
+        let explicit = if self.remote_client.is_active() && self.route != AppRoute::ArchivedChat {
+            self.remote_client.chat_panel_explicit_open()
+        } else {
+            self.chat_panel_open
+        };
+        side_panel::resolved_open(
+            explicit,
+            self.chat_panel_available_width(),
+            self.settings(cx).chat_panel_width,
+            self.active_chat_split_columns(),
+        )
     }
 
     pub(crate) fn set_chat_panel_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            self.remote_client.set_chat_info_open(open);
+        if self.remote_client.is_active() && self.route != AppRoute::ArchivedChat {
+            self.remote_client.set_chat_panel_open(open);
+            cx.notify();
             return;
         }
         self.sync_chat_panel(cx);
@@ -74,16 +107,11 @@ impl NativeRoot {
         if !open {
             self.chat_panel_maximized = false;
         }
-        self.update_app_settings(cx, true, |settings| {
-            let changed = settings.chat_panel_open != open;
-            settings.chat_panel_open = open;
-            changed
-        });
+        cx.notify();
     }
 
     pub(crate) fn chat_panel_contains_focus(&self, window: &Window, cx: &App) -> bool {
         self.chat_panel_focus.contains_focused(window, cx)
-            || self.chat_surfaces.menu_focused(window)
     }
 
     pub(crate) fn focus_chat_panel_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -93,11 +121,8 @@ impl NativeRoot {
             side_panel_surface(self.active_tab_is_terminal(cx))
         };
         let settings = self.settings(cx);
-        let shown = side_panel::shown(surface, settings, &self.chat_surfaces.open);
-        if shown.is_none() {
-            self.chat_surfaces.list_focus().focus(window, cx);
-            return;
-        }
+        let selection = self.active_chat_panel_selection();
+        let shown = side_panel::shown(surface, settings, &selection);
         let detail = if self.route == AppRoute::ArchivedChat {
             self.archived_chat_detail.as_ref()
         } else {
@@ -165,16 +190,20 @@ impl NativeRoot {
         self.set_chat_panel_maximized(next, window, cx);
     }
 
-    pub(super) fn active_chat_panel_surface(&self, cx: &App) -> (PanelSurface, bool) {
+    pub(crate) fn active_chat_panel_surface(&self, cx: &App) -> (PanelSurface, bool) {
         let terminal = self.active_tab_is_terminal(cx);
         let surface = side_panel_surface(terminal);
         let settings = self.settings(cx);
-        let available = if self.remote_client.is_active() {
-            !terminal && settings.show_side_panel && settings.info_view
-        } else {
-            side_panel_available(settings, surface)
-        };
+        let available = side_panel_available(settings, surface);
         (surface, available)
+    }
+
+    fn active_chat_panel_selection(&self) -> side_panel::PanelSelection {
+        if self.remote_client.is_active() && self.route != AppRoute::ArchivedChat {
+            self.remote_client.chat_panel_selection()
+        } else {
+            self.chat_surfaces.selection
+        }
     }
 
     pub(super) fn render_island_panel_toggle(
@@ -212,7 +241,7 @@ impl NativeRoot {
                         .on_press(move |window, cx| {
                             root.update(cx, |this, cx| {
                                 this.set_chat_panel_open(true, cx);
-                                this.focus_empty_chat_panel(window, cx);
+                                this.focus_chat_panel_shown(window, cx);
                                 cx.notify();
                             })
                         }),
@@ -270,6 +299,111 @@ impl NativeRoot {
         ))
     }
 
+    fn session_effective_cwd(&self, session_id: &str, cx: &App) -> Option<String> {
+        if self.remote_client.is_active() && self.route != AppRoute::ArchivedChat {
+            return self
+                .remote_client
+                .session(session_id, cx)
+                .and_then(|session| session.cwd);
+        }
+        let detail = self
+            .active_chat_detail
+            .as_ref()
+            .filter(|d| d.session_id == session_id)
+            .or_else(|| self.app_store.read(cx).session_details.get(session_id))
+            .or_else(|| self.session_entry(session_id, cx))?;
+        detail.cwd.clone().or_else(|| {
+            let role_id = detail.role_id.as_deref()?;
+            self.app_store
+                .read(cx)
+                .roles
+                .iter()
+                .find(|role| role.id == role_id)?
+                .working_dir
+                .clone()
+        })
+    }
+
+    /// Quiet `Following <pane> · <branch/folder>` cue when a split tab holds
+    /// panes working in different folders or worktrees (#1403).
+    pub(super) fn split_following_badge(&self, followed_id: &str, cx: &App) -> Option<String> {
+        if self.route == AppRoute::ArchivedChat || !self.front_page_is_chat() {
+            return None;
+        }
+        let layout = self.front_page_layout()?;
+        let leaves = layout.root.leaves();
+        if leaves.len() <= 1 {
+            return None;
+        }
+        let mut distinct_cwds = HashSet::new();
+        for leaf in &leaves {
+            if let Some(session_id) = leaf.session_id.as_deref()
+                && let Some(cwd) = self.session_effective_cwd(session_id, cx)
+            {
+                let trimmed = cwd.trim().trim_end_matches(['/', '\\']).to_owned();
+                if !trimmed.is_empty() {
+                    distinct_cwds.insert(trimmed);
+                }
+            }
+        }
+        if distinct_cwds.len() <= 1 {
+            return None;
+        }
+        let pane_label = self
+            .front_page_session(followed_id, cx)
+            .map(|entry| {
+                entry.label(
+                    self.remote_client
+                        .is_local()
+                        .then(|| self.attached_title(followed_id, cx))
+                        .flatten()
+                        .as_deref(),
+                )
+            })
+            .unwrap_or_else(|| followed_id.to_owned());
+        let cwd = self.session_effective_cwd(followed_id, cx);
+        let branch = if self.remote_client.is_active() {
+            self.remote_client.computer().and_then(|computer| {
+                remote_info_branch_row(
+                    &self.app_store,
+                    &computer.id,
+                    None,
+                    Some(followed_id),
+                    cwd.as_deref(),
+                    cx,
+                )
+            })
+        } else {
+            let project_id = self
+                .session_entry(followed_id, cx)
+                .and_then(|entry| entry.project_id.as_deref());
+            cwd.as_deref().and_then(|cwd| {
+                self.app_store
+                    .read(cx)
+                    .worktree_checkout_for(cwd, project_id)
+                    .and_then(|checkout| info_branch_row_from_checkout(checkout, None))
+            })
+        };
+        let target = branch
+            .map(|b| b.branch)
+            .or_else(|| {
+                cwd.as_deref().and_then(|cwd| {
+                    crate::surfaces::remote_client::model::host_path_leaf(cwd)
+                        .map(str::to_owned)
+                        .or_else(|| {
+                            std::path::Path::new(cwd)
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                        })
+                })
+            })
+            .filter(|s| !s.is_empty())?;
+        Some(crate::i18n::tf(
+            "side_panel.following",
+            &[("pane", pane_label), ("target", target)],
+        ))
+    }
+
     pub(super) fn chat_panel_context(
         &self,
         detail: &DirectSessionEntry,
@@ -292,6 +426,7 @@ impl NativeRoot {
             cwd: detail.cwd.clone().or_else(role_dir),
             project: detail.project_id.clone(),
             remote: !self.remote_client.is_local(),
+            following: self.split_following_badge(&detail.session_id, cx),
         }
     }
 
@@ -345,20 +480,6 @@ impl NativeRoot {
         Some(self.chat_files.link_view(&context, cx))
     }
 
-    /// The chat panel's empty list takes focus when the panel opens on it.
-    pub(crate) fn focus_empty_chat_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let surface = side_panel_surface(self.active_tab_is_terminal(cx));
-        let settings = self.settings(cx);
-        if self.remote_client.is_local()
-            && self.route == AppRoute::Chat
-            && self.chat_panel_is_open(cx)
-            && side_panel_available(settings, surface)
-            && side_panel::shown(surface, settings, &self.chat_surfaces.open).is_none()
-        {
-            self.chat_surfaces.list_focus().focus(window, cx);
-        }
-    }
-
     /// ⇧⌘O: opens the panel on Files, as a link does, and its finder. With no
     /// view to search the key goes on, so a terminal program gets it.
     pub(crate) fn search_files_in_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -383,27 +504,23 @@ impl NativeRoot {
     fn show_link_preview_in_tab(&mut self, tab: &str, cx: &mut Context<Self>) {
         self.sync_chat_panel(cx);
         if self.chat_panel_tab.as_deref() == Some(tab) {
-            self.chat_surfaces.open.open(PanelViewId::Files);
+            self.chat_surfaces.selection.select(PanelViewId::Files);
             self.chat_panel_open = Some(true);
         } else {
             let panel = self.chat_panels_by_tab.entry(tab.into()).or_default();
-            panel.surfaces.open(PanelViewId::Files);
+            panel.selection.select(PanelViewId::Files);
             panel.open = Some(true);
         }
-        self.update_app_settings(cx, true, |settings| {
-            let changed = !settings.chat_panel_open;
-            settings.chat_panel_open = true;
-            changed
-        });
         cx.notify();
     }
 
-    /// The chat panel's width, widened once Files or Changes has widened it.
+    /// The chat panel's width, widened state, and Docked vs Sheet presentation.
     pub(super) fn chat_panel_layout(
         &self,
         detail: Option<&DirectSessionEntry>,
+        split_columns: usize,
         cx: &App,
-    ) -> (f32, Option<crate::surfaces::side_panel::Widened>) {
+    ) -> side_panel::PanelLayout {
         let settings = self.settings(cx);
         let surface = if self.route == AppRoute::ArchivedChat {
             PanelSurface::Chat
@@ -411,16 +528,232 @@ impl NativeRoot {
             side_panel_surface(self.active_tab_is_terminal(cx))
         };
         let subject = detail.map(|detail| PanelSubject::Session(detail.session_id.clone()));
+        let selection = self.active_chat_panel_selection();
         self.chat_files.panel_layout(
             surface,
             settings,
-            &self.chat_surfaces,
+            &selection,
             subject.as_ref(),
             settings.chat_panel_width,
             6.,
-            self.chat_panel_maximized,
+            split_columns,
+            self.chat_panel_maximized && self.remote_client.is_local(),
             cx,
         )
+    }
+
+    pub(super) fn session_key_copy_for(
+        &mut self,
+        session_id: &str,
+        value: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Entity<CopyValueButton> {
+        let copy = self
+            .pane_session_key_copies
+            .entry(session_id.to_owned())
+            .or_insert_with(|| {
+                let value = value.clone();
+                cx.new(|copy_cx| {
+                    CopyValueButton::new(
+                        copy_cx.focus_handle(),
+                        value,
+                        crate::i18n::message("ui.copy_session_key"),
+                    )
+                })
+            })
+            .clone();
+        copy.update(cx, |btn, btn_cx| btn.set_value(value, btn_cx));
+        copy
+    }
+
+    pub(super) fn worktree_copy_for(
+        &mut self,
+        session_id: &str,
+        path: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<CopyValueButton>> {
+        let path = path?;
+        let copy = self
+            .pane_worktree_copies
+            .entry(session_id.to_owned())
+            .or_insert_with(|| {
+                let path = path.clone();
+                cx.new(|copy_cx| {
+                    CopyValueButton::new(
+                        copy_cx.focus_handle(),
+                        Some(path),
+                        crate::i18n::message("info.copy_worktree_path"),
+                    )
+                })
+            })
+            .clone();
+        copy.update(cx, |btn, btn_cx| btn.set_value(Some(path), btn_cx));
+        Some(copy)
+    }
+
+    pub(super) fn render_pane_info_card_for_session(
+        &mut self,
+        session_id: &str,
+        menu: gpui::WeakEntity<PopoverMenu>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let shortcut_hint = crate::keymap::effective_binding(
+            "toggle-session-info",
+            &self.settings(cx).keymap_overrides,
+        )
+        .map(|combo| crate::keymap::format_combo(&combo));
+
+        if self.remote_client.is_active() && self.route != AppRoute::ArchivedChat {
+            let Some(session) = self.remote_client.session(session_id, cx) else {
+                return div().into_any_element();
+            };
+            let branch = self.remote_client.computer().and_then(|computer| {
+                remote_info_branch_row(
+                    &self.app_store,
+                    &computer.id,
+                    None,
+                    Some(session_id),
+                    session.cwd.as_deref(),
+                    cx,
+                )
+            });
+            let location = resolve_info_location_rows(session.cwd.as_deref(), branch.as_ref());
+            let worktree_copy = location
+                .worktree
+                .as_ref()
+                .and_then(|wt| wt.path.clone())
+                .and_then(|path| self.worktree_copy_for(session_id, Some(path), cx));
+            return render_s2_remote_chat_info_card(session, branch, worktree_copy, shortcut_hint);
+        }
+
+        let detail = self
+            .archived_chat_detail
+            .as_ref()
+            .filter(|d| self.route == AppRoute::ArchivedChat && d.session_id == session_id)
+            .or_else(|| {
+                self.active_chat_detail
+                    .as_ref()
+                    .filter(|d| d.session_id == session_id)
+            })
+            .or_else(|| self.app_store.read(cx).session_details.get(session_id))
+            .or_else(|| self.session_entry(session_id, cx))
+            .cloned();
+        let Some(detail) = detail else {
+            return div()
+                .p(rems(12. / 16.))
+                .text_size(theme::text_ui())
+                .text_color(theme::faint())
+                .child(crate::i18n::text("ui.loading_chat"))
+                .into_any_element();
+        };
+        let role = detail.role_id.as_deref().and_then(|role_id| {
+            self.app_store
+                .read(cx)
+                .roles
+                .iter()
+                .find(|role| role.id == role_id)
+                .cloned()
+        });
+        let branch_cwd = detail
+            .cwd
+            .clone()
+            .or_else(|| role.as_ref().and_then(|role| role.working_dir.clone()));
+        let branch = ensure_info_branch_row(
+            &self.app_store,
+            branch_cwd.as_deref(),
+            detail.project_id.as_deref(),
+            false,
+            cx,
+        );
+        let location = resolve_info_location_rows(branch_cwd.as_deref(), branch.as_ref());
+        let session_key_copy =
+            self.session_key_copy_for(&detail.session_id, detail.agent_session_key.clone(), cx);
+        let worktree_copy = location
+            .worktree
+            .as_ref()
+            .and_then(|wt| wt.path.clone())
+            .and_then(|path| self.worktree_copy_for(&detail.session_id, Some(path), cx));
+        let account = self.claude_account_details(&detail, cx);
+
+        let open_root = cx.entity();
+        let close_menu = menu.clone();
+        let toggle_root = cx.entity();
+        let toggle_menu = menu;
+        let toggle_session = detail.session_id.clone();
+        let expanded = self.chat_info_prompt_expanded.contains(&detail.session_id);
+        let actions = ChatInfoPopoverActions {
+            open_role: role.as_ref().map(|role| {
+                let handle = role.handle.clone();
+                Rc::new(move |window: &mut Window, cx: &mut App| {
+                    let _ = close_menu.update(cx, |menu, menu_cx| menu.close(menu_cx));
+                    open_root.update(cx, |this, cx| {
+                        this.open_role_detail(handle.clone(), window, cx)
+                    });
+                }) as ClickHandler
+            }),
+            toggle_prompt: Rc::new(move |_, cx| {
+                let id = toggle_session.clone();
+                toggle_root.update(cx, |this, cx| {
+                    if !this.chat_info_prompt_expanded.remove(&id) {
+                        this.chat_info_prompt_expanded.insert(id);
+                    }
+                    cx.notify();
+                });
+                let _ = toggle_menu.update(cx, |_, menu_cx| menu_cx.notify());
+            }),
+            expanded,
+            view: cx.entity_id(),
+            shortcut_hint,
+        };
+        render_s2_chat_info_card(
+            &detail,
+            role.as_ref(),
+            session_key_copy,
+            worktree_copy,
+            actions,
+            account,
+            branch,
+            cx,
+        )
+    }
+
+    pub(crate) fn toggle_focused_pane_info_popover(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session_id) = self
+            .front_page_layout()
+            .and_then(PaneLayout::focused_session_id)
+            .map(str::to_owned)
+        else {
+            cx.propagate();
+            return;
+        };
+        let is_shell = self
+            .front_page_session(&session_id, cx)
+            .is_some_and(|entry| entry.agent_runtime == "shell");
+        if is_shell {
+            cx.propagate();
+            return;
+        }
+        let Some(menu) = self.pane_action_menus.get(&session_id).cloned() else {
+            cx.propagate();
+            return;
+        };
+        menu.update(cx, |menu, menu_cx| menu.toggle_open(window, menu_cx));
+    }
+
+    pub(crate) fn toggle_archived_chat_info_popover(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((_, menu)) = self.archived_title_menu.as_ref().cloned() else {
+            cx.propagate();
+            return;
+        };
+        menu.update(cx, |menu, menu_cx| menu.toggle_open(window, menu_cx));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -428,8 +761,8 @@ impl NativeRoot {
         &self,
         detail: Option<&DirectSessionEntry>,
         surface: PanelSurface,
-        session_key_copy: Entity<CopyValueButton>,
-        (width, widened): (f32, Option<crate::surfaces::side_panel::Widened>),
+        panel_layout: side_panel::PanelLayout,
+        animated_width: f32,
         visibility: f32,
         show_panel: bool,
         border_on: bool,
@@ -440,8 +773,21 @@ impl NativeRoot {
         crate::render_counts::count_render("side-panel", cx);
         let remote = self.remote_client.is_active() && self.route != AppRoute::ArchivedChat;
         let detail = detail.filter(|_| !remote);
+        let width = if panel_layout.is_sheet() {
+            panel_layout.width
+        } else {
+            animated_width
+        };
+        let widened = panel_layout.widened;
+        let sheet = panel_layout.is_sheet();
         let maximized = show_panel && !remote && self.chat_panel_maximized;
-        let visible_width = width * visibility;
+        let visible_width = if !show_panel {
+            0.
+        } else if sheet {
+            width
+        } else {
+            width * visibility
+        };
         if !show_panel {
             self.chat_files.hide(cx);
             return div()
@@ -453,69 +799,75 @@ impl NativeRoot {
                 .overflow_hidden()
                 .into_any_element();
         }
-        let role = detail
-            .and_then(|detail| detail.role_id.as_deref())
-            .and_then(|role_id| {
-                self.app_store
-                    .read(cx)
-                    .roles
-                    .iter()
-                    .find(|role| role.id == role_id)
-                    .cloned()
-            });
         let collapse_root = cx.entity();
         let maximize_root = cx.entity();
         let req_max_root = cx.entity();
         let surface_root = cx.entity();
-        let mut settings = self.settings(cx).clone();
-        if remote {
-            settings.files_view = false;
-            settings.changes_view = false;
-        }
-        let shown = side_panel::shown(surface, &settings, &self.chat_surfaces.open);
-        let handler: side_panel::SurfaceHandler = Rc::new(move |action, window, cx| {
-            if remote {
-                return;
-            }
+        let settings = self.settings(cx).clone();
+        let selection = self.active_chat_panel_selection();
+        let shown = side_panel::shown(surface, &settings, &selection);
+        let handler: side_panel::SurfaceHandler = Rc::new(move |action, _window, cx| {
             surface_root.update(cx, |this, cx| {
-                let settings = this.settings(cx).clone();
-                this.chat_surfaces
-                    .apply(surface, &settings, action, window, cx);
-                // A pick removes the empty list, whether made there or from a
-                // `+` menu that handed focus back to it: the chat takes the keys.
-                if matches!(action, side_panel::SurfaceAction::Open(_))
-                    && this.chat_surfaces.list_focus().is_focused(window)
-                    && !this.chat_panel_maximized
-                {
-                    this.focus_active_terminal(window, cx);
+                match action {
+                    side_panel::SurfaceAction::Select(id) => {
+                        if this.remote_client.is_active() && this.route != AppRoute::ArchivedChat {
+                            this.remote_client.select_chat_panel_mode(id);
+                        } else {
+                            this.chat_surfaces.apply(action);
+                        }
+                    }
                 }
                 cx.notify();
             })
         });
-        let maximize_control = (!remote).then_some(side_panel::MaximizeControl {
-            maximized,
-            on_toggle: Rc::new(move |window, cx| {
-                maximize_root.update(cx, |this, cx| {
-                    this.toggle_chat_panel_maximized(window, cx);
-                });
-            }),
-        });
-        let on_request_maximize: side_panel::PanelCallback = Rc::new(move |window, cx| {
-            req_max_root.update(cx, |this, cx| {
-                this.set_chat_panel_maximized(true, window, cx);
+        // Maximize is shown only when widened on an open file/diff or already maximized (#1403).
+        let maximize_control =
+            (!remote && (widened.is_some() || maximized)).then_some(side_panel::MaximizeControl {
+                maximized,
+                on_toggle: Rc::new(move |window, cx| {
+                    maximize_root.update(cx, |this, cx| {
+                        this.toggle_chat_panel_maximized(window, cx);
+                    });
+                }),
             });
-        });
+        let on_request_maximize: side_panel::PanelMaximizeCallback =
+            Rc::new(move |maximize, window, cx| {
+                req_max_root.update(cx, |this, cx| {
+                    this.set_chat_panel_maximized(maximize, window, cx);
+                });
+            });
+
+        let panel_context = if remote {
+            let focused = self
+                .front_page_layout()
+                .and_then(PaneLayout::focused_session_id);
+            self.panel_session_for(focused, cx)
+                .map(|(id, _)| PanelContext {
+                    following: self.split_following_badge(&id, cx),
+                    subject: PanelSubject::Session(id),
+                    surface,
+                    cwd: None,
+                    project: None,
+                    remote: true,
+                })
+        } else {
+            detail.map(|detail| self.chat_panel_context(detail, surface, cx))
+        };
+        let dirty_changes = !remote
+            && self.chat_files.dirty_changes_for(
+                panel_context.as_ref(),
+                shown,
+                settings.changes_view,
+                Some(cx.entity_id()),
+                cx,
+            );
+
+        let chat_card = self.route != AppRoute::ArchivedChat && self.front_page_is_chat();
         let header = self.render_titlebar_drag_area(
             "chat-panel-titlebar-drag",
             div()
                 .flex_none()
-                .h(rems(
-                    if self.route == AppRoute::Chat {
-                        40.
-                    } else {
-                        WORKSPACE_HEADER_HEIGHT
-                    } / 16.,
-                ))
+                .h(rems(40. / 16.))
                 .pl_2()
                 .pr_2()
                 .flex()
@@ -537,12 +889,12 @@ impl NativeRoot {
                     let element = crate::theme_snapshot::record_fill("CHAT_PANEL_HEADER", element);
                     element
                 })
-                .child(side_panel::header_tabs(
+                .child(side_panel::activity_bar(
                     surface,
                     &settings,
-                    &self.chat_surfaces.open,
-                    (&self.chat_surfaces, window),
-                    handler.clone(),
+                    &selection,
+                    dirty_changes,
+                    handler,
                     maximize_control,
                     IconButton::new("collapse-chat-panel", "panel-right-open.svg")
                         .tooltip(crate::i18n::text("ui.collapse_side_panel"))
@@ -560,91 +912,39 @@ impl NativeRoot {
                 )),
             cx,
         );
-        let files = match (shown, detail) {
-            (Some(PanelViewId::Files), Some(detail)) => {
+        let body = match (shown, panel_context.as_ref()) {
+            (Some(PanelViewId::Files), Some(context)) => {
                 self.chat_files.hide_changes(cx);
-                Some(self.chat_files.show_with_maximize(
-                    &self.chat_panel_context(detail, surface, cx),
+                self.chat_files.show_with_maximize(
+                    context,
                     widened,
                     Some(cx.entity_id()),
                     maximized,
                     Some(on_request_maximize),
                     cx,
-                ))
+                )
             }
-            (Some(PanelViewId::Changes), Some(detail)) => {
+            (Some(PanelViewId::Changes), Some(context)) => {
                 self.chat_files.hide_files(cx);
-                Some(self.chat_files.show_changes_with_maximize(
-                    &self.chat_panel_context(detail, surface, cx),
+                self.chat_files.show_changes_with_maximize(
+                    context,
                     widened,
                     Some(cx.entity_id()),
                     maximized,
                     Some(on_request_maximize),
                     cx,
-                ))
+                )
             }
             _ => {
                 self.chat_files.hide(cx);
-                None
-            }
-        };
-        let content = if shown.is_none() {
-            None
-        } else if remote {
-            self.render_remote_chat_info(cx)
-        } else if let Some(detail) = detail {
-            let open_root = cx.entity();
-            let toggle_root = cx.entity();
-            let actions = ChatPanelActions {
-                open_role: role.as_ref().map(|role| {
-                    let handle = role.handle.clone();
-                    Rc::new(move |window: &mut Window, cx: &mut App| {
-                        open_root.update(cx, |this, cx| {
-                            this.open_role_detail(handle.clone(), window, cx)
-                        });
-                    }) as ClickHandler
-                }),
-                toggle_prompt: Rc::new(move |_, cx| {
-                    toggle_root.update(cx, |this, cx| {
-                        this.chat_panel_prompt_expanded = !this.chat_panel_prompt_expanded;
-                        cx.notify();
-                    });
-                }),
-                expanded: self.chat_panel_prompt_expanded,
-                view: cx.entity_id(),
-            };
-            let account = self.claude_account_details(detail, cx);
-            let branch_cwd = detail
-                .cwd
-                .clone()
-                .or_else(|| role.as_ref().and_then(|role| role.working_dir.clone()));
-            let branch_project = detail.project_id.clone();
-            let remote = self.front_page_client(cx).is_remote();
-            let branch = crate::surfaces::panes::ensure_info_branch_row(
-                &self.app_store,
-                branch_cwd.as_deref(),
-                branch_project.as_deref(),
-                remote,
-                cx,
-            );
-            Some(chat_panel_content(
-                detail,
-                role.as_ref(),
-                width,
-                session_key_copy,
-                actions,
-                account,
-                branch,
-                cx,
-            ))
-        } else {
-            Some(
                 div()
+                    .flex_1()
+                    .p_5()
                     .text_size(theme::text_ui())
                     .text_color(theme::faint())
                     .child(crate::i18n::text("ui.loading_chat"))
-                    .into_any_element(),
-            )
+                    .into_any_element()
+            }
         };
         let panel = div()
             .relative()
@@ -655,39 +955,7 @@ impl NativeRoot {
             .flex_col()
             .overflow_hidden()
             .child(header)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .flex()
-                    .flex_col()
-                    .when(files.is_none(), |body| body.pb(rems(8. / 16.)))
-                    .child(match (files, content) {
-                        (Some(files), _) => files,
-                        (None, Some(content)) => div()
-                            .id("chat-panel-scroll")
-                            .when(cfg!(test), |el| {
-                                el.debug_selector(|| "CHAT_INFO_SCROLL".into())
-                            })
-                            .flex_1()
-                            .min_h(px(0.))
-                            .overflow_y_scroll()
-                            .p_5()
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _, window, cx| {
-                                    if !this.chat_panel_contains_focus(window, cx) {
-                                        this.chat_panel_focus.focus(window, cx);
-                                    }
-                                }),
-                            )
-                            .child(content)
-                            .into_any_element(),
-                        (None, None) => {
-                            side_panel::empty_list(surface, &settings, &self.chat_surfaces, handler)
-                        }
-                    }),
-            );
+            .child(div().flex_1().min_h(px(0.)).flex().flex_col().child(body));
         div()
             .id("chat-side-panel")
             .debug_selector(|| "CHAT_SIDE_PANEL".into())
@@ -697,34 +965,17 @@ impl NativeRoot {
             .when(!maximized, |p| p.w(rems(visible_width / 16.)).flex_none())
             .h_full()
             .overflow_hidden()
-            .when(self.route == AppRoute::Chat, |panel| {
+            .when(chat_card || sheet, |panel| {
                 panel
                     .rounded(rems(12. / 16.))
                     .border_1()
                     .border_color(theme::border())
                     .bg(theme::bg())
             })
-            .when(
-                self.route != AppRoute::Chat && border_on && !maximized,
-                |panel| panel.border_l_1().border_color(theme::border()),
-            )
+            .when(!chat_card && !sheet && border_on && !maximized, |panel| {
+                panel.border_l_1().border_color(theme::border())
+            })
             .child(panel)
             .into_any_element()
-    }
-
-    fn render_remote_chat_info(&self, cx: &App) -> Option<AnyElement> {
-        let computer = self.remote_client.computer()?;
-        let focused = self.front_page_layout()?.focused_session_id();
-        let (id, _) = self.panel_session_for(focused, cx)?;
-        let session = self.remote_client.session(&id, cx)?;
-        let branch = remote_info_branch_row(
-            &self.app_store,
-            &computer.id,
-            None,
-            Some(&id),
-            session.cwd.as_deref(),
-            cx,
-        );
-        Some(remote_chat_panel_content(session, branch))
     }
 }

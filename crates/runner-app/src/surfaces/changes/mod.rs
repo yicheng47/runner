@@ -352,6 +352,13 @@ pub(super) struct CheckoutPickerState {
     _observe: Subscription,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct SavedChangesState {
+    pub(crate) root: PathBuf,
+    pub(crate) selected_path: String,
+    pub(crate) selected_target: SelectedTarget,
+}
+
 pub(crate) struct ChangesView {
     pub(super) context: PanelContext,
     client: DaemonClient,
@@ -383,9 +390,11 @@ pub(crate) struct ChangesView {
     pub(super) files_scrollbar: Entity<Scrollbar>,
     pub(super) widened: Option<Widened>,
     pub(super) maximized: bool,
-    pub(super) on_request_maximize: Option<side_panel::PanelCallback>,
+    pub(super) on_request_maximize: Option<side_panel::PanelMaximizeCallback>,
     pub(super) owner: Option<EntityId>,
-    pub(super) reported_wide: Option<bool>,
+    pub(super) reported: (Option<bool>, bool),
+    pub(super) status_stale: bool,
+    pub(super) pending_restore: Option<SavedChangesState>,
     pub(super) tree_resizing: bool,
     look: Option<Look>,
     tree_view_pref: bool,
@@ -482,7 +491,9 @@ impl ChangesView {
             maximized: false,
             on_request_maximize: None,
             owner: None,
-            reported_wide: None,
+            reported: (None, false),
+            status_stale: false,
+            pending_restore: None,
             tree_resizing: false,
             look: Look::current(cx),
             tree_view_pref,
@@ -551,7 +562,10 @@ impl ChangesView {
         }
     }
 
-    pub(crate) fn set_on_request_maximize(&mut self, handler: Option<side_panel::PanelCallback>) {
+    pub(crate) fn set_on_request_maximize(
+        &mut self,
+        handler: Option<side_panel::PanelMaximizeCallback>,
+    ) {
         self.on_request_maximize = handler;
     }
 
@@ -613,7 +627,7 @@ impl ChangesView {
             && let Some(request) = self.on_request_maximize.clone()
         {
             self.maximized = true;
-            request(window, cx);
+            request(true, window, cx);
         }
         self.sync_effective_diff_mode(cx);
         cx.notify();
@@ -621,6 +635,12 @@ impl ChangesView {
 
     pub(crate) fn set_owner(&mut self, owner: Option<EntityId>) {
         self.owner = owner;
+    }
+
+    fn notify_owner(&self, cx: &mut Context<Self>) {
+        if let Some(owner) = self.owner {
+            cx.defer(move |cx| cx.notify(owner));
+        }
     }
 
     pub(crate) fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
@@ -631,18 +651,133 @@ impl ChangesView {
         if !shown {
             self.base_picker = None;
             self.checkout_picker = None;
+            self.status_stale = true;
         }
         self.sync_watch(cx);
     }
 
-    /// `Some(true)` once a git root is active; `None` while loading so the
-    /// panel can fall back to Files' known root width without flickering.
+    /// C1 progressive widening (#1403): Changes stays compact at 300 px until
+    /// the user explicitly opens a changed file's diff (`selected_path.is_some()`).
     pub(crate) fn widening(&self) -> Option<bool> {
         match &self.body {
-            Body::Loading => None,
-            Body::Root(_) => Some(true),
+            Body::Root(state) => Some(
+                state.selected_path.is_some()
+                    || (state.commits.is_none()
+                        && self.pending_restore.as_ref().is_some_and(|pending| {
+                            runner_core::app_paths::same_normalized_checkout_path(
+                                &state.root.path,
+                                &pending.root,
+                            )
+                        })),
+            ),
+            Body::Loading => Some(self.pending_restore.is_some()),
             _ => Some(false),
         }
+    }
+
+    pub(crate) fn has_dirty_changes(&self) -> bool {
+        matches!(
+            &self.body,
+            Body::Root(state) if state.uncommitted_count > 0
+        )
+    }
+
+    /// Authoritative live uncommitted-changes flag while this view is watching.
+    pub(crate) fn fresh_dirty_changes(&self) -> Option<bool> {
+        if !self.shown || self.status_stale {
+            return None;
+        }
+        match &self.body {
+            Body::Root(state) if state.commits.is_some() => Some(state.uncommitted_count > 0),
+            Body::Root(_) | Body::Loading | Body::Failed(_) => None,
+            Body::Remote | Body::Choose | Body::Missing { .. } | Body::NotInGit => Some(false),
+        }
+    }
+
+    pub(crate) fn saved_state(&self) -> Option<SavedChangesState> {
+        match &self.body {
+            Body::Root(state) => state
+                .selected_path
+                .as_ref()
+                .map(|path| SavedChangesState {
+                    root: state.root.path.clone(),
+                    selected_path: path.clone(),
+                    selected_target: state.selected_target.clone(),
+                })
+                .or_else(|| {
+                    self.pending_restore.as_ref().and_then(|pending| {
+                        runner_core::app_paths::same_normalized_checkout_path(
+                            &state.root.path,
+                            &pending.root,
+                        )
+                        .then(|| pending.clone())
+                    })
+                }),
+            Body::Loading => self.pending_restore.clone(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn restore_saved_state(&mut self, saved: SavedChangesState, cx: &mut Context<Self>) {
+        if matches!(&self.body, Body::Root(state) if state.commits.is_some()) {
+            self.apply_saved_changes(saved, cx);
+        } else {
+            self.pending_restore = Some(saved);
+        }
+    }
+
+    fn apply_saved_changes(&mut self, saved: SavedChangesState, cx: &mut Context<Self>) {
+        let same_root = matches!(
+            &self.body,
+            Body::Root(state)
+                if runner_core::app_paths::same_normalized_checkout_path(
+                    &state.root.path,
+                    &saved.root,
+                )
+        );
+        if !same_root {
+            self.notify_owner(cx);
+            return;
+        }
+        let needs_target_switch = matches!(
+            &self.body,
+            Body::Root(state) if state.selected_target != saved.selected_target
+        );
+        if needs_target_switch {
+            self.pending_restore = Some(saved.clone());
+            self.select_target(saved.selected_target, cx);
+            return;
+        }
+        let has_file = matches!(
+            &self.body,
+            Body::Root(state) if state.files.iter().any(|f| f.path == saved.selected_path)
+        );
+        if has_file {
+            self.select_file_by_path(saved.selected_path, cx);
+        } else {
+            self.notify_owner(cx);
+        }
+    }
+
+    pub(super) fn close_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let was_maximized = self.maximized;
+        if let Body::Root(state) = &mut self.body {
+            state.selected_path = None;
+            state.diff_state = ActiveDiff::Empty;
+            state.in_flight_diff = None;
+        }
+        self.focus_place = FocusPlace::Files;
+        self.list_focus.focus(window, cx);
+        if was_maximized {
+            self.maximized = false;
+            if let Some(request) = self.on_request_maximize.clone() {
+                request(false, window, cx);
+            }
+        }
+        if let Some(owner) = self.owner {
+            cx.defer(move |cx| cx.notify(owner));
+        }
+        cx.notify();
     }
 
     fn watched_git_root(&self) -> Option<&Path> {
@@ -825,7 +960,9 @@ impl ChangesView {
                     }
                 }
                 if root.git.is_none() {
+                    self.pending_restore = None;
                     self.body = Body::NotInGit;
+                    self.notify_owner(cx);
                 } else if let Body::Root(state) = &mut self.body
                     && same
                 {
@@ -863,18 +1000,35 @@ impl ChangesView {
                         files_seq: 0,
                         diff_seq: 0,
                     }));
+                    if let Body::Root(state) = &self.body
+                        && self.pending_restore.as_ref().is_some_and(|pending| {
+                            !runner_core::app_paths::same_normalized_checkout_path(
+                                &state.root.path,
+                                &pending.root,
+                            )
+                        })
+                    {
+                        self.pending_restore = None;
+                        self.notify_owner(cx);
+                    }
                     self.load_snapshot(cx);
                 }
             }
             Ok(FilesRootOutcome::ChooseFolder) => {
+                self.pending_restore = None;
                 self.body = Body::Choose;
                 self.load_recent(cx);
+                self.notify_owner(cx);
             }
             Ok(FilesRootOutcome::Missing { path }) => {
+                self.pending_restore = None;
                 self.body = Body::Missing { path };
+                self.notify_owner(cx);
             }
             Err(error) => {
+                self.pending_restore = None;
                 self.body = Body::Failed(error.to_string().into());
+                self.notify_owner(cx);
             }
         }
         self.watched_root_changed(cx);
@@ -1271,6 +1425,7 @@ impl ChangesView {
         state.uncommitted_count = uncommitted_count;
         state.branch_count = branch_count;
         state.selected_target = next_target.clone();
+        self.status_stale = false;
         if let Some((top, branch)) = forget_missing_base {
             crate::app_store::global_app_store(cx).update(cx, |store, cx| {
                 store.update_settings(
@@ -1401,12 +1556,12 @@ impl ChangesView {
                 build_flat_rows(&state.files)
             };
 
-            let next_path = reconcile_file_selection(
-                prev_path.as_deref(),
-                &state.files,
-                &state.list_rows,
-                tree_mode,
-            );
+            // C1 progressive widening (#1403): keep the diff closed until the
+            // user clicks or opens a changed file; if a diff was already open,
+            // reconcile selection when files update or disappear.
+            let next_path = prev_path.as_deref().and_then(|previous| {
+                reconcile_file_selection(Some(previous), &state.files, &state.list_rows, tree_mode)
+            });
             let same_path = next_path.is_some() && next_path == prev_path;
             state.selected_path = next_path.clone();
             if state.selected_path.is_some() {
@@ -1429,7 +1584,16 @@ impl ChangesView {
                         .scroll_to_item(state.highlighted_list_row, ScrollStrategy::Nearest);
                 }
             } else {
-                state.highlighted_list_row = 0;
+                state.highlighted_list_row = if state.list_rows.is_empty() {
+                    0
+                } else {
+                    resolve_highlighted_row(
+                        prev_highlight.as_ref(),
+                        None,
+                        prev_highlight_idx,
+                        &state.list_rows,
+                    )
+                };
                 state.diff_state = ActiveDiff::Empty;
                 state.in_flight_diff = None;
             }
@@ -1475,6 +1639,9 @@ impl ChangesView {
             && should_load_diff
         {
             self.load_diff(path, cx);
+        }
+        if let Some(saved) = self.pending_restore.take() {
+            self.apply_saved_changes(saved, cx);
         }
         cx.notify();
     }
@@ -2507,10 +2674,10 @@ impl ChangesView {
             crate::app_store::global_app_store(cx).update(cx, |store, cx| {
                 store.update_settings(
                     |settings| {
-                        let changed =
-                            settings.file_tree_width != tree || settings.file_viewer_width != file;
+                        let changed = settings.file_tree_width != tree
+                            || settings.changes_viewer_width != file;
                         settings.file_tree_width = tree;
-                        settings.file_viewer_width = file;
+                        settings.changes_viewer_width = file;
                         changed
                     },
                     false,
@@ -2732,6 +2899,21 @@ impl ChangesView {
                     && let Some((folder_path, _)) = self.highlighted_folder()
                 {
                     self.toggle_folder(&folder_path, cx);
+                } else if self.focus_place == FocusPlace::Files {
+                    let open_path = match &self.body {
+                        Body::Root(state) if state.selected_path.is_none() => {
+                            match state.list_rows.get(state.highlighted_list_row) {
+                                Some(ListRow::File { path, .. }) => Some(path.clone()),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(path) = open_path {
+                        self.select_file_by_path(path, cx);
+                    } else {
+                        self.enter_diff(window, cx);
+                    }
                 } else {
                     self.enter_diff(window, cx);
                 }
@@ -2894,9 +3076,10 @@ impl ChangesView {
                     state.highlighted_list_row = next_idx;
                     self.files_scroll
                         .scroll_to_item(next_idx, ScrollStrategy::Nearest);
+                    let diff_open = state.selected_path.is_some();
                     match &state.list_rows[next_idx] {
-                        ListRow::File { path, .. } => Some(path.clone()),
-                        ListRow::Folder { .. } => None,
+                        ListRow::File { path, .. } if diff_open => Some(path.clone()),
+                        _ => None,
                     }
                 };
                 if let Some(path) = file_to_select {

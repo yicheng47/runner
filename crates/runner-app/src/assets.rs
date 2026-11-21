@@ -217,6 +217,7 @@ const FOLDER_PLUS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="
 const GIT_BRANCH_PLUS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/><path d="M18 15v6"/><path d="M21 18h-6"/></svg>"#;
 const GIT_COMMIT_HORIZONTAL: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><line x1="3" x2="9" y1="12" y2="12"/><line x1="15" x2="21" y1="12" y2="12"/></svg>"#;
 const LAYERS: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></svg>"#;
+const CHEVRONS_DOWN_UP: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 20 5-5 5 5"/><path d="m7 4 5 5 5-5"/></svg>"#;
 
 const ASSETS: &[(&str, &[u8])] = &[
     ("list-tree.svg", LIST_TREE),
@@ -277,6 +278,7 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("chevron-down.svg", CHEVRON_DOWN),
     ("chevron-up.svg", CHEVRON_UP),
     ("chevrons-up-down.svg", CHEVRONS_UP_DOWN),
+    ("chevrons-down-up.svg", CHEVRONS_DOWN_UP),
     ("chevron-left.svg", CHEVRON_LEFT),
     ("chevron-right.svg", CHEVRON_RIGHT),
     ("grip-horizontal.svg", GRIP_HORIZONTAL),

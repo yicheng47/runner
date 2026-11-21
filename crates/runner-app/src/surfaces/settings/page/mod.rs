@@ -179,6 +179,13 @@ impl SettingsPane {
                 "terminal.scrollback",
                 "terminal.copy_on_select",
             ],
+            Self::SidePanel => &[
+                "side_panel.show",
+                "side_panel.surfaces",
+                "ui.files",
+                "ui.changes",
+                "ui.sessions",
+            ],
             Self::About => &["ui.application_logs"],
             _ => &[],
         };

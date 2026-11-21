@@ -294,40 +294,93 @@ impl MissionWorkspace {
             .absolute()
             .inset_0()
         }));
-        if !self.presentation.is_remote() {
-            let default_open = self.settings(cx).mission_rail_open;
-            self.rail_open.get_or_insert(default_open);
-        }
         let rail_open = self.settings(cx).show_side_panel && self.rail_is_open(cx);
         if !rail_open && self.rail_maximized {
             self.rail_maximized = false;
         }
         let rail_maximized = rail_open && self.rail_maximized && !self.presentation.is_remote();
-        if std::mem::take(&mut self.rail_switched) {
-            self.rail_visibility = SidebarVisibilityTransition::new(rail_open);
+        let rail_layout = self.rail_layout(cx);
+        let rail_sheet = rail_open && !rail_maximized && rail_layout.is_sheet();
+        let switched = std::mem::take(&mut self.rail_switched);
+        let now = Instant::now();
+        if switched {
+            self.rail_visibility =
+                SidebarVisibilityTransition::new(rail_open && !rail_layout.is_sheet());
+            self.rail_sheet_anim = SidebarVisibilityTransition::new(false);
         }
-        let (rail_visibility, rail_animating) = if rail_maximized {
+        let (rail_visibility, rail_animating) = if rail_maximized || rail_sheet {
             (1., false)
+        } else if rail_layout.is_sheet() {
+            self.rail_visibility = SidebarVisibilityTransition::new(false);
+            (0., false)
         } else {
             self.rail_visibility.animate_to(
                 if rail_open { 1. } else { 0. },
-                Instant::now(),
+                now,
                 Duration::from_millis(MISSION_RAIL_TRANSITION_MS),
             )
         };
-        if rail_animating {
+        let (rail_sheet_progress, rail_sheet_animating) = if rail_sheet {
+            self.rail_sheet_anim.animate_to(
+                1.,
+                now,
+                Duration::from_millis(MISSION_RAIL_TRANSITION_MS),
+            )
+        } else {
+            self.rail_sheet_anim = SidebarVisibilityTransition::new(false);
+            (0., false)
+        };
+        let target_rail_width = rail_layout.width.round();
+        let rail_width_mode = (
+            rail_layout.widened.is_some(),
+            rail_layout.widened.is_some_and(|w| w.tree),
+        );
+        let prev_rail_mode = self.rail_width_mode;
+        self.rail_width_mode = Some(rail_width_mode);
+        let rail_mode_changed = prev_rail_mode.is_some_and(|prev| prev != rail_width_mode);
+        let (animated_rail_width, rail_width_animating) = if rail_sheet {
+            let docked = rail_layout.reserved_docked_width.round();
+            self.rail_width_anim = SidebarVisibilityTransition::at(docked);
+            (target_rail_width, false)
+        } else if switched
+            || rail_maximized
+            || self.rail_resizing
+            || !rail_open
+            || (!rail_mode_changed && self.rail_width_anim.started_at.is_none())
+        {
+            self.rail_width_anim = SidebarVisibilityTransition::at(target_rail_width);
+            (target_rail_width, false)
+        } else {
+            self.rail_width_anim.animate_to(
+                target_rail_width,
+                now,
+                Duration::from_millis(MISSION_RAIL_TRANSITION_MS),
+            )
+        };
+        if rail_animating || rail_sheet_animating || rail_width_animating {
+            let weak = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                let _ = weak.update(cx, |_, cx| cx.notify());
+            });
             window.request_animation_frame();
         }
-        let rail_layout = self.rail_layout(cx);
-        let widened = rail_layout.1;
+        if !rail_open && !rail_animating {
+            self.rail_files.hide(cx);
+        }
+        let widened = rail_layout.widened;
         let rail_region_style = if rail_maximized {
             gpui::StyleRefinement::default()
                 .flex_1()
                 .min_w(px(0.))
                 .h_full()
+        } else if rail_sheet {
+            gpui::StyleRefinement::default()
+                .w(rems(rail_layout.width / 16.))
+                .h_full()
+                .flex_none()
         } else {
             gpui::StyleRefinement::default()
-                .w(rems(rail_layout.0 * rail_visibility / 16.))
+                .w(rems(animated_rail_width * rail_visibility / 16.))
                 .h_full()
                 .flex_none()
         };
@@ -337,6 +390,7 @@ impl MissionWorkspace {
             move |workspace, window, cx| {
                 workspace.render_mission_rail(
                     rail_layout,
+                    animated_rail_width,
                     rail_visibility,
                     rail_open || rail_animating,
                     window,
@@ -345,7 +399,8 @@ impl MissionWorkspace {
             },
             cx,
         );
-        let rail_resize = (!rail_maximized && (rail_open || rail_animating)).then(|| {
+        let docked_open = !rail_maximized && !rail_sheet && (rail_open || rail_animating);
+        let rail_resize = docked_open.then(|| {
             let zoom = self.settings(cx).app_zoom;
             resize_strip(
                 "mission-rail-resize",
@@ -365,29 +420,66 @@ impl MissionWorkspace {
             .absolute()
             .top_0()
             .right(px(
-                rail_layout.0 * rail_visibility * zoom - resize_strip_inset(zoom)
+                animated_rail_width * rail_visibility * zoom - resize_strip_inset(zoom)
             ))
             .on_drag(
                 MissionRailResizeDrag,
                 |drag: &MissionRailResizeDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),
             )
         });
+        let sheet_dismiss_root = cx.entity();
+        let (docked_rail, sheet_overlay) = if rail_sheet {
+            (
+                None,
+                Some(crate::surfaces::side_panel::overlay_sheet(
+                    "mission-rail-sheet",
+                    rail,
+                    rail_layout.width,
+                    rail_sheet_progress,
+                    Rc::new(move |window, cx| {
+                        sheet_dismiss_root.update(cx, |this, cx| {
+                            this.set_rail_open(false, cx);
+                            this.focus_active_mission_terminal(window, cx);
+                            cx.notify();
+                        });
+                    }),
+                )),
+            )
+        } else {
+            (Some(rail), None)
+        };
+        let reserved_spacer = (rail_sheet && rail_layout.reserved_docked_width > 0.).then(|| {
+            div()
+                .w(rems((rail_layout.reserved_docked_width + 6.) / 16.))
+                .h_full()
+                .flex_none()
+        });
         div()
             .relative()
             .key_context("Mission")
             .track_focus(&self.root_focus)
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                if rail_sheet
+                    && event.keystroke.key == "escape"
+                    && !event.keystroke.modifiers.modified()
+                {
+                    cx.stop_propagation();
+                    this.set_rail_open(false, cx);
+                    this.focus_active_mission_terminal(window, cx);
+                    cx.notify();
+                }
+            }))
             .flex_1()
             .min_w(px(0.))
             .h_full()
             .flex()
             .child(self.rail_files.measure(self.settings(cx).app_zoom))
             .when(!rail_maximized, |el| el.child(center))
-            .children(
-                (!rail_maximized && (rail_open || rail_animating))
-                    .then(|| div().w(rems(6. / 16.)).h_full().flex_none()),
-            )
-            .child(rail)
+            .children(docked_open.then(|| div().w(rems(6. / 16.)).h_full().flex_none()))
+            .children(reserved_spacer)
+            .children(docked_rail)
             .children(rail_resize)
+            .children(sheet_overlay)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
@@ -403,17 +495,28 @@ impl MissionWorkspace {
             .on_action(cx.listener(Self::focus_next_mission_tab))
             .on_drag_move::<MissionRailResizeDrag>(cx.listener(
                 move |this, event: &DragMoveEvent<MissionRailResizeDrag>, _, cx| {
+                    this.rail_resizing = true;
                     let width = f32::from(event.bounds.right() - event.event.position.x)
                         / this.settings(cx).app_zoom;
-                    // With a file open the drag sizes the file beside the tree.
+                    // With a file or diff open the drag sizes the viewer beside the tree/list.
                     if let Some(widened) = widened {
                         let tree = if widened.tree { widened.tree_width } else { 0. };
                         let width = app_settings::clamp_file_viewer_width(width - tree);
+                        let is_changes = crate::surfaces::side_panel::shown(
+                            crate::surfaces::side_panel::PanelSurface::Mission,
+                            this.settings(cx),
+                            &this.rail_surfaces.selection,
+                        ) == Some(PanelViewId::Changes);
                         this.update_app_settings(cx, false, |settings| {
-                            if settings.file_viewer_width == width {
+                            let target = if is_changes {
+                                &mut settings.changes_viewer_width
+                            } else {
+                                &mut settings.file_viewer_width
+                            };
+                            if *target == width {
                                 return false;
                             }
-                            settings.file_viewer_width = width;
+                            *target = width;
                             true
                         });
                         return;
@@ -429,6 +532,7 @@ impl MissionWorkspace {
                 },
             ))
             .on_drop(cx.listener(|this, _: &MissionRailResizeDrag, _, cx| {
+                this.rail_resizing = false;
                 this.save_settings(cx);
             }))
             .into_any_element()
@@ -531,7 +635,6 @@ impl MissionWorkspace {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .children((!self.resuming).then(|| self.action_menu.clone()))
                     .children(
                         (any_stopped && !busy && self.remote_supports(&["resumeMission"])).then(
                             || {
@@ -619,7 +722,7 @@ impl MissionWorkspace {
                     })
                     .into_any_element()
             });
-        let row = WorkspaceHeader::new(
+        let mut header_builder = WorkspaceHeader::new(
             px(self.workspace_titlebar_padding(window, cx)),
             ChatIcon::mission().render(rems(15. / 16.), theme::accent(), true),
             title,
@@ -630,16 +733,21 @@ impl MissionWorkspace {
                 .into_iter()
                 .chain(controls.into_iter().map(IntoElement::into_any_element)),
         )
-        .trailing_actions(drawer_action.into_iter().chain(rail_action))
-        .into_div()
-        .rounded_tl(rems(11. / 16.))
-        .rounded_tr(rems(11. / 16.))
-        .debug_selector(|| "MISSION_HEADER_ROW".into())
-        .map(|element| {
-            #[cfg(test)]
-            let element = crate::theme_snapshot::record_fill("MISSION_HEADER_ROW", element);
-            element
-        });
+        .trailing_actions(drawer_action.into_iter().chain(rail_action));
+        if mission.is_some() {
+            header_builder =
+                header_builder.title_element(self.action_menu.clone().into_any_element());
+        }
+        let row = header_builder
+            .into_div()
+            .rounded_tl(rems(11. / 16.))
+            .rounded_tr(rems(11. / 16.))
+            .debug_selector(|| "MISSION_HEADER_ROW".into())
+            .map(|element| {
+                #[cfg(test)]
+                let element = crate::theme_snapshot::record_fill("MISSION_HEADER_ROW", element);
+                element
+            });
         self.render_titlebar_drag_area("mission-titlebar-drag", row, cx)
             .into_any_element()
     }

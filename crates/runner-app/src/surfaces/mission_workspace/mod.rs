@@ -310,6 +310,7 @@ fn drawer_session_should_take_focus(layout: &MissionLayout, session_id: &str) ->
 enum MissionMenuAction {
     Pin,
     Rename,
+    StopAll,
     Archive,
 }
 
@@ -429,6 +430,10 @@ pub(crate) struct MissionWorkspace {
     pub(crate) rail_maximized: bool,
     pub(crate) rail_focus: FocusHandle,
     rail_switched: bool,
+    rail_resizing: bool,
+    rail_width_anim: SidebarVisibilityTransition,
+    rail_width_mode: Option<(bool, bool)>,
+    rail_sheet_anim: SidebarVisibilityTransition,
     rails_by_mission: HashMap<String, crate::surfaces::side_panel::SavedPanel>,
     rail_files: crate::surfaces::files::FilesPanel,
     action_menu: Entity<PopoverMenu>,
@@ -438,6 +443,7 @@ pub(crate) struct MissionWorkspace {
     menu_pinned: bool,
     pub(crate) rename_modal: Option<MissionRenameModal>,
     mission_id_copy: Entity<CopyValueButton>,
+    mission_worktree_copy: Entity<CopyValueButton>,
     session_key_copies: HashMap<String, Entity<CopyValueButton>>,
     mark_viewed_in_flight: bool,
     pending_mark_viewed_session: Option<String>,

@@ -12,6 +12,7 @@ impl FilesView {
             self.picker = None;
             self.finder = None;
             self.menu = None;
+            self.status_stale = true;
         }
         self.ignored_refresh = shown.then(|| self.refresh_ignored_tabs(cx));
         self.sync_watch(cx);
@@ -172,9 +173,10 @@ impl FilesView {
         );
     }
 
-    fn apply_status(&mut self, status: Arc<PreparedStatus>, cx: &mut Context<Self>) {
+    pub(super) fn apply_status(&mut self, status: Arc<PreparedStatus>, cx: &mut Context<Self>) {
         if let Body::Root(state) = &mut self.body {
             self.status_error = None;
+            self.status_stale = false;
             state.tree.set_status(status);
             self.note_ignored_tabs();
             self.reconcile_diff_tabs(false, cx);

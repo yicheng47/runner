@@ -17,6 +17,7 @@ pub type MenuHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 /// Opens an item's submenu beside the item's row, whose bounds it is given.
 pub type SubmenuHandler = Rc<dyn Fn(usize, Bounds<Pixels>, &mut Window, &mut App)>;
 pub type DismissHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+pub type HeaderRenderer = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 
 /// Text shown in place of a popover's icon trigger, followed by a chevron.
 #[derive(Clone, Debug, PartialEq)]
@@ -379,12 +380,14 @@ pub struct PopoverMenu {
     state: MenuState,
     anchor_bounds: Option<Bounds<Pixels>>,
     min_width: Pixels,
+    max_height: Option<Pixels>,
     single_line_labels: bool,
     align_right: bool,
     trigger_size: IconButtonSize,
     trigger_icon: SharedString,
     trigger_tooltip: Option<crate::i18n::Text>,
     trigger_label: Option<MenuTriggerLabel>,
+    header_renderer: Option<HeaderRenderer>,
     on_trigger_press: Option<DismissHandler>,
     on_trigger_double_click: Option<DismissHandler>,
     return_focus: Option<FocusHandle>,
@@ -411,12 +414,14 @@ impl PopoverMenu {
             state: MenuState::default(),
             anchor_bounds: None,
             min_width: px(160.),
+            max_height: None,
             single_line_labels: false,
             align_right: false,
             trigger_size: IconButtonSize::Md,
             trigger_icon: "more-horizontal.svg".into(),
             trigger_tooltip: Some(crate::i18n::message("ui.more_actions")),
             trigger_label: None,
+            header_renderer: None,
             on_trigger_press: None,
             on_trigger_double_click: None,
             return_focus: None,
@@ -429,6 +434,52 @@ impl PopoverMenu {
     pub fn min_width(mut self, min_width: Pixels) -> Self {
         self.min_width = min_width;
         self
+    }
+
+    pub fn set_min_width(&mut self, min_width: Pixels, cx: &mut Context<Self>) {
+        if self.min_width != min_width {
+            self.min_width = min_width;
+            cx.notify();
+        }
+    }
+
+    pub fn max_height(mut self, max_height: Pixels) -> Self {
+        self.max_height = Some(max_height);
+        self
+    }
+
+    pub fn set_header_renderer(
+        &mut self,
+        renderer: Option<HeaderRenderer>,
+        cx: &mut Context<Self>,
+    ) {
+        let had = self.header_renderer.is_some();
+        let has = renderer.is_some();
+        self.header_renderer = renderer;
+        if self.items.is_empty() && !has {
+            self.state.close();
+        }
+        if self.state.open || had != has {
+            cx.notify();
+        }
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.state.open
+    }
+
+    pub fn toggle_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.items.is_empty() && self.header_renderer.is_none() {
+            return;
+        }
+        if self.state.open {
+            self.dismiss(window, cx);
+        } else {
+            self.return_focus = window.focused(cx);
+            self.state.open(&self.items, 0);
+            self.focus_handle.focus(window, cx);
+            cx.notify();
+        }
     }
 
     pub fn single_line_labels(mut self) -> Self {
@@ -500,9 +551,9 @@ impl PopoverMenu {
             return;
         }
         self.items = items;
-        if self.items.is_empty() {
+        if self.items.is_empty() && self.header_renderer.is_none() {
             self.state.close();
-        } else {
+        } else if !self.items.is_empty() {
             self.state.highlighted = self.state.highlighted.min(self.items.len() - 1);
         }
         cx.notify();
@@ -536,7 +587,7 @@ impl PopoverMenu {
     }
 
     fn toggle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.items.is_empty() {
+        if self.items.is_empty() && self.header_renderer.is_none() {
             return;
         }
         if self.state.open {
@@ -570,10 +621,16 @@ impl PopoverMenu {
         }
         cx.notify();
     }
-    fn menu_content(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn menu_content(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.state.open {
             return None;
         }
+        let header_el = self
+            .header_renderer
+            .clone()
+            .map(|render| render(window, cx));
+        let has_header = header_el.is_some();
+        let has_items = !self.items.is_empty();
         let menu_entity = cx.weak_entity();
         let single_line_labels = self.single_line_labels;
         let rows = self
@@ -734,10 +791,18 @@ impl PopoverMenu {
                     })
                     .child(row)
             });
+        let max_h = self.max_height.unwrap_or_else(|| {
+            if has_header {
+                let viewport_h = f32::from(window.viewport_size().height);
+                px((viewport_h - 32.).clamp(280., 620.))
+            } else {
+                px(280. * app_zoom(window))
+            }
+        });
         let menu = div()
             .id("popover-menu-items")
             .relative()
-            .max_h(rems(280. / 16.))
+            .max_h(max_h)
             .overflow_hidden()
             .rounded(rems(8. / 16.))
             .border_1()
@@ -750,20 +815,37 @@ impl PopoverMenu {
                 menu
             })
             .shadow_2xl()
-            .child(
-                div()
-                    .id("popover-menu-scroll")
-                    .max_h(rems(280. / 16.))
-                    .overflow_y_scroll()
-                    .scrollbar_width(px(0.))
-                    .track_scroll(&self.menu_scroll)
-                    .flex()
-                    .flex_col()
-                    .gap(rems(1. / 16.))
-                    .p(rems(6. / 16.))
-                    .children(rows),
-            )
-            .child(self.menu_scrollbar.clone())
+            .flex()
+            .flex_col()
+            .children(header_el)
+            .when(has_header && has_items, |menu| {
+                menu.child(div().h(px(1.)).w_full().flex_none().bg(theme::border()))
+            })
+            .when(has_items, |menu| {
+                menu.child(
+                    div()
+                        .relative()
+                        .flex_none()
+                        .child(
+                            div()
+                                .id("popover-menu-scroll")
+                                .max_h(if has_header {
+                                    rems(220. / 16.)
+                                } else {
+                                    rems(280. / 16.)
+                                })
+                                .overflow_y_scroll()
+                                .scrollbar_width(px(0.))
+                                .track_scroll(&self.menu_scroll)
+                                .flex()
+                                .flex_col()
+                                .gap(rems(1. / 16.))
+                                .p(rems(6. / 16.))
+                                .children(rows),
+                        )
+                        .child(self.menu_scrollbar.clone()),
+                )
+            })
             .into_any_element();
         Some(menu)
     }
@@ -891,7 +973,13 @@ impl Render for PopoverMenu {
                 canvas(
                     |_, _, _| {},
                     move |bounds, _, _, cx| {
-                        entity.update(cx, |menu, _| menu.anchor_bounds = Some(bounds));
+                        entity.update(cx, |menu, cx| {
+                            let was_missing = menu.anchor_bounds.is_none();
+                            menu.anchor_bounds = Some(bounds);
+                            if was_missing && menu.state.open {
+                                cx.notify();
+                            }
+                        });
                     },
                 )
                 .absolute()

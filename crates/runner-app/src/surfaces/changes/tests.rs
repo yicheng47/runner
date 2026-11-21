@@ -34,6 +34,7 @@ struct Host {
     outside_focus: FocusHandle,
     closed_panes: usize,
     app_zooms: Vec<&'static str>,
+    tree_fits: bool,
     maximized: bool,
     maximize_requests: usize,
 }
@@ -47,19 +48,21 @@ impl Render for Host {
                     file: if self.maximized {
                         960.
                     } else {
-                        settings.file_viewer_width.max(288.)
+                        settings.changes_viewer_width.max(288.)
                     },
-                    tree: true,
+                    tree: self.tree_fits,
                     tree_width: settings.file_tree_width,
                     standard: 288.,
                 });
                 let owner = cx.entity_id();
                 let weak = cx.weak_entity();
-                let on_request_maximize: crate::surfaces::side_panel::PanelCallback =
-                    std::rc::Rc::new(move |_, cx| {
+                let on_request_maximize: crate::surfaces::side_panel::PanelMaximizeCallback =
+                    std::rc::Rc::new(move |maximize, _, cx| {
                         let _ = weak.update(cx, |host, cx| {
-                            host.maximized = true;
-                            host.maximize_requests += 1;
+                            host.maximized = maximize;
+                            if maximize {
+                                host.maximize_requests += 1;
+                            }
                             cx.notify();
                         });
                     });
@@ -231,6 +234,7 @@ fn harness(context: Option<PanelContext>) -> Harness {
         outside_focus: cx.focus_handle(),
         closed_panes: 0,
         app_zooms: Vec::new(),
+        tree_fits: true,
         maximized: false,
         maximize_requests: 0,
     });
@@ -257,6 +261,7 @@ fn mission_ctx(id: &str) -> PanelContext {
         cwd: None,
         project: Some("runner".into()),
         remote: false,
+        following: None,
     }
 }
 
@@ -267,6 +272,7 @@ fn chat_ctx(id: &str, project: Option<&str>, remote: bool) -> PanelContext {
         cwd: None,
         project: project.map(str::to_owned),
         remote,
+        following: None,
     }
 }
 
@@ -603,7 +609,13 @@ fn crlf_only_detection_and_selection_reconciliation() {
 #[test]
 fn worktree_opens_on_all_changes_or_uncommitted_and_switches_commits() {
     let mut h = harness(Some(mission_ctx("on-worktree")));
+    h.wait("All changes list", |h| h.has("CHANGES_ROW src/lib.rs"));
+    // C1: Changes starts compact with no diff open until a file is clicked.
+    assert!(!h.has("CHANGES_DIFF_CODE"));
+    assert_eq!(h.read(|v| v.widening()), Some(false));
+    h.click("CHANGES_ROW src/lib.rs");
     h.wait("All changes diff", |h| h.has("CHANGES_DIFF_CODE"));
+    assert_eq!(h.read(|v| v.widening()), Some(true));
     assert_eq!(
         h.read(|v| v.selected_target().cloned()),
         Some(SelectedTarget::Branch)
@@ -612,6 +624,10 @@ fn worktree_opens_on_all_changes_or_uncommitted_and_switches_commits() {
     assert!(h.has("CHANGES_COMMIT_UNCOMMITTED"));
     assert!(h.has("CHANGES_ROW src/lib.rs"));
     assert!(h.has("CHANGES_ROW src/sub/added.rs"));
+    // Clicking `×` closes the diff and shrinks back to compact list-only.
+    h.click("CHANGES_CLOSE_DIFF");
+    assert!(!h.has("CHANGES_DIFF_CODE"));
+    assert_eq!(h.read(|v| v.widening()), Some(false));
 
     // Add an uncommitted edit: live or freshly opened view excludes uncommitted from All changes.
     std::fs::write(h.worktree.join("dirty.txt"), "uncommitted\n").unwrap();
@@ -676,14 +692,13 @@ fn keyboard_moves_focus_between_commits_files_and_diff_and_jumps_hunks() {
     std::fs::write(h.worktree.join("two_hunks.rs"), lines.join("\n") + "\n").unwrap();
 
     h.show(Some(mission_ctx("on-worktree")));
+    h.wait("two_hunks row", |h| h.has("CHANGES_ROW two_hunks.rs"));
+    h.click("CHANGES_ROW two_hunks.rs");
     h.wait("two_hunks diff", |h| h.has("CHANGES_DIFF_CODE"));
     assert_eq!(
         h.read(|v| v.selected_path().map(str::to_owned)),
         Some("two_hunks.rs".into())
     );
-
-    // Focus list by clicking the row, then Space marks viewed, Tab switches to Commits, Tab back to Files.
-    h.click("CHANGES_ROW two_hunks.rs");
     assert_eq!(h.read(|v| v.focus_place()), FocusPlace::Files);
 
     h.press("space");
@@ -749,6 +764,8 @@ fn keyboard_moves_focus_between_commits_files_and_diff_and_jumps_hunks() {
 #[test]
 fn unified_diff_highlights_both_versions_and_copies_without_gutter() {
     let mut h = harness(Some(mission_ctx("on-worktree")));
+    h.wait("src/lib.rs row", |h| h.has("CHANGES_ROW src/lib.rs"));
+    h.click("CHANGES_ROW src/lib.rs");
     h.wait("src/lib.rs diff", |h| h.has("CHANGES_DIFF_CODE"));
     assert_eq!(
         h.read(|v| v.selected_path().map(str::to_owned)),
@@ -790,6 +807,8 @@ fn viewed_marks_toggle_at_end_of_diff_sync_across_clients_and_turn_amber_on_edit
     let mut h = harness(None);
     std::fs::write(h.worktree.join("tracked.rs"), "fn v1() {}\n").unwrap();
     h.show(Some(mission_ctx("on-worktree")));
+    h.wait("tracked.rs row", |h| h.has("CHANGES_ROW tracked.rs"));
+    h.click("CHANGES_ROW tracked.rs");
     h.wait("tracked.rs diff", |h| h.has("CHANGES_DIFF_VIEWED"));
 
     // Click end-of-diff viewed checkbox.
@@ -849,6 +868,8 @@ fn edge_placeholders_and_root_states_render_expected_screens() {
     }
 
     h.show(Some(mission_ctx("on-worktree")));
+    h.wait("README.md row", |h| h.has("CHANGES_ROW README.md"));
+    h.click("CHANGES_ROW README.md");
     h.wait("README.md CRLF placeholder", |h| {
         h.has("CHANGES_PLACEHOLDER_CRLF")
     });
@@ -885,143 +906,274 @@ fn edge_placeholders_and_root_states_render_expected_screens() {
 
 #[test]
 fn diff_footer_viewed_mark_binds_to_displayed_blob_version_across_races() {
-    let mut h = harness(None);
-    std::fs::write(h.worktree.join("tracked.rs"), "fn v1() {}\n").unwrap();
-    h.show(Some(mission_ctx("on-worktree")));
-    h.wait("tracked.rs v1 diff", |h| h.has("CHANGES_DIFF_VIEWED"));
+    use runner_core::protocol::files::{
+        FilesChanged, FilesStatusChanged, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
+    };
 
-    let v1_blob = h
-        .read(|v| {
-            v.loaded_diff_version()
-                .and_then(|ver| ver.new_blob_id.clone())
-        })
-        .expect("v1 new_blob_id");
+    for control in ["CHANGES_DIFF_VIEWED", "CHANGES_HEADER_VIEWED"] {
+        let mut h = harness(None);
+        std::fs::write(h.worktree.join("tracked.rs"), "fn v1() {}\n").unwrap();
+        let worktree_path = h.worktree.clone();
+        let events = h
+            .store
+            .read_with(&h.visual, |store, _| store.test_core.events.clone());
+        let mut sent = events.subscribe();
 
-    // Hold incoming diff loads so `state.files` advances to v2 while `LoadedDiff` still shows v1.
-    let view = h.view();
-    view.update(&mut h.visual, |v, _| v.set_hold_diffs(true));
-
-    std::fs::write(h.worktree.join("tracked.rs"), "fn v2() {}\n").unwrap();
-    let root = h.worktree.clone();
-    view.update(&mut h.visual, |v, cx| {
-        v.receive(
-            crate::surfaces::files::FilesEvent::Changed(
-                runner_core::protocol::files::FilesChanged {
-                    root,
-                    paths: vec!["tracked.rs".into()],
-                    folders: vec!["".into()],
-                },
-            ),
-            cx,
+        h.show(Some(mission_ctx("on-worktree")));
+        // Require observed startup FILES_STATUS_EVENT before probing live watcher delivery.
+        let mut saw_startup = false;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline && !saw_startup {
+            h.visual.run_until_parked();
+            loop {
+                match sent.try_recv() {
+                    Ok(event) if event.name == FILES_STATUS_EVENT => {
+                        if serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(
+                            |update| {
+                                runner_core::app_paths::same_checkout_path(
+                                    &update.root,
+                                    &worktree_path,
+                                )
+                            },
+                        ) {
+                            saw_startup = true;
+                            break;
+                        }
+                    }
+                    Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                    Err(_) => break,
+                }
+            }
+            if !saw_startup {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        assert!(
+            saw_startup,
+            "{control}: timed out waiting for startup FILES_STATUS_EVENT"
         );
-    });
 
-    h.wait("list updated to v2 while diff still holds v1", |h| {
-        h.read(|v| match &v.body {
-            super::Body::Root(s) => s
-                .files
-                .iter()
-                .find(|f| f.path == "tracked.rs")
-                .and_then(|f| f.new_blob_id.as_ref())
-                .is_some_and(|blob| blob != &v1_blob),
+        // Prove the OS watcher is delivering live edits via an independent sentinel before writing
+        // the target file once.
+        let sentinel = worktree_path.join(".watch-ready");
+        std::fs::write(&sentinel, "ready\n").unwrap();
+        let mut saw_changed = false;
+        let mut saw_status = false;
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline && !(saw_changed && saw_status) {
+            h.visual.run_until_parked();
+            loop {
+                match sent.try_recv() {
+                    Ok(event) if event.name == FILES_CHANGED_EVENT => {
+                        if serde_json::from_value::<FilesChanged>(event.payload).is_ok_and(
+                            |changed| {
+                                runner_core::app_paths::same_checkout_path(
+                                    &changed.root,
+                                    &worktree_path,
+                                ) && (changed.paths.iter().any(|p| p == ".watch-ready")
+                                    || (changed.paths.is_empty() && changed.folders == [""]))
+                            },
+                        ) {
+                            saw_changed = true;
+                        }
+                    }
+                    Ok(event) if event.name == FILES_STATUS_EVENT => {
+                        if serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(
+                            |update| {
+                                runner_core::app_paths::same_checkout_path(
+                                    &update.root,
+                                    &worktree_path,
+                                ) && update
+                                    .status
+                                    .entries
+                                    .iter()
+                                    .any(|e| e.path == ".watch-ready")
+                            },
+                        ) {
+                            saw_status = true;
+                        }
+                    }
+                    Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                    Err(_) => break,
+                }
+            }
+            if !(saw_changed && saw_status) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        assert!(
+            saw_changed && saw_status,
+            "{control}: timed out waiting for sentinel readiness (saw_changed={saw_changed}, saw_status={saw_status})"
+        );
+        std::fs::remove_file(&sentinel).unwrap();
+        h.wait("sentinel removed from Changes list", |h| {
+            h.has("CHANGES_ROW tracked.rs") && !h.has("CHANGES_ROW .watch-ready")
+        });
+
+        h.click("CHANGES_ROW tracked.rs");
+        h.wait("tracked.rs v1 diff", |h| h.has(control));
+
+        let v1_blob = h
+            .read(|v| {
+                v.loaded_diff_version()
+                    .and_then(|ver| ver.new_blob_id.clone())
+            })
+            .expect("v1 new_blob_id");
+
+        // Hold incoming diff loads so `state.files` advances to v2 via the real watcher while
+        // `LoadedDiff` still displays v1 (single write, no retries or synthetic event injection).
+        let view = h.view();
+        view.update(&mut h.visual, |v, _| v.set_hold_diffs(true));
+
+        let tracked = h.worktree.join("tracked.rs");
+        std::fs::write(&tracked, "fn v2() {}\n").unwrap();
+        h.wait("list updated to v2 while diff still holds v1", |h| {
+            h.read(|v| match &v.body {
+                super::Body::Root(s) => s
+                    .files
+                    .iter()
+                    .find(|f| f.path == "tracked.rs")
+                    .and_then(|f| f.new_blob_id.as_ref())
+                    .is_some_and(|blob| blob != &v1_blob),
+                _ => false,
+            })
+        });
+        assert_eq!(
+            h.read(|v| v
+                .loaded_diff_version()
+                .and_then(|ver| ver.new_blob_id.clone())),
+            Some(v1_blob.clone()),
+            "{control}: displayed diff must still be v1 while v2 load is in flight"
+        );
+
+        // Clicking the Viewed control now marks v1 (what the user actually saw), NOT unseen v2!
+        h.click(control);
+        h.wait("v2 list row shows unviewed + changed_since_viewed", |h| {
+            h.read(|v| match &v.body {
+                super::Body::Root(s) => s
+                    .files
+                    .iter()
+                    .find(|f| f.path == "tracked.rs")
+                    .is_some_and(|f| !f.viewed && f.changed_since_viewed),
+                _ => false,
+            })
+        });
+
+        // Wait for initial v1 highlights AND the held v2 diff reply before releasing.
+        let diff = h.read(|v| v.unified_diff_view()).unwrap();
+        h.wait("v1 highlights and held v2 diff ready", |h| {
+            diff.read_with(&h.visual, |d, _| d.has_highlights().1)
+                && h.read(|v| !v.held_diffs.is_empty())
+        });
+        view.update(&mut h.visual, |v, _| {
+            v.set_hold_diffs(false);
+            assert!(v.release_held_diffs() >= 1);
+        });
+        h.wait("v2 diff applied", |h| {
+            h.read(|v| {
+                v.loaded_diff_version()
+                    .and_then(|ver| ver.new_blob_id.as_ref())
+                    .is_some_and(|blob| blob != &v1_blob)
+            })
+        });
+        assert!(h.read(|v| match &v.body {
+            super::Body::Root(s) => match &s.diff_state {
+                super::ActiveDiff::Loaded(loaded) => !loaded.viewed && loaded.changed_since_viewed,
+                _ => false,
+            },
             _ => false,
+        }));
+
+        // Reverse race: `changes_diff` returns v3 BEFORE `state.files` refreshes from v2.
+        let v2_blob = h
+            .read(|v| {
+                v.loaded_diff_version()
+                    .and_then(|ver| ver.new_blob_id.clone())
+            })
+            .expect("v2 new_blob_id");
+        view.update(&mut h.visual, |v, _| v.set_hold_snapshots(true));
+        std::fs::write(&tracked, "fn v3() {}\n").unwrap();
+        view.update(&mut h.visual, |v, cx| {
+            v.reload_diff_for_test("tracked.rs", cx)
+        });
+
+        h.wait("diff updated to v3 while list still holds v2", |h| {
+            h.read(|v| {
+                v.loaded_diff_version()
+                    .and_then(|ver| ver.new_blob_id.as_ref())
+                    .is_some_and(|blob| blob != &v2_blob)
+            })
+        });
+        assert_eq!(
+            h.read(|v| match &v.body {
+                super::Body::Root(s) => s
+                    .files
+                    .iter()
+                    .find(|f| f.path == "tracked.rs")
+                    .and_then(|f| f.new_blob_id.clone()),
+                _ => None,
+            }),
+            Some(v2_blob),
+            "{control}: list still holds v2 before snapshot release"
+        );
+
+        // Clicking the Viewed control now marks v3 (the displayed diff), NOT v2 in `state.files`.
+        h.click(control);
+        // Wait for the watcher-driven snapshot to be held before releasing it.
+        h.wait("v3 snapshot held", |h| {
+            h.read(|v| !v.held_snapshots.is_empty())
+        });
+        view.update(&mut h.visual, |v, _| {
+            v.set_hold_snapshots(false);
+            assert!(v.release_held_snapshots() >= 1);
+        });
+        h.wait("v3 marked viewed in daemon and list", |h| {
+            h.read(|v| match &v.body {
+                super::Body::Root(s) => s
+                    .files
+                    .iter()
+                    .find(|f| f.path == "tracked.rs")
+                    .is_some_and(|f| f.viewed && !f.changed_since_viewed),
+                _ => false,
+            })
+        });
+    }
+}
+
+#[test]
+fn changes_narrow_sheet_hides_list_column_when_widened_tree_is_false_and_restores_on_close() {
+    let mut h = harness(None);
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait("src/lib.rs row", |h| h.has("CHANGES_ROW src/lib.rs"));
+    h.click("CHANGES_ROW src/lib.rs");
+    h.wait("src/lib.rs diff", |h| h.has("CHANGES_DIFF_CODE"));
+    assert!(h.has("CHANGES_TREE_GUTTER"));
+
+    // Simulate a 500 px narrow sheet where compute_panel_layout drops the list column (`tree: false`).
+    h.host
+        .update(&mut h.visual, |host, _, cx| {
+            host.tree_fits = false;
+            cx.notify();
         })
-    });
-    assert_eq!(
-        h.read(|v| v
-            .loaded_diff_version()
-            .and_then(|ver| ver.new_blob_id.clone())),
-        Some(v1_blob.clone()),
-        "displayed diff must still be v1 while v2 load is in flight"
+        .unwrap();
+    h.visual.simulate_resize(size(px(420.), px(800.)));
+    h.settle();
+    assert!(h.has("CHANGES_DIFF_COLUMN"));
+    assert!(
+        !h.has("CHANGES_TREE_GUTTER"),
+        "list column and resize gutter must hide when widened.tree is false"
+    );
+    assert!(
+        !h.has("CHANGES_ROW src/lib.rs"),
+        "list column must not shrink the narrow sheet diff"
     );
 
-    // Clicking the diff footer now marks v1 (what the user actually saw), NOT unseen v2!
-    h.click("CHANGES_DIFF_VIEWED");
-    h.wait("v2 list row shows unviewed + changed_since_viewed", |h| {
-        h.read(|v| match &v.body {
-            super::Body::Root(s) => s
-                .files
-                .iter()
-                .find(|f| f.path == "tracked.rs")
-                .is_some_and(|f| !f.viewed && f.changed_since_viewed),
-            _ => false,
-        })
+    // Clicking × closes the diff and restores the full-width Changes list rail.
+    h.click("CHANGES_CLOSE_DIFF");
+    h.wait("list restores on close", |h| {
+        h.has("CHANGES_ROW src/lib.rs")
     });
-
-    // Wait for initial v1 highlights, then release v2 diff and verify stale highlights clear first
-    // and v2 diff arrives unviewed with changed_since_viewed.
-    let diff = h.read(|v| v.unified_diff_view()).unwrap();
-    h.wait("v1 highlights ready", |h| {
-        diff.read_with(&h.visual, |d, _| d.has_highlights().1)
-    });
-    view.update(&mut h.visual, |v, _| {
-        v.set_hold_diffs(false);
-        assert!(v.release_held_diffs() >= 1);
-    });
-    h.wait("v2 diff applied", |h| {
-        h.read(|v| {
-            v.loaded_diff_version()
-                .and_then(|ver| ver.new_blob_id.as_ref())
-                .is_some_and(|blob| blob != &v1_blob)
-        })
-    });
-    assert!(h.read(|v| match &v.body {
-        super::Body::Root(s) => match &s.diff_state {
-            super::ActiveDiff::Loaded(loaded) => !loaded.viewed && loaded.changed_since_viewed,
-            _ => false,
-        },
-        _ => false,
-    }));
-
-    // Reverse race: `changes_diff` returns v3 BEFORE `state.files` refreshes from v2.
-    let v2_blob = h
-        .read(|v| {
-            v.loaded_diff_version()
-                .and_then(|ver| ver.new_blob_id.clone())
-        })
-        .expect("v2 new_blob_id");
-    view.update(&mut h.visual, |v, _| v.set_hold_snapshots(true));
-    std::fs::write(h.worktree.join("tracked.rs"), "fn v3() {}\n").unwrap();
-    view.update(&mut h.visual, |v, cx| {
-        v.reload_diff_for_test("tracked.rs", cx)
-    });
-
-    h.wait("diff updated to v3 while list still holds v2", |h| {
-        h.read(|v| {
-            v.loaded_diff_version()
-                .and_then(|ver| ver.new_blob_id.as_ref())
-                .is_some_and(|blob| blob != &v2_blob)
-        })
-    });
-    assert_eq!(
-        h.read(|v| match &v.body {
-            super::Body::Root(s) => s
-                .files
-                .iter()
-                .find(|f| f.path == "tracked.rs")
-                .and_then(|f| f.new_blob_id.clone()),
-            _ => None,
-        }),
-        Some(v2_blob),
-        "list still holds v2 before snapshot release"
-    );
-
-    // Clicking diff footer now marks v3 (the displayed diff), NOT v2 in `state.files`.
-    h.click("CHANGES_DIFF_VIEWED");
-    view.update(&mut h.visual, |v, _| {
-        v.set_hold_snapshots(false);
-        assert!(v.release_held_snapshots() >= 1);
-    });
-    h.wait("v3 marked viewed in daemon and list", |h| {
-        h.read(|v| match &v.body {
-            super::Body::Root(s) => s
-                .files
-                .iter()
-                .find(|f| f.path == "tracked.rs")
-                .is_some_and(|f| f.viewed && !f.changed_since_viewed),
-            _ => false,
-        })
-    });
+    assert!(!h.has("CHANGES_DIFF_COLUMN"));
 }
 
 #[test]
@@ -1038,8 +1190,9 @@ fn enter_while_diff_is_loading_focuses_diff_on_arrival_without_stealing_if_focus
     std::fs::write(h.worktree.join("two_hunks.rs"), lines.join("\n") + "\n").unwrap();
 
     h.show(Some(mission_ctx("on-worktree")));
-    h.wait("alpha.rs diff", |h| h.has("CHANGES_DIFF_CODE"));
+    h.wait("alpha.rs row", |h| h.has("CHANGES_ROW alpha.rs"));
     h.click("CHANGES_ROW alpha.rs");
+    h.wait("alpha.rs diff", |h| h.has("CHANGES_DIFF_CODE"));
 
     // A live watcher refresh can queue another reply while a diff is held.
     // 1. Hold diff loads, select `two_hunks.rs`, press Enter while Loading -> focus transfers on arrival.
@@ -1293,9 +1446,9 @@ fn removing_root_after_load_transitions_to_missing_when_shown_or_reopened() {
                     |update| runner_core::app_paths::same_checkout_path(&update.root, root),
                 )
         });
-        h.wait(label, |h| {
-            h.has("CHANGES_DIFF_CODE") && h.has("CHANGES_ROW src/lib.rs")
-        });
+        h.wait(label, |h| h.has("CHANGES_ROW src/lib.rs"));
+        h.click("CHANGES_ROW src/lib.rs");
+        h.wait(label, |h| h.has("CHANGES_DIFF_CODE"));
 
         // Write a sentinel file and wait for both the OS watcher change event and
         // a status snapshot listing `.watch-ready` (in either order, since polling
@@ -1347,9 +1500,9 @@ fn removing_root_after_load_transitions_to_missing_when_shown_or_reopened() {
             root.display()
         );
         h.settle();
-        h.wait(label, |h| {
-            h.has("CHANGES_DIFF_CODE") && h.has("CHANGES_ROW src/lib.rs")
-        });
+        h.wait(label, |h| h.has("CHANGES_ROW src/lib.rs"));
+        h.click("CHANGES_ROW src/lib.rs");
+        h.wait(label, |h| h.has("CHANGES_DIFF_CODE"));
         assert!(
             h.store
                 .read_with(&h.visual, |store, _| store.test_core.files.watched_roots())
@@ -1589,7 +1742,7 @@ fn split_diff_pairs_changed_blocks_strips_crlf_and_copies_active_side_only() {
     h.store.update(&mut h.visual, |store, cx| {
         store.update_settings(
             |settings| {
-                settings.file_viewer_width = 800.;
+                settings.changes_viewer_width = 800.;
                 true
             },
             false,
@@ -1598,6 +1751,8 @@ fn split_diff_pairs_changed_blocks_strips_crlf_and_copies_active_side_only() {
     });
     h.visual.simulate_resize(size(px(1100.), px(900.)));
     h.show(Some(mission_ctx("on-worktree")));
+    h.wait("pair.rs row", |h| h.has("CHANGES_ROW pair.rs"));
+    h.click("CHANGES_ROW pair.rs");
     h.wait("pair.rs diff", |h| h.has("CHANGES_DIFF_CODE"));
 
     h.click("CHANGES_DIFF_MODE_SPLIT");
@@ -1678,7 +1833,7 @@ fn split_360px_rule_auto_maximizes_narrow_panel_and_falls_back_to_unified_on_res
     h.store.update(&mut h.visual, |store, cx| {
         store.update_settings(
             |settings| {
-                settings.file_viewer_width = 520.;
+                settings.changes_viewer_width = 520.;
                 settings.changes_diff_mode = DiffViewMode::Unified;
                 true
             },
@@ -1687,6 +1842,8 @@ fn split_360px_rule_auto_maximizes_narrow_panel_and_falls_back_to_unified_on_res
         );
     });
     h.show(Some(mission_ctx("on-worktree")));
+    h.wait("src/lib.rs row", |h| h.has("CHANGES_ROW src/lib.rs"));
+    h.click("CHANGES_ROW src/lib.rs");
     h.wait("src/lib.rs diff", |h| h.has("CHANGES_DIFF_CODE"));
 
     let diff = h.read(|v| v.unified_diff_view()).unwrap();
@@ -1742,7 +1899,7 @@ fn split_360px_rule_auto_maximizes_narrow_panel_and_falls_back_to_unified_on_res
     h.store.update(&mut h.visual, |store, cx| {
         store.update_settings(
             |settings| {
-                settings.file_viewer_width = 760.;
+                settings.changes_viewer_width = 760.;
                 true
             },
             false,
@@ -1781,7 +1938,7 @@ fn narrow_diff_header_keeps_unified_split_switch_in_bounds_and_clickable_for_lon
     h.store.update(&mut h.visual, |store, cx| {
         store.update_settings(
             |settings| {
-                settings.file_viewer_width = 288.;
+                settings.changes_viewer_width = 288.;
                 settings.changes_diff_mode = DiffViewMode::Unified;
                 true
             },
@@ -2549,5 +2706,121 @@ fn single_checkout_is_plain_and_multiple_checkouts_share_files_root_and_handle_r
     assert!(
         !h.has("CHANGES_CHECKOUT_BUTTON"),
         "with feat/x removed, only one checkout remains so branch row returns to plain"
+    );
+}
+
+#[test]
+fn changes_diff_survives_eviction_past_kept_views_without_active_watches() {
+    let mut h = harness(Some(mission_ctx("on-worktree")));
+    h.wait("worktree changes list loaded", |h| {
+        h.has("CHANGES_ROW src/lib.rs")
+    });
+    h.click("CHANGES_ROW src/lib.rs");
+    h.wait("src/lib.rs diff opened", |h| h.has("CHANGES_DIFF_CODE"));
+
+    let origin = PanelSubject::Mission("on-worktree".into());
+    for i in 0..14 {
+        h.show(Some(chat_ctx(&format!("evict-other-{i}"), None, false)));
+    }
+    let evicted_and_widening = h
+        .host
+        .read_with(&h.visual, |host, cx| {
+            (
+                host.panel.changes_view(&origin).is_none(),
+                host.panel.changes_widening(&origin, cx),
+            )
+        })
+        .unwrap();
+    assert_eq!(
+        evicted_and_widening,
+        (true, Some(true)),
+        "evicted Changes subject must drop its live view while preserving open diff metadata"
+    );
+    h.wait("evicted Changes watches released", |h| {
+        h.store.read_with(&h.visual, |store, _| {
+            store.test_core.files.watched_roots().is_empty()
+        })
+    });
+
+    // Re-evict before root resolution finishes: pending saved state must survive rather than drop.
+    h.host
+        .update(&mut h.visual, |host, _, cx| {
+            host.context = Some(mission_ctx("on-worktree"));
+            cx.notify();
+        })
+        .unwrap();
+    h.visual.update(|window, _| window.refresh());
+    assert!(
+        h.host
+            .read_with(&h.visual, |host, _| host
+                .panel
+                .changes_view(&origin)
+                .is_some())
+            .unwrap(),
+        "revisiting evicted Changes subject must instantiate a fresh view before re-eviction"
+    );
+    for i in 14..28 {
+        h.show(Some(chat_ctx(&format!("evict-other-{i}"), None, false)));
+    }
+    assert_eq!(
+        h.host
+            .read_with(&h.visual, |host, cx| (
+                host.panel.changes_view(&origin).is_none(),
+                host.panel.changes_widening(&origin, cx),
+            ))
+            .unwrap(),
+        (true, Some(true)),
+        "pending saved Changes state must survive re-eviction before root resolution completes"
+    );
+    h.wait("re-evicted Changes watches released", |h| {
+        h.store.read_with(&h.visual, |store, _| {
+            store.test_core.files.watched_roots().is_empty()
+        })
+    });
+
+    // Revisit on the SAME checkout -> src/lib.rs diff restores automatically.
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait("evicted open diff restores automatically on revisit", |h| {
+        h.has("CHANGES_DIFF_CODE") && h.has("CHANGES_DIFF_HEADER")
+    });
+
+    // Evict again, modify the same relative path (`src/lib.rs`) in the main checkout, and switch
+    // `on-worktree`'s root to the main checkout: revisiting must NOT silently open `main`'s diff.
+    std::fs::write(h.repo_path.join("src/lib.rs"), "pub fn main_only() {}\n").unwrap();
+    for i in 28..42 {
+        h.show(Some(chat_ctx(&format!("evict-other-{i}"), None, false)));
+    }
+    h.wait("second eviction Changes watches released", |h| {
+        h.store.read_with(&h.visual, |store, _| {
+            store.test_core.files.watched_roots().is_empty()
+        })
+    });
+    let main_repo = h.repo_path.clone();
+    h.store.read_with(&h.visual, |store, _| {
+        store
+            .client
+            .files_set_root(
+                &runner_core::protocol::files::FilesSubject::Mission("on-worktree".into()),
+                Some(&main_repo),
+            )
+            .unwrap();
+    });
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait(
+        "switched checkout loads Changes list without restoring old-root diff",
+        |h| {
+            h.has("CHANGES_ROW src/lib.rs")
+                && h.read(|v| match &v.body {
+                    super::Body::Root(s) => {
+                        s.commits.is_some()
+                            && runner_core::app_paths::same_checkout_path(&s.root.path, &main_repo)
+                    }
+                    _ => false,
+                })
+        },
+    );
+    assert!(
+        !h.has("CHANGES_DIFF_CODE") && !h.has("CHANGES_DIFF_COLUMN"),
+        "saved Changes diff must not reopen under a different checkout root"
     );
 }

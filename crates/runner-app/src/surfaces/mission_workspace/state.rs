@@ -4,7 +4,7 @@ use std::rc::Rc;
 use futures::StreamExt as _;
 use gpui::prelude::*;
 use gpui::{px, App, Entity, WeakEntity, Window};
-use runner_app::ui::{CopyValueButton, IconButtonSize, PopoverMenu, TextField};
+use runner_app::ui::{CopyValueButton, PopoverMenu, TextField};
 use runner_core::protocol::model::{Event, EventKind, SessionStatus};
 use runner_core::protocol::window::Subject;
 
@@ -32,7 +32,7 @@ impl MissionWorkspace {
     ) -> Self {
         let settings = &app_store.read(cx).settings;
         let sidebar_collapsed = settings.sidebar_collapsed;
-        let rail_visibility = SidebarVisibilityTransition::new(settings.mission_rail_shown());
+        let rail_visibility = SidebarVisibilityTransition::new(settings.show_side_panel);
         let root_focus = cx.focus_handle();
         let drawer_focus = cx.focus_handle();
         let drawer_focus_subscriptions = vec![
@@ -67,16 +67,21 @@ impl MissionWorkspace {
                 }),
                 menu_cx,
             )
-            .min_width(px(160.))
-            .trigger_size(IconButtonSize::Md)
-            .trigger_icon("more-horizontal.svg")
-            .trigger_tooltip(crate::i18n::message("ui.mission_actions"))
+            .min_width(px(336.))
+            .single_line_labels()
         });
         let mission_id_copy = cx.new(|copy_cx| {
             CopyValueButton::new(
                 copy_cx.focus_handle(),
                 None,
                 crate::i18n::message("ui.copy_mission_id"),
+            )
+        });
+        let mission_worktree_copy = cx.new(|copy_cx| {
+            CopyValueButton::new(
+                copy_cx.focus_handle(),
+                None,
+                crate::i18n::message("info.copy_worktree_path"),
             )
         });
         let feed_scrollbar_metrics = Rc::new(Cell::new(ScrollbarMetrics::default()));
@@ -285,11 +290,17 @@ impl MissionWorkspace {
             secondary: false,
             duplicate_dismissed: false,
             primary_label: None,
-            rail_surfaces: crate::surfaces::side_panel::PanelSurfaces::new(Default::default(), cx),
+            rail_surfaces: crate::surfaces::side_panel::PanelSurfaces::new(Default::default()),
             rail_open: None,
             rail_maximized: false,
             rail_focus: cx.focus_handle(),
-            rail_switched: false,
+            rail_switched: true,
+            rail_resizing: false,
+            rail_width_anim: SidebarVisibilityTransition::at(
+                app_store.read(cx).settings.mission_rail_width,
+            ),
+            rail_width_mode: None,
+            rail_sheet_anim: SidebarVisibilityTransition::new(false),
             rails_by_mission: HashMap::new(),
             rail_files: Default::default(),
             action_menu,
@@ -297,6 +308,7 @@ impl MissionWorkspace {
             menu_pinned: false,
             rename_modal: None,
             mission_id_copy,
+            mission_worktree_copy,
             session_key_copies: HashMap::new(),
             mark_viewed_in_flight: false,
             pending_mark_viewed_session: None,
@@ -317,10 +329,9 @@ impl MissionWorkspace {
                 self.rails_by_mission.insert(
                     previous.clone(),
                     crate::surfaces::side_panel::SavedPanel {
-                        surfaces: self.rail_surfaces.open.clone(),
+                        selection: self.rail_surfaces.selection,
                         open: self.rail_open,
                         maximized: self.rail_maximized,
-                        widened_tree: self.rail_surfaces.widened_tree(),
                     },
                 );
             }
@@ -328,13 +339,13 @@ impl MissionWorkspace {
                 .rails_by_mission
                 .remove(&mission_id)
                 .unwrap_or_default();
-            self.rail_surfaces
-                .restore(saved.surfaces, saved.widened_tree);
+            self.rail_surfaces.restore(saved.selection);
             self.rail_open = saved.open;
             self.rail_maximized = saved.maximized;
             self.rail_switched = true;
         } else {
             self.rail_surfaces.reset(Default::default());
+            self.rail_open = None;
             self.rail_maximized = false;
         }
         self.mission_id = Some(mission_id);
@@ -863,12 +874,10 @@ impl MissionWorkspace {
         if revisions.settings != previous.settings || revisions.locale != previous.locale {
             self.presentation.refresh_settings(&self.app_store, cx);
             let settings = self.settings(cx).clone();
-            self.rail_surfaces.open.close_off(&settings, true);
             if !settings.show_side_panel {
                 self.rail_maximized = false;
             }
             for panel in self.rails_by_mission.values_mut() {
-                panel.surfaces.close_off(&settings, true);
                 if !settings.show_side_panel {
                     panel.maximized = false;
                 }

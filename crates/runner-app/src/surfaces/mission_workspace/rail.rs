@@ -18,38 +18,43 @@ use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, PanelSurface
 use crate::*;
 
 impl MissionWorkspace {
-    pub(super) fn rail_is_open(&self, cx: &App) -> bool {
-        if self.presentation.is_remote() {
-            self.settings(cx).mission_rail_open
+    fn rail_available_width(&self) -> f32 {
+        let measured = self.rail_files.measured_width();
+        if measured > 0. {
+            (measured - 6.).max(0.)
         } else {
-            self.rail_open
-                .unwrap_or(self.settings(cx).mission_rail_open)
+            0.
         }
+    }
+
+    pub(super) fn rail_is_open(&self, cx: &App) -> bool {
+        side_panel::resolved_open(
+            self.rail_open,
+            self.rail_available_width(),
+            self.settings(cx).mission_rail_width,
+            1,
+        )
     }
 
     pub(super) fn set_rail_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        let toggled = self.rail_is_open(cx) != open;
-        if !self.presentation.is_remote() {
-            self.rail_open = Some(open);
-        }
+        self.rail_open = Some(open);
         if !open {
             self.rail_maximized = false;
         }
-        // The store observer also refreshes the mission's terminal size hint.
-        self.update_app_settings(cx, true, |settings| {
-            let changed = settings.mission_rail_open != open;
-            settings.mission_rail_open = open;
-            changed || toggled
-        });
+        cx.notify();
     }
 
     pub(crate) fn rail_contains_focus(&self, window: &Window, cx: &App) -> bool {
-        self.rail_focus.contains_focused(window, cx) || self.rail_surfaces.menu_focused(window)
+        self.rail_focus.contains_focused(window, cx)
     }
 
     pub(crate) fn focus_rail_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let settings = self.settings(cx);
-        let shown = side_panel::shown(PanelSurface::Mission, settings, &self.rail_surfaces.open);
+        let shown = side_panel::shown(
+            PanelSurface::Mission,
+            settings,
+            &self.rail_surfaces.selection,
+        );
         let subject = self
             .mission_view()
             .map(|mission| PanelSubject::Mission(mission.id));
@@ -114,8 +119,8 @@ impl MissionWorkspace {
         }
     }
 
-    /// The rail's width, widened once Files or Changes has widened it.
-    pub(super) fn rail_layout(&self, cx: &App) -> (f32, Option<side_panel::Widened>) {
+    /// The rail's width, widened state, and Docked vs Sheet presentation.
+    pub(super) fn rail_layout(&self, cx: &App) -> side_panel::PanelLayout {
         let settings = self.settings(cx);
         let subject = self
             .mission_view()
@@ -123,10 +128,11 @@ impl MissionWorkspace {
         self.rail_files.panel_layout(
             PanelSurface::Mission,
             settings,
-            &self.rail_surfaces,
+            &self.rail_surfaces.selection,
             subject.as_ref(),
             settings.mission_rail_width,
             6.,
+            1,
             self.rail_maximized && !self.presentation.is_remote(),
             cx,
         )
@@ -142,6 +148,7 @@ impl MissionWorkspace {
             cwd: mission.cwd,
             project: mission.project_id,
             remote: self.presentation.is_remote(),
+            following: None,
         }
     }
 
@@ -154,13 +161,8 @@ impl MissionWorkspace {
                 this.show_link_preview(cx);
             } else if let Some(id) = mission.as_ref() {
                 let panel = this.rails_by_mission.entry(id.clone()).or_default();
-                panel.surfaces.open(PanelViewId::Files);
+                panel.selection.select(PanelViewId::Files);
                 panel.open = Some(true);
-                this.update_app_settings(cx, true, |settings| {
-                    let changed = !settings.mission_rail_open;
-                    settings.mission_rail_open = true;
-                    changed
-                });
                 cx.notify();
             }
         })
@@ -190,21 +192,35 @@ impl MissionWorkspace {
 
     /// A link opened in the preview: the rail opens Files, or switches to it.
     fn show_link_preview(&mut self, cx: &mut Context<Self>) {
-        self.rail_surfaces.open.open(PanelViewId::Files);
+        self.rail_surfaces.selection.select(PanelViewId::Files);
         self.set_rail_open(true, cx);
         cx.notify();
     }
 
     pub(super) fn render_mission_rail(
         &self,
-        (width, widened): (f32, Option<side_panel::Widened>),
+        rail_layout: side_panel::PanelLayout,
+        animated_width: f32,
         visibility: f32,
         show_rail: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let width = if rail_layout.is_sheet() {
+            rail_layout.width
+        } else {
+            animated_width
+        };
+        let widened = rail_layout.widened;
+        let sheet = rail_layout.is_sheet();
         let maximized = show_rail && self.rail_maximized && !self.presentation.is_remote();
-        let visible_width = width * visibility;
+        let visible_width = if !show_rail {
+            0.
+        } else if sheet {
+            width
+        } else {
+            width * visibility
+        };
         if !show_rail {
             self.rail_files.hide(cx);
             return div()
@@ -222,17 +238,19 @@ impl MissionWorkspace {
         let maximize_root = cx.entity();
         let req_max_root = cx.entity();
         let settings = self.settings(cx).clone();
-        let shown = side_panel::shown(PanelSurface::Mission, &settings, &self.rail_surfaces.open);
-        let handler: side_panel::SurfaceHandler = Rc::new(move |action, window, cx| {
+        let shown = side_panel::shown(
+            PanelSurface::Mission,
+            &settings,
+            &self.rail_surfaces.selection,
+        );
+        let handler: side_panel::SurfaceHandler = Rc::new(move |action, _window, cx| {
             surface_root.update(cx, |this, cx| {
-                let settings = this.settings(cx).clone();
-                this.rail_surfaces
-                    .apply(PanelSurface::Mission, &settings, action, window, cx);
+                this.rail_surfaces.apply(action);
                 cx.notify();
             })
         });
-        let maximize_control =
-            (!self.presentation.is_remote()).then(|| side_panel::MaximizeControl {
+        let maximize_control = (!self.presentation.is_remote() && (widened.is_some() || maximized))
+            .then(|| side_panel::MaximizeControl {
                 maximized,
                 on_toggle: Rc::new(move |window, cx| {
                     maximize_root.update(cx, |this, cx| {
@@ -240,15 +258,27 @@ impl MissionWorkspace {
                     });
                 }),
             });
-        let on_request_maximize: side_panel::PanelCallback = Rc::new(move |window, cx| {
-            req_max_root.update(cx, |this, cx| {
-                this.set_rail_maximized(true, window, cx);
+        let on_request_maximize: side_panel::PanelMaximizeCallback =
+            Rc::new(move |maximize, window, cx| {
+                req_max_root.update(cx, |this, cx| {
+                    this.set_rail_maximized(maximize, window, cx);
+                });
             });
-        });
+        let rail_context = self
+            .mission_view()
+            .map(|mission| self.rail_context(mission));
+        let dirty_changes = !self.presentation.is_remote()
+            && self.rail_files.dirty_changes_for(
+                rail_context.as_ref(),
+                shown,
+                settings.changes_view,
+                Some(cx.entity_id()),
+                cx,
+            );
         let header = self.render_titlebar_drag_area(
             "mission-rail-titlebar-drag",
             div()
-                .h(rems(WORKSPACE_HEADER_HEIGHT / 16.))
+                .h(rems(40. / 16.))
                 .flex_none()
                 .pl_2()
                 .pr_2()
@@ -272,11 +302,11 @@ impl MissionWorkspace {
                         crate::theme_snapshot::record_fill("MISSION_RAIL_HEADER", element);
                     element
                 })
-                .child(side_panel::header_tabs(
+                .child(side_panel::activity_bar(
                     PanelSurface::Mission,
                     &settings,
-                    &self.rail_surfaces.open,
-                    (&self.rail_surfaces, window),
+                    &self.rail_surfaces.selection,
+                    dirty_changes,
                     handler,
                     maximize_control,
                     IconButton::new("collapse-mission-rail", "panel-right-open.svg")
@@ -314,12 +344,11 @@ impl MissionWorkspace {
                 ))
             }
             _ => {
-                self.rail_files.hide(cx);
+                self.rail_files.hide_tools(cx);
                 None
             }
         };
         let body = match shown {
-            Some(PanelViewId::Info) => self.render_mission_meta_panel(cx),
             Some(PanelViewId::Files | PanelViewId::Changes) => {
                 surface_view.unwrap_or_else(|| div().into_any_element())
             }
@@ -912,117 +941,18 @@ impl MissionWorkspace {
         .detach();
     }
 
-    fn render_mission_meta_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_mission_info_popover_card(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(mission) = self.mission_view() else {
             return div().into_any_element();
         };
-        let root = cx.entity();
-        let cwd_root = root;
+        let cwd_root = cx.entity();
         let goal = self.goal();
         let permission_mode = self.permission_mode();
-        let mut panel = div()
-            .id("mission-meta-scroll")
-            .debug_selector(|| "MISSION_META_SCROLL".into())
-            .flex_1()
-            .min_h(px(0.))
-            .overflow_y_scroll()
-            .px_5()
-            .pb_5()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .child(rail_section_label(crate::i18n::text("ui.mission_detail")))
-            .child(meta_section(
-                crate::i18n::text("ui.mission_id"),
-                div()
-                    .flex()
-                    .items_start()
-                    .gap_1()
-                    .child(
-                        div()
-                            .debug_selector(|| "MISSION_META_ID".into())
-                            .min_w(px(0.))
-                            .flex_1()
-                            .font_family(theme::UI_MONOSPACE_FONT)
-                            .text_size(theme::text_meta())
-                            .text_color(theme::muted())
-                            .child(mission.id.clone()),
-                    )
-                    .child(self.mission_id_copy.clone()),
-            ))
-            .child(meta_section(
-                crate::i18n::text("ui.goal"),
-                match goal {
-                    Some(goal) if !goal.is_empty() => div()
-                        .text_size(theme::text_ui())
-                        .line_height(rems(18. / 16.))
-                        .text_color(theme::text())
-                        .child(goal)
-                        .into_any_element(),
-                    Some(_) => div()
-                        .text_size(theme::text_ui())
-                        .italic()
-                        .text_color(theme::faint())
-                        .child(crate::i18n::text("ui.no_goal_set"))
-                        .into_any_element(),
-                    None => div()
-                        .text_size(theme::text_ui())
-                        .italic()
-                        .text_color(theme::faint())
-                        .child(crate::i18n::text("ui.loading"))
-                        .into_any_element(),
-                },
-            ));
-        if !self.presentation.is_remote() {
-            panel = panel.child(meta_section(
-                crate::i18n::text("ui.working_dir"),
-                mission.cwd.clone().map_or_else(
-                    || {
-                        div()
-                            .text_size(theme::text_ui())
-                            .italic()
-                            .text_color(theme::faint())
-                            .child(crate::i18n::text("ui.no_cwd_set"))
-                            .into_any_element()
-                    },
-                    |cwd| {
-                        let reveal = cwd.clone();
-                        #[cfg(target_os = "macos")]
-                        let reveal_label = crate::i18n::text("ui.reveal_in_finder");
-                        #[cfg(target_os = "linux")]
-                        let reveal_label = crate::i18n::text("ui.open_working_directory");
-                        #[cfg(windows)]
-                        let reveal_label = crate::i18n::text("ui.reveal_in_explorer");
-                        Tooltip::new(
-                            "reveal-mission-cwd-tooltip",
-                            reveal_label,
-                            div()
-                                .id("reveal-mission-cwd")
-                                .w_full()
-                                .rounded_md()
-                                .border_1()
-                                .border_color(theme::border())
-                                .bg(theme::panel())
-                                .px_2()
-                                .py_2()
-                                .cursor_pointer()
-                                .font_family(theme::UI_MONOSPACE_FONT)
-                                .text_size(theme::text_meta())
-                                .text_color(theme::text())
-                                .hover(|button| button.border_color(theme::border_strong()))
-                                .on_click(move |_, _, cx| {
-                                    let reveal = reveal.clone();
-                                    cwd_root
-                                        .update(cx, |this, cx| this.reveal_mission_cwd(reveal, cx));
-                                })
-                                .child(cwd),
-                        )
-                        .expand()
-                        .into_any_element()
-                    },
-                ),
-            ));
-        }
+        let shortcut_hint = crate::keymap::effective_binding(
+            "toggle-session-info",
+            &self.settings(cx).keymap_overrides,
+        )
+        .map(|combo| crate::keymap::format_combo(&combo));
         let branch_info =
             if let crate::surfaces::front_page::FrontPageTarget::Remote { computer, .. } =
                 &self.client.target
@@ -1044,9 +974,114 @@ impl MissionWorkspace {
                     cx,
                 )
             };
-        if let Some(branch_info) = branch_info {
-            panel = panel.child(meta_section(
-                crate::i18n::text("ui.info_branch"),
+        let location = crate::surfaces::panes::resolve_info_location_rows(
+            mission.cwd.as_deref(),
+            branch_info.as_ref(),
+        );
+        self.mission_worktree_copy.update(cx, |btn, btn_cx| {
+            btn.set_value(
+                location.worktree.as_ref().and_then(|wt| wt.path.clone()),
+                btn_cx,
+            );
+        });
+        let info_row = |label: &'static str, value: AnyElement| {
+            div()
+                .flex()
+                .items_start()
+                .gap_3()
+                .text_size(theme::text_meta())
+                .child(
+                    div()
+                        .w(rems(72. / 16.))
+                        .flex_none()
+                        .text_color(theme::faint())
+                        .child(label),
+                )
+                .child(div().flex_1().min_w(px(0.)).child(value))
+        };
+
+        let mut panel = div()
+            .id("mission-meta-scroll")
+            .debug_selector(|| "MISSION_META_SCROLL".into())
+            .p(rems(12. / 16.))
+            .flex()
+            .flex_col()
+            .gap(rems(8. / 16.))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(rail_section_label(crate::i18n::text("ui.mission_detail")))
+                    .children(shortcut_hint.map(|hint| {
+                        div()
+                            .flex_none()
+                            .font_family(theme::UI_MONOSPACE_FONT)
+                            .text_size(theme::text_micro())
+                            .text_color(theme::faint())
+                            .child(hint)
+                    })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(rems(3. / 16.))
+                    .child(
+                        div()
+                            .text_size(theme::text_caption())
+                            .text_color(theme::faint())
+                            .child(crate::i18n::text("ui.goal")),
+                    )
+                    .child(match goal {
+                        Some(goal) if !goal.is_empty() => div()
+                            .id("mission-info-goal-scroll")
+                            .max_h(rems(120. / 16.))
+                            .overflow_y_scroll()
+                            .text_size(theme::text_meta())
+                            .line_height(rems(17. / 16.))
+                            .text_color(theme::text())
+                            .child(goal)
+                            .into_any_element(),
+                        Some(_) => div()
+                            .text_size(theme::text_meta())
+                            .italic()
+                            .text_color(theme::faint())
+                            .child(crate::i18n::text("ui.no_goal_set"))
+                            .into_any_element(),
+                        None => div()
+                            .text_size(theme::text_meta())
+                            .italic()
+                            .text_color(theme::faint())
+                            .child(crate::i18n::text("ui.loading"))
+                            .into_any_element(),
+                    }),
+            )
+            .child(div().h(px(1.)).w_full().bg(theme::border()));
+
+        if let Some(worktree) = location.worktree {
+            let full_path = worktree.path.clone();
+            let branch_text = div()
+                .min_w(px(0.))
+                .flex_1()
+                .truncate()
+                .font_family(theme::UI_MONOSPACE_FONT)
+                .text_color(if worktree.missing {
+                    theme::warning()
+                } else {
+                    theme::text()
+                })
+                .child(worktree.branch);
+            let branch_label = if let Some(path) = full_path {
+                Tooltip::new("mission-info-worktree-path", path, branch_text)
+                    .expand()
+                    .into_any_element()
+            } else {
+                branch_text.into_any_element()
+            };
+            panel = panel.child(info_row(
+                crate::i18n::text("info.worktree"),
                 div()
                     .when(cfg!(test), |el| {
                         el.debug_selector(|| "MISSION_META_BRANCH".into())
@@ -1056,61 +1091,113 @@ impl MissionWorkspace {
                     .gap(rems(2. / 16.))
                     .child(
                         div()
+                            .w_full()
                             .min_w(px(0.))
-                            .truncate()
-                            .font_family(theme::UI_MONOSPACE_FONT)
-                            .text_size(theme::text_meta())
-                            .text_color(if branch_info.missing {
-                                theme::warning()
-                            } else {
-                                theme::text()
-                            })
-                            .child(branch_info.branch),
+                            .flex()
+                            .items_center()
+                            .gap(rems(6. / 16.))
+                            .child(branch_label)
+                            .child(self.mission_worktree_copy.clone()),
                     )
                     .child(crate::surfaces::panes::info_worktree_marker(
-                        branch_info.marker,
-                    )),
+                        worktree.marker,
+                    ))
+                    .into_any_element(),
             ));
         }
+
+        if let Some(cwd) = location.cwd {
+            let reveal_path = mission.cwd.clone().unwrap_or_else(|| cwd.clone());
+            let cwd_el = if !self.presentation.is_remote() {
+                #[cfg(target_os = "macos")]
+                let reveal_label = crate::i18n::text("ui.reveal_in_finder");
+                #[cfg(target_os = "linux")]
+                let reveal_label = crate::i18n::text("ui.open_working_directory");
+                #[cfg(windows)]
+                let reveal_label = crate::i18n::text("ui.reveal_in_explorer");
+                Tooltip::new(
+                    "reveal-mission-cwd-tooltip",
+                    reveal_label,
+                    div()
+                        .id("reveal-mission-cwd")
+                        .min_w(px(0.))
+                        .truncate()
+                        .cursor_pointer()
+                        .font_family(theme::UI_MONOSPACE_FONT)
+                        .text_color(theme::muted())
+                        .hover(|el| el.text_color(theme::text()).underline())
+                        .on_click(move |_, _, cx| {
+                            let reveal = reveal_path.clone();
+                            cwd_root.update(cx, |this, cx| this.reveal_mission_cwd(reveal, cx));
+                        })
+                        .child(cwd),
+                )
+                .expand()
+                .into_any_element()
+            } else {
+                div()
+                    .min_w(px(0.))
+                    .truncate()
+                    .font_family(theme::UI_MONOSPACE_FONT)
+                    .text_color(theme::muted())
+                    .child(cwd)
+                    .into_any_element()
+            };
+            panel = panel.child(info_row("cwd", cwd_el));
+        }
+
         panel
             .children(permission_mode.map(|mode| {
-                meta_section(
+                info_row(
                     crate::i18n::text("ui.permissions"),
                     div()
                         .id("mission-permission-mode")
-                        .text_size(theme::text_ui())
                         .text_color(theme::text())
-                        .child(mode),
+                        .child(mode)
+                        .into_any_element(),
                 )
             }))
             .children(mission.started_at.map(|started_at| {
-                meta_section(
+                info_row(
                     crate::i18n::text("ui.started"),
                     div()
                         .flex()
                         .items_center()
-                        .gap_2()
-                        .text_size(theme::text_ui())
+                        .gap(rems(5. / 16.))
+                        .text_color(theme::muted())
                         .child(
                             svg()
                                 .flex_none()
                                 .path("clock.svg")
-                                .size(rems(12. / 16.))
-                                .text_color(theme::muted()),
+                                .size(rems(11. / 16.))
+                                .text_color(theme::faint()),
                         )
                         .child(runner_app::text_util::format_relative_time(
                             started_at,
                             Utc::now(),
-                        )),
+                        ))
+                        .into_any_element(),
                 )
             }))
-            .child(
+            .child(info_row(
+                "mission_id",
                 div()
-                    .debug_selector(|| "MISSION_META_END".into())
-                    .h(rems(1. / 16.))
-                    .w_full()
-                    .bg(theme::border()),
-            )
+                    .flex()
+                    .items_center()
+                    .gap(rems(6. / 16.))
+                    .child(
+                        div()
+                            .debug_selector(|| "MISSION_META_ID".into())
+                            .min_w(px(0.))
+                            .flex_1()
+                            .truncate()
+                            .font_family(theme::UI_MONOSPACE_FONT)
+                            .text_color(theme::muted())
+                            .child(mission.id.clone()),
+                    )
+                    .child(self.mission_id_copy.clone())
+                    .into_any_element(),
+            ))
             .into_any_element()
     }
 
@@ -1259,22 +1346,6 @@ fn rail_section_label(label: &'static str) -> AnyElement {
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme::faint())
         .child(tracked_uppercase(label))
-        .into_any_element()
-}
-
-fn meta_section(label: &'static str, body: impl IntoElement) -> AnyElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .text_size(theme::text_caption())
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme::faint())
-                .child(tracked_uppercase(label)),
-        )
-        .child(body)
         .into_any_element()
 }
 

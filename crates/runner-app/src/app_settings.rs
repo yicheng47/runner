@@ -27,13 +27,14 @@ pub const TERMINAL_SCROLLBACK_PRESETS: [usize; 5] = [1_000, 5_000, 10_000, 25_00
 pub const TERMINAL_SCROLLBACK_DEFAULT: usize = 10_000;
 pub const CHAT_PANEL_MIN: f32 = 200.;
 pub const CHAT_PANEL_MAX: f32 = 480.;
-pub const CHAT_PANEL_DEFAULT: f32 = 320.;
+pub const CHAT_PANEL_DEFAULT: f32 = 300.;
 pub const MISSION_RAIL_MIN: f32 = 200.;
 pub const MISSION_RAIL_MAX: f32 = 480.;
-pub const MISSION_RAIL_DEFAULT: f32 = 288.;
+pub const MISSION_RAIL_DEFAULT: f32 = 300.;
 pub const FILE_VIEWER_MIN: f32 = 200.;
 pub const FILE_VIEWER_MAX: f32 = 1200.;
 pub const FILE_VIEWER_DEFAULT: f32 = 440.;
+pub const CHANGES_VIEWER_DEFAULT: f32 = 500.;
 pub const FILE_TREE_MIN: f32 = 160.;
 pub const FILE_TREE_MAX: f32 = 480.;
 pub const FILE_TREE_DEFAULT: f32 = 240.;
@@ -382,19 +383,18 @@ pub struct AppSettings {
     /// Collapsed linked groups (#748), by the node id of the tab heading them.
     pub sidebar_collapsed_link_groups: BTreeSet<String>,
     pub remote_sidebars: BTreeMap<String, RemoteSidebarSettings>,
-    pub chat_panel_open: bool,
     pub chat_panel_width: f32,
-    pub mission_rail_open: bool,
     pub mission_rail_width: f32,
     /// The file's width in a side panel widened by an open file, beside the tree.
     pub file_viewer_width: f32,
+    /// The diff viewer's width in a side panel widened by an open Changes diff.
+    pub changes_viewer_width: f32,
     /// The tree's width on the outer edge of a panel widened by an open file.
     pub file_tree_width: f32,
     /// Settings → Side panel → Panel: off hides every tab's panel and its
-    /// toggle, keeping the open state and the view switches below.
+    /// toggle, keeping the view switches below.
     pub show_side_panel: bool,
-    /// Whether the `+` menu offers Info, Files and Changes.
-    pub info_view: bool,
+    /// Whether the activity bar offers Files and Changes.
     pub files_view: bool,
     pub changes_view: bool,
     pub changes_tree_view: bool,
@@ -462,14 +462,12 @@ impl Default for AppSettings {
             sidebar_collapsed_active_groups: BTreeSet::new(),
             sidebar_collapsed_link_groups: BTreeSet::new(),
             remote_sidebars: BTreeMap::new(),
-            chat_panel_open: true,
             chat_panel_width: CHAT_PANEL_DEFAULT,
-            mission_rail_open: true,
             mission_rail_width: MISSION_RAIL_DEFAULT,
             file_viewer_width: FILE_VIEWER_DEFAULT,
+            changes_viewer_width: CHANGES_VIEWER_DEFAULT,
             file_tree_width: FILE_TREE_DEFAULT,
             show_side_panel: true,
-            info_view: true,
             files_view: true,
             changes_view: true,
             changes_tree_view: false,
@@ -548,6 +546,7 @@ impl AppSettings {
         self.chat_panel_width = normalize_chat_panel_width(self.chat_panel_width);
         self.mission_rail_width = normalize_mission_rail_width(self.mission_rail_width);
         self.file_viewer_width = normalize_file_viewer_width(self.file_viewer_width);
+        self.changes_viewer_width = normalize_changes_viewer_width(self.changes_viewer_width);
         self.file_tree_width = normalize_file_tree_width(self.file_tree_width);
         self.files_font_family = self
             .files_font_family
@@ -577,16 +576,6 @@ impl AppSettings {
         self.disabled_agents = normalize_agent_set(std::mem::take(&mut self.disabled_agents));
         self.enabled_agents = normalize_agent_set(std::mem::take(&mut self.enabled_agents));
         keymap::normalize_overrides(&mut self.keymap_overrides);
-    }
-
-    /// Whether a chat's or a terminal tab's panel is open: shown at all and
-    /// not collapsed.
-    pub fn chat_panel_shown(&self) -> bool {
-        self.show_side_panel && self.chat_panel_open
-    }
-
-    pub fn mission_rail_shown(&self) -> bool {
-        self.show_side_panel && self.mission_rail_open
     }
 
     /// The file viewer's code font: its own pick, or the terminal's; a font
@@ -812,6 +801,14 @@ pub fn clamp_file_viewer_width(value: f32) -> f32 {
     value.clamp(FILE_VIEWER_MIN, FILE_VIEWER_MAX)
 }
 
+pub fn normalize_changes_viewer_width(value: f32) -> f32 {
+    if value.is_finite() && (FILE_VIEWER_MIN..=FILE_VIEWER_MAX).contains(&value) {
+        value
+    } else {
+        CHANGES_VIEWER_DEFAULT
+    }
+}
+
 pub fn normalize_file_tree_width(value: f32) -> f32 {
     if value.is_finite() && (FILE_TREE_MIN..=FILE_TREE_MAX).contains(&value) {
         value
@@ -991,7 +988,7 @@ mod tests {
     fn side_panel_settings_default_to_todays_behaviour_and_round_trip() {
         use crate::file_icons::IconSet;
         let old: AppSettings = serde_json::from_str(r#"{"appZoom":1.0}"#).unwrap();
-        assert!(old.show_side_panel && old.info_view && old.files_view);
+        assert!(old.show_side_panel && old.files_view && old.changes_view);
         assert_eq!(old.file_icons, IconSet::Catppuccin);
         assert_eq!(old.files_font_family, None);
         assert_eq!(old.files_font_size, None);
@@ -1003,8 +1000,8 @@ mod tests {
         let path = temp.path().join("ui-settings.json");
         let settings = AppSettings {
             show_side_panel: false,
-            info_view: false,
             files_view: false,
+            changes_view: false,
             file_icons: IconSet::Minimal,
             files_font_family: Some(TerminalFontFamily::new("Berkeley Mono")),
             files_font_size: Some(17),
@@ -1014,15 +1011,21 @@ mod tests {
         settings.save(&path).unwrap();
         let json: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(json["showSidePanel"], false);
+        assert_eq!(json["filesView"], false);
+        assert_eq!(json["changesView"], false);
+        assert!(json.get("infoView").is_none());
+        assert!(json.get("chatPanelOpen").is_none());
+        assert!(json.get("missionRailOpen").is_none());
         assert_eq!(json["fileIcons"], "minimal");
         assert_eq!(json["filesFontFamily"], "Berkeley Mono");
         assert_eq!(json["filesFontSize"], 17);
         assert_eq!(json["markdownOpenAs"], "source");
         assert_eq!(AppSettings::load(&path).unwrap(), settings);
-        // The removed Open with a single click, A new chat's panel opens and
-        // Syntax highlighting are ignored on load.
+        // Legacy side-panel keys (`infoView`, `chatPanelOpen`, `missionRailOpen`,
+        // `filesSingleClick`, `newChatPanel`, `filesSyntaxHighlighting`) are
+        // ignored cleanly on load.
         let saved: AppSettings = serde_json::from_str(
-            r#"{"appZoom":1.0,"filesSingleClick":false,"newChatPanel":"info","filesSyntaxHighlighting":false}"#,
+            r#"{"appZoom":1.0,"infoView":false,"chatPanelOpen":false,"missionRailOpen":false,"filesSingleClick":false,"newChatPanel":"info","filesSyntaxHighlighting":false}"#,
         )
         .unwrap();
         assert_eq!(saved, AppSettings::default());
@@ -1167,11 +1170,14 @@ mod tests {
     #[test]
     fn terminal_and_chat_panel_settings_follow_the_shipped_domains() {
         assert_eq!(normalize_chat_panel_width(376.), 376.);
-        assert_eq!(normalize_chat_panel_width(f32::NAN), 320.);
+        assert_eq!(normalize_chat_panel_width(f32::NAN), CHAT_PANEL_DEFAULT);
         assert_eq!(clamp_chat_panel_width(999.), 480.);
         assert_eq!(normalize_file_viewer_width(f32::NAN), 440.);
         assert_eq!(normalize_file_viewer_width(9999.), 440.);
         assert_eq!(clamp_file_viewer_width(9999.), 1200.);
+        assert_eq!(normalize_changes_viewer_width(f32::NAN), 500.);
+        assert_eq!(normalize_changes_viewer_width(9999.), 500.);
+        assert_eq!(normalize_changes_viewer_width(640.), 640.);
         assert_eq!(normalize_file_tree_width(320.), 320.);
         assert_eq!(normalize_file_tree_width(f32::NAN), 240.);
         assert_eq!(normalize_file_tree_width(100.), 240.);
@@ -1181,21 +1187,21 @@ mod tests {
 
         let serialized = serde_json::to_value(AppSettings {
             terminal_cursor_style: TerminalCursorStyle::Bar,
-            chat_panel_open: false,
             chat_panel_width: 440.,
+            changes_viewer_width: 620.,
             ..AppSettings::default()
         })
         .unwrap();
         assert_eq!(serialized["terminalCursorStyle"], "bar");
         assert!(serialized.get("terminalScrollback").is_none());
-        assert_eq!(serialized["chatPanelOpen"], false);
+        assert!(serialized.get("chatPanelOpen").is_none());
         assert_eq!(serialized["chatPanelWidth"], 440.);
+        assert_eq!(serialized["changesViewerWidth"], 620.);
     }
 
     #[test]
     fn mission_workspace_preferences_round_trip_and_normalize() {
         let mut settings = AppSettings {
-            mission_rail_open: false,
             mission_rail_width: 412.,
             ..AppSettings::default()
         };
@@ -1203,7 +1209,7 @@ mod tests {
             .last_mission_terminal_ids
             .insert("mission".into(), "session".into());
         let value = serde_json::to_value(&settings).unwrap();
-        assert_eq!(value["missionRailOpen"], false);
+        assert!(value.get("missionRailOpen").is_none());
         assert_eq!(value["missionRailWidth"], 412.);
         assert_eq!(value["lastMissionTerminalIds"]["mission"], "session");
 
