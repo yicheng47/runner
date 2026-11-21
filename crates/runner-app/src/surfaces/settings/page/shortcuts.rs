@@ -506,49 +506,28 @@ impl NativeRoot {
     #[cfg(any(windows, target_os = "linux"))]
     fn render_ctrl_keys_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.settings(cx).terminal_ctrl_keys;
-        let segmented = div()
-            .flex()
-            .items_center()
-            .gap(rems(2. / 16.))
-            .p(rems(2. / 16.))
-            .rounded(rems(6. / 16.))
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::bg())
-            .children(keymap::TerminalCtrlKeys::ALL.into_iter().map(|mode| {
-                let active = mode == selected;
+        let segmented =
+            SegmentedControl::new(keymap::TerminalCtrlKeys::ALL.into_iter().map(|mode| {
                 let root = cx.entity();
-                let key_root = root.clone();
-                div()
-                    .id(SharedString::from(format!(
-                        "settings-terminal-ctrl-keys-{}",
-                        mode.label_key()
-                    )))
-                    .tab_index(0)
-                    .px(rems(12. / 16.))
-                    .py(rems(5. / 16.))
-                    .rounded(rems(4. / 16.))
-                    .text_size(theme::text_ui())
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(if active {
-                        theme::text()
-                    } else {
-                        theme::muted()
-                    })
-                    .when(active, |item| item.bg(theme::raised()))
-                    .cursor(CursorStyle::PointingHand)
-                    .hover(|item| item.text_color(theme::text()))
-                    .child(crate::i18n::text(mode.label_key()))
-                    .on_click(move |_, _, cx| {
+                let selector = match mode {
+                    keymap::TerminalCtrlKeys::RunnerFirst => {
+                        "SETTINGS_TERMINAL_CTRL_KEYS_RUNNER_FIRST"
+                    }
+                    keymap::TerminalCtrlKeys::TerminalFirst => {
+                        "SETTINGS_TERMINAL_CTRL_KEYS_TERMINAL_FIRST"
+                    }
+                };
+                SegmentOption::new(
+                    format!("settings-terminal-ctrl-keys-{}", mode.label_key()),
+                    crate::i18n::text(mode.label_key()),
+                    mode == selected,
+                    move |_, cx| {
                         root.update(cx, |this, cx| this.set_terminal_ctrl_keys(mode, cx));
-                    })
-                    .on_key_down(move |event: &KeyDownEvent, _, cx| {
-                        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                            cx.stop_propagation();
-                            key_root.update(cx, |this, cx| this.set_terminal_ctrl_keys(mode, cx));
-                        }
-                    })
-            }));
+                    },
+                )
+                .debug_selector(selector)
+            }))
+            .debug_selector("SETTINGS_TERMINAL_CTRL_KEYS_SEGMENTED");
         div()
             .debug_selector(|| "SETTINGS_TERMINAL_CTRL_KEYS".into())
             .child(

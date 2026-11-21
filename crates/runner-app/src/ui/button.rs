@@ -353,6 +353,24 @@ mod tests {
         assert_eq!(ButtonSize::Md.height(true), 34.);
     }
 
+    #[test]
+    fn focus_ring_with_offset_paints_outer_ring_before_inner_gap_for_gpui_shadow_order() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        theme::set_active_variant(theme::ThemeVariant::RunnerLight);
+        let track_ring = focus_ring_with_offset(theme::bg(), theme::accent(), px(1.), px(2.));
+        assert_eq!(track_ring.len(), 2);
+        assert_eq!(track_ring[0].color, theme::accent());
+        assert_eq!(track_ring[0].spread_radius, px(3.));
+        assert_eq!(track_ring[1].color, theme::bg());
+        assert_eq!(track_ring[1].spread_radius, px(1.));
+
+        let panel_ring = focus_ring_with_offset(theme::panel(), theme::accent(), px(2.), px(2.));
+        assert_eq!(panel_ring[0].color, theme::accent());
+        assert_eq!(panel_ring[0].spread_radius, px(4.));
+        assert_eq!(panel_ring[1].color, theme::panel());
+        assert_eq!(panel_ring[1].spread_radius, px(2.));
+    }
+
     struct CountedButton {
         focus: FocusHandle,
         presses: Rc<std::cell::Cell<usize>>,
@@ -679,6 +697,33 @@ pub fn focus_ring(color: gpui::Hsla) -> Vec<BoxShadow> {
             offset: gpui::point(px(0.), px(0.)),
             blur_radius: px(0.),
             spread_radius: px(3.),
+            inset: false,
+        },
+    ]
+}
+
+/// Paint the outer ring before the surface-colored separator: GPUI draws `box_shadow` entries
+/// in slice order, so the narrower inner shadow must come second to carve a visible gap around
+/// the element's border.
+pub fn focus_ring_with_offset(
+    surface: gpui::Hsla,
+    color: gpui::Hsla,
+    offset: gpui::Pixels,
+    width: gpui::Pixels,
+) -> Vec<BoxShadow> {
+    vec![
+        BoxShadow {
+            color,
+            offset: gpui::point(px(0.), px(0.)),
+            blur_radius: px(0.),
+            spread_radius: offset + width,
+            inset: false,
+        },
+        BoxShadow {
+            color: surface,
+            offset: gpui::point(px(0.), px(0.)),
+            blur_radius: px(0.),
+            spread_radius: offset,
             inset: false,
         },
     ]

@@ -12,14 +12,14 @@ The setting covers Runner's interface and date displays. Agent output, user-auth
 
 ## Themes
 
-Open **Settings → Appearance**. **Theme** follows the operating system or pins Runner to light or dark mode. Below it, **Light theme** and **Dark theme** each show six theme cards — picking a card sets the sidebar, panels, controls and terminal grid together, and **in use now** marks whichever mode is active:
+Open **Settings → Appearance**. **Mode** (**Auto**, **Light**, or **Dark**) follows the system or always uses light or dark mode. Below it, **Light mode theme** and **Dark mode theme** each show six theme cards — picking a card sets the sidebar, panels, controls and terminal grid together, and an **Active now** badge marks whichever mode is active:
 
-- **Light theme** ("Used when the app is light"): Runner Light, Catppuccin Latte, Rosé Pine Dawn, Tokyo Night Day, Gruvbox Light and Solarized Light. Runner Light pairs cool gray surfaces with Rosé Pine Dawn’s cream terminal ground.
-- **Dark theme** ("Used when the app is dark"): Runner, Catppuccin Mocha, Rosé Pine Moon, Tokyo Night, Gruvbox Dark and Solarized Dark.
+- **Light mode theme** ("Used while Runner is light"): Runner Light, Catppuccin Latte, Rosé Pine Dawn, Tokyo Night Day, Gruvbox Light and Solarized Light. Runner Light pairs cool gray surfaces with Rosé Pine Dawn’s cream terminal ground.
+- **Dark mode theme** ("Used while Runner is dark"): Runner, Catppuccin Mocha, Rosé Pine Moon, Tokyo Night, Gruvbox Dark and Solarized Dark.
 
 Choose a theme for each mode once, then switch between light and dark without rebuilding pairings. Open terminals update immediately, and Claude Code follows Runner’s light/dark switch live; other agents may use their own theme controls for colors they draw themselves.
 
-Agents that draw their own colors, such as Codex, choose light or dark styling once, when they start, from the active theme’s terminal palette. Chats that resume when Runner starts get the terminal palette you last used. If **Theme** follows the operating system and it switched between light and dark while Runner was closed, stop and resume a chat whose colors look mismatched. Terminals on another computer use that computer’s terminal palette; see [Remote access](remote-access.md#pair-and-open-another-computer-in-the-app).
+Agents that draw their own colors, such as Codex, choose light or dark styling once, when they start, from the active theme’s terminal palette. Chats that resume when Runner starts get the terminal palette you last used. If **Mode** follows the operating system and it switched between light and dark while Runner was closed, stop and resume a chat whose colors look mismatched. Terminals on another computer use that computer’s terminal palette; see [Remote access](remote-access.md#pair-and-open-another-computer-in-the-app).
 
 ## Window material
 

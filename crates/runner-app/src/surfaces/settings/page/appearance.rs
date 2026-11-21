@@ -94,14 +94,15 @@ impl NativeRoot {
             .gap_6()
             .child(PaneHeader::new(
                 crate::i18n::text("ui.appearance"),
-                crate::i18n::text(
-                    "ui.pick_a_theme_for_each_mode_a_theme_sets_the_app_and_terminal_colours_together",
-                ),
+                crate::i18n::text("appearance.caption"),
             ))
             .child(SettingsCard::new({
-                let rows = vec![SettingsRow::new(crate::i18n::text("ui.theme"), self.render_theme_segmented(cx))
-                    .subtitle(crate::i18n::text("ui.match_the_os_or_pin_to_light_or_dark"))
-                    .into_any_element()];
+                let rows = vec![SettingsRow::new(
+                    crate::i18n::text("appearance.mode"),
+                    self.render_theme_segmented(cx),
+                )
+                .subtitle(crate::i18n::text("appearance.mode_description"))
+                .into_any_element()];
                 #[cfg(target_os = "macos")]
                 let rows = {
                     let mut rows = rows;
@@ -113,19 +114,27 @@ impl NativeRoot {
                 rows
             }))
             .child(theme_gallery_section(
-                crate::i18n::text("ui.light_theme"),
-                "ui.used_when_the_app_is_light",
-                "SETTINGS_LIGHT_THEME_GALLERY",
-                "SETTINGS_LIGHT_THEME_META",
+                crate::i18n::text("appearance.light_mode_theme"),
+                "appearance.used_while_light",
+                ThemeGallerySelectors {
+                    section: "SETTINGS_LIGHT_THEME_GALLERY",
+                    title: "SETTINGS_LIGHT_THEME_TITLE",
+                    active_pill: "SETTINGS_LIGHT_THEME_ACTIVE_PILL",
+                    meta: "SETTINGS_LIGHT_THEME_META",
+                },
                 active_is_light,
                 gallery_columns,
                 light_cards,
             ))
             .child(theme_gallery_section(
-                crate::i18n::text("ui.dark_theme"),
-                "ui.used_when_the_app_is_dark",
-                "SETTINGS_DARK_THEME_GALLERY",
-                "SETTINGS_DARK_THEME_META",
+                crate::i18n::text("appearance.dark_mode_theme"),
+                "appearance.used_while_dark",
+                ThemeGallerySelectors {
+                    section: "SETTINGS_DARK_THEME_GALLERY",
+                    title: "SETTINGS_DARK_THEME_TITLE",
+                    active_pill: "SETTINGS_DARK_THEME_ACTIVE_PILL",
+                    meta: "SETTINGS_DARK_THEME_META",
+                },
                 !active_is_light,
                 gallery_columns,
                 dark_cards,
@@ -141,49 +150,37 @@ impl NativeRoot {
     pub(super) fn render_material_segmented(&self, cx: &mut Context<Self>) -> AnyElement {
         use runner_app::appearance::WindowMaterial;
         let selected = self.settings(cx).window_material;
-        div()
-            .debug_selector(|| "SETTINGS_WINDOW_MATERIAL".into())
-            .flex()
-            .gap(rems(2. / 16.))
-            .p(rems(2. / 16.))
-            .rounded(rems(6. / 16.))
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::bg())
-            .children(
-                [
-                    (WindowMaterial::Glass, crate::i18n::text("ui.glass")),
-                    (WindowMaterial::Solid, crate::i18n::text("ui.solid")),
-                ]
-                .into_iter()
-                .map(|(material, label)| {
-                    let root = cx.entity();
-                    let key_root = root.clone();
-                    div()
-                        .id(SharedString::from(format!("settings-material-{label}")))
-                        .tab_index(0)
-                        .px(rems(12. / 16.))
-                        .py(rems(5. / 16.))
-                        .rounded(rems(4. / 16.))
-                        .text_size(theme::text_ui())
-                        .when(material == selected, |item| item.bg(theme::raised()))
-                        .cursor_pointer()
-                        .child(label)
-                        .on_click(move |event, _, cx| {
-                            if !event.is_keyboard() {
-                                root.update(cx, |this, cx| this.set_window_material(material, cx));
-                            }
-                        })
-                        .on_key_down(move |event: &KeyDownEvent, _, cx| {
-                            if is_plain_activation_key(event) {
-                                cx.stop_propagation();
-                                key_root
-                                    .update(cx, |this, cx| this.set_window_material(material, cx));
-                            }
-                        })
-                }),
-            )
-            .into_any_element()
+        SegmentedControl::new(
+            [
+                (
+                    WindowMaterial::Glass,
+                    "glass",
+                    crate::i18n::text("ui.glass"),
+                    "SETTINGS_WINDOW_MATERIAL_GLASS",
+                ),
+                (
+                    WindowMaterial::Solid,
+                    "solid",
+                    crate::i18n::text("ui.solid"),
+                    "SETTINGS_WINDOW_MATERIAL_SOLID",
+                ),
+            ]
+            .into_iter()
+            .map(|(material, key, label, selector)| {
+                let root = cx.entity();
+                SegmentOption::new(
+                    format!("settings-material-{key}"),
+                    label,
+                    material == selected,
+                    move |_, cx| {
+                        root.update(cx, |this, cx| this.set_window_material(material, cx));
+                    },
+                )
+                .debug_selector(selector)
+            }),
+        )
+        .debug_selector("SETTINGS_WINDOW_MATERIAL")
+        .into_any_element()
     }
 
     #[cfg(target_os = "macos")]
@@ -204,86 +201,48 @@ impl NativeRoot {
     }
 
     pub(super) fn render_theme_segmented(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .flex()
-            .items_center()
-            .gap(rems(2. / 16.))
-            .rounded(rems(6. / 16.))
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::bg())
-            .p(rems(2. / 16.))
-            .children(
-                [
-                    (
-                        ThemeIntent::Auto,
-                        crate::i18n::text("ui.auto"),
-                        "monitor.svg",
-                    ),
-                    (ThemeIntent::Light, crate::i18n::text("ui.light"), "sun.svg"),
-                    (ThemeIntent::Dark, crate::i18n::text("ui.dark"), "moon.svg"),
-                ]
-                .into_iter()
-                .map(|(intent, label, icon)| {
-                    let active = intent == self.settings(cx).app_theme;
-                    let foreground = if active {
-                        theme::text()
-                    } else {
-                        theme::muted()
-                    };
-                    let hover_group = SharedString::from(format!(
-                        "settings-theme-{}",
-                        label.to_ascii_lowercase()
-                    ));
-                    let root = cx.entity();
-                    let key_root = root.clone();
-                    div()
-                        .id(SharedString::from(format!("settings-theme-{label}")))
-                        .group(hover_group.clone())
-                        .tab_index(0)
-                        .flex()
-                        .items_center()
-                        .gap(rems(6. / 16.))
-                        .rounded(rems(4. / 16.))
-                        .px(rems(10. / 16.))
-                        .py(rems(5. / 16.))
-                        .bg(if active {
-                            theme::raised()
-                        } else {
-                            gpui::transparent_black()
-                        })
-                        .text_size(theme::text_ui())
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(foreground)
-                        .cursor(CursorStyle::PointingHand)
-                        .hover(|button| button.text_color(theme::text()))
-                        .child(
-                            svg()
-                                .path(icon)
-                                .size(rems(12. / 16.))
-                                .flex_none()
-                                .text_color(foreground)
-                                .group_hover(hover_group, |icon| icon.text_color(theme::text())),
-                        )
-                        .child(label)
-                        .on_click(move |event, _, cx| {
-                            if !event.is_keyboard() {
-                                root.update(cx, |this, root_cx| {
-                                    this.set_theme_intent(intent, root_cx)
-                                });
-                            }
-                        })
-                        .on_key_down(move |event: &KeyDownEvent, _, cx| {
-                            if is_plain_activation_key(event) {
-                                cx.stop_propagation();
-                                key_root.update(cx, |this, root_cx| {
-                                    this.set_theme_intent(intent, root_cx)
-                                });
-                            }
-                        })
-                }),
-            )
-            .into_any_element()
+        let selected = self.settings(cx).app_theme;
+        SegmentedControl::new(
+            [
+                (
+                    ThemeIntent::Auto,
+                    "auto",
+                    crate::i18n::text("ui.auto"),
+                    "monitor.svg",
+                    "SETTINGS_THEME_MODE_AUTO",
+                ),
+                (
+                    ThemeIntent::Light,
+                    "light",
+                    crate::i18n::text("ui.light"),
+                    "sun.svg",
+                    "SETTINGS_THEME_MODE_LIGHT",
+                ),
+                (
+                    ThemeIntent::Dark,
+                    "dark",
+                    crate::i18n::text("ui.dark"),
+                    "moon.svg",
+                    "SETTINGS_THEME_MODE_DARK",
+                ),
+            ]
+            .into_iter()
+            .map(|(intent, key, label, icon, selector)| {
+                let root = cx.entity();
+                SegmentOption::new(
+                    format!("settings-theme-{key}"),
+                    label,
+                    intent == selected,
+                    move |_, cx| {
+                        root.update(cx, |this, root_cx| this.set_theme_intent(intent, root_cx));
+                    },
+                )
+                .icon(icon)
+                .debug_selector(selector)
+            }),
+        )
+        .debug_selector("SETTINGS_THEME_MODE")
+        .into_any_element()
     }
 
     pub(super) fn render_terminal_settings(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -472,21 +431,21 @@ struct ThemeGalleryCard {
     on_select: Rc<dyn Fn(&mut gpui::App)>,
 }
 
+struct ThemeGallerySelectors {
+    section: &'static str,
+    title: &'static str,
+    active_pill: &'static str,
+    meta: &'static str,
+}
+
 fn theme_gallery_section(
     heading: &'static str,
     meta_key: &'static str,
-    selector: &'static str,
-    meta_selector: &'static str,
+    selectors: ThemeGallerySelectors,
     in_use: bool,
     columns: usize,
     cards: impl IntoIterator<Item = ThemeGalleryCard>,
 ) -> AnyElement {
-    let base_meta = crate::i18n::text(meta_key);
-    let meta: SharedString = if in_use {
-        crate::i18n::tf("format.theme_in_use", &[("meta", base_meta.to_string())]).into()
-    } else {
-        base_meta.into()
-    };
     let mut rows = Vec::new();
     let mut iter = cards.into_iter().map(theme_gallery_card);
     loop {
@@ -504,8 +463,53 @@ fn theme_gallery_section(
         );
     }
 
+    let title = div()
+        .text_size(theme::text_body())
+        .font_weight(if in_use {
+            FontWeight::SEMIBOLD
+        } else {
+            FontWeight::MEDIUM
+        })
+        .text_color(if in_use {
+            theme::text()
+        } else {
+            theme::muted()
+        })
+        .child(heading);
+    #[cfg(test)]
+    let title = crate::theme_snapshot::record_text(selectors.title, title);
+    #[cfg(not(test))]
+    let title = title.debug_selector(move || selectors.title.into());
+
+    let active_pill = in_use.then(|| {
+        let pill = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(rems(4. / 16.))
+            .px(rems(8. / 16.))
+            .py(rems(2. / 16.))
+            .rounded_full()
+            .bg(theme::with_alpha(theme::accent(), 0.12))
+            .child(
+                div()
+                    .size(rems(6. / 16.))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(theme::accent()),
+            )
+            .child(
+                div()
+                    .text_size(theme::text_meta())
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::accent())
+                    .child(crate::i18n::text("appearance.active_now")),
+            );
+        super::side_panel::snapshot(selectors.active_pill, pill)
+    });
+
     div()
-        .debug_selector(move || selector.into())
+        .debug_selector(move || selectors.section.into())
         .flex()
         .flex_col()
         .gap(rems(10. / 16.))
@@ -517,17 +521,18 @@ fn theme_gallery_section(
                 .gap_3()
                 .child(
                     div()
-                        .text_size(theme::text_body())
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(theme::muted())
-                        .child(heading),
+                        .flex()
+                        .items_center()
+                        .gap(rems(8. / 16.))
+                        .child(title)
+                        .children(active_pill),
                 )
                 .child(
                     div()
-                        .debug_selector(move || meta_selector.into())
+                        .debug_selector(move || selectors.meta.into())
                         .text_size(theme::text_ui())
                         .text_color(theme::faint())
-                        .child(meta),
+                        .child(crate::i18n::text(meta_key)),
                 ),
         )
         .child(
@@ -555,12 +560,19 @@ fn is_plain_activation_key(event: &KeyDownEvent) -> bool {
         && matches!(event.keystroke.key.as_str(), "enter" | "space")
 }
 
-// Paint opaque panel inside the focus ring so the drop shadow does not flood the footer text.
+// Paint opaque panel inside the card and as a 2 px separation halo inside the outer focus ring so
+// focus stays visibly distinct from the selected preview's 2 px accent border and never floods the
+// footer text.
 pub(super) fn theme_card_focus_style(style: gpui::StyleRefinement) -> gpui::StyleRefinement {
     style
         .rounded(rems(8. / 16.))
         .bg(theme::panel())
-        .shadow(focus_ring(theme::accent()))
+        .shadow(focus_ring_with_offset(
+            theme::panel(),
+            theme::accent(),
+            px(2.),
+            px(2.),
+        ))
 }
 
 fn theme_gallery_card(card: ThemeGalleryCard) -> AnyElement {

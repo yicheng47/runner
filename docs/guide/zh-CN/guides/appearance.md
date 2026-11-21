@@ -12,14 +12,14 @@
 
 ## 主题
 
-打开 **设置 → 外观（Settings → Appearance）** 。 **主题（Theme）** 可跟随操作系统，或固定为浅色、深色。下方的 **浅色主题（Light theme）** 和 **深色主题（Dark theme）** 各展示六张主题卡片，点选卡片即可同时设置侧边栏、面板、控件与终端网格；当前生效的模式标题旁会标出 **当前使用（in use now）** ：
+打开 **设置 → 外观（Settings → Appearance）** 。 **模式（Mode）** （ **自动（Auto）** 、 **浅色（Light）** 或 **深色（Dark）** ）可跟随系统，或始终使用浅色或深色。下方的 **浅色模式主题（Light mode theme）** 和 **深色模式主题（Dark mode theme）** 各展示六张主题卡片，点选卡片即可同时设置侧边栏、面板、控件与终端网格；当前生效的模式标题旁会显示 **当前生效（Active now）** 标记：
 
-- **浅色主题**（“浅色模式下使用”）：Runner Light、Catppuccin Latte、Rosé Pine Dawn、Tokyo Night Day、Gruvbox Light 与 Solarized Light。Runner Light 将偏冷的灰色界面与 Rosé Pine Dawn 的奶油色终端背景搭配使用。
-- **深色主题**（“深色模式下使用”）：Runner、Catppuccin Mocha、Rosé Pine Moon、Tokyo Night、Gruvbox Dark 与 Solarized Dark。
+- **浅色模式主题**（“Runner 为浅色时使用”）：Runner Light、Catppuccin Latte、Rosé Pine Dawn、Tokyo Night Day、Gruvbox Light 与 Solarized Light。Runner Light 将偏冷的灰色界面与 Rosé Pine Dawn 的奶油色终端背景搭配使用。
+- **深色模式主题**（“Runner 为深色时使用”）：Runner、Catppuccin Mocha、Rosé Pine Moon、Tokyo Night、Gruvbox Dark 与 Solarized Dark。
 
 为两种模式各选好一次主题后，浅色和深色之间即可直接切换，无需重新组合搭配。已打开的终端会立即更新，Claude Code 也会实时跟随 Runner 的浅色/深色切换；其他智能体自行绘制的颜色可能需使用其自己的主题控制。
 
-Codex 等自行绘制颜色的智能体会在启动时按当前主题的终端配色选择一次浅色或深色样式。Runner 启动时恢复的聊天使用上次的终端配色。如果 **主题** 跟随系统，且 Runner 关闭期间系统切换了浅色/深色，颜色不匹配的聊天需停止再恢复。另一台电脑的终端使用那台电脑的终端配色；见[远程访问](remote-access.md#在应用中配对并打开另一台电脑)。
+Codex 等自行绘制颜色的智能体会在启动时按当前主题的终端配色选择一次浅色或深色样式。Runner 启动时恢复的聊天使用上次的终端配色。如果 **模式** 跟随系统，且 Runner 关闭期间系统切换了浅色/深色，颜色不匹配的聊天需停止再恢复。另一台电脑的终端使用那台电脑的终端配色；见[远程访问](remote-access.md#在应用中配对并打开另一台电脑)。
 
 ## 窗口材质
 

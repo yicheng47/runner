@@ -58,6 +58,13 @@ pub(crate) fn record_text<T: Styled + InteractiveElement>(id: &'static str, mut 
     element.debug_selector(|| id.into())
 }
 
+/// Records an element's text color, leaving the debug selector it already has.
+pub(crate) fn note_text<T: Styled>(id: &'static str, mut element: T) -> T {
+    let color = element.style().text.color;
+    TEXTS.with_borrow_mut(|texts| texts.insert(id, color));
+    element
+}
+
 pub(crate) fn assert_text(window: &mut VisualTestContext, id: &'static str, color: gpui::Hsla) {
     assert!(window.debug_bounds(id).is_some(), "missing surface {id}");
     TEXTS.with_borrow(|texts| assert_eq!(texts.get(id), Some(&Some(color)), "{id}"));

@@ -310,13 +310,68 @@ fn shortcuts_page_renders_sections_setting_row_and_tags() {
 
         #[cfg(any(windows, target_os = "linux"))]
         {
+            use crate::theme_snapshot::{assert_border, assert_fill_color};
+
             let setting = visual.debug_bounds("SETTINGS_TERMINAL_CTRL_KEYS").unwrap();
             assert!(terminal.contains(&setting.center()));
-            host.update(&mut visual, |root, _, cx| {
-                root.set_terminal_ctrl_keys(keymap::TerminalCtrlKeys::TerminalFirst, cx)
-            })
-            .unwrap();
+            assert_fill_color(
+                &mut visual,
+                "SETTINGS_TERMINAL_CTRL_KEYS_SEGMENTED",
+                Some(theme::bg()),
+            );
+            assert_border(
+                &mut visual,
+                "SETTINGS_TERMINAL_CTRL_KEYS_SEGMENTED",
+                theme::border_strong(),
+            );
+            assert_fill_color(
+                &mut visual,
+                "SETTINGS_TERMINAL_CTRL_KEYS_RUNNER_FIRST",
+                Some(theme::seg_selected()),
+            );
+            assert_fill_color(
+                &mut visual,
+                "SETTINGS_TERMINAL_CTRL_KEYS_TERMINAL_FIRST",
+                Some(gpui::transparent_black()),
+            );
+            let terminal_first = visual
+                .debug_bounds("SETTINGS_TERMINAL_CTRL_KEYS_TERMINAL_FIRST")
+                .unwrap();
+            visual.simulate_click(terminal_first.center(), gpui::Modifiers::default());
             visual.run_until_parked();
+            assert_fill_color(
+                &mut visual,
+                "SETTINGS_TERMINAL_CTRL_KEYS_TERMINAL_FIRST",
+                Some(theme::seg_selected()),
+            );
+            assert_border(
+                &mut visual,
+                "SETTINGS_TERMINAL_CTRL_KEYS_TERMINAL_FIRST",
+                theme::seg_selected_border(),
+            );
+            assert_fill_color(
+                &mut visual,
+                "SETTINGS_TERMINAL_CTRL_KEYS_RUNNER_FIRST",
+                Some(gpui::transparent_black()),
+            );
+            // Real Shift-Tab + Space traverses back to Runner-first, then Tab + Enter restores
+            // Terminal-first through the Settings key handler.
+            visual.simulate_keystrokes("shift-tab");
+            visual.run_until_parked();
+            visual.simulate_keystrokes("space");
+            visual.run_until_parked();
+            assert_eq!(
+                visual.read(|cx| store.read(cx).settings.terminal_ctrl_keys()),
+                keymap::TerminalCtrlKeys::RunnerFirst
+            );
+            visual.simulate_keystrokes("tab");
+            visual.run_until_parked();
+            visual.simulate_keystrokes("enter");
+            visual.run_until_parked();
+            assert_eq!(
+                visual.read(|cx| store.read(cx).settings.terminal_ctrl_keys()),
+                keymap::TerminalCtrlKeys::TerminalFirst
+            );
             for selector in [
                 "SHORTCUT_OUTSIDE_TERMINALS_new-chat",
                 "SHORTCUT_OUTSIDE_TERMINALS_toggle-sidebar",
@@ -353,6 +408,52 @@ fn shortcuts_page_renders_sections_setting_row_and_tags() {
                     .is_empty());
             });
         }
+
+        // Plain Tab / Shift-Tab traverse focusable controls on Shortcuts, while Ctrl+Tab and
+        // active shortcut recording do not move focus.
+        let nav_shortcuts = visual.debug_bounds("SETTINGS_NAV_shortcuts").unwrap();
+        visual.simulate_click(nav_shortcuts.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_keystrokes("tab");
+        visual.run_until_parked();
+        let first_focus = host
+            .update(&mut visual, |_, window, cx| window.focused(cx).unwrap())
+            .unwrap();
+        visual.simulate_keystrokes("ctrl-tab");
+        visual.run_until_parked();
+        assert_eq!(
+            host.update(&mut visual, |_, window, cx| window.focused(cx))
+                .unwrap(),
+            Some(first_focus.clone())
+        );
+        visual.simulate_keystrokes("tab");
+        visual.run_until_parked();
+        let second_focus = host
+            .update(&mut visual, |_, window, cx| window.focused(cx).unwrap())
+            .unwrap();
+        assert_ne!(second_focus, first_focus);
+        visual.simulate_keystrokes("shift-tab");
+        visual.run_until_parked();
+        assert_eq!(
+            host.update(&mut visual, |_, window, cx| window.focused(cx))
+                .unwrap(),
+            Some(first_focus)
+        );
+        host.update(&mut visual, |root, window, cx| {
+            root.start_shortcut_recording("new-chat", window, cx);
+        })
+        .unwrap();
+        visual.run_until_parked();
+        let recording_focus = host
+            .update(&mut visual, |_, window, cx| window.focused(cx).unwrap())
+            .unwrap();
+        visual.simulate_keystrokes("tab");
+        visual.run_until_parked();
+        assert_eq!(
+            host.update(&mut visual, |_, window, cx| window.focused(cx))
+                .unwrap(),
+            Some(recording_focus)
+        );
     });
 }
 
@@ -1119,7 +1220,9 @@ fn general_quit_menu_renders_a_right_hand_tick_for_each_choice() {
 #[test]
 fn appearance_theme_galleries_update_app_and_terminal_together_and_fit_six_cards() {
     use crate::theme::{DarkTheme, LightTheme, ThemeVariant};
-    use crate::theme_snapshot::{assert_fill, ThemeGuard};
+    use crate::theme_snapshot::{
+        assert_border, assert_fill, assert_fill_color, assert_text, ThemeGuard,
+    };
     use gpui::{size, Modifiers, TestAppContext, VisualTestContext};
     use runner_daemon::{db, session, shell_path};
     use std::sync::{Arc, RwLock};
@@ -1213,6 +1316,100 @@ fn appearance_theme_galleries_update_app_and_terminal_together_and_fit_six_cards
         window.debug_bounds("SETTINGS_WINDOW_MATERIAL").is_some(),
         cfg!(target_os = "macos")
     );
+    // Mode and Window material use the shared segmented control surface tokens.
+    assert_fill_color(&mut window, "SETTINGS_THEME_MODE", Some(theme::bg()));
+    assert_border(&mut window, "SETTINGS_THEME_MODE", theme::border_strong());
+    assert_fill_color(
+        &mut window,
+        "SETTINGS_THEME_MODE_DARK",
+        Some(theme::seg_selected()),
+    );
+    assert_border(
+        &mut window,
+        "SETTINGS_THEME_MODE_DARK",
+        theme::seg_selected_border(),
+    );
+    assert_text(&mut window, "SETTINGS_THEME_MODE_DARK", theme::text());
+    assert_fill_color(
+        &mut window,
+        "SETTINGS_THEME_MODE_LIGHT",
+        Some(gpui::transparent_black()),
+    );
+    assert_border(
+        &mut window,
+        "SETTINGS_THEME_MODE_LIGHT",
+        gpui::transparent_black(),
+    );
+    assert_text(&mut window, "SETTINGS_THEME_MODE_LIGHT", theme::muted());
+    #[cfg(target_os = "macos")]
+    {
+        assert_fill_color(&mut window, "SETTINGS_WINDOW_MATERIAL", Some(theme::bg()));
+        assert_border(
+            &mut window,
+            "SETTINGS_WINDOW_MATERIAL",
+            theme::border_strong(),
+        );
+        assert_fill_color(
+            &mut window,
+            "SETTINGS_WINDOW_MATERIAL_GLASS",
+            Some(theme::seg_selected()),
+        );
+        assert_border(
+            &mut window,
+            "SETTINGS_WINDOW_MATERIAL_GLASS",
+            theme::seg_selected_border(),
+        );
+        assert_fill_color(
+            &mut window,
+            "SETTINGS_WINDOW_MATERIAL_SOLID",
+            Some(gpui::transparent_black()),
+        );
+        let solid = window
+            .debug_bounds("SETTINGS_WINDOW_MATERIAL_SOLID")
+            .unwrap();
+        window.simulate_click(solid.center(), Modifiers::default());
+        window.run_until_parked();
+        assert_eq!(
+            store.read_with(&window, |store, _| store.settings.window_material),
+            runner_app::appearance::WindowMaterial::Solid
+        );
+        assert_fill_color(
+            &mut window,
+            "SETTINGS_WINDOW_MATERIAL_SOLID",
+            Some(theme::seg_selected()),
+        );
+        assert_border(
+            &mut window,
+            "SETTINGS_WINDOW_MATERIAL_SOLID",
+            theme::seg_selected_border(),
+        );
+        assert_fill_color(
+            &mut window,
+            "SETTINGS_WINDOW_MATERIAL_GLASS",
+            Some(gpui::transparent_black()),
+        );
+        let glass = window
+            .debug_bounds("SETTINGS_WINDOW_MATERIAL_GLASS")
+            .unwrap();
+        window.simulate_click(glass.center(), Modifiers::default());
+        window.run_until_parked();
+        assert_eq!(
+            store.read_with(&window, |store, _| store.settings.window_material),
+            runner_app::appearance::WindowMaterial::Glass
+        );
+    }
+
+    // Active now pill marks only the Dark gallery while Dark mode is active.
+    assert!(window
+        .debug_bounds("SETTINGS_LIGHT_THEME_ACTIVE_PILL")
+        .is_none());
+    assert_fill_color(
+        &mut window,
+        "SETTINGS_DARK_THEME_ACTIVE_PILL",
+        Some(theme::with_alpha(theme::accent(), 0.12)),
+    );
+    assert_text(&mut window, "SETTINGS_DARK_THEME_TITLE", theme::text());
+    assert_text(&mut window, "SETTINGS_LIGHT_THEME_TITLE", theme::muted());
 
     // Every preview card paints with its own theme's ground and terminal palette.
     for light in LightTheme::ALL {
@@ -1364,138 +1561,211 @@ fn appearance_theme_galleries_update_app_and_terminal_together_and_fit_six_cards
         runner_terminal::palette::TOKYO_NIGHT
     );
 
-    // Switching mode to Light activates the stored Light theme and its terminal palette.
-    store.update(&mut window, |store, cx| {
-        store.update_settings(
-            |settings| {
-                settings.app_theme = ThemeIntent::Light;
-                true
-            },
-            false,
-            cx,
-        );
-    });
+    // Switching Mode to Light via the segmented control activates the stored Light theme,
+    // updates the terminal palette, and moves the Active now pill to the Light gallery.
+    let light_mode = window.debug_bounds("SETTINGS_THEME_MODE_LIGHT").unwrap();
+    window.simulate_click(light_mode.center(), Modifiers::default());
     window.run_until_parked();
     assert_eq!(theme::active_variant(), ThemeVariant::GruvboxLight);
     assert_eq!(
         bridge.session("term").unwrap().palette(),
         runner_terminal::palette::GRUVBOX_LIGHT
     );
+    assert_fill_color(
+        &mut window,
+        "SETTINGS_THEME_MODE_LIGHT",
+        Some(theme::seg_selected()),
+    );
+    assert_border(
+        &mut window,
+        "SETTINGS_THEME_MODE_LIGHT",
+        theme::seg_selected_border(),
+    );
+    assert_fill_color(
+        &mut window,
+        "SETTINGS_THEME_MODE_DARK",
+        Some(gpui::transparent_black()),
+    );
+    assert_fill_color(
+        &mut window,
+        "SETTINGS_LIGHT_THEME_ACTIVE_PILL",
+        Some(theme::with_alpha(theme::accent(), 0.12)),
+    );
+    assert!(window
+        .debug_bounds("SETTINGS_DARK_THEME_ACTIVE_PILL")
+        .is_none());
+    assert_text(&mut window, "SETTINGS_LIGHT_THEME_TITLE", theme::text());
+    assert_text(&mut window, "SETTINGS_DARK_THEME_TITLE", theme::muted());
     assert!(window.debug_bounds("SETTINGS_LIGHT_THEME_META").is_some());
     assert!(window.debug_bounds("SETTINGS_DARK_THEME_META").is_some());
-    assert_eq!(
-        crate::i18n::tf(
-            "format.theme_in_use",
-            &[(
-                "meta",
-                crate::i18n::text("ui.used_when_the_app_is_light").to_string(),
-            )],
-        ),
-        "Used when the app is light · in use now"
-    );
-    crate::i18n::testing::with_locale(crate::i18n::Locale::SimplifiedChinese, || {
+    crate::i18n::testing::with_locale(crate::i18n::Locale::English, || {
         assert_eq!(
-            crate::i18n::tf(
-                "format.theme_in_use",
-                &[(
-                    "meta",
-                    crate::i18n::text("ui.used_when_the_app_is_light").to_string(),
-                )],
-            ),
-            "浅色模式下使用 · 当前使用"
+            crate::i18n::text("appearance.caption"),
+            "Choose a mode, then the theme each mode uses. A theme sets the app and terminal colours together."
         );
+        assert_eq!(crate::i18n::text("appearance.mode"), "Mode");
+        assert_eq!(
+            crate::i18n::text("appearance.mode_description"),
+            "Follow the system, or always use light or dark."
+        );
+        assert_eq!(
+            crate::i18n::text("appearance.light_mode_theme"),
+            "Light mode theme"
+        );
+        assert_eq!(
+            crate::i18n::text("appearance.dark_mode_theme"),
+            "Dark mode theme"
+        );
+        assert_eq!(
+            crate::i18n::text("appearance.used_while_light"),
+            "Used while Runner is light"
+        );
+        assert_eq!(
+            crate::i18n::text("appearance.used_while_dark"),
+            "Used while Runner is dark"
+        );
+        assert_eq!(crate::i18n::text("appearance.active_now"), "Active now");
+    });
+    crate::i18n::testing::with_locale(crate::i18n::Locale::SimplifiedChinese, || {
+        assert_eq!(crate::i18n::text("appearance.mode"), "模式");
+        assert_eq!(
+            crate::i18n::text("appearance.light_mode_theme"),
+            "浅色模式主题"
+        );
+        assert_eq!(
+            crate::i18n::text("appearance.dark_mode_theme"),
+            "深色模式主题"
+        );
+        assert_eq!(
+            crate::i18n::text("appearance.used_while_light"),
+            "Runner 为浅色时使用"
+        );
+        assert_eq!(
+            crate::i18n::text("appearance.used_while_dark"),
+            "Runner 为深色时使用"
+        );
+        assert_eq!(crate::i18n::text("appearance.active_now"), "当前生效");
     });
 
-    // Narrow windows and zoomed viewports fold into 3×2 rows without wrapping or truncating labels.
-    for (win_w, win_h, zoom) in [(960., 700., 1.0_f32), (1440., 900., 1.3_f32)] {
-        window.simulate_resize(size(px(win_w), px(win_h)));
-        host.update(&mut window, |root, window, cx| {
-            root.set_zoom(zoom, window, cx);
-        })
-        .unwrap();
-        window.run_until_parked();
+    // Narrow windows and zoomed viewports fold into 3×2 rows without wrapping or truncating labels,
+    // and keep Mode controls plus gallery title/Active-now pill/meta non-overlapping in EN and zh-CN.
+    for locale in [
+        crate::i18n::Locale::English,
+        crate::i18n::Locale::SimplifiedChinese,
+    ] {
+        crate::i18n::testing::with_locale(locale, || {
+            for (win_w, win_h, zoom) in [(960., 700., 1.0_f32), (1440., 900., 1.3_f32)] {
+                window.simulate_resize(size(px(win_w), px(win_h)));
+                host.update(&mut window, |root, window, cx| {
+                    root.set_zoom(zoom, window, cx);
+                    window.refresh();
+                })
+                .unwrap();
+                window.run_until_parked();
 
-        for (gallery_sel, mode_tag, keys) in [
-            (
-                "SETTINGS_LIGHT_THEME_GALLERY",
-                "LIGHT",
-                LightTheme::ALL
-                    .into_iter()
-                    .map(|choice| (choice.key(), choice.label()))
-                    .collect::<Vec<_>>(),
-            ),
-            (
-                "SETTINGS_DARK_THEME_GALLERY",
-                "DARK",
-                DarkTheme::ALL
-                    .into_iter()
-                    .map(|choice| (choice.key(), choice.label()))
-                    .collect::<Vec<_>>(),
-            ),
-        ] {
-            let gallery = window.debug_bounds(gallery_sel).unwrap();
-            let row0_top = window
-                .debug_bounds(static_selector(format!(
-                    "APPEARANCE_{mode_tag}_THEME_{}",
-                    keys[0].0
-                )))
-                .unwrap()
-                .top();
-            let row0_bottom = window
-                .debug_bounds(static_selector(format!(
-                    "APPEARANCE_{mode_tag}_THEME_{}",
-                    keys[0].0
-                )))
-                .unwrap()
-                .bottom();
-            let row1_top = window
-                .debug_bounds(static_selector(format!(
-                    "APPEARANCE_{mode_tag}_THEME_{}",
-                    keys[3].0
-                )))
-                .unwrap()
-                .top();
-            assert!(
-                row1_top >= row0_bottom,
-                "{win_w}x{win_h}@{zoom} {mode_tag}: {row1_top:?} < {row0_bottom:?}"
-            );
-            for (row_offset, chunk) in keys.chunks(3).enumerate() {
-                let mut prev_right = gallery.left();
-                let expected_top = if row_offset == 0 { row0_top } else { row1_top };
-                for (key, label_text) in chunk {
-                    let card = window
+                let light_gallery = window.debug_bounds("SETTINGS_LIGHT_THEME_GALLERY").unwrap();
+                let light_title = window.debug_bounds("SETTINGS_LIGHT_THEME_TITLE").unwrap();
+                let light_pill = window
+                    .debug_bounds("SETTINGS_LIGHT_THEME_ACTIVE_PILL")
+                    .unwrap();
+                let light_meta = window.debug_bounds("SETTINGS_LIGHT_THEME_META").unwrap();
+                assert!(
+                    light_title.right() < light_pill.left()
+                        && light_pill.right() < light_meta.left()
+                        && light_meta.right() <= light_gallery.right(),
+                    "{locale:?} {win_w}x{win_h}@{zoom}: {light_title:?} {light_pill:?} {light_meta:?} in {light_gallery:?}"
+                );
+                let mode_track = window.debug_bounds("SETTINGS_THEME_MODE").unwrap();
+                assert!(
+                    mode_track.right() <= light_gallery.right(),
+                    "{locale:?} {win_w}x{win_h}@{zoom}: mode track {mode_track:?} overflowed {light_gallery:?}"
+                );
+
+                for (gallery_sel, mode_tag, keys) in [
+                    (
+                        "SETTINGS_LIGHT_THEME_GALLERY",
+                        "LIGHT",
+                        LightTheme::ALL
+                            .into_iter()
+                            .map(|choice| (choice.key(), choice.label()))
+                            .collect::<Vec<_>>(),
+                    ),
+                    (
+                        "SETTINGS_DARK_THEME_GALLERY",
+                        "DARK",
+                        DarkTheme::ALL
+                            .into_iter()
+                            .map(|choice| (choice.key(), choice.label()))
+                            .collect::<Vec<_>>(),
+                    ),
+                ] {
+                    let gallery = window.debug_bounds(gallery_sel).unwrap();
+                    let row0_top = window
                         .debug_bounds(static_selector(format!(
-                            "APPEARANCE_{mode_tag}_THEME_{key}"
+                            "APPEARANCE_{mode_tag}_THEME_{}",
+                            keys[0].0
                         )))
-                        .unwrap();
-                    assert!(card.left() >= prev_right, "{key}: {card:?} {prev_right:?}");
+                        .unwrap()
+                        .top();
+                    let row0_bottom = window
+                        .debug_bounds(static_selector(format!(
+                            "APPEARANCE_{mode_tag}_THEME_{}",
+                            keys[0].0
+                        )))
+                        .unwrap()
+                        .bottom();
+                    let row1_top = window
+                        .debug_bounds(static_selector(format!(
+                            "APPEARANCE_{mode_tag}_THEME_{}",
+                            keys[3].0
+                        )))
+                        .unwrap()
+                        .top();
                     assert!(
-                        card.right() <= gallery.right(),
-                        "{key}: {card:?} {gallery:?}"
+                        row1_top >= row0_bottom,
+                        "{win_w}x{win_h}@{zoom} {mode_tag}: {row1_top:?} < {row0_bottom:?}"
                     );
-                    assert!(
-                        (f32::from(card.top()) - f32::from(expected_top)).abs() < 1.5,
-                        "{key}: top {:?} vs {expected_top:?}",
-                        card.top()
-                    );
-                    prev_right = card.right();
+                    for (row_offset, chunk) in keys.chunks(3).enumerate() {
+                        let mut prev_right = gallery.left();
+                        let expected_top = if row_offset == 0 { row0_top } else { row1_top };
+                        for (key, label_text) in chunk {
+                            let card = window
+                                .debug_bounds(static_selector(format!(
+                                    "APPEARANCE_{mode_tag}_THEME_{key}"
+                                )))
+                                .unwrap();
+                            assert!(card.left() >= prev_right, "{key}: {card:?} {prev_right:?}");
+                            assert!(
+                                card.right() <= gallery.right(),
+                                "{key}: {card:?} {gallery:?}"
+                            );
+                            assert!(
+                                (f32::from(card.top()) - f32::from(expected_top)).abs() < 1.5,
+                                "{key}: top {:?} vs {expected_top:?}",
+                                card.top()
+                            );
+                            prev_right = card.right();
 
-                    let label_bounds = window
-                        .debug_bounds(static_selector(format!("APPEARANCE_THEME_LABEL_{key}")))
-                        .unwrap();
-                    assert!(
-                        label_bounds.size.height <= px(22. * zoom),
-                        "label wrapped at {win_w}x{win_h}@{zoom}: {key} {label_bounds:?}"
-                    );
-                    let shaped_width = shaped_ui_text_width(&mut window, label_text);
-                    assert!(
-                        shaped_width <= label_bounds.size.width,
-                        "{label_text} truncated at {win_w}x{win_h}@{zoom}: needed {shaped_width:?}, got {:?}",
-                        label_bounds.size.width
-                    );
+                            let label_bounds = window
+                                .debug_bounds(static_selector(format!(
+                                    "APPEARANCE_THEME_LABEL_{key}"
+                                )))
+                                .unwrap();
+                            assert!(
+                                label_bounds.size.height <= px(22. * zoom),
+                                "label wrapped at {win_w}x{win_h}@{zoom}: {key} {label_bounds:?}"
+                            );
+                            let shaped_width = shaped_ui_text_width(&mut window, label_text);
+                            assert!(
+                                shaped_width <= label_bounds.size.width,
+                                "{label_text} truncated at {win_w}x{win_h}@{zoom}: needed {shaped_width:?}, got {:?}",
+                                label_bounds.size.width
+                            );
+                        }
+                    }
                 }
             }
-        }
+        });
     }
     window.simulate_resize(size(px(1200.), px(900.)));
     host.update(&mut window, |root, window, cx| {
@@ -1652,7 +1922,14 @@ fn nav_search_filters_labels_and_removes_empty_groups() {
                 "{row}"
             );
         }
-        for row in ["light theme", "dark theme"] {
+        for row in [
+            "mode",
+            "theme",
+            "light theme",
+            "dark theme",
+            "light mode theme",
+            "dark mode theme",
+        ] {
             assert_eq!(
                 filtered_nav_groups(row),
                 vec![("App", vec![SettingsPane::Appearance])],
@@ -1676,6 +1953,22 @@ fn nav_search_filters_labels_and_removes_empty_groups() {
             SettingsPane::from_route(Some("updates")),
             SettingsPane::Updates
         );
+    });
+    crate::i18n::testing::with_locale(crate::i18n::Locale::SimplifiedChinese, || {
+        for row in [
+            "模式",
+            "主题",
+            "浅色主题",
+            "深色主题",
+            "浅色模式主题",
+            "深色模式主题",
+        ] {
+            assert_eq!(
+                filtered_nav_groups(row),
+                vec![("应用", vec![SettingsPane::Appearance])],
+                "{row}"
+            );
+        }
     });
 }
 
@@ -2100,6 +2393,96 @@ fn appearance_keyboard_tabs_between_theme_cards_and_applies_selection() {
 }
 
 #[test]
+fn appearance_mode_segmented_supports_keyboard_navigation_and_moves_active_pill() {
+    use crate::theme::{DarkTheme, LightTheme, ThemeVariant};
+    use crate::theme_snapshot::{assert_border, assert_fill_color, ThemeGuard};
+    use gpui::{size, Modifiers, TestAppContext, VisualTestContext};
+
+    let _theme = ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    let host = cx.add_window(|window, cx| {
+        NativeRoot::new(
+            "appearance-mode-keyboard".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        )
+    });
+    let mut visual = VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(size(px(1200.), px(900.)));
+    host.update(&mut visual, |root, window, cx| {
+        root.enter_settings_pane(SettingsPane::Appearance, window, cx);
+        root.set_light_theme(LightTheme::RunnerLight, cx);
+        root.set_dark_theme(DarkTheme::Runner, cx);
+        root.set_theme_intent(ThemeIntent::Light, cx);
+        window.refresh();
+    })
+    .unwrap();
+    visual.run_until_parked();
+
+    assert_eq!(theme::active_variant(), ThemeVariant::RunnerLight);
+    assert!(visual
+        .debug_bounds("SETTINGS_LIGHT_THEME_ACTIVE_PILL")
+        .is_some());
+    assert!(visual
+        .debug_bounds("SETTINGS_DARK_THEME_ACTIVE_PILL")
+        .is_none());
+
+    // Click Light to put keyboard focus on the Mode segmented control, then Tab to Dark and press Space.
+    let light_mode = visual.debug_bounds("SETTINGS_THEME_MODE_LIGHT").unwrap();
+    visual.simulate_click(light_mode.center(), Modifiers::default());
+    visual.run_until_parked();
+
+    visual.simulate_keystrokes("tab");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("space");
+    visual.run_until_parked();
+    assert_eq!(
+        visual.read(|cx| store.read(cx).settings.app_theme),
+        ThemeIntent::Dark
+    );
+    assert_eq!(theme::active_variant(), ThemeVariant::Carbon);
+    assert_fill_color(
+        &mut visual,
+        "SETTINGS_THEME_MODE_DARK",
+        Some(theme::seg_selected()),
+    );
+    assert_border(
+        &mut visual,
+        "SETTINGS_THEME_MODE_DARK",
+        theme::seg_selected_border(),
+    );
+    assert!(visual
+        .debug_bounds("SETTINGS_LIGHT_THEME_ACTIVE_PILL")
+        .is_none());
+    assert!(visual
+        .debug_bounds("SETTINGS_DARK_THEME_ACTIVE_PILL")
+        .is_some());
+
+    // Shift-Tab back to Light and activate with Enter.
+    visual.simulate_keystrokes("shift-tab");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("enter");
+    visual.run_until_parked();
+    assert_eq!(
+        visual.read(|cx| store.read(cx).settings.app_theme),
+        ThemeIntent::Light
+    );
+    assert_eq!(theme::active_variant(), ThemeVariant::RunnerLight);
+    assert!(visual
+        .debug_bounds("SETTINGS_LIGHT_THEME_ACTIVE_PILL")
+        .is_some());
+    assert!(visual
+        .debug_bounds("SETTINGS_DARK_THEME_ACTIVE_PILL")
+        .is_none());
+}
+
+#[test]
 fn theme_card_focus_style_occludes_shadow_with_opaque_panel_background() {
     use crate::theme::ThemeVariant;
     use crate::theme_snapshot::ThemeGuard;
@@ -2111,7 +2494,14 @@ fn theme_card_focus_style_occludes_shadow_with_opaque_panel_background() {
         assert_eq!(focused.background, Some(gpui::Fill::from(theme::panel())));
         assert_eq!(theme::panel().a, 1.0);
         assert_ne!(theme::panel(), theme::accent());
-        assert!(focused.box_shadow.is_some());
+        let shadows = focused.box_shadow.expect("focus ring shadows");
+        assert_eq!(shadows.len(), 2, "{variant:?}");
+        assert_eq!(shadows[0].color, theme::accent(), "{variant:?}");
+        assert_eq!(shadows[0].spread_radius, px(4.), "{variant:?}");
+        assert!(!shadows[0].inset, "{variant:?}");
+        assert_eq!(shadows[1].color, theme::panel(), "{variant:?}");
+        assert_eq!(shadows[1].spread_radius, px(2.), "{variant:?}");
+        assert!(!shadows[1].inset, "{variant:?}");
     }
 }
 

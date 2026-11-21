@@ -9,8 +9,8 @@ use gpui::{
     SharedString, Subscription, WeakEntity, Window,
 };
 use runner_app::ui::{
-    Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogState, PaneHeader, SettingsCard,
-    TextField,
+    Button, ButtonSize, ButtonVariant, ConfirmDialog, ConfirmDialogState, PaneHeader,
+    SegmentOption, SegmentedControl, SettingsCard, TextField,
 };
 use runner_core::protocol::model::Mission;
 use runner_core::protocol::session::DirectSessionEntry;
@@ -33,6 +33,22 @@ enum ArchivedFilter {
 
 impl ArchivedFilter {
     const ALL: [Self; 3] = [Self::All, Self::Missions, Self::Chats];
+
+    const fn key(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Missions => "missions",
+            Self::Chats => "chats",
+        }
+    }
+
+    const fn debug_selector(self) -> &'static str {
+        match self {
+            Self::All => "ARCHIVED_FILTER_ALL",
+            Self::Missions => "ARCHIVED_FILTER_MISSIONS",
+            Self::Chats => "ARCHIVED_FILTER_CHATS",
+        }
+    }
 
     fn label(self) -> &'static str {
         match self {
@@ -139,6 +155,10 @@ impl ArchivedPane {
 
     pub(crate) fn confirm_open(&self) -> bool {
         self.confirm.is_open()
+    }
+
+    pub(crate) fn is_composing(&self, cx: &gpui::App) -> bool {
+        self.search.read(cx).is_composing()
     }
 
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -382,48 +402,20 @@ impl ArchivedPane {
 
     fn render_filters(&self, cx: &mut Context<Self>) -> AnyElement {
         let pane = cx.entity();
-        div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .gap(rems(2. / 16.))
-            .rounded(rems(6. / 16.))
-            .border_1()
-            .border_color(theme::border())
-            .bg(theme::bg())
-            .p(rems(2. / 16.))
-            .children(ArchivedFilter::ALL.into_iter().map(|filter| {
-                let active = self.filter == filter;
-                let pane = pane.clone();
-                div()
-                    .id(SharedString::from(format!(
-                        "archived-filter-{}",
-                        filter.label()
-                    )))
-                    .tab_index(0)
-                    .cursor_pointer()
-                    .rounded(rems(4. / 16.))
-                    .bg(if active {
-                        theme::raised()
-                    } else {
-                        gpui::transparent_black()
-                    })
-                    .px(rems(10. / 16.))
-                    .py(rems(5. / 16.))
-                    .text_size(theme::text_ui())
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(if active {
-                        theme::text()
-                    } else {
-                        theme::muted()
-                    })
-                    .hover(|cell| cell.text_color(theme::text()))
-                    .child(filter.label())
-                    .on_click(move |_, _, cx| {
-                        pane.update(cx, |this, pane_cx| this.set_filter(filter, pane_cx));
-                    })
-            }))
-            .into_any_element()
+        SegmentedControl::new(ArchivedFilter::ALL.into_iter().map(|filter| {
+            let pane = pane.clone();
+            SegmentOption::new(
+                format!("archived-filter-{}", filter.key()),
+                filter.label(),
+                self.filter == filter,
+                move |_, cx| {
+                    pane.update(cx, |this, pane_cx| this.set_filter(filter, pane_cx));
+                },
+            )
+            .debug_selector(filter.debug_selector())
+        }))
+        .debug_selector("ARCHIVED_FILTER_SEGMENTED")
+        .into_any_element()
     }
 
     fn render_row(&self, item: ArchivedItem, cx: &mut Context<Self>) -> AnyElement {
@@ -1251,6 +1243,161 @@ mod tests {
                 restored_mission.cwd.as_deref().unwrap()
             )),
             runner_core::app_paths::normalize_checkout_path(&repo)
+        );
+    }
+
+    #[test]
+    fn archived_filter_uses_shared_segmented_control_and_updates_filtered_rows() {
+        use crate::theme_snapshot::{assert_border, assert_fill_color, assert_text, ThemeGuard};
+        use crate::{AppRoute, SettingsPane};
+        use gpui::{px, size, Modifiers, TestAppContext, VisualTestContext};
+
+        let _theme = ThemeGuard::new();
+        theme::set_active_variant(theme::ThemeVariant::RunnerLight);
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+        let host = cx.add_window(|window, cx| {
+            let mut root = NativeRoot::new(
+                "arch-filter".into(),
+                temp.path().join("logs"),
+                None,
+                None,
+                store.clone(),
+                window,
+                cx,
+            );
+            let shell_weak = cx.entity().downgrade();
+            let pane = cx.new(|cx| {
+                let mut pane = ArchivedPane::new(shell_weak, store.clone(), cx);
+                pane.items = Some(merge_archived_items(
+                    &[mission(
+                        "m1",
+                        "Release",
+                        "/work/runner",
+                        "2026-08-20T01:00:00Z",
+                    )],
+                    &[chat(
+                        "c1",
+                        Some("Investigate"),
+                        "/work/quill",
+                        "2026-08-21T01:00:00Z",
+                    )],
+                ));
+                pane
+            });
+            root.route = AppRoute::Settings;
+            root.settings_page.pane = SettingsPane::Archived;
+            root.settings_page.archived = Some(pane);
+            root
+        });
+        let pane = host
+            .read_with(&cx, |root, _| root.settings_page.archived.clone().unwrap())
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(host.into(), &cx);
+        visual.simulate_resize(size(px(1200.), px(800.)));
+        visual.run_until_parked();
+
+        assert_fill_color(&mut visual, "ARCHIVED_FILTER_SEGMENTED", Some(theme::bg()));
+        assert_border(
+            &mut visual,
+            "ARCHIVED_FILTER_SEGMENTED",
+            theme::border_strong(),
+        );
+        assert_fill_color(
+            &mut visual,
+            "ARCHIVED_FILTER_ALL",
+            Some(theme::seg_selected()),
+        );
+        assert_border(
+            &mut visual,
+            "ARCHIVED_FILTER_ALL",
+            theme::seg_selected_border(),
+        );
+        assert_text(&mut visual, "ARCHIVED_FILTER_ALL", theme::text());
+        assert_fill_color(
+            &mut visual,
+            "ARCHIVED_FILTER_MISSIONS",
+            Some(gpui::transparent_black()),
+        );
+        assert_text(&mut visual, "ARCHIVED_FILTER_MISSIONS", theme::muted());
+        assert!(visual.debug_bounds("ARCHIVED_ROW:m1").is_some());
+        assert!(visual.debug_bounds("ARCHIVED_ROW:c1").is_some());
+
+        let missions = visual.debug_bounds("ARCHIVED_FILTER_MISSIONS").unwrap();
+        visual.simulate_click(missions.center(), Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            pane.read_with(&visual, |p, _| p.filter),
+            ArchivedFilter::Missions
+        );
+        assert_fill_color(
+            &mut visual,
+            "ARCHIVED_FILTER_MISSIONS",
+            Some(theme::seg_selected()),
+        );
+        assert_fill_color(
+            &mut visual,
+            "ARCHIVED_FILTER_ALL",
+            Some(gpui::transparent_black()),
+        );
+        assert!(visual.debug_bounds("ARCHIVED_ROW:m1").is_some());
+        assert!(visual.debug_bounds("ARCHIVED_ROW:c1").is_none());
+
+        // Ctrl+Tab does not traverse out of Missions; real Tab moves focus to Chats.
+        let missions_focus = host
+            .update(&mut visual, |_, window, cx| window.focused(cx).unwrap())
+            .unwrap();
+        visual.simulate_keystrokes("ctrl-tab");
+        visual.run_until_parked();
+        assert_eq!(
+            host.update(&mut visual, |_, window, cx| window.focused(cx))
+                .unwrap(),
+            Some(missions_focus.clone())
+        );
+
+        visual.simulate_keystrokes("tab");
+        visual.run_until_parked();
+        let chats_focus = host
+            .update(&mut visual, |_, window, cx| window.focused(cx).unwrap())
+            .unwrap();
+        assert_ne!(chats_focus, missions_focus);
+
+        // Shift+Space is ignored; plain Space activates Chats.
+        visual.simulate_keystrokes("shift-space");
+        visual.run_until_parked();
+        assert_eq!(
+            pane.read_with(&visual, |p, _| p.filter),
+            ArchivedFilter::Missions
+        );
+
+        visual.simulate_keystrokes("space");
+        visual.run_until_parked();
+        assert_eq!(
+            pane.read_with(&visual, |p, _| p.filter),
+            ArchivedFilter::Chats
+        );
+        assert_fill_color(
+            &mut visual,
+            "ARCHIVED_FILTER_CHATS",
+            Some(theme::seg_selected()),
+        );
+        assert!(visual.debug_bounds("ARCHIVED_ROW:m1").is_none());
+        assert!(visual.debug_bounds("ARCHIVED_ROW:c1").is_some());
+
+        // Shift-Tab moves focus back to Missions and Enter activates it.
+        visual.simulate_keystrokes("shift-tab");
+        visual.run_until_parked();
+        assert_eq!(
+            host.update(&mut visual, |_, window, cx| window.focused(cx))
+                .unwrap(),
+            Some(missions_focus)
+        );
+        visual.simulate_keystrokes("enter");
+        visual.run_until_parked();
+        assert_eq!(
+            pane.read_with(&visual, |p, _| p.filter),
+            ArchivedFilter::Missions
         );
     }
 }

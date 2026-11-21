@@ -19,18 +19,18 @@ use std::time::Duration;
 use gpui::prelude::*;
 
 use gpui::{
-    div, px, rems, svg, AnyElement, BoxShadow, Context, CursorStyle, Entity, FontWeight,
-    KeyDownEvent, PathPromptOptions, Pixels, ScrollHandle, SharedString, Subscription, Window,
+    div, px, rems, svg, AnyElement, BoxShadow, Context, Entity, FontWeight, KeyDownEvent,
+    PathPromptOptions, Pixels, ScrollHandle, SharedString, Subscription, Window,
 };
 
 #[cfg(target_os = "macos")]
 use runner_app::terminal_ime::OptionAsMeta;
 
 use runner_app::ui::{
-    focus_ring, working_dir_text_field, Button, ButtonSize, ButtonVariant, IconButton,
-    IconButtonSize, PaneHeader, Scrollbar, SelectHandler, SelectLeading, SelectOption,
-    SettingsCard, SettingsRow, StepHandler, Stepper, StyledSelect, TextField, Toggle,
-    WorkingDirField,
+    focus_ring_with_offset, working_dir_text_field, Button, ButtonSize, ButtonVariant, IconButton,
+    IconButtonSize, PaneHeader, Scrollbar, SegmentOption, SegmentedControl, SelectHandler,
+    SelectLeading, SelectOption, SettingsCard, SettingsRow, StepHandler, Stepper, StyledSelect,
+    TextField, Toggle, WorkingDirField,
 };
 
 use runner_core::protocol::command::{
@@ -160,8 +160,11 @@ impl SettingsPane {
     fn search_terms(self) -> Vec<&'static str> {
         let keys: &[&'static str] = match self {
             Self::Appearance => &[
+                "appearance.mode",
                 "ui.theme",
                 "ui.window_material",
+                "appearance.light_mode_theme",
+                "appearance.dark_mode_theme",
                 "ui.light_theme",
                 "ui.dark_theme",
             ],
@@ -311,7 +314,7 @@ pub(crate) struct SettingsState {
     agents: Option<Entity<settings::agents::AgentsPane>>,
     updates: Option<Entity<settings::updates::UpdatesPane>>,
     about: Option<Entity<settings::about::AboutPane>>,
-    archived: Option<Entity<settings::archived::ArchivedPane>>,
+    pub(crate) archived: Option<Entity<settings::archived::ArchivedPane>>,
     nav_scroll: ScrollHandle,
     nav_scrollbar: Entity<Scrollbar>,
     content_scroll: ScrollHandle,
