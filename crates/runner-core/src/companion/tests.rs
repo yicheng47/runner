@@ -1388,3 +1388,31 @@ fn overview_checkout_round_trips_older_omission_and_forward_unknowns() {
     .unwrap();
     assert_eq!(future_unknown_kind.to_protocol(), None);
 }
+
+#[test]
+fn overview_session_model_and_effort_round_trip_and_default_when_omitted() {
+    let old: Session = serde_json::from_value(json!({
+        "kind": "agent",
+        "title": "Coder",
+        "runtime": "codex",
+        "cwd": "/tmp",
+        "status": "idle",
+        "reason": null,
+        "unread": false
+    }))
+    .unwrap();
+    assert_eq!(old.model, None);
+    assert_eq!(old.effort, None);
+    let old_wire = serde_json::to_value(&old).unwrap();
+    assert!(old_wire.get("model").is_none());
+    assert!(old_wire.get("effort").is_none());
+
+    let mut full = old;
+    full.model = Some("gpt-6-astra".into());
+    full.effort = Some("xhigh".into());
+    let wire = serde_json::to_value(&full).unwrap();
+    assert_eq!(wire["model"], "gpt-6-astra");
+    assert_eq!(wire["effort"], "xhigh");
+    let decoded: Session = serde_json::from_value(wire).unwrap();
+    assert_eq!(decoded, full);
+}

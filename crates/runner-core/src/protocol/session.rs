@@ -19,6 +19,12 @@ pub struct SessionRow {
     /// (clear-on-resize for full-screen TUIs, etc.) without a second
     /// role lookup. See docs/impls/archive/0011 §"Per-runtime clear-on-resize".
     pub runtime: String,
+    /// Effective model from the session's launch definition, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_model: Option<String>,
+    /// Effective reasoning effort from the session's launch definition, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_effort: Option<String>,
     /// Legacy compatibility field; always false.
     pub lead: bool,
     /// Native agent conversation key captured from the spawned agent.

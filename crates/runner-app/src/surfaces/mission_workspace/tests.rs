@@ -763,6 +763,8 @@ fn sidebar_and_mission_fills_follow_carbon_and_runner_light() {
         },
         handle: "archived".into(),
         runtime: "codex".into(),
+        agent_model: None,
+        agent_effort: None,
         role_handle: String::new(),
         lead: false,
         agent_session_key: None,
@@ -1334,6 +1336,8 @@ fn cached_mission_header_tabs_and_feed_span_the_content_column() {
                     role_handle: String::new(),
                     lead: false,
                     runtime: "codex".into(),
+                    agent_model: None,
+                    agent_effort: None,
                     live_title: None,
                     agent_session_key: None,
                 })
@@ -1481,6 +1485,8 @@ fn mission_rail_scrolls_long_roster_and_goal_above_corner_padding() {
                     role_handle: String::new(),
                     lead: index == 0,
                     runtime: "shell".into(),
+                    agent_model: None,
+                    agent_effort: None,
                     live_title: None,
                     agent_session_key: None,
                 })
@@ -1574,6 +1580,8 @@ fn a_rail_widened_by_an_open_file_lays_the_roster_two_per_row() {
                     role_handle: String::new(),
                     lead: index == 0,
                     runtime: "shell".into(),
+                    agent_model: None,
+                    agent_effort: None,
                     live_title: None,
                     agent_session_key: None,
                 })
@@ -2079,6 +2087,14 @@ impl gpui::Render for MissionRailLayoutTest {
                 )
                 .child(
                     div()
+                        .debug_selector(|| "RAIL_FULL_RUNTIME".into())
+                        .flex_none()
+                        .text_size(theme::text_meta())
+                        .line_height(gpui::rems(14. / 16.))
+                        .child("Codex · a-very-long-model-name-that-must-truncate · Extra high"),
+                )
+                .child(
+                    div()
                         .debug_selector(|| "RAIL_TWO_LINE_MISSION_ID".into())
                         .font_family(theme::UI_MONOSPACE_FONT)
                         .text_size(theme::text_meta())
@@ -2179,6 +2195,9 @@ fn mission_rail_long_values_truncate_without_overlapping_fixed_controls() {
                     role_handle: "role".into(),
                     lead,
                     runtime: "codex".into(),
+                    agent_model: (id != "short")
+                        .then(|| "a-very-long-model-name-that-must-truncate".into()),
+                    agent_effort: (id != "short").then(|| "xhigh".into()),
                     live_title: None,
                     agent_session_key: (id != "short").then(|| session_key.into()),
                 })
@@ -2205,21 +2224,46 @@ fn mission_rail_long_values_truncate_without_overlapping_fixed_controls() {
         cx.run_until_parked();
         let full = visual.debug_bounds("RAIL_FULL_HANDLE").unwrap();
         let prefix = visual.debug_bounds("RAIL_VISIBLE_PREFIX").unwrap();
-        for (card_selector, handle_selector, controls_selector) in [
+        let full_runtime = visual.debug_bounds("RAIL_FULL_RUNTIME").unwrap();
+        for (
+            card_selector,
+            handle_selector,
+            status_selector,
+            controls_selector,
+            runtime_selector,
+            runtime_mark_selector,
+            runtime_text_selector,
+            key_selector,
+        ) in [
             (
                 "MISSION_CARD lead",
                 "MISSION_CARD_HANDLE lead",
+                "MISSION_CARD_STATUS lead",
                 "MISSION_CARD_CONTROLS lead",
+                "MISSION_CARD_RUNTIME lead",
+                "MISSION_CARD_RUNTIME_MARK lead",
+                "MISSION_CARD_RUNTIME_TEXT lead",
+                "MISSION_CARD_KEY lead",
             ),
             (
                 "MISSION_CARD worker",
                 "MISSION_CARD_HANDLE worker",
+                "MISSION_CARD_STATUS worker",
                 "MISSION_CARD_CONTROLS worker",
+                "MISSION_CARD_RUNTIME worker",
+                "MISSION_CARD_RUNTIME_MARK worker",
+                "MISSION_CARD_RUNTIME_TEXT worker",
+                "MISSION_CARD_KEY worker",
             ),
         ] {
             let card = visual.debug_bounds(card_selector).unwrap();
             let handle = visual.debug_bounds(handle_selector).unwrap();
+            let status = visual.debug_bounds(status_selector).unwrap();
             let controls = visual.debug_bounds(controls_selector).unwrap();
+            let runtime = visual.debug_bounds(runtime_selector).unwrap();
+            let runtime_mark = visual.debug_bounds(runtime_mark_selector).unwrap();
+            let runtime_text = visual.debug_bounds(runtime_text_selector).unwrap();
+            let key = visual.debug_bounds(key_selector).unwrap();
             assert!(
                 handle.size.width >= prefix.size.width,
                 "handle cannot retain its first character at rail width {width}: {handle:?}, prefix {prefix:?}"
@@ -2233,6 +2277,14 @@ fn mission_rail_long_values_truncate_without_overlapping_fixed_controls() {
                 "handle overlaps controls at rail width {width}"
             );
             assert!(
+                status.top() >= handle.bottom(),
+                "status should sit below handle at rail width {width}: handle {handle:?}, status {status:?}"
+            );
+            assert!(
+                status.right() <= controls.left(),
+                "status overlaps controls at rail width {width}: status {status:?}, controls {controls:?}"
+            );
+            assert!(
                 controls.right() <= card.right(),
                 "controls overflow at rail width {width}"
             );
@@ -2240,6 +2292,35 @@ fn mission_rail_long_values_truncate_without_overlapping_fixed_controls() {
                 controls.size.width,
                 px(80.),
                 "controls shrank at rail width {width}"
+            );
+            assert!(
+                runtime.top() >= status.bottom(),
+                "runtime line should sit below header status at rail width {width}: status {status:?}, runtime {runtime:?}"
+            );
+            assert!(
+                runtime.bottom() <= key.top(),
+                "runtime line should sit above session_key at rail width {width}: runtime {runtime:?}, key {key:?}"
+            );
+            assert!(
+                runtime.right() <= card.right(),
+                "runtime line overflows card at rail width {width}: runtime {runtime:?}, card {card:?}"
+            );
+            assert_eq!(
+                runtime_mark.size,
+                size(px(12.), px(12.)),
+                "runtime mark should stay 12px at rail width {width}: {runtime_mark:?}"
+            );
+            assert!(
+                runtime_text.size.width < full_runtime.size.width,
+                "long runtime line did not truncate at rail width {width}: {runtime_text:?}"
+            );
+            assert_eq!(
+                runtime_text.size.height, full_runtime.size.height,
+                "runtime line wrapped to multiple lines at rail width {width}: {runtime_text:?}"
+            );
+            assert!(
+                runtime_text.right() <= card.right(),
+                "runtime text overflows card at rail width {width}: {runtime_text:?}, card {card:?}"
             );
             if handle_selector == "MISSION_CARD_HANDLE lead" {
                 let avatar = visual.debug_bounds("MISSION_CARD_AVATAR lead").unwrap();
@@ -2251,6 +2332,10 @@ fn mission_rail_long_values_truncate_without_overlapping_fixed_controls() {
                     avatar.size.width,
                     px(25.),
                     "avatar shrank at rail width {width}"
+                );
+                assert!(
+                    status.left() >= avatar.right(),
+                    "status should sit beside avatar at rail width {width}: avatar {avatar:?}, status {status:?}"
                 );
             }
         }
@@ -2314,6 +2399,15 @@ fn mission_rail_long_values_truncate_without_overlapping_fixed_controls() {
                 .height,
             px(14.),
             "NULL gained a line at rail width {width}"
+        );
+        assert_eq!(
+            visual
+                .debug_bounds("MISSION_CARD short")
+                .unwrap()
+                .size
+                .height,
+            px(108.),
+            "single-line NULL key card should match the spec's 108 px height at rail width {width}"
         );
         for status in [MissionStatus::Running, MissionStatus::Completed] {
             let (short_handle, reference) = if status == MissionStatus::Running && width < 239. {
@@ -4682,6 +4776,8 @@ fn osc52_visibility_follows_the_mission_terminals_a_window_draws() {
                 role_handle: String::new(),
                 lead: true,
                 runtime: "shell".into(),
+                agent_model: None,
+                agent_effort: None,
                 live_title: None,
                 agent_session_key: None,
             }];
@@ -6058,4 +6154,255 @@ fn local_mission_drawer_empty_focused_cmd_w_hides_and_non_drawer_actions_stay_in
         host.update(&mut visual, |_, window, _| window.remove_window())
             .unwrap();
     }
+}
+
+#[test]
+fn mission_card_runtime_line_formats_values_and_omits_unknown_and_shell() {
+    let member = |runtime: &str, model: Option<&str>, effort: Option<&str>| {
+        crate::surfaces::front_page::model::MissionMemberDisplay {
+            session: crate::surfaces::front_page::model::MissionMemberSession {
+                id: "s".into(),
+                status: SessionStatus::Running,
+                cwd: None,
+            },
+            handle: "coder".into(),
+            runtime: runtime.into(),
+            agent_model: model.map(str::to_owned),
+            agent_effort: effort.map(str::to_owned),
+            live_title: None,
+            agent_session_key: None,
+        }
+    };
+    assert_eq!(
+        rail::session_runtime_line(&member("codex", Some("gpt-6-astra"), Some("xhigh"))).as_deref(),
+        Some("Codex · gpt-6-astra · Extra high")
+    );
+    crate::i18n::testing::with_locale(crate::i18n::Locale::SimplifiedChinese, || {
+        assert_eq!(
+            rail::session_runtime_line(&member("codex", Some("gpt-6-astra"), Some("xhigh")))
+                .as_deref(),
+            Some("Codex · gpt-6-astra · 极高")
+        );
+    });
+    assert_eq!(
+        rail::session_runtime_line(&member("claude-code", Some("opus"), Some("high"))).as_deref(),
+        Some("Claude Code · opus · High")
+    );
+    assert_eq!(
+        rail::session_runtime_line(&member("pi", Some("deepseek-chat"), None)).as_deref(),
+        Some("pi · deepseek-chat")
+    );
+    assert_eq!(
+        rail::session_runtime_line(&member("codex", None, None)).as_deref(),
+        Some("Codex")
+    );
+    assert_eq!(
+        rail::session_runtime_line(&member("codex", None, Some("high"))).as_deref(),
+        Some("Codex · High")
+    );
+    assert_eq!(
+        rail::session_runtime_line(&member("codex", Some("  "), Some("default"))).as_deref(),
+        Some("Codex")
+    );
+    assert_eq!(
+        rail::session_runtime_line(&member("claude-code", Some("default"), Some("high")))
+            .as_deref(),
+        Some("Claude Code · High")
+    );
+    assert_eq!(
+        rail::session_runtime_line(&member("codex", Some("gpt-6-astra"), Some("DEFAULT")))
+            .as_deref(),
+        Some("Codex · gpt-6-astra")
+    );
+    assert_eq!(
+        rail::session_runtime_line(&member("codex", Some("gpt-6-astra"), Some(""))).as_deref(),
+        Some("Codex · gpt-6-astra")
+    );
+    assert_eq!(
+        rail::session_runtime_line(&member("future-agent", Some("v1"), Some("high"))).as_deref(),
+        Some("future-agent · v1 · High")
+    );
+    assert_eq!(
+        rail::session_runtime_line(&member("shell", Some("ignored"), Some("high"))),
+        None
+    );
+    assert_eq!(rail::session_runtime_line(&member("", None, None)), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn mission_rail_cards_show_runtime_line_omit_shell_and_fit_two_up() {
+    use crate::theme_snapshot::ThemeGuard;
+    use gpui::{TestAppContext, VisualTestContext};
+    let _theme = ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    store.update(&mut cx, |store, _| {
+        crate::app_store::seed_mixed_working_sessions(store)
+    });
+    let mission = store.read_with(&cx, |store, _| {
+        runner_daemon::ops::mission::mission_get(&store.test_core, "test-mission").unwrap()
+    });
+    let host = cx.add_window(|window, cx| {
+        window.set_rem_size(px(16.));
+        let workspace = cx.new(|cx| {
+            let mut workspace = MissionWorkspace::new(
+                "rail-runtime".into(),
+                WeakEntity::new_invalid(),
+                store,
+                window,
+                cx,
+            );
+            workspace.mission = Some(mission);
+            let wrapped_key = "01a119c9-4714-7091-8b75-81cec4ff360c";
+            workspace.sessions = [
+                (
+                    "coder",
+                    "claude-code",
+                    Some("opus"),
+                    Some("high"),
+                    Some("01kzmr6z"),
+                ),
+                ("qa", "pi", Some("deepseek-chat"), None, None),
+                ("bare", "codex", None, None, None),
+                ("shell", "shell", None, None, None),
+                (
+                    "reviewer",
+                    "codex",
+                    Some("a-very-long-model-name-that-must-truncate"),
+                    Some("xhigh"),
+                    Some(wrapped_key),
+                ),
+            ]
+            .into_iter()
+            .map(|(id, runtime, model, effort, key)| SessionRow {
+                session: runner_core::protocol::model::Session {
+                    id: id.into(),
+                    mission_id: Some("test-mission".into()),
+                    role_id: "test-shell-role".into(),
+                    slot_id: None,
+                    cwd: None,
+                    status: SessionStatus::Running,
+                    pid: None,
+                    started_at: None,
+                    stopped_at: None,
+                },
+                handle: id.into(),
+                role_handle: id.into(),
+                lead: false,
+                runtime: runtime.into(),
+                agent_model: model.map(str::to_owned),
+                agent_effort: effort.map(str::to_owned),
+                live_title: None,
+                agent_session_key: key.map(str::to_owned),
+            })
+            .collect();
+            workspace.sync_mission_copy_entities(cx);
+            workspace
+        });
+        MissionRailLayoutTest {
+            workspace,
+            width: None,
+        }
+    });
+    let mut visual = VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(size(px(2400.), px(900.)));
+    for width in [app_settings::MISSION_RAIL_DEFAULT, 560., 680.] {
+        host.update(&mut visual, |host, _, cx| {
+            host.width = Some(width);
+            cx.notify();
+        })
+        .unwrap();
+        visual.run_until_parked();
+        let full_runtime = visual.debug_bounds("RAIL_FULL_RUNTIME").unwrap();
+        for id in ["coder", "qa", "bare", "reviewer"] {
+            let card = visual
+                .debug_bounds(format!("MISSION_CARD {id}").leak())
+                .unwrap();
+            let avatar = visual
+                .debug_bounds(format!("MISSION_CARD_AVATAR {id}").leak())
+                .unwrap();
+            let handle = visual
+                .debug_bounds(format!("MISSION_CARD_HANDLE {id}").leak())
+                .unwrap();
+            let status = visual
+                .debug_bounds(format!("MISSION_CARD_STATUS {id}").leak())
+                .unwrap();
+            let runtime = visual
+                .debug_bounds(format!("MISSION_CARD_RUNTIME {id}").leak())
+                .unwrap();
+            let mark = visual
+                .debug_bounds(format!("MISSION_CARD_RUNTIME_MARK {id}").leak())
+                .unwrap();
+            let text = visual
+                .debug_bounds(format!("MISSION_CARD_RUNTIME_TEXT {id}").leak())
+                .unwrap();
+            let key = visual
+                .debug_bounds(format!("MISSION_CARD_KEY {id}").leak())
+                .unwrap();
+            assert!(status.left() >= avatar.right(), "{id} at {width}");
+            assert!(status.top() >= handle.bottom(), "{id} at {width}");
+            assert!(runtime.top() >= status.bottom(), "{id} at {width}");
+            assert!(runtime.bottom() <= key.top(), "{id} at {width}");
+            assert!(runtime.right() <= card.right(), "{id} at {width}");
+            assert_eq!(mark.size, size(px(12.), px(12.)), "{id} at {width}");
+            assert_eq!(
+                text.size.height, full_runtime.size.height,
+                "{id} at {width}"
+            );
+            assert!(text.right() <= card.right(), "{id} at {width}");
+            if id == "reviewer" {
+                assert!(
+                    card.size.height > px(108.),
+                    "wrapped session_key card should grow beyond 108 px: {id} at {width}: {card:?}"
+                );
+            } else {
+                assert_eq!(
+                    card.size.height,
+                    px(108.),
+                    "single-line key card (populated or NULL) should match the spec's 108 px height: {id} at {width}: {card:?}"
+                );
+            }
+        }
+        for (id, expected_key) in [
+            ("coder", "01kzmr6z"),
+            ("reviewer", "01a119c9-4714-7091-8b75-81cec4ff360c"),
+        ] {
+            let card = visual
+                .debug_bounds(format!("MISSION_CARD {id}").leak())
+                .unwrap();
+            let key = visual
+                .debug_bounds(format!("MISSION_CARD_KEY {id}").leak())
+                .unwrap();
+            let copy = visual
+                .debug_bounds(format!("MISSION_CARD_KEY_COPY {id}").leak())
+                .unwrap();
+            assert_eq!(copy.size, size(px(20.), px(20.)), "{id} at {width}");
+            assert!(key.right() <= copy.left(), "{id} at {width}");
+            assert!(copy.right() <= card.right(), "{id} at {width}");
+            visual.simulate_click(copy.center(), gpui::Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()),
+                Some(expected_key.into()),
+                "copy hit target failed for {id} at {width}"
+            );
+        }
+        let reviewer_text = visual
+            .debug_bounds("MISSION_CARD_RUNTIME_TEXT reviewer")
+            .unwrap();
+        assert!(
+            reviewer_text.size.width < full_runtime.size.width,
+            "reviewer long runtime line should truncate at {width}: {reviewer_text:?}"
+        );
+        assert!(visual.debug_bounds("MISSION_CARD shell").is_some());
+        assert!(visual.debug_bounds("MISSION_CARD_STATUS shell").is_none());
+        assert!(visual.debug_bounds("MISSION_CARD_RUNTIME shell").is_none());
+        assert!(visual
+            .debug_bounds("MISSION_CARD_RUNTIME_MARK shell")
+            .is_none());
+    }
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
 }

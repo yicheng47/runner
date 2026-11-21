@@ -564,6 +564,8 @@ record!(SessionRow {
     live_title,
     handle,
     runtime,
+    agent_model,
+    agent_effort,
     lead,
     agent_session_key
 });
@@ -1537,4 +1539,35 @@ fn window_subjects_preserve_adjacently_tagged_shapes_across_local_and_remote_var
         assert_eq!(serde_json::to_value(&subject).unwrap(), expected);
         round_trip(subject);
     }
+}
+
+#[test]
+fn session_row_round_trips_and_defaults_missing_model_and_effort() {
+    let mut full = SessionRow::sample();
+    full.agent_model = Some("gpt-6-astra".into());
+    full.agent_effort = Some("xhigh".into());
+    round_trip(full.clone());
+
+    let mut value = serde_json::to_value(&full).unwrap();
+    let object = value.as_object_mut().unwrap();
+    assert_eq!(object["agent_model"], "gpt-6-astra");
+    assert_eq!(object["agent_effort"], "xhigh");
+    object.remove("agent_model");
+    object.remove("agent_effort");
+    let decoded: SessionRow = serde_json::from_value(value).unwrap();
+    assert_eq!(decoded.agent_model, None);
+    assert_eq!(decoded.agent_effort, None);
+    assert_eq!(decoded.runtime, full.runtime);
+    assert_eq!(decoded.handle, full.handle);
+
+    let mut unset = full;
+    unset.agent_model = None;
+    unset.agent_effort = None;
+    let unset_value = serde_json::to_value(&unset).unwrap();
+    let unset_object = unset_value.as_object().unwrap();
+    assert!(unset_object.get("agent_model").is_none());
+    assert!(unset_object.get("agent_effort").is_none());
+    let decoded_unset: SessionRow = serde_json::from_value(unset_value).unwrap();
+    assert_eq!(decoded_unset.agent_model, None);
+    assert_eq!(decoded_unset.agent_effort, None);
 }

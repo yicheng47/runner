@@ -654,8 +654,16 @@ impl MissionPresentation {
                     },
                     handle: member.handle.clone(),
                     runtime: session
-                        .and_then(|session| session.runtime.clone())
+                        .map(|session| {
+                            if session.kind == runner_core::companion::SessionKind::Shell {
+                                "shell".into()
+                            } else {
+                                session.runtime.clone().unwrap_or_default()
+                            }
+                        })
                         .unwrap_or_default(),
+                    agent_model: session.and_then(|session| session.model.clone()),
+                    agent_effort: session.and_then(|session| session.effort.clone()),
                     live_title: session.map(|session| session.title.clone()),
                     agent_session_key: None,
                 }

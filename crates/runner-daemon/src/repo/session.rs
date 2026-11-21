@@ -953,6 +953,8 @@ pub struct MissionSessionRow {
     pub agent_session_key: Option<String>,
     pub handle: String,
     pub runtime: String,
+    pub agent_model: Option<String>,
+    pub agent_effort: Option<String>,
     pub lead: bool,
 }
 
@@ -977,6 +979,13 @@ fn session_from_row_db(row: SessionRowDb) -> rusqlite::Result<Session> {
         started_at: row.started_at,
         stopped_at: row.stopped_at,
     })
+}
+
+fn known_launch_setting(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("default"))
+        .map(str::to_owned)
 }
 
 /// Non-archived sessions of a mission in slot-roster order, joined with
@@ -1008,12 +1017,26 @@ pub fn list_for_mission(
         let lead: bool = row.get("lead")?;
         let agent_session_key = db_row.agent_session_key.clone();
         let live_title = db_row.live_title.clone();
+        let agent_model = known_launch_setting(
+            db_row
+                .launch_definition
+                .as_ref()
+                .and_then(|definition| definition.model.as_deref()),
+        );
+        let agent_effort = known_launch_setting(
+            db_row
+                .launch_definition
+                .as_ref()
+                .and_then(|definition| definition.effort.as_deref()),
+        );
         Ok(MissionSessionRow {
             session: session_from_row_db(db_row)?,
             live_title,
             agent_session_key,
             handle,
             runtime,
+            agent_model,
+            agent_effort,
             lead,
         })
     })?;

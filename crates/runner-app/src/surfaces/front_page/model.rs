@@ -594,6 +594,8 @@ pub(crate) struct MissionMemberDisplay {
     pub(crate) session: MissionMemberSession,
     pub(crate) handle: String,
     pub(crate) runtime: String,
+    pub(crate) agent_model: Option<String>,
+    pub(crate) agent_effort: Option<String>,
     pub(crate) live_title: Option<String>,
     pub(crate) agent_session_key: Option<String>,
 }
@@ -615,6 +617,8 @@ impl From<&runner_core::protocol::session::SessionRow> for MissionMemberDisplay 
             },
             handle: row.handle.clone(),
             runtime: row.runtime.clone(),
+            agent_model: row.agent_model.clone(),
+            agent_effort: row.agent_effort.clone(),
             live_title: row.live_title.clone(),
             agent_session_key: row.agent_session_key.clone(),
         }

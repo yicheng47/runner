@@ -217,6 +217,12 @@ pub struct Session {
     pub kind: SessionKind,
     pub title: String,
     pub runtime: Option<String>,
+    /// Effective model from the session's launch definition (#1332); older hosts send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Effective reasoning effort from the session's launch definition (#1332); older hosts send none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     pub cwd: Option<String>,
     #[serde(flatten)]
     pub status: SessionStatus,

@@ -43,6 +43,8 @@ pub fn list_for_mission(
             live_title: row.live_title,
             handle: row.handle,
             runtime: row.runtime,
+            agent_model: row.agent_model,
+            agent_effort: row.agent_effort,
             role_handle: String::new(),
             lead: false,
             agent_session_key: row.agent_session_key,

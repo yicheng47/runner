@@ -694,6 +694,30 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
                     error_acknowledged: false,
                     interrupted_since: None,
                 });
+            let known_setting = |value: Option<&str>| {
+                value
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("default"))
+                    .map(str::to_owned)
+            };
+            let model = (!shell)
+                .then(|| {
+                    known_setting(
+                        row.launch_definition
+                            .as_ref()
+                            .and_then(|definition| definition.model.as_deref()),
+                    )
+                })
+                .flatten();
+            let effort = (!shell)
+                .then(|| {
+                    known_setting(
+                        row.launch_definition
+                            .as_ref()
+                            .and_then(|definition| definition.effort.as_deref()),
+                    )
+                })
+                .flatten();
             pending_sessions.push((
                 id,
                 row.project_id,
@@ -701,6 +725,8 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
                     kind,
                     title,
                     runtime: runtime.filter(|_| !shell),
+                    model,
+                    effort,
                     cwd: row.cwd,
                     status,
                     checkout: None,
@@ -1419,5 +1445,138 @@ mod tests {
             mission2.checkout.as_ref(),
             Some(Checkout::Git { branch: Some(b), .. }) if b == "feat/beta"
         ));
+    }
+
+    #[test]
+    fn overview_sessions_carry_launch_definition_model_and_effort() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = crate::test_support::test_core_in(temp.path().into());
+        let conn = core.db.get().unwrap();
+        let now = chrono::Utc::now();
+        crate::test_support::insert_test_role(&conn, "r-codex", "reviewer", "codex", "codex");
+        crate::test_support::insert_test_role(&conn, "r-pi", "qa", "pi", "pi");
+        crate::test_support::insert_test_role(&conn, "r-shell", "shell", "shell", "/bin/sh");
+        repo::crew::insert(
+            &conn,
+            &repo::crew::CrewRow {
+                id: "crew-rt".into(),
+                name: "Mixed".into(),
+                system_prompt_addendum: None,
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .unwrap();
+        crate::test_support::insert_test_slot(
+            &conn, "sl-rev", "crew-rt", "r-codex", "reviewer", 0, false,
+        );
+        crate::test_support::insert_test_slot(&conn, "sl-qa", "crew-rt", "r-pi", "qa", 1, false);
+        crate::test_support::insert_test_slot(
+            &conn,
+            "sl-def-model",
+            "crew-rt",
+            "r-codex",
+            "def-model",
+            2,
+            false,
+        );
+        crate::test_support::insert_test_slot(
+            &conn,
+            "sl-def-effort",
+            "crew-rt",
+            "r-codex",
+            "def-effort",
+            3,
+            false,
+        );
+        crate::test_support::insert_test_slot(
+            &conn, "sl-sh", "crew-rt", "r-shell", "shell", 4, false,
+        );
+        repo::mission::insert(
+            &conn,
+            &repo::mission::MissionRow {
+                id: "m-rt".into(),
+                crew_id: Some("crew-rt".into()),
+                project_id: None,
+                title: "Mixed runtimes".into(),
+                status: crate::model::MissionStatus::Running,
+                goal_override: None,
+                cwd: Some("/tmp".into()),
+                started_at: now,
+                stopped_at: None,
+                pinned_at: None,
+                archived_at: None,
+                linked_session_id: None,
+                report_to_chat: true,
+            },
+        )
+        .unwrap();
+        for (id, role_id, slot_id, runtime, model, effort) in [
+            (
+                "s-rev",
+                "r-codex",
+                "sl-rev",
+                "codex",
+                Some("gpt-6-astra"),
+                Some("xhigh"),
+            ),
+            ("s-qa", "r-pi", "sl-qa", "pi", Some("deepseek-chat"), None),
+            (
+                "s-def-model",
+                "r-codex",
+                "sl-def-model",
+                "codex",
+                Some(" default "),
+                Some("high"),
+            ),
+            (
+                "s-def-effort",
+                "r-codex",
+                "sl-def-effort",
+                "codex",
+                Some("gpt-6-astra"),
+                Some("DEFAULT"),
+            ),
+            (
+                "s-sh",
+                "r-shell",
+                "sl-sh",
+                "shell",
+                Some("ignored"),
+                Some("high"),
+            ),
+        ] {
+            let mut s = repo::session::SessionRowDb::new_running(id.into());
+            s.mission_id = Some("m-rt".into());
+            s.role_id = Some(role_id.into());
+            s.slot_id = Some(slot_id.into());
+            s.agent_runtime = Some(runtime.into());
+            let mut def = crate::test_support::session_definition(runtime, runtime);
+            def.model = model.map(str::to_owned);
+            def.effort = effort.map(str::to_owned);
+            s.launch_definition = Some(def);
+            repo::session::insert(&conn, &s).unwrap();
+        }
+        repo::node::ensure_mission_node(&conn, "m-rt", None).unwrap();
+        drop(conn);
+
+        let ov = overview(&core).unwrap();
+        assert_eq!(ov.sessions["s-rev"].runtime.as_deref(), Some("codex"));
+        assert_eq!(ov.sessions["s-rev"].model.as_deref(), Some("gpt-6-astra"));
+        assert_eq!(ov.sessions["s-rev"].effort.as_deref(), Some("xhigh"));
+        assert_eq!(ov.sessions["s-qa"].runtime.as_deref(), Some("pi"));
+        assert_eq!(ov.sessions["s-qa"].model.as_deref(), Some("deepseek-chat"));
+        assert_eq!(ov.sessions["s-qa"].effort, None);
+        assert_eq!(ov.sessions["s-def-model"].model, None);
+        assert_eq!(ov.sessions["s-def-model"].effort.as_deref(), Some("high"));
+        assert_eq!(
+            ov.sessions["s-def-effort"].model.as_deref(),
+            Some("gpt-6-astra")
+        );
+        assert_eq!(ov.sessions["s-def-effort"].effort, None);
+        assert_eq!(ov.sessions["s-sh"].kind, SessionKind::Shell);
+        assert_eq!(ov.sessions["s-sh"].runtime, None);
+        assert_eq!(ov.sessions["s-sh"].model, None);
+        assert_eq!(ov.sessions["s-sh"].effort, None);
     }
 }

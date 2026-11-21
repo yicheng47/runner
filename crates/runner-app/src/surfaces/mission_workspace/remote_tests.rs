@@ -2839,3 +2839,116 @@ fn remote_mission_drawer_cmd_w_respects_close_capability_empty_fallback_and_non_
             .unwrap();
     }
 }
+
+#[test]
+fn remote_mission_rail_shows_runtime_line_handles_older_hosts_and_hides_session_key() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (_temp, cx, window, _store, fake) = setup();
+    let workspace = workspace(window, &cx);
+    let data: Overview = serde_json::from_value(serde_json::json!({
+        "projects": [],
+        "tabs": [],
+        "missions": [{
+            "id": "remote-mission",
+            "project": null,
+            "title": "Host mission",
+            "crew": "Mixed",
+            "state": "running",
+            "pinned": false,
+            "members": [
+                {"handle": "reviewer", "session": "reviewer", "lead": false},
+                {"handle": "legacy", "session": "legacy", "lead": false},
+                {"handle": "shell", "session": "shell", "lead": false}
+            ],
+            "asks": [],
+            "shells": []
+        }],
+        "sessions": {
+            "reviewer": {
+                "kind": "agent",
+                "title": "Reviewer",
+                "runtime": "codex",
+                "model": "gpt-6-astra",
+                "effort": "xhigh",
+                "cwd": "/tmp/work",
+                "status": "working",
+                "unread": false
+            },
+            "legacy": {
+                "kind": "agent",
+                "title": "Legacy",
+                "runtime": "claude-code",
+                "cwd": "/tmp/work",
+                "status": "idle",
+                "unread": false
+            },
+            "shell": {
+                "kind": "shell",
+                "title": "Shell",
+                "runtime": null,
+                "cwd": "/tmp/work",
+                "status": "idle",
+                "unread": false
+            }
+        }
+    }))
+    .unwrap();
+    fake.set_overview(data);
+    cx.run_until_parked();
+
+    workspace.read_with(&cx, |ws, _| {
+        let members = ws.members();
+        assert_eq!(
+            rail::session_runtime_line(&members[0]).as_deref(),
+            Some("Codex · gpt-6-astra · Extra high")
+        );
+        assert_eq!(
+            rail::session_runtime_line(&members[1]).as_deref(),
+            Some("Claude Code")
+        );
+        assert_eq!(rail::session_runtime_line(&members[2]), None);
+    });
+
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.simulate_resize(gpui::size(px(1200.), px(800.)));
+    visual.run_until_parked();
+
+    for id in ["reviewer", "legacy"] {
+        let card = visual
+            .debug_bounds(format!("MISSION_CARD {id}").leak())
+            .unwrap();
+        let avatar = visual
+            .debug_bounds(format!("MISSION_CARD_AVATAR {id}").leak())
+            .unwrap();
+        let handle = visual
+            .debug_bounds(format!("MISSION_CARD_HANDLE {id}").leak())
+            .unwrap();
+        let status = visual
+            .debug_bounds(format!("MISSION_CARD_STATUS {id}").leak())
+            .unwrap();
+        let runtime = visual
+            .debug_bounds(format!("MISSION_CARD_RUNTIME {id}").leak())
+            .unwrap();
+        let mark = visual
+            .debug_bounds(format!("MISSION_CARD_RUNTIME_MARK {id}").leak())
+            .unwrap();
+        assert!(status.left() >= avatar.right(), "{id}");
+        assert!(status.top() >= handle.bottom(), "{id}");
+        assert!(runtime.top() >= status.bottom(), "{id}");
+        assert!(runtime.right() <= card.right(), "{id}");
+        assert_eq!(mark.size, gpui::size(px(12.), px(12.)), "{id}");
+        assert!(
+            visual
+                .debug_bounds(format!("MISSION_CARD_KEY {id}").leak())
+                .is_none(),
+            "remote card must keep session_key hidden: {id}"
+        );
+    }
+    assert!(visual.debug_bounds("MISSION_CARD shell").is_some());
+    assert!(visual.debug_bounds("MISSION_CARD_STATUS shell").is_none());
+    assert!(visual.debug_bounds("MISSION_CARD_RUNTIME shell").is_none());
+
+    window
+        .update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
