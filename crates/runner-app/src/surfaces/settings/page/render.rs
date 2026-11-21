@@ -59,24 +59,38 @@ impl NativeRoot {
                 if event.keystroke.key != "tab"
                     || !matches!(
                         this.settings_page.pane,
-                        SettingsPane::Agents | SettingsPane::Appearance
+                        SettingsPane::Agents
+                            | SettingsPane::Appearance
+                            | SettingsPane::Archived
+                            | SettingsPane::Shortcuts
                     )
                     || this.settings_page.search.read(cx).is_composing()
                 {
                     return;
                 }
                 let modifiers = event.keystroke.modifiers;
+                let plain_tab = !(modifiers.control
+                    || modifiers.platform
+                    || modifiers.alt
+                    || modifiers.function);
                 let allowed = match this.settings_page.pane {
                     SettingsPane::Agents => !this
                         .settings_page
                         .agents
                         .as_ref()
                         .is_some_and(|pane| pane.read(cx).is_composing(cx)),
-                    SettingsPane::Appearance => {
-                        !(modifiers.control
-                            || modifiers.platform
-                            || modifiers.alt
-                            || modifiers.function)
+                    SettingsPane::Appearance => plain_tab,
+                    SettingsPane::Archived => {
+                        plain_tab
+                            && !this.settings_page.archived.as_ref().is_some_and(|pane| {
+                                let pane = pane.read(cx);
+                                pane.is_composing(cx) || pane.confirm_open()
+                            })
+                    }
+                    SettingsPane::Shortcuts => {
+                        plain_tab
+                            && !this.shortcut_recording_active()
+                            && !this.settings_page.shortcut_search.read(cx).is_composing()
                     }
                     _ => false,
                 };

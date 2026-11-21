@@ -296,6 +296,8 @@ pub struct ThemeColors {
     pub bg: u32,
     pub panel: u32,
     pub raised: u32,
+    pub seg_selected: u32,
+    pub seg_selected_border: u32,
     pub line: u32,
     pub line_strong: u32,
     pub sidebar: u32,
@@ -315,6 +317,8 @@ pub const CARBON: ThemeColors = ThemeColors {
     bg: 0x15161b,
     panel: 0x1d1e23,
     raised: 0x272930,
+    seg_selected: 0x2e3038,
+    seg_selected_border: 0x3b3e48,
     line: 0x272930,
     line_strong: 0x2a2c33,
     sidebar: 0x272930,
@@ -334,6 +338,8 @@ pub const CATPPUCCIN_MOCHA: ThemeColors = ThemeColors {
     bg: 0x1e1e2e,
     panel: 0x313244,
     raised: 0x45475a,
+    seg_selected: 0x45475a,
+    seg_selected_border: 0x5c5f77,
     line: 0x45475a,
     line_strong: 0x585b70,
     sidebar: 0x313244,
@@ -353,6 +359,8 @@ pub const RUNNER_LIGHT: ThemeColors = ThemeColors {
     bg: 0xf2f3f5,
     panel: 0xf8f8fa,
     raised: 0xecedf1,
+    seg_selected: 0xffffff,
+    seg_selected_border: 0xc6c9d1,
     line: 0xd9dbe1,
     line_strong: 0xcdd0d7,
     sidebar: 0xe2e4e9,
@@ -372,6 +380,8 @@ pub const CATPPUCCIN_LATTE: ThemeColors = ThemeColors {
     bg: 0xeff1f5,
     panel: 0xe6e9ef,
     raised: 0xffffff,
+    seg_selected: 0xffffff,
+    seg_selected_border: 0xb6bac8,
     line: 0xccd0da,
     line_strong: 0xbcc0cc,
     sidebar: 0xe6e9ef,
@@ -391,6 +401,8 @@ pub const ROSE_PINE_MOON: ThemeColors = ThemeColors {
     bg: 0x232136,
     panel: 0x2a273f,
     raised: 0x393552,
+    seg_selected: 0x3e3a59,
+    seg_selected_border: 0x56526e,
     line: 0x393552,
     line_strong: 0x56526e,
     sidebar: 0x2a273f,
@@ -410,6 +422,8 @@ pub const TOKYO_NIGHT: ThemeColors = ThemeColors {
     bg: 0x1a1b26,
     panel: 0x24283b,
     raised: 0x2f3549,
+    seg_selected: 0x333952,
+    seg_selected_border: 0x474f72,
     line: 0x292e42,
     line_strong: 0x3b4261,
     sidebar: 0x24283b,
@@ -429,6 +443,8 @@ pub const GRUVBOX_DARK: ThemeColors = ThemeColors {
     bg: 0x282828,
     panel: 0x32302f,
     raised: 0x3c3836,
+    seg_selected: 0x49433f,
+    seg_selected_border: 0x625850,
     line: 0x3c3836,
     line_strong: 0x504945,
     sidebar: 0x3c3836,
@@ -448,6 +464,8 @@ pub const SOLARIZED_DARK: ThemeColors = ThemeColors {
     bg: 0x002b36,
     panel: 0x073642,
     raised: 0x0e4552,
+    seg_selected: 0x093b46,
+    seg_selected_border: 0x1d5f6f,
     line: 0x0e4552,
     line_strong: 0x165361,
     sidebar: 0x073642,
@@ -467,6 +485,8 @@ pub const ROSE_PINE_DAWN: ThemeColors = ThemeColors {
     bg: 0xfaf4ed,
     panel: 0xfffaf3,
     raised: 0xf4ede8,
+    seg_selected: 0xffffff,
+    seg_selected_border: 0xc9c1be,
     line: 0xe8ded7,
     line_strong: 0xcecacd,
     sidebar: 0xf2e9e1,
@@ -486,6 +506,8 @@ pub const TOKYO_NIGHT_DAY: ThemeColors = ThemeColors {
     bg: 0xe1e2e7,
     panel: 0xeaebf0,
     raised: 0xf4f5f8,
+    seg_selected: 0xffffff,
+    seg_selected_border: 0xa9afc6,
     line: 0xc4c8da,
     line_strong: 0xb4b8cc,
     sidebar: 0xd0d5e3,
@@ -505,6 +527,8 @@ pub const GRUVBOX_LIGHT: ThemeColors = ThemeColors {
     bg: 0xfbf1c7,
     panel: 0xf2e5bc,
     raised: 0xf9f5d7,
+    seg_selected: 0xfffdf2,
+    seg_selected_border: 0xb8a688,
     line: 0xd5c4a1,
     line_strong: 0xbdae93,
     sidebar: 0xebdbb2,
@@ -524,6 +548,8 @@ pub const SOLARIZED_LIGHT: ThemeColors = ThemeColors {
     bg: 0xfdf6e3,
     panel: 0xeee8d5,
     raised: 0xfdf9ee,
+    seg_selected: 0xffffff,
+    seg_selected_border: 0xc4ba9e,
     line: 0xe0d8c0,
     line_strong: 0xd3cab1,
     sidebar: 0xeee8d5,
@@ -596,6 +622,14 @@ pub fn panel() -> Hsla {
 
 pub fn raised() -> Hsla {
     color(colors().raised)
+}
+
+pub fn seg_selected() -> Hsla {
+    color(colors().seg_selected)
+}
+
+pub fn seg_selected_border() -> Hsla {
+    color(colors().seg_selected_border)
 }
 
 pub fn text() -> Hsla {
@@ -897,6 +931,8 @@ mod tests {
             let opaque_bg = bg();
             let opaque_panel = panel();
             let opaque_raised = raised();
+            let opaque_seg_selected = seg_selected();
+            let opaque_seg_selected_border = seg_selected_border();
             let opaque_selection = sidebar_selected();
             set_glass(true);
             assert_eq!(
@@ -906,8 +942,12 @@ mod tests {
             assert_eq!(bg(), opaque_bg);
             assert_eq!(panel(), opaque_panel);
             assert_eq!(raised(), opaque_raised);
+            assert_eq!(seg_selected(), opaque_seg_selected);
+            assert_eq!(seg_selected_border(), opaque_seg_selected_border);
             assert_eq!(sidebar_selected(), opaque_selection);
             assert_eq!(raised().a, 1.);
+            assert_eq!(seg_selected().a, 1.);
+            assert_eq!(seg_selected_border().a, 1.);
             assert_eq!(bg().a, 1.);
             assert_eq!(panel().a, 1.);
         }
@@ -1012,6 +1052,8 @@ mod tests {
                 bg: 0xf2f3f5,
                 panel: 0xf8f8fa,
                 raised: 0xecedf1,
+                seg_selected: 0xffffff,
+                seg_selected_border: 0xc6c9d1,
                 line: 0xd9dbe1,
                 line_strong: 0xcdd0d7,
                 sidebar: 0xe2e4e9,
@@ -1027,6 +1069,110 @@ mod tests {
                 info: 0x0a8fb3,
             }
         );
+        assert_eq!(CARBON.seg_selected, 0x2e3038);
+        assert_eq!(CARBON.seg_selected_border, 0x3b3e48);
+    }
+
+    #[test]
+    fn segmented_selection_tokens_stay_distinct_and_readable_across_all_themes() {
+        fn luminance(hex: u32) -> f64 {
+            let channel = |shift: u32| {
+                let s = f64::from((hex >> shift) & 0xff) / 255.0;
+                if s <= 0.04045 {
+                    s / 12.92
+                } else {
+                    ((s + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+        }
+        fn contrast(a: u32, b: u32) -> f64 {
+            let (la, lb) = (luminance(a), luminance(b));
+            (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+        }
+
+        let _scope = testing::scope();
+        for variant in ThemeVariant::ALL {
+            set_active_variant(variant);
+            let colors = colors_for(variant);
+            assert_eq!(seg_selected(), color(colors.seg_selected), "{variant:?}");
+            assert_eq!(
+                seg_selected_border(),
+                color(colors.seg_selected_border),
+                "{variant:?}"
+            );
+            assert_ne!(colors.seg_selected, colors.bg, "{variant:?}");
+            assert_ne!(
+                colors.seg_selected_border, colors.seg_selected,
+                "{variant:?}"
+            );
+            assert_ne!(colors.seg_selected_border, colors.bg, "{variant:?}");
+
+            let lum_bg = luminance(colors.bg);
+            let lum_panel = luminance(colors.panel);
+            let lum_sel = luminance(colors.seg_selected);
+            let lum_border = luminance(colors.seg_selected_border);
+
+            if variant.is_light() {
+                assert!(
+                    lum_sel > lum_bg && lum_sel >= lum_panel && lum_sel >= luminance(colors.raised),
+                    "{variant:?}: light seg_selected should lift brighter than track/panel/raised"
+                );
+                assert!(
+                    lum_border < lum_bg,
+                    "{variant:?}: light seg_selected_border should frame the pill darker than bg"
+                );
+                assert!(
+                    contrast(colors.seg_selected, colors.bg) >= 1.07,
+                    "{variant:?}: fill/bg contrast {:.2}",
+                    contrast(colors.seg_selected, colors.bg)
+                );
+                assert!(
+                    contrast(colors.seg_selected_border, colors.seg_selected) >= 1.60,
+                    "{variant:?}: border/fill contrast {:.2}",
+                    contrast(colors.seg_selected_border, colors.seg_selected)
+                );
+                assert!(
+                    contrast(colors.seg_selected_border, colors.bg) >= 1.45,
+                    "{variant:?}: border/bg contrast {:.2}",
+                    contrast(colors.seg_selected_border, colors.bg)
+                );
+                assert!(
+                    contrast(colors.fg, colors.seg_selected) >= 5.0,
+                    "{variant:?}: fg/fill contrast {:.2}",
+                    contrast(colors.fg, colors.seg_selected)
+                );
+            } else {
+                assert!(
+                    lum_sel > lum_panel && lum_panel > lum_bg,
+                    "{variant:?}: dark seg_selected should lift brighter than panel and bg"
+                );
+                assert!(
+                    lum_border > lum_sel,
+                    "{variant:?}: dark seg_selected_border should lift brighter than seg_selected"
+                );
+                assert!(
+                    contrast(colors.seg_selected, colors.bg) >= 1.20,
+                    "{variant:?}: fill/bg contrast {:.2}",
+                    contrast(colors.seg_selected, colors.bg)
+                );
+                assert!(
+                    contrast(colors.seg_selected_border, colors.seg_selected) >= 1.20,
+                    "{variant:?}: border/fill contrast {:.2}",
+                    contrast(colors.seg_selected_border, colors.seg_selected)
+                );
+                assert!(
+                    contrast(colors.seg_selected_border, colors.bg) >= 1.65,
+                    "{variant:?}: border/bg contrast {:.2}",
+                    contrast(colors.seg_selected_border, colors.bg)
+                );
+                assert!(
+                    contrast(colors.fg, colors.seg_selected) >= 4.5,
+                    "{variant:?}: fg/fill contrast {:.2}",
+                    contrast(colors.fg, colors.seg_selected)
+                );
+            }
+        }
     }
 
     #[test]

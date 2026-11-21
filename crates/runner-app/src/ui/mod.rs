@@ -33,7 +33,8 @@ fn zoom_from_rem_size(rem_size: Pixels) -> f32 {
 
 pub use avatar::{cells_for_seed, hue_for_seed, AvatarHue, RoleAvatar, RolePresence};
 pub use button::{
-    focus_ring, Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize, PressHandler,
+    focus_ring, focus_ring_with_offset, Button, ButtonSize, ButtonVariant, IconButton,
+    IconButtonSize, PressHandler,
 };
 pub use copy_value_button::CopyValueButton;
 pub use duplicate_subject_overlay::{DuplicateSubjectKind, DuplicateSubjectOverlay};
@@ -60,7 +61,10 @@ pub use select::{
 };
 pub use session_control::{SessionControl, SessionControlKind, SessionControlVariant};
 pub use session_overlay::{SessionOverlay, SessionOverlayKind};
-pub use settings::{PaneHeader, SettingsCard, SettingsHeader, SettingsRow, StepHandler, Stepper};
+pub use settings::{
+    PaneHeader, SegmentHandler, SegmentOption, SegmentedControl, SettingsCard, SettingsHeader,
+    SettingsRow, StepHandler, Stepper,
+};
 pub use surfaces::{notice_banner, pill, status_badge, Badge, Card, RuntimeBadge, Tone};
 pub use toggle::{Toggle, ToggleHandler};
 pub use tooltip::Tooltip;
