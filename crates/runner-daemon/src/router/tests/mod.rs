@@ -2089,7 +2089,7 @@ fn multi_target_human_messages_keep_recipients_live_and_during_reopen_repair() {
 }
 
 mod report {
-    use super::super::report::{Line, ReportDispatcher, ReportKind, ReportSource};
+    use super::super::report::{DropReason, Line, ReportDispatcher, ReportKind, ReportSource};
     use super::*;
 
     #[derive(Default)]
@@ -2101,7 +2101,9 @@ mod report {
     impl ReportSource for Lines {
         fn line(&self, _: &str, mission: &str, kind: ReportKind) -> Line {
             if self.stale.lock().unwrap().iter().any(|m| m == mission) {
-                Line::Drop
+                Line::Drop(DropReason::StateChanged(
+                    runner_core::protocol::MissionPhase::Working,
+                ))
             } else if self.unknown.lock().unwrap().iter().any(|m| m == mission) {
                 Line::Wait
             } else {
@@ -2681,5 +2683,13 @@ mod report {
         unknown.lines.unknown.lock().unwrap().clear();
         unknown.wait(Duration::from_secs(1));
         assert_eq!(unknown.typed(), ["[runner] Mission m1 Linked"]);
+
+        assert_eq!(DropReason::MissionMissing.to_string(), "mission missing");
+        assert_eq!(DropReason::MissionArchived.to_string(), "mission archived");
+        assert_eq!(DropReason::Unlinked.to_string(), "unlinked");
+        assert_eq!(
+            DropReason::StateChanged(runner_core::protocol::MissionPhase::Working).to_string(),
+            "state changed (Working)"
+        );
     }
 }

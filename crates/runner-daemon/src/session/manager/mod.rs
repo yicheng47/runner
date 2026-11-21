@@ -328,7 +328,7 @@ impl SessionState {
     }
 
     /// A report waits for an idle session on every runtime, so it never lands
-    /// in a turn the person started, and a draft holds it without a cap (#748).
+    /// in a turn the person started, and shares the screen-observed draft cap (#1409).
     fn report_readiness(
         &self,
         delivery: &DeliveryGateState,

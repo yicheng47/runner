@@ -1206,3 +1206,34 @@ fn an_archived_chat_receives_nothing() {
         Some(MissionPhase::Settled)
     );
 }
+
+#[test]
+fn line_source_reports_drop_reasons() {
+    let f = Fixture::new();
+    let mission = f.mission(Some("chat"), false);
+    let source = |phase: MissionPhase| LineSource {
+        core: &f.core,
+        phases: HashMap::from([(mission.id.clone(), phase)]),
+    };
+
+    assert_eq!(
+        source(MissionPhase::Working).line("chat", &mission.id, ReportKind::State),
+        Line::Drop(DropReason::StateChanged(MissionPhase::Working))
+    );
+    assert_eq!(
+        source(MissionPhase::Settled).line("other-chat", &mission.id, ReportKind::State),
+        Line::Drop(DropReason::Unlinked)
+    );
+    assert_eq!(
+        source(MissionPhase::Settled).line("chat", "missing-mission", ReportKind::State),
+        Line::Drop(DropReason::MissionMissing)
+    );
+
+    let conn = f.core.db.get().unwrap();
+    repo::mission::complete_and_archive_if_running(&conn, &mission.id, chrono::Utc::now()).unwrap();
+    drop(conn);
+    assert_eq!(
+        source(MissionPhase::Settled).line("chat", &mission.id, ReportKind::State),
+        Line::Drop(DropReason::MissionArchived)
+    );
+}
