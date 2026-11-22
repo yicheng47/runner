@@ -48,7 +48,7 @@ impl Render for Host {
                     file: if self.maximized {
                         960.
                     } else {
-                        settings.changes_viewer_width.max(288.)
+                        settings.file_viewer_width.max(288.)
                     },
                     tree: self.tree_fits,
                     tree_width: settings.file_tree_width,
@@ -276,6 +276,49 @@ fn chat_ctx(id: &str, project: Option<&str>, remote: bool) -> PanelContext {
     }
 }
 
+struct ReadChanges<'a> {
+    view: &'a ChangesView,
+    cx: &'a gpui::App,
+}
+
+impl std::ops::Deref for ReadChanges<'_> {
+    type Target = ChangesView;
+
+    fn deref(&self) -> &Self::Target {
+        self.view
+    }
+}
+
+impl ReadChanges<'_> {
+    fn widening(&self) -> Option<bool> {
+        self.view.widening(self.cx)
+    }
+
+    fn unified_diff_view(&self) -> Option<Entity<super::UnifiedDiffView>> {
+        self.view.unified_diff_view(self.cx)
+    }
+
+    fn is_diff_loading(&self) -> bool {
+        self.view.is_diff_loading(self.cx)
+    }
+
+    fn loaded_diff_new_blob(&self) -> Option<String> {
+        self.view
+            .viewer()
+            .read(self.cx)
+            .loaded_diff_meta()
+            .and_then(|(_, _, _, _, new_blob)| new_blob.map(str::to_owned))
+    }
+
+    fn held_diffs_len(&self) -> usize {
+        self.view.viewer().read(self.cx).held_diffs_len()
+    }
+
+    fn active_diff_viewed(&self) -> Option<(bool, bool)> {
+        self.view.viewer().read(self.cx).active_diff_viewed()
+    }
+}
+
 impl Harness {
     fn settle(&mut self) {
         self.visual.run_until_parked();
@@ -309,6 +352,30 @@ impl Harness {
         self.settle();
     }
 
+    fn double_click(&mut self, selector: impl Into<String>) {
+        let selector: String = selector.into();
+        let bounds = self
+            .visual
+            .debug_bounds(selector.clone().leak())
+            .unwrap_or_else(|| panic!("missing selector {selector}"));
+        for click_count in [1, 2] {
+            self.visual.simulate_event(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: bounds.center(),
+                modifiers: Modifiers::default(),
+                click_count,
+                first_mouse: false,
+            });
+            self.visual.simulate_event(gpui::MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position: bounds.center(),
+                modifiers: Modifiers::default(),
+                click_count,
+            });
+            self.settle();
+        }
+    }
+
     fn press(&mut self, key: &str) {
         self.visual.simulate_keystrokes(key);
         self.settle();
@@ -324,9 +391,9 @@ impl Harness {
             .expect("a shown ChangesView")
     }
 
-    fn read<T>(&mut self, f: impl FnOnce(&ChangesView) -> T) -> T {
+    fn read<T>(&mut self, f: impl FnOnce(ReadChanges<'_>) -> T) -> T {
         let view = self.view();
-        view.read_with(&self.visual, |v, _| f(v))
+        view.read_with(&self.visual, |v, cx| f(ReadChanges { view: v, cx }))
     }
 
     fn focused(&mut self, f: impl FnOnce(&ChangesView) -> &FocusHandle) -> bool {
@@ -612,7 +679,7 @@ fn worktree_opens_on_all_changes_or_uncommitted_and_switches_commits() {
     h.wait("All changes list", |h| h.has("CHANGES_ROW src/lib.rs"));
     // C1: Changes starts compact with no diff open until a file is clicked.
     assert!(!h.has("CHANGES_DIFF_CODE"));
-    assert_eq!(h.read(|v| v.widening()), Some(false));
+    assert_eq!(h.read(|v| v.widening()), None);
     h.click("CHANGES_ROW src/lib.rs");
     h.wait("All changes diff", |h| h.has("CHANGES_DIFF_CODE"));
     assert_eq!(h.read(|v| v.widening()), Some(true));
@@ -624,10 +691,10 @@ fn worktree_opens_on_all_changes_or_uncommitted_and_switches_commits() {
     assert!(h.has("CHANGES_COMMIT_UNCOMMITTED"));
     assert!(h.has("CHANGES_ROW src/lib.rs"));
     assert!(h.has("CHANGES_ROW src/sub/added.rs"));
-    // Clicking `×` closes the diff and shrinks back to compact list-only.
-    h.click("CHANGES_CLOSE_DIFF");
+    // Clicking `×` closes the diff tab and shrinks back to compact list-only.
+    h.click("FILE_TAB_CLOSE src/lib.rs");
     assert!(!h.has("CHANGES_DIFF_CODE"));
-    assert_eq!(h.read(|v| v.widening()), Some(false));
+    assert_eq!(h.read(|v| v.widening()), None);
 
     // Add an uncommitted edit: live or freshly opened view excludes uncommitted from All changes.
     std::fs::write(h.worktree.join("dirty.txt"), "uncommitted\n").unwrap();
@@ -1014,16 +1081,13 @@ fn diff_footer_viewed_mark_binds_to_displayed_blob_version_across_races() {
         h.wait("tracked.rs v1 diff", |h| h.has(control));
 
         let v1_blob = h
-            .read(|v| {
-                v.loaded_diff_version()
-                    .and_then(|ver| ver.new_blob_id.clone())
-            })
+            .read(|v| v.loaded_diff_new_blob())
             .expect("v1 new_blob_id");
 
         // Hold incoming diff loads so `state.files` advances to v2 via the real watcher while
         // `LoadedDiff` still displays v1 (single write, no retries or synthetic event injection).
         let view = h.view();
-        view.update(&mut h.visual, |v, _| v.set_hold_diffs(true));
+        view.update(&mut h.visual, |v, cx| v.set_hold_diffs(true, cx));
 
         let tracked = h.worktree.join("tracked.rs");
         std::fs::write(&tracked, "fn v2() {}\n").unwrap();
@@ -1039,9 +1103,7 @@ fn diff_footer_viewed_mark_binds_to_displayed_blob_version_across_races() {
             })
         });
         assert_eq!(
-            h.read(|v| v
-                .loaded_diff_version()
-                .and_then(|ver| ver.new_blob_id.clone())),
+            h.read(|v| v.loaded_diff_new_blob()),
             Some(v1_blob.clone()),
             "{control}: displayed diff must still be v1 while v2 load is in flight"
         );
@@ -1063,33 +1125,20 @@ fn diff_footer_viewed_mark_binds_to_displayed_blob_version_across_races() {
         let diff = h.read(|v| v.unified_diff_view()).unwrap();
         h.wait("v1 highlights and held v2 diff ready", |h| {
             diff.read_with(&h.visual, |d, _| d.has_highlights().1)
-                && h.read(|v| !v.held_diffs.is_empty())
+                && h.read(|v| v.held_diffs_len() > 0)
         });
-        view.update(&mut h.visual, |v, _| {
-            v.set_hold_diffs(false);
-            assert!(v.release_held_diffs() >= 1);
+        view.update(&mut h.visual, |v, cx| {
+            v.set_hold_diffs(false, cx);
+            assert!(v.release_held_diffs(cx) >= 1);
         });
         h.wait("v2 diff applied", |h| {
-            h.read(|v| {
-                v.loaded_diff_version()
-                    .and_then(|ver| ver.new_blob_id.as_ref())
-                    .is_some_and(|blob| blob != &v1_blob)
-            })
+            h.read(|v| v.loaded_diff_new_blob().is_some_and(|blob| blob != v1_blob))
         });
-        assert!(h.read(|v| match &v.body {
-            super::Body::Root(s) => match &s.diff_state {
-                super::ActiveDiff::Loaded(loaded) => !loaded.viewed && loaded.changed_since_viewed,
-                _ => false,
-            },
-            _ => false,
-        }));
+        assert_eq!(h.read(|v| v.active_diff_viewed()), Some((false, true)));
 
         // Reverse race: `changes_diff` returns v3 BEFORE `state.files` refreshes from v2.
         let v2_blob = h
-            .read(|v| {
-                v.loaded_diff_version()
-                    .and_then(|ver| ver.new_blob_id.clone())
-            })
+            .read(|v| v.loaded_diff_new_blob())
             .expect("v2 new_blob_id");
         view.update(&mut h.visual, |v, _| v.set_hold_snapshots(true));
         std::fs::write(&tracked, "fn v3() {}\n").unwrap();
@@ -1098,11 +1147,7 @@ fn diff_footer_viewed_mark_binds_to_displayed_blob_version_across_races() {
         });
 
         h.wait("diff updated to v3 while list still holds v2", |h| {
-            h.read(|v| {
-                v.loaded_diff_version()
-                    .and_then(|ver| ver.new_blob_id.as_ref())
-                    .is_some_and(|blob| blob != &v2_blob)
-            })
+            h.read(|v| v.loaded_diff_new_blob().is_some_and(|blob| blob != v2_blob))
         });
         assert_eq!(
             h.read(|v| match &v.body {
@@ -1147,7 +1192,7 @@ fn changes_narrow_sheet_hides_list_column_when_widened_tree_is_false_and_restore
     h.wait("src/lib.rs row", |h| h.has("CHANGES_ROW src/lib.rs"));
     h.click("CHANGES_ROW src/lib.rs");
     h.wait("src/lib.rs diff", |h| h.has("CHANGES_DIFF_CODE"));
-    assert!(h.has("CHANGES_TREE_GUTTER"));
+    assert!(h.has("FILE_TREE_GUTTER"));
 
     // Simulate a 500 px narrow sheet where compute_panel_layout drops the list column (`tree: false`).
     h.host
@@ -1160,7 +1205,7 @@ fn changes_narrow_sheet_hides_list_column_when_widened_tree_is_false_and_restore
     h.settle();
     assert!(h.has("CHANGES_DIFF_COLUMN"));
     assert!(
-        !h.has("CHANGES_TREE_GUTTER"),
+        !h.has("FILE_TREE_GUTTER"),
         "list column and resize gutter must hide when widened.tree is false"
     );
     assert!(
@@ -1168,8 +1213,8 @@ fn changes_narrow_sheet_hides_list_column_when_widened_tree_is_false_and_restore
         "list column must not shrink the narrow sheet diff"
     );
 
-    // Clicking × closes the diff and restores the full-width Changes list rail.
-    h.click("CHANGES_CLOSE_DIFF");
+    // Clicking × closes the diff tab and restores the full-width Changes list rail.
+    h.click("FILE_TAB_CLOSE src/lib.rs");
     h.wait("list restores on close", |h| {
         h.has("CHANGES_ROW src/lib.rs")
     });
@@ -1197,7 +1242,7 @@ fn enter_while_diff_is_loading_focuses_diff_on_arrival_without_stealing_if_focus
     // A live watcher refresh can queue another reply while a diff is held.
     // 1. Hold diff loads, select `two_hunks.rs`, press Enter while Loading -> focus transfers on arrival.
     let view = h.view();
-    view.update(&mut h.visual, |v, _| v.set_hold_diffs(true));
+    view.update(&mut h.visual, |v, cx| v.set_hold_diffs(true, cx));
     h.press("down");
     assert_eq!(
         h.read(|v| v.selected_path().map(str::to_owned)),
@@ -1208,9 +1253,9 @@ fn enter_while_diff_is_loading_focuses_diff_on_arrival_without_stealing_if_focus
     h.press("enter");
     assert_eq!(h.read(|v| v.focus_place()), FocusPlace::Diff);
 
-    view.update(&mut h.visual, |v, _| {
-        v.set_hold_diffs(false);
-        assert!(v.release_held_diffs() >= 1);
+    view.update(&mut h.visual, |v, cx| {
+        v.set_hold_diffs(false, cx);
+        assert!(v.release_held_diffs(cx) >= 1);
     });
     h.wait("two_hunks.rs diff arrived", |h| h.has("CHANGES_DIFF_CODE"));
 
@@ -1225,7 +1270,7 @@ fn enter_while_diff_is_loading_focuses_diff_on_arrival_without_stealing_if_focus
     assert_eq!(h.read(|v| v.focus_place()), FocusPlace::Files);
 
     // 2. Press Enter while Loading, then press Escape BEFORE diff arrives -> keeps focus in list.
-    view.update(&mut h.visual, |v, _| v.set_hold_diffs(true));
+    view.update(&mut h.visual, |v, cx| v.set_hold_diffs(true, cx));
     h.press("up");
     assert!(h.read(|v| v.is_diff_loading()));
     h.press("enter");
@@ -1233,9 +1278,9 @@ fn enter_while_diff_is_loading_focuses_diff_on_arrival_without_stealing_if_focus
     h.press("escape");
     assert_eq!(h.read(|v| v.focus_place()), FocusPlace::Files);
 
-    view.update(&mut h.visual, |v, _| {
-        v.set_hold_diffs(false);
-        assert!(v.release_held_diffs() >= 1);
+    view.update(&mut h.visual, |v, cx| {
+        v.set_hold_diffs(false, cx);
+        assert!(v.release_held_diffs(cx) >= 1);
     });
     h.wait("alpha.rs diff arrived", |h| h.has("CHANGES_DIFF_CODE"));
     h.press("tab");
@@ -1248,7 +1293,7 @@ fn enter_while_diff_is_loading_focuses_diff_on_arrival_without_stealing_if_focus
     assert_eq!(h.read(|v| v.focus_place()), FocusPlace::Files);
 
     // 3. Press Enter while Loading, then focus an outside view BEFORE diff arrives -> does not steal focus.
-    view.update(&mut h.visual, |v, _| v.set_hold_diffs(true));
+    view.update(&mut h.visual, |v, cx| v.set_hold_diffs(true, cx));
     h.press("down");
     assert!(h.read(|v| v.is_diff_loading()));
     h.press("enter");
@@ -1259,9 +1304,9 @@ fn enter_while_diff_is_loading_focuses_diff_on_arrival_without_stealing_if_focus
         .unwrap();
     h.settle();
 
-    view.update(&mut h.visual, |v, _| {
-        v.set_hold_diffs(false);
-        assert!(v.release_held_diffs() >= 1);
+    view.update(&mut h.visual, |v, cx| {
+        v.set_hold_diffs(false, cx);
+        assert!(v.release_held_diffs(cx) >= 1);
     });
     h.wait("two_hunks.rs diff arrived without stealing focus", |h| {
         h.has("CHANGES_DIFF_CODE")
@@ -1742,7 +1787,7 @@ fn split_diff_pairs_changed_blocks_strips_crlf_and_copies_active_side_only() {
     h.store.update(&mut h.visual, |store, cx| {
         store.update_settings(
             |settings| {
-                settings.changes_viewer_width = 800.;
+                settings.file_viewer_width = 800.;
                 true
             },
             false,
@@ -1833,7 +1878,7 @@ fn split_360px_rule_auto_maximizes_narrow_panel_and_falls_back_to_unified_on_res
     h.store.update(&mut h.visual, |store, cx| {
         store.update_settings(
             |settings| {
-                settings.changes_viewer_width = 520.;
+                settings.file_viewer_width = 520.;
                 settings.changes_diff_mode = DiffViewMode::Unified;
                 true
             },
@@ -1899,7 +1944,7 @@ fn split_360px_rule_auto_maximizes_narrow_panel_and_falls_back_to_unified_on_res
     h.store.update(&mut h.visual, |store, cx| {
         store.update_settings(
             |settings| {
-                settings.changes_viewer_width = 760.;
+                settings.file_viewer_width = 760.;
                 true
             },
             false,
@@ -1938,7 +1983,7 @@ fn narrow_diff_header_keeps_unified_split_switch_in_bounds_and_clickable_for_lon
     h.store.update(&mut h.visual, |store, cx| {
         store.update_settings(
             |settings| {
-                settings.changes_viewer_width = 288.;
+                settings.file_viewer_width = 288.;
                 settings.changes_diff_mode = DiffViewMode::Unified;
                 true
             },
@@ -1994,8 +2039,8 @@ fn narrow_diff_header_keeps_unified_split_switch_in_bounds_and_clickable_for_lon
         DiffViewMode::Split
     );
     assert!(
-        !h.has("CHANGES_DIFF_COMPARE"),
-        "Changes diff header omits the comparison label"
+        h.has("CHANGES_DIFF_COMPARE"),
+        "Unified diff context subbar displays the comparison scope pill (#1421)"
     );
 }
 
@@ -2822,5 +2867,977 @@ fn changes_diff_survives_eviction_past_kept_views_without_active_watches() {
     assert!(
         !h.has("CHANGES_DIFF_CODE") && !h.has("CHANGES_DIFF_COLUMN"),
         "saved Changes diff must not reopen under a different checkout root"
+    );
+}
+
+#[test]
+fn unified_viewer_preview_tab_swaps_promotes_flips_code_diff_syncs_viewed_and_guards_deleted() {
+    let mut h = harness(None);
+    // Two uncommitted files + one deleted tracked file in the worktree.
+    std::fs::write(h.worktree.join("uncomm_a.rs"), "pub fn a() -> i32 { 1 }\n").unwrap();
+    std::fs::write(h.worktree.join("uncomm_b.rs"), "pub fn b() -> i32 { 2 }\n").unwrap();
+    std::fs::remove_file(h.worktree.join("README.md")).unwrap();
+
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait("uncommitted files listed", |h| {
+        h.has("CHANGES_ROW uncomm_a.rs")
+            && h.has("CHANGES_ROW uncomm_b.rs")
+            && h.has("CHANGES_ROW README.md")
+    });
+
+    let viewer = h.read(|v| v.viewer());
+
+    // 1. Single-clicking files in Changes swaps ONE italic preview slot without tab spam.
+    h.click("CHANGES_ROW uncomm_a.rs");
+    h.wait("uncomm_a.rs preview diff loaded", |h| {
+        h.has("CHANGES_DIFF_CODE")
+            && h.has("FILE_TAB_PREVIEW uncomm_a.rs")
+            && h.has("VIEWER_PIN_TAB")
+            && h.has("VIEWER_MODE_DIFF active")
+            && h.has("VIEWER_MODE_CODE")
+    });
+    assert_eq!(
+        viewer.read_with(&h.visual, |v, _| v.open_tabs()),
+        vec!["uncomm_a.rs".to_string()]
+    );
+    assert!(viewer.read_with(&h.visual, |v, _| v
+        .active_tab_entry()
+        .is_some_and(|t| t.preview)));
+
+    h.click("CHANGES_ROW uncomm_b.rs");
+    h.wait("uncomm_b.rs replaces preview slot", |h| {
+        h.has("FILE_TAB_PREVIEW uncomm_b.rs") && !h.has("FILE_TAB_PREVIEW uncomm_a.rs")
+    });
+    assert_eq!(
+        viewer.read_with(&h.visual, |v, _| v.open_tabs()),
+        vec!["uncomm_b.rs".to_string()]
+    );
+
+    // 2. Pinning promotes the preview tab; next click opens a new preview tab beside it;
+    // selecting an already-pinned file focuses it without duplicating.
+    h.click("VIEWER_PIN_TAB");
+    h.wait("uncomm_b.rs promoted to pinned", |h| {
+        h.has("FILE_TAB_PINNED uncomm_b.rs") && !h.has("VIEWER_PIN_TAB")
+    });
+    assert!(viewer.read_with(&h.visual, |v, _| v
+        .active_tab_entry()
+        .is_some_and(|t| !t.preview)));
+
+    h.click("CHANGES_ROW uncomm_a.rs");
+    h.wait(
+        "uncomm_a.rs opens as preview beside pinned uncomm_b.rs",
+        |h| h.has("FILE_TAB_PREVIEW uncomm_a.rs") && h.has("FILE_TAB_PINNED uncomm_b.rs"),
+    );
+    assert_eq!(viewer.read_with(&h.visual, |v, _| v.open_tabs().len()), 2);
+
+    h.click("CHANGES_ROW uncomm_b.rs");
+    h.wait(
+        "selecting pinned uncomm_b.rs focuses it without duplicating",
+        |h| {
+            viewer.read_with(&h.visual, |v, _| {
+                v.active_tab().as_deref() == Some("uncomm_b.rs")
+            })
+        },
+    );
+    assert_eq!(viewer.read_with(&h.visual, |v, _| v.open_tabs().len()), 2);
+
+    // 3. Double-clicking a Changes row promotes its preview tab to pinned.
+    h.double_click("CHANGES_ROW uncomm_a.rs");
+    h.wait("double-click pins uncomm_a.rs and diff is loaded", |h| {
+        h.has("FILE_TAB_PINNED uncomm_a.rs")
+            && !h.has("VIEWER_PIN_TAB")
+            && h.has("CHANGES_DIFF_CODE")
+            && h.read(|v| v.active_diff_viewed().is_some())
+    });
+
+    // 4. Live ✓ Viewed syncs bidirectionally between unified viewer header and Changes rail.
+    h.click("CHANGES_HEADER_VIEWED");
+    h.wait("Changes rail marks uncomm_a.rs viewed", |h| {
+        h.read(|v| match &v.body {
+            super::Body::Root(s) => s
+                .files
+                .iter()
+                .find(|f| f.path == "uncomm_a.rs")
+                .is_some_and(|f| f.viewed),
+            _ => false,
+        })
+    });
+    h.click("CHANGES_VIEWED_BOX uncomm_a.rs");
+    h.wait("Viewer clears viewed state when rail toggles off", |h| {
+        h.read(|v| v.active_diff_viewed() == Some((false, false)))
+    });
+
+    // 5. Switching commit targets keeps open pinned tabs intact; flipping Diff -> Code
+    // promotes an italic preview tab to pinned and switches in place, and Code -> Diff returns.
+    h.click("CHANGES_COMMIT_ALL");
+    h.wait("All changes files loaded while pinned tabs remain", |h| {
+        h.has("CHANGES_ROW src/lib.rs")
+            && viewer.read_with(&h.visual, |v, _| v.open_tabs().len()) == 2
+    });
+    h.click("CHANGES_ROW src/lib.rs");
+    h.wait("src/lib.rs opens as preview diff", |h| {
+        h.has("FILE_TAB_PREVIEW src/lib.rs")
+            && h.has("CHANGES_DIFF_CODE")
+            && h.has("VIEWER_MODE_CODE")
+    });
+    h.click("VIEWER_MODE_CODE");
+    h.wait(
+        "Diff -> Code promotes preview to pinned and shows code",
+        |h| {
+            h.has("FILE_CODE")
+                && h.has("FILE_TAB_PINNED src/lib.rs")
+                && h.has("VIEWER_MODE_CODE active")
+                && !h.has("VIEWER_PIN_TAB")
+        },
+    );
+    h.click("VIEWER_MODE_DIFF");
+    h.wait("Code -> Diff flips back in place", |h| {
+        h.has("CHANGES_DIFF_CODE") && h.has("VIEWER_MODE_DIFF active")
+    });
+
+    // 6. Deleted file disables Code mode cleanly.
+    h.click("CHANGES_COMMIT_UNCOMMITTED");
+    h.wait("Uncommitted target restored", |h| {
+        h.has("CHANGES_ROW README.md")
+    });
+    h.click("CHANGES_ROW README.md");
+    h.wait(
+        "deleted README.md diff loaded with disabled Code button",
+        |h| h.has("CHANGES_DIFF_CODE") && h.has("VIEWER_MODE_CODE disabled"),
+    );
+    h.click("VIEWER_MODE_CODE disabled");
+    assert!(
+        h.has("CHANGES_DIFF_CODE") && !h.has("FILE_CODE"),
+        "Code mode stays disabled on deleted files"
+    );
+
+    // 7. Inner divider drag trades file_tree_width vs unified file_viewer_width with constant total.
+    let widths = |h: &mut Harness| {
+        h.store.read_with(&h.visual, |store, _| {
+            (
+                store.settings.file_tree_width,
+                store.settings.file_viewer_width,
+            )
+        })
+    };
+    assert_eq!(widths(&mut h), (240., 460.));
+    let start = h.visual.debug_bounds("FILE_TREE_GUTTER").unwrap().center();
+    h.visual
+        .simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        h.visual.simulate_mouse_move(
+            start + gpui::point(px(-50.), px(0.)),
+            Some(gpui::MouseButton::Left),
+            Modifiers::default(),
+        );
+        h.settle();
+    }
+    h.visual.simulate_mouse_up(
+        start + gpui::point(px(-50.), px(0.)),
+        gpui::MouseButton::Left,
+        Modifiers::default(),
+    );
+    h.settle();
+    assert_eq!(widths(&mut h), (290., 410.));
+}
+
+#[test]
+fn code_mode_diff_reloads_fresh_hunks_after_base_change() {
+    let mut h = harness(None);
+    // Point `alt-base` at `feat/x`'s current HEAD (where `src/lib.rs` already differs from `main`),
+    // then add two commits on `feat/x` so `All changes` stays available under both `main` and
+    // `alt-base`, and `src/lib.rs` has distinct merge-base old blobs under each base.
+    git(&h.worktree, &["branch", "alt-base", "HEAD"]);
+    std::fs::write(
+        h.worktree.join("src/lib.rs"),
+        "fn alpha_v3() {\n    let a = 99;\n}\n\nfn beta() {\n    let b = 2;\n}\n",
+    )
+    .unwrap();
+    git(&h.worktree, &["add", "src/lib.rs"]);
+    git(&h.worktree, &["commit", "-q", "-m", "feat: alpha v3"]);
+    std::fs::write(
+        h.worktree.join("src/sub/extra.rs"),
+        "pub fn extra() -> i32 { 3 }\n",
+    )
+    .unwrap();
+    git(&h.worktree, &["add", "src/sub/extra.rs"]);
+    git(&h.worktree, &["commit", "-q", "-m", "feat: extra helper"]);
+
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait("All changes ready against main", |h| {
+        h.has("CHANGES_BASE_CHIP Auto · main") && h.has("CHANGES_ROW src/lib.rs")
+    });
+
+    let viewer = h.read(|v| v.viewer());
+    h.click("CHANGES_ROW src/lib.rs");
+    h.wait("src/lib.rs diff loaded against Auto (main)", |h| {
+        h.has("CHANGES_DIFF_CODE")
+            && viewer.read_with(&h.visual, |v, _| {
+                v.loaded_diff_meta().is_some_and(|(t, base, path, _, _)| {
+                    *t == SelectedTarget::Branch && base.is_none() && path == "src/lib.rs"
+                })
+            })
+    });
+    let main_old_blob = viewer
+        .read_with(&h.visual, |v, _| {
+            v.loaded_diff_meta()
+                .and_then(|(_, _, _, old_blob, _)| old_blob.map(str::to_owned))
+        })
+        .expect("main old blob");
+
+    // Flip Diff -> Code (promotes to pinned), then change Base to `alt-base` while in Code mode.
+    h.click("VIEWER_MODE_CODE");
+    h.wait("src/lib.rs pinned in Code mode", |h| {
+        h.has("FILE_CODE") && h.has("FILE_TAB_PINNED src/lib.rs")
+    });
+
+    h.click("CHANGES_BASE_CHIP Auto · main");
+    h.wait("base picker lists alt-base", |h| {
+        h.has("CHANGES_BASE_PICKER_ITEM 1 alt-base")
+    });
+    h.click("CHANGES_BASE_PICKER_ITEM 1 alt-base");
+    h.wait("base switched to alt-base", |h| {
+        h.has("CHANGES_BASE_CHIP alt-base") && h.has("CHANGES_ROW src/lib.rs")
+    });
+
+    // Flip Code -> Diff: must reload against `alt-base` with the new old blob, never stale `main`.
+    h.click("VIEWER_MODE_DIFF");
+    h.wait("src/lib.rs diff reloaded against alt-base", |h| {
+        h.has("CHANGES_DIFF_CODE")
+            && viewer.read_with(&h.visual, |v, _| {
+                v.loaded_diff_meta().is_some_and(|(t, base, path, old, _)| {
+                    *t == SelectedTarget::Branch
+                        && base == Some("refs/heads/alt-base")
+                        && path == "src/lib.rs"
+                        && old.is_some()
+                        && old != Some(main_old_blob.as_str())
+                })
+            })
+    });
+
+    // Switch back to Code, restore Auto (main), and re-select `src/lib.rs` from Changes rail:
+    // `open_changes_file` must compare against the previous base and reload `main`'s diff.
+    h.click("VIEWER_MODE_CODE");
+    h.wait("returned to Code mode", |h| h.has("FILE_CODE"));
+    h.click("CHANGES_BASE_CHIP alt-base");
+    h.wait("base picker lists Auto", |h| {
+        h.has("CHANGES_BASE_PICKER_ITEM 0 Auto")
+    });
+    h.click("CHANGES_BASE_PICKER_ITEM 0 Auto");
+    h.wait("base restored to Auto · main", |h| {
+        h.has("CHANGES_BASE_CHIP Auto · main") && h.has("CHANGES_ROW src/lib.rs")
+    });
+    h.click("CHANGES_ROW src/lib.rs");
+    h.wait("re-selecting from rail reloads Auto (main) diff", |h| {
+        h.has("CHANGES_DIFF_CODE")
+            && viewer.read_with(&h.visual, |v, _| {
+                v.loaded_diff_meta().is_some_and(|(t, base, path, old, _)| {
+                    *t == SelectedTarget::Branch
+                        && base.is_none()
+                        && path == "src/lib.rs"
+                        && old == Some(main_old_blob.as_str())
+                })
+            })
+    });
+}
+
+#[test]
+fn held_diff_load_preserves_newer_viewed_event_and_reconciles_failed_write() {
+    let mut h = harness(None);
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait("All changes file listed", |h| {
+        h.has("CHANGES_ROW src/lib.rs")
+    });
+
+    let (old_blob, new_blob) = h.read(|v| match &v.body {
+        super::Body::Root(s) => {
+            let f = s.files.iter().find(|f| f.path == "src/lib.rs").unwrap();
+            (f.old_blob_id.clone(), f.new_blob_id.clone())
+        }
+        _ => panic!("expected root"),
+    });
+    assert!(old_blob.is_some() && new_blob.is_some());
+
+    // 1. Hold diff completion so the in-flight load captures `viewed = false`.
+    let view = h.view();
+    let viewer = h.read(|v| v.viewer());
+    view.update(&mut h.visual, |v, cx| v.set_hold_diffs(true, cx));
+    h.click("CHANGES_ROW src/lib.rs");
+    h.wait("diff load held in flight", |h| {
+        h.read(|v| v.held_diffs_len()) >= 1
+    });
+
+    // Mark the same blobs viewed via daemon while the diff load is still held.
+    h.store.read_with(&h.visual, |store, _| {
+        store
+            .client
+            .changes_set_viewed(
+                &h.worktree,
+                &ChangesTarget::Branch,
+                "src/lib.rs",
+                old_blob.as_deref(),
+                new_blob.as_deref(),
+                true,
+            )
+            .unwrap();
+    });
+    h.wait("rail reflects newer viewed event while diff is held", |h| {
+        h.read(|v| match &v.body {
+            super::Body::Root(s) => s
+                .files
+                .iter()
+                .find(|f| f.path == "src/lib.rs")
+                .is_some_and(|f| f.viewed),
+            _ => false,
+        })
+    });
+
+    // Release the held diff: stale `viewed = false` response must not clobber newer `viewed = true`.
+    view.update(&mut h.visual, |v, cx| {
+        v.set_hold_diffs(false, cx);
+        assert!(v.release_held_diffs(cx) >= 1);
+    });
+    h.wait("held diff completes preserving viewed = true", |h| {
+        h.has("CHANGES_DIFF_CODE")
+            && !h.read(|v| v.is_diff_loading())
+            && h.read(|v| v.active_diff_viewed()) == Some((true, false))
+    });
+
+    // 2. Inject a failed viewed write from the viewer header: optimistic toggle must revert both
+    // viewer and Changes rail back to `viewed = true` and surface the error banner.
+    viewer.update(&mut h.visual, |v, _| {
+        v.set_fail_next_viewed_write(Some("viewed write failed".into()));
+    });
+    h.click("CHANGES_HEADER_VIEWED checked");
+    h.wait(
+        "failed viewed write reverts viewer and rail and surfaces error",
+        |h| {
+            h.has("CHANGES_ERROR")
+                && h.read(|v| v.active_diff_viewed()) == Some((true, false))
+                && h.read(|v| match &v.body {
+                    super::Body::Root(s) => s
+                        .files
+                        .iter()
+                        .find(|f| f.path == "src/lib.rs")
+                        .is_some_and(|f| f.viewed),
+                    _ => false,
+                })
+        },
+    );
+}
+
+#[test]
+fn keyboard_stepping_in_compact_changes_opens_and_swaps_preview_tab() {
+    let mut h = harness(None);
+    std::fs::write(h.worktree.join("uncomm_a.rs"), "pub fn a() {}\n").unwrap();
+    std::fs::write(h.worktree.join("uncomm_b.rs"), "pub fn b() {}\n").unwrap();
+
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait("compact Changes rail lists uncommitted files", |h| {
+        h.has("CHANGES_ROW uncomm_a.rs") && h.has("CHANGES_ROW uncomm_b.rs")
+    });
+    assert_eq!(h.read(|v| v.widening()), None);
+    assert!(!h.has("CHANGES_DIFF_CODE"));
+
+    let view = h.view();
+    let viewer = h.read(|v| v.viewer());
+    h.host
+        .update(&mut h.visual, |_, window, cx| {
+            view.update(cx, |v, cx| v.focus_list(window, cx));
+        })
+        .unwrap();
+    h.settle();
+
+    // Row 0 (`uncomm_a.rs`) is highlighted initially; stepping Down from compact Changes opens
+    // row 1 (`uncomm_b.rs`) as an italic preview tab and widens the viewer.
+    h.press("down");
+    h.wait("Down from compact rail opens preview tab", |h| {
+        h.has("CHANGES_DIFF_CODE")
+            && h.has("FILE_TAB_PREVIEW uncomm_b.rs")
+            && h.read(|v| v.widening()) == Some(true)
+    });
+    assert_eq!(
+        viewer.read_with(&h.visual, |v, _| v.open_tabs()),
+        vec!["uncomm_b.rs".to_string()]
+    );
+
+    h.press("k");
+    h.wait("k swaps single preview slot to uncomm_a.rs", |h| {
+        h.has("FILE_TAB_PREVIEW uncomm_a.rs") && !h.has("FILE_TAB_PREVIEW uncomm_b.rs")
+    });
+    assert_eq!(
+        viewer.read_with(&h.visual, |v, _| v.open_tabs()),
+        vec!["uncomm_a.rs".to_string()]
+    );
+
+    h.press("j");
+    h.wait("j swaps single preview slot back to uncomm_b.rs", |h| {
+        h.has("FILE_TAB_PREVIEW uncomm_b.rs") && !h.has("FILE_TAB_PREVIEW uncomm_a.rs")
+    });
+    assert_eq!(
+        viewer.read_with(&h.visual, |v, _| v.open_tabs()),
+        vec!["uncomm_b.rs".to_string()]
+    );
+}
+
+#[test]
+fn historical_commit_deletion_allows_code_and_open_in_when_file_was_recreated() {
+    let mut h = harness(None);
+    std::fs::remove_file(h.worktree.join("README.md")).unwrap();
+    git(&h.worktree, &["add", "-A"]);
+    git(&h.worktree, &["commit", "-q", "-m", "delete readme"]);
+    let del_short = String::from_utf8(
+        Command::new("git")
+            .current_dir(&h.worktree)
+            .args(["rev-parse", "--short=7", "HEAD"])
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+
+    std::fs::write(h.worktree.join("README.md"), "# Recreated\n").unwrap();
+    git(&h.worktree, &["add", "-A"]);
+    git(&h.worktree, &["commit", "-q", "-m", "recreate readme"]);
+
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait("delete commit listed", |h| {
+        h.has(format!("CHANGES_COMMIT {del_short}"))
+    });
+    h.click(format!("CHANGES_COMMIT {del_short}"));
+    h.wait("deleted README.md listed in historical commit", |h| {
+        h.has("CHANGES_ROW README.md")
+    });
+
+    let viewer = h.read(|v| v.viewer());
+    h.click("CHANGES_ROW README.md");
+    h.wait(
+        "historical deleted diff loaded with Code and Open in enabled",
+        |h| {
+            h.has("CHANGES_DIFF_CODE")
+                && h.has("VIEWER_MODE_CODE")
+                && !h.has("VIEWER_MODE_CODE disabled")
+                && h.has("FILE_OPEN_IN")
+        },
+    );
+
+    h.click("FILE_OPEN_IN");
+    assert_eq!(
+        viewer.read_with(&h.visual, |v, _| v.launched().len()),
+        1,
+        "Open in must launch recreated file on disk"
+    );
+
+    h.click("VIEWER_MODE_CODE");
+    h.wait("Code mode loads recreated working-tree README.md", |h| {
+        (h.has("FILE_MARKDOWN") || h.has("FILE_CODE")) && h.has("VIEWER_MODE_CODE active")
+    });
+}
+
+#[test]
+fn background_refresh_removing_inactive_preview_preserves_active_pinned_tab_and_cleans_orphan() {
+    use runner_core::protocol::files::{
+        FilesChanged, FilesStatusChanged, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
+    };
+
+    let mut h = harness(None);
+    std::fs::write(h.worktree.join("uncomm_a.rs"), "pub fn a() {}\n").unwrap();
+    std::fs::write(h.worktree.join("uncomm_b.rs"), "pub fn b() {}\n").unwrap();
+    std::fs::write(h.worktree.join("uncomm_c.rs"), "pub fn c() {}\n").unwrap();
+    let worktree_path = h.worktree.clone();
+    let events = h
+        .store
+        .read_with(&h.visual, |store, _| store.test_core.events.clone());
+    let mut sent = events.subscribe();
+
+    h.show(Some(mission_ctx("on-worktree")));
+    // Wait for startup status event and prove real OS watcher delivery before unlinking files
+    // (never inject synthetic events alongside an active watcher).
+    let mut saw_startup = false;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline && !saw_startup {
+        h.visual.run_until_parked();
+        loop {
+            match sent.try_recv() {
+                Ok(event) if event.name == FILES_STATUS_EVENT => {
+                    if serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(
+                        |update| {
+                            runner_core::app_paths::same_checkout_path(&update.root, &worktree_path)
+                        },
+                    ) {
+                        saw_startup = true;
+                        break;
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        if !saw_startup {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    assert!(
+        saw_startup,
+        "timed out waiting for startup FILES_STATUS_EVENT"
+    );
+    let sentinel = worktree_path.join(".watch-ready");
+    std::fs::write(&sentinel, "ready\n").unwrap();
+    let mut saw_changed = false;
+    let mut saw_status = false;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline && !(saw_changed && saw_status) {
+        h.visual.run_until_parked();
+        loop {
+            match sent.try_recv() {
+                Ok(event) if event.name == FILES_CHANGED_EVENT => {
+                    if serde_json::from_value::<FilesChanged>(event.payload).is_ok_and(|changed| {
+                        runner_core::app_paths::same_checkout_path(&changed.root, &worktree_path)
+                            && (changed.paths.iter().any(|p| p == ".watch-ready")
+                                || (changed.paths.is_empty() && changed.folders == [""]))
+                    }) {
+                        saw_changed = true;
+                    }
+                }
+                Ok(event) if event.name == FILES_STATUS_EVENT => {
+                    if serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(
+                        |update| {
+                            runner_core::app_paths::same_checkout_path(&update.root, &worktree_path)
+                                && update
+                                    .status
+                                    .entries
+                                    .iter()
+                                    .any(|e| e.path == ".watch-ready")
+                        },
+                    ) {
+                        saw_status = true;
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        if !(saw_changed && saw_status) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    assert!(
+        saw_changed && saw_status,
+        "timed out waiting for OS watcher sentinel readiness"
+    );
+    std::fs::remove_file(&sentinel).unwrap();
+
+    h.wait(
+        "all three uncommitted files listed and sentinel cleared",
+        |h| {
+            !h.has("CHANGES_ROW .watch-ready")
+                && h.has("CHANGES_ROW uncomm_a.rs")
+                && h.has("CHANGES_ROW uncomm_b.rs")
+                && h.has("CHANGES_ROW uncomm_c.rs")
+        },
+    );
+
+    let viewer = h.read(|v| v.viewer());
+
+    // Open and pin `uncomm_a.rs`, open `uncomm_b.rs` as preview, then return focus to pinned `uncomm_a.rs`.
+    h.click("CHANGES_ROW uncomm_a.rs");
+    h.wait("uncomm_a.rs preview opened", |h| {
+        h.has("FILE_TAB_PREVIEW uncomm_a.rs") && h.has("CHANGES_DIFF_CODE")
+    });
+    h.double_click("CHANGES_ROW uncomm_a.rs");
+    h.wait("uncomm_a.rs pinned", |h| {
+        h.has("FILE_TAB_PINNED uncomm_a.rs") && h.has("CHANGES_DIFF_CODE")
+    });
+    h.click("CHANGES_ROW uncomm_b.rs");
+    h.wait("uncomm_b.rs preview opened", |h| {
+        h.has("FILE_TAB_PREVIEW uncomm_b.rs")
+    });
+    h.click("FILE_TAB_PINNED uncomm_a.rs");
+    h.wait("active tab returned to pinned uncomm_a.rs", |h| {
+        viewer.read_with(&h.visual, |v, _| {
+            v.active_tab().as_deref() == Some("uncomm_a.rs")
+        })
+    });
+
+    // Remove the INACTIVE preview file: real watcher refresh removes `uncomm_b.rs` without
+    // yanking focus away from pinned `uncomm_a.rs`.
+    std::fs::remove_file(h.worktree.join("uncomm_b.rs")).unwrap();
+    h.wait(
+        "inactive preview removed while pinned tab stays active",
+        |h| {
+            !h.has("CHANGES_ROW uncomm_b.rs")
+                && viewer.read_with(&h.visual, |v, _| {
+                    v.open_tabs() == vec!["uncomm_a.rs".to_string()]
+                        && v.active_tab().as_deref() == Some("uncomm_a.rs")
+                })
+        },
+    );
+
+    // Now open `uncomm_c.rs` as the ACTIVE preview beside pinned `uncomm_a.rs`, then remove
+    // `uncomm_c.rs`: surviving neighbor is already-pinned `uncomm_a.rs`, so focus moves to it
+    // with zero orphaned preview tab left behind.
+    h.click("CHANGES_ROW uncomm_c.rs");
+    h.wait("uncomm_c.rs opened as active preview", |h| {
+        h.has("FILE_TAB_PREVIEW uncomm_c.rs")
+            && viewer.read_with(&h.visual, |v, _| {
+                v.active_tab().as_deref() == Some("uncomm_c.rs")
+            })
+    });
+    std::fs::remove_file(h.worktree.join("uncomm_c.rs")).unwrap();
+    h.wait(
+        "active preview cleaned up when replacement is already pinned",
+        |h| {
+            !h.has("CHANGES_ROW uncomm_c.rs")
+                && !h.has("FILE_TAB_PREVIEW uncomm_c.rs")
+                && h.has("FILE_TAB_PINNED uncomm_a.rs")
+                && viewer.read_with(&h.visual, |v, _| {
+                    v.open_tabs() == vec!["uncomm_a.rs".to_string()]
+                        && v.active_tab().as_deref() == Some("uncomm_a.rs")
+                })
+        },
+    );
+}
+
+#[test]
+fn pinned_all_changes_diff_settles_to_no_changes_when_base_matches_head() {
+    let mut h = harness(None);
+    // Create a local branch at the feature branch HEAD so choosing it as Base leaves 0 commits
+    // ahead (`All changes` disappears and the rail reconciles to `Uncommitted`).
+    git(&h.worktree, &["branch", "at-head", "HEAD"]);
+
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait("All changes ready against main", |h| {
+        h.has("CHANGES_BASE_CHIP Auto · main") && h.has("CHANGES_ROW src/lib.rs")
+    });
+
+    // Open and pin `src/lib.rs` on `All changes`.
+    h.click("CHANGES_ROW src/lib.rs");
+    h.wait("src/lib.rs preview diff loaded", |h| {
+        h.has("CHANGES_DIFF_CODE") && h.has("FILE_TAB_PREVIEW src/lib.rs")
+    });
+    h.click("VIEWER_PIN_TAB");
+    h.wait("src/lib.rs pinned", |h| {
+        h.has("FILE_TAB_PINNED src/lib.rs") && !h.has("VIEWER_PIN_TAB")
+    });
+
+    // Pick `at-head` as Base: `All changes` disappears, rail falls back to `Uncommitted`, and
+    // the pinned `All changes` diff must settle to `NoChanges` rather than staying on Loading.
+    h.click("CHANGES_BASE_CHIP Auto · main");
+    h.wait("base picker lists at-head", |h| {
+        h.has("CHANGES_BASE_PICKER_ITEM 1 at-head")
+    });
+    h.click("CHANGES_BASE_PICKER_ITEM 1 at-head");
+    h.wait(
+        "pinned Branch diff settles to NoChanges when All changes disappears",
+        |h| {
+            h.has("CHANGES_BASE_CHIP at-head")
+                && !h.has("CHANGES_COMMIT_ALL")
+                && h.has("FILE_DIFF_NO_CHANGES")
+                && !h.has("FILE_DIFF_LOADING")
+                && !h.has("CHANGES_DIFF_CODE")
+                && !h.read(|v| v.is_diff_loading())
+        },
+    );
+
+    // The user can still flip the pinned tab to Code mode cleanly.
+    h.click("VIEWER_MODE_CODE");
+    h.wait("Code mode opens from settled NoChanges tab", |h| {
+        h.has("FILE_CODE") && h.has("VIEWER_MODE_CODE active")
+    });
+}
+
+#[test]
+fn viewed_marks_refresh_for_unchanged_blobs_after_hidden_interval_and_resync() {
+    let mut h = harness(None);
+    std::fs::write(h.worktree.join("uncomm_a.rs"), "pub fn a() -> i32 { 1 }\n").unwrap();
+
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait("uncomm_a.rs listed", |h| h.has("CHANGES_ROW uncomm_a.rs"));
+
+    let viewer = h.read(|v| v.viewer());
+
+    // 1. Open and pin an Uncommitted diff (`uncomm_a.rs`) and mark it viewed.
+    h.click("CHANGES_ROW uncomm_a.rs");
+    h.wait("uncomm_a.rs preview diff loaded", |h| {
+        h.has("CHANGES_DIFF_CODE") && h.has("CHANGES_HEADER_VIEWED")
+    });
+    h.click("VIEWER_PIN_TAB");
+    h.click("CHANGES_HEADER_VIEWED");
+    h.wait("uncomm_a.rs marked viewed", |h| {
+        h.read(|v| v.active_diff_viewed()) == Some((true, false))
+    });
+    let (uncomm_old, uncomm_new) = viewer
+        .read_with(&h.visual, |v, _| {
+            v.loaded_diff_meta()
+                .map(|(_, _, _, o, n)| (o.map(str::to_owned), n.map(str::to_owned)))
+        })
+        .unwrap();
+
+    // 2. Open and pin an All changes diff (`src/lib.rs`) and mark it viewed.
+    h.click("CHANGES_COMMIT_ALL");
+    h.wait("All changes lists src/lib.rs", |h| {
+        h.has("CHANGES_ROW src/lib.rs")
+    });
+    h.click("CHANGES_ROW src/lib.rs");
+    h.wait("src/lib.rs preview diff loaded", |h| {
+        h.has("CHANGES_DIFF_CODE") && h.has("CHANGES_HEADER_VIEWED")
+    });
+    h.click("VIEWER_PIN_TAB");
+    h.click("CHANGES_HEADER_VIEWED");
+    h.wait("src/lib.rs marked viewed", |h| {
+        h.read(|v| v.active_diff_viewed()) == Some((true, false))
+    });
+    let (branch_old, branch_new) = viewer
+        .read_with(&h.visual, |v, _| {
+            v.loaded_diff_meta()
+                .map(|(_, _, _, o, n)| (o.map(str::to_owned), n.map(str::to_owned)))
+        })
+        .unwrap();
+
+    // 3. Hide the panel (unwatched interval), clear both marks in daemon with UNCHANGED blobs,
+    // then re-show: both Branch and Uncommitted tabs must refresh to authoritative `viewed = false`.
+    h.show(None);
+    h.store.read_with(&h.visual, |store, _| {
+        store
+            .client
+            .changes_set_viewed(
+                &h.worktree,
+                &ChangesTarget::Uncommitted,
+                "uncomm_a.rs",
+                uncomm_old.as_deref(),
+                uncomm_new.as_deref(),
+                false,
+            )
+            .unwrap();
+        store
+            .client
+            .changes_set_viewed(
+                &h.worktree,
+                &ChangesTarget::Branch,
+                "src/lib.rs",
+                branch_old.as_deref(),
+                branch_new.as_deref(),
+                false,
+            )
+            .unwrap();
+    });
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait(
+        "src/lib.rs refreshes to unviewed after hidden interval",
+        |h| h.read(|v| v.active_diff_viewed()) == Some((false, false)),
+    );
+    h.click("FILE_TAB_PINNED uncomm_a.rs");
+    h.wait(
+        "uncomm_a.rs refreshes to unviewed after hidden interval",
+        |h| h.read(|v| v.active_diff_viewed()) == Some((false, false)),
+    );
+
+    // 4. Simulate daemon reconnect (`FilesEvent::Resync { rewatch: true }`) while viewer stays
+    // shown with stale pre-reconnect local `viewed = true` marks on unchanged blobs (covering
+    // both an active Diff tab and a Code-mode tab flipped back to Diff after resync).
+    h.click("FILE_TAB_PINNED src/lib.rs");
+    h.click("VIEWER_MODE_CODE");
+    h.wait("src/lib.rs switched to Code mode", |h| h.has("FILE_CODE"));
+    h.click("FILE_TAB_PINNED uncomm_a.rs");
+    h.wait("uncomm_a.rs active in Diff mode", |h| {
+        h.has("CHANGES_DIFF_CODE")
+    });
+
+    let root = h.worktree.clone();
+    viewer.update(&mut h.visual, |v, cx| {
+        v.apply_changes_viewed_optimistic(
+            &root,
+            &SelectedTarget::Uncommitted,
+            "uncomm_a.rs",
+            uncomm_old.as_deref(),
+            uncomm_new.as_deref(),
+            true,
+            false,
+            cx,
+        );
+        v.apply_changes_viewed_optimistic(
+            &root,
+            &SelectedTarget::Branch,
+            "src/lib.rs",
+            branch_old.as_deref(),
+            branch_new.as_deref(),
+            true,
+            false,
+            cx,
+        );
+    });
+    h.settle();
+    assert_eq!(
+        h.read(|v| v.active_diff_viewed()),
+        Some((true, false)),
+        "pre-reconnect stale viewed mark must be set before Resync"
+    );
+
+    viewer.update(&mut h.visual, |v, cx| {
+        v.on_files_event(
+            &crate::surfaces::files::FilesEvent::Resync { rewatch: true },
+            cx,
+        );
+    });
+    h.wait(
+        "Resync refreshes active Uncommitted diff viewed mark to false on unchanged blobs",
+        |h| h.read(|v| v.active_diff_viewed()) == Some((false, false)),
+    );
+
+    h.click("FILE_TAB_PINNED src/lib.rs");
+    h.click("VIEWER_MODE_DIFF");
+    h.wait(
+        "Code -> Diff after Resync shows authoritative unviewed mark instead of stale hint",
+        |h| {
+            h.has("CHANGES_DIFF_CODE") && h.read(|v| v.active_diff_viewed()) == Some((false, false))
+        },
+    );
+}
+
+#[test]
+fn diff_to_code_async_load_transfers_focus_to_code_view() {
+    let mut h = harness(None);
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait("src/lib.rs listed", |h| h.has("CHANGES_ROW src/lib.rs"));
+
+    let viewer = h.read(|v| v.viewer());
+    h.click("CHANGES_ROW src/lib.rs");
+    h.wait("src/lib.rs diff loaded", |h| h.has("CHANGES_DIFF_CODE"));
+
+    let diff = h.read(|v| v.unified_diff_view()).unwrap();
+    h.host
+        .update(&mut h.visual, |_, window, cx| {
+            diff.read(cx).focus_handle().clone().focus(window, cx);
+        })
+        .unwrap();
+    h.settle();
+
+    // Flip Diff -> Code while Content is still Idle (async read); once CodeView mounts, focus must
+    // promote from the viewer placeholder to CodeView without another click.
+    h.click("VIEWER_MODE_CODE");
+    h.wait(
+        "CodeView mounted and focused after async Diff -> Code",
+        |h| {
+            h.has("FILE_CODE")
+                && h.host
+                    .update(&mut h.visual, |_, window, cx| {
+                        viewer
+                            .read(cx)
+                            .code_view()
+                            .is_some_and(|code| code.read(cx).focus_handle().is_focused(window))
+                    })
+                    .unwrap()
+        },
+    );
+}
+
+#[test]
+fn stale_non_uncommitted_refresh_does_not_overwrite_newer_base_selection() {
+    let mut h = harness(None);
+    // Create `alt-base` with 2 commits ahead on `feat/x` so `src/lib.rs` has distinct old blobs
+    // under `Auto · main` vs `alt-base`.
+    git(&h.worktree, &["branch", "alt-base", "HEAD"]);
+    std::fs::write(
+        h.worktree.join("src/lib.rs"),
+        "fn alpha_v3() {\n    let a = 99;\n}\n\nfn beta() {\n    let b = 2;\n}\n",
+    )
+    .unwrap();
+    git(&h.worktree, &["add", "src/lib.rs"]);
+    git(&h.worktree, &["commit", "-q", "-m", "feat: alpha v3"]);
+    std::fs::write(
+        h.worktree.join("src/sub/extra.rs"),
+        "pub fn extra() -> i32 { 3 }\n",
+    )
+    .unwrap();
+    git(&h.worktree, &["add", "src/sub/extra.rs"]);
+    git(&h.worktree, &["commit", "-q", "-m", "feat: extra helper"]);
+
+    h.show(Some(mission_ctx("on-worktree")));
+    h.wait("All changes ready against main", |h| {
+        h.has("CHANGES_BASE_CHIP Auto · main") && h.has("CHANGES_ROW src/lib.rs")
+    });
+
+    // Open and pin `src/lib.rs` on `All changes` (`Auto · main`).
+    let viewer = h.read(|v| v.viewer());
+    h.click("CHANGES_ROW src/lib.rs");
+    h.wait("src/lib.rs diff loaded against main", |h| {
+        h.has("CHANGES_DIFF_CODE") && h.has("VIEWER_PIN_TAB")
+    });
+    h.click("VIEWER_PIN_TAB");
+    let main_old_blob = viewer
+        .read_with(&h.visual, |v, _| {
+            v.loaded_diff_meta()
+                .and_then(|(_, _, _, old_blob, _)| old_blob.map(str::to_owned))
+        })
+        .expect("main old blob");
+
+    // Hold a slow viewer branch refresh that captured `Auto · main` BEFORE the user selects
+    // `alt-base` in the Base picker.
+    viewer.update(&mut h.visual, |v, _| {
+        v.set_hold_non_uncommitted_refreshes(true);
+    });
+    viewer.update(&mut h.visual, |v, cx| {
+        v.on_files_event(
+            &crate::surfaces::files::FilesEvent::Resync { rewatch: false },
+            cx,
+        );
+    });
+    h.wait("slow refresh A held in flight with Auto · main", |h| {
+        viewer.read_with(&h.visual, |v, _| {
+            v.held_non_uncommitted_refreshes_len() >= 1
+        })
+    });
+
+    // Now pick `alt-base` in the Base picker and wait for B's diff to load.
+    h.click("CHANGES_BASE_CHIP Auto · main");
+    h.wait("base picker lists alt-base", |h| {
+        h.has("CHANGES_BASE_PICKER_ITEM 1 alt-base")
+    });
+    h.click("CHANGES_BASE_PICKER_ITEM 1 alt-base");
+    h.wait("alt-base diff loaded", |h| {
+        h.has("CHANGES_BASE_CHIP alt-base")
+            && h.has("CHANGES_DIFF_CODE")
+            && viewer.read_with(&h.visual, |v, _| {
+                v.loaded_diff_meta().is_some_and(|(t, base, path, old, _)| {
+                    *t == SelectedTarget::Branch
+                        && base == Some("refs/heads/alt-base")
+                        && path == "src/lib.rs"
+                        && old.is_some()
+                        && old != Some(main_old_blob.as_str())
+                })
+            })
+    });
+    let alt_old_blob = viewer
+        .read_with(&h.visual, |v, _| {
+            v.loaded_diff_meta()
+                .and_then(|(_, _, _, old_blob, _)| old_blob.map(str::to_owned))
+        })
+        .expect("alt old blob");
+
+    // Release slow refresh A: it MUST be discarded and must NEVER revert the pinned diff or
+    // scope pill back to `Auto · main`.
+    viewer.update(&mut h.visual, |v, _| {
+        v.set_hold_non_uncommitted_refreshes(false);
+        assert!(v.release_held_non_uncommitted_refreshes() >= 1);
+    });
+    h.settle();
+    assert_eq!(
+        viewer.read_with(&h.visual, |v, _| {
+            v.loaded_diff_meta()
+                .map(|(_, base, _, old, _)| (base.map(str::to_owned), old.map(str::to_owned)))
+        }),
+        Some((Some("refs/heads/alt-base".to_owned()), Some(alt_old_blob))),
+        "stale refresh A must not revert pinned diff from alt-base back to main"
+    );
+    assert!(
+        viewer
+            .read_with(&h.visual, |v, _| v.active_diff_scope_label())
+            .is_some_and(|s| s.contains("alt-base")),
+        "scope pill must remain on alt-base after discarding stale refresh A"
     );
 }

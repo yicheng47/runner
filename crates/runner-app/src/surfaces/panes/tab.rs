@@ -766,25 +766,15 @@ impl NativeRoot {
                         this.chat_panel_resizing = true;
                         cx.notify();
                     }
-                    // With a file or diff open the drag sizes the viewer beside the tree/list.
+                    // With a file or diff open the drag sizes the unified viewer beside the right rail.
                     if let Some(widened) = widened {
                         let tree = if widened.tree { widened.tree_width } else { 0. };
                         let width = app_settings::clamp_file_viewer_width(width - tree);
-                        let is_changes = side_panel::shown(
-                            surface,
-                            this.settings(cx),
-                            &this.chat_surfaces.selection,
-                        ) == Some(side_panel::PanelViewId::Changes);
                         this.update_app_settings(cx, false, |settings| {
-                            let target = if is_changes {
-                                &mut settings.changes_viewer_width
-                            } else {
-                                &mut settings.file_viewer_width
-                            };
-                            if *target == width {
+                            if settings.file_viewer_width == width {
                                 return false;
                             }
-                            *target = width;
+                            settings.file_viewer_width = width;
                             true
                         });
                         return;

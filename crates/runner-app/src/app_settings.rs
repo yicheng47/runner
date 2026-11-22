@@ -33,8 +33,7 @@ pub const MISSION_RAIL_MAX: f32 = 480.;
 pub const MISSION_RAIL_DEFAULT: f32 = 300.;
 pub const FILE_VIEWER_MIN: f32 = 200.;
 pub const FILE_VIEWER_MAX: f32 = 1200.;
-pub const FILE_VIEWER_DEFAULT: f32 = 440.;
-pub const CHANGES_VIEWER_DEFAULT: f32 = 500.;
+pub const FILE_VIEWER_DEFAULT: f32 = 460.;
 pub const FILE_TREE_MIN: f32 = 160.;
 pub const FILE_TREE_MAX: f32 = 480.;
 pub const FILE_TREE_DEFAULT: f32 = 240.;
@@ -385,11 +384,9 @@ pub struct AppSettings {
     pub remote_sidebars: BTreeMap<String, RemoteSidebarSettings>,
     pub chat_panel_width: f32,
     pub mission_rail_width: f32,
-    /// The file's width in a side panel widened by an open file, beside the tree.
+    /// The unified viewer's width in a side panel widened by an open file or diff, beside the right rail.
     pub file_viewer_width: f32,
-    /// The diff viewer's width in a side panel widened by an open Changes diff.
-    pub changes_viewer_width: f32,
-    /// The tree's width on the outer edge of a panel widened by an open file.
+    /// The right rail's width on the outer edge of a panel widened by an open file or diff.
     pub file_tree_width: f32,
     /// Settings → Side panel → Panel: off hides every tab's panel and its
     /// toggle, keeping the view switches below.
@@ -465,7 +462,6 @@ impl Default for AppSettings {
             chat_panel_width: CHAT_PANEL_DEFAULT,
             mission_rail_width: MISSION_RAIL_DEFAULT,
             file_viewer_width: FILE_VIEWER_DEFAULT,
-            changes_viewer_width: CHANGES_VIEWER_DEFAULT,
             file_tree_width: FILE_TREE_DEFAULT,
             show_side_panel: true,
             files_view: true,
@@ -546,7 +542,6 @@ impl AppSettings {
         self.chat_panel_width = normalize_chat_panel_width(self.chat_panel_width);
         self.mission_rail_width = normalize_mission_rail_width(self.mission_rail_width);
         self.file_viewer_width = normalize_file_viewer_width(self.file_viewer_width);
-        self.changes_viewer_width = normalize_changes_viewer_width(self.changes_viewer_width);
         self.file_tree_width = normalize_file_tree_width(self.file_tree_width);
         self.files_font_family = self
             .files_font_family
@@ -799,14 +794,6 @@ pub fn normalize_file_viewer_width(value: f32) -> f32 {
 
 pub fn clamp_file_viewer_width(value: f32) -> f32 {
     value.clamp(FILE_VIEWER_MIN, FILE_VIEWER_MAX)
-}
-
-pub fn normalize_changes_viewer_width(value: f32) -> f32 {
-    if value.is_finite() && (FILE_VIEWER_MIN..=FILE_VIEWER_MAX).contains(&value) {
-        value
-    } else {
-        CHANGES_VIEWER_DEFAULT
-    }
 }
 
 pub fn normalize_file_tree_width(value: f32) -> f32 {
@@ -1172,12 +1159,9 @@ mod tests {
         assert_eq!(normalize_chat_panel_width(376.), 376.);
         assert_eq!(normalize_chat_panel_width(f32::NAN), CHAT_PANEL_DEFAULT);
         assert_eq!(clamp_chat_panel_width(999.), 480.);
-        assert_eq!(normalize_file_viewer_width(f32::NAN), 440.);
-        assert_eq!(normalize_file_viewer_width(9999.), 440.);
+        assert_eq!(normalize_file_viewer_width(f32::NAN), 460.);
+        assert_eq!(normalize_file_viewer_width(9999.), 460.);
         assert_eq!(clamp_file_viewer_width(9999.), 1200.);
-        assert_eq!(normalize_changes_viewer_width(f32::NAN), 500.);
-        assert_eq!(normalize_changes_viewer_width(9999.), 500.);
-        assert_eq!(normalize_changes_viewer_width(640.), 640.);
         assert_eq!(normalize_file_tree_width(320.), 320.);
         assert_eq!(normalize_file_tree_width(f32::NAN), 240.);
         assert_eq!(normalize_file_tree_width(100.), 240.);
@@ -1188,15 +1172,28 @@ mod tests {
         let serialized = serde_json::to_value(AppSettings {
             terminal_cursor_style: TerminalCursorStyle::Bar,
             chat_panel_width: 440.,
-            changes_viewer_width: 620.,
+            file_viewer_width: 620.,
             ..AppSettings::default()
         })
         .unwrap();
         assert_eq!(serialized["terminalCursorStyle"], "bar");
         assert!(serialized.get("terminalScrollback").is_none());
         assert!(serialized.get("chatPanelOpen").is_none());
+        assert!(serialized.get("changesViewerWidth").is_none());
         assert_eq!(serialized["chatPanelWidth"], 440.);
-        assert_eq!(serialized["changesViewerWidth"], 620.);
+        assert_eq!(serialized["fileViewerWidth"], 620.);
+
+        // Legacy `changesViewerWidth` deserializes cleanly without error and is dropped on save.
+        let legacy: AppSettings =
+            serde_json::from_str(r#"{"changesViewerWidth":520,"fileViewerWidth":540}"#).unwrap();
+        assert_eq!(legacy.file_viewer_width, 540.);
+        let legacy_only: AppSettings =
+            serde_json::from_str(r#"{"changesViewerWidth":520}"#).unwrap();
+        assert_eq!(legacy_only.file_viewer_width, FILE_VIEWER_DEFAULT);
+        assert!(serde_json::to_value(&legacy_only)
+            .unwrap()
+            .get("changesViewerWidth")
+            .is_none());
     }
 
     #[test]

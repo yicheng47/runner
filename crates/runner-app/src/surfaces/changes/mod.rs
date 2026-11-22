@@ -23,22 +23,16 @@ use gpui::{
 use runner_app::ui::{Scrollbar, TextField};
 use runner_core::protocol::changes::{
     ChangedFile, ChangesBranches, ChangesCommits, ChangesDiff, ChangesFiles, ChangesTotals,
-    ChangesViewed, DiffBody, DiffCounts, DiffHunk, ModeChange,
+    ChangesViewed, DiffBody, DiffHunk,
 };
-use runner_core::protocol::files::{
-    FileStatus, FilesRoot, FilesRootOutcome, FilesSubject, WorktreeEntry,
-};
+use runner_core::protocol::files::{FilesRoot, FilesRootOutcome, FilesSubject, WorktreeEntry};
 use runner_core::protocol::{ClientError, DaemonClient};
 
-use crate::app_settings::{
-    DiffViewMode, FileLinkEditor, TERMINAL_FONT_SIZE_MAX, TERMINAL_FONT_SIZE_MIN,
-};
-#[cfg(not(test))]
-use crate::file_links::{self, FileLinkTarget};
 use crate::surfaces::files::document::Document;
-use crate::surfaces::files::highlight;
+use crate::surfaces::files::open_file::{OpenChangesRequest, UnifiedViewer};
+use crate::surfaces::files::tabs::TabKey;
 use crate::surfaces::files::{self, absolute, picker, FilesEvent, FilesHub, Look};
-use crate::surfaces::side_panel::{self, PanelContext, PanelSurface, Widened};
+use crate::surfaces::side_panel::{PanelContext, PanelSurface, Widened};
 use crate::theme;
 
 pub(crate) use diff::UnifiedDiffView;
@@ -46,11 +40,12 @@ use model::{
     build_base_picker_items, build_checkout_picker_items, build_commit_rows, build_flat_rows,
     build_tree_rows, choose_initial_target, default_base_highlight, default_checkout_highlight,
     filter_base_picker_items, filter_checkout_picker_items, has_all_changes, is_crlf_only_change,
-    is_viewing_other_checkout, live_worktrees, reconcile_file_selection, reconcile_target,
-    BasePickerItem, CheckoutPickerItem, CommitRow, FocusPlace, ListRow, SelectedTarget,
+    is_viewing_other_checkout, live_worktrees, reconcile_target, BasePickerItem,
+    CheckoutPickerItem, CommitRow, FocusPlace, ListRow, SelectedTarget,
 };
 pub(crate) use render::{
     render_shared_diff_header, render_shared_diff_placeholder, DiffHeaderProps, DiffModeCallback,
+    PlaceholderViewedFooter,
 };
 
 fn subject(context: &PanelContext) -> FilesSubject {
@@ -85,72 +80,8 @@ pub(super) struct RootChanges {
     pub(super) list_rows: Vec<ListRow>,
     pub(super) selected_path: Option<String>,
     pub(super) highlighted_list_row: usize,
-    pub(super) diff_state: ActiveDiff,
-    pub(super) in_flight_diff: Option<(u64, SelectedTarget, Option<String>, String)>,
     pub(super) snapshot_seq: u64,
     pub(super) files_seq: u64,
-    pub(super) diff_seq: u64,
-}
-
-pub(super) enum ActiveDiff {
-    Empty,
-    Loading,
-    Loaded(Box<LoadedDiff>),
-    Failed(SharedString),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct DiffVersion {
-    pub(super) target: SelectedTarget,
-    pub(super) base: Option<String>,
-    pub(super) path: String,
-    pub(super) old_blob_id: Option<String>,
-    pub(super) new_blob_id: Option<String>,
-}
-
-pub(super) struct LoadedDiff {
-    pub(super) version: DiffVersion,
-    pub(super) path: String,
-    pub(super) status: FileStatus,
-    pub(super) counts: DiffCounts,
-    pub(super) mode_change: Option<ModeChange>,
-    pub(super) conflicted: bool,
-    pub(super) viewed: bool,
-    pub(super) changed_since_viewed: bool,
-    pub(super) kind: LoadedDiffKind,
-}
-
-impl LoadedDiff {
-    pub(super) fn matches_file(
-        &self,
-        target: &SelectedTarget,
-        chosen_base: Option<&str>,
-        file: &ChangedFile,
-    ) -> bool {
-        let expected_base = matches!(target, SelectedTarget::Branch)
-            .then_some(chosen_base)
-            .flatten();
-        &self.version.target == target
-            && self.version.base.as_deref() == expected_base
-            && self.version.path == file.path
-            && self.version.old_blob_id == file.old_blob_id
-            && self.version.new_blob_id == file.new_blob_id
-    }
-
-    pub(super) fn set_viewed_state(
-        &mut self,
-        viewed: bool,
-        changed_since_viewed: bool,
-        cx: &mut App,
-    ) {
-        self.viewed = viewed;
-        self.changed_since_viewed = changed_since_viewed;
-        if let LoadedDiffKind::Unified(entity) = &self.kind {
-            entity.update(cx, |v, cx| {
-                v.set_viewed_state(viewed, changed_since_viewed, cx);
-            });
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -355,16 +286,15 @@ pub(super) struct CheckoutPickerState {
 #[derive(Clone, Debug)]
 pub(crate) struct SavedChangesState {
     pub(crate) root: PathBuf,
-    pub(crate) selected_path: String,
     pub(crate) selected_target: SelectedTarget,
 }
 
 pub(crate) struct ChangesView {
     pub(super) context: PanelContext,
     client: DaemonClient,
-    pub(super) root_focus: FocusHandle,
+    pub(crate) viewer: Entity<UnifiedViewer>,
+    pub(crate) root_focus: FocusHandle,
     pub(super) list_focus: FocusHandle,
-    pub(super) diff_focus: FocusHandle,
     pub(super) checkout_button_focus: FocusHandle,
     pub(super) checkout_return_focus: FocusHandle,
     pub(super) base_chip_focus: FocusHandle,
@@ -389,22 +319,12 @@ pub(crate) struct ChangesView {
     pub(super) files_scroll: UniformListScrollHandle,
     pub(super) files_scrollbar: Entity<Scrollbar>,
     pub(super) widened: Option<Widened>,
-    pub(super) maximized: bool,
-    pub(super) on_request_maximize: Option<side_panel::PanelMaximizeCallback>,
     pub(super) owner: Option<EntityId>,
-    pub(super) reported: (Option<bool>, bool),
+    pub(super) reported_dirty: bool,
     pub(super) status_stale: bool,
     pub(super) pending_restore: Option<SavedChangesState>,
-    pub(super) tree_resizing: bool,
     look: Option<Look>,
     tree_view_pref: bool,
-    diff_mode_pref: DiffViewMode,
-    #[cfg(test)]
-    pub(super) launched: Vec<(Option<FileLinkEditor>, PathBuf)>,
-    #[cfg(test)]
-    hold_diffs: bool,
-    #[cfg(test)]
-    held_diffs: Vec<futures::channel::oneshot::Sender<()>>,
     #[cfg(test)]
     hold_snapshots: bool,
     #[cfg(test)]
@@ -414,7 +334,11 @@ pub(crate) struct ChangesView {
 }
 
 impl ChangesView {
-    pub(crate) fn new(context: PanelContext, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        context: PanelContext,
+        viewer: Entity<UnifiedViewer>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let client = crate::app_store::global_app_store(cx)
             .read(cx)
             .client
@@ -451,8 +375,6 @@ impl ChangesView {
         let base = files_scroll.0.borrow().base_handle.clone();
         let files_scrollbar = cx.new(|_| Scrollbar::app(base, entity_id));
         let tree_view_pref = files::settings(cx).is_some_and(|s| s.changes_tree_view);
-        let diff_mode_pref =
-            files::settings(cx).map_or(DiffViewMode::Unified, |s| s.changes_diff_mode);
 
         let mut view = Self {
             body: if context.remote {
@@ -462,9 +384,9 @@ impl ChangesView {
             },
             context,
             client,
+            viewer,
             root_focus: cx.focus_handle(),
             list_focus: cx.focus_handle().tab_stop(true),
-            diff_focus: cx.focus_handle(),
             checkout_button_focus: cx.focus_handle().tab_stop(true),
             checkout_return_focus: cx.focus_handle().tab_stop(true),
             base_chip_focus: cx.focus_handle().tab_stop(true),
@@ -488,22 +410,12 @@ impl ChangesView {
             files_scroll,
             files_scrollbar,
             widened: None,
-            maximized: false,
-            on_request_maximize: None,
             owner: None,
-            reported: (None, false),
+            reported_dirty: false,
             status_stale: false,
             pending_restore: None,
-            tree_resizing: false,
             look: Look::current(cx),
             tree_view_pref,
-            diff_mode_pref,
-            #[cfg(test)]
-            launched: Vec::new(),
-            #[cfg(test)]
-            hold_diffs: false,
-            #[cfg(test)]
-            held_diffs: Vec::new(),
             #[cfg(test)]
             hold_snapshots: false,
             #[cfg(test)]
@@ -549,24 +461,12 @@ impl ChangesView {
     pub(crate) fn set_widened(&mut self, widened: Option<Widened>, cx: &mut Context<Self>) {
         if self.widened != widened {
             self.widened = widened;
-            self.sync_effective_diff_mode(cx);
             cx.notify();
         }
     }
 
-    pub(crate) fn set_maximized(&mut self, maximized: bool, cx: &mut Context<Self>) {
-        if self.maximized != maximized {
-            self.maximized = maximized;
-            self.sync_effective_diff_mode(cx);
-            cx.notify();
-        }
-    }
-
-    pub(crate) fn set_on_request_maximize(
-        &mut self,
-        handler: Option<side_panel::PanelMaximizeCallback>,
-    ) {
-        self.on_request_maximize = handler;
+    pub(crate) fn is_not_in_git(&self) -> bool {
+        matches!(self.body, Body::NotInGit)
     }
 
     pub(crate) fn focus_default(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -580,64 +480,11 @@ impl ChangesView {
         }
     }
 
-    pub(super) fn diff_width(&self) -> f32 {
-        self.widened
-            .map_or(crate::app_settings::FILE_VIEWER_DEFAULT, |w| w.file)
-    }
-
-    pub(super) fn effective_diff_mode(&self, cx: &App) -> DiffViewMode {
-        let preferred = files::settings(cx).map_or(self.diff_mode_pref, |s| s.changes_diff_mode);
-        side_panel::effective_diff_mode(preferred, self.diff_width(), self.maximized)
-    }
-
-    fn sync_effective_diff_mode(&self, cx: &mut Context<Self>) {
-        let mode = self.effective_diff_mode(cx);
-        if let Body::Root(state) = &self.body
-            && let ActiveDiff::Loaded(loaded) = &state.diff_state
-            && let LoadedDiffKind::Unified(entity) = &loaded.kind
-        {
-            entity.update(cx, |v, cx| v.set_mode(mode, cx));
-        }
-    }
-
-    pub(super) fn select_diff_mode(
-        &mut self,
-        mode: DiffViewMode,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.diff_mode_pref = mode;
-        crate::app_store::global_app_store(cx).update(cx, |store, cx| {
-            store.update_settings(
-                |settings| {
-                    let changed = settings.changes_diff_mode != mode;
-                    settings.changes_diff_mode = mode;
-                    changed
-                },
-                true,
-                cx,
-            );
-        });
-        if !self.root_focus.contains_focused(window, cx) {
-            self.focus_default(window, cx);
-        }
-        if mode == DiffViewMode::Split
-            && !self.maximized
-            && self.diff_width() < side_panel::SPLIT_MIN_DIFF_WIDTH
-            && let Some(request) = self.on_request_maximize.clone()
-        {
-            self.maximized = true;
-            request(true, window, cx);
-        }
-        self.sync_effective_diff_mode(cx);
-        cx.notify();
-    }
-
     pub(crate) fn set_owner(&mut self, owner: Option<EntityId>) {
         self.owner = owner;
     }
 
-    fn notify_owner(&self, cx: &mut Context<Self>) {
+    pub(super) fn notify_owner(&self, cx: &mut Context<Self>) {
         if let Some(owner) = self.owner {
             cx.defer(move |cx| cx.notify(owner));
         }
@@ -652,27 +499,14 @@ impl ChangesView {
             self.base_picker = None;
             self.checkout_picker = None;
             self.status_stale = true;
+            if let Body::Root(state) = &mut self.body {
+                // Invalidate in-flight snapshot / target-list responses so a
+                // hidden Changes rail cannot mutate the shared viewer after handoff.
+                state.snapshot_seq += 1;
+                state.files_seq += 1;
+            }
         }
         self.sync_watch(cx);
-    }
-
-    /// C1 progressive widening (#1403): Changes stays compact at 300 px until
-    /// the user explicitly opens a changed file's diff (`selected_path.is_some()`).
-    pub(crate) fn widening(&self) -> Option<bool> {
-        match &self.body {
-            Body::Root(state) => Some(
-                state.selected_path.is_some()
-                    || (state.commits.is_none()
-                        && self.pending_restore.as_ref().is_some_and(|pending| {
-                            runner_core::app_paths::same_normalized_checkout_path(
-                                &state.root.path,
-                                &pending.root,
-                            )
-                        })),
-            ),
-            Body::Loading => Some(self.pending_restore.is_some()),
-            _ => Some(false),
-        }
     }
 
     pub(crate) fn has_dirty_changes(&self) -> bool {
@@ -696,23 +530,10 @@ impl ChangesView {
 
     pub(crate) fn saved_state(&self) -> Option<SavedChangesState> {
         match &self.body {
-            Body::Root(state) => state
-                .selected_path
-                .as_ref()
-                .map(|path| SavedChangesState {
-                    root: state.root.path.clone(),
-                    selected_path: path.clone(),
-                    selected_target: state.selected_target.clone(),
-                })
-                .or_else(|| {
-                    self.pending_restore.as_ref().and_then(|pending| {
-                        runner_core::app_paths::same_normalized_checkout_path(
-                            &state.root.path,
-                            &pending.root,
-                        )
-                        .then(|| pending.clone())
-                    })
-                }),
+            Body::Root(state) => Some(SavedChangesState {
+                root: state.root.path.clone(),
+                selected_target: state.selected_target.clone(),
+            }),
             Body::Loading => self.pending_restore.clone(),
             _ => None,
         }
@@ -736,7 +557,6 @@ impl ChangesView {
                 )
         );
         if !same_root {
-            self.notify_owner(cx);
             return;
         }
         let needs_target_switch = matches!(
@@ -744,40 +564,88 @@ impl ChangesView {
             Body::Root(state) if state.selected_target != saved.selected_target
         );
         if needs_target_switch {
-            self.pending_restore = Some(saved.clone());
             self.select_target(saved.selected_target, cx);
-            return;
-        }
-        let has_file = matches!(
-            &self.body,
-            Body::Root(state) if state.files.iter().any(|f| f.path == saved.selected_path)
-        );
-        if has_file {
-            self.select_file_by_path(saved.selected_path, cx);
-        } else {
-            self.notify_owner(cx);
         }
     }
 
-    pub(super) fn close_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let was_maximized = self.maximized;
-        if let Body::Root(state) = &mut self.body {
-            state.selected_path = None;
-            state.diff_state = ActiveDiff::Empty;
-            state.in_flight_diff = None;
+    pub(crate) fn sync_active_tab(&mut self, active: Option<&TabKey>, cx: &mut Context<Self>) {
+        let Body::Root(state) = &mut self.body else {
+            return;
+        };
+        let next = active
+            .filter(|key| {
+                key.target == state.selected_target
+                    && state.files.iter().any(|f| f.path == key.path)
+            })
+            .map(|key| key.path.clone());
+        if state.selected_path != next {
+            state.selected_path = next;
+            if let Some(path) = &state.selected_path
+                && let Some(row_idx) = state
+                    .list_rows
+                    .iter()
+                    .position(|r| matches!(r, ListRow::File { path: p, .. } if p == path))
+            {
+                state.highlighted_list_row = row_idx;
+                self.files_scroll
+                    .scroll_to_item(row_idx, ScrollStrategy::Nearest);
+            }
+            cx.notify();
         }
-        self.focus_place = FocusPlace::Files;
-        self.list_focus.focus(window, cx);
-        if was_maximized {
-            self.maximized = false;
-            if let Some(request) = self.on_request_maximize.clone() {
-                request(false, window, cx);
+    }
+
+    pub(crate) fn on_viewer_viewed_error(&mut self, msg: String, cx: &mut Context<Self>) {
+        if self.recover_from_root_error(&msg, cx) {
+            return;
+        }
+        self.error = Some(msg.into());
+        self.load_snapshot_inner(false, false, false, cx);
+        cx.notify();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn apply_viewer_viewed_optimistic(
+        &mut self,
+        root: &Path,
+        target: &SelectedTarget,
+        path: &str,
+        old_blob: Option<&str>,
+        new_blob: Option<&str>,
+        viewed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Body::Root(state) = &mut self.body else {
+            return;
+        };
+        if !runner_core::app_paths::same_normalized_checkout_path(&state.root.path, root)
+            || &state.selected_target != target
+        {
+            return;
+        }
+        let mut updated = false;
+        for file in &mut state.files {
+            if file.path == path
+                && file.old_blob_id.as_deref() == old_blob
+                && file.new_blob_id.as_deref() == new_blob
+            {
+                file.viewed = viewed;
+                if viewed {
+                    file.changed_since_viewed = false;
+                }
+                updated = true;
             }
         }
-        if let Some(owner) = self.owner {
-            cx.defer(move |cx| cx.notify(owner));
+        if updated {
+            state.totals.viewed = state.files.iter().filter(|f| f.viewed).count();
+            cx.notify();
         }
-        cx.notify();
+    }
+
+    pub(crate) fn on_viewer_diff_focused(&mut self, cx: &mut Context<Self>) {
+        if self.focus_place != FocusPlace::Diff {
+            self.focus_place = FocusPlace::Diff;
+            cx.notify();
+        }
     }
 
     fn watched_git_root(&self) -> Option<&Path> {
@@ -938,6 +806,7 @@ impl ChangesView {
             self.base_picker = None;
             self.checkout_picker = None;
         }
+        let sync_outcome = outcome.as_ref().ok().cloned();
         self.error = None;
         match outcome {
             Ok(FilesRootOutcome::Root(root)) => {
@@ -967,7 +836,9 @@ impl ChangesView {
                     && same
                 {
                     state.root = root;
-                    self.load_snapshot(cx);
+                    if self.shown {
+                        self.load_snapshot_inner(true, true, false, cx);
+                    }
                 } else {
                     self.files_scroll = UniformListScrollHandle::new();
                     let entity_id = cx.entity_id();
@@ -994,11 +865,8 @@ impl ChangesView {
                         list_rows: Vec::new(),
                         selected_path: None,
                         highlighted_list_row: 0,
-                        diff_state: ActiveDiff::Empty,
-                        in_flight_diff: None,
                         snapshot_seq: 0,
                         files_seq: 0,
-                        diff_seq: 0,
                     }));
                     if let Body::Root(state) = &self.body
                         && self.pending_restore.as_ref().is_some_and(|pending| {
@@ -1011,7 +879,9 @@ impl ChangesView {
                         self.pending_restore = None;
                         self.notify_owner(cx);
                     }
-                    self.load_snapshot(cx);
+                    if self.shown {
+                        self.load_snapshot_inner(true, true, false, cx);
+                    }
                 }
             }
             Ok(FilesRootOutcome::ChooseFolder) => {
@@ -1030,6 +900,10 @@ impl ChangesView {
                 self.body = Body::Failed(error.to_string().into());
                 self.notify_owner(cx);
             }
+        }
+        if let Some(root_outcome) = sync_outcome {
+            self.viewer
+                .update(cx, |viewer, cx| viewer.sync_root(root_outcome, cx));
         }
         self.watched_root_changed(cx);
         cx.notify();
@@ -1139,13 +1013,13 @@ impl ChangesView {
         let Some(root) = wanted else {
             return;
         };
-        let already_loaded = matches!(&self.body, Body::Root(state) if state.commits.is_some());
+        let has_root = matches!(&self.body, Body::Root(_));
         self.watched = Some(root.clone());
         self.chain_watch(cx, move |client| {
             let _ = client.files_watch(&root);
         });
-        if already_loaded {
-            self.load_snapshot(cx);
+        if has_root {
+            self.load_snapshot_inner(true, true, false, cx);
         }
     }
 
@@ -1219,10 +1093,16 @@ impl ChangesView {
     }
 
     fn load_snapshot(&mut self, cx: &mut Context<Self>) {
-        self.load_snapshot_inner(true, cx);
+        self.load_snapshot_inner(true, true, true, cx);
     }
 
-    fn load_snapshot_inner(&mut self, reload_same_diff: bool, cx: &mut Context<Self>) {
+    fn load_snapshot_inner(
+        &mut self,
+        reload_same_diff: bool,
+        clear_error: bool,
+        allow_preview_replace: bool,
+        cx: &mut Context<Self>,
+    ) {
         let settings_snapshot = files::settings(cx).cloned();
         let Body::Root(state) = &mut self.body else {
             return;
@@ -1319,23 +1199,34 @@ impl ChangesView {
             }
             let _ = this.update(cx, |this, cx| {
                 if this.generation == generation {
-                    this.apply_snapshot(seq, files_seq, reload_same_diff, result, cx);
+                    this.apply_snapshot(
+                        seq,
+                        files_seq,
+                        reload_same_diff,
+                        clear_error,
+                        allow_preview_replace,
+                        result,
+                        cx,
+                    );
                 }
             });
         })
         .detach();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn apply_snapshot(
         &mut self,
         seq: u64,
         files_seq: u64,
         reload_same_diff: bool,
+        clear_error: bool,
+        allow_preview_replace: bool,
         result: Result<SnapshotPayload, ClientError>,
         cx: &mut Context<Self>,
     ) {
         let is_current = match &self.body {
-            Body::Root(state) => seq >= state.snapshot_seq,
+            Body::Root(state) => self.shown && seq >= state.snapshot_seq,
             _ => false,
         };
         if !is_current {
@@ -1356,7 +1247,9 @@ impl ChangesView {
         let Body::Root(state) = &mut self.body else {
             return;
         };
-        self.error = None;
+        if clear_error {
+            self.error = None;
+        }
         let prev_top_and_branch = state
             .commits
             .as_ref()
@@ -1441,6 +1334,36 @@ impl ChangesView {
         if self.checkout_picker.is_some() {
             self.rebuild_checkout_picker(cx);
         }
+        if next_target != SelectedTarget::Branch
+            && let Body::Root(state) = &self.body
+        {
+            let root_path = state.root.path.clone();
+            let chosen_base = state.chosen_base.clone();
+            let resolved_base = state
+                .commits
+                .as_ref()
+                .and_then(|c| c.base.clone().or_else(|| c.auto_base.clone()));
+            let branch_name = state
+                .commits
+                .as_ref()
+                .and_then(|c| c.branch.clone())
+                .or_else(|| state.root.git.as_ref().and_then(|g| g.branch.clone()));
+            let has_head = state.commits.as_ref().map_or_else(
+                || state.root.git.as_ref().is_some_and(|g| g.commit.is_some()),
+                |c| c.head_commit.is_some(),
+            );
+            self.viewer.update(cx, |viewer, cx| {
+                viewer.sync_branch_base(
+                    &root_path,
+                    chosen_base.as_deref(),
+                    resolved_base.as_deref(),
+                    branch_name.as_deref(),
+                    has_head,
+                    true,
+                    cx,
+                );
+            });
+        }
         if files_seq < prev_files_seq && next_target == prev_target && active_files_opt.is_none() {
             cx.notify();
             return;
@@ -1465,6 +1388,7 @@ impl ChangesView {
         self.apply_files_list(
             active_files,
             reload_same_diff && files_seq >= prev_files_seq,
+            allow_preview_replace,
             cx,
         );
     }
@@ -1479,8 +1403,6 @@ impl ChangesView {
         state.selected_target = target.clone();
         state.selected_path = None;
         state.highlighted_list_row = 0;
-        state.diff_state = ActiveDiff::Empty;
-        state.in_flight_diff = None;
         state.files_seq += 1;
         let files_seq = state.files_seq;
         let root_path = state.root.path.clone();
@@ -1493,7 +1415,7 @@ impl ChangesView {
             move |client| client.changes_files(&root_path, &proto, chosen_base.as_deref()),
             move |this, result, cx| {
                 let is_current = match &this.body {
-                    Body::Root(state) => files_seq >= state.files_seq,
+                    Body::Root(state) => this.shown && files_seq >= state.files_seq,
                     _ => false,
                 };
                 if !is_current {
@@ -1512,7 +1434,7 @@ impl ChangesView {
                                 SelectedTarget::Commit(_) => {}
                             }
                         }
-                        this.apply_files_list(files, false, cx);
+                        this.apply_files_list(files, false, false, cx);
                     }
                     Err(error) => {
                         let msg = error.to_string();
@@ -1532,13 +1454,14 @@ impl ChangesView {
         &mut self,
         mut changes_files: ChangesFiles,
         reload_same_diff: bool,
+        allow_preview_replace: bool,
         cx: &mut Context<Self>,
     ) {
         changes_files.files.sort_by(|a, b| a.path.cmp(&b.path));
         let tree_mode = files::settings(cx).is_some_and(|s| s.changes_tree_view);
         self.tree_view_pref = tree_mode;
 
-        let (selected_path, should_load_diff) = {
+        let reconcile = {
             let Body::Root(state) = &mut self.body else {
                 return;
             };
@@ -1555,15 +1478,79 @@ impl ChangesView {
             } else {
                 build_flat_rows(&state.files)
             };
+            let resolved_base = state
+                .commits
+                .as_ref()
+                .and_then(|c| c.base.clone().or_else(|| c.auto_base.clone()));
+            let branch_name = state
+                .commits
+                .as_ref()
+                .and_then(|c| c.branch.clone())
+                .or_else(|| state.root.git.as_ref().and_then(|g| g.branch.clone()));
+            let has_head = state.commits.as_ref().map_or_else(
+                || state.root.git.as_ref().is_some_and(|g| g.commit.is_some()),
+                |c| c.head_commit.is_some(),
+            );
+            (
+                state.root.path.clone(),
+                state.selected_target.clone(),
+                state.chosen_base.clone(),
+                resolved_base,
+                branch_name,
+                has_head,
+                state.files.clone(),
+                state.list_rows.clone(),
+                prev_path,
+                prev_highlight,
+                prev_highlight_idx,
+            )
+        };
+        let (
+            root_path,
+            target,
+            chosen_base,
+            resolved_base,
+            branch_name,
+            has_head,
+            files_snapshot,
+            rows_snapshot,
+            prev_path,
+            prev_highlight,
+            prev_highlight_idx,
+        ) = reconcile;
 
-            // C1 progressive widening (#1403): keep the diff closed until the
-            // user clicks or opens a changed file; if a diff was already open,
-            // reconcile selection when files update or disappear.
-            let next_path = prev_path.as_deref().and_then(|previous| {
-                reconcile_file_selection(Some(previous), &state.files, &state.list_rows, tree_mode)
-            });
+        self.viewer.update(cx, |viewer, cx| {
+            viewer.reconcile_changes_files(
+                &root_path,
+                &target,
+                chosen_base.as_deref(),
+                resolved_base.as_deref(),
+                branch_name.as_deref(),
+                has_head,
+                &files_snapshot,
+                &rows_snapshot,
+                tree_mode,
+                reload_same_diff,
+                allow_preview_replace,
+                cx,
+            );
+        });
+
+        let active_key = self
+            .viewer
+            .read(cx)
+            .tabs
+            .active()
+            .map(|tab| tab.key.clone());
+        if let Body::Root(state) = &mut self.body {
+            let next_path = active_key
+                .filter(|key| {
+                    key.target == state.selected_target
+                        && state.files.iter().any(|f| f.path == key.path)
+                })
+                .map(|key| key.path);
             let same_path = next_path.is_some() && next_path == prev_path;
-            state.selected_path = next_path.clone();
+            state.selected_path = next_path;
             if state.selected_path.is_some() {
                 let wanted = if same_path {
                     prev_highlight
@@ -1594,51 +1581,7 @@ impl ChangesView {
                         &state.list_rows,
                     )
                 };
-                state.diff_state = ActiveDiff::Empty;
-                state.in_flight_diff = None;
             }
-            let chosen_base_ref = state.chosen_base.as_deref();
-            if let ActiveDiff::Loaded(loaded) = &mut state.diff_state
-                && let Some(file) = state
-                    .files
-                    .iter()
-                    .find(|f| loaded.matches_file(&state.selected_target, chosen_base_ref, f))
-            {
-                loaded.set_viewed_state(file.viewed, file.changed_since_viewed, cx);
-            }
-            let loaded_matches_selected = match (&state.selected_path, &state.diff_state) {
-                (Some(path), ActiveDiff::Loaded(loaded)) => state
-                    .files
-                    .iter()
-                    .find(|f| &f.path == path)
-                    .is_some_and(|f| {
-                        loaded.matches_file(&state.selected_target, chosen_base_ref, f)
-                    }),
-                _ => false,
-            };
-            let expected_in_flight_base = matches!(state.selected_target, SelectedTarget::Branch)
-                .then_some(chosen_base_ref)
-                .flatten();
-            let already_in_flight = match (&state.selected_path, &state.in_flight_diff) {
-                (Some(path), Some((_, in_flight_target, in_flight_base, in_flight_path))) => {
-                    in_flight_target == &state.selected_target
-                        && in_flight_base.as_deref() == expected_in_flight_base
-                        && in_flight_path == path
-                }
-                _ => false,
-            };
-            let need_diff = if reload_same_diff {
-                true
-            } else {
-                !loaded_matches_selected && !already_in_flight
-            };
-            (next_path, need_diff)
-        };
-
-        if let Some(path) = selected_path
-            && should_load_diff
-        {
-            self.load_diff(path, cx);
         }
         if let Some(saved) = self.pending_restore.take() {
             self.apply_saved_changes(saved, cx);
@@ -1646,9 +1589,12 @@ impl ChangesView {
         cx.notify();
     }
 
-    pub(super) fn select_file_by_path(&mut self, path: String, cx: &mut Context<Self>) {
-        let changed = {
+    pub(super) fn select_file_by_path(&mut self, path: String, pin: bool, cx: &mut Context<Self>) {
+        let req = {
             let Body::Root(state) = &mut self.body else {
+                return;
+            };
+            let Some(file) = state.files.iter().find(|f| f.path == path).cloned() else {
                 return;
             };
             if let Some(row_idx) = state
@@ -1660,355 +1606,94 @@ impl ChangesView {
                 self.files_scroll
                     .scroll_to_item(row_idx, ScrollStrategy::Nearest);
             }
-            if state.selected_path.as_deref() == Some(path.as_str()) {
-                false
-            } else {
-                state.selected_path = Some(path.clone());
-                true
-            }
-        };
-        if changed {
-            self.load_diff(path, cx);
-        }
-        cx.notify();
-    }
-
-    fn load_diff(&mut self, path: String, cx: &mut Context<Self>) {
-        let (seq, root_path, selected_target, requested_base, target) = {
-            let Body::Root(state) = &mut self.body else {
-                return;
-            };
-            state.diff_seq += 1;
-            let seq = state.diff_seq;
-            let selected_target = state.selected_target.clone();
-            let requested_base = matches!(selected_target, SelectedTarget::Branch)
-                .then(|| state.chosen_base.clone())
-                .flatten();
-            state.in_flight_diff = Some((
-                seq,
-                selected_target.clone(),
-                requested_base.clone(),
-                path.clone(),
-            ));
-            let keep_existing = matches!(
-                &state.diff_state,
-                ActiveDiff::Loaded(loaded)
-                    if loaded.version.target == selected_target
-                        && loaded.version.base == requested_base
-                        && loaded.path == path
-            );
-            if !keep_existing {
-                state.diff_state = ActiveDiff::Loading;
-            }
-            let proto = selected_target.to_protocol();
-            (
-                seq,
-                state.root.path.clone(),
-                selected_target,
-                requested_base,
-                proto,
-            )
-        };
-        #[cfg(test)]
-        let hold_rx = self.hold_diffs.then(|| {
-            let (tx, rx) = futures::channel::oneshot::channel();
-            self.held_diffs.push(tx);
-            rx
-        });
-        let req_path = path.clone();
-        let req_base = requested_base.clone();
-        let client = self.client.clone();
-        let generation = self.generation;
-        let task = cx.background_spawn(async move {
-            let diff = client.changes_diff(&root_path, &target, &req_path, req_base.as_deref())?;
-            let prepared = prepare_diff_body(&diff);
-            Ok((diff, prepared))
-        });
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            #[cfg(test)]
-            if let Some(rx) = hold_rx {
-                let _ = rx.await;
-            }
-            let _ = this.update(cx, |this, cx| {
-                if this.generation == generation {
-                    this.apply_diff(seq, selected_target, requested_base, path, result, cx);
-                }
-            });
-        })
-        .detach();
-    }
-
-    fn apply_diff(
-        &mut self,
-        seq: u64,
-        requested_target: SelectedTarget,
-        requested_base: Option<String>,
-        requested_path: String,
-        result: Result<(ChangesDiff, PreparedDiffBody), ClientError>,
-        cx: &mut Context<Self>,
-    ) {
-        let weak = cx.weak_entity();
-        {
-            let Body::Root(state) = &mut self.body else {
-                return;
-            };
-            if state
-                .in_flight_diff
+            state.selected_path = Some(path.clone());
+            let resolved_base = state
+                .commits
                 .as_ref()
-                .is_some_and(|(s, ..)| *s == seq)
-            {
-                state.in_flight_diff = None;
+                .and_then(|c| c.base.clone().or_else(|| c.auto_base.clone()));
+            let branch_name = state
+                .commits
+                .as_ref()
+                .and_then(|c| c.branch.clone())
+                .or_else(|| state.root.git.as_ref().and_then(|g| g.branch.clone()));
+            let commit_short_id = match &state.selected_target {
+                SelectedTarget::Commit(id) => state
+                    .commits
+                    .as_ref()
+                    .and_then(|c| c.commits.iter().find(|commit| &commit.id == id))
+                    .map(|c| c.short_id.clone())
+                    .or_else(|| Some(id[..id.len().min(7)].to_owned())),
+                _ => None,
+            };
+            let has_head = state.commits.as_ref().map_or_else(
+                || state.root.git.as_ref().is_some_and(|g| g.commit.is_some()),
+                |c| c.head_commit.is_some(),
+            );
+            OpenChangesRequest {
+                root: state.root.clone(),
+                path,
+                target: state.selected_target.clone(),
+                chosen_base: state.chosen_base.clone(),
+                resolved_base,
+                branch_name,
+                commit_short_id,
+                file,
+                has_head,
             }
-            let expected_base = matches!(state.selected_target, SelectedTarget::Branch)
-                .then(|| state.chosen_base.clone())
-                .flatten();
-            if seq < state.diff_seq
-                || state.selected_target != requested_target
-                || expected_base != requested_base
-                || state.selected_path.as_deref() != Some(requested_path.as_str())
-            {
-                return;
-            }
-        }
-        let mut list_stale = false;
-        match result {
-            Ok((diff, prepared)) => {
-                let effective_mode = self.effective_diff_mode(cx);
-                let Body::Root(state) = &mut self.body else {
-                    return;
-                };
-                let version = DiffVersion {
-                    target: requested_target,
-                    base: requested_base,
-                    path: diff.path.clone(),
-                    old_blob_id: diff.old_blob_id,
-                    new_blob_id: diff.new_blob_id,
-                };
-                let matching_file = state.files.iter().find(|f| {
-                    f.path == version.path
-                        && f.old_blob_id == version.old_blob_id
-                        && f.new_blob_id == version.new_blob_id
-                });
-                let (viewed, changed_since_viewed) = matching_file
-                    .map(|f| (f.viewed, f.changed_since_viewed))
-                    .unwrap_or((false, false));
-                list_stale = matching_file.is_none();
-
-                let file_name: SharedString = model::file_name(&diff.path).to_owned().into();
-                let grammar = highlight::grammar_for_path(&diff.path);
-
-                let kind = match prepared {
-                    PreparedDiffBody::Unified {
-                        old_doc,
-                        new_doc,
-                        hunks,
-                    } => {
-                        if let ActiveDiff::Loaded(existing) = &state.diff_state
-                            && existing.path == diff.path
-                            && let LoadedDiffKind::Unified(entity) = &existing.kind
-                        {
-                            let entity = entity.clone();
-                            entity.update(cx, |v, cx| {
-                                v.set_mode(effective_mode, cx);
-                                v.update_content(
-                                    old_doc,
-                                    new_doc,
-                                    &hunks,
-                                    grammar,
-                                    file_name,
-                                    viewed,
-                                    changed_since_viewed,
-                                    cx,
-                                );
-                            });
-                            LoadedDiffKind::Unified(entity)
-                        } else {
-                            let esc_weak = weak.clone();
-                            let toggle_weak = weak.clone();
-                            let focus_weak = weak;
-                            let entity = cx.new(|cx| {
-                                let mut v = UnifiedDiffView::new(
-                                    old_doc,
-                                    new_doc,
-                                    &hunks,
-                                    grammar,
-                                    file_name,
-                                    viewed,
-                                    changed_since_viewed,
-                                    cx,
-                                );
-                                v.set_mode(effective_mode, cx);
-                                v.set_callbacks(
-                                    Rc::new(move |window, cx| {
-                                        let _ = esc_weak.update(cx, |this, cx| {
-                                            this.focus_list(window, cx);
-                                        });
-                                    }),
-                                    Some(Rc::new(move |_, cx| {
-                                        let _ = toggle_weak.update(cx, |this, cx| {
-                                            this.toggle_viewed_for_loaded_diff(cx);
-                                        });
-                                    })),
-                                    Rc::new(move |_, cx| {
-                                        let _ = focus_weak.update(cx, |this, cx| {
-                                            if this.focus_place != FocusPlace::Diff {
-                                                this.focus_place = FocusPlace::Diff;
-                                                cx.notify();
-                                            }
-                                        });
-                                    }),
-                                );
-                                v
-                            });
-                            LoadedDiffKind::Unified(entity)
-                        }
-                    }
-                    PreparedDiffBody::CrlfOnly => LoadedDiffKind::CrlfOnly,
-                    PreparedDiffBody::Binary { old_size, new_size } => {
-                        LoadedDiffKind::Binary { old_size, new_size }
-                    }
-                    PreparedDiffBody::TooLarge { old_size, new_size } => {
-                        LoadedDiffKind::TooLarge { old_size, new_size }
-                    }
-                    PreparedDiffBody::ModeOnly { old_mode, new_mode } => {
-                        LoadedDiffKind::ModeOnly { old_mode, new_mode }
-                    }
-                    PreparedDiffBody::Submodule {
-                        old_commit,
-                        new_commit,
-                    } => LoadedDiffKind::Submodule {
-                        old_commit,
-                        new_commit,
-                    },
-                };
-
-                state.diff_state = ActiveDiff::Loaded(Box::new(LoadedDiff {
-                    version,
-                    path: diff.path,
-                    status: diff.status,
-                    counts: diff.counts,
-                    mode_change: diff.mode_change,
-                    conflicted: diff.conflicted,
-                    viewed,
-                    changed_since_viewed,
-                    kind,
-                }));
-            }
-            Err(error) => {
-                let msg = error.to_string();
-                if self.recover_from_root_error(&msg, cx) {
-                    return;
-                }
-                if msg.contains("has no changes in target") {
-                    self.load_snapshot(cx);
-                    return;
-                }
-                if let Body::Root(state) = &mut self.body {
-                    state.diff_state = ActiveDiff::Failed(msg.into());
-                }
-            }
-        }
-        if list_stale {
-            self.load_snapshot_inner(false, cx);
-        }
+        };
+        self.viewer
+            .update(cx, |viewer, cx| viewer.open_changes_file(req, pin, cx));
         cx.notify();
     }
 
     // ── Viewed marks & flat/tree toggle ────────────────────────────────
 
     pub(super) fn toggle_viewed_for_path(&mut self, path: &str, cx: &mut Context<Self>) {
-        let (root_path, target, old_blob, new_blob, next_viewed) = {
+        let (root_path, selected_target, old_blob, new_blob, next_viewed, next_changed) = {
             let Body::Root(state) = &mut self.body else {
                 return;
             };
-            let (next_viewed, changed, old_blob, new_blob, matches_loaded) = {
-                let Some(file) = state.files.iter_mut().find(|f| f.path == path) else {
-                    return;
-                };
-                let next_viewed = !file.viewed;
-                file.viewed = next_viewed;
-                if next_viewed {
-                    file.changed_since_viewed = false;
-                }
-                let matches_loaded = match &state.diff_state {
-                    ActiveDiff::Loaded(loaded) => loaded.matches_file(
-                        &state.selected_target,
-                        state.chosen_base.as_deref(),
-                        file,
-                    ),
-                    _ => false,
-                };
-                (
-                    next_viewed,
-                    file.changed_since_viewed,
-                    file.old_blob_id.clone(),
-                    file.new_blob_id.clone(),
-                    matches_loaded,
-                )
+            let Some(file) = state.files.iter_mut().find(|f| f.path == path) else {
+                return;
             };
-            state.totals.viewed = state.files.iter().filter(|f| f.viewed).count();
-            if matches_loaded && let ActiveDiff::Loaded(loaded) = &mut state.diff_state {
-                loaded.set_viewed_state(next_viewed, changed, cx);
+            let next_viewed = !file.viewed;
+            file.viewed = next_viewed;
+            if next_viewed {
+                file.changed_since_viewed = false;
             }
+            let next_changed = file.changed_since_viewed;
+            let old_blob = file.old_blob_id.clone();
+            let new_blob = file.new_blob_id.clone();
+            state.totals.viewed = state.files.iter().filter(|f| f.viewed).count();
             (
                 state.root.path.clone(),
-                state.selected_target.to_protocol(),
+                state.selected_target.clone(),
                 old_blob,
                 new_blob,
                 next_viewed,
+                next_changed,
             )
         };
+        self.viewer.update(cx, |viewer, cx| {
+            viewer.apply_changes_viewed_optimistic(
+                &root_path,
+                &selected_target,
+                path,
+                old_blob.as_deref(),
+                new_blob.as_deref(),
+                next_viewed,
+                next_changed,
+                cx,
+            );
+        });
         let req_path = path.to_owned();
+        let target = selected_target.to_protocol();
         self.send_viewed_toggle(
             root_path,
             target,
             req_path,
             old_blob,
             new_blob,
-            next_viewed,
-            cx,
-        );
-    }
-
-    pub(super) fn toggle_viewed_for_loaded_diff(&mut self, cx: &mut Context<Self>) {
-        let (root_path, version, next_viewed) = {
-            let Body::Root(state) = &mut self.body else {
-                return;
-            };
-            let ActiveDiff::Loaded(loaded) = &mut state.diff_state else {
-                return;
-            };
-            let next_viewed = !loaded.viewed;
-            let next_changed = if next_viewed {
-                false
-            } else {
-                loaded.changed_since_viewed
-            };
-            loaded.set_viewed_state(next_viewed, next_changed, cx);
-            let version = loaded.version.clone();
-            if state.selected_target == version.target
-                && let Some(file) = state.files.iter_mut().find(|f| {
-                    f.path == version.path
-                        && f.old_blob_id == version.old_blob_id
-                        && f.new_blob_id == version.new_blob_id
-                })
-            {
-                file.viewed = next_viewed;
-                if next_viewed {
-                    file.changed_since_viewed = false;
-                }
-                state.totals.viewed = state.files.iter().filter(|f| f.viewed).count();
-            }
-            (state.root.path.clone(), version, next_viewed)
-        };
-        let proto = version.target.to_protocol();
-        self.send_viewed_toggle(
-            root_path,
-            proto,
-            version.path,
-            version.old_blob_id,
-            version.new_blob_id,
             next_viewed,
             cx,
         );
@@ -2044,7 +1729,7 @@ impl ChangesView {
                         return;
                     }
                     this.error = Some(msg.into());
-                    this.load_snapshot_inner(false, cx);
+                    this.load_snapshot_inner(false, false, false, cx);
                 }
             },
         );
@@ -2075,26 +1760,11 @@ impl ChangesView {
                     }
                 }
             }
-            if let ActiveDiff::Loaded(loaded) = &mut state.diff_state
-                && runner_core::app_paths::same_normalized_checkout_path(
-                    &absolute(&root_norm, &loaded.version.path),
-                    &event_abs,
-                )
-                && loaded.version.old_blob_id == event.old_blob_id
-                && loaded.version.new_blob_id == event.new_blob_id
-            {
-                let changed = if event.viewed {
-                    false
-                } else {
-                    loaded.changed_since_viewed
-                };
-                loaded.set_viewed_state(event.viewed, changed, cx);
-            }
             state.totals.viewed = state.files.iter().filter(|f| f.viewed).count();
         }
         if matched_checkout {
             if self.shown {
-                self.load_snapshot_inner(false, cx);
+                self.load_snapshot_inner(false, true, false, cx);
             }
             cx.notify();
         }
@@ -2314,11 +1984,11 @@ impl ChangesView {
         cx: &mut Context<Self>,
     ) {
         let return_focus = self.base_picker.take().map(|p| p.return_focus);
-        let top_and_branch = match &mut self.body {
+        let (top_and_branch, sync_info) = match &mut self.body {
             Body::Root(state) => {
                 state.missing_base_notice = None;
                 state.chosen_base = next_base.clone();
-                state
+                let top_and_branch = state
                     .commits
                     .as_ref()
                     .map(|c| (c.checkout_top.clone(), c.branch.clone()))
@@ -2328,10 +1998,39 @@ impl ChangesView {
                             .git
                             .as_ref()
                             .map(|g| (g.top.clone(), g.branch.clone()))
-                    })
+                    });
+                let branch_name = state
+                    .commits
+                    .as_ref()
+                    .and_then(|c| c.branch.clone())
+                    .or_else(|| state.root.git.as_ref().and_then(|g| g.branch.clone()));
+                let has_head = state.commits.as_ref().map_or_else(
+                    || state.root.git.as_ref().is_some_and(|g| g.commit.is_some()),
+                    |c| c.head_commit.is_some(),
+                );
+                let sync_info = (
+                    state.root.path.clone(),
+                    branch_name,
+                    has_head,
+                    state.selected_target != SelectedTarget::Branch,
+                );
+                (top_and_branch, Some(sync_info))
             }
-            _ => None,
+            _ => (None, None),
         };
+        if let Some((root_path, branch_name, has_head, reload_now)) = sync_info {
+            self.viewer.update(cx, |viewer, cx| {
+                viewer.sync_branch_base(
+                    &root_path,
+                    next_base.as_deref(),
+                    next_base.as_deref(),
+                    branch_name.as_deref(),
+                    has_head,
+                    reload_now,
+                    cx,
+                );
+            });
+        }
         if let Some((top, branch)) = top_and_branch {
             crate::app_store::global_app_store(cx).update(cx, |store, cx| {
                 store.update_settings(
@@ -2346,7 +2045,7 @@ impl ChangesView {
         if let Some(focus) = return_focus {
             focus.focus(window, cx);
         }
-        self.load_snapshot(cx);
+        self.load_snapshot_inner(true, true, false, cx);
         cx.notify();
     }
 
@@ -2545,7 +2244,7 @@ impl ChangesView {
         }
     }
 
-    // ── Settings, zoom, divider resize & external launch ───────────────
+    // ── Settings, focus & keyboard ─────────────────────────────────────
 
     fn settings_changed(&mut self, cx: &mut Context<Self>) {
         if self.checkout_picker.is_some() {
@@ -2582,166 +2281,24 @@ impl ChangesView {
             _ => false,
         };
         if external_base_change {
-            self.load_snapshot(cx);
+            self.load_snapshot_inner(true, true, false, cx);
         }
         let look = Look::current(cx);
         let tree_pref = files::settings(cx).is_some_and(|s| s.changes_tree_view);
         if tree_pref != self.tree_view_pref {
             self.rebuild_list_rows(tree_pref, cx);
         }
-        let diff_mode = files::settings(cx).map_or(DiffViewMode::Unified, |s| s.changes_diff_mode);
-        if diff_mode != self.diff_mode_pref {
-            self.diff_mode_pref = diff_mode;
-            self.sync_effective_diff_mode(cx);
-            cx.notify();
-        }
-        if look == self.look {
-            return;
-        }
-        self.look = look;
-        if let Body::Root(state) = &self.body
-            && let ActiveDiff::Loaded(loaded) = &state.diff_state
-            && let LoadedDiffKind::Unified(entity) = &loaded.kind
-        {
-            entity.update(cx, |_, cx| cx.notify());
-        }
-        cx.notify();
-    }
-
-    fn diff_has_focus(&self, window: &Window, cx: &App) -> bool {
-        if self.diff_focus.is_focused(window) {
-            return true;
-        }
-        if let Body::Root(state) = &self.body
-            && let ActiveDiff::Loaded(loaded) = &state.diff_state
-            && let LoadedDiffKind::Unified(entity) = &loaded.kind
-        {
-            return entity.read(cx).focus_handle().is_focused(window);
-        }
-        false
-    }
-
-    pub(super) fn zoom(
-        &mut self,
-        step: i16,
-        fallback: Box<dyn gpui::Action>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.diff_has_focus(window, cx) {
-            window.dispatch_action(fallback, cx);
-            return;
-        }
-        crate::app_store::global_app_store(cx).update(cx, |store, cx| {
-            store.update_settings(
-                |settings| {
-                    let current = settings.files_font_size() as i16;
-                    let next = (current + step)
-                        .clamp(TERMINAL_FONT_SIZE_MIN as i16, TERMINAL_FONT_SIZE_MAX as i16)
-                        as u16;
-                    let changed = settings.files_font_size != Some(next);
-                    settings.files_font_size = Some(next);
-                    changed
-                },
-                true,
-                cx,
-            );
-        });
-    }
-
-    pub(super) fn resize_tree(&mut self, tree: f32, cx: &mut Context<Self>) {
-        let Some(widened) = self.widened.filter(|w| w.tree) else {
-            return;
-        };
-        self.tree_resizing = true;
-        if self.maximized {
-            let total = widened.file + widened.tree_width;
-            let tree = crate::app_settings::clamp_file_tree_width(tree)
-                .min((total - widened.standard).max(crate::app_settings::FILE_TREE_MIN));
-            crate::app_store::global_app_store(cx).update(cx, |store, cx| {
-                store.update_settings(
-                    |settings| {
-                        let changed = settings.file_tree_width != tree;
-                        settings.file_tree_width = tree;
-                        changed
-                    },
-                    false,
-                    cx,
-                );
-            });
-        } else {
-            let (file, tree) = widened.resize_tree(tree);
-            crate::app_store::global_app_store(cx).update(cx, |store, cx| {
-                store.update_settings(
-                    |settings| {
-                        let changed = settings.file_tree_width != tree
-                            || settings.changes_viewer_width != file;
-                        settings.file_tree_width = tree;
-                        settings.changes_viewer_width = file;
-                        changed
-                    },
-                    false,
-                    cx,
-                );
-            });
-        }
-        if let Some(owner) = self.owner {
-            cx.defer(move |cx| cx.notify(owner));
-        }
-        cx.notify();
-    }
-
-    pub(super) fn finish_tree_resize(&mut self, cx: &mut Context<Self>) {
-        if std::mem::take(&mut self.tree_resizing) {
-            crate::app_store::global_app_store(cx)
-                .read(cx)
-                .save_settings();
+        if look != self.look {
+            self.look = look;
             cx.notify();
         }
     }
-
-    pub(super) fn launch_external(
-        &mut self,
-        editor: Option<FileLinkEditor>,
-        path: PathBuf,
-        cx: &mut Context<Self>,
-    ) {
-        #[cfg(test)]
-        {
-            let _ = cx;
-            self.launched.push((editor, path));
-        }
-        #[cfg(not(test))]
-        {
-            let target = FileLinkTarget {
-                path,
-                line: None,
-                column: None,
-            };
-            match editor {
-                Some(editor) => file_links::open_file_with(editor, target, cx),
-                None => file_links::open_file_link(target, cx),
-            }
-        }
-    }
-
-    // ── Focus & Keyboard ───────────────────────────────────────────────
 
     pub(super) fn on_focus_lost(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(target) = window.focus_lost_restore_target(cx) else {
             return;
         };
-        if target == self.diff_focus
-            && self.focus_place == FocusPlace::Diff
-            && matches!(
-                &self.body,
-                Body::Root(state) if !matches!(state.diff_state, ActiveDiff::Empty)
-            )
-        {
-            self.diff_focus.focus(window, cx);
-            cx.notify();
-        } else if target == self.root_focus
-            || target == self.diff_focus
+        if target == self.root_focus
             || target == self.checkout_button_focus
             || target == self.checkout_return_focus
             || target == self.base_chip_focus
@@ -2750,7 +2307,7 @@ impl ChangesView {
         }
     }
 
-    pub(super) fn focus_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn focus_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.focus_place == FocusPlace::Diff {
             self.focus_place = FocusPlace::Files;
         }
@@ -2760,25 +2317,14 @@ impl ChangesView {
 
     pub(super) fn enter_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_place = FocusPlace::Diff;
-        if let Body::Root(state) = &self.body
-            && let ActiveDiff::Loaded(loaded) = &state.diff_state
-            && let LoadedDiffKind::Unified(entity) = &loaded.kind
-        {
-            entity.read(cx).focus_handle().clone().focus(window, cx);
-        } else {
-            self.diff_focus.focus(window, cx);
-        }
+        self.viewer
+            .update(cx, |viewer, cx| viewer.focus_active(window, cx));
         cx.notify();
     }
 
     pub(super) fn jump_hunk(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
-        if let Body::Root(state) = &self.body
-            && let ActiveDiff::Loaded(loaded) = &state.diff_state
-            && let LoadedDiffKind::Unified(entity) = &loaded.kind
-        {
-            return entity.update(cx, |v, cx| v.jump_hunk(forward, cx));
-        }
-        false
+        self.viewer
+            .update(cx, |viewer, cx| viewer.jump_hunk(forward, cx))
     }
 
     fn has_checkout_trigger(&self) -> bool {
@@ -2910,11 +2456,11 @@ impl ChangesView {
                         _ => None,
                     };
                     if let Some(path) = open_path {
-                        self.select_file_by_path(path, cx);
-                    } else {
+                        self.select_file_by_path(path, false, cx);
+                    } else if self.viewer.read(cx).has_tabs() {
                         self.enter_diff(window, cx);
                     }
-                } else {
+                } else if self.viewer.read(cx).has_tabs() {
                     self.enter_diff(window, cx);
                 }
             }
@@ -3008,22 +2554,6 @@ impl ChangesView {
         }
     }
 
-    pub(super) fn on_placeholder_diff_key(
-        &mut self,
-        event: &KeyDownEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let modifiers = event.keystroke.modifiers;
-        if modifiers.platform || modifiers.control || modifiers.alt {
-            return;
-        }
-        if event.keystroke.key == "escape" {
-            cx.stop_propagation();
-            self.focus_list(window, cx);
-        }
-    }
-
     fn highlighted_folder(&self) -> Option<(String, bool)> {
         let Body::Root(state) = &self.body else {
             return None;
@@ -3076,14 +2606,13 @@ impl ChangesView {
                     state.highlighted_list_row = next_idx;
                     self.files_scroll
                         .scroll_to_item(next_idx, ScrollStrategy::Nearest);
-                    let diff_open = state.selected_path.is_some();
                     match &state.list_rows[next_idx] {
-                        ListRow::File { path, .. } if diff_open => Some(path.clone()),
+                        ListRow::File { path, .. } => Some(path.clone()),
                         _ => None,
                     }
                 };
                 if let Some(path) = file_to_select {
-                    self.select_file_by_path(path, cx);
+                    self.select_file_by_path(path, false, cx);
                 } else {
                     cx.notify();
                 }
@@ -3096,6 +2625,16 @@ impl ChangesView {
 impl ChangesView {
     pub(crate) fn receive(&mut self, event: FilesEvent, cx: &mut Context<Self>) {
         self.on_files_event(&event, cx);
+        self.viewer
+            .update(cx, |viewer, cx| viewer.on_files_event(&event, cx));
+    }
+
+    pub(crate) fn viewer(&self) -> Entity<UnifiedViewer> {
+        self.viewer.clone()
+    }
+
+    pub(crate) fn widening(&self, cx: &App) -> Option<bool> {
+        self.viewer.read(cx).widening()
     }
 
     pub(crate) fn selected_target(&self) -> Option<&SelectedTarget> {
@@ -3116,34 +2655,26 @@ impl ChangesView {
         self.focus_place
     }
 
-    pub(crate) fn unified_diff_view(&self) -> Option<Entity<UnifiedDiffView>> {
-        match &self.body {
-            Body::Root(state) => match &state.diff_state {
-                ActiveDiff::Loaded(loaded) => match &loaded.kind {
-                    LoadedDiffKind::Unified(entity) => Some(entity.clone()),
-                    _ => None,
-                },
-                _ => None,
-            },
-            _ => None,
-        }
+    pub(crate) fn unified_diff_view(&self, cx: &App) -> Option<Entity<UnifiedDiffView>> {
+        self.viewer.read(cx).tab_diff_view()
     }
 
-    pub(crate) fn set_hold_diffs(&mut self, hold: bool) {
-        self.hold_diffs = hold;
+    pub(crate) fn set_hold_diffs(&mut self, hold: bool, cx: &mut Context<Self>) {
+        self.viewer
+            .update(cx, |viewer, _| viewer.set_hold_diffs(hold));
     }
 
-    pub(crate) fn release_held_diffs(&mut self) -> usize {
-        let mut released = 0;
-        for tx in self.held_diffs.drain(..) {
-            let _ = tx.send(());
-            released += 1;
-        }
-        released
+    pub(crate) fn release_held_diffs(&mut self, cx: &mut Context<Self>) -> usize {
+        self.viewer
+            .update(cx, |viewer, _| viewer.release_held_diffs())
     }
 
     pub(crate) fn set_hold_snapshots(&mut self, hold: bool) {
         self.hold_snapshots = hold;
+    }
+
+    pub(crate) fn held_snapshots_len(&self) -> usize {
+        self.held_snapshots.len()
     }
 
     pub(crate) fn release_held_snapshots(&mut self) -> usize {
@@ -3156,7 +2687,13 @@ impl ChangesView {
     }
 
     pub(crate) fn reload_diff_for_test(&mut self, path: &str, cx: &mut Context<Self>) {
-        self.load_diff(path.to_owned(), cx);
+        let target = match &self.body {
+            Body::Root(state) => state.selected_target.clone(),
+            _ => SelectedTarget::Uncommitted,
+        };
+        let key = TabKey::new(path, target);
+        self.viewer
+            .update(cx, |viewer, cx| viewer.load_tab_diff(key, cx));
     }
 
     pub(crate) fn highlighted_row(&self) -> Option<&ListRow> {
@@ -3166,20 +2703,11 @@ impl ChangesView {
         }
     }
 
-    pub(crate) fn is_diff_loading(&self) -> bool {
-        matches!(
-            &self.body,
-            Body::Root(state) if matches!(state.diff_state, ActiveDiff::Loading)
-        )
+    pub(crate) fn is_diff_loading(&self, cx: &App) -> bool {
+        self.viewer.read(cx).is_diff_loading()
     }
 
-    pub(super) fn loaded_diff_version(&self) -> Option<&DiffVersion> {
-        match &self.body {
-            Body::Root(state) => match &state.diff_state {
-                ActiveDiff::Loaded(loaded) => Some(&loaded.version),
-                _ => None,
-            },
-            _ => None,
-        }
+    pub(crate) fn watched(&self) -> Option<&Path> {
+        self.watched.as_deref()
     }
 }

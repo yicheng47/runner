@@ -16,9 +16,10 @@ use crate::surfaces::files::picker::{same_checkout_path, shorten_checkout_path};
 use crate::theme;
 
 /// Which row in the Commits section is active.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) enum SelectedTarget {
     Branch,
+    #[default]
     Uncommitted,
     Commit(String),
 }

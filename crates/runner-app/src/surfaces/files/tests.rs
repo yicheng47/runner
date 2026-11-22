@@ -42,7 +42,7 @@ impl Render for Host {
                 let has_file = self
                     .panel
                     .view(&context.subject)
-                    .is_some_and(|view| view.read(cx).has_tabs());
+                    .is_some_and(|view| view.read(cx).has_tabs(cx));
                 // As `FilesPanel::layout`: no room and no file, no widening.
                 let widened = (self.tree_fits || has_file).then_some(Widened {
                     file: if self.maximized {
@@ -261,6 +261,87 @@ fn mission(id: &str) -> PanelContext {
     }
 }
 
+struct ReadView<'a> {
+    view: &'a FilesView,
+    cx: &'a gpui::App,
+}
+
+impl std::ops::Deref for ReadView<'_> {
+    type Target = FilesView;
+
+    fn deref(&self) -> &Self::Target {
+        self.view
+    }
+}
+
+impl ReadView<'_> {
+    fn has_tabs(&self) -> bool {
+        self.view.has_tabs(self.cx)
+    }
+
+    fn widening(&self) -> Option<bool> {
+        self.view.widening(self.cx)
+    }
+
+    fn has_uncommitted_diff(&self, path: &str) -> Option<bool> {
+        self.view.has_uncommitted_diff(path, self.cx)
+    }
+
+    fn open_tabs(&self) -> Vec<String> {
+        self.view.open_tabs(self.cx)
+    }
+
+    fn active_tab(&self) -> Option<String> {
+        self.view.active_tab(self.cx)
+    }
+
+    fn code_view(&self) -> Option<Entity<super::code::CodeView>> {
+        self.view.code_view(self.cx)
+    }
+
+    fn showing_diff(&self) -> bool {
+        self.view.showing_diff(self.cx)
+    }
+
+    fn tab_diff_view(&self) -> Option<Entity<crate::surfaces::changes::UnifiedDiffView>> {
+        self.view.tab_diff_view(self.cx)
+    }
+
+    fn read_seq(&self, path: &str) -> Option<u64> {
+        self.view.read_seq(path, self.cx)
+    }
+
+    fn reading(&self, path: &str) -> bool {
+        self.view.reading(path, self.cx)
+    }
+
+    fn last_search(&self) -> Option<u64> {
+        self.view.last_search(self.cx)
+    }
+
+    fn launched(
+        &self,
+    ) -> Vec<(
+        Option<crate::app_settings::FileLinkEditor>,
+        PathBuf,
+        Option<u32>,
+    )> {
+        self.view.launched(self.cx)
+    }
+
+    fn rendered_view(&self) -> Option<Entity<super::markdown::MarkdownView>> {
+        self.view.rendered_view(self.cx)
+    }
+
+    fn opened_urls(&self) -> Vec<String> {
+        self.view.opened_urls(self.cx)
+    }
+
+    fn find_state(&self) -> Option<(Option<String>, Option<usize>)> {
+        self.view.find_state(self.cx)
+    }
+}
+
 impl Harness {
     fn settle(&mut self) {
         self.visual.run_until_parked();
@@ -306,9 +387,9 @@ impl Harness {
             .expect("a shown view")
     }
 
-    fn read<T>(&mut self, read: impl FnOnce(&FilesView) -> T) -> T {
+    fn read<T>(&mut self, read: impl FnOnce(ReadView<'_>) -> T) -> T {
         let view = self.view();
-        view.read_with(&self.visual, |view, _| read(view))
+        view.read_with(&self.visual, |view, cx| read(ReadView { view, cx }))
     }
 
     fn show(&mut self, context: Option<PanelContext>) {
@@ -504,7 +585,8 @@ fn reading_status_shows_until_the_first_status_arrives() {
     // Status arrives with the watch, which only a shown view holds.
     h.host
         .update(&mut h.visual, |host, _, cx| {
-            host.unshown = Some(cx.new(|cx| FilesView::new(chat("in-project"), cx)));
+            let viewer = cx.new(|cx| super::open_file::UnifiedViewer::new(chat("in-project"), cx));
+            host.unshown = Some(cx.new(|cx| FilesView::new(chat("in-project"), viewer, cx)));
             cx.notify();
         })
         .unwrap();
@@ -1611,14 +1693,14 @@ fn an_open_file_widens_the_panel_into_the_room_the_mission_leaves() {
 
     h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
-    // 6 + 420 + 440 + 240: the tree fits beside the file.
-    let fit = panel_at(&mut h, selection, 1106.);
-    assert_eq!(fit.width, 680.);
+    // 6 + 420 + 460 + 240: the tree fits beside the file.
+    let fit = panel_at(&mut h, selection, 1126.);
+    assert_eq!(fit.width, 700.);
     assert_eq!(fit.presentation, PanelPresentation::Docked);
     assert!(fit.widened.unwrap().tree);
     // Narrower: the file gives way to the mission first, and the tree stays.
-    let tighter = panel_at(&mut h, selection, 1105.);
-    assert_eq!(tighter.width, 679.);
+    let tighter = panel_at(&mut h, selection, 1125.);
+    assert_eq!(tighter.width, 699.);
     assert_eq!(tighter.presentation, PanelPresentation::Docked);
     assert!(tighter.widened.unwrap().tree);
     assert_eq!(panel_at(&mut h, selection, 1000.).width, 574.);
@@ -1627,21 +1709,21 @@ fn an_open_file_widens_the_panel_into_the_room_the_mission_leaves() {
     assert_eq!(sheet.presentation, PanelPresentation::Sheet);
     assert!(sheet.widened.unwrap().tree);
 
-    // Switching to Sessions keeps the panel compact (300 px) while preserving open file tabs.
+    // Switching to Sessions keeps the unified widened layout (0 px jump) and open tabs (#1421).
     selection.select(PanelViewId::Sessions);
     let on_sessions = panel_at(&mut h, selection, 1200.);
-    assert_eq!(on_sessions.width, 300.);
-    assert!(on_sessions.widened.is_none());
+    assert_eq!(on_sessions.width, 700.);
+    assert!(on_sessions.widened.unwrap().tree);
     assert!(h.read(|view| view.has_tabs()));
 
-    // Returning to Files restores the widened layout because a.txt is still open.
+    // Returning to Files keeps the exact same 700 px widened layout.
     selection.select(PanelViewId::Files);
-    assert_eq!(panel_at(&mut h, selection, 1200.).width, 680.);
+    assert_eq!(panel_at(&mut h, selection, 1200.).width, 700.);
 
-    // Hiding the tree while a file is open narrows to the file viewer width (440 px).
+    // Hiding the tree while a file is open narrows to the unified viewer width (460 px).
     h.click("FILE_TREE_TOGGLE");
     let no_tree = panel_at(&mut h, selection, 1200.);
-    assert_eq!(no_tree.width, 440.);
+    assert_eq!(no_tree.width, 460.);
     assert!(!no_tree.widened.unwrap().tree);
 }
 
@@ -1703,7 +1785,7 @@ fn dragging_the_tree_divider_sizes_the_tree_against_the_file_and_saves_both() {
             )
         })
     };
-    assert_eq!(settings(&mut h), (240., 440.));
+    assert_eq!(settings(&mut h), (240., 460.));
     let gutter = h.visual.debug_bounds("FILE_TREE_GUTTER").unwrap();
     let column = h.visual.debug_bounds("FILES_TREE_COLUMN").unwrap();
     assert_eq!(gutter.center().x, column.left());
@@ -1722,15 +1804,15 @@ fn dragging_the_tree_divider_sizes_the_tree_against_the_file_and_saves_both() {
         .simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
     // Toward the file: the tree widens by what the file gives up.
     to(&mut h, -60.);
-    assert_eq!(settings(&mut h), (300., 380.));
+    assert_eq!(settings(&mut h), (300., 400.));
     let column = h.visual.debug_bounds("FILES_TREE_COLUMN").unwrap();
     assert_eq!(column.size.width, px(300.));
-    // The file stops at the panel's standard width.
+    // The file stops at the panel's standard width (total 700 - 288 = 412).
     to(&mut h, -400.);
-    assert_eq!(settings(&mut h), (392., 288.));
+    assert_eq!(settings(&mut h), (412., 288.));
     // Toward the edge: the tree stops at its minimum.
     to(&mut h, 200.);
-    assert_eq!(settings(&mut h), (160., 520.));
+    assert_eq!(settings(&mut h), (160., 540.));
     to(&mut h, -60.);
     h.visual.simulate_mouse_up(
         start + gpui::point(px(-60.), px(0.)),
@@ -1742,7 +1824,7 @@ fn dragging_the_tree_divider_sizes_the_tree_against_the_file_and_saves_both() {
         crate::app_settings::AppSettings::load(&h.temp.path().join("settings.json")).unwrap();
     assert_eq!(
         (saved.file_tree_width, saved.file_viewer_width),
-        (300., 380.)
+        (300., 400.)
     );
 }
 
@@ -2001,13 +2083,13 @@ fn a_reply_for_a_closed_tab_never_passes_for_the_file_reopened() {
     let view = h.view();
     let first = view.update(&mut h.visual, |view, cx| {
         view.open_file("a.txt".into(), cx);
-        view.read_seq("a.txt").unwrap()
+        view.read_seq("a.txt", cx).unwrap()
     });
     h.visual
         .update(|window, cx| view.update(cx, |view, cx| view.close_tab(0, window, cx)));
     let second = view.update(&mut h.visual, |view, cx| {
         view.open_file("a.txt".into(), cx);
-        view.read_seq("a.txt").unwrap()
+        view.read_seq("a.txt", cx).unwrap()
     });
     assert_ne!(first, second);
     h.settle();
@@ -2391,12 +2473,12 @@ fn the_source_toggle_switches_both_ways_and_find_opens_the_source() {
     std::fs::write(h.repo.join("README.md"), README).unwrap();
     h.open("README.md");
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
-    h.click("FILE_MARKDOWN_SOURCE");
+    h.click("FILE_MD_SOURCE");
     assert!(h.has("FILE_CODE") && !h.has("FILE_MARKDOWN"));
     assert_eq!(h.line(0), "# Runner");
     h.wait("the source's highlights", |h| h.highlighted());
     assert!(h.painted(0).iter().any(|(text, _)| text == "Runner"));
-    h.click("FILE_MARKDOWN_SOURCE");
+    h.click("FILE_MD_RENDERED");
     assert!(h.has("FILE_MARKDOWN") && !h.has("FILE_CODE"));
 
     // ⌘F over the page searches its source.
@@ -2413,7 +2495,7 @@ fn the_source_toggle_switches_both_ways_and_find_opens_the_source() {
             .is_some_and(|(count, _)| count.as_deref() == Some("1 of 2"))
     });
     // Back to the page, find closes with the source.
-    h.click("FILE_MARKDOWN_SOURCE");
+    h.click("FILE_MD_RENDERED");
     assert!(!h.has("FILE_FIND_BAR"));
     assert_eq!(h.read(|view| view.find_state()), None);
 }
@@ -2606,7 +2688,7 @@ fn a_deleted_rendered_page_keeps_closing_as_its_only_action() {
     h.settle();
     assert_eq!(h.tabs(), ["GONE.md"], "no link opens");
     assert!(h.read(|view| view.opened_urls()).is_empty());
-    h.click("FILE_MARKDOWN_SOURCE");
+    h.click("FILE_MD_SOURCE");
     assert!(
         h.has("FILE_MARKDOWN") && !h.has("FILE_CODE"),
         "the toggle does nothing"
@@ -3126,9 +3208,9 @@ fn markdown_set_to_open_as_source_opens_the_highlighted_source() {
     h.wait("the source", |h| h.has("FILE_CODE"));
     assert!(!h.has("FILE_MARKDOWN"), "Markdown opens as its source");
     assert_eq!(h.line(0), "# Runner");
-    // `</>` still switches the tab to the page.
-    h.wait("the page beside it", |h| h.has("FILE_MARKDOWN_SOURCE"));
-    h.click("FILE_MARKDOWN_SOURCE");
+    // `Rendered` still switches the tab to the page.
+    h.wait("the page beside it", |h| h.has("FILE_MD_RENDERED"));
+    h.click("FILE_MD_RENDERED");
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
     assert!(!h.has("FILE_CODE"));
 }
@@ -3254,7 +3336,7 @@ fn a_chat_widens_by_the_same_rule_as_a_mission() {
     };
     h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
-    assert_eq!(layout(&mut h, 1106.).width, 680.);
+    assert_eq!(layout(&mut h, 1126.).width, 700.);
     // 6 + 420 + 334 + 240: the file narrows, the tree stays.
     let tighter = layout(&mut h, 1000.);
     assert_eq!(tighter.width, 574.);
@@ -3266,7 +3348,7 @@ fn a_chat_widens_by_the_same_rule_as_a_mission() {
     assert_eq!(layout(&mut h, 800.).presentation, PanelPresentation::Sheet);
     h.click("FILE_TREE_TOGGLE");
     let no_tree = layout(&mut h, 1000.);
-    assert_eq!(no_tree.width, 440., "the tree's room goes to the file");
+    assert_eq!(no_tree.width, 460., "the tree's room goes to the file");
     assert!(!no_tree.widened.unwrap().tree);
 }
 
@@ -3406,7 +3488,7 @@ fn a_terminal_link_waits_for_a_root_still_resolving() {
     assert_eq!(view.read_with(&h.visual, |view, _| view.state()), "loading");
     let shown = h.click_link(&view, link(h.repo.join("lines.txt"), Some(2)));
     h.wait("the preview", |h| {
-        view.read_with(&h.visual, |view, _| view.active_tab()) == Some("lines.txt".into())
+        view.read_with(&h.visual, |view, cx| view.active_tab(cx)) == Some("lines.txt".into())
     });
     assert_eq!(shown.get(), 1);
     // Not shown, so not watching.
@@ -3564,11 +3646,11 @@ fn a_retargeted_symlink_is_checked_again_on_the_next_click_and_hover() {
         h.wait("the click", |h| {
             !launched().is_empty()
                 || view
-                    .read_with(&h.visual, |view, _| view.active_tab())
+                    .read_with(&h.visual, |view, cx| view.active_tab(cx))
                     .is_some()
         });
     };
-    let active = |h: &mut Harness| view.read_with(&h.visual, |view, _| view.active_tab());
+    let active = |h: &mut Harness| view.read_with(&h.visual, |view, cx| view.active_tab(cx));
 
     point(&h.repo.join("a.txt"));
     assert!(hover(&mut h));
@@ -3941,7 +4023,7 @@ fn the_layout_stays_compact_until_a_file_opens_and_shrinks_back_when_closed() {
     h.click("FILE_TREE_TOGGLE");
     assert_eq!(h.read(|view| view.widening()), Some(false));
     let tree_hidden = layout(&mut h, 1200., 1);
-    assert_eq!(tree_hidden.width, 440.);
+    assert_eq!(tree_hidden.width, 460.);
     assert!(!tree_hidden.widened.unwrap().tree);
 }
 
@@ -4196,7 +4278,7 @@ fn a_file_opened_before_the_status_arrives_is_noted_when_it_does() {
     h.wait("the status", |h| h.read(|view| view.git_status().is_some()));
     let view = h.view();
     let reads = |h: &mut Harness, view: &Entity<FilesView>| {
-        view.read_with(&h.visual, |view, _| view.read_seq("old.txt"))
+        view.read_with(&h.visual, |view, cx| view.read_seq("old.txt", cx))
     };
     let before = reads(&mut h, &view);
     tick(&mut h);
@@ -4233,7 +4315,8 @@ fn a_rescan_lists_every_loaded_folder_again() {
     h.show(None);
     h.host
         .update(&mut h.visual, |host, _, cx| {
-            host.unshown = Some(cx.new(|cx| FilesView::new(chat("in-project"), cx)));
+            let viewer = cx.new(|cx| super::open_file::UnifiedViewer::new(chat("in-project"), cx));
+            host.unshown = Some(cx.new(|cx| FilesView::new(chat("in-project"), viewer, cx)));
             cx.notify();
         })
         .unwrap();
@@ -4674,9 +4757,12 @@ fn a_status_that_arrives_clears_the_error_of_one_that_failed() {
 #[test]
 fn files_diff_toggle_swaps_changed_tab_in_place_shares_split_mode_and_resets_when_clean() {
     use crate::app_settings::DiffViewMode;
-    use runner_core::protocol::files::{FileStatus, GitStatus, StatusEntry};
+    use runner_core::protocol::files::{
+        FilesChanged, FilesStatusChanged, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
+    };
 
-    let mut h = viewer_after_startup_watcher(chat("in-project"));
+    let mut h = viewer(chat("in-project"));
+    h.wait("initial status loaded", |h| h.status_read());
     h.store.update(&mut h.visual, |store, cx| {
         store.update_settings(
             |settings| {
@@ -4689,57 +4775,96 @@ fn files_diff_toggle_swaps_changed_tab_in_place_shares_split_mode_and_resets_whe
         );
     });
 
-    // Clean file tab has no Diff button.
+    // Prove real OS watcher readiness before modifying/reverting files (no synthetic status injection).
+    let events = h
+        .store
+        .read_with(&h.visual, |store, _| store.test_core.events.clone());
+    let mut sent = events.subscribe();
+    let root = h.read(|view| view.root().unwrap().path.clone());
+    let sentinel = h.repo.join(".watch-ready");
+    let mut probe = 0u32;
+    let mut last_probe = Instant::now() - Duration::from_secs(2);
+    let mut saw_changed = false;
+    let mut saw_status = false;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline && !(saw_changed && saw_status) {
+        if last_probe.elapsed() >= Duration::from_secs(1) {
+            probe += 1;
+            std::fs::write(&sentinel, format!("ready-{probe}\n")).unwrap();
+            last_probe = Instant::now();
+        }
+        h.visual.run_until_parked();
+        loop {
+            match sent.try_recv() {
+                Ok(event) if event.name == FILES_CHANGED_EVENT => {
+                    if serde_json::from_value::<FilesChanged>(event.payload).is_ok_and(|c| {
+                        runner_core::app_paths::same_checkout_path(&c.root, &root)
+                            && (c.paths.iter().any(|p| p == ".watch-ready")
+                                || (c.paths.is_empty() && c.folders == [""]))
+                    }) {
+                        saw_changed = true;
+                    }
+                }
+                Ok(event) if event.name == FILES_STATUS_EVENT => {
+                    if serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(|u| {
+                        runner_core::app_paths::same_checkout_path(&u.root, &root)
+                            && u.status.entries.iter().any(|e| e.path == ".watch-ready")
+                    }) {
+                        saw_status = true;
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        if !(saw_changed && saw_status) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    assert!(saw_changed && saw_status, "sentinel watch readiness");
+    std::fs::remove_file(&sentinel).unwrap();
+
+    // Clean file tab has no Code|Diff switch.
     h.open("a.txt");
     h.wait("clean file code and uncommitted paths settled", |h| {
         h.has("FILE_CODE")
             && h.read(|v| v.has_uncommitted_diff("a.txt") == Some(false))
-            && !h.has("FILE_DIFF_TOGGLE")
+            && !h.has("VIEWER_MODE_DIFF")
             && !h.read(|v| v.showing_diff())
     });
 
-    // Edit `src/deep/x.rs` on disk and report modified status.
+    // Edit `src/deep/x.rs` on disk and wait for real watch status + Diff toggle.
     std::fs::write(
         h.repo.join("src/deep/x.rs"),
         "fn x() {\n    let edited = 1;\n}\n",
     )
     .unwrap();
-    receive_status(
-        &mut h,
-        GitStatus::new(
-            vec![StatusEntry {
-                path: "src/deep/x.rs".into(),
-                status: FileStatus::Modified,
-            }],
-            Vec::new(),
-        ),
-    );
     h.open("src/deep/x.rs");
-    h.wait("dirty file code and diff toggle", |h| {
-        h.has("FILE_CODE") && h.has("FILE_DIFF_TOGGLE")
+    h.wait("dirty file code, M badge, and diff toggle", |h| {
+        h.has("FILE_CODE") && h.has("FILE_TAB_LETTER src/deep/x.rs M") && h.has("VIEWER_MODE_DIFF")
     });
 
     // Switching back to clean `a.txt` hides the Diff button; switching back shows it again.
     h.click("FILE_TAB a.txt");
     h.wait("Diff button hidden on clean a.txt", |h| {
-        !h.has("FILE_DIFF_TOGGLE")
+        !h.has("VIEWER_MODE_DIFF")
     });
     h.click("FILE_TAB src/deep/x.rs");
     h.wait("Diff button shown on dirty src/deep/x.rs", |h| {
-        h.has("FILE_DIFF_TOGGLE")
+        h.has("VIEWER_MODE_DIFF")
     });
 
-    // Toggle Diff in place: shows diff header + code, omits Viewed checkbox, disables Find bar.
-    h.click("FILE_DIFF_TOGGLE");
+    // Toggle Diff in place: shows unified diff header + code + live Viewed checkbox, disables Find bar.
+    h.click("VIEWER_MODE_DIFF");
     h.wait("in-place file diff loaded", |h| {
-        h.has("FILE_DIFF_COLUMN")
+        h.has("CHANGES_DIFF_COLUMN")
             && h.has("CHANGES_DIFF_HEADER")
             && h.has("CHANGES_DIFF_CODE")
             && h.read(|v| v.showing_diff())
     });
     assert!(
-        !h.has("CHANGES_DIFF_VIEWED"),
-        "Files' in-place diff has no Viewed checkbox"
+        h.has("CHANGES_HEADER_VIEWED"),
+        "unified viewer Diff mode includes live Viewed checkbox (#1421)"
     );
     h.visual.simulate_keystrokes(&primary("f"));
     h.settle();
@@ -4777,17 +4902,18 @@ fn files_diff_toggle_swaps_changed_tab_in_place_shares_split_mode_and_resets_whe
     });
     h.click("FILE_TAB src/deep/x.rs");
     h.wait("dirty src/deep/x.rs restores diff", |h| {
-        h.read(|v| v.showing_diff()) && h.has("FILE_DIFF_COLUMN")
+        h.read(|v| v.showing_diff()) && h.has("CHANGES_DIFF_COLUMN")
     });
 
-    // When uncommitted changes clear, hide Diff button and return the tab to the file viewer.
+    // When uncommitted changes clear via real git checkout, the live watch hides the Diff
+    // button, drops the stale M badge, and returns the tab to the file viewer.
     git(&h.repo, &["checkout", "--", "src/deep/x.rs"]);
-    receive_status(&mut h, GitStatus::default());
     h.wait("tab returned to file after changes cleared", |h| {
         h.has("FILE_CODE")
             && h.read(|v| v.has_uncommitted_diff("src/deep/x.rs") == Some(false))
-            && !h.has("FILE_DIFF_TOGGLE")
-            && !h.has("FILE_DIFF_COLUMN")
+            && !h.has("FILE_TAB_LETTER src/deep/x.rs M")
+            && !h.has("VIEWER_MODE_DIFF")
+            && !h.has("CHANGES_DIFF_COLUMN")
             && !h.read(|v| v.showing_diff())
             && h.read(|v| v.tab_diff_view().is_none())
     });
@@ -4826,7 +4952,7 @@ fn files_diff_toggle_reflects_working_tree_vs_head_when_staged_edit_is_reverted_
             h.has("FILE_CODE")
                 && h.read(|v| v.has_uncommitted_diff("src/deep/x.rs") == Some(false))
                 && h.has("FILE_TAB_LETTER src/deep/x.rs M")
-                && !h.has("FILE_DIFF_TOGGLE")
+                && !h.has("VIEWER_MODE_DIFF")
         },
     );
 
@@ -4844,11 +4970,11 @@ fn files_diff_toggle_reflects_working_tree_vs_head_when_staged_edit_is_reverted_
     );
     h.wait(
         "Diff button appears with M badge once working tree differs from HEAD",
-        |h| h.has("FILE_TAB_LETTER src/deep/x.rs M") && h.has("FILE_DIFF_TOGGLE"),
+        |h| h.has("FILE_TAB_LETTER src/deep/x.rs M") && h.has("VIEWER_MODE_DIFF"),
     );
-    h.click("FILE_DIFF_TOGGLE");
+    h.click("VIEWER_MODE_DIFF");
     h.wait("in-place file diff loaded", |h| {
-        h.has("FILE_DIFF_COLUMN") && h.has("CHANGES_DIFF_CODE")
+        h.has("CHANGES_DIFF_COLUMN") && h.has("CHANGES_DIFF_CODE")
     });
 
     // Revert the working tree back to HEAD again while leaving the staged edit in the index
@@ -4870,8 +4996,8 @@ fn files_diff_toggle_reflects_working_tree_vs_head_when_staged_edit_is_reverted_
             h.has("FILE_CODE")
                 && h.read(|v| v.has_uncommitted_diff("src/deep/x.rs") == Some(false))
                 && h.has("FILE_TAB_LETTER src/deep/x.rs M")
-                && !h.has("FILE_DIFF_TOGGLE")
-                && !h.has("FILE_DIFF_COLUMN")
+                && !h.has("VIEWER_MODE_DIFF")
+                && !h.has("CHANGES_DIFF_COLUMN")
                 && !h.read(|v| v.showing_diff())
         },
     );
@@ -5012,5 +5138,250 @@ fn open_file_survives_eviction_past_kept_views_without_active_watches() {
     assert!(
         !h.has("FILE_CODE") && !h.has("FILE_TAB a.txt"),
         "saved open files must not reopen under a different checkout root"
+    );
+}
+
+#[test]
+fn code_mode_hunk_navigation_works_from_files_and_steps_successively_across_visible_hunks() {
+    // Prepare the committed + modified fixture BEFORE mounting FilesView/watch so no
+    // synthetic status event is injected alongside a live watcher.
+    let mut h = harness(None);
+    let base: String = (1..=30).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(h.repo.join("hunks.rs"), &base).unwrap();
+    git(&h.repo, &["add", "hunks.rs"]);
+    git(&h.repo, &["commit", "-q", "-m", "add hunks fixture"]);
+
+    // Modify two separated lines that both fit inside one viewport (lines 2 and 28).
+    let edited: String = (1..=30)
+        .map(|i| match i {
+            2 => "line 2 edited\n".to_owned(),
+            28 => "line 28 edited\n".to_owned(),
+            _ => format!("line {i}\n"),
+        })
+        .collect();
+    std::fs::write(h.repo.join("hunks.rs"), &edited).unwrap();
+
+    h.visual.simulate_resize(size(px(1000.), px(900.)));
+    h.show(Some(chat("in-project")));
+    h.wait("hunks.rs visible in tree with live git status", |h| {
+        h.has("FILES_ROW hunks.rs") && h.has("FILES_LETTER hunks.rs")
+    });
+
+    // Open directly from Files without ever switching to Diff mode.
+    h.open("hunks.rs");
+    h.wait("hunks.rs code and hunk badge loaded from Files", |h| {
+        h.has("FILE_CODE") && h.has("FILE_HUNKS_BADGE")
+    });
+
+    h.focus_code();
+    let code = h.code();
+    h.visual.simulate_keystrokes("]");
+    h.settle();
+    assert_eq!(
+        code.read_with(&h.visual, |c, _| c.hunk_cursor()),
+        Some(1),
+        "first ] must land on hunk 1 (@@ -1,5 +1,5 @@ around line 2)"
+    );
+
+    h.visual.simulate_keystrokes("]");
+    h.settle();
+    assert_eq!(
+        code.read_with(&h.visual, |c, _| c.hunk_cursor()),
+        Some(25),
+        "second ] must advance to hunk 2 (@@ -25,6 +25,6 @@ around line 28) even when both hunks fit in view"
+    );
+
+    h.visual.simulate_keystrokes("[");
+    h.settle();
+    assert_eq!(
+        code.read_with(&h.visual, |c, _| c.hunk_cursor()),
+        Some(1),
+        "[ must step back to hunk 1"
+    );
+}
+
+#[test]
+fn held_uncommitted_list_for_v2_while_marking_v1_keeps_v2_unviewed() {
+    use runner_core::protocol::files::{
+        FilesChanged, FilesStatusChanged, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
+    };
+
+    // Prepare tracked.rs at v1 BEFORE mounting FilesView/watch.
+    let mut h = harness(None);
+    std::fs::write(h.repo.join("tracked.rs"), "fn base() {}\n").unwrap();
+    git(&h.repo, &["add", "tracked.rs"]);
+    git(&h.repo, &["commit", "-q", "-m", "add tracked.rs"]);
+    std::fs::write(h.repo.join("tracked.rs"), "fn v1() {}\n").unwrap();
+
+    let repo_path = h.repo.clone();
+    let events = h
+        .store
+        .read_with(&h.visual, |store, _| store.test_core.events.clone());
+    let mut sent = events.subscribe();
+
+    h.visual.simulate_resize(size(px(1000.), px(900.)));
+    h.show(Some(chat("in-project")));
+
+    // Wait for startup status event and prove real OS watcher readiness via sentinel.
+    let mut saw_startup = false;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline && !saw_startup {
+        h.visual.run_until_parked();
+        loop {
+            match sent.try_recv() {
+                Ok(event) if event.name == FILES_STATUS_EVENT => {
+                    if serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(
+                        |update| {
+                            runner_core::app_paths::same_checkout_path(&update.root, &repo_path)
+                        },
+                    ) {
+                        saw_startup = true;
+                        break;
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        if !saw_startup {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    assert!(
+        saw_startup,
+        "timed out waiting for startup FILES_STATUS_EVENT"
+    );
+
+    let sentinel = repo_path.join(".watch-ready");
+    std::fs::write(&sentinel, "ready\n").unwrap();
+    let mut saw_changed = false;
+    let mut saw_status = false;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline && !(saw_changed && saw_status) {
+        h.visual.run_until_parked();
+        loop {
+            match sent.try_recv() {
+                Ok(event) if event.name == FILES_CHANGED_EVENT => {
+                    if serde_json::from_value::<FilesChanged>(event.payload).is_ok_and(|changed| {
+                        runner_core::app_paths::same_checkout_path(&changed.root, &repo_path)
+                            && (changed.paths.iter().any(|p| p == ".watch-ready")
+                                || (changed.paths.is_empty() && changed.folders == [""]))
+                    }) {
+                        saw_changed = true;
+                    }
+                }
+                Ok(event) if event.name == FILES_STATUS_EVENT => {
+                    if serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(
+                        |update| {
+                            runner_core::app_paths::same_checkout_path(&update.root, &repo_path)
+                                && update
+                                    .status
+                                    .entries
+                                    .iter()
+                                    .any(|e| e.path == ".watch-ready")
+                        },
+                    ) {
+                        saw_status = true;
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        if !(saw_changed && saw_status) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    assert!(
+        saw_changed && saw_status,
+        "timed out waiting for OS watcher sentinel readiness"
+    );
+    std::fs::remove_file(&sentinel).unwrap();
+    h.wait("tracked.rs listed and sentinel removed", |h| {
+        h.has("FILES_ROW tracked.rs") && !h.has("FILES_ROW .watch-ready")
+    });
+
+    // Open tracked.rs (v1) in Diff mode from Files.
+    h.open("tracked.rs");
+    h.wait("tracked.rs code and Diff toggle ready", |h| {
+        h.has("FILE_CODE") && h.has("VIEWER_MODE_DIFF")
+    });
+    h.click("VIEWER_MODE_DIFF");
+    h.wait("tracked.rs v1 diff loaded", |h| {
+        h.has("CHANGES_DIFF_CODE") && h.has("CHANGES_HEADER_VIEWED")
+    });
+
+    let subject = PanelSubject::Session("in-project".into());
+    let viewer = h
+        .host
+        .read_with(&h.visual, |host, _| host.panel.viewer(&subject))
+        .unwrap()
+        .unwrap();
+    let v1_blob = viewer
+        .read_with(&h.visual, |v, _| {
+            v.loaded_diff_meta()
+                .and_then(|(_, _, _, _, new_blob)| new_blob.map(str::to_owned))
+        })
+        .expect("v1 new blob");
+
+    // Hold both incoming uncommitted list refreshes and diff reloads, then write v2 on disk
+    // so v2's `changes_files` response is paused in flight while the viewer still displays v1.
+    viewer.update(&mut h.visual, |v, _| {
+        v.set_hold_uncommitted_lists(true);
+        v.set_hold_diffs(true);
+    });
+    std::fs::write(h.repo.join("tracked.rs"), "fn v2() {}\n").unwrap();
+    h.wait("v2 uncommitted list held in flight", |h| {
+        viewer.read_with(&h.visual, |v, _| v.held_uncommitted_lists_len() >= 1)
+    });
+    assert_eq!(
+        viewer.read_with(&h.visual, |v, _| {
+            v.loaded_diff_meta()
+                .and_then(|(_, _, _, _, new_blob)| new_blob.map(str::to_owned))
+        }),
+        Some(v1_blob.clone()),
+        "displayed diff must still be v1 while v2 list is held"
+    );
+
+    // Mark still-displayed v1 viewed while v2's list is in flight, and wait for the daemon
+    // write (`CHANGES_VIEWED_EVENT`) to settle before releasing v2's list.
+    while matches!(
+        sent.try_recv(),
+        Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+    ) {}
+    h.click("CHANGES_HEADER_VIEWED");
+    h.wait("v1 marked viewed in viewer and daemon", |h| {
+        let mut saw_viewed = false;
+        while let Ok(ev) = sent.try_recv() {
+            if ev.name == runner_core::protocol::changes::CHANGES_VIEWED_EVENT {
+                saw_viewed = true;
+            }
+        }
+        saw_viewed
+            && viewer.read_with(&h.visual, |v, _| v.active_diff_viewed()) == Some((true, false))
+    });
+
+    // Release v2's list refresh FIRST so B's list completes after A was marked viewed, then
+    // release held diff loads: v2's blob IDs must NEVER inherit v1's viewed=true mark.
+    viewer.update(&mut h.visual, |v, _| {
+        v.set_hold_uncommitted_lists(false);
+        assert!(v.release_held_uncommitted_lists() >= 1);
+    });
+    h.settle();
+    viewer.update(&mut h.visual, |v, _| {
+        v.set_hold_diffs(false);
+        v.release_held_diffs();
+    });
+    h.wait(
+        "v2 diff loaded and refreshed to unviewed + changed_since_viewed",
+        |h| {
+            viewer.read_with(&h.visual, |v, _| {
+                v.loaded_diff_meta()
+                    .and_then(|(_, _, _, _, new_blob)| new_blob)
+                    .is_some_and(|blob| blob != v1_blob.as_str())
+                    && !v.is_diff_loading()
+                    && v.active_diff_viewed() == Some((false, true))
+            })
+        },
     );
 }

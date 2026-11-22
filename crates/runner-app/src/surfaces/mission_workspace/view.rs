@@ -498,25 +498,15 @@ impl MissionWorkspace {
                     this.rail_resizing = true;
                     let width = f32::from(event.bounds.right() - event.event.position.x)
                         / this.settings(cx).app_zoom;
-                    // With a file or diff open the drag sizes the viewer beside the tree/list.
+                    // With a file or diff open the drag sizes the unified viewer beside the right rail.
                     if let Some(widened) = widened {
                         let tree = if widened.tree { widened.tree_width } else { 0. };
                         let width = app_settings::clamp_file_viewer_width(width - tree);
-                        let is_changes = crate::surfaces::side_panel::shown(
-                            crate::surfaces::side_panel::PanelSurface::Mission,
-                            this.settings(cx),
-                            &this.rail_surfaces.selection,
-                        ) == Some(PanelViewId::Changes);
                         this.update_app_settings(cx, false, |settings| {
-                            let target = if is_changes {
-                                &mut settings.changes_viewer_width
-                            } else {
-                                &mut settings.file_viewer_width
-                            };
-                            if *target == width {
+                            if settings.file_viewer_width == width {
                                 return false;
                             }
-                            *target = width;
+                            settings.file_viewer_width = width;
                             true
                         });
                         return;

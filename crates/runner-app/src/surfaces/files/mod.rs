@@ -1,5 +1,6 @@
-//! The side panel's Files view (#634): the root and its states, the root
-//! picker and the tree with git status, served by `runnerd`'s file service.
+//! The side panel's Files view (#634) and unified File + Diff viewer (#1421):
+//! shared per-subject tab strip, root resolution, watch ownership, and side-panel
+//! composition (`[Unified Viewer | Right Rail]`).
 
 pub(crate) mod code;
 pub(crate) mod document;
@@ -7,11 +8,11 @@ mod finder;
 pub(crate) mod highlight;
 mod links;
 mod markdown;
-mod open_file;
+pub(crate) mod open_file;
 mod panel_view;
 pub(crate) mod picker;
 pub(crate) mod syntax;
-mod tabs;
+pub(crate) mod tabs;
 pub(crate) mod tree;
 
 #[cfg(test)]
@@ -24,10 +25,12 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use futures::StreamExt as _;
+use gpui::prelude::*;
 use gpui::{
-    canvas, AnyElement, App, AppContext as _, Context, Entity, EntityId, EventEmitter, FocusHandle,
-    Global, IntoElement as _, Styled as _, Subscription, Task, Window,
+    canvas, div, px, rems, AnyElement, App, Bounds, Context, Entity, EntityId, EventEmitter,
+    FocusHandle, Global, MouseButton, Pixels, Subscription, Task, Window,
 };
+use runner_app::ui::resize::{resize_strip, resize_strip_inset, ResizeAxis};
 use runner_core::protocol::changes::{ChangesViewed, CHANGES_VIEWED_EVENT};
 use runner_core::protocol::files::{
     FilesChanged, FilesRootOutcome, FilesStatusChanged, FilesSubject, FILES_CHANGED_EVENT,
@@ -36,9 +39,13 @@ use runner_core::protocol::files::{
 use runner_core::protocol::DaemonClient;
 
 use crate::surfaces::changes::{ChangesView, SavedChangesState};
-use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, Widened};
+use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, PanelViewId, Widened};
+use crate::theme;
 pub(crate) use links::ShowPreview;
-pub(crate) use open_file::{editor_icon, format_size, found_editors};
+pub(crate) use open_file::{
+    editor_icon, format_size, found_editors, SavedViewerState, TitlebarWrapper, UnifiedViewer,
+    ViewerChrome,
+};
 use panel_view::SavedFilesState;
 pub(crate) use panel_view::{absolute, compact_missing_path, FileTreeResizeDrag, FilesView};
 use tree::PreparedStatus;
@@ -74,8 +81,8 @@ impl Look {
     }
 }
 
-/// How many subjects' trees a panel keeps while they are not shown, so
-/// switching back keeps their expansion and scroll.
+/// How many subjects' viewer & rail state a panel keeps live while inactive,
+/// so switching back keeps expansion, scroll, and open tabs without re-reading.
 const KEPT_VIEWS: usize = 12;
 
 #[derive(Clone, Debug)]
@@ -97,7 +104,8 @@ pub(crate) enum FilesEvent {
     },
 }
 
-/// Forwards the daemon's `files/*` and `changes/*` events to every Files and Changes view.
+/// Forwards the daemon's `files/*` and `changes/*` events to every Files,
+/// Changes, and UnifiedViewer entity.
 pub(crate) struct FilesHub;
 
 impl EventEmitter<FilesEvent> for FilesHub {}
@@ -157,11 +165,12 @@ pub(crate) fn hub(client: &DaemonClient, cx: &mut App) -> Entity<FilesHub> {
 }
 
 /// Authoritative git-dirty tracker for the side panel's Changes activity-bar
-/// indicator (#1403) when neither Files nor Changes currently owns a watch
-/// (e.g. a mission open on Sessions). Acquires a scoped daemon watch + initial
-/// status while active, consumes `FilesEvent::Status` updates, and releases
-/// both its watch and `FilesHub` subscription as soon as Files/Changes takes
-/// over, Changes is disabled, or the panel/workspace hides.
+/// indicator (#1403, #1421) when neither `FilesView`, `ChangesView`, nor
+/// `UnifiedViewer` currently owns a watch (e.g. a rail-only mission open on
+/// Sessions). Acquires a scoped daemon watch + initial status while active,
+/// consumes `FilesEvent::Status` updates, and releases both its watch and
+/// `FilesHub` subscription as soon as another owner takes over, Changes is
+/// disabled, or the panel/workspace hides.
 struct DirtyTracker {
     client: DaemonClient,
     active: bool,
@@ -243,7 +252,7 @@ impl DirtyTracker {
         &mut self,
         context: &PanelContext,
         owner: Option<EntityId>,
-        shown: Option<side_panel::PanelViewId>,
+        external_watch_owner: bool,
         active_dirty: Option<bool>,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -255,11 +264,7 @@ impl DirtyTracker {
             return false;
         }
         let subject_changed = self.last_subject.as_ref() != Some(&context.subject);
-        let tracker_owns_watch = !matches!(
-            shown,
-            Some(side_panel::PanelViewId::Files | side_panel::PanelViewId::Changes)
-        );
-        if !tracker_owns_watch {
+        if external_watch_owner {
             self.deactivate(cx);
             self.last_subject = Some(context.subject.clone());
             if let Some(dirty) = active_dirty {
@@ -408,27 +413,645 @@ impl DirtyTracker {
     }
 }
 
-/// A side panel's Files and Changes views, one per subject, and which one is
-/// shown. The owner calls [`FilesPanel::show_with_maximize`] /
-/// [`FilesPanel::show_changes_with_maximize`] while drawing and
-/// [`FilesPanel::hide`] whenever drawing something else or collapsing, which
-/// starts and stops the shown view's watch.
+struct SubjectBundle {
+    subject: PanelSubject,
+    viewer: Entity<UnifiedViewer>,
+    files: Option<Entity<FilesView>>,
+    changes: Option<Entity<ChangesView>>,
+    saved_files: Option<SavedFilesState>,
+    saved_changes: Option<SavedChangesState>,
+}
+
+#[derive(Clone, Debug)]
+struct SavedSubjectState {
+    viewer: Option<SavedViewerState>,
+    files: Option<SavedFilesState>,
+    changes: Option<SavedChangesState>,
+}
+
+/// Properties for composing the aligned `40 px` unified viewer + right rail
+/// inside chat/terminal and mission side panels (#1421).
+pub(crate) struct SidePanelRenderProps {
+    pub(crate) surface: side_panel::PanelSurface,
+    pub(crate) settings: crate::app_settings::AppSettings,
+    pub(crate) selection: side_panel::PanelSelection,
+    pub(crate) shown: Option<PanelViewId>,
+    pub(crate) context: Option<PanelContext>,
+    pub(crate) widened: Option<Widened>,
+    pub(crate) maximized: bool,
+    pub(crate) remote: bool,
+    pub(crate) owner: EntityId,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) header_selector: &'static str,
+    pub(crate) titlebar_id: &'static str,
+    pub(crate) round_header_tl_when_compact: bool,
+    pub(crate) macos_titlebar_inset: Option<(f32, Option<AnyElement>)>,
+    pub(crate) wrap_titlebar: TitlebarWrapper,
+    pub(crate) on_surface_action: side_panel::SurfaceHandler,
+    pub(crate) maximize_control: Option<side_panel::MaximizeControl>,
+    pub(crate) on_request_maximize: side_panel::PanelMaximizeCallback,
+    pub(crate) make_collapse_button: Rc<dyn Fn(&mut App) -> AnyElement>,
+    pub(crate) sessions_body: Option<AnyElement>,
+    pub(crate) sessions_focus: Option<FocusHandle>,
+    pub(crate) loading_fallback: Option<AnyElement>,
+}
+
+/// A side panel's shared per-subject `UnifiedViewer` plus lazy `FilesView` and
+/// `ChangesView` rails (#1421).
 #[derive(Default)]
 pub(crate) struct FilesPanel {
-    views: RefCell<Vec<(PanelSubject, Entity<FilesView>)>>,
-    changes: RefCell<Vec<(PanelSubject, Entity<ChangesView>)>>,
-    /// Lightweight open-file / diff selection preserved when an inactive view
-    /// is evicted past [`KEPT_VIEWS`], so still-open tabs keep their open
-    /// files/diffs without retaining background watches (#1403).
-    saved_files: RefCell<HashMap<PanelSubject, SavedFilesState>>,
-    saved_changes: RefCell<HashMap<PanelSubject, SavedChangesState>>,
+    subjects: RefCell<Vec<SubjectBundle>>,
+    /// Lightweight viewer/rail state preserved when an inactive subject is
+    /// evicted past [`KEPT_VIEWS`], so still-open tabs keep their open
+    /// files/diffs without retaining background watches.
+    saved: RefCell<HashMap<PanelSubject, SavedSubjectState>>,
     dirty_tracker: RefCell<Option<Entity<DirtyTracker>>>,
     /// The width the panel shares with its chat or mission, unzoomed, as
     /// last drawn.
     surface: Rc<Cell<f32>>,
+    /// Full composed side-panel bounds, so `⇧⌘O` centers over viewer + rail.
+    panel_bounds: Rc<Cell<Bounds<Pixels>>>,
 }
 
 impl FilesPanel {
+    fn touch_or_create_bundle(
+        &self,
+        context: &PanelContext,
+        create_if_absent: bool,
+        cx: &mut App,
+    ) -> Option<usize> {
+        let mut subjects = self.subjects.borrow_mut();
+        if let Some(index) = subjects.iter().position(|b| b.subject == context.subject) {
+            let bundle = subjects.remove(index);
+            subjects.push(bundle);
+            return Some(subjects.len() - 1);
+        }
+        let has_saved_tabs = self
+            .saved
+            .borrow()
+            .get(&context.subject)
+            .is_some_and(|s| s.viewer.as_ref().is_some_and(|v| !v.tabs.is_empty()));
+        if !create_if_absent && !has_saved_tabs {
+            return None;
+        }
+        let saved = self.saved.borrow_mut().remove(&context.subject);
+        let ctx_clone = context.clone();
+        let saved_viewer = saved.as_ref().and_then(|s| s.viewer.clone());
+        let viewer = cx.new(|cx| {
+            let mut viewer = UnifiedViewer::new(ctx_clone, cx);
+            if let Some(state) = saved_viewer {
+                viewer.restore_saved_state(state, cx);
+            }
+            viewer
+        });
+        subjects.push(SubjectBundle {
+            subject: context.subject.clone(),
+            viewer,
+            files: None,
+            changes: None,
+            saved_files: saved.as_ref().and_then(|s| s.files.clone()),
+            saved_changes: saved.and_then(|s| s.changes),
+        });
+        let excess = subjects.len().saturating_sub(KEPT_VIEWS);
+        if excess > 0 {
+            let mut saved_map = self.saved.borrow_mut();
+            for evicted in subjects.drain(..excess) {
+                let viewer_state = evicted.viewer.read(cx).saved_state();
+                let files_state = evicted
+                    .files
+                    .as_ref()
+                    .and_then(|f| f.read(cx).saved_state())
+                    .or(evicted.saved_files);
+                let changes_state = evicted
+                    .changes
+                    .as_ref()
+                    .and_then(|c| c.read(cx).saved_state())
+                    .or(evicted.saved_changes);
+                if viewer_state.is_some() || files_state.is_some() || changes_state.is_some() {
+                    saved_map.insert(
+                        evicted.subject,
+                        SavedSubjectState {
+                            viewer: viewer_state,
+                            files: files_state,
+                            changes: changes_state,
+                        },
+                    );
+                } else {
+                    saved_map.remove(&evicted.subject);
+                }
+            }
+        }
+        Some(subjects.len() - 1)
+    }
+
+    fn hide_other_subjects(&self, keep: Option<&PanelSubject>, cx: &mut App) {
+        let bundles: Vec<_> = self
+            .subjects
+            .borrow()
+            .iter()
+            .filter(|b| keep.is_none_or(|k| &b.subject != k))
+            .map(|b| (b.viewer.clone(), b.files.clone(), b.changes.clone()))
+            .collect();
+        for (viewer, files, changes) in bundles {
+            if let Some(files) = files {
+                files.update(cx, |v, cx| v.set_shown(false, cx));
+            }
+            if let Some(changes) = changes {
+                changes.update(cx, |v, cx| v.set_shown(false, cx));
+            }
+            viewer.update(cx, |v, cx| v.set_shown(false, false, false, cx));
+        }
+    }
+
+    fn ensure_files_in_bundle(
+        &self,
+        index: usize,
+        context: &PanelContext,
+        cx: &mut App,
+    ) -> Entity<FilesView> {
+        let mut subjects = self.subjects.borrow_mut();
+        let bundle = &mut subjects[index];
+        if let Some(files) = &bundle.files {
+            return files.clone();
+        }
+        let viewer = bundle.viewer.clone();
+        let ctx_clone = context.clone();
+        let saved = bundle.saved_files.take();
+        let files = cx.new(|cx| {
+            let mut view = FilesView::new(ctx_clone, viewer, cx);
+            if let Some(state) = saved {
+                view.restore_saved_state(state, cx);
+            }
+            view
+        });
+        bundle.files = Some(files.clone());
+        files
+    }
+
+    fn ensure_changes_in_bundle(
+        &self,
+        index: usize,
+        context: &PanelContext,
+        cx: &mut App,
+    ) -> Entity<ChangesView> {
+        let mut subjects = self.subjects.borrow_mut();
+        let bundle = &mut subjects[index];
+        if let Some(changes) = &bundle.changes {
+            return changes.clone();
+        }
+        let viewer = bundle.viewer.clone();
+        let ctx_clone = context.clone();
+        let saved = bundle.saved_changes.take();
+        let changes = cx.new(|cx| {
+            let mut view = ChangesView::new(ctx_clone, viewer, cx);
+            if let Some(state) = saved {
+                view.restore_saved_state(state, cx);
+            }
+            view
+        });
+        bundle.changes = Some(changes.clone());
+        changes
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_viewer_chrome(
+        shown: Option<PanelViewId>,
+        show_rail_column: bool,
+        files_opt: Option<&Entity<FilesView>>,
+        changes_opt: Option<&Entity<ChangesView>>,
+        sessions_focus: Option<FocusHandle>,
+        maximize_control: Option<side_panel::MaximizeControl>,
+        collapse_when_rail_hidden: Option<AnyElement>,
+        macos_titlebar_inset: Option<(f32, Option<AnyElement>)>,
+        wrap_titlebar: Option<TitlebarWrapper>,
+        cx: &App,
+    ) -> ViewerChrome {
+        // Weak handles avoid a strong reference cycle (FilesView/ChangesView hold Entity<UnifiedViewer>)
+        // and deferred updates avoid re-entrant borrows when a rail updates UnifiedViewer.
+        let files_weak = files_opt.map(Entity::downgrade);
+        let changes_weak = changes_opt.map(Entity::downgrade);
+        let hidden_rail_focus = (!show_rail_column)
+            .then(|| match shown {
+                Some(PanelViewId::Files) => files_opt.map(|f| f.read(cx).root_focus.clone()),
+                Some(PanelViewId::Changes) => changes_opt.map(|c| c.read(cx).root_focus.clone()),
+                Some(PanelViewId::Sessions) => sessions_focus.clone(),
+                None => None,
+            })
+            .flatten();
+        let finder_host = (!show_rail_column).then(|| files_weak.clone()).flatten();
+        let esc_files = files_weak.clone();
+        let esc_changes = changes_weak.clone();
+        let esc_sessions = sessions_focus;
+        let on_escape_to_rail: side_panel::PanelCallback = Rc::new(move |window, cx| {
+            let esc_files = esc_files.clone();
+            let esc_changes = esc_changes.clone();
+            let esc_sessions = esc_sessions.clone();
+            window.defer(cx, move |window, cx| match shown {
+                Some(PanelViewId::Files) => {
+                    if let Some(files) = &esc_files {
+                        let _ = files.update(cx, |v, cx| v.focus_tree(window, cx));
+                    }
+                }
+                Some(PanelViewId::Changes) => {
+                    if let Some(changes) = &esc_changes {
+                        let _ = changes.update(cx, |v, cx| v.focus_list(window, cx));
+                    }
+                }
+                Some(PanelViewId::Sessions) => {
+                    if let Some(focus) = &esc_sessions {
+                        focus.focus(window, cx);
+                    }
+                }
+                None => {}
+            });
+        });
+        let focus_changes = changes_weak.clone();
+        let on_diff_focus_in: side_panel::PanelCallback = Rc::new(move |_, cx| {
+            if let Some(changes) = focus_changes.clone() {
+                cx.defer(move |cx| {
+                    let _ = changes.update(cx, |v, cx| v.on_viewer_diff_focused(cx));
+                });
+            }
+        });
+        let tab_files = files_weak;
+        let tab_changes = changes_weak.clone();
+        let on_tab_activated: open_file::TabActivatedCallback = Rc::new(move |key, cx| {
+            let key = key.cloned();
+            let tab_files = tab_files.clone();
+            let tab_changes = tab_changes.clone();
+            cx.defer(move |cx| {
+                if let Some(files) = &tab_files
+                    && let Some(key) = &key
+                {
+                    let path = key.path.clone();
+                    let _ = files.update(cx, |v, cx| v.reveal_in_tree(&path, cx));
+                }
+                if let Some(changes) = &tab_changes {
+                    let _ = changes.update(cx, |v, cx| v.sync_active_tab(key.as_ref(), cx));
+                }
+            });
+        });
+        let viewed_changes = changes_weak.clone();
+        let on_viewed_toggled: open_file::ViewedToggledCallback =
+            Rc::new(move |root, target, path, old_blob, new_blob, viewed, cx| {
+                if let Some(changes) = viewed_changes.clone() {
+                    let root = root.to_path_buf();
+                    let target = target.clone();
+                    let path = path.to_owned();
+                    let old_blob = old_blob.map(str::to_owned);
+                    let new_blob = new_blob.map(str::to_owned);
+                    cx.defer(move |cx| {
+                        let _ = changes.update(cx, |v, cx| {
+                            v.apply_viewer_viewed_optimistic(
+                                &root,
+                                &target,
+                                &path,
+                                old_blob.as_deref(),
+                                new_blob.as_deref(),
+                                viewed,
+                                cx,
+                            );
+                        });
+                    });
+                }
+            });
+        let viewed_err_changes = changes_weak;
+        let on_viewed_error: open_file::ViewedErrorCallback = Rc::new(move |msg, cx| {
+            if let Some(changes) = viewed_err_changes.clone() {
+                cx.defer(move |cx| {
+                    let _ = changes.update(cx, |v, cx| v.on_viewer_viewed_error(msg, cx));
+                });
+            }
+        });
+        ViewerChrome {
+            show_rail_column,
+            hidden_rail_focus,
+            finder_host,
+            maximize_control,
+            collapse_when_rail_hidden,
+            macos_titlebar_inset,
+            wrap_titlebar,
+            on_escape_to_rail: Some(on_escape_to_rail),
+            on_diff_focus_in: Some(on_diff_focus_in),
+            on_tab_activated: Some(on_tab_activated),
+            on_viewed_toggled: Some(on_viewed_toggled),
+            on_viewed_error: Some(on_viewed_error),
+        }
+    }
+
+    fn compose_split(
+        &self,
+        viewer: Entity<UnifiedViewer>,
+        rail_column: Option<AnyElement>,
+        widened: Option<Widened>,
+        zoom: f32,
+        cx: &App,
+    ) -> AnyElement {
+        let panel_bounds = self.panel_bounds.clone();
+        let measure = canvas(
+            move |bounds, _, _| panel_bounds.set(bounds),
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
+        let Some(rail_column) = rail_column else {
+            return div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.))
+                .min_w(px(0.))
+                .flex()
+                .flex_row()
+                .child(viewer)
+                .child(measure)
+                .into_any_element();
+        };
+        let tree_width = widened.map_or(crate::app_settings::FILE_TREE_DEFAULT, |w| w.tree_width);
+        let tree_resizing = viewer.read(cx).tree_resizing;
+        let resize = resize_strip(
+            "file-tree-resize",
+            ResizeAxis::Columns,
+            tree_resizing,
+            zoom,
+            Some(theme::border()),
+            false,
+        )
+        .id("file-tree-resize")
+        .when(cfg!(test), |handle| {
+            handle.debug_selector(|| "FILE_TREE_GUTTER".into())
+        })
+        .map(|handle| {
+            #[cfg(any(windows, target_os = "linux"))]
+            let handle = handle.occlude();
+            handle
+        })
+        .absolute()
+        .top_0()
+        .right(px(tree_width * zoom - resize_strip_inset(zoom)))
+        .on_drag(
+            FileTreeResizeDrag,
+            |drag: &FileTreeResizeDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),
+        );
+        let drag_viewer = viewer.clone();
+        let drop_viewer = viewer.clone();
+        let up_viewer = viewer.clone();
+        let up_out_viewer = viewer.clone();
+        div()
+            .relative()
+            .flex_1()
+            .min_h(px(0.))
+            .min_w(px(0.))
+            .flex()
+            .flex_row()
+            .child(viewer)
+            .child(
+                div()
+                    .flex_none()
+                    .w(rems(tree_width / 16.))
+                    .h_full()
+                    .min_h(px(0.))
+                    .bg(theme::panel())
+                    .flex()
+                    .flex_col()
+                    .child(rail_column),
+            )
+            .child(resize)
+            .child(measure)
+            .on_drag_move::<FileTreeResizeDrag>(
+                move |event: &gpui::DragMoveEvent<FileTreeResizeDrag>, _, cx| {
+                    let tree = f32::from(event.bounds.right() - event.event.position.x) / zoom;
+                    drag_viewer.update(cx, |v, cx| v.resize_tree(tree, cx));
+                },
+            )
+            .on_drop(move |_: &FileTreeResizeDrag, _, cx| {
+                drop_viewer.update(cx, |v, cx| v.finish_tree_resize(cx));
+            })
+            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                up_viewer.update(cx, |v, cx| v.finish_tree_resize(cx));
+            })
+            .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+                up_out_viewer.update(cx, |v, cx| v.finish_tree_resize(cx));
+            })
+            .into_any_element()
+    }
+
+    /// Renders the complete aligned `40 px` side panel (`[UnifiedViewer | Right Rail]`
+    /// when a document tab is open, or `[Right Rail]` when rail-only) (#1421).
+    pub(crate) fn render_panel(&self, mut props: SidePanelRenderProps, cx: &mut App) -> AnyElement {
+        let zoom = props.settings.app_zoom;
+        let viewer_enabled =
+            !props.remote && (props.settings.files_view || props.settings.changes_view);
+        let create_bundle = matches!(props.shown, Some(PanelViewId::Files | PanelViewId::Changes));
+
+        let bundle_index = props
+            .context
+            .as_ref()
+            .and_then(|ctx| self.touch_or_create_bundle(ctx, create_bundle, cx));
+        self.hide_other_subjects(props.context.as_ref().map(|c| &c.subject), cx);
+
+        let (viewer_opt, files_opt, changes_opt) =
+            if let (Some(idx), Some(ctx)) = (bundle_index, props.context.as_ref()) {
+                match props.shown {
+                    Some(PanelViewId::Files) => {
+                        let _ = self.ensure_files_in_bundle(idx, ctx, cx);
+                    }
+                    Some(PanelViewId::Changes) => {
+                        let _ = self.ensure_changes_in_bundle(idx, ctx, cx);
+                    }
+                    _ => {}
+                }
+                let subjects = self.subjects.borrow();
+                let bundle = &subjects[idx];
+                (
+                    Some(bundle.viewer.clone()),
+                    bundle.files.clone(),
+                    bundle.changes.clone(),
+                )
+            } else {
+                (None, None, None)
+            };
+
+        let has_viewer = viewer_enabled
+            && viewer_opt
+                .as_ref()
+                .is_some_and(|viewer| viewer.read(cx).has_tabs());
+        let tree_hidden = viewer_opt
+            .as_ref()
+            .is_some_and(|viewer| viewer.read(cx).tree_hidden);
+        let show_rail_column =
+            !has_viewer || (props.widened.is_none_or(|w| w.tree) && !tree_hidden);
+
+        let mut rail_watches = false;
+        let mut changes_rail_shown = false;
+        if let Some(ctx) = props.context.as_ref() {
+            if let Some(files) = &files_opt {
+                let show_files = show_rail_column && props.shown == Some(PanelViewId::Files);
+                let keep_finder = has_viewer && !show_rail_column;
+                files.update(cx, |v, cx| {
+                    v.set_context(ctx.clone(), cx);
+                    v.set_widened(props.widened, cx);
+                    v.set_owner(Some(props.owner));
+                    v.set_panel_bounds(Some(self.panel_bounds.clone()));
+                    v.set_shown_keeping_finder(show_files, keep_finder, cx);
+                });
+                if show_files {
+                    rail_watches = true;
+                }
+            }
+            if let Some(changes) = &changes_opt {
+                let show_changes = show_rail_column && props.shown == Some(PanelViewId::Changes);
+                let mut not_in_git = false;
+                changes.update(cx, |v, cx| {
+                    v.set_context(ctx.clone(), cx);
+                    v.set_widened(props.widened, cx);
+                    v.set_owner(Some(props.owner));
+                    v.set_shown(show_changes, cx);
+                    not_in_git = v.is_not_in_git();
+                });
+                if show_changes && !not_in_git {
+                    rail_watches = true;
+                    changes_rail_shown = true;
+                }
+            }
+            if let Some(viewer) = &viewer_opt {
+                let maximize_for_viewer =
+                    has_viewer.then(|| props.maximize_control.take()).flatten();
+                let macos_for_viewer = has_viewer
+                    .then(|| props.macos_titlebar_inset.take())
+                    .flatten();
+                let collapse_for_viewer =
+                    (has_viewer && !show_rail_column).then(|| (props.make_collapse_button)(cx));
+                let chrome = Self::build_viewer_chrome(
+                    props.shown,
+                    show_rail_column,
+                    files_opt.as_ref(),
+                    changes_opt.as_ref(),
+                    props.sessions_focus.take(),
+                    maximize_for_viewer,
+                    collapse_for_viewer,
+                    macos_for_viewer,
+                    Some(props.wrap_titlebar.clone()),
+                    cx,
+                );
+                viewer.update(cx, |v, cx| {
+                    v.set_context(ctx.clone(), cx);
+                    v.set_owner(Some(props.owner));
+                    v.set_widened(props.widened, cx);
+                    v.set_maximized(props.maximized, cx);
+                    v.set_on_request_maximize(Some(props.on_request_maximize.clone()));
+                    v.set_chrome(chrome);
+                    v.set_shown(has_viewer, rail_watches, changes_rail_shown, cx);
+                });
+            }
+        }
+
+        let dirty_changes = !props.remote
+            && self.dirty_changes_for(
+                props.context.as_ref(),
+                props.shown,
+                show_rail_column,
+                props.settings.changes_view,
+                Some(props.owner),
+                cx,
+            );
+
+        let rail_column = show_rail_column.then(|| {
+            #[cfg(test)]
+            let header_selector = props.header_selector;
+            let rail_header = (props.wrap_titlebar)(
+                props.titlebar_id,
+                div()
+                    .flex_none()
+                    .h(rems(40. / 16.))
+                    .pl_2()
+                    .pr_2()
+                    .flex()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(theme::border())
+                    .when(
+                        !has_viewer && (props.round_header_tl_when_compact || props.maximized),
+                        |h| h.rounded_tl(rems(11. / 16.)),
+                    )
+                    .rounded_tr(rems(11. / 16.))
+                    .when_some(
+                        props.macos_titlebar_inset.take(),
+                        |header, (pad, spacer)| header.pl(px(pad)).children(spacer),
+                    )
+                    .map(|element| {
+                        #[cfg(test)]
+                        let element = crate::theme_snapshot::record_fill(header_selector, element);
+                        element
+                    })
+                    .child(side_panel::activity_bar(
+                        props.surface,
+                        &props.settings,
+                        &props.selection,
+                        dirty_changes,
+                        props.on_surface_action,
+                        props.maximize_control.take(),
+                        (props.make_collapse_button)(cx),
+                    )),
+                cx,
+            );
+            let rail_body = match props.shown {
+                Some(PanelViewId::Files) => files_opt
+                    .map(IntoElement::into_any_element)
+                    .or_else(|| props.loading_fallback.take())
+                    .unwrap_or_else(|| div().flex_1().into_any_element()),
+                Some(PanelViewId::Changes) => changes_opt
+                    .map(IntoElement::into_any_element)
+                    .or_else(|| props.loading_fallback.take())
+                    .unwrap_or_else(|| div().flex_1().into_any_element()),
+                Some(PanelViewId::Sessions) | None => props
+                    .sessions_body
+                    .take()
+                    .or_else(|| props.loading_fallback.take())
+                    .unwrap_or_else(|| div().flex_1().into_any_element()),
+            };
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .child(rail_header)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .child(rail_body),
+                )
+                .into_any_element()
+        });
+
+        if has_viewer && let Some(viewer) = viewer_opt {
+            self.compose_split(viewer, rail_column, props.widened, zoom, cx)
+        } else {
+            let panel_bounds = self.panel_bounds.clone();
+            div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.))
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .children(rail_column)
+                .child(
+                    canvas(
+                        move |bounds, _, _| panel_bounds.set(bounds),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+                .into_any_element()
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn show_with(
         &self,
@@ -440,6 +1063,7 @@ impl FilesPanel {
         self.show_with_maximize(context, widened, owner, false, None, cx)
     }
 
+    #[cfg(test)]
     pub(crate) fn show_with_maximize(
         &self,
         context: &PanelContext,
@@ -449,125 +1073,234 @@ impl FilesPanel {
         on_request_maximize: Option<side_panel::PanelMaximizeCallback>,
         cx: &mut App,
     ) -> AnyElement {
-        let mut views = self.views.borrow_mut();
-        let view = match views
-            .iter()
-            .position(|(subject, _)| *subject == context.subject)
-        {
-            Some(index) => views.remove(index).1,
-            None => {
-                let context_clone = context.clone();
-                let saved = self.saved_files.borrow_mut().remove(&context.subject);
-                cx.new(|cx| {
-                    let mut view = FilesView::new(context_clone, cx);
-                    if let Some(saved) = saved {
-                        view.restore_saved_state(saved, cx);
-                    }
-                    view
-                })
-            }
+        let idx = self
+            .touch_or_create_bundle(context, true, cx)
+            .expect("bundle created");
+        self.hide_other_subjects(Some(&context.subject), cx);
+        let files = self.ensure_files_in_bundle(idx, context, cx);
+        let (viewer, changes_opt) = {
+            let subjects = self.subjects.borrow();
+            let b = &subjects[idx];
+            (b.viewer.clone(), b.changes.clone())
         };
-        for (_, other) in views.iter() {
-            other.update(cx, |other, cx| other.set_shown(false, cx));
+        if let Some(changes) = &changes_opt {
+            changes.update(cx, |v, cx| v.set_shown(false, cx));
         }
-        view.update(cx, |view, cx| {
+        let has_viewer = !context.remote && viewer.read(cx).has_tabs();
+        let tree_hidden = viewer.read(cx).tree_hidden;
+        let show_rail_column = !has_viewer || (widened.is_none_or(|w| w.tree) && !tree_hidden);
+        files.update(cx, |view, cx| {
             view.set_context(context.clone(), cx);
-            view.set_maximized(maximized, cx);
-            view.set_on_request_maximize(on_request_maximize);
             view.set_widened(widened, cx);
             view.set_owner(owner);
-            view.set_shown(true, cx);
+            view.set_panel_bounds(Some(self.panel_bounds.clone()));
+            view.set_shown_keeping_finder(show_rail_column, has_viewer && !show_rail_column, cx);
         });
-        views.push((context.subject.clone(), view.clone()));
-        let excess = views.len().saturating_sub(KEPT_VIEWS);
-        if excess > 0 {
-            let mut saved_files = self.saved_files.borrow_mut();
-            for (evicted_subject, evicted_view) in views.drain(..excess) {
-                if let Some(state) = evicted_view.read(cx).saved_state() {
-                    saved_files.insert(evicted_subject, state);
-                } else {
-                    saved_files.remove(&evicted_subject);
-                }
-            }
+        let chrome = Self::build_viewer_chrome(
+            Some(PanelViewId::Files),
+            show_rail_column,
+            Some(&files),
+            changes_opt.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            cx,
+        );
+        viewer.update(cx, |v, cx| {
+            v.set_context(context.clone(), cx);
+            v.set_owner(owner);
+            v.set_widened(widened, cx);
+            v.set_maximized(maximized, cx);
+            v.set_on_request_maximize(on_request_maximize);
+            v.set_chrome(chrome);
+            v.set_shown(has_viewer, show_rail_column, false, cx);
+        });
+        let zoom = settings(cx).map_or(1., |s| s.app_zoom);
+        if has_viewer {
+            self.compose_split(
+                viewer,
+                show_rail_column.then(|| files.into_any_element()),
+                widened,
+                zoom,
+                cx,
+            )
+        } else {
+            let panel_bounds = self.panel_bounds.clone();
+            div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.))
+                .min_w(px(0.))
+                .flex()
+                .flex_col()
+                .child(files)
+                .child(
+                    canvas(
+                        move |bounds, _, _| panel_bounds.set(bounds),
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+                .into_any_element()
         }
-        view.into_any_element()
     }
 
-    /// The subject's view for a ⌘-clicked link, made when the panel has not
-    /// shown it yet, so its root resolves.
+    #[cfg(test)]
+    pub(crate) fn show_changes_with(
+        &self,
+        context: &PanelContext,
+        widened: Option<Widened>,
+        owner: Option<EntityId>,
+        cx: &mut App,
+    ) -> AnyElement {
+        self.show_changes_with_maximize(context, widened, owner, false, None, cx)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn show_changes_with_maximize(
+        &self,
+        context: &PanelContext,
+        widened: Option<Widened>,
+        owner: Option<EntityId>,
+        maximized: bool,
+        on_request_maximize: Option<side_panel::PanelMaximizeCallback>,
+        cx: &mut App,
+    ) -> AnyElement {
+        let idx = self
+            .touch_or_create_bundle(context, true, cx)
+            .expect("bundle created");
+        self.hide_other_subjects(Some(&context.subject), cx);
+        let changes = self.ensure_changes_in_bundle(idx, context, cx);
+        let (viewer, files_opt) = {
+            let subjects = self.subjects.borrow();
+            let b = &subjects[idx];
+            (b.viewer.clone(), b.files.clone())
+        };
+        if let Some(files) = &files_opt {
+            files.update(cx, |v, cx| v.set_shown(false, cx));
+        }
+        let has_viewer = !context.remote && viewer.read(cx).has_tabs();
+        let tree_hidden = viewer.read(cx).tree_hidden;
+        let show_rail_column = !has_viewer || (widened.is_none_or(|w| w.tree) && !tree_hidden);
+        let mut not_in_git = false;
+        changes.update(cx, |view, cx| {
+            view.set_context(context.clone(), cx);
+            view.set_widened(widened, cx);
+            view.set_owner(owner);
+            view.set_shown(show_rail_column, cx);
+            not_in_git = view.is_not_in_git();
+        });
+        let chrome = Self::build_viewer_chrome(
+            Some(PanelViewId::Changes),
+            show_rail_column,
+            files_opt.as_ref(),
+            Some(&changes),
+            None,
+            None,
+            None,
+            None,
+            None,
+            cx,
+        );
+        viewer.update(cx, |v, cx| {
+            v.set_context(context.clone(), cx);
+            v.set_owner(owner);
+            v.set_widened(widened, cx);
+            v.set_maximized(maximized, cx);
+            v.set_on_request_maximize(on_request_maximize);
+            v.set_chrome(chrome);
+            v.set_shown(
+                has_viewer,
+                show_rail_column && !not_in_git,
+                show_rail_column && !not_in_git,
+                cx,
+            );
+        });
+        let zoom = settings(cx).map_or(1., |s| s.app_zoom);
+        if has_viewer {
+            self.compose_split(
+                viewer,
+                show_rail_column.then(|| changes.into_any_element()),
+                widened,
+                zoom,
+                cx,
+            )
+        } else {
+            changes.into_any_element()
+        }
+    }
+
+    /// The subject's `FilesView` for a ⌘-clicked link or `⇧⌘O` finder, created
+    /// lazily on the shared subject bundle so its root resolves and opened
+    /// files land in the unified viewer.
     pub(crate) fn link_view(&self, context: &PanelContext, cx: &mut App) -> Entity<FilesView> {
-        let mut views = self.views.borrow_mut();
-        if let Some((_, view)) = views
-            .iter()
-            .find(|(subject, _)| *subject == context.subject)
-        {
-            let view = view.clone();
-            view.update(cx, |view, cx| view.set_context(context.clone(), cx));
-            return view;
-        }
-        let saved = self.saved_files.borrow_mut().remove(&context.subject);
-        let view = cx.new(|cx| {
-            let mut view = FilesView::new(context.clone(), cx);
-            if let Some(saved) = saved {
-                view.restore_saved_state(saved, cx);
-            }
-            view
+        let idx = self
+            .touch_or_create_bundle(context, true, cx)
+            .expect("bundle created");
+        let files = self.ensure_files_in_bundle(idx, context, cx);
+        files.update(cx, |view, cx| {
+            view.set_context(context.clone(), cx);
+            view.set_panel_bounds(Some(self.panel_bounds.clone()));
         });
-        views.push((context.subject.clone(), view.clone()));
-        let excess = views.len().saturating_sub(KEPT_VIEWS);
-        if excess > 0 {
-            let mut saved_files = self.saved_files.borrow_mut();
-            for (evicted_subject, evicted_view) in views.drain(..excess) {
-                if let Some(state) = evicted_view.read(cx).saved_state() {
-                    saved_files.insert(evicted_subject, state);
-                } else {
-                    saved_files.remove(&evicted_subject);
-                }
-            }
-        }
-        view
+        files
     }
 
-    pub(crate) fn files_widening(&self, subject: &PanelSubject, cx: &App) -> Option<bool> {
-        if let Some((_, view)) = self
-            .views
+    pub(crate) fn viewer_has_tabs(&self, subject: &PanelSubject, cx: &App) -> bool {
+        if let Some(bundle) = self
+            .subjects
             .borrow()
             .iter()
-            .find(|(shown, _)| shown == subject)
+            .find(|b| &b.subject == subject)
         {
-            return view.read(cx).widening();
+            return bundle.viewer.read(cx).has_tabs();
         }
-        self.saved_files
+        self.saved
             .borrow()
             .get(subject)
-            .filter(|saved| !saved.open_paths.is_empty())
-            .map(|saved| !saved.tree_hidden)
+            .and_then(|s| s.viewer.as_ref())
+            .is_some_and(|v| !v.tabs.is_empty())
     }
 
-    pub(crate) fn changes_widening(&self, subject: &PanelSubject, cx: &App) -> Option<bool> {
-        if let Some((_, view)) = self
-            .changes
+    pub(crate) fn viewer_widening(&self, subject: &PanelSubject, cx: &App) -> Option<bool> {
+        if let Some(bundle) = self
+            .subjects
             .borrow()
             .iter()
-            .find(|(shown, _)| shown == subject)
+            .find(|b| &b.subject == subject)
         {
-            return view.read(cx).widening().filter(|&wide| wide);
+            return bundle.viewer.read(cx).widening();
         }
-        self.saved_changes
+        self.saved
             .borrow()
-            .contains_key(subject)
-            .then_some(true)
+            .get(subject)
+            .and_then(|s| s.viewer.as_ref())
+            .filter(|v| !v.tabs.is_empty())
+            .map(|v| !v.tree_hidden)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn files_widening(&self, subject: &PanelSubject, cx: &App) -> Option<bool> {
+        self.viewer_widening(subject, cx)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn changes_widening(&self, subject: &PanelSubject, cx: &App) -> Option<bool> {
+        self.viewer_widening(subject, cx)
     }
 
     /// Authoritative uncommitted-changes indicator for the Changes activity
-    /// icon (#1403): uses the currently-active live tool when resolved, or
-    /// holds a scoped daemon watch when neither tool is open (e.g. a mission on
-    /// Sessions), releasing that watch as soon as Files/Changes takes over,
-    /// Changes is disabled, or the panel/workspace hides.
+    /// icon (#1403, #1421): reads from whichever active entity owns the watch
+    /// (`FilesView`, `ChangesView`, or `UnifiedViewer`), or holds a scoped
+    /// daemon watch via `DirtyTracker` when none of them is watching (e.g. a
+    /// rail-only mission on Sessions).
     pub(crate) fn dirty_changes_for(
         &self,
         context: Option<&PanelContext>,
-        shown: Option<side_panel::PanelViewId>,
+        shown: Option<PanelViewId>,
+        show_rail_column: bool,
         changes_enabled: bool,
         owner: Option<EntityId>,
         cx: &mut App,
@@ -585,20 +1318,35 @@ impl FilesPanel {
             self.hide_dirty_tracker(cx);
             return false;
         }
-        let active_dirty = match shown {
-            Some(side_panel::PanelViewId::Files) => self
-                .views
-                .borrow()
-                .iter()
-                .find(|(s, _)| *s == context.subject)
-                .and_then(|(_, view)| view.read(cx).fresh_dirty_changes()),
-            Some(side_panel::PanelViewId::Changes) => self
-                .changes
-                .borrow()
-                .iter()
-                .find(|(s, _)| *s == context.subject)
-                .and_then(|(_, view)| view.read(cx).fresh_dirty_changes()),
-            _ => None,
+        let (external_watch_owner, active_dirty) = {
+            let subjects = self.subjects.borrow();
+            let bundle = subjects.iter().find(|b| b.subject == context.subject);
+            match bundle {
+                Some(b) if show_rail_column && shown == Some(PanelViewId::Files) => (
+                    true,
+                    b.files
+                        .as_ref()
+                        .and_then(|v| v.read(cx).fresh_dirty_changes()),
+                ),
+                Some(b)
+                    if show_rail_column
+                        && shown == Some(PanelViewId::Changes)
+                        && b.changes
+                            .as_ref()
+                            .is_none_or(|v| !v.read(cx).is_not_in_git()) =>
+                {
+                    (
+                        true,
+                        b.changes
+                            .as_ref()
+                            .and_then(|v| v.read(cx).fresh_dirty_changes()),
+                    )
+                }
+                Some(b) if b.viewer.read(cx).has_tabs() => {
+                    (true, b.viewer.read(cx).fresh_dirty_changes())
+                }
+                _ => (false, None),
+            }
         };
         let tracker = {
             let mut slot = self.dirty_tracker.borrow_mut();
@@ -606,7 +1354,7 @@ impl FilesPanel {
                 .clone()
         };
         tracker.update(cx, |tracker, cx| {
-            tracker.sync(context, owner, shown, active_dirty, cx)
+            tracker.sync(context, owner, external_watch_owner, active_dirty, cx)
         })
     }
 
@@ -642,8 +1390,10 @@ impl FilesPanel {
     }
 
     /// Computes the panel's width, widened state, and Docked vs Sheet
-    /// presentation for `subject` (#1403, #1331). Files widens only when a
-    /// file tab is open; Changes widens only when a diff is open (C1).
+    /// presentation for `subject` (#1403, #1331, #1421). Width is derived
+    /// strictly from the subject's unified viewer open state — never from the
+    /// active `PanelViewId` — so switching `Files ↔ Changes ↔ Sessions` yields
+    /// `0 px` width jump.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn panel_layout(
         &self,
@@ -658,25 +1408,17 @@ impl FilesPanel {
         cx: &App,
     ) -> side_panel::PanelLayout {
         let active = side_panel::shown(surface, settings, selection);
-        let widened_tree = match active {
-            Some(side_panel::PanelViewId::Files) => subject
-                .filter(|_| settings.files_view)
-                .and_then(|subject| self.files_widening(subject, cx)),
-            Some(side_panel::PanelViewId::Changes) => subject
-                .filter(|_| settings.changes_view)
-                .and_then(|subject| self.changes_widening(subject, cx)),
-            Some(side_panel::PanelViewId::Sessions) | None => None,
-        };
+        let viewer_enabled = settings.files_view || settings.changes_view;
+        let widened_tree = subject
+            .filter(|_| viewer_enabled && active.is_some())
+            .and_then(|subject| self.viewer_widening(subject, cx));
         let measured = self.surface.get();
         let available = if measured > 0. {
             (measured - gap).max(0.)
         } else {
             0.
         };
-        let file = match active {
-            Some(side_panel::PanelViewId::Changes) => settings.changes_viewer_width,
-            _ => settings.file_viewer_width,
-        };
+        let file = settings.file_viewer_width;
         let tree_width = settings.file_tree_width;
         let full = self.maximized_width(
             (side_panel::SPLIT_MIN_DIFF_WIDTH + tree_width)
@@ -695,123 +1437,45 @@ impl FilesPanel {
         )
     }
 
-    #[cfg(test)]
-    pub(crate) fn show_changes_with(
-        &self,
-        context: &PanelContext,
-        widened: Option<Widened>,
-        owner: Option<EntityId>,
-        cx: &mut App,
-    ) -> AnyElement {
-        self.show_changes_with_maximize(context, widened, owner, false, None, cx)
-    }
-
-    pub(crate) fn show_changes_with_maximize(
-        &self,
-        context: &PanelContext,
-        widened: Option<Widened>,
-        owner: Option<EntityId>,
-        maximized: bool,
-        on_request_maximize: Option<side_panel::PanelMaximizeCallback>,
-        cx: &mut App,
-    ) -> AnyElement {
-        let mut changes = self.changes.borrow_mut();
-        let view = match changes
-            .iter()
-            .position(|(subject, _)| *subject == context.subject)
-        {
-            Some(index) => changes.remove(index).1,
-            None => {
-                let context_clone = context.clone();
-                let saved = self.saved_changes.borrow_mut().remove(&context.subject);
-                cx.new(|cx| {
-                    let mut view = ChangesView::new(context_clone, cx);
-                    if let Some(saved) = saved {
-                        view.restore_saved_state(saved, cx);
-                    }
-                    view
-                })
-            }
-        };
-        for (_, other) in changes.iter() {
-            other.update(cx, |other, cx| other.set_shown(false, cx));
-        }
-        view.update(cx, |view, cx| {
-            view.set_context(context.clone(), cx);
-            view.set_maximized(maximized, cx);
-            view.set_on_request_maximize(on_request_maximize);
-            view.set_widened(widened, cx);
-            view.set_owner(owner);
-            view.set_shown(true, cx);
-        });
-        changes.push((context.subject.clone(), view.clone()));
-        let excess = changes.len().saturating_sub(KEPT_VIEWS);
-        if excess > 0 {
-            let mut saved_changes = self.saved_changes.borrow_mut();
-            for (evicted_subject, evicted_view) in changes.drain(..excess) {
-                if let Some(state) = evicted_view.read(cx).saved_state() {
-                    saved_changes.insert(evicted_subject, state);
-                } else {
-                    saved_changes.remove(&evicted_subject);
-                }
-            }
-        }
-        view.into_any_element()
-    }
-
     pub(crate) fn focus_shown(
         &self,
         subject: Option<&PanelSubject>,
-        shown: Option<side_panel::PanelViewId>,
+        shown: Option<PanelViewId>,
         fallback: &FocusHandle,
         window: &mut Window,
         cx: &mut App,
     ) {
-        match (shown, subject) {
-            (Some(side_panel::PanelViewId::Changes), Some(subject)) => {
-                if let Some(view) = self
-                    .changes
-                    .borrow()
-                    .iter()
-                    .find(|(s, _)| s == subject)
-                    .map(|(_, v)| v.clone())
-                {
-                    view.update(cx, |view, cx| view.focus_default(window, cx));
+        if let Some(subject) = subject {
+            let bundle = self
+                .subjects
+                .borrow()
+                .iter()
+                .find(|b| &b.subject == subject)
+                .map(|b| (b.viewer.clone(), b.files.clone(), b.changes.clone()));
+            if let Some((viewer, files, changes)) = bundle {
+                let viewer_only = viewer.read(cx).has_tabs() && viewer.read(cx).tree_hidden;
+                if viewer_only {
+                    viewer.update(cx, |v, cx| v.focus_active(window, cx));
                     return;
                 }
-            }
-            (Some(side_panel::PanelViewId::Files), Some(subject)) => {
-                if let Some(view) = self
-                    .views
-                    .borrow()
-                    .iter()
-                    .find(|(s, _)| s == subject)
-                    .map(|(_, v)| v.clone())
-                {
-                    view.update(cx, |view, cx| view.focus_default(window, cx));
-                    return;
+                match shown {
+                    Some(PanelViewId::Changes) => {
+                        if let Some(view) = changes {
+                            view.update(cx, |view, cx| view.focus_default(window, cx));
+                            return;
+                        }
+                    }
+                    Some(PanelViewId::Files) => {
+                        if let Some(view) = files {
+                            view.update(cx, |view, cx| view.focus_default(window, cx));
+                            return;
+                        }
+                    }
+                    _ => {}
                 }
             }
-            _ => {}
         }
         fallback.focus(window, cx);
-    }
-
-    pub(crate) fn hide_files(&self, cx: &mut App) {
-        for (_, view) in self.views.borrow().iter() {
-            view.update(cx, |view, cx| view.set_shown(false, cx));
-        }
-    }
-
-    pub(crate) fn hide_changes(&self, cx: &mut App) {
-        for (_, view) in self.changes.borrow().iter() {
-            view.update(cx, |view, cx| view.set_shown(false, cx));
-        }
-    }
-
-    pub(crate) fn hide_tools(&self, cx: &mut App) {
-        self.hide_files(cx);
-        self.hide_changes(cx);
     }
 
     fn hide_dirty_tracker(&self, cx: &mut App) {
@@ -822,29 +1486,36 @@ impl FilesPanel {
     }
 
     pub(crate) fn hide(&self, cx: &mut App) {
-        self.hide_tools(cx);
+        self.hide_other_subjects(None, cx);
         self.hide_dirty_tracker(cx);
     }
 
     /// Hides every view and drops them, for a window that is closing.
     pub(crate) fn release(&self, cx: &mut App) {
-        self.hide_tools(cx);
+        self.hide_other_subjects(None, cx);
         if let Some(tracker) = self.dirty_tracker.borrow_mut().take() {
             tracker.update(cx, |tracker, cx| tracker.release(cx));
         }
-        self.views.borrow_mut().clear();
-        self.changes.borrow_mut().clear();
-        self.saved_files.borrow_mut().clear();
-        self.saved_changes.borrow_mut().clear();
+        self.subjects.borrow_mut().clear();
+        self.saved.borrow_mut().clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn viewer(&self, subject: &PanelSubject) -> Option<Entity<UnifiedViewer>> {
+        self.subjects
+            .borrow()
+            .iter()
+            .find(|b| &b.subject == subject)
+            .map(|b| b.viewer.clone())
     }
 
     #[cfg(test)]
     pub(crate) fn view(&self, subject: &PanelSubject) -> Option<Entity<FilesView>> {
-        self.views
+        self.subjects
             .borrow()
             .iter()
-            .find(|(shown, _)| shown == subject)
-            .map(|(_, view)| view.clone())
+            .find(|b| &b.subject == subject)
+            .and_then(|b| b.files.clone())
     }
 
     #[cfg(all(test, unix))]
@@ -857,10 +1528,10 @@ impl FilesPanel {
 
     #[cfg(test)]
     pub(crate) fn changes_view(&self, subject: &PanelSubject) -> Option<Entity<ChangesView>> {
-        self.changes
+        self.subjects
             .borrow()
             .iter()
-            .find(|(shown, _)| shown == subject)
-            .map(|(_, view)| view.clone())
+            .find(|b| &b.subject == subject)
+            .and_then(|b| b.changes.clone())
     }
 }

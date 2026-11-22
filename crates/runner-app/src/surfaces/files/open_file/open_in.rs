@@ -44,7 +44,7 @@ pub(in super::super) fn reveal(path: PathBuf) -> Result<(), String> {
     }
 }
 
-type RowAction = Box<dyn Fn(&mut FilesView, &mut Context<FilesView>)>;
+type RowAction = Box<dyn Fn(&mut UnifiedViewer, &mut Context<UnifiedViewer>)>;
 
 const OPEN_IN_WIDTH: f32 = 224.;
 
@@ -114,35 +114,35 @@ fn reveal_icon(size: f32) -> AnyElement {
     }
 }
 
-impl FilesView {
+impl UnifiedViewer {
     pub(super) fn active_path(&self) -> Option<PathBuf> {
         let root = self.root_path()?;
-        let tab = self.viewer.tabs.active()?;
-        Some(absolute(root, &tab.path))
+        let tab = self.tabs.active()?;
+        Some(absolute(root, tab.path()))
     }
 
     pub(super) fn open_line_handler(
         &self,
-        relative: String,
+        key: TabKey,
         cx: &mut Context<Self>,
     ) -> super::super::code::OpenLine {
         let root = cx.weak_entity();
         Rc::new(move |line, _, cx| {
-            let _ = root.update(cx, |this, cx| this.open_at_line(&relative, line, cx));
+            let _ = root.update(cx, |this, cx| this.open_at_line(&key, line, cx));
         })
     }
 
     /// ⌘-click on a line: the file at that line in the chosen editor,
     /// unless it was deleted.
-    fn open_at_line(&mut self, relative: &str, line: u32, cx: &mut Context<Self>) {
-        let deleted = matches!(
-            self.viewer.files.get(relative).map(|file| &file.content),
-            None | Some(Content::Deleted(_))
-        );
+    fn open_at_line(&mut self, key: &TabKey, line: u32, cx: &mut Context<Self>) {
+        let deleted = self
+            .docs
+            .get(key)
+            .is_none_or(|doc| doc.is_working_tree_deleted(key));
         let Some(root) = self.root_path().filter(|_| !deleted) else {
             return;
         };
-        let path = absolute(root, relative);
+        let path = absolute(root, &key.path);
         self.launch(None, path, Some(line), cx);
     }
 
@@ -157,7 +157,7 @@ impl FilesView {
         #[cfg(test)]
         {
             let _ = cx;
-            self.viewer.launched.push((editor, path, line));
+            self.launched.push((editor, path, line));
         }
         #[cfg(not(test))]
         {
@@ -177,7 +177,7 @@ impl FilesView {
     /// editor from the menu makes it the editor for Open in and for
     /// ⌘-clicked links the preview does not take.
     pub(super) fn open_in(&mut self, editor: Option<FileLinkEditor>, cx: &mut Context<Self>) {
-        self.viewer.open_in_open = false;
+        self.open_in_open = false;
         cx.notify();
         if self.active_deleted() {
             return;
@@ -185,7 +185,13 @@ impl FilesView {
         let Some(path) = self.active_path() else {
             return;
         };
-        let line = self.active_view().map(|view| view.read(cx).line_in_view());
+        let line = self
+            .active_view()
+            .map(|view| view.read(cx).line_in_view())
+            .or_else(|| {
+                self.active_diff_view()
+                    .and_then(|diff| diff.read(cx).current_new_line())
+            });
         if let Some(editor) = editor {
             crate::app_store::global_app_store(cx).update(cx, |store, cx| {
                 store.update_settings(
@@ -204,7 +210,7 @@ impl FilesView {
     }
 
     fn reveal_active(&mut self, cx: &mut Context<Self>) {
-        self.viewer.open_in_open = false;
+        self.open_in_open = false;
         if let Some(path) = self.active_path().filter(|_| !self.active_deleted()) {
             cx.background_spawn(async move {
                 if let Err(error) = reveal(path) {
@@ -216,15 +222,110 @@ impl FilesView {
         cx.notify();
     }
 
+    pub(super) fn render_open_in_control(
+        &self,
+        deleted: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open_in_anchor = self.open_in_anchor.clone();
+        let (_, effective) = found_editors(cx);
+        let open_in_label = crate::i18n::tf(
+            "format.open_in_editor",
+            &[("editor", effective.label().to_owned())],
+        );
+        div()
+            .relative()
+            .flex_none()
+            .flex()
+            .items_center()
+            .rounded_md()
+            .border_1()
+            .border_color(theme::border())
+            .bg(theme::bg())
+            .when(deleted, |element| element.opacity(0.4))
+            .child(
+                canvas(
+                    move |bounds, _, _| open_in_anchor.set(bounds),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .child(
+                div()
+                    .id("file-open-in")
+                    .when(cfg!(test), |element| {
+                        element.debug_selector(|| "FILE_OPEN_IN".into())
+                    })
+                    .h(px(22.))
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(4.))
+                    .rounded_l_md()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .when(!deleted, |element| {
+                        element
+                            .cursor_pointer()
+                            .hover(|element| {
+                                element.bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
+                            })
+                            .tooltip(move |_, cx| {
+                                runner_app::ui::tooltip::tooltip_view(open_in_label.clone(), cx)
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| this.open_in(None, cx)))
+                    })
+                    .child(editor_icon(effective, 13.)),
+            )
+            .child(div().w(px(1.)).h(px(14.)).bg(theme::border()))
+            .child(
+                div()
+                    .id("file-open-in-menu")
+                    .when(cfg!(test), |element| {
+                        element.debug_selector(|| "FILE_OPEN_IN_MENU".into())
+                    })
+                    .h(px(22.))
+                    .w(px(18.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_r_md()
+                    .when(self.open_in_open, |element| {
+                        element.bg(theme::sidebar_selected())
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .when(!deleted, |element| {
+                        element
+                            .cursor_pointer()
+                            .hover(|element| {
+                                element.bg(theme::with_alpha(theme::sidebar_selected(), 0.6))
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.open_in_open = !this.open_in_open;
+                                this.list_open = false;
+                                cx.notify();
+                            }))
+                    })
+                    .child(
+                        svg()
+                            .size(px(11.))
+                            .path("chevron-down.svg")
+                            .text_color(theme::muted()),
+                    ),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn render_open_in_menu(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        if !self.viewer.open_in_open || self.active_deleted() {
+        if !self.open_in_open || self.active_deleted() {
             return None;
         }
-        let name = self.viewer.tabs.active()?.name().to_owned();
+        let name = self.tabs.active()?.name().to_owned();
         let (found, effective) = found_editors(cx);
         let row = |id: (&'static str, usize),
                    icon: AnyElement,
@@ -332,13 +433,13 @@ impl FilesView {
             .into_any_element();
         let root = cx.entity();
         Some(popup_layer_right_aligned(
-            self.viewer.open_in_anchor.get(),
+            self.open_in_anchor.get(),
             window,
             px(OPEN_IN_WIDTH),
             content,
             Rc::new(move |_, cx| {
                 root.update(cx, |this, cx| {
-                    this.viewer.open_in_open = false;
+                    this.open_in_open = false;
                     cx.notify();
                 })
             }),

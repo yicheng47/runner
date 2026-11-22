@@ -78,6 +78,10 @@ pub(crate) struct PreparedStatus {
 }
 
 impl PreparedStatus {
+    pub(crate) fn letter(&self, path: &str) -> Option<Letter> {
+        self.letters.get(path).copied()
+    }
+
     pub(crate) fn new(status: GitStatus) -> Arc<Self> {
         let changed = Arc::new(
             status

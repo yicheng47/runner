@@ -4878,7 +4878,7 @@ fn a_file_link_in_a_mission_terminal_opens_the_rails_preview() {
             workspace
                 .rail_files
                 .view(&subject)
-                .and_then(|view| view.read(cx).active_tab())
+                .and_then(|view| view.read(cx).active_tab(cx))
                 == Some("lib.rs".into())
         })
     });
@@ -4890,34 +4890,50 @@ fn a_file_link_in_a_mission_terminal_opens_the_rails_preview() {
         "opening a file link selects Files"
     );
 
-    // Opening a file widens the rail while Files is active; switching to Sessions
-    // returns to compact 300 px while keeping the file tab for when Files returns.
+    // #1421: Opening a file widens the panel once; switching the right rail to
+    // Sessions keeps the unified viewer open and widened (0 px width jump).
     let widened = |visual: &mut gpui::VisualTestContext| {
         workspace.read_with(visual, |workspace, cx| {
             workspace.rail_layout(cx).widened.is_some()
         })
     };
+    let layout_width = |visual: &mut gpui::VisualTestContext| {
+        workspace.read_with(visual, |workspace, cx| workspace.rail_layout(cx).width)
+    };
     assert!(widened(&mut visual));
+    let opened_width = layout_width(&mut visual);
     workspace.update(&mut visual, |workspace, _| {
         workspace.rail_surfaces.select(PanelViewId::Sessions)
     });
-    assert!(!widened(&mut visual), "Sessions stays compact at 300 px");
+    assert!(
+        widened(&mut visual),
+        "Sessions keeps unified viewer open and widened"
+    );
+    assert_eq!(
+        layout_width(&mut visual),
+        opened_width,
+        "switching Files -> Sessions must produce 0 px width jump"
+    );
     workspace.update(&mut visual, |workspace, _| {
         workspace.rail_surfaces.select(PanelViewId::Files);
     });
     assert!(
         widened(&mut visual),
-        "returning to Files restores widened file viewer"
+        "returning to Files keeps unified viewer widened"
     );
+    assert_eq!(layout_width(&mut visual), opened_width);
     workspace.update(&mut visual, |workspace, _| {
         workspace.rail_surfaces.reset(Default::default());
     });
-    assert!(!widened(&mut visual), "reset returns to compact Sessions");
+    assert!(
+        widened(&mut visual),
+        "reset to Sessions keeps open viewer widened"
+    );
     assert!(workspace.read_with(&visual, |workspace, cx| {
         workspace
             .rail_files
             .view(&subject)
-            .and_then(|view| view.read(cx).active_tab())
+            .and_then(|view| view.read(cx).active_tab(cx))
             == Some("lib.rs".into())
     }));
     workspace.update(&mut visual, |workspace, _| {
@@ -5279,43 +5295,64 @@ fn mission_rail_progressively_widens_on_file_or_diff_and_shrinks_back_to_300px()
     let card_shell = visual.debug_bounds("MISSION_CARD mission-shell").unwrap();
     assert!(card_agent.top() < card_shell.top());
 
-    // Clicking Changes stays compact at 300 px (C1 list-only) until a changed file is clicked,
-    // which widens smoothly to the signed-off ~740 px (500 diff + 240 list).
+    // Clicking Changes stays compact at 300 px (list-only) until a changed file is clicked,
+    // which widens smoothly once to the unified 700 px (460 viewer + 240 right rail).
     click(&mut visual, "PANEL_ACTIVITY Changes");
     wait(&mut visual, "Changes list loaded", &|v| {
         v.debug_bounds("CHANGES_ROW lib.rs").is_some()
     });
     assert!((rail_width(&mut visual) - 300.).abs() <= 1.);
     click(&mut visual, "CHANGES_ROW lib.rs");
-    wait(&mut visual, "Changes diff widens rail to 740 px", &|v| {
-        v.debug_bounds("CHANGES_CLOSE_DIFF").is_some() && (rail_width(v) - 740.).abs() <= 1.
+    wait(&mut visual, "Changes diff widens rail to 700 px", &|v| {
+        v.debug_bounds("FILE_TAB_CLOSE lib.rs").is_some()
+            && v.debug_bounds("CHANGES_DIFF_CODE").is_some()
+            && (rail_width(v) - 700.).abs() <= 1.
     });
-    click(&mut visual, "CHANGES_CLOSE_DIFF");
-    wait(&mut visual, "Changes diff closes back to 300 px", &|v| {
-        v.debug_bounds("CHANGES_CLOSE_DIFF").is_none() && (rail_width(v) - 300.).abs() <= 1.
-    });
+    // Switching right rail to Sessions and Files while the diff is open produces 0 px jump!
+    click(&mut visual, "PANEL_ACTIVITY Sessions");
+    assert!(
+        (rail_width(&mut visual) - 700.).abs() <= 1.,
+        "switching Changes -> Sessions with viewer open must keep 700 px width"
+    );
+    assert!(visual.debug_bounds("CHANGES_DIFF_CODE").is_some());
+    // Sessions cards stay cleanly single-column in the 240 px rail beside the viewer.
+    let card_agent_beside = visual.debug_bounds("MISSION_CARD mission-agent").unwrap();
+    let card_shell_beside = visual.debug_bounds("MISSION_CARD mission-shell").unwrap();
+    assert!(card_agent_beside.top() < card_shell_beside.top());
 
-    // Clicking Files stays compact at 300 px until clicking lib.rs widens smoothly to 680 px;
-    // tree toggle narrows to 440 px; dragging the rail gutter saves file_viewer_width;
-    // closing the last file tab shrinks back to 300 px.
     click(&mut visual, "PANEL_ACTIVITY Files");
-    wait(&mut visual, "Files tree loaded", &|v| {
+    wait(&mut visual, "Files tree loaded beside open diff", &|v| {
         v.debug_bounds("FILES_ROW lib.rs").is_some()
     });
-    assert!((rail_width(&mut visual) - 300.).abs() <= 1.);
+    assert!(
+        (rail_width(&mut visual) - 700.).abs() <= 1.,
+        "switching Sessions -> Files with viewer open must keep 700 px width"
+    );
+    click(&mut visual, "FILE_TAB_CLOSE lib.rs");
+    wait(
+        &mut visual,
+        "Closing last tab shrinks back to 300 px",
+        &|v| {
+            v.debug_bounds("FILE_TAB_CLOSE lib.rs").is_none() && (rail_width(v) - 300.).abs() <= 1.
+        },
+    );
+
+    // Opening lib.rs from Files widens smoothly to 700 px (460 + 240);
+    // hiding rail narrows to 460 px; dragging the rail gutter saves unified file_viewer_width;
+    // closing the last file tab shrinks back to 300 px.
     click(&mut visual, "FILES_ROW lib.rs");
     wait(
         &mut visual,
-        "lib.rs opens and widens rail to 680 px",
-        &|v| v.debug_bounds("FILE_CODE").is_some() && (rail_width(v) - 680.).abs() <= 1.,
+        "lib.rs opens and widens rail to 700 px",
+        &|v| v.debug_bounds("FILE_CODE").is_some() && (rail_width(v) - 700.).abs() <= 1.,
     );
     click(&mut visual, "FILE_TREE_TOGGLE");
-    wait(&mut visual, "hiding tree narrows rail to 440 px", &|v| {
-        (rail_width(v) - 440.).abs() <= 1.
+    wait(&mut visual, "hiding rail narrows rail to 460 px", &|v| {
+        (rail_width(v) - 460.).abs() <= 1.
     });
     click(&mut visual, "FILE_TREE_TOGGLE");
-    wait(&mut visual, "showing tree widens rail to 680 px", &|v| {
-        (rail_width(v) - 680.).abs() <= 0.5
+    wait(&mut visual, "showing tree widens rail to 700 px", &|v| {
+        (rail_width(v) - 700.).abs() <= 0.5
             && host
                 .read_with(v, |r, cx| {
                     r.mission_workspace
@@ -5343,7 +5380,7 @@ fn mission_rail_progressively_widens_on_file_or_diff_and_shrinks_back_to_300px()
         gpui::Modifiers::default(),
     );
     visual.run_until_parked();
-    assert!((rail_width(&mut visual) - 720.).abs() <= 1.);
+    assert!((rail_width(&mut visual) - 740.).abs() <= 1.);
 
     // Narrowing the window preserves MAIN_MIN_WIDTH = 420 px for the mission column.
     visual.simulate_resize(gpui::size(px(1260.), px(900.)));
@@ -5362,6 +5399,1660 @@ fn mission_rail_progressively_widens_on_file_or_diff_and_shrinks_back_to_300px()
     wait(&mut visual, "closing file shrinks rail to 300 px", &|v| {
         (rail_width(v) - 300.).abs() <= 1.
     });
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[test]
+fn mission_unified_viewer_keeps_aligned_header_promotes_preview_from_files_and_maintains_single_watch(
+) {
+    use std::process::Command;
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (temp, mut cx, host, _fake) = suspended_mission_test();
+    let repo = temp.path().join("mission-unified-1421");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "core.autocrlf", "false"][..],
+    ] {
+        assert!(Command::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .status()
+            .unwrap()
+            .success());
+    }
+    std::fs::write(repo.join("lib.rs"), "pub fn mission() {}\n").unwrap();
+    std::fs::write(repo.join("main.rs"), "fn main() {}\n").unwrap();
+    for args in [
+        &["add", "-A"][..],
+        &[
+            "-c",
+            "user.name=Runner",
+            "-c",
+            "user.email=runner@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ][..],
+    ] {
+        assert!(Command::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .status()
+            .unwrap()
+            .success());
+    }
+    std::fs::write(
+        repo.join("lib.rs"),
+        "pub fn mission() { println!(\"changed\"); }\n",
+    )
+    .unwrap();
+    let canonical = if cfg!(windows) {
+        repo.clone()
+    } else {
+        repo.canonicalize().unwrap()
+    };
+    let store = host
+        .read_with(&cx, |root, _| root.app_store.clone())
+        .unwrap();
+    host.update(&mut cx, |root, window, cx| {
+        root.app_store.update(cx, |store, cx| {
+            store
+                .test_core
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE missions SET cwd = ?1, files_root = ?1 WHERE id = 'test-mission'",
+                    [canonical.to_string_lossy().as_ref()],
+                )
+                .unwrap();
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+        });
+        root.open_mission("test-mission".into(), window, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+    visual.run_until_parked();
+
+    let rail_width = |visual: &mut gpui::VisualTestContext| -> f32 {
+        f32::from(visual.debug_bounds("MISSION_RAIL").unwrap().size.width)
+    };
+    let click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+        let bounds = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+    };
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                ready: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !ready(visual) {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::yield_now();
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+        }
+    };
+    let watch_count = |visual: &mut gpui::VisualTestContext| -> usize {
+        store.read_with(visual, |s, _| s.test_core.files.watched_roots().len())
+    };
+    let subject = crate::surfaces::side_panel::PanelSubject::Mission("test-mission".into());
+    let files_watching = |visual: &mut gpui::VisualTestContext| -> bool {
+        host.read_with(visual, |r, cx| {
+            r.mission_workspace
+                .read(cx)
+                .rail_files
+                .view(&subject)
+                .is_some_and(|v| v.read(cx).watched().is_some())
+        })
+        .unwrap()
+    };
+    let changes_watching = |visual: &mut gpui::VisualTestContext| -> bool {
+        host.read_with(visual, |r, cx| {
+            r.mission_workspace
+                .read(cx)
+                .rail_files
+                .changes_view(&subject)
+                .is_some_and(|v| v.read(cx).watched().is_some())
+        })
+        .unwrap()
+    };
+    let viewer_watching = |visual: &mut gpui::VisualTestContext| -> bool {
+        host.read_with(visual, |r, cx| {
+            r.mission_workspace
+                .read(cx)
+                .rail_files
+                .viewer(&subject)
+                .is_some_and(|v| v.read(cx).watched().is_some())
+        })
+        .unwrap()
+    };
+    let watcher_owners = |visual: &mut gpui::VisualTestContext| -> (bool, bool, bool) {
+        (
+            files_watching(visual),
+            changes_watching(visual),
+            viewer_watching(visual),
+        )
+    };
+    #[cfg(unix)]
+    let dirty_active = |visual: &mut gpui::VisualTestContext| -> bool {
+        host.read_with(visual, |r, cx| {
+            r.mission_workspace
+                .read(cx)
+                .rail_files
+                .dirty_tracker_active(cx)
+        })
+        .unwrap()
+    };
+    let rail_focused = |visual: &mut gpui::VisualTestContext| -> bool {
+        host.update(visual, |r, window, cx| {
+            r.mission_workspace.read(cx).rail_focus.is_focused(window)
+        })
+        .unwrap()
+    };
+
+    // 1. Sessions rail starts at 300 px with DirtyTracker exclusively owning the single watch.
+    wait(
+        &mut visual,
+        "initial dirty dot and single watch on Sessions",
+        &|v| {
+            v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_some()
+                && watch_count(v) == 1
+                && watcher_owners(v) == (false, false, false)
+        },
+    );
+    #[cfg(unix)]
+    assert!(dirty_active(&mut visual));
+
+    // 2. Opening a diff from Changes widens to 700 px with aligned 40 px viewer + rail headers
+    // and ChangesView exclusively owning the single watch.
+    click(&mut visual, "PANEL_ACTIVITY Changes");
+    wait(&mut visual, "Changes list loaded with single watch", &|v| {
+        v.debug_bounds("CHANGES_ROW lib.rs").is_some()
+            && watch_count(v) == 1
+            && watcher_owners(v) == (false, true, false)
+    });
+    #[cfg(unix)]
+    assert!(!dirty_active(&mut visual));
+    click(&mut visual, "CHANGES_ROW lib.rs");
+    wait(&mut visual, "lib.rs preview diff opens at 700 px", &|v| {
+        v.debug_bounds("CHANGES_DIFF_CODE").is_some()
+            && v.debug_bounds("FILE_TAB_PREVIEW lib.rs").is_some()
+            && (rail_width(v) - 700.).abs() <= 1.
+            && watch_count(v) == 1
+            && watcher_owners(v) == (false, true, false)
+    });
+    let viewer_hdr = visual.debug_bounds("FILE_TAB_STRIP").unwrap();
+    let rail_hdr = visual.debug_bounds("MISSION_RAIL_HEADER").unwrap();
+    assert!(
+        (f32::from(viewer_hdr.size.height) - 40.).abs() <= 1.
+            && (f32::from(rail_hdr.size.height) - 40.).abs() <= 1.
+            && (f32::from(viewer_hdr.origin.y) - f32::from(rail_hdr.origin.y)).abs() <= 0.5,
+        "viewer header and rail activity bar must form one aligned 40 px row: {viewer_hdr:?} vs {rail_hdr:?}"
+    );
+
+    // 3. Switching to Sessions keeps 700 px (0 px jump), hands the single watch exclusively to
+    // UnifiedViewer, keeps DirtyTracker inactive, and routes Escape from the focused viewer back
+    // to the Sessions rail focus handle.
+    click(&mut visual, "PANEL_ACTIVITY Sessions");
+    wait(
+        &mut visual,
+        "UnifiedViewer owns single watch on Sessions",
+        &|v| watcher_owners(v) == (false, false, true) && watch_count(v) == 1,
+    );
+    assert!((rail_width(&mut visual) - 700.).abs() <= 1.);
+    assert!(visual.debug_bounds("CHANGES_DIFF_CODE").is_some());
+    #[cfg(unix)]
+    assert!(
+        !dirty_active(&mut visual),
+        "DirtyTracker must stay inactive while UnifiedViewer owns the watch"
+    );
+    host.update(&mut visual, |r, window, cx| {
+        let viewer = r
+            .mission_workspace
+            .read(cx)
+            .rail_files
+            .viewer(&subject)
+            .unwrap();
+        viewer.update(cx, |v, cx| v.focus_active(window, cx));
+    })
+    .unwrap();
+    visual.run_until_parked();
+    assert!(
+        !rail_focused(&mut visual),
+        "viewer must hold focus before Escape"
+    );
+    visual.simulate_keystrokes("escape");
+    wait(
+        &mut visual,
+        "Escape from viewer focuses Sessions rail",
+        &|v| rail_focused(v),
+    );
+
+    // 4. Switching to Files keeps 700 px (0 px jump), hands watch exclusively to FilesView, and
+    // opening the same file from Files promotes the Changes italic preview tab to pinned Code mode.
+    click(&mut visual, "PANEL_ACTIVITY Files");
+    wait(
+        &mut visual,
+        "Files rail owns single watch beside open diff",
+        &|v| {
+            watcher_owners(v) == (true, false, false)
+                && watch_count(v) == 1
+                && v.debug_bounds("FILES_ROW lib.rs").is_some()
+        },
+    );
+    #[cfg(unix)]
+    assert!(!dirty_active(&mut visual));
+    assert!((rail_width(&mut visual) - 700.).abs() <= 1.);
+    click(&mut visual, "FILES_ROW lib.rs");
+    wait(
+        &mut visual,
+        "Files open promotes preview tab to pinned Code mode",
+        &|v| {
+            v.debug_bounds("FILE_CODE").is_some()
+                && v.debug_bounds("FILE_TAB_PINNED lib.rs").is_some()
+                && v.debug_bounds("FILE_TAB_PREVIEW lib.rs").is_none()
+        },
+    );
+
+    // 5. Hiding rail narrows to 460 px, keeps PANEL_COLLAPSE reachable, and UnifiedViewer
+    // exclusively owns the single watch without duplicates.
+    click(&mut visual, "FILE_TREE_TOGGLE");
+    wait(
+        &mut visual,
+        "hidden rail transfers single watch to viewer",
+        &|v| {
+            (rail_width(v) - 460.).abs() <= 1.
+                && v.debug_bounds("PANEL_COLLAPSE").is_some()
+                && watcher_owners(v) == (false, false, true)
+                && watch_count(v) == 1
+        },
+    );
+    #[cfg(unix)]
+    assert!(!dirty_active(&mut visual));
+
+    // 6. Restoring rail, switching to Sessions, closing last tab shrinks to 300 px and
+    // hands the single watch back to DirtyTracker; collapsing releases all watches (0).
+    click(&mut visual, "FILE_TREE_TOGGLE");
+    wait(&mut visual, "rail restored at 700 px", &|v| {
+        (rail_width(v) - 700.).abs() <= 1.
+            && v.debug_bounds("PANEL_ACTIVITY Sessions").is_some()
+            && watcher_owners(v) == (true, false, false)
+            && watch_count(v) == 1
+    });
+    click(&mut visual, "PANEL_ACTIVITY Sessions");
+    click(&mut visual, "FILE_TAB_CLOSE lib.rs");
+    wait(
+        &mut visual,
+        "closing last tab shrinks to 300 px and keeps dirty dot",
+        &|v| {
+            (rail_width(v) - 300.).abs() <= 1.
+                && v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_some()
+                && watcher_owners(v) == (false, false, false)
+                && watch_count(v) == 1
+        },
+    );
+    #[cfg(unix)]
+    assert!(dirty_active(&mut visual));
+    click(&mut visual, "PANEL_COLLAPSE");
+    wait(
+        &mut visual,
+        "collapsing rail releases every daemon watch",
+        &|v| watch_count(v) == 0 && watcher_owners(v) == (false, false, false),
+    );
+    #[cfg(unix)]
+    assert!(!dirty_active(&mut visual));
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[test]
+fn mission_sessions_rail_refreshes_pinned_branch_diff_when_comparison_ref_moves() {
+    use runner_core::protocol::files::{
+        FilesChanged, FilesStatusChanged, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
+    };
+    use std::process::Command;
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (temp, mut cx, host, _fake) = suspended_mission_test();
+    let repo = temp.path().join("mission-branch-ref-move");
+    std::fs::create_dir_all(&repo).unwrap();
+    let run_git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&repo)
+            .args([
+                "-c",
+                "user.name=Runner",
+                "-c",
+                "user.email=runner@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run_git(&["init", "-q", "-b", "main"]);
+    run_git(&["config", "core.autocrlf", "false"]);
+    std::fs::write(repo.join("lib.rs"), "pub fn base() {}\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-q", "-m", "init"]);
+    // Local comparison branch `cmp-base` starts at `main`, while feature branch `feat/live`
+    // has 2 commits ahead modifying `lib.rs` and adding `extra.rs`.
+    run_git(&["branch", "cmp-base", "main"]);
+    run_git(&["checkout", "-q", "-b", "feat/live"]);
+    std::fs::write(repo.join("lib.rs"), "pub fn updated() -> i32 { 42 }\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-q", "-m", "feat: update lib"]);
+    std::fs::write(repo.join("extra.rs"), "pub fn extra() {}\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-q", "-m", "feat: add extra"]);
+
+    let canonical = if cfg!(windows) {
+        repo.clone()
+    } else {
+        repo.canonicalize().unwrap()
+    };
+    let store = host
+        .read_with(&cx, |root, _| root.app_store.clone())
+        .unwrap();
+    let events = store.read_with(&cx, |s, _| s.test_core.events.clone());
+    let mut sent = events.subscribe();
+
+    host.update(&mut cx, |root, window, cx| {
+        root.app_store.update(cx, |store, cx| {
+            store
+                .test_core
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE missions SET cwd = ?1, files_root = ?1 WHERE id = 'test-mission'",
+                    [canonical.to_string_lossy().as_ref()],
+                )
+                .unwrap();
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+        });
+        root.open_mission("test-mission".into(), window, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+    visual.run_until_parked();
+
+    let click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+        let bounds = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+    };
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                ready: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !ready(visual) {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::yield_now();
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+        }
+    };
+    let subject = crate::surfaces::side_panel::PanelSubject::Mission("test-mission".into());
+    let viewer_watching = |visual: &mut gpui::VisualTestContext| -> bool {
+        host.read_with(visual, |r, cx| {
+            r.mission_workspace
+                .read(cx)
+                .rail_files
+                .viewer(&subject)
+                .is_some_and(|v| v.read(cx).watched().is_some())
+        })
+        .unwrap()
+    };
+
+    // 1. Open Changes, choose `cmp-base` as Base, open & pin `lib.rs` on All changes.
+    click(&mut visual, "PANEL_ACTIVITY Changes");
+    wait(&mut visual, "Changes ready with main base", &|v| {
+        v.debug_bounds("CHANGES_BASE_CHIP Auto · main").is_some()
+            && v.debug_bounds("CHANGES_ROW lib.rs").is_some()
+    });
+    click(&mut visual, "CHANGES_BASE_CHIP Auto · main");
+    wait(&mut visual, "base picker lists cmp-base", &|v| {
+        v.debug_bounds("CHANGES_BASE_PICKER_ITEM 1 cmp-base")
+            .is_some()
+    });
+    click(&mut visual, "CHANGES_BASE_PICKER_ITEM 1 cmp-base");
+    wait(&mut visual, "cmp-base active with lib.rs listed", &|v| {
+        v.debug_bounds("CHANGES_BASE_CHIP cmp-base").is_some()
+            && v.debug_bounds("CHANGES_ROW lib.rs").is_some()
+    });
+    click(&mut visual, "CHANGES_ROW lib.rs");
+    wait(&mut visual, "lib.rs diff opened", &|v| {
+        v.debug_bounds("CHANGES_DIFF_CODE").is_some() && v.debug_bounds("VIEWER_PIN_TAB").is_some()
+    });
+    click(&mut visual, "VIEWER_PIN_TAB");
+    wait(&mut visual, "lib.rs pinned", &|v| {
+        v.debug_bounds("FILE_TAB_PINNED lib.rs").is_some()
+    });
+
+    // 2. Switch to Sessions so Changes is hidden and UnifiedViewer owns the watch, then prove
+    // real OS watcher delivery via an independent sentinel before moving the Git ref.
+    click(&mut visual, "PANEL_ACTIVITY Sessions");
+    wait(&mut visual, "UnifiedViewer owns watch on Sessions", &|v| {
+        viewer_watching(v) && v.debug_bounds("CHANGES_DIFF_CODE").is_some()
+    });
+    while matches!(
+        sent.try_recv(),
+        Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+    ) {}
+    let sentinel = canonical.join(".watch-ready");
+    let mut probe = 0u32;
+    let mut last_probe = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    let mut saw_changed = false;
+    let mut saw_status = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while std::time::Instant::now() < deadline && !(saw_changed && saw_status) {
+        if last_probe.elapsed() >= std::time::Duration::from_secs(1) {
+            probe += 1;
+            std::fs::write(&sentinel, format!("ready-{probe}\n")).unwrap();
+            last_probe = std::time::Instant::now();
+        }
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        loop {
+            match sent.try_recv() {
+                Ok(event) if event.name == FILES_CHANGED_EVENT => {
+                    if serde_json::from_value::<FilesChanged>(event.payload).is_ok_and(|c| {
+                        runner_core::app_paths::same_checkout_path(&c.root, &canonical)
+                            && (c.paths.iter().any(|p| p == ".watch-ready")
+                                || (c.paths.is_empty() && c.folders == [""]))
+                    }) {
+                        saw_changed = true;
+                    }
+                }
+                Ok(event) if event.name == FILES_STATUS_EVENT => {
+                    if serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(|u| {
+                        runner_core::app_paths::same_checkout_path(&u.root, &canonical)
+                            && u.status.entries.iter().any(|e| e.path == ".watch-ready")
+                    }) {
+                        saw_status = true;
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        if !(saw_changed && saw_status) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    assert!(
+        saw_changed && saw_status,
+        "timed out waiting for viewer watch readiness on Sessions"
+    );
+    std::fs::remove_file(&sentinel).unwrap();
+    wait(&mut visual, "sentinel cleaned and dirty dot clear", &|v| {
+        v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_none()
+            && v.debug_bounds("CHANGES_DIFF_CODE").is_some()
+    });
+
+    // 3. Move ONLY `cmp-base` to HEAD while staying on Sessions: pinned All changes diff must
+    // settle to `FILE_DIFF_NO_CHANGES` without switching rails.
+    run_git(&["branch", "-f", "cmp-base", "HEAD"]);
+    wait(
+        &mut visual,
+        "moving cmp-base to HEAD settles pinned Branch diff to NoChanges on Sessions",
+        &|v| {
+            v.debug_bounds("FILE_DIFF_NO_CHANGES").is_some()
+                && v.debug_bounds("CHANGES_DIFF_CODE").is_none()
+                && v.debug_bounds("PANEL_ACTIVITY Sessions active").is_some()
+        },
+    );
+
+    // 4. Move `cmp-base` back to `main` while STILL on Sessions: settled NoChanges tab must
+    // reload its diff automatically without switching rails.
+    run_git(&["branch", "-f", "cmp-base", "main"]);
+    wait(
+        &mut visual,
+        "moving cmp-base back to main reloads settled NoChanges Branch diff on Sessions",
+        &|v| {
+            v.debug_bounds("CHANGES_DIFF_CODE").is_some()
+                && v.debug_bounds("FILE_DIFF_NO_CHANGES").is_none()
+                && v.debug_bounds("PANEL_ACTIVITY Sessions active").is_some()
+        },
+    );
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[test]
+fn mission_sessions_rail_commit_viewed_does_not_amber_uncommitted_and_clear_clears_amber() {
+    use runner_core::protocol::changes::ChangesTarget;
+    use runner_core::protocol::files::{
+        FilesChanged, FilesStatusChanged, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
+    };
+    use std::process::Command;
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (temp, mut cx, host, _fake) = suspended_mission_test();
+    let repo = temp.path().join("mission-commit-vs-wt-viewed");
+    std::fs::create_dir_all(&repo).unwrap();
+    let run_git = |args: &[&str]| -> String {
+        let out = Command::new("git")
+            .current_dir(&repo)
+            .args([
+                "-c",
+                "user.name=Runner",
+                "-c",
+                "user.email=runner@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    run_git(&["init", "-q", "-b", "main"]);
+    run_git(&["config", "core.autocrlf", "false"]);
+    std::fs::write(repo.join("lib.rs"), "pub fn base() {}\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-q", "-m", "init"]);
+    run_git(&["checkout", "-q", "-b", "feat/viewed"]);
+    std::fs::write(repo.join("lib.rs"), "pub fn commit_v() {}\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-q", "-m", "feat: commit edit"]);
+    let commit_short = run_git(&["rev-parse", "--short=7", "HEAD"]);
+    // Also leave an uncommitted working-tree edit on the same file.
+    std::fs::write(repo.join("lib.rs"), "pub fn wt_v1() {}\n").unwrap();
+
+    let canonical = if cfg!(windows) {
+        repo.clone()
+    } else {
+        repo.canonicalize().unwrap()
+    };
+    let store = host
+        .read_with(&cx, |root, _| root.app_store.clone())
+        .unwrap();
+    let events = store.read_with(&cx, |s, _| s.test_core.events.clone());
+    let mut sent = events.subscribe();
+
+    host.update(&mut cx, |root, window, cx| {
+        root.app_store.update(cx, |store, cx| {
+            store
+                .test_core
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE missions SET cwd = ?1, files_root = ?1 WHERE id = 'test-mission'",
+                    [canonical.to_string_lossy().as_ref()],
+                )
+                .unwrap();
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+        });
+        root.open_mission("test-mission".into(), window, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+    visual.run_until_parked();
+
+    let click = |visual: &mut gpui::VisualTestContext, selector: &str| {
+        let sel: &'static str = Box::leak(selector.to_owned().into_boxed_str());
+        let bounds = visual
+            .debug_bounds(sel)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+    };
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                ready: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !ready(visual) {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::yield_now();
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+        }
+    };
+    let subject = crate::surfaces::side_panel::PanelSubject::Mission("test-mission".into());
+    let viewer = |visual: &mut gpui::VisualTestContext| {
+        host.read_with(visual, |r, cx| {
+            r.mission_workspace.read(cx).rail_files.viewer(&subject)
+        })
+        .unwrap()
+    };
+
+    // 1. Open and pin BOTH Uncommitted `lib.rs` (tab 0) and historical Commit `lib.rs` (tab 1).
+    click(&mut visual, "PANEL_ACTIVITY Changes");
+    wait(&mut visual, "Uncommitted lib.rs listed", &|v| {
+        v.debug_bounds("CHANGES_ROW lib.rs").is_some()
+    });
+    click(&mut visual, "CHANGES_ROW lib.rs");
+    wait(&mut visual, "Uncommitted lib.rs diff loaded", &|v| {
+        v.debug_bounds("CHANGES_DIFF_CODE").is_some() && v.debug_bounds("VIEWER_PIN_TAB").is_some()
+    });
+    click(&mut visual, "VIEWER_PIN_TAB");
+    let v1_blobs = viewer(&mut visual)
+        .unwrap()
+        .read_with(&visual, |v, _| {
+            v.loaded_diff_meta()
+                .map(|(_, _, _, o, n)| (o.map(str::to_owned), n.map(str::to_owned)))
+        })
+        .unwrap();
+
+    let commit_sel: &'static str =
+        Box::leak(format!("CHANGES_COMMIT {commit_short}").into_boxed_str());
+    wait(&mut visual, "commit row listed", &|v| {
+        v.debug_bounds(commit_sel).is_some()
+    });
+    click(&mut visual, commit_sel);
+    wait(&mut visual, "commit lib.rs listed", &|v| {
+        v.debug_bounds("CHANGES_ROW lib.rs").is_some()
+    });
+    click(&mut visual, "CHANGES_ROW lib.rs");
+    wait(&mut visual, "commit lib.rs preview diff opened", &|v| {
+        v.debug_bounds("CHANGES_DIFF_CODE").is_some() && v.debug_bounds("VIEWER_PIN_TAB").is_some()
+    });
+    click(&mut visual, "VIEWER_PIN_TAB");
+    wait(&mut visual, "both tabs pinned", &|v| {
+        viewer(v)
+            .unwrap()
+            .read_with(v, |viewer, _| viewer.open_tabs().len() == 2)
+    });
+
+    // 2. Switch to Sessions (Changes hidden) and mark the historical commit tab viewed.
+    click(&mut visual, "PANEL_ACTIVITY Sessions");
+    wait(&mut visual, "Sessions active with viewer watch", &|v| {
+        viewer(v)
+            .unwrap()
+            .read_with(v, |viewer, _| viewer.watched().is_some())
+            && v.debug_bounds("CHANGES_HEADER_VIEWED").is_some()
+    });
+    click(&mut visual, "CHANGES_HEADER_VIEWED");
+    wait(&mut visual, "commit tab marked viewed", &|v| {
+        viewer(v).unwrap().read_with(v, |viewer, _| {
+            viewer.active_diff_viewed() == Some((true, false))
+        })
+    });
+
+    // Switch to tab 0 (Uncommitted `lib.rs`): historical commit mark must NEVER turn it amber!
+    let v_ent = viewer(&mut visual).unwrap();
+    v_ent.update(&mut visual, |v, cx| v.activate_tab(0, cx));
+    visual.run_until_parked();
+    wait(
+        &mut visual,
+        "Uncommitted diff stays unviewed and NOT amber after commit-only viewed mark",
+        &|v| {
+            v.debug_bounds("CHANGES_DIFF_CODE").is_some()
+                && v_ent.read_with(v, |viewer, _| {
+                    viewer.loaded_diff_meta().is_some_and(|(t, ..)| {
+                        *t == crate::surfaces::changes::model::SelectedTarget::Uncommitted
+                    }) && viewer.active_diff_viewed() == Some((false, false))
+                })
+        },
+    );
+
+    // 3. Prove watcher readiness on Sessions, mark Uncommitted v1 viewed, edit to v2 (becomes
+    // amber `(false, true)`), then clear v1's tracked mark in daemon: amber must clear to
+    // `(false, false)` while staying on Sessions.
+    while matches!(
+        sent.try_recv(),
+        Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+    ) {}
+    let sentinel = canonical.join(".watch-ready");
+    let mut probe = 0u32;
+    let mut last_probe = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    let mut saw_changed = false;
+    let mut saw_status = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while std::time::Instant::now() < deadline && !(saw_changed && saw_status) {
+        if last_probe.elapsed() >= std::time::Duration::from_secs(1) {
+            probe += 1;
+            std::fs::write(&sentinel, format!("ready-{probe}\n")).unwrap();
+            last_probe = std::time::Instant::now();
+        }
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        loop {
+            match sent.try_recv() {
+                Ok(event) if event.name == FILES_CHANGED_EVENT => {
+                    if serde_json::from_value::<FilesChanged>(event.payload).is_ok_and(|c| {
+                        runner_core::app_paths::same_checkout_path(&c.root, &canonical)
+                            && (c.paths.iter().any(|p| p == ".watch-ready")
+                                || (c.paths.is_empty() && c.folders == [""]))
+                    }) {
+                        saw_changed = true;
+                    }
+                }
+                Ok(event) if event.name == FILES_STATUS_EVENT => {
+                    if serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(|u| {
+                        runner_core::app_paths::same_checkout_path(&u.root, &canonical)
+                            && u.status.entries.iter().any(|e| e.path == ".watch-ready")
+                    }) {
+                        saw_status = true;
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        if !(saw_changed && saw_status) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    assert!(saw_changed && saw_status, "sentinel watch readiness");
+    std::fs::remove_file(&sentinel).unwrap();
+
+    // Mark v1 viewed, wait for daemon write, then edit to v2.
+    while matches!(
+        sent.try_recv(),
+        Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+    ) {}
+    click(&mut visual, "CHANGES_HEADER_VIEWED");
+    let mut saw_viewed = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !(saw_viewed
+        && v_ent.read_with(&visual, |viewer, _| {
+            viewer.active_diff_viewed() == Some((true, false))
+        }))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for v1 viewed persisted"
+        );
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        while let Ok(ev) = sent.try_recv() {
+            if ev.name == runner_core::protocol::changes::CHANGES_VIEWED_EVENT {
+                saw_viewed = true;
+            }
+        }
+        std::thread::yield_now();
+    }
+
+    std::fs::write(repo.join("lib.rs"), "pub fn wt_v2() {}\n").unwrap();
+    wait(
+        &mut visual,
+        "v2 diff loads with amber changed_since_viewed",
+        &|v| {
+            v_ent.read_with(v, |viewer, _| {
+                viewer
+                    .loaded_diff_meta()
+                    .and_then(|(_, _, _, _, new_blob)| new_blob)
+                    .is_some_and(|blob| Some(blob) != v1_blobs.1.as_deref())
+                    && viewer.active_diff_viewed() == Some((false, true))
+            })
+        },
+    );
+
+    // Mark v2 viewed (`(true, false)`), then uncheck v2 while staying on Sessions: daemon still
+    // holds v1's tracked mark, so unchecked v2 must return to amber `(false, true)`.
+    click(&mut visual, "CHANGES_HEADER_VIEWED");
+    wait(&mut visual, "v2 marked viewed", &|v| {
+        v.debug_bounds("CHANGES_HEADER_VIEWED checked").is_some()
+            && v_ent.read_with(v, |viewer, _| {
+                viewer.active_diff_viewed() == Some((true, false))
+            })
+    });
+    click(&mut visual, "CHANGES_HEADER_VIEWED checked");
+    wait(
+        &mut visual,
+        "unchecking v2 restores amber (false, true) because v1 is still tracked",
+        &|v| {
+            v_ent.read_with(v, |viewer, _| {
+                viewer.active_diff_viewed() == Some((false, true))
+            })
+        },
+    );
+
+    // Clear the tracked v1 mark on daemon while staying on Sessions: amber on v2 must clear!
+    store.read_with(&visual, |s, _| {
+        s.client
+            .changes_set_viewed(
+                &canonical,
+                &ChangesTarget::Uncommitted,
+                "lib.rs",
+                v1_blobs.0.as_deref(),
+                v1_blobs.1.as_deref(),
+                false,
+            )
+            .unwrap();
+    });
+    wait(
+        &mut visual,
+        "clearing tracked v1 mark clears amber on v2 while staying on Sessions",
+        &|v| {
+            v_ent.read_with(v, |viewer, _| {
+                viewer.active_diff_viewed() == Some((false, false))
+            })
+        },
+    );
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[test]
+fn mission_sessions_rail_updates_pinned_branch_scope_and_base_on_branch_checkout() {
+    use runner_core::protocol::files::{
+        FilesChanged, FilesStatusChanged, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
+    };
+    use std::process::Command;
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (temp, mut cx, host, _fake) = suspended_mission_test();
+    let repo = temp.path().join("mission-branch-checkout-scope");
+    std::fs::create_dir_all(&repo).unwrap();
+    let run_git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&repo)
+            .args([
+                "-c",
+                "user.name=Runner",
+                "-c",
+                "user.email=runner@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run_git(&["init", "-q", "-b", "main"]);
+    run_git(&["config", "core.autocrlf", "false"]);
+    std::fs::write(repo.join("lib.rs"), "pub fn main_base() {}\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-q", "-m", "init"]);
+
+    // `branch-a` has 3 commits ahead of `main`; `base-b` sits at commit 1 (modifying `lib.rs` to
+    // v1), and `branch-b` points at the EXACT SAME HEAD as `branch-a` (commit 3, `lib.rs` at v2).
+    run_git(&["checkout", "-q", "-b", "branch-a"]);
+    std::fs::write(repo.join("lib.rs"), "pub fn base_b_v1() {}\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-q", "-m", "feat: v1"]);
+    run_git(&["branch", "base-b", "HEAD"]);
+    std::fs::write(repo.join("lib.rs"), "pub fn tip_v2() {}\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-q", "-m", "feat: v2"]);
+    std::fs::write(repo.join("extra.rs"), "pub fn extra() {}\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-q", "-m", "feat: extra"]);
+    run_git(&["branch", "branch-b", "HEAD"]);
+
+    let canonical = if cfg!(windows) {
+        repo.clone()
+    } else {
+        repo.canonicalize().unwrap()
+    };
+    let store = host
+        .read_with(&cx, |root, _| root.app_store.clone())
+        .unwrap();
+    let events = store.read_with(&cx, |s, _| s.test_core.events.clone());
+    let mut sent = events.subscribe();
+
+    host.update(&mut cx, |root, window, cx| {
+        root.app_store.update(cx, |store, cx| {
+            store
+                .test_core
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE missions SET cwd = ?1, files_root = ?1 WHERE id = 'test-mission'",
+                    [canonical.to_string_lossy().as_ref()],
+                )
+                .unwrap();
+            // Save a distinct comparison base (`refs/heads/base-b`) for `branch-b`.
+            store.update_settings(
+                |settings| {
+                    settings.set_changes_base(
+                        &canonical,
+                        Some("branch-b"),
+                        Some("refs/heads/base-b"),
+                    )
+                },
+                false,
+                cx,
+            );
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+        });
+        root.open_mission("test-mission".into(), window, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+    visual.run_until_parked();
+
+    let click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+        let bounds = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+    };
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                ready: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !ready(visual) {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::yield_now();
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+        }
+    };
+    let subject = crate::surfaces::side_panel::PanelSubject::Mission("test-mission".into());
+    let viewer = |visual: &mut gpui::VisualTestContext| {
+        host.read_with(visual, |r, cx| {
+            r.mission_workspace.read(cx).rail_files.viewer(&subject)
+        })
+        .unwrap()
+    };
+
+    // 1. Open and pin `lib.rs` on `All changes` while on `branch-a` (Auto -> `main`).
+    click(&mut visual, "PANEL_ACTIVITY Changes");
+    wait(&mut visual, "Changes ready on branch-a", &|v| {
+        v.debug_bounds("CHANGES_BASE_CHIP Auto · main").is_some()
+            && v.debug_bounds("CHANGES_ROW lib.rs").is_some()
+    });
+    click(&mut visual, "CHANGES_ROW lib.rs");
+    wait(&mut visual, "lib.rs diff opened on branch-a", &|v| {
+        v.debug_bounds("CHANGES_DIFF_CODE").is_some() && v.debug_bounds("VIEWER_PIN_TAB").is_some()
+    });
+    click(&mut visual, "VIEWER_PIN_TAB");
+    let v_ent = viewer(&mut visual).unwrap();
+    let main_old_blob = v_ent
+        .read_with(&visual, |v, _| {
+            v.loaded_diff_meta()
+                .and_then(|(_, _, _, old_blob, _)| old_blob.map(str::to_owned))
+        })
+        .expect("main old blob");
+    let scope_a = v_ent
+        .read_with(&visual, |v, _| v.active_diff_scope_label())
+        .unwrap();
+    assert!(
+        scope_a.contains("branch-a") && scope_a.contains("main"),
+        "expected branch-a vs main scope pill, got {scope_a:?}"
+    );
+
+    // 2. Switch to Sessions (Changes hidden) and prove real watcher readiness via sentinel.
+    click(&mut visual, "PANEL_ACTIVITY Sessions");
+    wait(&mut visual, "UnifiedViewer owns watch on Sessions", &|v| {
+        v_ent.read_with(v, |viewer, _| viewer.watched().is_some())
+            && v.debug_bounds("CHANGES_DIFF_CODE").is_some()
+    });
+    while matches!(
+        sent.try_recv(),
+        Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+    ) {}
+    let sentinel = canonical.join(".watch-ready");
+    let mut probe = 0u32;
+    let mut last_probe = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    let mut saw_changed = false;
+    let mut saw_status = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while std::time::Instant::now() < deadline && !(saw_changed && saw_status) {
+        if last_probe.elapsed() >= std::time::Duration::from_secs(1) {
+            probe += 1;
+            std::fs::write(&sentinel, format!("ready-{probe}\n")).unwrap();
+            last_probe = std::time::Instant::now();
+        }
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        loop {
+            match sent.try_recv() {
+                Ok(event) if event.name == FILES_CHANGED_EVENT => {
+                    if serde_json::from_value::<FilesChanged>(event.payload).is_ok_and(|c| {
+                        runner_core::app_paths::same_checkout_path(&c.root, &canonical)
+                            && (c.paths.iter().any(|p| p == ".watch-ready")
+                                || (c.paths.is_empty() && c.folders == [""]))
+                    }) {
+                        saw_changed = true;
+                    }
+                }
+                Ok(event) if event.name == FILES_STATUS_EVENT => {
+                    if serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(|u| {
+                        runner_core::app_paths::same_checkout_path(&u.root, &canonical)
+                            && u.status.entries.iter().any(|e| e.path == ".watch-ready")
+                    }) {
+                        saw_status = true;
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        if !(saw_changed && saw_status) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    assert!(saw_changed && saw_status, "sentinel watch readiness");
+    std::fs::remove_file(&sentinel).unwrap();
+    wait(&mut visual, "sentinel cleaned", &|v| {
+        v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_none()
+    });
+
+    // 3. Check out `branch-b` at the exact same HEAD while staying on Sessions: both the scope
+    // pill AND the displayed diff comparison must switch from `(branch-a, main)` to
+    // `(branch-b, refs/heads/base-b)` without reopening Changes!
+    run_git(&["checkout", "-q", "branch-b"]);
+    wait(
+        &mut visual,
+        "checking out branch-b at same HEAD updates scope pill and reloads against base-b on Sessions",
+        &|v| {
+            v.debug_bounds("PANEL_ACTIVITY Sessions active").is_some()
+                && v.debug_bounds("CHANGES_DIFF_CODE").is_some()
+                && v_ent.read_with(v, |viewer, _| {
+                    let scope_ok = viewer
+                        .active_diff_scope_label()
+                        .is_some_and(|s| s.contains("branch-b") && s.contains("base-b"));
+                    let diff_ok = viewer.loaded_diff_meta().is_some_and(|(_, base, _, old, _)| {
+                        base == Some("refs/heads/base-b")
+                            && old.is_some()
+                            && old != Some(main_old_blob.as_str())
+                    });
+                    scope_ok && diff_ok
+                })
+        },
+    );
+
+    // 4. Detach HEAD while STILL on Sessions: scope pill must drop `branch-b` and must NOT fall
+    // back to the original checkout branch name `branch-a`.
+    run_git(&["checkout", "-q", "--detach", "HEAD"]);
+    wait(
+        &mut visual,
+        "detached HEAD drops stale branch name from scope pill on Sessions",
+        &|v| {
+            v.debug_bounds("PANEL_ACTIVITY Sessions active").is_some()
+                && v_ent.read_with(v, |viewer, _| {
+                    viewer
+                        .active_diff_scope_label()
+                        .is_some_and(|s| !s.contains("branch-a") && !s.contains("branch-b"))
+                })
+        },
+    );
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[test]
+fn mission_sessions_clean_preview_clears_tab_badge_and_preserves_open_tab_and_width_on_changes_switch(
+) {
+    use runner_core::protocol::files::{
+        FilesChanged, FilesStatusChanged, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
+    };
+    use std::process::Command;
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (temp, mut cx, host, _fake) = suspended_mission_test();
+    let repo = temp.path().join("mission-clean-preview-switch");
+    std::fs::create_dir_all(&repo).unwrap();
+    let run_git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&repo)
+            .args([
+                "-c",
+                "user.name=Runner",
+                "-c",
+                "user.email=runner@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run_git(&["init", "-q", "-b", "main"]);
+    run_git(&["config", "core.autocrlf", "false"]);
+    let original = "line_1 = \"original 1\"\nline_2 = \"original 2\"\n";
+    std::fs::write(repo.join("alpha.py"), original).unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-q", "-m", "init"]);
+    std::fs::write(
+        repo.join("alpha.py"),
+        "line_1 = \"edited 1\"\nline_2 = \"original 2\"\n",
+    )
+    .unwrap();
+
+    let canonical = if cfg!(windows) {
+        repo.clone()
+    } else {
+        repo.canonicalize().unwrap()
+    };
+    let store = host
+        .read_with(&cx, |root, _| root.app_store.clone())
+        .unwrap();
+    let events = store.read_with(&cx, |s, _| s.test_core.events.clone());
+    let mut sent = events.subscribe();
+
+    host.update(&mut cx, |root, window, cx| {
+        root.app_store.update(cx, |store, cx| {
+            store
+                .test_core
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE missions SET cwd = ?1, files_root = ?1 WHERE id = 'test-mission'",
+                    [canonical.to_string_lossy().as_ref()],
+                )
+                .unwrap();
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+        });
+        root.open_mission("test-mission".into(), window, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+    visual.run_until_parked();
+
+    let click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+        let bounds = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+    };
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                ready: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !ready(visual) {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::yield_now();
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+        }
+    };
+    let panel_width = |visual: &mut gpui::VisualTestContext| {
+        visual
+            .debug_bounds("MISSION_RAIL")
+            .map(|b| f32::from(b.size.width))
+    };
+    let subject = crate::surfaces::side_panel::PanelSubject::Mission("test-mission".into());
+    let viewer = |visual: &mut gpui::VisualTestContext| {
+        host.read_with(visual, |r, cx| {
+            r.mission_workspace.read(cx).rail_files.viewer(&subject)
+        })
+        .unwrap()
+    };
+    let changes_entity = |visual: &mut gpui::VisualTestContext| {
+        host.read_with(visual, |r, cx| {
+            r.mission_workspace
+                .read(cx)
+                .rail_files
+                .changes_view(&subject)
+        })
+        .unwrap()
+    };
+
+    // 1. In mission Changes, open uncommitted `alpha.py` as the italic preview tab.
+    click(&mut visual, "PANEL_ACTIVITY Changes");
+    wait(&mut visual, "Changes lists alpha.py", &|v| {
+        v.debug_bounds("CHANGES_ROW alpha.py").is_some()
+    });
+    click(&mut visual, "CHANGES_ROW alpha.py");
+    wait(
+        &mut visual,
+        "alpha.py preview diff opened at 700 px",
+        &|v| {
+            v.debug_bounds("FILE_TAB_PREVIEW alpha.py").is_some()
+                && v.debug_bounds("FILE_TAB_LETTER alpha.py M").is_some()
+                && v.debug_bounds("CHANGES_DIFF_CODE").is_some()
+                && panel_width(v).is_some_and(|w| (w - 700.).abs() < 2.)
+        },
+    );
+    let widened_w = panel_width(&mut visual).unwrap();
+    let v_ent = viewer(&mut visual).unwrap();
+    let c_ent = changes_entity(&mut visual).unwrap();
+
+    // 2. Switch to Sessions and prove live watcher readiness.
+    click(&mut visual, "PANEL_ACTIVITY Sessions");
+    wait(
+        &mut visual,
+        "Sessions rail active with viewer watching",
+        &|v| {
+            v.debug_bounds("PANEL_ACTIVITY Sessions active").is_some()
+                && v.debug_bounds("CHANGES_DIFF_CODE").is_some()
+                && v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_some()
+                && v_ent.read_with(v, |viewer, _| viewer.watched().is_some())
+                && panel_width(v).is_some_and(|w| (w - widened_w).abs() < 0.5)
+        },
+    );
+    while matches!(
+        sent.try_recv(),
+        Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+    ) {}
+    let sentinel = canonical.join(".watch-ready");
+    let mut probe = 0u32;
+    let mut last_probe = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    let mut saw_changed = false;
+    let mut saw_status = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while std::time::Instant::now() < deadline && !(saw_changed && saw_status) {
+        if last_probe.elapsed() >= std::time::Duration::from_secs(1) {
+            probe += 1;
+            std::fs::write(&sentinel, format!("ready-{probe}\n")).unwrap();
+            last_probe = std::time::Instant::now();
+        }
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        loop {
+            match sent.try_recv() {
+                Ok(event) if event.name == FILES_CHANGED_EVENT => {
+                    if serde_json::from_value::<FilesChanged>(event.payload).is_ok_and(|c| {
+                        runner_core::app_paths::same_checkout_path(&c.root, &canonical)
+                            && (c.paths.iter().any(|p| p == ".watch-ready")
+                                || (c.paths.is_empty() && c.folders == [""]))
+                    }) {
+                        saw_changed = true;
+                    }
+                }
+                Ok(event) if event.name == FILES_STATUS_EVENT => {
+                    if serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(|u| {
+                        runner_core::app_paths::same_checkout_path(&u.root, &canonical)
+                            && u.status.entries.iter().any(|e| e.path == ".watch-ready")
+                    }) {
+                        saw_status = true;
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        if !(saw_changed && saw_status) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    assert!(saw_changed && saw_status, "sentinel watch readiness");
+    std::fs::remove_file(&sentinel).unwrap();
+
+    // 3. Restore `alpha.py` to clean on disk while on Sessions: viewer falls back to Code,
+    // dirty dot clears, stale M badge disappears, and width stays 700 px.
+    std::fs::write(repo.join("alpha.py"), original).unwrap();
+    wait(
+        &mut visual,
+        "alpha.py falls back to clean Code with no M badge and no dirty dot",
+        &|v| {
+            v.debug_bounds("FILE_CODE").is_some()
+                && v.debug_bounds("FILE_TAB alpha.py").is_some()
+                && v.debug_bounds("FILE_TAB_LETTER alpha.py M").is_none()
+                && v.debug_bounds("VIEWER_MODE_DIFF").is_none()
+                && v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_none()
+                && panel_width(v).is_some_and(|w| (w - widened_w).abs() < 0.5)
+        },
+    );
+
+    // 4. Switch right rail back to Changes while `alpha.py` is visibly open:
+    // Changes refreshes to 0 uncommitted files, yet `alpha.py` stays open at 700 px (0 px jump).
+    click(&mut visual, "PANEL_ACTIVITY Changes");
+    wait(
+        &mut visual,
+        "Changes settles empty while preserving open alpha.py and 700 px width",
+        &|v| {
+            v.debug_bounds("PANEL_ACTIVITY Changes active").is_some()
+                && c_ent.read_with(v, |c, _| c.fresh_dirty_changes() == Some(false))
+                && v.debug_bounds("CHANGES_ROW alpha.py").is_none()
+                && v.debug_bounds("FILE_TAB alpha.py").is_some()
+                && v.debug_bounds("FILE_CODE").is_some()
+                && v.debug_bounds("FILE_TAB_LETTER alpha.py M").is_none()
+                && panel_width(v).is_some_and(|w| (w - widened_w).abs() < 0.5)
+        },
+    );
+
+    // 5. Re-dirty `alpha.py`, open it as preview on Changes, then restore it to clean while
+    // staying directly on Changes: emptying Uncommitted must also transition the sole active
+    // preview cleanly to Code at 700 px instead of collapsing the panel without a close action.
+    click(&mut visual, "FILE_TAB_CLOSE alpha.py");
+    wait(&mut visual, "explicit close shrinks back to 300 px", &|v| {
+        v.debug_bounds("FILE_TAB alpha.py").is_none()
+            && panel_width(v).is_some_and(|w| (w - 300.).abs() < 2.)
+    });
+    std::fs::write(
+        repo.join("alpha.py"),
+        "line_1 = \"edited again\"\nline_2 = \"original 2\"\n",
+    )
+    .unwrap();
+    wait(&mut visual, "Changes lists alpha.py again", &|v| {
+        v.debug_bounds("CHANGES_ROW alpha.py").is_some()
+    });
+    click(&mut visual, "CHANGES_ROW alpha.py");
+    wait(&mut visual, "alpha.py preview reopened on Changes", &|v| {
+        v.debug_bounds("FILE_TAB_PREVIEW alpha.py").is_some()
+            && v.debug_bounds("CHANGES_DIFF_CODE").is_some()
+            && panel_width(v).is_some_and(|w| (w - widened_w).abs() < 2.)
+    });
+    std::fs::write(repo.join("alpha.py"), original).unwrap();
+    wait(
+        &mut visual,
+        "sole preview transitions to clean Code on Changes without collapsing panel",
+        &|v| {
+            v.debug_bounds("CHANGES_ROW alpha.py").is_none()
+                && v.debug_bounds("FILE_TAB alpha.py").is_some()
+                && v.debug_bounds("FILE_CODE").is_some()
+                && v.debug_bounds("FILE_TAB_LETTER alpha.py M").is_none()
+                && v.debug_bounds("VIEWER_MODE_DIFF").is_none()
+                && panel_width(v).is_some_and(|w| (w - widened_w).abs() < 0.5)
+        },
+    );
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[test]
+fn held_live_changes_snapshot_released_after_switching_to_sessions_does_not_replace_preview() {
+    use runner_core::protocol::files::{
+        FilesChanged, FilesStatusChanged, FILES_CHANGED_EVENT, FILES_STATUS_EVENT,
+    };
+    use std::process::Command;
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (temp, mut cx, host, _fake) = suspended_mission_test();
+    let repo = temp.path().join("mission-held-snapshot-hidden-changes");
+    std::fs::create_dir_all(&repo).unwrap();
+    let run_git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&repo)
+            .args([
+                "-c",
+                "user.name=Runner",
+                "-c",
+                "user.email=runner@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run_git(&["init", "-q", "-b", "main"]);
+    run_git(&["config", "core.autocrlf", "false"]);
+    std::fs::write(repo.join("a.rs"), "pub fn a() { 0 }\n").unwrap();
+    std::fs::write(repo.join("b.rs"), "pub fn b() { 0 }\n").unwrap();
+    std::fs::write(repo.join("c.rs"), "pub fn c() { 0 }\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-q", "-m", "init"]);
+
+    // `topic` has 3 commits ahead of `alt-base` (starting at `main`):
+    // commit 1 changes `a.rs`, commit 2 changes `b.rs`, commit 3 changes `c.rs`.
+    // Moving `alt-base` forward to commit 1 leaves `b.rs` and `c.rs` in `All changes`
+    // while removing `a.rs`.
+    run_git(&["branch", "alt-base", "main"]);
+    run_git(&["checkout", "-q", "-b", "topic"]);
+    std::fs::write(repo.join("a.rs"), "pub fn a() { 1 }\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-q", "-m", "change a"]);
+    std::fs::write(repo.join("b.rs"), "pub fn b() { 1 }\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-q", "-m", "change b"]);
+    std::fs::write(repo.join("c.rs"), "pub fn c() { 1 }\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-q", "-m", "change c"]);
+
+    let canonical = if cfg!(windows) {
+        repo.clone()
+    } else {
+        repo.canonicalize().unwrap()
+    };
+    let store = host
+        .read_with(&cx, |root, _| root.app_store.clone())
+        .unwrap();
+    let events = store.read_with(&cx, |s, _| s.test_core.events.clone());
+    let mut sent = events.subscribe();
+
+    host.update(&mut cx, |root, window, cx| {
+        root.app_store.update(cx, |store, cx| {
+            store
+                .test_core
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE missions SET cwd = ?1, files_root = ?1 WHERE id = 'test-mission'",
+                    [canonical.to_string_lossy().as_ref()],
+                )
+                .unwrap();
+            store.update_settings(
+                |settings| {
+                    settings.set_changes_base(
+                        &canonical,
+                        Some("topic"),
+                        Some("refs/heads/alt-base"),
+                    )
+                },
+                false,
+                cx,
+            );
+            store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+        });
+        root.open_mission("test-mission".into(), window, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
+    visual.simulate_resize(gpui::size(px(1600.), px(900.)));
+    visual.run_until_parked();
+
+    let click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+        let bounds = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+        visual.run_until_parked();
+    };
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                ready: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !ready(visual) {
+            assert!(std::time::Instant::now() < deadline, "timed out: {what}");
+            std::thread::yield_now();
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+        }
+    };
+    let subject = crate::surfaces::side_panel::PanelSubject::Mission("test-mission".into());
+    let viewer = |visual: &mut gpui::VisualTestContext| {
+        host.read_with(visual, |r, cx| {
+            r.mission_workspace.read(cx).rail_files.viewer(&subject)
+        })
+        .unwrap()
+    };
+    let changes_entity = |visual: &mut gpui::VisualTestContext| {
+        host.read_with(visual, |r, cx| {
+            r.mission_workspace
+                .read(cx)
+                .rail_files
+                .changes_view(&subject)
+        })
+        .unwrap()
+    };
+
+    // 1. Open Changes (`All changes` vs `alt-base`) and preview `a.rs` while `b.rs` is also changed.
+    click(&mut visual, "PANEL_ACTIVITY Changes");
+    wait(
+        &mut visual,
+        "Changes lists a.rs and b.rs under All changes",
+        &|v| {
+            v.debug_bounds("CHANGES_BASE_CHIP alt-base").is_some()
+                && v.debug_bounds("CHANGES_ROW a.rs").is_some()
+                && v.debug_bounds("CHANGES_ROW b.rs").is_some()
+        },
+    );
+    click(&mut visual, "CHANGES_ROW a.rs");
+    wait(&mut visual, "a.rs preview diff loaded", &|v| {
+        v.debug_bounds("FILE_TAB_PREVIEW a.rs").is_some()
+            && v.debug_bounds("CHANGES_DIFF_CODE").is_some()
+    });
+    let v_ent = viewer(&mut visual).unwrap();
+    let c_ent = changes_entity(&mut visual).unwrap();
+
+    // 2. Prove live OS watcher readiness while Changes is active.
+    while matches!(
+        sent.try_recv(),
+        Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+    ) {}
+    let sentinel = canonical.join(".watch-ready");
+    let mut probe = 0u32;
+    let mut last_probe = std::time::Instant::now() - std::time::Duration::from_secs(2);
+    let mut saw_changed = false;
+    let mut saw_status = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while std::time::Instant::now() < deadline && !(saw_changed && saw_status) {
+        if last_probe.elapsed() >= std::time::Duration::from_secs(1) {
+            probe += 1;
+            std::fs::write(&sentinel, format!("ready-{probe}\n")).unwrap();
+            last_probe = std::time::Instant::now();
+        }
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        loop {
+            match sent.try_recv() {
+                Ok(event) if event.name == FILES_CHANGED_EVENT => {
+                    if serde_json::from_value::<FilesChanged>(event.payload).is_ok_and(|c| {
+                        runner_core::app_paths::same_checkout_path(&c.root, &canonical)
+                            && (c.paths.iter().any(|p| p == ".watch-ready")
+                                || (c.paths.is_empty() && c.folders == [""]))
+                    }) {
+                        saw_changed = true;
+                    }
+                }
+                Ok(event) if event.name == FILES_STATUS_EVENT => {
+                    if serde_json::from_value::<FilesStatusChanged>(event.payload).is_ok_and(|u| {
+                        runner_core::app_paths::same_checkout_path(&u.root, &canonical)
+                            && u.status.entries.iter().any(|e| e.path == ".watch-ready")
+                    }) {
+                        saw_status = true;
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        if !(saw_changed && saw_status) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    assert!(saw_changed && saw_status, "sentinel watch readiness");
+    std::fs::remove_file(&sentinel).unwrap();
+    wait(&mut visual, "sentinel cleared from Changes", &|v| {
+        v.debug_bounds("CHANGES_ROW .watch-ready").is_none()
+            && v.debug_bounds("CHANGES_ROW a.rs").is_some()
+            && v.debug_bounds("CHANGES_ROW b.rs").is_some()
+    });
+
+    // 3. Hold live Changes snapshots, move `alt-base` to commit 1 (so only `b.rs`/`c.rs` remain
+    // under `All changes`), wait for the live snapshot (`allow_preview_replace = true`) to be
+    // captured in flight, switch to Sessions, and then release the held Changes snapshot.
+    c_ent.update(&mut visual, |c, _| c.set_hold_snapshots(true));
+    run_git(&["branch", "-f", "alt-base", "HEAD~2"]);
+    wait(
+        &mut visual,
+        "live Changes snapshot captured in flight",
+        &|v| c_ent.read_with(v, |c, _| c.held_snapshots_len() > 0),
+    );
+
+    click(&mut visual, "PANEL_ACTIVITY Sessions");
+    wait(&mut visual, "Sessions rail active", &|v| {
+        v.debug_bounds("PANEL_ACTIVITY Sessions active").is_some()
+    });
+
+    c_ent.update(&mut visual, |c, _| {
+        c.set_hold_snapshots(false);
+        assert!(c.release_held_snapshots() > 0);
+    });
+    // Drive the released ChangesView snapshot completion task to completion before asserting.
+    visual.run_until_parked();
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    // Wait for Sessions's own viewer refresh to settle `a.rs` to NoChanges; the released stale
+    // Changes snapshot must NOT replace `a.rs` with `b.rs`.
+    wait(
+        &mut visual,
+        "a.rs stays open as NoChanges on Sessions after releasing stale Changes snapshot",
+        &|v| {
+            v.debug_bounds("PANEL_ACTIVITY Sessions active").is_some()
+                && v.debug_bounds("FILE_DIFF_NO_CHANGES").is_some()
+                && v_ent.read_with(v, |viewer, _| {
+                    viewer.open_tabs() == vec!["a.rs".to_string()]
+                        && viewer.active_tab().as_deref() == Some("a.rs")
+                })
+        },
+    );
 
     host.update(&mut visual, |_, window, _| window.remove_window())
         .unwrap();

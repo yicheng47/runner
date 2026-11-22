@@ -268,93 +268,109 @@ impl MissionWorkspace {
         let rail_context = self
             .mission_view()
             .map(|mission| self.rail_context(mission));
-        let dirty_changes = !self.presentation.is_remote()
-            && self.rail_files.dirty_changes_for(
-                rail_context.as_ref(),
-                shown,
-                settings.changes_view,
-                Some(cx.entity_id()),
-                cx,
-            );
-        let header = self.render_titlebar_drag_area(
-            "mission-rail-titlebar-drag",
-            div()
-                .h(rems(40. / 16.))
-                .flex_none()
-                .pl_2()
-                .pr_2()
-                .flex()
-                .items_center()
-                .border_b_1()
-                .border_color(theme::border())
-                .rounded_tl(rems(11. / 16.))
-                .rounded_tr(rems(11. / 16.))
-                .when(
-                    maximized && self.sidebar_collapsed && cfg!(target_os = "macos"),
-                    |header| {
-                        header
-                            .pl(px(self.workspace_titlebar_padding(window, cx)))
-                            .children(self.render_collapsed_titlebar_spacer())
-                    },
-                )
-                .map(|element| {
-                    #[cfg(test)]
-                    let element =
-                        crate::theme_snapshot::record_fill("MISSION_RAIL_HEADER", element);
-                    element
-                })
-                .child(side_panel::activity_bar(
-                    PanelSurface::Mission,
-                    &settings,
-                    &self.rail_surfaces.selection,
-                    dirty_changes,
-                    handler,
-                    maximize_control,
-                    IconButton::new("collapse-mission-rail", "panel-right-open.svg")
-                        .tooltip(crate::i18n::text("ui.collapse_side_panel"))
-                        .on_press(move |_, cx| {
-                            collapse_root.update(cx, |this, cx| {
-                                this.set_rail_open(false, cx);
-                                cx.notify();
-                            });
+        let has_viewer = !self.presentation.is_remote()
+            && (settings.files_view || settings.changes_view)
+            && rail_context
+                .as_ref()
+                .is_some_and(|ctx| self.rail_files.viewer_has_tabs(&ctx.subject, cx));
+        let roles_rail_width = if has_viewer {
+            widened.map_or(settings.file_tree_width, |w| w.tree_width)
+        } else {
+            width
+        };
+        let sessions_body = (!matches!(shown, Some(PanelViewId::Files | PanelViewId::Changes)))
+            .then(|| {
+                let roles = self.render_roles_rail(roles_rail_width, window, cx);
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .flex_col()
+                    .pb(rems(8. / 16.))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            if !this.rail_contains_focus(window, cx) {
+                                this.rail_focus.focus(window, cx);
+                            }
                         }),
-                )),
+                    )
+                    .map(|element| {
+                        #[cfg(test)]
+                        let element = crate::theme_snapshot::record_fill("MISSION_PANEL", element);
+                        element
+                    })
+                    .child(roles)
+                    .into_any_element()
+            });
+        let macos_titlebar_inset =
+            (maximized && self.sidebar_collapsed && cfg!(target_os = "macos")).then(|| {
+                (
+                    self.workspace_titlebar_padding(window, cx),
+                    self.render_collapsed_titlebar_spacer(),
+                )
+            });
+        let titlebar_weak = cx.weak_entity();
+        let wrap_titlebar: crate::surfaces::files::TitlebarWrapper = Rc::new(move |id, area, _| {
+            let out_weak = titlebar_weak.clone();
+            let up_weak = titlebar_weak.clone();
+            let down_weak = titlebar_weak.clone();
+            area.id(id)
+                .window_control_area(gpui::WindowControlArea::Drag)
+                .capture_any_mouse_down(|event, _, _| platform_ui::capture_titlebar_press(event))
+                .on_mouse_down_out(move |_, _, cx| {
+                    let _ = out_weak.update(cx, |this, _| this.titlebar_drag_armed = false);
+                })
+                .on_mouse_up(gpui::MouseButton::Left, move |_, _, cx| {
+                    let _ = up_weak.update(cx, |this, _| this.titlebar_drag_armed = false);
+                })
+                .on_mouse_down(gpui::MouseButton::Left, move |event, window, cx| {
+                    let _ = down_weak.update(cx, |this, cx| {
+                        this.titlebar_drag_armed = true;
+                        platform_ui::titlebar_mouse_down(event, window, cx);
+                    });
+                })
+                .into_any_element()
+        });
+        let make_collapse_button: Rc<dyn Fn(&mut gpui::App) -> AnyElement> = Rc::new(move |_| {
+            let collapse_root = collapse_root.clone();
+            IconButton::new("collapse-mission-rail", "panel-right-open.svg")
+                .tooltip(crate::i18n::text("ui.collapse_side_panel"))
+                .on_press(move |_, cx| {
+                    collapse_root.update(cx, |this, cx| {
+                        this.set_rail_open(false, cx);
+                        cx.notify();
+                    });
+                })
+                .into_any_element()
+        });
+        let owner = cx.entity_id();
+        let content = self.rail_files.render_panel(
+            crate::surfaces::files::SidePanelRenderProps {
+                surface: PanelSurface::Mission,
+                settings,
+                selection: self.rail_surfaces.selection,
+                shown,
+                context: rail_context,
+                widened,
+                maximized,
+                remote: self.presentation.is_remote(),
+                owner,
+                header_selector: "MISSION_RAIL_HEADER",
+                titlebar_id: "mission-rail-titlebar-drag",
+                round_header_tl_when_compact: true,
+                macos_titlebar_inset,
+                wrap_titlebar,
+                on_surface_action: handler,
+                maximize_control,
+                on_request_maximize,
+                make_collapse_button,
+                sessions_body,
+                sessions_focus: Some(self.rail_focus.clone()),
+                loading_fallback: None,
+            },
             cx,
         );
-        let surface_view = match (shown, self.mission_view()) {
-            (Some(PanelViewId::Files), Some(mission)) => {
-                self.rail_files.hide_changes(cx);
-                Some(self.rail_files.show_with_maximize(
-                    &self.rail_context(mission),
-                    widened,
-                    Some(cx.entity_id()),
-                    maximized,
-                    Some(on_request_maximize),
-                    cx,
-                ))
-            }
-            (Some(PanelViewId::Changes), Some(mission)) => {
-                self.rail_files.hide_files(cx);
-                Some(self.rail_files.show_changes_with_maximize(
-                    &self.rail_context(mission),
-                    widened,
-                    Some(cx.entity_id()),
-                    maximized,
-                    Some(on_request_maximize),
-                    cx,
-                ))
-            }
-            _ => {
-                self.rail_files.hide_tools(cx);
-                None
-            }
-        };
-        let body = match shown {
-            Some(PanelViewId::Files | PanelViewId::Changes) => {
-                surface_view.unwrap_or_else(|| div().into_any_element())
-            }
-            Some(PanelViewId::Sessions) | None => self.render_roles_rail(width, window, cx),
-        };
         let rail = div()
             .relative()
             .when(maximized, |r| r.w_full().flex_1().min_w(px(0.)))
@@ -363,45 +379,7 @@ impl MissionWorkspace {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .child(header)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .flex()
-                    .flex_col()
-                    .when(
-                        !matches!(shown, Some(PanelViewId::Files | PanelViewId::Changes)),
-                        |body| body.pb(rems(8. / 16.)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h(px(0.))
-                            .flex()
-                            .flex_col()
-                            .when(
-                                !matches!(shown, Some(PanelViewId::Files | PanelViewId::Changes)),
-                                |el| {
-                                    el.on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(|this, _, window, cx| {
-                                            if !this.rail_contains_focus(window, cx) {
-                                                this.rail_focus.focus(window, cx);
-                                            }
-                                        }),
-                                    )
-                                },
-                            )
-                            .map(|element| {
-                                #[cfg(test)]
-                                let element =
-                                    crate::theme_snapshot::record_fill("MISSION_PANEL", element);
-                                element
-                            })
-                            .child(body),
-                    ),
-            );
+            .child(content);
         div()
             .id("mission-rail")
             .debug_selector(|| "MISSION_RAIL".into())
@@ -425,10 +403,18 @@ impl MissionWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // A rail widened by an open file places two cards per row.
+        // A rail widened by an open file places two cards per row only when the
+        // Sessions rail itself is wide enough; when sharing the panel beside the
+        // unified viewer at 240 px, cards stay single-column with compact padding.
+        let compact = width < 270.;
+        let pad_x = if compact { 12. } else { 20. };
         let two_up = width >= side_panel::ROSTER_TWO_UP_WIDTH;
-        let card_width = (width - 2. * 20. - 12.) / 2.;
-        let fit_width = if two_up { card_width + 2. * 20. } else { width };
+        let card_width = (width - 2. * pad_x - 12.) / 2.;
+        let fit_width = if two_up {
+            card_width + 2. * pad_x
+        } else {
+            width
+        };
         let mut cards = Vec::new();
         let selected = match &self.active_tab {
             MissionTab::Session(session_id) => Some(session_id.as_str()),
@@ -440,7 +426,8 @@ impl MissionWorkspace {
             .flex_1()
             .min_h(px(0.))
             .overflow_y_scroll()
-            .px_5()
+            .when(compact, |el| el.px_3())
+            .when(!compact, |el| el.px_5())
             .pb_5()
             .flex()
             .flex_col()

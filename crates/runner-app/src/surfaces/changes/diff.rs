@@ -762,6 +762,72 @@ impl UnifiedDiffView {
         }
     }
 
+    /// 1-based new-file line nearest the current diff cursor / viewport, used when
+    /// flipping `Diff → Code` in place so reading context is preserved (#1421).
+    pub(crate) fn current_new_line(&self) -> Option<u32> {
+        let count = self.active_row_count();
+        if count == 0 {
+            return None;
+        }
+        let anchor = if let Some(metrics) = self.metrics.get() {
+            let line_h = f32::from(metrics.line_height).max(1.);
+            let top = ((f32::from(self.scroll.y) - TOP_PAD).max(0.) / line_h) as usize;
+            let visible = ((f32::from(metrics.bounds.size.height) / line_h).ceil() as usize).max(1);
+            if self.cursor_row >= top && self.cursor_row < top.saturating_add(visible) {
+                self.cursor_row
+            } else {
+                top.min(count - 1)
+            }
+        } else {
+            self.cursor_row.min(count - 1)
+        };
+        let row_new_line = |idx: usize| -> Option<u32> {
+            match self.mode {
+                DiffViewMode::Unified => match self.rows.get(idx)? {
+                    DiffRow::Context { new_line, .. } | DiffRow::Added { new_line } => {
+                        Some(*new_line as u32 + 1)
+                    }
+                    DiffRow::Hunk { .. } | DiffRow::Removed { .. } => None,
+                },
+                DiffViewMode::Split => match self.split_rows.get(idx)? {
+                    SplitRow::Pair {
+                        right: SplitCell::Context { line } | SplitCell::Added { line },
+                        ..
+                    } => Some(*line as u32 + 1),
+                    _ => None,
+                },
+            }
+        };
+        (anchor..count)
+            .find_map(&row_new_line)
+            .or_else(|| (0..anchor).rev().find_map(&row_new_line))
+    }
+
+    /// Scrolls the diff near 1-based new-file `line` when flipping `Code → Diff` (#1421).
+    pub(crate) fn scroll_to_new_line(&mut self, target_line: u32, cx: &mut Context<Self>) {
+        let target_idx = target_line.saturating_sub(1) as usize;
+        let found = match self.mode {
+            DiffViewMode::Unified => self.rows.iter().position(|row| match *row {
+                DiffRow::Context { new_line, .. } | DiffRow::Added { new_line } => {
+                    new_line >= target_idx
+                }
+                _ => false,
+            }),
+            DiffViewMode::Split => self.split_rows.iter().position(|row| match *row {
+                SplitRow::Pair {
+                    right: SplitCell::Context { line } | SplitCell::Added { line },
+                    ..
+                } => line >= target_idx,
+                _ => false,
+            }),
+        };
+        if let Some(row) = found {
+            self.cursor_row = row;
+            self.reveal_row = Some(row);
+            cx.notify();
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn cursor_row(&self) -> usize {
         self.cursor_row

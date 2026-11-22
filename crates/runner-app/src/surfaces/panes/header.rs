@@ -900,99 +900,111 @@ impl NativeRoot {
         } else {
             detail.map(|detail| self.chat_panel_context(detail, surface, cx))
         };
-        let dirty_changes = !remote
-            && self.chat_files.dirty_changes_for(
-                panel_context.as_ref(),
-                shown,
-                settings.changes_view,
-                Some(cx.entity_id()),
-                cx,
-            );
 
         let chat_card = !self.showing_archived_chat() && self.front_page_is_chat();
-        let header = self.render_titlebar_drag_area(
-            "chat-panel-titlebar-drag",
-            div()
-                .flex_none()
-                .h(rems(40. / 16.))
-                .pl_2()
-                .pr_2()
-                .flex()
-                .items_center()
-                .border_b_1()
-                .border_color(theme::border())
-                .when(maximized, |h| h.rounded_tl(rems(11. / 16.)))
-                .rounded_tr(rems(11. / 16.))
-                .when(
-                    maximized && self.front_page_sidebar_collapsed() && cfg!(target_os = "macos"),
-                    |header| {
-                        header
-                            .pl(px(self.workspace_titlebar_padding(window, cx)))
-                            .children(self.render_collapsed_titlebar_spacer())
-                    },
-                )
-                .map(|element| {
-                    #[cfg(test)]
-                    let element = crate::theme_snapshot::record_fill("CHAT_PANEL_HEADER", element);
-                    element
+        let macos_titlebar_inset = (maximized
+            && self.front_page_sidebar_collapsed()
+            && cfg!(target_os = "macos"))
+        .then(|| {
+            (
+                self.workspace_titlebar_padding(window, cx),
+                self.render_collapsed_titlebar_spacer(),
+            )
+        });
+        let titlebar_weak = cx.weak_entity();
+        let wrap_titlebar: crate::surfaces::files::TitlebarWrapper = Rc::new(move |id, area, _| {
+            let out_weak = titlebar_weak.clone();
+            let up_weak = titlebar_weak.clone();
+            let down_weak = titlebar_weak.clone();
+            #[cfg(target_os = "linux")]
+            let move_weak = titlebar_weak.clone();
+            let area = area
+                .id(id)
+                .window_control_area(gpui::WindowControlArea::Drag)
+                .capture_any_mouse_down(|event, _, _| platform_ui::capture_titlebar_press(event))
+                .on_mouse_down_out(move |_, _, cx| {
+                    let _ = out_weak.update(cx, |this, _| this.titlebar_drag_armed = false);
                 })
-                .child(side_panel::activity_bar(
-                    surface,
-                    &settings,
-                    &selection,
-                    dirty_changes,
-                    handler,
-                    maximize_control,
-                    IconButton::new("collapse-chat-panel", "panel-right-open.svg")
-                        .tooltip(crate::i18n::text("ui.collapse_side_panel"))
-                        .on_press(move |window, cx| {
-                            collapse_root.update(cx, |this, cx| {
-                                let return_focus = this.chat_panel_contains_focus(window, cx)
-                                    || (!remote && this.chat_panel_maximized);
-                                this.set_chat_panel_open(false, cx);
-                                if return_focus && this.route == AppRoute::Chat {
-                                    this.focus_active_terminal(window, cx);
-                                }
-                                cx.notify();
-                            });
-                        }),
-                )),
+                .on_mouse_up(MouseButton::Left, move |_, _, cx| {
+                    let _ = up_weak.update(cx, |this, _| this.titlebar_drag_armed = false);
+                })
+                .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                    let _ = down_weak.update(cx, |this, cx| {
+                        this.titlebar_drag_armed = true;
+                        platform_ui::titlebar_mouse_down(event, window, cx);
+                    });
+                });
+            #[cfg(target_os = "linux")]
+            let area = area
+                .on_mouse_move(move |_, window, cx| {
+                    let _ = move_weak.update(cx, |this, _| {
+                        if this.titlebar_drag_armed {
+                            this.titlebar_drag_armed = false;
+                            window.start_window_move();
+                        }
+                    });
+                })
+                .on_click(|event, window, cx| {
+                    if event.click_count() == 2 && platform_ui::titlebar_double_click(2) {
+                        cx.stop_propagation();
+                        window.titlebar_double_click();
+                    }
+                });
+            area.into_any_element()
+        });
+        let make_collapse_button: Rc<dyn Fn(&mut App) -> AnyElement> = Rc::new(move |_| {
+            let collapse_root = collapse_root.clone();
+            IconButton::new("collapse-chat-panel", "panel-right-open.svg")
+                .tooltip(crate::i18n::text("ui.collapse_side_panel"))
+                .on_press(move |window, cx| {
+                    collapse_root.update(cx, |this, cx| {
+                        let return_focus = this.chat_panel_contains_focus(window, cx)
+                            || (!remote && this.chat_panel_maximized);
+                        this.set_chat_panel_open(false, cx);
+                        if return_focus && this.route == AppRoute::Chat {
+                            this.focus_active_terminal(window, cx);
+                        }
+                        cx.notify();
+                    });
+                })
+                .into_any_element()
+        });
+        let loading_fallback = Some(
+            div()
+                .flex_1()
+                .p_5()
+                .text_size(theme::text_ui())
+                .text_color(theme::faint())
+                .child(crate::i18n::text("ui.loading_chat"))
+                .into_any_element(),
+        );
+        let owner = cx.entity_id();
+        let content = self.chat_files.render_panel(
+            crate::surfaces::files::SidePanelRenderProps {
+                surface,
+                settings,
+                selection,
+                shown,
+                context: panel_context,
+                widened,
+                maximized,
+                remote,
+                owner,
+                header_selector: "CHAT_PANEL_HEADER",
+                titlebar_id: "chat-panel-titlebar-drag",
+                round_header_tl_when_compact: false,
+                macos_titlebar_inset,
+                wrap_titlebar,
+                on_surface_action: handler,
+                maximize_control,
+                on_request_maximize,
+                make_collapse_button,
+                sessions_body: None,
+                sessions_focus: None,
+                loading_fallback,
+            },
             cx,
         );
-        let body = match (shown, panel_context.as_ref()) {
-            (Some(PanelViewId::Files), Some(context)) => {
-                self.chat_files.hide_changes(cx);
-                self.chat_files.show_with_maximize(
-                    context,
-                    widened,
-                    Some(cx.entity_id()),
-                    maximized,
-                    Some(on_request_maximize),
-                    cx,
-                )
-            }
-            (Some(PanelViewId::Changes), Some(context)) => {
-                self.chat_files.hide_files(cx);
-                self.chat_files.show_changes_with_maximize(
-                    context,
-                    widened,
-                    Some(cx.entity_id()),
-                    maximized,
-                    Some(on_request_maximize),
-                    cx,
-                )
-            }
-            _ => {
-                self.chat_files.hide(cx);
-                div()
-                    .flex_1()
-                    .p_5()
-                    .text_size(theme::text_ui())
-                    .text_color(theme::faint())
-                    .child(crate::i18n::text("ui.loading_chat"))
-                    .into_any_element()
-            }
-        };
         let panel = div()
             .relative()
             .when(maximized, |p| p.w_full().flex_1().min_w(px(0.)))
@@ -1001,8 +1013,7 @@ impl NativeRoot {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .child(header)
-            .child(div().flex_1().min_h(px(0.)).flex().flex_col().child(body));
+            .child(content);
         div()
             .id("chat-side-panel")
             .debug_selector(|| "CHAT_SIDE_PANEL".into())

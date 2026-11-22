@@ -4,17 +4,30 @@ use super::*;
 
 impl FilesView {
     pub(crate) fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        self.set_shown_keeping_finder(shown, false, cx);
+    }
+
+    pub(crate) fn set_shown_keeping_finder(
+        &mut self,
+        shown: bool,
+        keep_finder: bool,
+        cx: &mut Context<Self>,
+    ) {
         if self.shown == shown {
+            if !shown && !keep_finder {
+                self.finder = None;
+            }
             return;
         }
         self.shown = shown;
         if !shown {
             self.picker = None;
-            self.finder = None;
+            if !keep_finder {
+                self.finder = None;
+            }
             self.menu = None;
             self.status_stale = true;
         }
-        self.ignored_refresh = shown.then(|| self.refresh_ignored_tabs(cx));
         self.sync_watch(cx);
     }
 
@@ -67,7 +80,8 @@ impl FilesView {
         if let Some(tree) = self.tree_ref() {
             let folders = tree.loaded_folders();
             self.load(folders, cx);
-            self.reload_changed(None, cx);
+            self.viewer
+                .update(cx, |viewer, cx| viewer.reload_changed(None, cx));
         }
         let (status_tx, status_rx) = futures::channel::oneshot::channel();
         self.chain_watch(cx, move |client| {
@@ -86,7 +100,7 @@ impl FilesView {
                     return;
                 }
                 match result {
-                    Ok(status) => this.apply_status(status, cx),
+                    Ok(status) => this.apply_status(status, true, cx),
                     Err(error) => {
                         this.status_error = Some(error.to_string().into());
                         cx.notify();
@@ -97,90 +111,22 @@ impl FilesView {
         .detach();
     }
 
-    pub(in super::super) fn has_uncommitted_diff(&self, path: &str) -> Option<bool> {
-        let Body::Root(state) = &self.body else {
-            return Some(false);
-        };
-        if state.root.git.is_none() {
-            return Some(false);
-        }
-        state
-            .uncommitted_paths
-            .as_ref()
-            .map(|paths| paths.contains(path))
-    }
-
-    pub(in super::super) fn clear_uncommitted_path(&mut self, path: &str) {
-        if let Body::Root(state) = &mut self.body
-            && let Some(paths) = &mut state.uncommitted_paths
-        {
-            paths.remove(path);
-        }
-    }
-
-    pub(in super::super) fn ensure_uncommitted_paths(&mut self, cx: &mut Context<Self>) {
-        if matches!(&self.body, Body::Root(state) if state.uncommitted_paths.is_none()) {
-            self.refresh_uncommitted_paths(false, cx);
-        }
-    }
-
-    pub(in super::super) fn refresh_uncommitted_paths(
+    pub(super) fn apply_status(
         &mut self,
-        refresh_active_diffs: bool,
+        status: Arc<PreparedStatus>,
+        sync_viewer: bool,
         cx: &mut Context<Self>,
     ) {
-        let has_tabs = self.has_tabs();
-        let (root, seq) = match &mut self.body {
-            Body::Root(state) => {
-                if !has_tabs {
-                    state.uncommitted_paths = None;
-                    state.uncommitted_seq += 1;
-                    return;
-                }
-                if state.root.git.is_none() {
-                    state.uncommitted_paths = Some(Default::default());
-                    self.reconcile_diff_tabs(false, cx);
-                    return;
-                }
-                state.uncommitted_seq += 1;
-                (state.root.path.clone(), state.uncommitted_seq)
-            }
-            _ => return,
-        };
-        self.request(
-            cx,
-            move |client| {
-                client.changes_files(
-                    &root,
-                    &runner_core::protocol::changes::ChangesTarget::Uncommitted,
-                    None,
-                )
-            },
-            move |this, result, cx| {
-                let Body::Root(state) = &mut this.body else {
-                    return;
-                };
-                if state.uncommitted_seq != seq {
-                    return;
-                }
-                if let Ok(files) = result {
-                    state.uncommitted_paths =
-                        Some(files.files.into_iter().map(|entry| entry.path).collect());
-                    this.reconcile_diff_tabs(refresh_active_diffs, cx);
-                    cx.notify();
-                }
-            },
-        );
-    }
-
-    pub(super) fn apply_status(&mut self, status: Arc<PreparedStatus>, cx: &mut Context<Self>) {
         if let Body::Root(state) = &mut self.body {
             self.status_error = None;
             self.status_stale = false;
-            state.tree.set_status(status);
-            self.note_ignored_tabs();
-            self.reconcile_diff_tabs(false, cx);
-            self.refresh_uncommitted_paths(true, cx);
+            let root_path = state.root.path.clone();
+            state.tree.set_status(status.clone());
+            if sync_viewer {
+                self.viewer.update(cx, |viewer, cx| {
+                    viewer.set_status_snapshot(&root_path, status, cx)
+                });
+            }
             cx.notify();
         }
     }
@@ -203,12 +149,10 @@ impl FilesView {
                     state.tree.listed(&changed.folders)
                 };
                 self.load(folders, cx);
-                self.reload_changed(Some(changed), cx);
-                self.refresh_uncommitted_paths(false, cx);
             }
             FilesEvent::Status { root, status } => {
                 if self.shown && self.root_path() == Some(root.as_path()) {
-                    self.apply_status(status.clone(), cx);
+                    self.apply_status(status.clone(), true, cx);
                 }
             }
             FilesEvent::Resync { rewatch } => {
@@ -234,13 +178,12 @@ impl FilesView {
                         move |client| client.files_status(&root).map(PreparedStatus::new),
                         |this, result, cx| {
                             if let Ok(status) = result {
-                                this.apply_status(status, cx);
+                                this.apply_status(status, true, cx);
                             }
                         },
                     );
                 }
                 self.load(folders, cx);
-                self.reload_changed(None, cx);
             }
             FilesEvent::Viewed(_) => {}
             FilesEvent::RootChanged { subject, origin } => {
