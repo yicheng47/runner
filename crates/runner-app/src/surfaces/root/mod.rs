@@ -88,6 +88,13 @@ impl Render for SplitResizeDrag {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ChatPanelTarget {
+    Local(String),
+    Archived(String),
+    Remote { computer_id: String, tab_id: String },
+}
+
 pub(crate) struct SidebarVisibilityTransition {
     pub(crate) start: f32,
     pub(crate) target: f32,
@@ -381,6 +388,7 @@ pub(crate) struct NativeRoot {
     pub(crate) chat_info_prompt_expanded: HashSet<String>,
     pub(crate) chat_surfaces: crate::surfaces::side_panel::PanelSurfaces,
     pub(crate) chat_panel_tab: Option<String>,
+    pub(crate) chat_panel_visible_target: Option<ChatPanelTarget>,
     pub(crate) chat_panel_open: Option<bool>,
     pub(crate) chat_panel_maximized: bool,
     pub(crate) chat_panel_focus: FocusHandle,

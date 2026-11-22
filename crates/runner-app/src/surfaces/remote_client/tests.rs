@@ -1435,9 +1435,25 @@ fn remote_chat_info_shows_host_worktree_on_open_and_tracks_connection() {
     wait(&mut visual, "remote chat pane header", |v| {
         v.debug_bounds("PANE_HEADER:s").is_some()
     });
-    // Right side panel shows the Orca activity bar (Files / Changes) with compact unavailable notice.
-    assert!(visual.debug_bounds("PANEL_ACTIVITY Files active").is_some());
-    assert!(visual.debug_bounds("PANEL_ACTIVITY Changes").is_some());
+    // Remote chat starts with its right side panel collapsed by default.
+    assert!(!window
+        .read_with(&visual, |root, cx| root.chat_panel_is_open(cx))
+        .unwrap());
+    assert!(visual.debug_bounds("CHAT_SIDE_PANEL").is_none());
+    let toggle = visual
+        .debug_bounds("CHAT_PANEL_TOGGLE")
+        .expect("remote chat side panel toggle");
+    visual.simulate_click(toggle.center(), gpui::Modifiers::default());
+    // Opening the right side panel shows the Orca activity bar (Files / Changes) with compact unavailable notice.
+    wait(&mut visual, "opened remote chat side panel", |v| {
+        window
+            .read_with(v, |root, cx| {
+                root.chat_panel_is_open(cx) && root.chat_panel_visibility.started_at.is_none()
+            })
+            .unwrap()
+            && v.debug_bounds("PANEL_ACTIVITY Files active").is_some()
+            && v.debug_bounds("PANEL_ACTIVITY Changes").is_some()
+    });
     assert!(visual.debug_bounds("PANEL_TAB Info").is_none());
     assert!(visual.debug_bounds("PANEL_ADD_SURFACE").is_none());
 
@@ -1603,6 +1619,277 @@ fn remote_chat_info_shows_host_worktree_on_open_and_tracks_connection() {
             .unwrap()
             && v.debug_bounds("CHAT_PANEL_TOGGLE").is_some()
     });
+}
+
+#[test]
+fn remote_panel_defaults_closed_isolates_from_open_archive_and_snaps_across_remote_tabs() {
+    use std::time::{Duration, Instant};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::Builder::new()
+        .prefix("1420-remote-panel-snap-")
+        .tempdir()
+        .unwrap();
+    let folder = temp.path().join("archived-project");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("notes.txt"), "archived\n").unwrap();
+
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    enable_front_page(&fake);
+    let mut data: Overview = serde_json::from_value(serde_json::json!({
+        "projects": [{"id": "p", "name": "Remote project"}],
+        "tabs": [
+            {"id": "remote-tab-a", "project": "p", "name": "Remote A", "pinned": false, "panes": {"session": "sa"}, "shells": []},
+            {"id": "remote-tab-b", "project": "p", "name": "Remote B", "pinned": false, "panes": {"session": "sb"}, "shells": []}
+        ],
+        "missions": [],
+        "sessions": {
+            "sa": {"kind": "chat", "title": "Remote A", "runtime": "codex", "status": "stopped", "unread": false},
+            "sb": {"kind": "chat", "title": "Remote B", "runtime": "codex", "status": "stopped", "unread": false}
+        }
+    }))
+    .unwrap();
+    data.sidebar = None;
+    fake.set_overview(data);
+
+    let window = add_window(&mut cx, &store, temp.path(), "remote-panel-snap");
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.simulate_resize(gpui::size(px(1400.), px(900.)));
+
+    fn wait(
+        visual: &mut VisualTestContext,
+        what: &str,
+        mut ready: impl FnMut(&mut VisualTestContext) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            visual.refresh().unwrap();
+            visual.run_until_parked();
+            if ready(visual) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::yield_now();
+        }
+    }
+
+    // 1. Open a local archived chat, open its side panel, and switch it to Changes.
+    let archived = crate::DirectSessionEntry {
+        session_id: "arch-local".into(),
+        project_id: None,
+        role_id: None,
+        handle: None,
+        agent_runtime: "codex".into(),
+        agent_command: "codex".into(),
+        agent_model: None,
+        agent_effort: None,
+        display_name: "Codex".into(),
+        status: runner_core::protocol::model::SessionStatus::Stopped,
+        title: Some("Archived Local".into()),
+        live_title: None,
+        cwd: Some(folder.to_string_lossy().into_owned()),
+        started_at: None,
+        stopped_at: None,
+        resumable: false,
+        native_fork: false,
+        forkable: false,
+        agent_session_key: None,
+        claude_account: None,
+        pinned: false,
+        archived_at: Some(chrono::Utc::now()),
+    };
+    window
+        .update(&mut visual, |root, win, cx| {
+            root.open_archived_chat(archived, win, cx);
+        })
+        .unwrap();
+    visual.refresh().unwrap();
+    visual.run_until_parked();
+    assert!(!window
+        .read_with(&visual, |root, cx| root.chat_panel_is_open(cx))
+        .unwrap());
+    assert!(visual.debug_bounds("CHAT_PANEL_HEADER").is_none());
+
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.set_chat_panel_open(true, cx);
+        })
+        .unwrap();
+    wait(&mut visual, "local archived chat panel opens", |v| {
+        window
+            .read_with(v, |root, cx| {
+                root.chat_panel_is_open(cx) && root.chat_panel_visibility.started_at.is_none()
+            })
+            .unwrap()
+            && v.debug_bounds("PANEL_ACTIVITY Files active").is_some()
+            && v.debug_bounds("PANEL_ACTIVITY Changes").is_some()
+    });
+    let changes_btn = visual.debug_bounds("PANEL_ACTIVITY Changes").unwrap();
+    visual.simulate_click(changes_btn.center(), gpui::Modifiers::default());
+    wait(&mut visual, "local archive switches to Changes", |v| {
+        v.debug_bounds("PANEL_ACTIVITY Changes active").is_some()
+    });
+
+    // 2. Visit another computer in the same window while local route stays ArchivedChat:
+    // remote tab A must default closed (snapped immediately to 0) without touching archive state.
+    window.update(&mut visual, choose_host).unwrap();
+    wait(&mut visual, "remote tab A renders closed", |v| {
+        v.debug_bounds("PANE_HEADER:sa").is_some()
+    });
+    assert_eq!(
+        window
+            .read_with(&visual, |root, cx| (
+                root.route.clone(),
+                root.chat_panel_is_open(cx),
+                root.chat_panel_open,
+                root.chat_panel_visibility.target,
+                root.chat_panel_visibility.started_at.is_none(),
+            ))
+            .unwrap(),
+        (crate::AppRoute::ArchivedChat, false, Some(true), 0., true)
+    );
+    assert!(visual.debug_bounds("CHAT_SIDE_PANEL").is_none());
+    assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_some());
+    let full_pane_width = visual.debug_bounds("PANE_ISLAND:p1").unwrap().size.width;
+
+    // 3. Toggling remote tab A open within the same tab must NOT snap visibility (target stays
+    // at 0 until render drives the animation), and settles docked at 300 px on Files without
+    // affecting the local archive.
+    assert_eq!(
+        window
+            .update(&mut visual, |root, _, cx| {
+                root.set_chat_panel_open(true, cx);
+                root.sync_chat_panel(cx);
+                (
+                    root.chat_panel_is_open(cx),
+                    root.chat_panel_visibility.target,
+                    root.chat_panel_open,
+                )
+            })
+            .unwrap(),
+        (true, 0., Some(true)),
+        "toggling open within the same remote tab must leave prior visibility target unsnapped"
+    );
+    wait(&mut visual, "remote tab A panel finishes opening", |v| {
+        window
+            .read_with(v, |root, _| root.chat_panel_visibility.started_at.is_none())
+            .unwrap()
+            && v.debug_bounds("PANEL_ACTIVITY Files active").is_some()
+            && v.debug_bounds("CHAT_SIDE_PANEL")
+                .is_some_and(|b| (f32::from(b.size.width) - 300.).abs() <= 1.)
+    });
+
+    // 4. Switch to unopened remote tab B: first frame must snap straight to closed at full
+    // pane width with zero animation and zero terminal resize.
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Tab("remote-tab-b".into()), cx);
+        })
+        .unwrap();
+    visual.refresh().unwrap();
+    assert!(
+        visual.debug_bounds("PANE_HEADER:sb").is_some(),
+        "first frame must show remote tab B"
+    );
+    assert_eq!(
+        window
+            .read_with(&visual, |root, cx| (
+                root.chat_panel_is_open(cx),
+                root.chat_panel_visibility.target,
+                root.chat_panel_visibility.started_at.is_none(),
+            ))
+            .unwrap(),
+        (false, 0., true),
+        "switching to unopened remote tab B must snap closed on frame 0"
+    );
+    assert!(visual.debug_bounds("CHAT_SIDE_PANEL").is_none());
+    assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_some());
+    assert_eq!(
+        visual.debug_bounds("PANE_ISLAND:p1").unwrap().size.width,
+        full_pane_width,
+        "remote tab B must keep full pane width on its first frame"
+    );
+
+    // 5. Switch back to remote tab A: first frame must snap straight back to open at 300 px.
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Tab("remote-tab-a".into()), cx);
+        })
+        .unwrap();
+    visual.refresh().unwrap();
+    assert!(visual.debug_bounds("PANE_HEADER:sa").is_some());
+    assert_eq!(
+        window
+            .read_with(&visual, |root, cx| (
+                root.chat_panel_is_open(cx),
+                root.chat_panel_visibility.target,
+                root.chat_panel_visibility.started_at.is_none(),
+            ))
+            .unwrap(),
+        (true, 1., true),
+        "switching back to open remote tab A must snap open on frame 0"
+    );
+    assert!(visual
+        .debug_bounds("CHAT_SIDE_PANEL")
+        .is_some_and(|b| (f32::from(b.size.width) - 300.).abs() <= 1.));
+    assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_none());
+
+    // Collapsing within the same remote tab must NOT snap visibility (target stays at 1 until
+    // render drives the collapse animation) and never overwrites the local archive.
+    assert_eq!(
+        window
+            .update(&mut visual, |root, _, cx| {
+                root.set_chat_panel_open(false, cx);
+                root.sync_chat_panel(cx);
+                (
+                    root.chat_panel_is_open(cx),
+                    root.chat_panel_visibility.target,
+                    root.chat_panel_open,
+                )
+            })
+            .unwrap(),
+        (false, 1., Some(true)),
+        "collapsing within the same remote tab must leave prior visibility target unsnapped"
+    );
+    wait(&mut visual, "remote tab A collapses", |v| {
+        window
+            .read_with(v, |root, _| root.chat_panel_visibility.started_at.is_none())
+            .unwrap()
+            && v.debug_bounds("CHAT_SIDE_PANEL").is_none()
+            && v.debug_bounds("CHAT_PANEL_TOGGLE").is_some()
+    });
+
+    // 6. Return to This computer: the local archive still has its panel open on Changes
+    // and snaps straight back to open without animating from remote tab A's collapsed state.
+    window
+        .update(&mut visual, |root, win, cx| {
+            root.choose_computer(computers()[0].clone(), false, win, cx);
+        })
+        .unwrap();
+    visual.refresh().unwrap();
+    assert_eq!(
+        window
+            .read_with(&visual, |root, cx| (
+                root.remote_client.is_local(),
+                root.route.clone(),
+                root.chat_panel_is_open(cx),
+                root.chat_panel_visibility.target,
+                root.chat_panel_visibility.started_at.is_none(),
+            ))
+            .unwrap(),
+        (true, crate::AppRoute::ArchivedChat, true, 1., true)
+    );
+    assert!(visual
+        .debug_bounds("PANEL_ACTIVITY Changes active")
+        .is_some());
+    assert!(visual
+        .debug_bounds("CHAT_SIDE_PANEL")
+        .is_some_and(|b| (f32::from(b.size.width) - 300.).abs() <= 1.));
 }
 
 #[test]

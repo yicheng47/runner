@@ -1543,7 +1543,7 @@
 "side_panel.panel" = "Panel"
 "side_panel.panel_description" = "The side panel beside chats, terminals and missions, and the workspace tools in its activity bar."
 "side_panel.show" = "Show the side panel"
-"side_panel.show_description" = "Opens on the Project Tree in wide windows, slides over narrow windows as a sheet, and tracks open state per tab. Turn off to hide the panel everywhere."
+"side_panel.show_description" = "Starts collapsed on chats and terminals, opens on Sessions in wide missions, slides over narrow windows as a sheet, and tracks open state per tab. Turn off to hide the panel everywhere."
 "side_panel.surfaces" = "Workspace tools"
 "side_panel.key" = "Key"
 "side_panel.info_description" = "A chat's runtime, model, folder and session, and a mission's details."

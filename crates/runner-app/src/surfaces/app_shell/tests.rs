@@ -98,6 +98,11 @@ fn work_card_insets_every_route_and_contains_chat_and_mission_columns() {
             );
             root.set_sidebar_collapsed(false, false, cx);
             root.sidebar_visibility = SidebarVisibilityTransition::new(true);
+            if path.starts_with("/chats/") {
+                assert!(!root.chat_panel_is_open(cx));
+                root.set_chat_panel_open(true, cx);
+                root.chat_panel_visibility = SidebarVisibilityTransition::new(true);
+            }
             root
         });
         let mut visual = VisualTestContext::from_window(host.into(), &cx);
@@ -708,6 +713,8 @@ fn capped_banner_stays_in_each_windows_main_content() {
         assert!(root.tabs.activate_session("direct-agent"));
         root.route = AppRoute::Chat;
         root.sync_active_chat_detail(cx);
+        root.set_chat_panel_open(true, cx);
+        root.chat_panel_visibility = SidebarVisibilityTransition::new(true);
         root
     });
     let other = cx.add_window(|window, cx| {

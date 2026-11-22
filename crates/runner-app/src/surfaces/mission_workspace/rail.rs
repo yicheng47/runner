@@ -29,6 +29,7 @@ impl MissionWorkspace {
 
     pub(super) fn rail_is_open(&self, cx: &App) -> bool {
         side_panel::resolved_open(
+            PanelSurface::Mission,
             self.rail_open,
             self.rail_available_width(),
             self.settings(cx).mission_rail_width,

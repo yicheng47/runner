@@ -3,68 +3,109 @@ use crate::file_links::FileLinkRoute;
 use crate::surfaces::files::FilesView;
 
 impl NativeRoot {
-    pub(crate) fn sync_chat_panel(&mut self, cx: &App) {
-        if !self.remote_client.is_local() && self.route != AppRoute::ArchivedChat {
-            return;
-        }
-        let tab = if self.route == AppRoute::ArchivedChat {
+    fn showing_archived_chat(&self) -> bool {
+        self.remote_client.is_local() && self.route == AppRoute::ArchivedChat
+    }
+
+    fn current_chat_panel_target(&self) -> Option<crate::surfaces::root::ChatPanelTarget> {
+        use crate::surfaces::root::ChatPanelTarget;
+        if self.remote_client.is_active() {
+            self.remote_client
+                .active_chat_panel_target()
+                .map(|(computer_id, tab_id)| ChatPanelTarget::Remote {
+                    computer_id,
+                    tab_id,
+                })
+        } else if self.showing_archived_chat() {
             self.archived_chat_detail
                 .as_ref()
-                .map(|detail| format!("archived:{}", detail.session_id))
+                .map(|detail| ChatPanelTarget::Archived(detail.session_id.clone()))
         } else {
-            self.tabs.active_tab_id().map(str::to_owned)
-        };
-        if self.chat_panel_tab == tab {
+            self.tabs
+                .active_tab_id()
+                .map(|id| ChatPanelTarget::Local(id.to_owned()))
+        }
+    }
+
+    pub(crate) fn sync_chat_panel(&mut self, cx: &App) {
+        if self.remote_client.is_local() {
+            let tab = if self.showing_archived_chat() {
+                self.archived_chat_detail
+                    .as_ref()
+                    .map(|detail| format!("archived:{}", detail.session_id))
+            } else {
+                self.tabs.active_tab_id().map(str::to_owned)
+            };
+            if self.chat_panel_tab != tab {
+                if let Some(previous) = self
+                    .chat_panel_tab
+                    .take()
+                    .filter(|id| self.tabs.tabs().iter().any(|tab| &tab.id == id))
+                {
+                    self.chat_panels_by_tab.insert(
+                        previous,
+                        side_panel::SavedPanel {
+                            selection: self.chat_surfaces.selection,
+                            open: self.chat_panel_open,
+                            maximized: self.chat_panel_maximized,
+                        },
+                    );
+                }
+                let saved = tab
+                    .as_ref()
+                    .and_then(|id| self.chat_panels_by_tab.remove(id));
+                if let Some(saved) = saved {
+                    self.chat_surfaces.restore(saved.selection);
+                    self.chat_panel_open = saved.open;
+                    self.chat_panel_maximized = saved.maximized;
+                } else {
+                    self.chat_surfaces.reset(Default::default());
+                    self.chat_panel_open = None;
+                    self.chat_panel_maximized = false;
+                }
+                self.chat_panel_tab = tab;
+            }
+        }
+
+        let target = self.current_chat_panel_target();
+        if self.chat_panel_visible_target == target {
             return;
         }
-        if let Some(previous) = self
-            .chat_panel_tab
-            .take()
-            .filter(|id| self.tabs.tabs().iter().any(|tab| &tab.id == id))
-        {
-            self.chat_panels_by_tab.insert(
-                previous,
-                side_panel::SavedPanel {
-                    selection: self.chat_surfaces.selection,
-                    open: self.chat_panel_open,
-                    maximized: self.chat_panel_maximized,
-                },
-            );
-        }
-        let saved = tab
-            .as_ref()
-            .and_then(|id| self.chat_panels_by_tab.remove(id));
-        if let Some(saved) = saved {
-            self.chat_surfaces.restore(saved.selection);
-            self.chat_panel_open = saved.open;
-            self.chat_panel_maximized = saved.maximized;
-        } else {
-            self.chat_surfaces.reset(Default::default());
-            self.chat_panel_open = None;
-            self.chat_panel_maximized = false;
-        }
-        self.chat_panel_tab = tab;
+        self.chat_panel_visible_target = target;
         self.chat_panel_width_snap = true;
         self.chat_sheet_anim = SidebarVisibilityTransition::new(false);
         let open = self.chat_panel_is_open(cx);
+        let showing_archived = self.showing_archived_chat();
+        let layout = (!showing_archived)
+            .then(|| self.front_page_layout())
+            .flatten();
+        let surface = if showing_archived {
+            PanelSurface::Chat
+        } else {
+            side_panel_surface(self.active_tab_is_terminal(cx))
+        };
+        let split_columns = if showing_archived {
+            1
+        } else {
+            self.active_chat_split_columns()
+        };
+        let is_sheet = side_panel::is_narrow(
+            self.chat_panel_available_width(),
+            self.settings(cx).chat_panel_width,
+            split_columns,
+        );
         let visible = open
-            && (self.route == AppRoute::ArchivedChat || !start_surface_visible(self.tabs.active()))
-            && side_panel_available(
-                self.settings(cx),
-                if self.route == AppRoute::ArchivedChat {
-                    PanelSurface::Chat
-                } else {
-                    side_panel_surface(self.active_tab_is_terminal(cx))
-                },
-            );
-        if !open {
+            && !is_sheet
+            && (showing_archived || !start_surface_visible(layout))
+            && side_panel_available(self.settings(cx), surface);
+        if self.remote_client.is_local() && !open {
             self.chat_panel_maximized = false;
         }
         self.chat_panel_visibility = SidebarVisibilityTransition::new(visible);
     }
 
     pub(super) fn active_chat_split_columns(&self) -> usize {
-        if self.route == AppRoute::ArchivedChat || !self.front_page_is_chat() {
+        if self.showing_archived_chat() || !self.front_page_is_chat() {
             return 1;
         }
         let layout = self.front_page_layout();
@@ -83,12 +124,18 @@ impl NativeRoot {
     }
 
     pub(crate) fn chat_panel_is_open(&self, cx: &App) -> bool {
-        let explicit = if self.remote_client.is_active() && self.route != AppRoute::ArchivedChat {
+        let explicit = if self.remote_client.is_active() {
             self.remote_client.chat_panel_explicit_open()
         } else {
             self.chat_panel_open
         };
+        let surface = if self.showing_archived_chat() {
+            PanelSurface::Chat
+        } else {
+            side_panel_surface(self.active_tab_is_terminal(cx))
+        };
         side_panel::resolved_open(
+            surface,
             explicit,
             self.chat_panel_available_width(),
             self.settings(cx).chat_panel_width,
@@ -97,12 +144,12 @@ impl NativeRoot {
     }
 
     pub(crate) fn set_chat_panel_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() && self.route != AppRoute::ArchivedChat {
+        self.sync_chat_panel(cx);
+        if self.remote_client.is_active() {
             self.remote_client.set_chat_panel_open(open);
             cx.notify();
             return;
         }
-        self.sync_chat_panel(cx);
         self.chat_panel_open = Some(open);
         if !open {
             self.chat_panel_maximized = false;
@@ -115,7 +162,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn focus_chat_panel_shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let surface = if self.route == AppRoute::ArchivedChat {
+        let surface = if self.showing_archived_chat() {
             PanelSurface::Chat
         } else {
             side_panel_surface(self.active_tab_is_terminal(cx))
@@ -123,7 +170,7 @@ impl NativeRoot {
         let settings = self.settings(cx);
         let selection = self.active_chat_panel_selection();
         let shown = side_panel::shown(surface, settings, &selection);
-        let detail = if self.route == AppRoute::ArchivedChat {
+        let detail = if self.showing_archived_chat() {
             self.archived_chat_detail.as_ref()
         } else {
             self.active_chat_detail.as_ref()
@@ -199,7 +246,7 @@ impl NativeRoot {
     }
 
     fn active_chat_panel_selection(&self) -> side_panel::PanelSelection {
-        if self.remote_client.is_active() && self.route != AppRoute::ArchivedChat {
+        if self.remote_client.is_active() {
             self.remote_client.chat_panel_selection()
         } else {
             self.chat_surfaces.selection
@@ -300,7 +347,7 @@ impl NativeRoot {
     }
 
     fn session_effective_cwd(&self, session_id: &str, cx: &App) -> Option<String> {
-        if self.remote_client.is_active() && self.route != AppRoute::ArchivedChat {
+        if self.remote_client.is_active() {
             return self
                 .remote_client
                 .session(session_id, cx)
@@ -327,7 +374,7 @@ impl NativeRoot {
     /// Quiet `Following <pane> · <branch/folder>` cue when a split tab holds
     /// panes working in different folders or worktrees (#1403).
     pub(super) fn split_following_badge(&self, followed_id: &str, cx: &App) -> Option<String> {
-        if self.route == AppRoute::ArchivedChat || !self.front_page_is_chat() {
+        if self.showing_archived_chat() || !self.front_page_is_chat() {
             return None;
         }
         let layout = self.front_page_layout()?;
@@ -522,7 +569,7 @@ impl NativeRoot {
         cx: &App,
     ) -> side_panel::PanelLayout {
         let settings = self.settings(cx);
-        let surface = if self.route == AppRoute::ArchivedChat {
+        let surface = if self.showing_archived_chat() {
             PanelSurface::Chat
         } else {
             side_panel_surface(self.active_tab_is_terminal(cx))
@@ -771,7 +818,7 @@ impl NativeRoot {
     ) -> AnyElement {
         #[cfg(test)]
         crate::render_counts::count_render("side-panel", cx);
-        let remote = self.remote_client.is_active() && self.route != AppRoute::ArchivedChat;
+        let remote = self.remote_client.is_active();
         let detail = detail.filter(|_| !remote);
         let width = if panel_layout.is_sheet() {
             panel_layout.width
@@ -810,7 +857,7 @@ impl NativeRoot {
             surface_root.update(cx, |this, cx| {
                 match action {
                     side_panel::SurfaceAction::Select(id) => {
-                        if this.remote_client.is_active() && this.route != AppRoute::ArchivedChat {
+                        if this.remote_client.is_active() {
                             this.remote_client.select_chat_panel_mode(id);
                         } else {
                             this.chat_surfaces.apply(action);
@@ -862,7 +909,7 @@ impl NativeRoot {
                 cx,
             );
 
-        let chat_card = self.route != AppRoute::ArchivedChat && self.front_page_is_chat();
+        let chat_card = !self.showing_archived_chat() && self.front_page_is_chat();
         let header = self.render_titlebar_drag_area(
             "chat-panel-titlebar-drag",
             div()

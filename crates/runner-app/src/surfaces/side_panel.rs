@@ -166,19 +166,29 @@ pub(crate) fn is_narrow(available: f32, compact_width: f32, split_columns: usize
     available > 0. && (available - compact_width) < min_main_width(split_columns)
 }
 
-/// Default open state for a tab whose user has not explicitly opened or
-/// collapsed the panel yet: open on wide windows, collapsed on narrow ones.
-pub(crate) fn default_open(available: f32, compact_width: f32, split_columns: usize) -> bool {
-    !is_narrow(available, compact_width, split_columns)
+/// Default open state for a tab or mission whose user has not explicitly opened
+/// or collapsed the panel yet: chats and terminals start collapsed; missions
+/// start open (on Sessions) on wide windows and collapsed on narrow ones.
+pub(crate) fn default_open(
+    surface: PanelSurface,
+    available: f32,
+    compact_width: f32,
+    split_columns: usize,
+) -> bool {
+    match surface {
+        PanelSurface::Chat | PanelSurface::Terminal => false,
+        PanelSurface::Mission => !is_narrow(available, compact_width, split_columns),
+    }
 }
 
 pub(crate) fn resolved_open(
+    surface: PanelSurface,
     explicit: Option<bool>,
     available: f32,
     compact_width: f32,
     split_columns: usize,
 ) -> bool {
-    explicit.unwrap_or_else(|| default_open(available, compact_width, split_columns))
+    explicit.unwrap_or_else(|| default_open(surface, available, compact_width, split_columns))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -416,8 +426,9 @@ impl PanelSelection {
     }
 }
 
-/// An inactive tab's or mission's panel state; `open: None` follows wide/narrow
-/// defaults until explicitly opened or collapsed.
+/// An inactive tab's or mission's panel state; `open: None` follows the
+/// surface's default (collapsed on chats/terminals; open on wide missions,
+/// collapsed on narrow ones) until explicitly opened or collapsed.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SavedPanel {
     pub(crate) selection: PanelSelection,
@@ -869,15 +880,38 @@ mod tests {
         assert_eq!(min_main_width(2), 680.);
         assert_eq!(min_main_width(3), 1020.);
 
-        // Single-pane: 720 available => 720 - 300 = 420 >= 420 (wide, docked open).
-        assert!(default_open(720., 300., 1));
+        // Chats and terminals start collapsed regardless of window width;
+        // missions start open on wide windows (>= 720 available) and collapsed when narrow.
+        assert!(!default_open(PanelSurface::Chat, 720., 300., 1));
+        assert!(!default_open(PanelSurface::Terminal, 720., 300., 1));
+        assert!(!default_open(PanelSurface::Chat, 1440., 300., 1));
+        assert!(!default_open(PanelSurface::Terminal, 1440., 300., 1));
+        assert!(resolved_open(PanelSurface::Chat, Some(true), 720., 300., 1));
+        assert!(resolved_open(
+            PanelSurface::Terminal,
+            Some(true),
+            719.,
+            300.,
+            1
+        ));
+        assert!(!resolved_open(
+            PanelSurface::Mission,
+            Some(false),
+            1440.,
+            300.,
+            1
+        ));
+
+        // Single-pane: 720 available => 720 - 300 = 420 >= 420 (wide; missions open docked).
+        assert!(default_open(PanelSurface::Mission, 720., 300., 1));
         assert!(!is_narrow(720., 300., 1));
         let wide_compact = compute_panel_layout(720., 1, 300., 440., 240., None, false, 720.);
         assert_eq!(wide_compact.presentation, PanelPresentation::Docked);
         assert_eq!(wide_compact.width, 300.);
 
         // Single-pane: 719 available => 719 - 300 = 419 < 420 (narrow, default collapsed, sheet).
-        assert!(!default_open(719., 300., 1));
+        assert!(!default_open(PanelSurface::Mission, 719., 300., 1));
+        assert!(!default_open(PanelSurface::Chat, 719., 300., 1));
         assert!(is_narrow(719., 300., 1));
         let narrow_compact = compute_panel_layout(719., 1, 300., 440., 240., None, false, 719.);
         assert_eq!(narrow_compact.presentation, PanelPresentation::Sheet);
@@ -890,8 +924,9 @@ mod tests {
         assert_eq!(wide_file.width, 680.);
 
         // 2-column split on 1440 px screen (available = 1194, min_main = 680):
-        // Compact 300 docks (1194 - 300 = 894 >= 680).
-        assert!(default_open(1194., 300., 2));
+        // Chat starts collapsed; once opened, compact 300 docks (1194 - 300 = 894 >= 680).
+        assert!(!default_open(PanelSurface::Chat, 1194., 300., 2));
+        assert!(!is_narrow(1194., 300., 2));
         let split_compact = compute_panel_layout(1194., 2, 300., 440., 240., None, false, 1194.);
         assert_eq!(split_compact.presentation, PanelPresentation::Docked);
         assert_eq!(split_compact.width, 300.);
