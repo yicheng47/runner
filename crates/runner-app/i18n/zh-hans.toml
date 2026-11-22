@@ -1543,7 +1543,7 @@
 "side_panel.panel" = "面板"
 "side_panel.panel_description" = "对话、终端和任务旁的侧面板，以及顶部活动栏提供的工作区工具。"
 "side_panel.show" = "显示侧面板"
-"side_panel.show_description" = "在宽窗口中默认展开项目文件树，在窄窗口中以浮层抽屉滑出，并按标签页独立记住展开状态。关闭后将全局隐藏侧面板。"
+"side_panel.show_description" = "聊天和终端默认收起，宽窗口中的任务默认展开会话，窄窗口中以浮层抽屉滑出，并按标签页独立记住展开状态。关闭后将全局隐藏侧面板。"
 "side_panel.surfaces" = "工作区工具"
 "side_panel.key" = "按键"
 "side_panel.info_description" = "对话的运行时、模型、文件夹和会话，以及任务的详情。"

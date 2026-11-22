@@ -66,6 +66,14 @@ impl RemoteClient {
         remote.layouts.get_mut(id)
     }
 
+    pub(crate) fn active_chat_panel_target(&self) -> Option<(String, String)> {
+        let remote = self.workspace.as_ref()?;
+        let Item::Tab(id) = remote.active.as_ref()? else {
+            return None;
+        };
+        Some((remote.computer.id.clone(), id.clone()))
+    }
+
     pub(crate) fn chat_panel_explicit_open(&self) -> Option<bool> {
         let remote = self.workspace.as_ref()?;
         let Item::Tab(id) = remote.active.as_ref()? else {

@@ -267,7 +267,7 @@ impl NativeRoot {
         });
         let sidebar_collapsed = settings.sidebar_collapsed;
         let sidebar_visibility = SidebarVisibilityTransition::new(!sidebar_collapsed);
-        let chat_panel_visibility = SidebarVisibilityTransition::new(settings.show_side_panel);
+        let chat_panel_visibility = SidebarVisibilityTransition::new(false);
         let role_surfaces = RoleSurfaces::new(cx.entity(), settings.roles_page_size, cx);
         let crew_surfaces = CrewSurfaces::new(cx.entity(), settings.crews_page_size, cx);
         let sidebar_shell = cx.entity().downgrade();
@@ -429,6 +429,7 @@ impl NativeRoot {
             chat_info_prompt_expanded: HashSet::new(),
             chat_surfaces: crate::surfaces::side_panel::PanelSurfaces::new(Default::default()),
             chat_panel_tab: None,
+            chat_panel_visible_target: None,
             chat_panel_open: None,
             chat_panel_maximized: false,
             chat_panel_focus: cx.focus_handle(),

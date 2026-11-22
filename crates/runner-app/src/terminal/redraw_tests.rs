@@ -85,6 +85,8 @@ fn terminal_output_reuses_split_siblings_and_title_changes_update_sidebar() {
         assert!(root.tabs.activate_session("direct-agent"));
         root.route = AppRoute::Chat;
         root.sync_active_chat_detail(cx);
+        root.set_chat_panel_open(true, cx);
+        root.chat_panel_visibility = crate::surfaces::root::SidebarVisibilityTransition::new(true);
         root.ensure_active_tab_attached(window, cx).unwrap();
         root
     });
