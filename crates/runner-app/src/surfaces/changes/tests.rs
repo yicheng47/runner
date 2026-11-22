@@ -3628,13 +3628,19 @@ fn viewed_marks_refresh_for_unchanged_blobs_after_hidden_interval_and_resync() {
     });
     h.show(Some(mission_ctx("on-worktree")));
     h.wait(
-        "src/lib.rs refreshes to unviewed after hidden interval",
-        |h| h.read(|v| v.active_diff_viewed()) == Some((false, false)),
+        "src/lib.rs and Changes snapshot refresh to unviewed after hidden interval",
+        |h| {
+            h.read(|v| {
+                v.active_diff_viewed() == Some((false, false))
+                    && v.fresh_dirty_changes() == Some(true)
+                    && !v.is_diff_loading()
+            }) && !viewer.read_with(&h.visual, |v, _| v.status_stale())
+        },
     );
     h.click("FILE_TAB_PINNED uncomm_a.rs");
     h.wait(
         "uncomm_a.rs refreshes to unviewed after hidden interval",
-        |h| h.read(|v| v.active_diff_viewed()) == Some((false, false)),
+        |h| h.read(|v| v.active_diff_viewed() == Some((false, false)) && !v.is_diff_loading()),
     );
 
     // 4. Simulate daemon reconnect (`FilesEvent::Resync { rewatch: true }`) while viewer stays
@@ -3645,7 +3651,7 @@ fn viewed_marks_refresh_for_unchanged_blobs_after_hidden_interval_and_resync() {
     h.wait("src/lib.rs switched to Code mode", |h| h.has("FILE_CODE"));
     h.click("FILE_TAB_PINNED uncomm_a.rs");
     h.wait("uncomm_a.rs active in Diff mode", |h| {
-        h.has("CHANGES_DIFF_CODE")
+        h.has("CHANGES_DIFF_CODE") && !h.read(|v| v.is_diff_loading())
     });
 
     let root = h.worktree.clone();

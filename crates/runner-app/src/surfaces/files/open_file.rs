@@ -855,10 +855,7 @@ impl UnifiedViewer {
     pub(crate) fn sync_root(&mut self, outcome: FilesRootOutcome, cx: &mut Context<Self>) {
         match (&outcome, &self.root) {
             (FilesRootOutcome::Root(next), Some(current))
-                if runner_core::app_paths::same_normalized_checkout_path(
-                    &current.path,
-                    &next.path,
-                ) =>
+                if runner_core::app_paths::same_checkout_path(&current.path, &next.path) =>
             {
                 if current != next {
                     self.root = Some(next.clone());
@@ -880,7 +877,7 @@ impl UnifiedViewer {
         let same = matches!(
             (&outcome, &self.root),
             (FilesRootOutcome::Root(next), Some(current))
-                if runner_core::app_paths::same_normalized_checkout_path(&current.path, &next.path)
+                if runner_core::app_paths::same_checkout_path(&current.path, &next.path)
         );
         if !same {
             self.generation += 1;
@@ -924,7 +921,7 @@ impl UnifiedViewer {
     ) {
         if self
             .root_path()
-            .is_some_and(|r| runner_core::app_paths::same_normalized_checkout_path(r, root))
+            .is_some_and(|r| runner_core::app_paths::same_checkout_path(r, root))
         {
             self.apply_status(status, cx);
         }
@@ -985,7 +982,7 @@ impl UnifiedViewer {
 
     fn watched_root_changed(&mut self, cx: &mut Context<Self>) {
         let same = match (self.watched.as_deref(), self.root_path()) {
-            (Some(a), Some(b)) => runner_core::app_paths::same_normalized_checkout_path(a, b),
+            (Some(a), Some(b)) => runner_core::app_paths::same_checkout_path(a, b),
             (None, None) => true,
             _ => false,
         };
@@ -1023,7 +1020,7 @@ impl UnifiedViewer {
             .then(|| self.root_path().map(Path::to_path_buf))
             .flatten();
         let same = match (self.watched.as_deref(), wanted.as_deref()) {
-            (Some(a), Some(b)) => runner_core::app_paths::same_normalized_checkout_path(a, b),
+            (Some(a), Some(b)) => runner_core::app_paths::same_checkout_path(a, b),
             (None, None) => true,
             _ => false,
         };
@@ -1085,9 +1082,10 @@ impl UnifiedViewer {
                 if !self.shown || !self.has_tabs() {
                     return;
                 }
-                if self.root_path().is_none_or(|r| {
-                    !runner_core::app_paths::same_normalized_checkout_path(r, &changed.root)
-                }) {
+                if self
+                    .root_path()
+                    .is_none_or(|r| !runner_core::app_paths::same_checkout_path(r, &changed.root))
+                {
                     return;
                 }
                 self.reload_changed(Some(changed), cx);
@@ -1095,9 +1093,9 @@ impl UnifiedViewer {
             }
             FilesEvent::Status { root, status } => {
                 if self.shown
-                    && self.root_path().is_some_and(|r| {
-                        runner_core::app_paths::same_normalized_checkout_path(r, root)
-                    })
+                    && self
+                        .root_path()
+                        .is_some_and(|r| runner_core::app_paths::same_checkout_path(r, root))
                 {
                     self.apply_status(status.clone(), cx);
                     if self.watched.is_some() {
@@ -1343,9 +1341,10 @@ impl UnifiedViewer {
         cx: &mut Context<Self>,
     ) {
         // Ensure our root matches the Changes rail before opening.
-        let same_root = self.root.as_ref().is_some_and(|r| {
-            runner_core::app_paths::same_normalized_checkout_path(&r.path, &req.root.path)
-        });
+        let same_root = self
+            .root
+            .as_ref()
+            .is_some_and(|r| runner_core::app_paths::same_checkout_path(&r.path, &req.root.path));
         if !same_root {
             self.apply_root_outcome(FilesRootOutcome::Root(req.root.clone()), cx);
         } else {
@@ -1454,7 +1453,7 @@ impl UnifiedViewer {
     ) {
         if self
             .root_path()
-            .is_none_or(|r| !runner_core::app_paths::same_normalized_checkout_path(r, root))
+            .is_none_or(|r| !runner_core::app_paths::same_checkout_path(r, root))
         {
             return;
         }
@@ -1552,7 +1551,7 @@ impl UnifiedViewer {
     ) {
         if self
             .root_path()
-            .is_none_or(|r| !runner_core::app_paths::same_normalized_checkout_path(r, root))
+            .is_none_or(|r| !runner_core::app_paths::same_checkout_path(r, root))
         {
             return;
         }
@@ -1788,7 +1787,7 @@ impl UnifiedViewer {
     ) {
         if self
             .root_path()
-            .is_none_or(|r| !runner_core::app_paths::same_normalized_checkout_path(r, root))
+            .is_none_or(|r| !runner_core::app_paths::same_checkout_path(r, root))
         {
             return;
         }
@@ -3794,9 +3793,10 @@ impl UnifiedViewer {
     }
 
     fn apply_saved_state(&mut self, saved: SavedViewerState, cx: &mut Context<Self>) {
-        let same_root = self.root.as_ref().is_some_and(|r| {
-            runner_core::app_paths::same_normalized_checkout_path(&r.path, &saved.root)
-        });
+        let same_root = self
+            .root
+            .as_ref()
+            .is_some_and(|r| runner_core::app_paths::same_checkout_path(&r.path, &saved.root));
         if !same_root {
             self.notify_owner(cx);
             cx.notify();
@@ -3932,6 +3932,10 @@ impl UnifiedViewer {
 
     pub(crate) fn set_hold_diffs(&mut self, hold: bool) {
         self.hold_diffs = hold;
+    }
+
+    pub(crate) fn status_stale(&self) -> bool {
+        self.status_stale
     }
 
     pub(crate) fn set_fail_next_viewed_write(&mut self, message: Option<String>) {

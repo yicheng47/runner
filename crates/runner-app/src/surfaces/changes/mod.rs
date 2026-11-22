@@ -550,11 +550,7 @@ impl ChangesView {
     fn apply_saved_changes(&mut self, saved: SavedChangesState, cx: &mut Context<Self>) {
         let same_root = matches!(
             &self.body,
-            Body::Root(state)
-                if runner_core::app_paths::same_normalized_checkout_path(
-                    &state.root.path,
-                    &saved.root,
-                )
+            Body::Root(state) if picker::same_checkout_path(&state.root.path, &saved.root)
         );
         if !same_root {
             return;
@@ -617,9 +613,7 @@ impl ChangesView {
         let Body::Root(state) = &mut self.body else {
             return;
         };
-        if !runner_core::app_paths::same_normalized_checkout_path(&state.root.path, root)
-            || &state.selected_target != target
-        {
+        if !picker::same_checkout_path(&state.root.path, root) || &state.selected_target != target {
             return;
         }
         let mut updated = false;
@@ -870,10 +864,7 @@ impl ChangesView {
                     }));
                     if let Body::Root(state) = &self.body
                         && self.pending_restore.as_ref().is_some_and(|pending| {
-                            !runner_core::app_paths::same_normalized_checkout_path(
-                                &state.root.path,
-                                &pending.root,
-                            )
+                            !picker::same_checkout_path(&state.root.path, &pending.root)
                         })
                     {
                         self.pending_restore = None;
