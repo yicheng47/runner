@@ -917,6 +917,7 @@ pub fn set_title(conn: &Connection, id: &str, title: Option<&str>) -> rusqlite::
     )
 }
 
+/// A chat's latest name wins, so a new agent title replaces the person's.
 pub fn set_live_title(
     conn: &Connection,
     id: &str,
@@ -924,7 +925,9 @@ pub fn set_live_title(
     expected_started_at: Option<&str>,
 ) -> rusqlite::Result<usize> {
     conn.execute(
-        "UPDATE sessions SET live_title = ?2
+        "UPDATE sessions
+            SET live_title = ?2,
+                title = CASE WHEN ?2 IS NOT NULL AND mission_id IS NULL THEN NULL ELSE title END
           WHERE id = ?1
             AND started_at IS ?3
             AND live_title IS NOT ?2
@@ -1152,7 +1155,6 @@ pub fn direct_title(chat: &DirectSessionRow) -> String {
         None,
         chat.row.live_title.as_deref(),
         runtime,
-        handle,
         chat.row.cwd.as_deref(),
     )
     .unwrap_or_else(|| {
@@ -1358,7 +1360,7 @@ mod tests {
     }
 
     #[test]
-    fn live_titles_survive_reopen_and_resume_but_not_a_fresh_conversation() {
+    fn live_titles_survive_reopen_and_resume_but_not_a_fresh_conversation_and_latest_name_wins() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("runner.db");
         let started = Utc::now();
@@ -1377,6 +1379,8 @@ mod tests {
                 set_live_title(&conn, &row.id, Some("Cars"), Some(&stamp)).unwrap(),
                 1
             );
+            assert_eq!(get_row(&conn, &row.id).unwrap().unwrap().title, None);
+            set_title(&conn, &row.id, Some("Manual name")).unwrap();
             assert_eq!(
                 set_live_title(&conn, &row.id, Some("Cars"), Some(&stamp)).unwrap(),
                 0
@@ -1413,15 +1417,45 @@ mod tests {
             set_live_title(&conn, &row.id, Some("New topic"), Some(&stamp)).unwrap(),
             1
         );
+        assert_eq!(get_row(&conn, &row.id).unwrap().unwrap().title, None);
+        set_title(&conn, &row.id, Some("Renamed again")).unwrap();
         assert_eq!(
             set_live_title(&conn, &row.id, None, Some(&stamp)).unwrap(),
             1
+        );
+        assert_eq!(
+            get_row(&conn, &row.id).unwrap().unwrap().title.as_deref(),
+            Some("Renamed again")
         );
         assert_eq!(
             set_live_title(&conn, &row.id, None, Some(&stamp)).unwrap(),
             0
         );
         assert_eq!(get_row(&conn, &row.id).unwrap().unwrap().live_title, None);
+    }
+
+    #[test]
+    fn mission_member_titles_survive_new_live_titles() {
+        let pool = db::open_in_memory().unwrap();
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO missions (id, title, status, started_at) VALUES ('m1', 'M', 'running', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let mut row = SessionRowDb::new_running("member".into());
+        row.mission_id = Some("m1".into());
+        row.agent_runtime = Some("codex".into());
+        row.title = Some("Member name".into());
+        insert(&conn, &row).unwrap();
+        assert_eq!(
+            set_live_title(&conn, &row.id, Some("Topic"), None).unwrap(),
+            1
+        );
+        assert_eq!(
+            get_row(&conn, &row.id).unwrap().unwrap().title.as_deref(),
+            Some("Member name")
+        );
     }
 
     #[test]

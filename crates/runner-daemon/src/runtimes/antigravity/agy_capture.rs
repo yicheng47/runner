@@ -105,18 +105,18 @@ pub(crate) struct CaptureRequest {
 
 pub(crate) fn spawn_capture(request: CaptureRequest) {
     let name = format!("agy-capture-{}", request.session_id);
+    let title_sync = SummaryTitleSync::for_launch(&request);
     if let Err(error) = std::thread::Builder::new()
         .name(name)
-        .spawn(move || run(request))
+        .spawn(move || run(request, title_sync))
     {
         log::warn!("spawn Antigravity key capture: {error}");
     }
 }
 
-fn run(request: CaptureRequest) {
+fn run(request: CaptureRequest, mut title_sync: SummaryTitleSync) {
     let mut tail = LogTail::default();
     let mut active_key = request.initial_key.clone();
-    let mut title_sync = SummaryTitleSync::default();
     loop {
         // Read once more after the stop flag so a line written just before
         // exit still lands.
@@ -145,17 +145,55 @@ fn run(request: CaptureRequest) {
 #[derive(Default)]
 struct SummaryTitleSync {
     last_observed: Option<(String, String)>,
+    /// A titled resumed conversation whose summary could not be read at launch.
+    pending_baseline: Option<String>,
 }
 
 impl SummaryTitleSync {
+    /// A resumed conversation's summary can predate a `/rename` Runner already holds, so the
+    /// summary at launch is treated as seen and only a later change counts as a new title.
+    fn for_launch(request: &CaptureRequest) -> Self {
+        // An unreadable row counts as titled: skipping the baseline could erase the person's name.
+        let titled = request.pool.get().map_or(true, |conn| {
+            crate::repo::session::get_row(&conn, &request.session_id)
+                .map_or(true, |row| row.is_some_and(|row| row.live_title.is_some()))
+        });
+        let (Some(key), Some(summaries_db)) = (
+            request.initial_key.as_deref().filter(|_| titled),
+            request.summaries_db_path.as_deref(),
+        ) else {
+            return Self::default();
+        };
+        match read_summary_title(summaries_db, key) {
+            Ok(raw) => Self {
+                last_observed: raw
+                    .and_then(|raw| {
+                        crate::session::title::provider_title(&raw, request.cwd.as_deref())
+                    })
+                    .map(|cleaned| (key.to_owned(), cleaned)),
+                pending_baseline: None,
+            },
+            Err(_) => Self {
+                last_observed: None,
+                pending_baseline: Some(key.to_owned()),
+            },
+        }
+    }
+
     fn poll(&mut self, request: &CaptureRequest, summaries_db: &Path, conversation_id: &str) {
-        let Some(raw) = read_summary_title(summaries_db, conversation_id) else {
+        let Ok(raw) = read_summary_title(summaries_db, conversation_id) else {
             return;
         };
-        let Some(cleaned) = crate::session::title::provider_title(&raw, request.cwd.as_deref())
+        let baseline = self.pending_baseline.take().as_deref() == Some(conversation_id);
+        let Some(cleaned) =
+            raw.and_then(|raw| crate::session::title::provider_title(&raw, request.cwd.as_deref()))
         else {
             return;
         };
+        if baseline {
+            self.last_observed = Some((conversation_id.to_owned(), cleaned));
+            return;
+        }
         if self
             .last_observed
             .as_ref()
@@ -169,16 +207,15 @@ impl SummaryTitleSync {
     }
 }
 
-fn read_summary_title(path: &Path, conversation_id: &str) -> Option<String> {
+fn read_summary_title(path: &Path, conversation_id: &str) -> rusqlite::Result<Option<String>> {
     use rusqlite::{Connection, OpenFlags, OptionalExtension};
-    if !path.is_file() {
-        return None;
+    if matches!(path.try_exists(), Ok(false)) {
+        return Ok(None);
     }
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
+    )?;
     let _ = conn.busy_timeout(Duration::from_millis(50));
     let _ = conn.pragma_update(None, "query_only", true);
     conn.query_row(
@@ -187,8 +224,6 @@ fn read_summary_title(path: &Path, conversation_id: &str) -> Option<String> {
         |row| row.get::<_, String>(0),
     )
     .optional()
-    .ok()
-    .flatten()
 }
 
 fn persist_title(request: &CaptureRequest, cleaned: &str) -> bool {
@@ -404,7 +439,7 @@ I0922 16:29:57.818131     580 conversation_manager.go:887] Streaming conversatio
 
         let temp = tempfile::tempdir().unwrap();
         let missing_db = temp.path().join("missing/conversation_summaries.db");
-        assert_eq!(read_summary_title(&missing_db, "conv-1"), None);
+        assert_eq!(read_summary_title(&missing_db, "conv-1").unwrap(), None);
         assert!(!missing_db.exists(), "read-only poll must never create DB");
 
         let db_path = temp.path().join("conversation_summaries.db");
@@ -561,5 +596,127 @@ I0922 16:29:57.818131     580 conversation_manager.go:887] Streaming conversatio
                 .as_deref(),
             Some("Switched Topic")
         );
+    }
+
+    #[test]
+    fn resumed_summary_replay_keeps_a_newer_runner_name_until_the_summary_changes() {
+        struct NoEvents;
+        impl SessionEvents for NoEvents {
+            fn exit(&self, _: &crate::session::manager::ExitEvent) {}
+        }
+
+        let mut launches = vec!["readable", "sql-locked", "row-unreadable"];
+        if cfg!(unix) {
+            launches.push("dir-unsearchable");
+        }
+        for launch in launches {
+            let temp = tempfile::tempdir().unwrap();
+            let provider = temp.path().join("provider");
+            std::fs::create_dir(&provider).unwrap();
+            let db_path = provider.join("conversation_summaries.db");
+            let writer = rusqlite::Connection::open(&db_path).unwrap();
+            writer
+                .execute_batch(
+                    "CREATE TABLE conversation_summaries (
+                        conversation_id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL DEFAULT ''
+                    );",
+                )
+                .unwrap();
+            let c1 = "27499127-777f-4aad-9e04-7c9208bfd9b6";
+            writer
+                .execute(
+                    "INSERT INTO conversation_summaries (conversation_id, title) VALUES (?1, 'Old A')",
+                    [c1],
+                )
+                .unwrap();
+
+            let pool = Arc::new(crate::db::open_in_memory().unwrap());
+            let manager = crate::session::manager::SessionManager::key_test_manager();
+            let mut row = crate::test_support::test_session_row(
+                "s-agy",
+                crate::model::SessionStatus::Running,
+            );
+            row.agent_runtime = Some("antigravity".into());
+            row.cwd = Some("/tmp/my-project".into());
+            row.live_title = Some("Native B".into());
+            row.title = Some("Runner C".into());
+            let started_at = row.started_at.unwrap().to_rfc3339();
+            crate::repo::session::insert(&pool.get().unwrap(), &row).unwrap();
+            let request_with = |pool: &Arc<DbPool>| CaptureRequest {
+                manager: Arc::downgrade(&manager),
+                session_id: "s-agy".into(),
+                mission_id: None,
+                log_path: log_path(temp.path(), "s-agy"),
+                summaries_db_path: Some(db_path.clone()),
+                cwd: Some("/tmp/my-project".into()),
+                initial_key: Some(c1.into()),
+                expected_row_started_at: started_at.clone(),
+                stop: Arc::new(AtomicBool::new(false)),
+                pool: Arc::clone(pool),
+                events: Arc::new(NoEvents),
+            };
+            let request = request_with(&pool);
+            let stored = || {
+                let row = crate::repo::session::get_row(&pool.get().unwrap(), "s-agy")
+                    .unwrap()
+                    .unwrap();
+                (row.title, row.live_title)
+            };
+            let names =
+                |title: Option<&str>, live: &str| (title.map(str::to_owned), Some(live.to_owned()));
+
+            let mut sync = match launch {
+                "sql-locked" => {
+                    writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+                    let sync = SummaryTitleSync::for_launch(&request);
+                    writer.execute_batch("COMMIT").unwrap();
+                    sync
+                }
+                "row-unreadable" => {
+                    let unreadable = Arc::new(crate::db::open_in_memory().unwrap());
+                    unreadable
+                        .get()
+                        .unwrap()
+                        .execute_batch("ALTER TABLE sessions RENAME TO sessions_unreadable")
+                        .unwrap();
+                    SummaryTitleSync::for_launch(&request_with(&unreadable))
+                }
+                #[cfg(unix)]
+                "dir-unsearchable" => {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = |mode| {
+                        std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(mode))
+                            .unwrap()
+                    };
+                    mode(0o000);
+                    let sync = SummaryTitleSync::for_launch(&request);
+                    mode(0o755);
+                    sync
+                }
+                _ => SummaryTitleSync::for_launch(&request),
+            };
+            assert!(
+                sync.last_observed.is_some() || sync.pending_baseline.is_some(),
+                "{launch} launch left no baseline"
+            );
+            sync.poll(&request, &db_path, c1);
+            sync.poll(&request, &db_path, c1);
+            assert_eq!(stored(), names(Some("Runner C"), "Native B"), "{launch}");
+
+            for (summary, expected) in [
+                ("Native B", names(Some("Runner C"), "Native B")),
+                ("Fresh D", names(None, "Fresh D")),
+            ] {
+                writer
+                    .execute(
+                        "UPDATE conversation_summaries SET title = ?2 WHERE conversation_id = ?1",
+                        [c1, summary],
+                    )
+                    .unwrap();
+                sync.poll(&request, &db_path, c1);
+                assert_eq!(stored(), expected, "{summary}, {launch}");
+            }
+        }
     }
 }

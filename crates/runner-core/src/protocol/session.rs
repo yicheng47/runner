@@ -103,7 +103,6 @@ impl DirectSessionEntry {
             live,
             self.live_title.as_deref(),
             &self.agent_runtime,
-            self.handle.as_deref(),
             self.cwd.as_deref(),
         )
     }

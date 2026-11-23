@@ -669,10 +669,11 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
                 .unwrap_or_default();
             let title = runner_core::protocol::session_title::preferred_title(
                 row.title.as_deref(),
-                row.live_title.as_deref(),
+                row.live_title
+                    .as_deref()
+                    .filter(|_| row.mission_id.is_none()),
                 None,
                 runtime_key,
-                handle.as_deref(),
                 row.cwd.as_deref(),
             )
             .unwrap_or_else(|| {
@@ -791,7 +792,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn overview_session_titles_preserve_role_identity_and_explicit_names() {
+    fn overview_session_titles_follow_the_latest_name() {
         let core = crate::test_support::test_core();
         let conn = core.db.get().unwrap();
         for (id, handle) in [("role-one", "planner"), ("role-two", "coder")] {
@@ -809,7 +810,7 @@ mod tests {
                 "pi",
                 None,
                 "π - runner-biz-plan - titles",
-                "@coder",
+                "runner-biz-plan",
             ),
             (
                 "named",
@@ -891,13 +892,17 @@ mod tests {
             repo::session::set_live_title(&conn, "one", Some("New provider topic"), None).unwrap(),
             1
         );
+        assert_eq!(
+            repo::session::set_live_title(&conn, "named", Some("Agent rename"), None).unwrap(),
+            1
+        );
         repo::session::set_title(&conn, "two", Some("User session name")).unwrap();
         repo::node::rename(&conn, &tabs[0].1, "User tab name").unwrap();
         drop(conn);
         let after = overview(&core).unwrap();
-        assert_eq!(after.sessions["one"].title, "@planner");
+        assert_eq!(after.sessions["one"].title, "New provider topic");
         assert_eq!(after.sessions["two"].title, "User session name");
-        assert_eq!(after.sessions["named"].title, "Release prep");
+        assert_eq!(after.sessions["named"].title, "Agent rename");
         assert_eq!(
             after
                 .tabs

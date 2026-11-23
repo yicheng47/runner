@@ -236,6 +236,8 @@ impl SessionManager {
                     let title = title.trim();
                     (!title.is_empty()).then(|| title.to_string())
                 });
+                // The fork replays the inherited agent title at startup; that is not a new name.
+                row.live_title.clone_from(&source.live_title);
                 row.agent_runtime.clone_from(&source.agent_runtime);
                 row.agent_command.clone_from(&source.agent_command);
                 row.launch_definition = Some(fork_definition.clone());

@@ -5,7 +5,6 @@ pub fn preferred_title(
     live: Option<&str>,
     persisted_live: Option<&str>,
     runtime: &str,
-    handle: Option<&str>,
     cwd: Option<&str>,
 ) -> Option<String> {
     title.map(str::to_owned).or_else(|| {
@@ -13,10 +12,6 @@ pub fn preferred_title(
             return live
                 .filter(|title| !title.trim().is_empty())
                 .map(str::to_owned);
-        }
-        // Provider topics can describe the injected role prompt; identity stays stable.
-        if handle.is_some() {
-            return None;
         }
         live.and_then(|title| provider_title(title, cwd))
             .or_else(|| persisted_live.and_then(|title| provider_title(title, cwd)))
@@ -55,7 +50,28 @@ pub fn osc_provider_title(raw: &str, runtime: Runtime, cwd: Option<&str>) -> Opt
     if runtime == Runtime::Pi && !has_pi_brand_prefix(&clean) {
         return None;
     }
+    if runtime == Runtime::Codex && is_codex_rename_progress(&clean) {
+        return None;
+    }
     provider_title_clean(&clean, cwd)
+}
+
+/// Codex titles a thread `[<frame> ]renaming... <frame>[ | <project>]` while it names it.
+fn is_codex_rename_progress(clean: &str) -> bool {
+    let is_frame = |c: char| ('\u{2800}'..='\u{28ff}').contains(&c);
+    let mut title = clean.trim();
+    let mut chars = title.chars();
+    if chars.next().is_some_and(is_frame) && chars.next() == Some(' ') {
+        title = chars.as_str();
+    }
+    let Some(rest) = title.strip_prefix("renaming... ") else {
+        return false;
+    };
+    let mut chars = rest.chars();
+    chars.next().is_some_and(is_frame) && {
+        let tail = chars.as_str();
+        tail.is_empty() || tail.starts_with(" | ")
+    }
 }
 
 pub fn provider_title(raw: &str, cwd: Option<&str>) -> Option<String> {
@@ -207,36 +223,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preferred_titles_keep_manual_names_role_identity_and_live_fallbacks() {
-        for handle in ["planner", "coder"] {
-            assert_eq!(
-                preferred_title(
-                    None,
-                    Some("New topic"),
-                    Some("Stored topic"),
-                    "pi",
-                    Some(handle),
-                    None
-                ),
-                None
-            );
-            assert_eq!(
-                default_label("pi", "pi", Some(handle), "pi"),
-                format!("@{handle}")
-            );
-            assert_eq!(
-                preferred_title(
-                    Some("My name"),
-                    Some("New topic"),
-                    None,
-                    "pi",
-                    Some(handle),
-                    None
-                )
-                .as_deref(),
-                Some("My name")
-            );
-        }
+    fn preferred_titles_keep_manual_names_and_live_fallbacks() {
+        assert_eq!(
+            preferred_title(
+                Some("My name"),
+                Some("π - New topic - runner"),
+                None,
+                "pi",
+                Some("/tmp/runner")
+            )
+            .as_deref(),
+            Some("My name")
+        );
         for (live, expected) in [
             ("π - Fresh topic - runner", "Fresh topic"),
             ("π - runner", "Stored topic"),
@@ -248,7 +246,6 @@ mod tests {
                     Some(live),
                     Some("Stored topic"),
                     "pi",
-                    None,
                     Some("/tmp/runner")
                 )
                 .as_deref(),
@@ -261,11 +258,11 @@ mod tests {
                 Some("π - runner"),
                 Some("pi"),
                 "pi",
-                None,
                 Some("/tmp/runner")
             ),
             None
         );
+        assert_eq!(default_label("pi", "pi", Some("planner"), "pi"), "@planner");
         assert_eq!(default_label("pi", "pi", None, "pi"), "pi");
     }
 
@@ -277,20 +274,11 @@ mod tests {
             (None, None),
         ] {
             assert_eq!(
-                preferred_title(
-                    None,
-                    live,
-                    Some("Old terminal title"),
-                    "shell",
-                    Some("term"),
-                    None
-                )
-                .as_deref(),
+                preferred_title(None, live, Some("Old terminal title"), "shell", None).as_deref(),
                 expected
             );
             assert_eq!(
-                preferred_title(Some("Build logs"), live, None, "shell", Some("term"), None)
-                    .as_deref(),
+                preferred_title(Some("Build logs"), live, None, "shell", None).as_deref(),
                 Some("Build logs")
             );
         }
@@ -427,6 +415,42 @@ mod tests {
         assert_eq!(
             osc_provider_title("◐ Airplane type", Runtime::ClaudeCode, cwd).as_deref(),
             Some("Airplane type")
+        );
+    }
+
+    #[test]
+    fn codex_rename_progress_is_dropped_only_from_codex_osc_titles() {
+        let cwd = Some("/Users/jason/repos/yicheng47");
+        for raw in [
+            "⠙ renaming... ⠙ | yicheng47",
+            "renaming... ⠹ | yicheng47",
+            "⠸ renaming... ⠸",
+        ] {
+            assert_eq!(osc_provider_title(raw, Runtime::Codex, cwd), None, "{raw}");
+        }
+        for (raw, runtime, expected) in [
+            ("Renaming | yicheng47", Runtime::Codex, "Renaming"),
+            (
+                "renaming... the parser | yicheng47",
+                Runtime::Codex,
+                "renaming... the parser",
+            ),
+            ("π - Renaming - yicheng47", Runtime::Pi, "Renaming"),
+            (
+                "π - Renaming - Files - yicheng47",
+                Runtime::Pi,
+                "Renaming - Files",
+            ),
+        ] {
+            assert_eq!(
+                osc_provider_title(raw, runtime, cwd).as_deref(),
+                Some(expected),
+                "{raw}"
+            );
+        }
+        assert_eq!(
+            provider_title("Renaming", None).as_deref(),
+            Some("Renaming")
         );
     }
 
