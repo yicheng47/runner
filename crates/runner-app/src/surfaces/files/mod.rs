@@ -811,6 +811,8 @@ impl FilesPanel {
                     .h_full()
                     .min_h(px(0.))
                     .bg(theme::panel())
+                    .rounded_tr(rems(11. / 16.))
+                    .rounded_br(rems(11. / 16.))
                     .flex()
                     .flex_col()
                     .child(rail_column),
@@ -1021,6 +1023,7 @@ impl FilesPanel {
                         .flex_1()
                         .min_h(px(0.))
                         .min_w(px(0.))
+                        .pb(rems(8. / 16.))
                         .flex()
                         .flex_col()
                         .child(rail_body),

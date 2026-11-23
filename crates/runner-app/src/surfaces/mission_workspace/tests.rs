@@ -5278,6 +5278,25 @@ fn mission_rail_progressively_widens_on_file_or_diff_and_shrinks_back_to_300px()
             visual.run_until_parked();
         }
     };
+    // The rail's square fills stay inside its 1 px border and clear of its 11 px bottom curves,
+    // and a column at the right edge meets the border without a gap (#1440).
+    let assert_inside_card =
+        |visual: &mut gpui::VisualTestContext, column: &'static str, at_right_edge: bool| {
+            let rail = visual.debug_bounds("MISSION_RAIL").unwrap();
+            let bounds = visual.debug_bounds(column).unwrap();
+            assert!(
+                bounds.right() <= rail.right() - px(0.5),
+                "{column} {bounds:?} crosses the rail's right border {rail:?}"
+            );
+            assert!(
+                bounds.bottom() <= rail.bottom() - px(8.5),
+                "{column} {bounds:?} reaches the rail's bottom corners {rail:?}"
+            );
+            assert!(
+                !at_right_edge || bounds.right() >= rail.right() - px(1.01),
+                "{column} {bounds:?} leaves a gap before the rail's right border {rail:?}"
+            );
+        };
 
     // Fresh mission rail starts compact at 300 px on Sessions (single-column session cards).
     assert!((rail_width(&mut visual) - 300.).abs() <= 1.);
@@ -5308,6 +5327,8 @@ fn mission_rail_progressively_widens_on_file_or_diff_and_shrinks_back_to_300px()
             && v.debug_bounds("CHANGES_DIFF_CODE").is_some()
             && (rail_width(v) - 700.).abs() <= 1.
     });
+    assert_inside_card(&mut visual, "CHANGES_LIST_COLUMN", true);
+    assert_inside_card(&mut visual, "CHANGES_DIFF_CODE", false);
     // Switching right rail to Sessions and Files while the diff is open produces 0 px jump!
     click(&mut visual, "PANEL_ACTIVITY Sessions");
     assert!(
@@ -5363,6 +5384,15 @@ fn mission_rail_progressively_widens_on_file_or_diff_and_shrinks_back_to_300px()
                 })
                 .unwrap()
     });
+    for scale in [2., 1.5] {
+        visual.simulate_scale_factor_change(scale);
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        assert_inside_card(&mut visual, "FILES_TREE_COLUMN", true);
+        assert_inside_card(&mut visual, "FILE_CODE", false);
+    }
+    visual.simulate_scale_factor_change(2.);
+    visual.run_until_parked();
 
     let start = visual.debug_bounds("MISSION_RAIL_GUTTER").unwrap().center();
     visual.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());

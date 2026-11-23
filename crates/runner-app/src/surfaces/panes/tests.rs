@@ -5475,3 +5475,82 @@ fn search_files_opens_finder_when_rail_is_hidden_and_in_narrow_sheet() {
     host.update(&mut visual, |_, window, _| window.remove_window())
         .unwrap();
 }
+
+#[test]
+fn an_open_file_and_its_tree_stay_inside_the_chat_panel_card() {
+    use std::time::{Duration, Instant};
+
+    let (temp, _cx, store, host, mut visual) = panel_root("direct-agent");
+    let root = temp.path().join("checkout");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("lib.rs"), "pub fn lib() {}\n").unwrap();
+    store.update(&mut visual, |store, cx| {
+        store
+            .test_core
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET files_root = ?1 WHERE id = 'direct-agent'",
+                [root.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+    });
+    host.update(&mut visual, |root, _, cx| root.chat_files.release(cx))
+        .unwrap();
+    visual.run_until_parked();
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                pred: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !pred(visual) {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::yield_now();
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+        }
+    };
+
+    open_chat_panel(&host, &mut visual);
+    wait(&mut visual, "checkout tree loaded", &|v| {
+        v.debug_bounds("FILES_ROW lib.rs").is_some()
+    });
+    click_selector(&mut visual, "FILES_ROW lib.rs");
+    wait(&mut visual, "lib.rs open beside the tree, settled", &|v| {
+        v.debug_bounds("FILE_CODE").is_some()
+            && v.debug_bounds("FILES_TREE_COLUMN").is_some()
+            && host
+                .read_with(v, |r, _| r.chat_panel_width_anim.started_at.is_none())
+                .unwrap()
+    });
+
+    // The square fills stay inside the card's 1 px border and clear of its 11 px bottom curves,
+    // and the tree meets the right border without a gap at a fractional display scale (#1440).
+    for scale in [2., 1.5] {
+        visual.simulate_scale_factor_change(scale);
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
+        for column in ["FILES_TREE_COLUMN", "FILE_CODE"] {
+            let bounds = visual.debug_bounds(column).unwrap();
+            assert!(
+                bounds.right() <= panel.right() - px(0.5),
+                "{scale}x: {column} {bounds:?} crosses the panel's right border {panel:?}"
+            );
+            assert!(
+                bounds.bottom() <= panel.bottom() - px(8.5),
+                "{scale}x: {column} {bounds:?} reaches the panel's bottom corners {panel:?}"
+            );
+        }
+        let tree = visual.debug_bounds("FILES_TREE_COLUMN").unwrap();
+        assert!(
+            tree.right() >= panel.right() - px(1.01),
+            "{scale}x: the tree {tree:?} leaves a gap before the panel's right border {panel:?}"
+        );
+    }
+    visual.simulate_scale_factor_change(2.);
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}

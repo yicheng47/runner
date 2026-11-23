@@ -851,6 +851,7 @@ impl NativeRoot {
         let req_max_root = cx.entity();
         let surface_root = cx.entity();
         let settings = self.settings(cx).clone();
+        let zoom = settings.app_zoom;
         let selection = self.active_chat_panel_selection();
         let shown = side_panel::shown(surface, &settings, &selection);
         let handler: side_panel::SurfaceHandler = Rc::new(move |action, _window, cx| {
@@ -1005,10 +1006,23 @@ impl NativeRoot {
             },
             cx,
         );
+        let border = if chat_card || sheet {
+            2.
+        } else if border_on {
+            1.
+        } else {
+            0.
+        };
         let panel = div()
             .relative()
             .when(maximized, |p| p.w_full().flex_1().min_w(px(0.)))
-            .when(!maximized, |p| p.w(rems(width / 16.)).flex_none())
+            .when(!maximized, |p| {
+                if sheet || visibility >= 1. {
+                    p.w_full()
+                } else {
+                    p.w(px(width * zoom - border)).flex_none()
+                }
+            })
             .h_full()
             .flex()
             .flex_col()

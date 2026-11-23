@@ -11,6 +11,7 @@ use crate::surfaces::changes::{
 };
 
 const LIST_WIDTH: f32 = 300.;
+const TAB_HEIGHT: f32 = 28.;
 
 fn strip_button(id: &'static str, active: bool) -> gpui::Stateful<gpui::Div> {
     div()
@@ -202,7 +203,7 @@ impl UnifiedViewer {
             })
             .group(group.clone())
             .flex_none()
-            .h(px(28.))
+            .h(px(TAB_HEIGHT))
             .pl(px(8.))
             .pr(px(6.))
             .flex()
@@ -424,6 +425,7 @@ impl UnifiedViewer {
         let offset = self.strip.offset().x;
         let max = self.strip.max_offset().x;
         let overflowing = max > px(0.5);
+        // The fade covers only the tabs' band, so it stays clear of the card's rounded corners (#1440).
         let fade = |left: bool| {
             let bg = theme::bg();
             div()
@@ -433,11 +435,27 @@ impl UnifiedViewer {
                 .w(px(28.))
                 .when(left, |element| element.left_0())
                 .when(!left, |element| element.right_0())
-                .bg(linear_gradient(
-                    if left { 90. } else { 270. },
-                    linear_color_stop(bg, 0.),
-                    linear_color_stop(theme::with_alpha(bg, 0.), 1.),
-                ))
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .when(cfg!(test), |element| {
+                            element.debug_selector(move || {
+                                if left {
+                                    "FILE_TAB_FADE_LEFT".into()
+                                } else {
+                                    "FILE_TAB_FADE_RIGHT".into()
+                                }
+                            })
+                        })
+                        .w_full()
+                        .h(px(TAB_HEIGHT))
+                        .bg(linear_gradient(
+                            if left { 90. } else { 270. },
+                            linear_color_stop(bg, 0.),
+                            linear_color_stop(theme::with_alpha(bg, 0.), 1.),
+                        )),
+                )
         };
         let count = self.tabs.tabs().len();
         let list_anchor = self.list_anchor.clone();
@@ -1406,7 +1424,6 @@ impl Render for UnifiedViewer {
             .flex_1()
             .min_w(px(0.))
             .h_full()
-            .bg(theme::bg())
             .flex()
             .flex_col()
             .child(strip)
@@ -1416,6 +1433,7 @@ impl Render for UnifiedViewer {
                     .flex_1()
                     .min_w(px(0.))
                     .min_h(px(0.))
+                    .pb(rems(8. / 16.))
                     .flex()
                     .flex_col()
                     .child(file),

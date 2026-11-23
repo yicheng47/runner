@@ -1346,6 +1346,22 @@ fn the_tab_strip_overflows_into_a_list_of_every_open_file() {
         h.has("FILE_TAB_LIST"),
         "the list button shows while tabs are cut off"
     );
+    // The edge fades cover only the tabs' band, clear of the card's rounded corners (#1440).
+    let tab = h
+        .visual
+        .debug_bounds("FILE_TAB src/file_8.rs".to_string().leak())
+        .unwrap();
+    let fades = ["FILE_TAB_FADE_LEFT", "FILE_TAB_FADE_RIGHT"]
+        .into_iter()
+        .filter_map(|fade| h.visual.debug_bounds(fade).map(|bounds| (fade, bounds)))
+        .collect::<Vec<_>>();
+    assert!(!fades.is_empty(), "an overflowing strip shows an edge fade");
+    for (fade, bounds) in fades {
+        assert!(
+            bounds.top() >= tab.top() - px(0.5) && bounds.bottom() <= tab.bottom() + px(0.5),
+            "{fade} {bounds:?} spills past the tabs' band {tab:?}"
+        );
+    }
     h.click("FILE_TAB_LIST");
     assert!(h.has("FILE_TAB_LIST_POPUP"));
     for index in 0..9 {
