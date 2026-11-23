@@ -2131,17 +2131,13 @@ fn a_direct_chat_takes_no_report_until_its_agent_is_ready_after_spawn_and_resume
     let spawned = manager
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(app_data.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(app_data.path().to_str().unwrap().into()),
+                ..Default::default()
+            },
             app_data.path(),
             pool.clone(),
             capture(),
-            None,
         )
         .unwrap();
     let id = spawned.id.clone();
@@ -2204,17 +2200,14 @@ fn a_codex_chat_takes_reports_once_its_startup_output_settles_only_where_no_trus
         manager
             .spawn_direct(
                 &role,
-                None,
-                None,
-                None,
-                None,
-                Some(app_data.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(app_data.path().to_str().unwrap().into()),
+                    first_turn: first_turn.map(str::to_owned),
+                    ..Default::default()
+                },
                 app_data.path(),
                 pool.clone(),
                 capture(),
-                first_turn.map(str::to_owned),
             )
             .unwrap()
             .id
@@ -2340,17 +2333,14 @@ fn a_chat_started_with_a_first_turn_takes_no_report_until_that_turn_completes() 
     let spawned = manager
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(app_data.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(app_data.path().to_str().unwrap().into()),
+                first_turn: Some("first turn".into()),
+                ..Default::default()
+            },
             app_data.path(),
             pool.clone(),
             capture(),
-            Some("first turn".into()),
         )
         .unwrap();
     let id = spawned.id.clone();
@@ -2840,17 +2830,13 @@ fn codex_no_osc_startup_releases_queued_delivery_after_trust_and_first_turn_whil
     let untrusted = manager
         .spawn_direct(
             &codex_role,
-            None,
-            None,
-            None,
-            None,
-            Some(app_data.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(app_data.path().to_str().unwrap().into()),
+                ..Default::default()
+            },
             app_data.path(),
             pool.clone(),
             capture(),
-            None,
         )
         .unwrap()
         .id;
@@ -2905,17 +2891,14 @@ fn codex_no_osc_startup_releases_queued_delivery_after_trust_and_first_turn_whil
     let first_turn = manager
         .spawn_direct(
             &codex_role,
-            None,
-            None,
-            None,
-            None,
-            Some(app_data.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(app_data.path().to_str().unwrap().into()),
+                first_turn: Some("summarize".into()),
+                ..Default::default()
+            },
             app_data.path(),
             pool.clone(),
             capture(),
-            Some("summarize".into()),
         )
         .unwrap()
         .id;
@@ -3001,17 +2984,13 @@ fn codex_no_osc_startup_releases_queued_delivery_after_trust_and_first_turn_whil
     let untrusted_failed = manager
         .spawn_direct(
             &codex_role,
-            None,
-            None,
-            None,
-            None,
-            Some(app_data.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(app_data.path().to_str().unwrap().into()),
+                ..Default::default()
+            },
             app_data.path(),
             pool.clone(),
             capture(),
-            None,
         )
         .unwrap()
         .id;
@@ -3072,17 +3051,14 @@ fn codex_no_osc_startup_releases_queued_delivery_after_trust_and_first_turn_whil
     let trusted_no_hooks = manager
         .spawn_direct(
             &disabled_hooks_role,
-            None,
-            None,
-            None,
-            None,
-            Some(app_data.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(app_data.path().to_str().unwrap().into()),
+                first_turn: Some("summarize".into()),
+                ..Default::default()
+            },
             app_data.path(),
             pool.clone(),
             capture(),
-            Some("summarize".into()),
         )
         .unwrap()
         .id;
@@ -3156,17 +3132,14 @@ fn codex_trusted_direct_first_turn_with_disabled_hooks_emits_unavailable_and_set
     let spawned = manager
         .spawn_direct(
             &codex_role,
-            None,
-            None,
-            None,
-            None,
-            Some(app_data.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(app_data.path().to_str().unwrap().into()),
+                first_turn: Some("summarize".into()),
+                ..Default::default()
+            },
             app_data.path(),
             pool.clone(),
             events.clone(),
-            Some("summarize".into()),
         )
         .unwrap();
     let id = &spawned.id;

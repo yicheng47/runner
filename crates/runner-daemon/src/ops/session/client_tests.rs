@@ -489,16 +489,14 @@ fn root_scoped_role_chat_stays_unfiled_inside_a_project() {
 
     let spawned = session::session_start_direct(
         &handler,
-        "role".into(),
-        None,
-        None,
-        None,
-        ProjectScope::Root,
-        None,
-        None,
-        None,
+        session::DirectLaunch {
+            role_id: Some("role".into()),
+            scope: ProjectScope::Root,
+            ..Default::default()
+        },
     )
-    .unwrap();
+    .unwrap()
+    .session;
 
     assert_root_row_and_tab(&handler, &spawned.id);
     session::session_kill(&handler, &spawned.id).unwrap();
@@ -512,15 +510,14 @@ fn root_scoped_runtime_chat_stays_unfiled_inside_a_project() {
     let handler = tracking_handler(app_data_dir);
     let cwd = project_with_nested_cwd(&handler, temp.path());
 
-    let output = session::session_start_runtime(
+    let output = session::session_start_direct(
         &handler,
-        crate::model::Runtime::Codex.key(),
-        ProjectScope::Root,
-        Some(cwd),
-        None,
-        None,
-        None,
-        None,
+        session::DirectLaunch {
+            runtime: Some(crate::model::Runtime::Codex.key().into()),
+            scope: ProjectScope::Root,
+            cwd: Some(cwd),
+            ..Default::default()
+        },
     )
     .unwrap();
 

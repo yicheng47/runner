@@ -1427,238 +1427,153 @@ fn resolve_direct_start_in_with_worktree(
     Ok((role, project_id, cwd))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn session_start_direct_impl_with_speed(
+/// Options for starting a direct chat session (role-backed or runtime-direct)
+/// through [`session_start_direct`].
+#[derive(Debug, Clone)]
+pub struct DirectLaunch {
+    /// Role ID for a role-backed chat; `None` starts a role-free runtime chat.
+    pub role_id: Option<String>,
+    /// Raw runtime name: overrides the role's runtime when `role_id` is `Some`,
+    /// or selects the runtime directly when `role_id` is `None`.
+    pub runtime: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub speed: Option<CodexSpeed>,
+    pub scope: ProjectScope,
+    pub cwd: Option<String>,
+    pub worktree: Option<runner_core::protocol::WorktreeSpec>,
+    pub cols: Option<u16>,
+    pub rows: Option<u16>,
+    pub initial_prompt: Option<String>,
+}
+
+impl Default for DirectLaunch {
+    fn default() -> Self {
+        Self {
+            role_id: None,
+            runtime: None,
+            model: None,
+            effort: None,
+            speed: None,
+            scope: ProjectScope::Infer,
+            cwd: None,
+            worktree: None,
+            cols: None,
+            rows: None,
+            initial_prompt: None,
+        }
+    }
+}
+
+pub fn session_start_direct(
     state: &AppCore,
-    role_id: String,
-    runtime: Option<String>,
-    model: Option<String>,
-    effort: Option<String>,
-    speed: Option<CodexSpeed>,
-    project_id: Option<String>,
-    cwd: Option<String>,
-    cols: Option<u16>,
-    rows: Option<u16>,
+    launch: DirectLaunch,
 ) -> Result<StartDirectSessionOutput> {
-    session_start_direct_impl_with_speed_and_prompt(
-        state,
+    let DirectLaunch {
         role_id,
         runtime,
         model,
         effort,
         speed,
-        ProjectScope::or_infer(project_id),
+        scope,
         cwd,
-        None,
-        cols,
-        rows,
-        None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn session_start_direct_impl_with_speed_and_prompt(
-    state: &AppCore,
-    role_id: String,
-    runtime: Option<String>,
-    model: Option<String>,
-    effort: Option<String>,
-    speed: Option<CodexSpeed>,
-    scope: ProjectScope,
-    cwd: Option<String>,
-    worktree: Option<runner_core::protocol::WorktreeSpec>,
-    cols: Option<u16>,
-    rows: Option<u16>,
-    initial_prompt: Option<String>,
-) -> Result<StartDirectSessionOutput> {
-    let reg_guard = state.files.worktree_gate().read();
-    let (role, project_id, cwd) =
-        resolve_direct_start_in_with_worktree(state, &role_id, &scope, cwd, worktree)?;
-    #[cfg(test)]
-    state.files.worktree_gate().fire_before_registration();
-    spawn_direct_chat_with_prompt(
-        state,
-        &role,
-        runtime,
-        model,
-        effort,
-        speed,
-        project_id,
-        cwd,
+        worktree,
         cols,
         rows,
         initial_prompt,
-        move || drop(reg_guard),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn spawn_direct_chat_with_prompt(
-    state: &AppCore,
-    role: &Role,
-    runtime: Option<String>,
-    model: Option<String>,
-    effort: Option<String>,
-    speed: Option<CodexSpeed>,
-    project_id: Option<String>,
-    effective_cwd: Option<String>,
-    cols: Option<u16>,
-    rows: Option<u16>,
-    initial_prompt: Option<String>,
-    after_row_insert: impl FnOnce(),
-) -> Result<StartDirectSessionOutput> {
-    let first_turn =
-        crate::router::prompt::compose_direct_first_turn(role.system_prompt.as_deref());
-    let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
-    let session = state
-        .sessions
-        .spawn_direct_with_speed_and_prompt_after_insert(
-            role,
-            runtime.as_deref(),
-            model.as_deref(),
-            effort.as_deref(),
-            speed,
-            project_id.as_deref(),
-            effective_cwd.as_deref(),
-            cols,
-            rows,
-            &state.app_data_dir,
-            state.db.clone(),
-            emitter,
-            first_turn,
-            initial_prompt,
-            after_row_insert,
-        )
-        .map_err(|e| e.context("session_start_direct"))?;
-    crate::ops::onboarding::mark_completed_on_activity(state)?;
-    Ok(StartDirectSessionOutput {
-        session,
-        project_id,
-        cwd: effective_cwd,
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn session_start_direct(
-    state: &AppCore,
-    role_id: String,
-    runtime: Option<String>,
-    model: Option<String>,
-    effort: Option<String>,
-    scope: ProjectScope,
-    cwd: Option<String>,
-    cols: Option<u16>,
-    rows: Option<u16>,
-) -> Result<SpawnedSession> {
-    session_start_direct_with_speed(
-        state, role_id, runtime, model, effort, None, scope, cwd, cols, rows,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn session_start_direct_with_speed(
-    state: &AppCore,
-    role_id: String,
-    runtime: Option<String>,
-    model: Option<String>,
-    effort: Option<String>,
-    speed: Option<CodexSpeed>,
-    scope: ProjectScope,
-    cwd: Option<String>,
-    cols: Option<u16>,
-    rows: Option<u16>,
-) -> Result<SpawnedSession> {
-    Ok(session_start_direct_impl_with_speed_and_prompt(
-        state, role_id, runtime, model, effort, speed, scope, cwd, None, cols, rows, None,
-    )?
-    .session)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn session_start_runtime(
-    state: &AppCore,
-    runtime: &str,
-    scope: ProjectScope,
-    cwd: Option<String>,
-    cols: Option<u16>,
-    rows: Option<u16>,
-    model: Option<String>,
-    effort: Option<String>,
-) -> Result<StartDirectSessionOutput> {
-    session_start_runtime_with_speed(state, runtime, scope, cwd, cols, rows, model, effort, None)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn session_start_runtime_with_speed(
-    state: &AppCore,
-    runtime: &str,
-    scope: ProjectScope,
-    cwd: Option<String>,
-    cols: Option<u16>,
-    rows: Option<u16>,
-    model: Option<String>,
-    effort: Option<String>,
-    speed: Option<CodexSpeed>,
-) -> Result<StartDirectSessionOutput> {
-    session_start_runtime_with_speed_and_prompt(
-        state, runtime, scope, cwd, None, cols, rows, model, effort, speed, None,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn session_start_runtime_with_speed_and_prompt(
-    state: &AppCore,
-    runtime: &str,
-    scope: ProjectScope,
-    cwd: Option<String>,
-    worktree: Option<runner_core::protocol::WorktreeSpec>,
-    cols: Option<u16>,
-    rows: Option<u16>,
-    model: Option<String>,
-    effort: Option<String>,
-    speed: Option<CodexSpeed>,
-    initial_prompt: Option<String>,
-) -> Result<StartDirectSessionOutput> {
-    let mut role = runtime_direct_role(runtime, None, model.as_deref(), effort.as_deref())?;
-    if crate::runtimes::for_key(runtime).capabilities().codex_speed {
-        role.codex_speed = speed;
+    } = launch;
+    match (role_id, runtime) {
+        (Some(role_id), runtime) => {
+            let reg_guard = state.files.worktree_gate().read();
+            let (role, project_id, cwd) =
+                resolve_direct_start_in_with_worktree(state, &role_id, &scope, cwd, worktree)?;
+            #[cfg(test)]
+            state.files.worktree_gate().fire_before_registration();
+            let first_turn =
+                crate::router::prompt::compose_direct_first_turn(role.system_prompt.as_deref());
+            let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
+            let session = state
+                .sessions
+                .spawn_direct_after_insert(
+                    &role,
+                    crate::session::manager::DirectLaunch {
+                        runtime_override: runtime,
+                        model_override: model,
+                        effort_override: effort,
+                        speed_override: speed,
+                        project_id: project_id.clone(),
+                        cwd: cwd.clone(),
+                        cols,
+                        rows,
+                        first_turn,
+                        initial_prompt,
+                        runtime_direct: false,
+                    },
+                    &state.app_data_dir,
+                    state.db.clone(),
+                    emitter,
+                    move || drop(reg_guard),
+                )
+                .map_err(|e| e.context("session_start_direct"))?;
+            crate::ops::onboarding::mark_completed_on_activity(state)?;
+            Ok(StartDirectSessionOutput {
+                session,
+                project_id,
+                cwd,
+            })
+        }
+        (None, Some(runtime)) => {
+            let mut role =
+                runtime_direct_role(&runtime, None, model.as_deref(), effort.as_deref())?;
+            if crate::runtimes::for_key(&runtime)
+                .capabilities()
+                .codex_speed
+            {
+                role.codex_speed = speed;
+            }
+            let reg_guard = state.files.worktree_gate().read();
+            let cwd = resolve_worktree_before_start(state, &scope, cwd, worktree)?;
+            let (project_id, cwd) = {
+                let conn = state.db.get()?;
+                project::resolve_scope_with_git(&conn, state.files.git().as_ref(), &scope, cwd)?
+            };
+            #[cfg(test)]
+            state.files.worktree_gate().fire_before_registration();
+            let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
+            let session = state
+                .sessions
+                .spawn_direct_after_insert(
+                    &role,
+                    crate::session::manager::DirectLaunch {
+                        project_id: project_id.clone(),
+                        cwd: cwd.clone(),
+                        cols,
+                        rows,
+                        initial_prompt,
+                        runtime_direct: true,
+                        ..Default::default()
+                    },
+                    &state.app_data_dir,
+                    state.db.clone(),
+                    emitter,
+                    move || drop(reg_guard),
+                )
+                .map_err(|e| e.context("session_start_runtime"))?;
+            if role.runtime != Runtime::Shell.key() {
+                crate::ops::onboarding::mark_completed_on_activity(state)?;
+            }
+            state.events.emit(
+                "session/updated",
+                &serde_json::json!({ "session_id": session.id }),
+            );
+            Ok(StartDirectSessionOutput {
+                session,
+                project_id,
+                cwd,
+            })
+        }
+        (None, None) => Err(Error::msg("one of role_id or runtime is required")),
     }
-    let reg_guard = state.files.worktree_gate().read();
-    let cwd = resolve_worktree_before_start(state, &scope, cwd, worktree)?;
-    let (project_id, cwd) = {
-        let conn = state.db.get()?;
-        project::resolve_scope_with_git(&conn, state.files.git().as_ref(), &scope, cwd)?
-    };
-    #[cfg(test)]
-    state.files.worktree_gate().fire_before_registration();
-    let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
-    let spawned = state
-        .sessions
-        .spawn_runtime_direct_with_prompt_after_insert(
-            &role,
-            project_id.as_deref(),
-            cwd.as_deref(),
-            cols,
-            rows,
-            &state.app_data_dir,
-            state.db.clone(),
-            emitter,
-            initial_prompt,
-            move || drop(reg_guard),
-        )
-        .map_err(|e| e.context("session_start_runtime"))?;
-    if role.runtime != Runtime::Shell.key() {
-        crate::ops::onboarding::mark_completed_on_activity(state)?;
-    }
-    state.events.emit(
-        "session/updated",
-        &serde_json::json!({ "session_id": spawned.id }),
-    );
-    Ok(StartDirectSessionOutput {
-        session: spawned,
-        project_id,
-        cwd,
-    })
 }
 
 fn resolve_shell_command(shell: Option<String>) -> Result<String> {
@@ -1764,12 +1679,16 @@ pub fn session_start_shell_in(
     let emitter: Arc<dyn SessionEvents> = Arc::new(state.session_events());
     let spawned = state
         .sessions
-        .spawn_runtime_direct_after_insert(
+        .spawn_direct_after_insert(
             &role,
-            project_id.as_deref(),
-            cwd.as_deref(),
-            cols,
-            rows,
+            crate::session::manager::DirectLaunch {
+                project_id,
+                cwd,
+                cols,
+                rows,
+                runtime_direct: true,
+                ..Default::default()
+            },
             &state.app_data_dir,
             state.db.clone(),
             emitter,
@@ -1882,36 +1801,22 @@ pub fn session_start_chat(
     let scope = args
         .scope
         .unwrap_or_else(|| ProjectScope::or_infer(args.project_id));
-    match (args.role_id, args.runtime) {
-        (Some(role_id), runtime) => session_start_direct_impl_with_speed_and_prompt(
-            state,
-            role_id,
-            runtime.map(|runtime| runtime.to_string()),
-            args.model,
-            args.effort,
-            args.speed,
+    session_start_direct(
+        state,
+        DirectLaunch {
+            role_id: args.role_id,
+            runtime: args.runtime.map(|runtime| runtime.to_string()),
+            model: args.model,
+            effort: args.effort,
+            speed: args.speed,
             scope,
-            args.cwd,
-            args.worktree,
-            args.cols,
-            args.rows,
-            args.initial_prompt,
-        ),
-        (None, Some(runtime)) => session_start_runtime_with_speed_and_prompt(
-            state,
-            runtime.key(),
-            scope,
-            args.cwd,
-            args.worktree,
-            args.cols,
-            args.rows,
-            args.model,
-            args.effort,
-            args.speed,
-            args.initial_prompt,
-        ),
-        (None, None) => Err(Error::msg("one of role_id or runtime is required")),
-    }
+            cwd: args.cwd,
+            worktree: args.worktree,
+            cols: args.cols,
+            rows: args.rows,
+            initial_prompt: args.initial_prompt,
+        },
+    )
 }
 
 pub fn session_list_with_activity(state: &AppCore) -> Result<Vec<serde_json::Value>> {

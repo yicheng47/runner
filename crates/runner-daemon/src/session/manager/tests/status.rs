@@ -16,17 +16,13 @@ fn direct_chat_status_transition_emits_session_status_busy() {
     let spawned = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             Arc::clone(&cap) as Arc<dyn SessionEvents>,
-            None,
         )
         .unwrap();
 
@@ -67,17 +63,13 @@ fn direct_chat_status_transition_emits_session_status_idle() {
     let spawned = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             Arc::clone(&cap) as Arc<dyn SessionEvents>,
-            None,
         )
         .unwrap();
     assert!(
@@ -115,17 +107,13 @@ fn direct_chat_typing_stays_idle_until_submit() {
     let spawned = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             Arc::clone(&cap) as Arc<dyn SessionEvents>,
-            None,
         )
         .unwrap();
 

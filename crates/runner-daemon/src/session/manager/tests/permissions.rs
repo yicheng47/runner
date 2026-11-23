@@ -43,17 +43,14 @@ fn direct_chat_persona_lands_as_trailing_positional_argv_without_worker_preamble
     let spawned = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some("/tmp"),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some("/tmp".into()),
+                first_turn: Some(body.clone()),
+                ..Default::default()
+            },
             std::path::Path::new("/tmp"),
             Arc::clone(&pool),
             capture(),
-            Some(body.clone()),
         )
         .unwrap();
 
@@ -499,17 +496,13 @@ fn direct_spawn_strips_permission_flags() {
     let spawned = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
-            None,
         )
         .unwrap();
     let args = fake.last_spawn_spec().unwrap().args;
@@ -603,17 +596,13 @@ fn direct_chat_spawn_and_resume_strip_permission_flags_and_preserve_row_args() {
         let spawned = mgr
             .spawn_direct(
                 &role,
-                None,
-                None,
-                None,
-                None,
-                Some(app_data.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(app_data.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 app_data.path(),
                 Arc::clone(&pool),
                 capture(),
-                None,
             )
             .unwrap();
         let args = fake.last_spawn_spec().unwrap().args;
@@ -670,12 +659,13 @@ fn runtime_only_chat_spawn_and_resume_assert_no_permission_posture() {
         let fake = fake_runtime();
         let mgr = mgr_with_fake(None, Arc::clone(&fake));
         let spawned = mgr
-            .spawn_runtime_direct(
+            .spawn_direct(
                 &role,
-                None,
-                Some(app_data.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(app_data.path().to_str().unwrap().into()),
+                    runtime_direct: true,
+                    ..Default::default()
+                },
                 app_data.path(),
                 Arc::clone(&pool),
                 capture(),
@@ -1036,17 +1026,13 @@ fn claude_account_metadata_records_effective_chat_bypass() {
     let session = manager
         .spawn_direct(
             &configured,
-            None,
-            None,
-            None,
-            None,
-            root.path().to_str(),
-            None,
-            None,
+            DirectLaunch {
+                cwd: root.path().to_str().map(str::to_owned),
+                ..Default::default()
+            },
             root.path(),
             pool.clone(),
             capture(),
-            None,
         )
         .unwrap();
     let saved = crate::repo::session::get_row(&pool.get().unwrap(), &session.id)
@@ -1088,17 +1074,13 @@ fn chat_bypass_switch_applies_to_roles_with_stored_permission_modes() {
             let session = manager
                 .spawn_direct(
                     &configured,
-                    None,
-                    None,
-                    None,
-                    None,
-                    root.path().to_str(),
-                    None,
-                    None,
+                    DirectLaunch {
+                        cwd: root.path().to_str().map(str::to_owned),
+                        ..Default::default()
+                    },
                     root.path(),
                     pool.clone(),
                     capture(),
-                    None,
                 )
                 .unwrap();
             let check = |args: &[String]| {
@@ -1173,17 +1155,13 @@ fn antigravity_chat_bypass_switch_applies_and_strips_conflicting_mode_flags() {
         let session = manager
             .spawn_direct(
                 &configured,
-                None,
-                None,
-                None,
-                None,
-                root.path().to_str(),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: root.path().to_str().map(str::to_owned),
+                    ..Default::default()
+                },
                 root.path(),
                 pool.clone(),
                 capture(),
-                None,
             )
             .unwrap();
         let check = |args: &[String]| {

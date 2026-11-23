@@ -63,6 +63,7 @@ pub mod terminal;
 #[cfg(windows)]
 pub(crate) mod windows_shutdown;
 
+pub use direct_spawn::DirectLaunch;
 pub use events::*;
 use events::{drop_streak_is_loggable, emit_role_activity, open_mission_event_log, AppendOutcome};
 use shell::{is_terminal_shell, resolve_shell_resume_cwd};

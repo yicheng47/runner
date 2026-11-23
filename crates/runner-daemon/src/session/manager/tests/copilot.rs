@@ -33,17 +33,14 @@ fn copilot_direct_spawn_persists_key_before_spawn_and_resume_never_replays_first
     let spawned = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(app_data.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(app_data.path().to_str().unwrap().into()),
+                first_turn: Some("persona first turn".into()),
+                ..Default::default()
+            },
             app_data.path(),
             pool.clone(),
             capture(),
-            Some("persona first turn".into()),
         )
         .unwrap();
     let key: String = pool

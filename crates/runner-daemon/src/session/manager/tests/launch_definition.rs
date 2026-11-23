@@ -18,20 +18,18 @@ fn direct_spawn_records_effective_inputs_before_machine_settings() {
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, fake.clone());
     let out = mgr
-        .spawn_direct_with_speed(
+        .spawn_direct(
             &configured,
-            None,
-            Some("selected-model"),
-            Some("xhigh"),
-            Some(CodexSpeed::Standard),
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                model_override: Some("selected-model".into()),
+                effort_override: Some("xhigh".into()),
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                speed_override: Some(CodexSpeed::Standard),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             pool.clone(),
             capture(),
-            None,
         )
         .unwrap();
     let row = crate::repo::session::get_row(&pool.get().unwrap(), &out.id)
@@ -76,17 +74,13 @@ fn direct_resume_keeps_every_recorded_input_and_agent_defaults_after_role_edit()
         let out = mgr
             .spawn_direct(
                 &configured,
-                None,
-                None,
-                None,
-                None,
-                Some(home.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(home.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 home.path(),
                 pool.clone(),
                 capture(),
-                None,
             )
             .unwrap();
         let original = crate::repo::session::get_row(&pool.get().unwrap(), &out.id)
@@ -385,17 +379,13 @@ fn claude_accounts_follow_active_selection_and_resume_and_fork_from_origin() {
     let source = mgr
         .spawn_direct(
             &configured,
-            None,
-            None,
-            None,
-            None,
-            Some(cwd),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(cwd.into()),
+                ..Default::default()
+            },
             temp.path(),
             pool.clone(),
             capture(),
-            None,
         )
         .unwrap();
     let spec = fake.last_spawn_spec().unwrap();
@@ -576,17 +566,13 @@ fn claude_rekey_after_account_switch_resumes_and_forks_the_new_conversation() {
         let source = mgr
             .spawn_direct(
                 &configured,
-                None,
-                None,
-                None,
-                None,
-                Some(cwd),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(cwd.into()),
+                    ..Default::default()
+                },
                 temp.path(),
                 pool.clone(),
                 capture(),
-                None,
             )
             .unwrap();
         let row = || {
@@ -725,17 +711,13 @@ fn claude_legacy_shell_pin_keeps_its_origin_when_a_second_account_is_added() {
     let source = mgr
         .spawn_direct(
             &configured,
-            None,
-            None,
-            None,
-            None,
-            temp.path().to_str(),
-            None,
-            None,
+            DirectLaunch {
+                cwd: temp.path().to_str().map(str::to_owned),
+                ..Default::default()
+            },
             temp.path(),
             pool.clone(),
             capture(),
-            None,
         )
         .unwrap();
     let row = crate::repo::session::get_row(&pool.get().unwrap(), &source.id)
@@ -914,17 +896,13 @@ fn claude_trust_uses_the_effective_launch_account_and_environment() {
         let out = crate::runtimes::with_conversation_home(&home, || {
             mgr.spawn_direct(
                 &configured,
-                None,
-                None,
-                None,
-                None,
-                cwd.to_str(),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: cwd.to_str().map(str::to_owned),
+                    ..Default::default()
+                },
                 data.path(),
                 pool,
                 capture(),
-                None,
             )
         })
         .unwrap();

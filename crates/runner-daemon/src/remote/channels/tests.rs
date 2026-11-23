@@ -1489,17 +1489,15 @@ async fn a_pty_that_stops_reading_its_input_stalls_only_that_sessions_input_1377
 
     let cwd = Some(temp.path().to_string_lossy().into_owned());
     let start = || {
-        crate::ops::session::session_start_direct_impl_with_speed(
+        crate::ops::session::session_start_direct(
             &core,
-            "role-codex".into(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            cwd.clone(),
-            Some(80),
-            Some(24),
+            crate::ops::session::DirectLaunch {
+                role_id: Some("role-codex".into()),
+                cwd: cwd.clone(),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
         )
         .unwrap()
         .session

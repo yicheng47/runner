@@ -614,34 +614,25 @@ impl DaemonCore {
                             .map_err(|_| bad_request())
                     })
                     .transpose()?;
-                let scope = p::ProjectScope::or_root(project);
-                let session = match (role, runtime) {
-                    (Some(role), runtime) => ops::session::session_start_direct_with_speed(
-                        core,
-                        role,
+                if role.is_none() && runtime.is_none() {
+                    return Err(bad_request());
+                }
+                let session = ops::session::session_start_direct(
+                    core,
+                    ops::session::DirectLaunch {
+                        role_id: role,
                         runtime,
                         model,
                         effort,
                         speed,
-                        scope,
+                        scope: p::ProjectScope::or_root(project),
                         cwd,
-                        Some(cols),
-                        Some(rows),
-                    ),
-                    (None, Some(runtime)) => ops::session::session_start_runtime_with_speed(
-                        core,
-                        &runtime,
-                        scope,
-                        cwd,
-                        Some(cols),
-                        Some(rows),
-                        model,
-                        effort,
-                        speed,
-                    )
-                    .map(|out| out.session),
-                    (None, None) => return Err(bad_request()),
-                }
+                        cols: Some(cols),
+                        rows: Some(rows),
+                        ..Default::default()
+                    },
+                )
+                .map(|out| out.session)
                 .map_err(launch_failed)?;
                 Ok(session_result(session))
             }

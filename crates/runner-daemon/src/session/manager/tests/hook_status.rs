@@ -412,17 +412,13 @@ fn assert_status_uses_existing_direct_and_mission_consumers(source: &'static str
         } else {
             mgr.spawn_direct(
                 &role,
-                None,
-                None,
-                None,
-                None,
-                Some(fixture_tmp_dir().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 app_data.path(),
                 Arc::clone(&pool),
                 cap.clone(),
-                None,
             )
             .unwrap()
         };

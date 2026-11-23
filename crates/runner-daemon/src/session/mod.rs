@@ -24,4 +24,4 @@ pub mod status;
 pub(crate) mod system_prompt;
 pub mod title;
 
-pub use manager::{CompleteSpawnOutcome, PendingMissionSpawn, SessionManager};
+pub use manager::{CompleteSpawnOutcome, DirectLaunch, PendingMissionSpawn, SessionManager};

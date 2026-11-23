@@ -637,15 +637,16 @@ mod tests {
                     env: runner_daemon::shell_path::LoginShellEnv::default(),
                 });
             }
-            let started = runner_daemon::ops::session::session_start_runtime(
+            let started = runner_daemon::ops::session::session_start_direct(
                 &core,
-                "opencode",
-                runner_core::protocol::ProjectScope::Root,
-                Some(dir.path().to_str().unwrap().to_owned()),
-                Some(80),
-                Some(24),
-                None,
-                None,
+                runner_daemon::ops::session::DirectLaunch {
+                    runtime: Some("opencode".into()),
+                    scope: runner_core::protocol::ProjectScope::Root,
+                    cwd: Some(dir.path().to_str().unwrap().to_owned()),
+                    cols: Some(80),
+                    rows: Some(24),
+                    ..Default::default()
+                },
             )
             .unwrap();
             let id = started.session.id;

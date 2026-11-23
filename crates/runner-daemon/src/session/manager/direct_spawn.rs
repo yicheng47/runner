@@ -1,11 +1,37 @@
 use super::*;
 use crate::model::CodexSpeed;
 
+/// Options for spawning a direct session (role-backed chat, runtime-direct
+/// chat, or terminal shell) through [`SessionManager::spawn_direct`].
+#[derive(Debug, Default, Clone)]
+pub struct DirectLaunch {
+    /// Chat-level engine override (feature 41): `None` uses the role's own
+    /// runtime unchanged; a differing registry runtime spawns that engine with
+    /// registry command / default args while the role's persona fields carry
+    /// over.
+    pub runtime_override: Option<String>,
+    pub model_override: Option<String>,
+    pub effort_override: Option<String>,
+    pub speed_override: Option<CodexSpeed>,
+    pub project_id: Option<String>,
+    pub cwd: Option<String>,
+    pub cols: Option<u16>,
+    pub rows: Option<u16>,
+    /// Composed persona body for a role-backed direct chat (no worker
+    /// preamble).
+    pub first_turn: Option<String>,
+    /// Optional first user turn sent once the direct session starts.
+    pub initial_prompt: Option<String>,
+    /// True for role-free runtime-direct or terminal shell launches: leaves
+    /// `sessions.role_id` null, skips role-activity emission, and uses the
+    /// synthetic `Role` as-is.
+    pub runtime_direct: bool,
+}
+
 impl SessionManager {
-    /// Spawn a "direct chat" PTY: a role process with **no parent
-    /// mission**. Schema-supported since C5.5a (`sessions.mission_id` is
-    /// nullable); C8.5 surfaces it as the "Chat now" affordance on the
-    /// Role Detail page.
+    /// Spawn a "direct chat" PTY: a session with **no parent mission**.
+    /// Schema-supported since C5.5a (`sessions.mission_id` is nullable);
+    /// C8.5 surfaces it as the "Chat now" affordance on the Role Detail page.
     ///
     /// Differences vs. the mission-flavored `spawn`:
     ///   - No `RUNNER_MISSION_ID`, `RUNNER_EVENT_LOG`, or
@@ -19,72 +45,27 @@ impl SessionManager {
     ///   - The session does not show up in `kill_all_for_mission` for any
     ///     mission_id, so a `mission_stop` on some unrelated crew never
     ///     yanks the user's open chat.
-    ///
-    /// `first_turn` is the composed persona body for the direct chat
-    /// (no preamble — direct chats are off-bus). When the runtime
-    /// supports argv-based delivery the persona lands as the
-    /// trailing positional at spawn. Pass `None` when there's no
-    /// persona to deliver, or for tests that don't care about boot
-    /// context.
-    /// `runtime_override` is the chat-level engine choice (feature 41):
-    /// `None` spawns the role's own runtime unchanged; a differing
-    /// registry runtime spawns that engine with registry command /
-    /// default args while the role's persona fields carry over.
-    /// `model_override` / `effort_override` apply after runtime
-    /// resolution and can also customize the role's own engine.
-    #[allow(clippy::too_many_arguments)]
     pub fn spawn_direct(
         self: &Arc<Self>,
         role: &Role,
-        runtime_override: Option<&str>,
-        model_override: Option<&str>,
-        effort_override: Option<&str>,
-        project_id: Option<&str>,
-        cwd: Option<&str>,
-        cols: Option<u16>,
-        rows: Option<u16>,
+        launch: DirectLaunch,
         app_data_dir: &Path,
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
-        first_turn: Option<String>,
     ) -> Result<SpawnedSession> {
-        self.spawn_direct_with_speed(
-            role,
-            runtime_override,
-            model_override,
-            effort_override,
-            None,
-            project_id,
-            cwd,
-            cols,
-            rows,
-            app_data_dir,
-            pool,
-            events,
-            first_turn,
-        )
+        self.spawn_direct_after_insert(role, launch, app_data_dir, pool, events, || {})
     }
 
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn spawn_direct_with_speed(
+    pub(crate) fn spawn_direct_after_insert(
         self: &Arc<Self>,
         role: &Role,
-        runtime_override: Option<&str>,
-        model_override: Option<&str>,
-        effort_override: Option<&str>,
-        speed_override: Option<CodexSpeed>,
-        project_id: Option<&str>,
-        cwd: Option<&str>,
-        cols: Option<u16>,
-        rows: Option<u16>,
+        launch: DirectLaunch,
         app_data_dir: &Path,
         pool: Arc<DbPool>,
         events: Arc<dyn SessionEvents>,
-        first_turn: Option<String>,
+        after_row_insert: impl FnOnce(),
     ) -> Result<SpawnedSession> {
-        self.spawn_direct_with_speed_and_prompt(
-            role,
+        let DirectLaunch {
             runtime_override,
             model_override,
             effort_override,
@@ -93,226 +74,40 @@ impl SessionManager {
             cwd,
             cols,
             rows,
-            app_data_dir,
-            pool,
-            events,
             first_turn,
-            None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn spawn_direct_with_speed_and_prompt(
-        self: &Arc<Self>,
-        role: &Role,
-        runtime_override: Option<&str>,
-        model_override: Option<&str>,
-        effort_override: Option<&str>,
-        speed_override: Option<CodexSpeed>,
-        project_id: Option<&str>,
-        cwd: Option<&str>,
-        cols: Option<u16>,
-        rows: Option<u16>,
-        app_data_dir: &Path,
-        pool: Arc<DbPool>,
-        events: Arc<dyn SessionEvents>,
-        first_turn: Option<String>,
-        initial_prompt: Option<String>,
-    ) -> Result<SpawnedSession> {
-        self.spawn_direct_with_speed_and_prompt_after_insert(
-            role,
+            initial_prompt,
+            runtime_direct,
+        } = launch;
+        debug_assert!(
+            !runtime_direct
+                || (runtime_override.is_none()
+                    && model_override.is_none()
+                    && effort_override.is_none()
+                    && speed_override.is_none()
+                    && first_turn.is_none()),
+            "runtime_direct launches carry overrides on the synthetic Role, not on DirectLaunch"
+        );
+        let (
             runtime_override,
             model_override,
             effort_override,
             speed_override,
-            project_id,
-            cwd,
-            cols,
-            rows,
-            app_data_dir,
-            pool,
-            events,
             first_turn,
-            initial_prompt,
-            || {},
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn spawn_direct_with_speed_and_prompt_after_insert(
-        self: &Arc<Self>,
-        role: &Role,
-        runtime_override: Option<&str>,
-        model_override: Option<&str>,
-        effort_override: Option<&str>,
-        speed_override: Option<CodexSpeed>,
-        project_id: Option<&str>,
-        cwd: Option<&str>,
-        cols: Option<u16>,
-        rows: Option<u16>,
-        app_data_dir: &Path,
-        pool: Arc<DbPool>,
-        events: Arc<dyn SessionEvents>,
-        first_turn: Option<String>,
-        initial_prompt: Option<String>,
-        after_row_insert: impl FnOnce(),
-    ) -> Result<SpawnedSession> {
-        self.spawn_direct_inner(
-            role,
-            runtime_override,
-            model_override,
-            effort_override,
-            speed_override,
-            Some(role.id.as_str()),
-            project_id,
-            cwd,
-            cols,
-            rows,
-            app_data_dir,
-            pool,
-            events,
-            first_turn,
-            initial_prompt,
-            true,
-            after_row_insert,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn spawn_runtime_direct(
-        self: &Arc<Self>,
-        role: &Role,
-        project_id: Option<&str>,
-        cwd: Option<&str>,
-        cols: Option<u16>,
-        rows: Option<u16>,
-        app_data_dir: &Path,
-        pool: Arc<DbPool>,
-        events: Arc<dyn SessionEvents>,
-    ) -> Result<SpawnedSession> {
-        self.spawn_runtime_direct_with_prompt(
-            role,
-            project_id,
-            cwd,
-            cols,
-            rows,
-            app_data_dir,
-            pool,
-            events,
-            None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn spawn_runtime_direct_after_insert(
-        self: &Arc<Self>,
-        role: &Role,
-        project_id: Option<&str>,
-        cwd: Option<&str>,
-        cols: Option<u16>,
-        rows: Option<u16>,
-        app_data_dir: &Path,
-        pool: Arc<DbPool>,
-        events: Arc<dyn SessionEvents>,
-        after_row_insert: impl FnOnce(),
-    ) -> Result<SpawnedSession> {
-        self.spawn_runtime_direct_with_prompt_after_insert(
-            role,
-            project_id,
-            cwd,
-            cols,
-            rows,
-            app_data_dir,
-            pool,
-            events,
-            None,
-            after_row_insert,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn spawn_runtime_direct_with_prompt(
-        self: &Arc<Self>,
-        role: &Role,
-        project_id: Option<&str>,
-        cwd: Option<&str>,
-        cols: Option<u16>,
-        rows: Option<u16>,
-        app_data_dir: &Path,
-        pool: Arc<DbPool>,
-        events: Arc<dyn SessionEvents>,
-        initial_prompt: Option<String>,
-    ) -> Result<SpawnedSession> {
-        self.spawn_runtime_direct_with_prompt_after_insert(
-            role,
-            project_id,
-            cwd,
-            cols,
-            rows,
-            app_data_dir,
-            pool,
-            events,
-            initial_prompt,
-            || {},
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn spawn_runtime_direct_with_prompt_after_insert(
-        self: &Arc<Self>,
-        role: &Role,
-        project_id: Option<&str>,
-        cwd: Option<&str>,
-        cols: Option<u16>,
-        rows: Option<u16>,
-        app_data_dir: &Path,
-        pool: Arc<DbPool>,
-        events: Arc<dyn SessionEvents>,
-        initial_prompt: Option<String>,
-        after_row_insert: impl FnOnce(),
-    ) -> Result<SpawnedSession> {
-        self.spawn_direct_inner(
-            role,
-            None,
-            None,
-            None,
-            None,
-            None,
-            project_id,
-            cwd,
-            cols,
-            rows,
-            app_data_dir,
-            pool,
-            events,
-            None,
-            initial_prompt,
-            false,
-            after_row_insert,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn spawn_direct_inner(
-        self: &Arc<Self>,
-        role: &Role,
-        runtime_override: Option<&str>,
-        model_override: Option<&str>,
-        effort_override: Option<&str>,
-        speed_override: Option<CodexSpeed>,
-        persisted_role_id: Option<&str>,
-        project_id: Option<&str>,
-        cwd: Option<&str>,
-        cols: Option<u16>,
-        rows: Option<u16>,
-        app_data_dir: &Path,
-        pool: Arc<DbPool>,
-        events: Arc<dyn SessionEvents>,
-        first_turn: Option<String>,
-        initial_prompt: Option<String>,
-        emit_activity: bool,
-        after_row_insert: impl FnOnce(),
-    ) -> Result<SpawnedSession> {
+            persisted_role_id,
+            emit_activity,
+        ) = if runtime_direct {
+            (None, None, None, None, None, None, false)
+        } else {
+            (
+                runtime_override.as_deref(),
+                model_override.as_deref(),
+                effort_override.as_deref(),
+                speed_override,
+                first_turn,
+                Some(role.id.as_str()),
+                true,
+            )
+        };
         // Chat-level runtime override (feature 41) — same resolution
         // rule as mission spawns.
         let effective =
@@ -354,7 +149,7 @@ impl SessionManager {
         let plan = crate::runtimes::for_key(&role.runtime).resume_plan(None);
 
         // Reject explicitly missing folders before portable-pty can substitute another cwd.
-        let resolved_cwd = resolve_spawn_cwd(cwd, role.working_dir.as_deref());
+        let resolved_cwd = resolve_spawn_cwd(cwd.as_deref(), role.working_dir.as_deref());
         let Some(chat_cwd) = resolved_cwd.as_deref() else {
             return Err(Error::msg(
                 "home directory is unavailable; select a working directory before starting a chat",
@@ -444,7 +239,7 @@ impl SessionManager {
             |effect| {
                 let conn = pool.get()?;
                 let mut row = crate::repo::session::SessionRowDb::new_running(session_id.clone());
-                row.project_id = project_id.map(str::to_string);
+                row.project_id = project_id;
                 row.role_id = persisted_role_id.map(str::to_string);
                 row.cwd = resolved_cwd.clone();
                 row.started_at = Some(started_at_dt);

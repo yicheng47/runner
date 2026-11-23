@@ -327,17 +327,13 @@ fn resume_applies_a_size_pushed_mid_fork() {
     let spawned = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             events.clone(),
-            None,
         )
         .unwrap();
     let session_id = spawned.id.clone();
@@ -389,17 +385,13 @@ fn first_spawn_without_dims_uses_and_persists_default_size() {
     let spawned = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
-            None,
         )
         .unwrap();
 
@@ -436,17 +428,15 @@ fn resume_size_resolution_prefers_explicit_then_persisted_after_manager_restart(
     let spawned = first_mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            Some(120),
-            Some(30),
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                cols: Some(120),
+                rows: Some(30),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
-            None,
         )
         .unwrap();
     first_fake.close_spawn(0);
@@ -549,17 +539,15 @@ fn spawn_claude_for_resize(
     let spawned = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            Some(120),
-            Some(30),
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                cols: Some(120),
+                rows: Some(30),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
-            None,
         )
         .unwrap();
     (pool, fake, mgr, spawned.id)

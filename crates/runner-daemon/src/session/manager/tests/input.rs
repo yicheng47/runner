@@ -605,17 +605,13 @@ fn direct_chat(
 ) -> String {
     mgr.spawn_direct(
         role,
-        None,
-        None,
-        None,
-        None,
-        Some(fixture_tmp_dir().to_str().unwrap()),
-        None,
-        None,
+        DirectLaunch {
+            cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+            ..Default::default()
+        },
         fixture_tmp_dir(),
         Arc::clone(pool),
         Arc::clone(cap) as Arc<dyn SessionEvents>,
-        None,
     )
     .unwrap()
     .id
