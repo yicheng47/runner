@@ -135,10 +135,11 @@ Write one English plain-text post within 280 weighted characters, counting each 
 
 ### Save and hand off
 
-- Canonical Chinese draft: `social/references/platforms/wechat/runner-<version>-user-group.md`, shared with linux.do by reference rather than a duplicate post file.
-- Canonical Discord draft: `social/references/platforms/discord/runner-<version>-release.md`.
-- Canonical X draft: `social/x/drafts/runner-<version>-release.md`. Follow the existing original-post format: draft date and status, agent authorship, weighted length, a copyable `text` fence, source release URL and space for Jason's response. Link it from `social/x/runner/README.md`.
-- For WeChat/linux.do and Discord, follow the existing draft metadata pattern: date, `status: draft`, intended venue(s), language, agent authorship and source release URL, then the copyable post body. Update the platform README indexes and link the shared Chinese draft from `social/linux-do/README.md`. A draft is not evidence of publication; preserve published copy if one already exists.
+- Save all three channel drafts together in `social/runner/releases/<version>/`:
+  - Chinese (WeChat / linux.do): `social/runner/releases/<version>/wechat-linuxdo.md` (rendered linux.do changelog screenshot PNGs, when created, live alongside it in the same folder).
+  - Discord: `social/runner/releases/<version>/discord.md`.
+  - X: `social/runner/releases/<version>/x.md`. Follow the existing original-post format: draft date and status, agent authorship, weighted length, a copyable `text` fence, source release URL and space for Jason's response.
+- For WeChat/linux.do and Discord, follow the existing draft metadata pattern: date, `status: draft`, intended venue(s), language, agent authorship and source release URL, then the copyable post body. Add one row to `social/runner/releases/README.md` (the platform READMEs already link there). A draft is not evidence of publication; preserve published copy if one already exists.
 - Also export the bodies without metadata to `/tmp/runner-v<version>-release-note.zh-CN.txt`, `/tmp/runner-v<version>-release-note.en.md` (Discord) and `/tmp/runner-v<version>-release-note.x.en.txt` for easy copying. The social repo is the durable record; `/tmp` is only a convenience copy.
 - Review the social diff and follow its standing commit/push authorization, preserving unrelated edits. This does not authorize git writes in the Runner repo.
 - Show the requested platform or language in the reply (all three posts when neither is specified), with `text` fences for Chinese and X, and link all three saved drafts. Do not post to any platform; the user does that.
