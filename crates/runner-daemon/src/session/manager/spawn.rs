@@ -1,7 +1,9 @@
 use super::*;
 
+#[cfg(all(test, target_os = "macos"))]
+pub(super) use super::spawn_spec::ensure_utf8_locale;
 #[cfg(test)]
-pub(super) use super::spawn_spec::{agent_env, apply_launch_env, ensure_utf8_locale};
+pub(super) use super::spawn_spec::{agent_env, apply_launch_env};
 
 pub(super) fn delete_session_row(pool: &DbPool, session_id: &str) -> Result<()> {
     let mut conn = pool.get()?;
