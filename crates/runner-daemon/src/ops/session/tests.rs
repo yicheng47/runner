@@ -814,7 +814,7 @@ fn session_get_role_chat_runtime_override_uses_new_runtime_defaults() {
 }
 
 #[test]
-fn role_backed_chats_keep_their_handle_over_a_provider_title() {
+fn role_and_runtime_chats_show_the_provider_title_under_a_manual_name() {
     let entry = |handle: Option<&str>, runtime: &str| {
         let mut row = repo::session::SessionRowDb::new_running(ulid::Ulid::new().to_string());
         row.agent_runtime = Some(runtime.into());
@@ -831,28 +831,23 @@ fn role_backed_chats_keep_their_handle_over_a_provider_title() {
         .unwrap()
     };
 
-    // Role injects the role's system prompt as the first turn, so
-    // every chat from one role is titled identically. Identity wins.
-    let backed = entry(Some("housekeeper"), "claude-code");
-    assert_eq!(backed.preferred_title(None), None);
-    assert_eq!(backed.preferred_title(Some("Fix the parser")), None);
-
-    // A name the user typed still outranks the handle.
-    let mut named = entry(Some("housekeeper"), "claude-code");
-    named.title = Some("Release prep".into());
-    assert_eq!(named.preferred_title(None).as_deref(), Some("Release prep"));
-
-    // Runtime-only chats have no persona injected, so their title is
-    // the user's own first turn and stays useful.
-    let plain = entry(None, "codex");
-    assert_eq!(
-        plain.preferred_title(None).as_deref(),
-        Some("Housekeeping assistant setup")
-    );
-    assert_eq!(
-        plain.preferred_title(Some("Fix the parser")).as_deref(),
-        Some("Fix the parser")
-    );
+    for handle in [Some("housekeeper"), None] {
+        let chat = entry(handle, "claude-code");
+        assert_eq!(
+            chat.preferred_title(None).as_deref(),
+            Some("Housekeeping assistant setup")
+        );
+        assert_eq!(
+            chat.preferred_title(Some("Fix the parser")).as_deref(),
+            Some("Fix the parser")
+        );
+        let mut named = entry(handle, "claude-code");
+        named.title = Some("Release prep".into());
+        assert_eq!(
+            named.preferred_title(Some("Fix the parser")).as_deref(),
+            Some("Release prep")
+        );
+    }
 
     // Shell keeps its terminal title either way.
     let shell = entry(Some("term"), "shell");

@@ -136,6 +136,7 @@ fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
         row.launch_definition.as_mut().unwrap().model = Some("opus".into());
         row.launch_definition.as_mut().unwrap().effort = Some("max".into());
         row.title = Some("Source".into());
+        row.live_title = Some("Inherited topic".into());
         row.last_cols = Some(90);
         row.last_rows = Some(30);
         crate::test_support::insert_session_row(&conn, &row).unwrap();
@@ -179,6 +180,7 @@ fn claude_direct_chat_fork_spawns_tui_directly_with_copied_row() {
     assert_eq!(fork.agent_command.as_deref(), Some(command.as_str()));
     assert_eq!(fork.launch_definition, source_before.launch_definition);
     assert_eq!(fork.title.as_deref(), Some("Source (fork)"));
+    assert_eq!(fork.live_title.as_deref(), Some("Inherited topic"));
     assert_eq!(fork.last_cols, Some(120));
     assert_eq!(fork.last_rows, Some(40));
     assert!(fork.agent_session_key.is_some());

@@ -48,6 +48,14 @@ fn terminal_titles_persist_topics_and_ignore_directory_status_and_reset() {
     let terminal =
         TerminalSession::attach(core.clone(), row.id.clone(), 80, 24, Arc::new(|| {})).unwrap();
     assert_eq!(terminal.title(), "Previous topic");
+    assert_eq!(
+        session::get_row(&conn, &row.id)
+            .unwrap()
+            .unwrap()
+            .title
+            .as_deref(),
+        Some("Manual name")
+    );
     for (seq, data, expected, writes) in [
         (1, "\x1b[22;0t\x1b]0;⠋ Cars\x07", "Cars", 1),
         (2, "\x1b]0;⠙ Cars\x1b\\\x1b]2;Cars\x07", "Cars", 1),
@@ -81,7 +89,7 @@ fn terminal_titles_persist_topics_and_ignore_directory_status_and_reset() {
             stored.live_title.as_deref(),
             (!expected.is_empty()).then_some(expected)
         );
-        assert_eq!(stored.title.as_deref(), Some("Manual name"));
+        assert_eq!(stored.title, None);
         let count: usize = conn
             .query_row("SELECT COUNT(*) FROM title_writes", [], |row| row.get(0))
             .unwrap();
@@ -97,6 +105,58 @@ fn terminal_titles_persist_topics_and_ignore_directory_status_and_reset() {
     assert_eq!(detail.live_title.as_deref(), Some("Last topic"));
     let reopened = TerminalSession::attach(core, row.id, 80, 24, Arc::new(|| {})).unwrap();
     assert_eq!(reopened.title(), "Last topic");
+}
+
+#[test]
+fn replayed_or_progress_titles_keep_the_runner_name_until_a_new_title_arrives() {
+    use crate::repo::session::{self, SessionRowDb};
+    let temp = tempfile::tempdir().unwrap();
+    let core = test_core(temp.path());
+    let conn = core.db.get().unwrap();
+    for (id, runtime, cwd, steps) in [
+        (
+            "pi-fork",
+            "pi",
+            "/repos/runner",
+            [
+                ("\x1b]0;π - Cars - runner\x07", "Cars", true),
+                ("\x1b]0;π - Cars - runner\x07", "Cars", true),
+                ("\x1b]0;π - Trucks - runner\x07", "Trucks", false),
+            ],
+        ),
+        (
+            "codex-progress",
+            "codex",
+            "/Users/jason/repos/yicheng47",
+            [
+                ("\x1b]0;⠙ renaming... ⠙ | yicheng47\x07", "Cars", true),
+                ("\x1b]0;Cars | yicheng47\x07", "Cars", true),
+                ("\x1b]0;Trucks | yicheng47\x07", "Trucks", false),
+            ],
+        ),
+    ] {
+        let mut row = SessionRowDb::new_running(id.into());
+        row.agent_runtime = Some(runtime.into());
+        row.agent_command = Some(runtime.into());
+        row.cwd = Some(cwd.into());
+        row.title = Some("Cars (fork)".into());
+        row.live_title = Some("Cars".into());
+        session::insert(&conn, &row).unwrap();
+        let terminal =
+            TerminalSession::attach(core.clone(), row.id.clone(), 80, 24, Arc::new(|| {})).unwrap();
+        for (seq, (data, live, named)) in steps.into_iter().enumerate() {
+            terminal.feed_output(&output(seq as u64 + 1, data)).unwrap();
+            flush_terminal_events(&terminal);
+            assert_eq!(terminal.title(), live, "{id} {data:?}");
+            let stored = session::get_row(&conn, &row.id).unwrap().unwrap();
+            assert_eq!(stored.live_title.as_deref(), Some(live), "{id} {data:?}");
+            assert_eq!(
+                stored.title.as_deref(),
+                named.then_some("Cars (fork)"),
+                "{id} {data:?}"
+            );
+        }
+    }
 }
 
 #[test]
