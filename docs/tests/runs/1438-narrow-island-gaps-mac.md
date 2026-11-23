@@ -33,3 +33,20 @@ Computer Use intermittently returned an app-resolution error immediately after a
 QA stopped the two ephemeral shell sessions `01M84346A49F5TYVYJ2K7MMKA4` and `01M843EC873XV86T7WWW5H5MTG`. They disappeared from the development CLI session list after stopping. The direct-chat archive command reported that these ephemeral shells had no session to archive. QA stopped and archived the Codex chat `01M8432VVZRCR03NMA8YQCZ26G`, then unpinned, stopped and archived mission `01M8432VXDNPX0EHY0RD950AK3`, which showed zero live sessions. The CLI ledger and evidence are retained under the scratch root.
 
 QA quit the wrapper, stopped the development daemon, verified its socket was gone, unregistered the wrapper, and restored `ui-settings.json`, `window-state.json` and `window-layout.json` from byte-identical backups. The restored `appZoom` was 1.4. QA released the lock. The installed Runner process remained active.
+
+## Follow-up A/B of the 100% column-gutter cursor
+
+Jason requested five matched trials per build on 2026-11-23. QA reacquired the lock, backed up the development settings, checked out `117f911e17aa175a98eb1c6c1ea7791391be7652` detached, and built and launched it with `make run`. After closing the baseline app and daemon, QA restored the test settings, checked out `fix/narrow-island-gaps` at `af72c59778a60b3c744d5b2098f86793ae77d30a`, and ran `make run` again. That candidate adds the original QA record to the reviewed commit. Both builds were clean. Each app was wrapped in a distinct QA bundle, its executable and CLI were compared against the worktree build, and the development endpoint was verified. App SHA-256 is `3d6d58b045d526ed8b86f221ba71267258d70d01a8b8798921d30c5711016550` for the parent and `b3cf22d654da7a8a18cbf642110d9e61c3e880b7e882b2549644e1a34f20135a` for the candidate. Both used Runner 0.20.3 (dev) and CLI 0.20.3.
+
+Both passes used the same 2042 × 1184 logical px Retina window, 100% zoom, a 303 px expanded sidebar, a 473.5 px compact Files panel, and a two-column Codex chat/plain zsh terminal tab. No agent prompts were submitted. Each trial began at the measured center of the gutter and moved 65 logical px right in 12 steps at 20 ms, with the original 1250 ms hold. The held captures finished 1.38–1.48 seconds before their drag commands returned. After each trial the divider was returned near the starting position and its center was measured again. The second candidate trial started 2 logical px to the left of the other candidate trials after a reset, and its pointer still started in the center of the gap.
+
+| Build | Standard pointer in held captures | Resize cursor in held captures | Evidence |
+| --- | --- | --- | --- |
+| Parent `117f911e1` (6 px) | 0/5 | 5/5 | `baseline/evidence/trial-{1..5}-held.png` |
+| Candidate `af72c597` (4 px) | 0/5 | 5/5 | `candidate/evidence/trial-{1..5}-held.png` |
+
+The five captured drags on each build are documented with hover, mouse-down, held and after screenshots, drag coordinates, capture timing and layout settings under `/tmp/runner-qa-1438-ab.PMTQma/`. During setup an earlier QA wrapper reopened when Computer Use resolved its reused bundle identifier. QA closed it and verified that only the uniquely identified baseline wrapper was running before taking any counted samples. After the fourth baseline trial, Computer Use timed out while capturing the reset. QA refreshed the reset evidence before running the fifth trial. All ten counted drags had a held-cursor crop and a verified divider move.
+
+**Check 2 remains Failed from the original run.** The A/B did not reproduce the original cursor loss on either build, so it establishes neither a pre-existing occurrence nor a regression. The four other original checks remain Passed, and `needs-live-test` stays on the PR.
+
+QA stopped the test shells, archived both test chats, verified the scoped session lists were empty, and quit each wrapper and daemon before continuing. At the end QA restored the three backed-up settings and window files byte for byte, verified `appZoom` was 1.4, and released the lock.
