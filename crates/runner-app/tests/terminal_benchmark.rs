@@ -72,12 +72,14 @@ fn spawn_cat(
     };
     let spawned = core
         .sessions
-        .spawn_runtime_direct(
+        .spawn_direct(
             &role,
-            None,
-            None,
-            Some(80),
-            Some(24),
+            runner_daemon::session::DirectLaunch {
+                cols: Some(80),
+                rows: Some(24),
+                runtime_direct: true,
+                ..Default::default()
+            },
             &core.app_data_dir,
             Arc::clone(&core.db),
             Arc::new(core.session_events()),

@@ -57,16 +57,16 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
     .unwrap();
     let spawned = runner_daemon::ops::session::session_start_direct(
         &core,
-        role.id,
-        None,
-        None,
-        None,
-        runner_daemon::ops::project::ProjectScope::Root,
-        None,
-        Some(80),
-        Some(24),
+        runner_daemon::ops::session::DirectLaunch {
+            role_id: Some(role.id),
+            scope: runner_daemon::ops::project::ProjectScope::Root,
+            cols: Some(80),
+            rows: Some(24),
+            ..Default::default()
+        },
     )
-    .unwrap();
+    .unwrap()
+    .session;
     let terminal = bridge.attach(&spawned.id).unwrap();
     assert_eq!(terminal.size(), (80, 24));
     terminal.resize(96, 32);
@@ -113,16 +113,16 @@ fn terminal_ime_commit_forwards_utf8_through_session_manager() {
     .unwrap();
     let spawned = runner_daemon::ops::session::session_start_direct(
         &core,
-        role.id,
-        None,
-        None,
-        None,
-        runner_daemon::ops::project::ProjectScope::Root,
-        None,
-        Some(80),
-        Some(24),
+        runner_daemon::ops::session::DirectLaunch {
+            role_id: Some(role.id),
+            scope: runner_daemon::ops::project::ProjectScope::Root,
+            cols: Some(80),
+            rows: Some(24),
+            ..Default::default()
+        },
     )
-    .unwrap();
+    .unwrap()
+    .session;
     let terminal = bridge.attach(&spawned.id).unwrap();
 
     let mut input = TerminalInput::new(Arc::clone(&terminal));
@@ -171,28 +171,28 @@ fn bridge_keeps_multiple_tab_sessions_attached_with_independent_geometry() {
     .unwrap();
     let first = runner_daemon::ops::session::session_start_direct(
         &core,
-        role.id.clone(),
-        None,
-        None,
-        None,
-        runner_daemon::ops::project::ProjectScope::Root,
-        None,
-        Some(80),
-        Some(24),
+        runner_daemon::ops::session::DirectLaunch {
+            role_id: Some(role.id.clone()),
+            scope: runner_daemon::ops::project::ProjectScope::Root,
+            cols: Some(80),
+            rows: Some(24),
+            ..Default::default()
+        },
     )
-    .unwrap();
+    .unwrap()
+    .session;
     let second = runner_daemon::ops::session::session_start_direct(
         &core,
-        role.id,
-        None,
-        None,
-        None,
-        runner_daemon::ops::project::ProjectScope::Root,
-        None,
-        Some(120),
-        Some(40),
+        runner_daemon::ops::session::DirectLaunch {
+            role_id: Some(role.id),
+            scope: runner_daemon::ops::project::ProjectScope::Root,
+            cols: Some(120),
+            rows: Some(40),
+            ..Default::default()
+        },
     )
-    .unwrap();
+    .unwrap()
+    .session;
     let first_terminal = bridge.session(&first.id).unwrap();
     let second_terminal = bridge.session(&second.id).unwrap();
 
@@ -242,16 +242,16 @@ fn bridge_releases_every_terminal_across_twenty_start_kill_cycles() {
     for _ in 0..20 {
         let spawned = runner_daemon::ops::session::session_start_direct(
             &core,
-            role.id.clone(),
-            None,
-            None,
-            None,
-            runner_daemon::ops::project::ProjectScope::Root,
-            None,
-            Some(80),
-            Some(24),
+            runner_daemon::ops::session::DirectLaunch {
+                role_id: Some(role.id.clone()),
+                scope: runner_daemon::ops::project::ProjectScope::Root,
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
         )
-        .unwrap();
+        .unwrap()
+        .session;
         assert!(bridge.session(&spawned.id).is_some());
         assert_eq!(bridge.live_session_count(), 1);
         runner_daemon::ops::session::session_kill(&core, &spawned.id).unwrap();

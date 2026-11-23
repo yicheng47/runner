@@ -620,17 +620,14 @@ fn direct_spawn_with_override_uses_registry_engine_and_records_runtime() {
     let spawned = mgr
         .spawn_direct(
             &role,
-            Some("claude-code"),
-            None,
-            None,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                runtime_override: Some("claude-code".into()),
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
-            None,
         )
         .unwrap();
 
@@ -664,17 +661,13 @@ fn direct_spawn_keeps_its_runtime_after_role_template_edit() {
     let spawned = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
-            None,
         )
         .unwrap();
 
@@ -778,17 +771,14 @@ fn chat_bypass_ignores_synthetic_runtime_override_permissions_on_start_and_resum
         let session = manager
             .spawn_direct(
                 &configured,
-                Some(target.key()),
-                None,
-                None,
-                None,
-                root.path().to_str(),
-                None,
-                None,
+                DirectLaunch {
+                    runtime_override: Some(target.key().into()),
+                    cwd: root.path().to_str().map(str::to_owned),
+                    ..Default::default()
+                },
                 root.path(),
                 pool.clone(),
                 capture(),
-                None,
             )
             .unwrap();
         let check = |args: &[String]| {

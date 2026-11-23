@@ -9,12 +9,13 @@ fn known_old_runtime_is_refused_before_every_launch_path_and_unknown_is_allowed(
     let mut role = role("fixture-codex", &[]);
     role.runtime = "codex".into();
     let source = manager
-        .spawn_runtime_direct(
+        .spawn_direct(
             &role,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                runtime_direct: true,
+                ..Default::default()
+            },
             data.path(),
             pool.clone(),
             capture(),
@@ -44,12 +45,12 @@ fn known_old_runtime_is_refused_before_every_launch_path_and_unknown_is_allowed(
     };
     check(
         manager
-            .spawn_runtime_direct(
+            .spawn_direct(
                 &role,
-                None,
-                None,
-                None,
-                None,
+                DirectLaunch {
+                    runtime_direct: true,
+                    ..Default::default()
+                },
                 data.path(),
                 pool.clone(),
                 capture(),
@@ -60,17 +61,10 @@ fn known_old_runtime_is_refused_before_every_launch_path_and_unknown_is_allowed(
         manager
             .spawn_direct(
                 &role,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                DirectLaunch::default(),
                 data.path(),
                 pool.clone(),
                 capture(),
-                None,
             )
             .unwrap_err(),
     );
@@ -200,12 +194,13 @@ fn unprobed_opencode_v1_is_probed_synchronously_and_refused_on_start_and_resume(
     let mut role = role("opencode", &[]);
     role.runtime = "opencode".into();
     let started = manager
-        .spawn_runtime_direct(
+        .spawn_direct(
             &role,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                runtime_direct: true,
+                ..Default::default()
+            },
             data.path(),
             pool.clone(),
             capture(),
@@ -230,12 +225,13 @@ fn unprobed_opencode_v1_is_probed_synchronously_and_refused_on_start_and_resume(
     manager.discovery_state.write().unwrap().versions = Default::default();
     let spawns_before = fake.spawns.lock().unwrap().len();
 
-    let Err(Error::RuntimeVersionGate(gate)) = manager.spawn_runtime_direct(
+    let Err(Error::RuntimeVersionGate(gate)) = manager.spawn_direct(
         &role,
-        None,
-        Some(fixture_tmp_dir().to_str().unwrap()),
-        None,
-        None,
+        DirectLaunch {
+            cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+            runtime_direct: true,
+            ..Default::default()
+        },
         data.path(),
         pool.clone(),
         capture(),
@@ -293,17 +289,10 @@ fn claude_code_pi_grok_and_opencode_enforce_osc7501_minimum_versions() {
         let err = manager
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                DirectLaunch::default(),
                 data.path(),
                 pool.clone(),
                 capture(),
-                None,
             )
             .unwrap_err();
         let Error::RuntimeVersionGate(gate) = err else {
@@ -407,15 +396,16 @@ fn grok_and_opencode_v2_below_minimum_build_update_specs_while_opencode_v1_stays
         assert_eq!(spec.command, bin.display().to_string());
         assert_eq!(spec.args, expected_args);
 
-        let err = crate::ops::session::session_start_runtime(
+        let err = crate::ops::session::session_start_direct(
             &core,
-            runtime.key(),
-            runner_core::protocol::ProjectScope::Root,
-            Some(dir.path().to_str().unwrap().to_owned()),
-            Some(80),
-            Some(24),
-            None,
-            None,
+            crate::ops::session::DirectLaunch {
+                runtime: Some(runtime.key().into()),
+                scope: runner_core::protocol::ProjectScope::Root,
+                cwd: Some(dir.path().to_str().unwrap().to_owned()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
         )
         .unwrap_err();
         let Error::RuntimeVersionGate(gate) = err else {

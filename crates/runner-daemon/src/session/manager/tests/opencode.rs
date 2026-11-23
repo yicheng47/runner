@@ -28,17 +28,13 @@ fn opencode_direct_role_and_concurrent_runtime_chats_persist_exact_keys() {
     let first = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            DirectLaunch {
+                first_turn: Some("中文 persona\nmission-free".into()),
+                ..Default::default()
+            },
             data.path(),
             pool.clone(),
             capture(),
-            Some("中文 persona\nmission-free".into()),
         )
         .unwrap();
     let spec = fake.last_spawn_spec().unwrap();
@@ -54,12 +50,13 @@ fn opencode_direct_role_and_concurrent_runtime_chats_persist_exact_keys() {
     assert_eq!(config["permissions"][0]["effect"], "deny");
     assert_eq!(config["plugins"][0]["options"]["model"]["variant"], "high");
     let second = mgr
-        .spawn_runtime_direct(
+        .spawn_direct(
             &role,
-            None,
-            Some(data.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(data.path().to_str().unwrap().into()),
+                runtime_direct: true,
+                ..Default::default()
+            },
             data.path(),
             pool.clone(),
             capture(),

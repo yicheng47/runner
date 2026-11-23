@@ -23,25 +23,21 @@ fn grok_new_chats_spawn_with_native_permissions_and_assigned_identity() {
         let spawned = if role_backed {
             mgr.spawn_direct(
                 &role,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                DirectLaunch {
+                    first_turn: Some("persona".into()),
+                    ..Default::default()
+                },
                 data.path(),
                 pool.clone(),
                 capture(),
-                Some("persona".into()),
             )
         } else {
-            mgr.spawn_runtime_direct(
+            mgr.spawn_direct(
                 &role,
-                None,
-                None,
-                None,
-                None,
+                DirectLaunch {
+                    runtime_direct: true,
+                    ..Default::default()
+                },
                 data.path(),
                 pool.clone(),
                 capture(),
@@ -78,12 +74,13 @@ fn concurrent_grok_new_chats_have_distinct_rows_without_shared_resume_identity()
     let role = runtime_direct_role("grok", Some("custom-grok-wrapper"), None, None).unwrap();
     let ids = std::thread::scope(|scope| {
         let spawn = || {
-            mgr.spawn_runtime_direct(
+            mgr.spawn_direct(
                 &role,
-                None,
-                Some(data.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(data.path().to_str().unwrap().into()),
+                    runtime_direct: true,
+                    ..Default::default()
+                },
                 data.path(),
                 pool.clone(),
                 capture(),

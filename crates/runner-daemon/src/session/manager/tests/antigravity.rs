@@ -78,17 +78,14 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
     let spawned = crate::runtimes::with_conversation_home(home.path(), || {
         mgr.spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(project.to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(project.to_str().unwrap().into()),
+                first_turn: Some("persona first turn".into()),
+                ..Default::default()
+            },
             app_data.path(),
             Arc::clone(&pool),
             events.clone(),
-            Some("persona first turn".into()),
         )
     })
     .unwrap();
@@ -310,12 +307,13 @@ fn antigravity_blank_chat_has_no_key_until_its_first_message() {
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let spawned = mgr
-        .spawn_runtime_direct(
+        .spawn_direct(
             &role,
-            None,
-            Some(app_data.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(app_data.path().to_str().unwrap().into()),
+                runtime_direct: true,
+                ..Default::default()
+            },
             app_data.path(),
             Arc::clone(&pool),
             capture(),
@@ -419,12 +417,13 @@ fn antigravity_capture_writes_nothing_after_its_session_stops() {
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let spawned = mgr
-        .spawn_runtime_direct(
+        .spawn_direct(
             &role,
-            None,
-            Some(app_data.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(app_data.path().to_str().unwrap().into()),
+                runtime_direct: true,
+                ..Default::default()
+            },
             app_data.path(),
             Arc::clone(&pool),
             capture(),
@@ -486,12 +485,13 @@ fn antigravity_capture_syncs_turn_one_summary_title_and_honors_settings_opt_out_
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
 
     let spawned = crate::runtimes::with_conversation_home(home.path(), || {
-        mgr.spawn_runtime_direct(
+        mgr.spawn_direct(
             &direct_role,
-            None,
-            Some(project.to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(project.to_str().unwrap().into()),
+                runtime_direct: true,
+                ..Default::default()
+            },
             app_data.path(),
             Arc::clone(&pool),
             capture(),
@@ -553,17 +553,13 @@ fn antigravity_capture_syncs_turn_one_summary_title_and_honors_settings_opt_out_
     let opt_out = crate::runtimes::with_conversation_home(home.path(), || {
         mgr.spawn_direct(
             &opt_out_role,
-            None,
-            None,
-            None,
-            None,
-            Some(project.to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(project.to_str().unwrap().into()),
+                ..Default::default()
+            },
             app_data.path(),
             Arc::clone(&pool),
             capture(),
-            None,
         )
     })
     .unwrap();
@@ -626,12 +622,15 @@ fn antigravity_summary_title_updates_attached_terminal_metadata_and_preferred_ti
     .unwrap();
     let direct_role = runtime_direct_role("antigravity", Some("agy"), None, None).unwrap();
     let spawned = crate::runtimes::with_conversation_home(home.path(), || {
-        core.sessions.spawn_runtime_direct(
+        core.sessions.spawn_direct(
             &direct_role,
-            None,
-            Some(project.to_str().unwrap()),
-            Some(80),
-            Some(24),
+            DirectLaunch {
+                cwd: Some(project.to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                runtime_direct: true,
+                ..Default::default()
+            },
             &core.app_data_dir,
             core.db.clone(),
             Arc::new(core.session_events()),
@@ -823,17 +822,13 @@ fn antigravity_symlinked_cwd_seeds_both_paths_on_direct_resume_and_mission() {
     let spawned = crate::runtimes::with_conversation_home(home.path(), || {
         mgr.spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(linked.to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(linked.to_str().unwrap().into()),
+                ..Default::default()
+            },
             app_data.path(),
             Arc::clone(&pool),
             capture(),
-            None,
         )
     })
     .unwrap();
@@ -924,17 +919,13 @@ fn antigravity_windows_launch_and_resume_replace_lowercase_auto_update_alias() {
     let spawned = crate::runtimes::with_conversation_home(home.path(), || {
         mgr.spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(project.to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(project.to_str().unwrap().into()),
+                ..Default::default()
+            },
             app_data.path(),
             Arc::clone(&pool),
             capture(),
-            None,
         )
     })
     .unwrap();

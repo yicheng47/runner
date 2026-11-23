@@ -1964,17 +1964,15 @@ mod tests {
             .sessions
             .spawn_direct(
                 role,
-                None,
-                None,
-                None,
-                None,
-                Some(root.to_str().unwrap()),
-                Some(80),
-                Some(24),
+                runner_daemon::session::DirectLaunch {
+                    cwd: Some(root.to_str().unwrap().into()),
+                    cols: Some(80),
+                    rows: Some(24),
+                    ..Default::default()
+                },
                 &core.app_data_dir,
                 Arc::clone(&core.db),
                 Arc::new(core.session_events()),
-                None,
             )
             .unwrap();
         let terminal = TerminalMirror::attach(

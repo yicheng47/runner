@@ -461,17 +461,13 @@ fn codex_pre_hook_startup_ignores_continuing_idle_redraw() {
             let spawned = manager
                 .spawn_direct(
                     &role,
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(app_data.path().to_str().unwrap()),
-                    None,
-                    None,
+                    DirectLaunch {
+                        cwd: Some(app_data.path().to_str().unwrap().into()),
+                        ..Default::default()
+                    },
                     app_data.path(),
                     pool.clone(),
                     events.clone(),
-                    None,
                 )
                 .unwrap();
             if launch == "unkeyed-direct" {
@@ -540,17 +536,13 @@ fn codex_pre_hook_submissions_and_hook_takeover() {
         let spawned = manager
             .spawn_direct(
                 &role,
-                None,
-                None,
-                None,
-                None,
-                Some(app_data.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(app_data.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 app_data.path(),
                 pool.clone(),
                 events.clone(),
-                None,
             )
             .unwrap();
         let id = &spawned.id;
@@ -707,17 +699,13 @@ fn codex_pre_hook_early_escape_accepts_interrupt_as_first_hook() {
     let spawned = manager
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(app_data.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(app_data.path().to_str().unwrap().into()),
+                ..Default::default()
+            },
             app_data.path(),
             pool.clone(),
             events.clone(),
-            None,
         )
         .unwrap();
     let id = &spawned.id;
@@ -901,17 +889,13 @@ fn codex_pre_hook_native_commands_and_failed_bridges_use_output_fallback() {
         let spawned = manager
             .spawn_direct(
                 &role,
-                None,
-                None,
-                None,
-                None,
-                Some(app_data.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(app_data.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 app_data.path(),
                 pool,
                 events.clone(),
-                None,
             )
             .unwrap();
         let id = &spawned.id;
@@ -2308,17 +2292,13 @@ fn codex_conversation_key_change_clears_saved_transcript_interrupted_outcome() {
     let spawned = manager
         .spawn_direct(
             &codex_role,
-            None,
-            None,
-            None,
-            None,
-            Some(dir.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(dir.path().to_str().unwrap().into()),
+                ..Default::default()
+            },
             dir.path(),
             pool.clone(),
             events.clone(),
-            None,
         )
         .unwrap();
     let id = &spawned.id;
@@ -2549,17 +2529,13 @@ fn codex_missed_session_start_user_prompt_submit_rekeys_before_confirming_once()
     let spawned = manager
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(app_data.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(app_data.path().to_str().unwrap().into()),
+                ..Default::default()
+            },
             app_data.path(),
             pool.clone(),
             events.clone(),
-            None,
         )
         .unwrap();
     let id = &spawned.id;
@@ -2657,17 +2633,13 @@ fn codex_missed_session_start_user_prompt_submit_rekeys_before_confirming_once()
     let spawned2 = manager2
         .spawn_direct(
             &role2,
-            None,
-            None,
-            None,
-            None,
-            Some(app_data2.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(app_data2.path().to_str().unwrap().into()),
+                ..Default::default()
+            },
             app_data2.path(),
             pool2.clone(),
             events2.clone(),
-            None,
         )
         .unwrap();
     let id2 = &spawned2.id;

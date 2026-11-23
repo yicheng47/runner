@@ -34,12 +34,16 @@ fn shell_runtime_spawns_and_resumes_as_plain_login_shell() {
     assert!(shell.effort.is_none());
 
     let spawned = mgr
-        .spawn_runtime_direct(
+        .spawn_direct(
             &shell,
-            Some(&project.id),
-            Some("/tmp"),
-            Some(132),
-            Some(41),
+            DirectLaunch {
+                project_id: Some(project.id.clone()),
+                cwd: Some("/tmp".into()),
+                cols: Some(132),
+                rows: Some(41),
+                runtime_direct: true,
+                ..Default::default()
+            },
             data.path(),
             Arc::clone(&pool),
             capture(),
@@ -285,12 +289,13 @@ fn runtime_direct_spawn_defaults_to_home_and_preserves_explicit_directories() {
         let mut configured = role("/bin/sh", &[]);
         configured.working_dir = role_cwd.map(str::to_owned);
         let spawned = mgr
-            .spawn_runtime_direct(
+            .spawn_direct(
                 &configured,
-                None,
-                cwd,
-                None,
-                None,
+                DirectLaunch {
+                    cwd: cwd.map(str::to_owned),
+                    runtime_direct: true,
+                    ..Default::default()
+                },
                 fixture_tmp_dir(),
                 Arc::clone(&pool),
                 capture(),
@@ -321,12 +326,13 @@ fn runtime_direct_spawn_persists_model_and_effort() {
         runtime_direct_role("codex", Some("/bin/sh"), Some("gpt-5.6-sol"), Some("max")).unwrap();
     let mgr = mgr_with_fake(None, fake_runtime());
     let spawned = mgr
-        .spawn_runtime_direct(
+        .spawn_direct(
             &configured,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                runtime_direct: true,
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
@@ -361,12 +367,13 @@ fn runtime_direct_speed_survives_resume() {
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let spawned = mgr
-        .spawn_runtime_direct(
+        .spawn_direct(
             &configured,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                runtime_direct: true,
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
@@ -428,20 +435,16 @@ fn role_direct_speed_override_wins_over_role_args_and_survives_resume() {
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let spawned = mgr
-        .spawn_direct_with_speed(
+        .spawn_direct(
             &configured,
-            None,
-            None,
-            None,
-            Some(CodexSpeed::Standard),
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                speed_override: Some(CodexSpeed::Standard),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
-            None,
         )
         .unwrap();
     let first = fake.last_spawn_spec().unwrap();
@@ -505,20 +508,16 @@ fn direct_speed_override_is_ignored_for_other_runtimes() {
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
     let spawned = mgr
-        .spawn_direct_with_speed(
+        .spawn_direct(
             &configured,
-            None,
-            None,
-            None,
-            Some(CodexSpeed::Fast),
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                speed_override: Some(CodexSpeed::Fast),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
-            None,
         )
         .unwrap();
     assert!(!fake
@@ -554,17 +553,16 @@ fn pinned_direct_spawn_records_override_model_and_effort() {
     let spawned = mgr
         .spawn_direct(
             &r,
-            Some("codex"),
-            Some("gpt-5.6-sol"),
-            Some("ultra"),
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                runtime_override: Some("codex".into()),
+                model_override: Some("gpt-5.6-sol".into()),
+                effort_override: Some("ultra".into()),
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
-            None,
         )
         .unwrap();
 
@@ -601,17 +599,15 @@ fn options_only_direct_spawn_persists_options_and_role_runtime() {
     let spawned = mgr
         .spawn_direct(
             &r,
-            None,
-            Some("gpt-5.6-sol"),
-            Some("ultra"),
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                model_override: Some("gpt-5.6-sol".into()),
+                effort_override: Some("ultra".into()),
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             capture(),
-            None,
         )
         .unwrap();
 
@@ -682,17 +678,13 @@ fn catalog_default_role_uses_detected_command_while_custom_command_stays_untouch
     let default_session = mgr
         .spawn_direct(
             &default_role,
-            None,
-            None,
-            None,
-            None,
-            Some("/tmp"),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some("/tmp".into()),
+                ..Default::default()
+            },
             std::path::Path::new("/tmp"),
             Arc::clone(&pool),
             capture(),
-            None,
         )
         .unwrap();
     assert_eq!(
@@ -707,17 +699,13 @@ fn catalog_default_role_uses_detected_command_while_custom_command_stays_untouch
     let custom_session = mgr
         .spawn_direct(
             &custom_role,
-            None,
-            None,
-            None,
-            None,
-            Some("/tmp"),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some("/tmp".into()),
+                ..Default::default()
+            },
             std::path::Path::new("/tmp"),
             Arc::clone(&pool),
             capture(),
-            None,
         )
         .unwrap();
     assert_eq!(fake.last_spawn_spec().unwrap().command, "codex-wrapper");
@@ -726,17 +714,13 @@ fn catalog_default_role_uses_detected_command_while_custom_command_stays_untouch
     let swapped_session = mgr
         .spawn_direct(
             &custom_role,
-            None,
-            None,
-            None,
-            None,
-            Some("/tmp"),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some("/tmp".into()),
+                ..Default::default()
+            },
             std::path::Path::new("/tmp"),
             Arc::clone(&pool),
             capture(),
-            None,
         )
         .unwrap();
     assert_eq!(
@@ -875,12 +859,13 @@ fn terminal_shell_exit_removes_its_pane_for_any_exit_code() {
         let shell = runtime_direct_role("shell", Some("sh"), None, None).unwrap();
         let data = tempfile::tempdir().unwrap();
         let session = mgr
-            .spawn_runtime_direct(
+            .spawn_direct(
                 &shell,
-                None,
-                Some(data.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(data.path().to_str().unwrap().into()),
+                    runtime_direct: true,
+                    ..Default::default()
+                },
                 data.path(),
                 pool.clone(),
                 cap.clone(),

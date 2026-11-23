@@ -98,15 +98,16 @@ fn failed_direct_spawn_removes_pre_attachment_bookkeeping() {
     let manager = manager_with_runtime(Default::default(), inert_runtime());
     let role = runtime_direct_role("claude-code", Some("fixture-spawn-error"), None, None).unwrap();
     assert!(manager
-        .spawn_runtime_direct(
+        .spawn_direct(
             &role,
-            None,
-            fixture_tmp_dir().to_str(),
-            None,
-            None,
+            DirectLaunch {
+                cwd: fixture_tmp_dir().to_str().map(str::to_owned),
+                runtime_direct: true,
+                ..Default::default()
+            },
             data.path(),
             Arc::clone(&pool),
-            capture(),
+            capture()
         )
         .is_err());
     assert!(manager.sessions.lock().unwrap().is_empty());
@@ -914,17 +915,14 @@ fn spawn_direct_writes_session_with_null_mission_id_and_emits_activity() {
     let spawned = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            Some(&project.id),
-            Some(&project.cwd),
-            None,
-            None,
+            DirectLaunch {
+                project_id: Some(project.id.clone()),
+                cwd: Some(project.cwd.clone()),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             cap.clone(),
-            None,
         )
         .unwrap();
     assert_eq!(spawned.mission_id, None);

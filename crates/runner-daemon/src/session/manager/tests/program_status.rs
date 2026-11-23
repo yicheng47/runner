@@ -590,17 +590,13 @@ fn hooks_off_chats_promote_osc7501_across_start_resume_and_fork_while_shells_and
             .sessions
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         let id = spawned.id;
@@ -895,17 +891,13 @@ fn hooks_off_chats_promote_osc7501_across_start_resume_and_fork_while_shells_and
             .sessions
             .spawn_direct(
                 &copilot_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         assert!(!core
@@ -958,12 +950,13 @@ fn hooks_off_chats_promote_osc7501_across_start_resume_and_fork_while_shells_and
     shell_role.command = "fake".into();
     let shell = core
         .sessions
-        .spawn_runtime_direct(
+        .spawn_direct(
             &shell_role,
-            None,
-            Some(dir.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(dir.path().to_str().unwrap().into()),
+                runtime_direct: true,
+                ..Default::default()
+            },
             dir.path(),
             Arc::clone(&core.db),
             Arc::clone(&events),
@@ -1068,17 +1061,13 @@ fn claude_and_pi_osc7501_chats_and_missions_cover_waits_outcomes_cancel_children
                     .sessions
                     .spawn_direct(
                         &agent_role,
-                        None,
-                        None,
-                        None,
-                        None,
-                        Some(dir.path().to_str().unwrap()),
-                        None,
-                        None,
+                        DirectLaunch {
+                            cwd: Some(dir.path().to_str().unwrap().into()),
+                            ..Default::default()
+                        },
                         dir.path(),
                         Arc::clone(&core.db),
                         Arc::clone(&events),
-                        None,
                     )
                     .unwrap();
                 let terminal = core
@@ -1293,17 +1282,13 @@ fn claude_and_pi_osc7501_chats_and_missions_cover_waits_outcomes_cancel_children
             .sessions
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         let id = spawned.id;
@@ -1391,17 +1376,14 @@ fn pi_retry_claude_no_osc_first_turn_failure_and_pi_untrusted_bridge_unavailable
             .sessions
             .spawn_direct(
                 &pi_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    first_turn: Some("first turn".into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                Some("first turn".into()),
             )
             .unwrap();
         let id = spawned.id;
@@ -1480,17 +1462,14 @@ fn pi_retry_claude_no_osc_first_turn_failure_and_pi_untrusted_bridge_unavailable
             .sessions
             .spawn_direct(
                 &cc_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    first_turn: Some("first turn".into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                Some("first turn".into()),
             )
             .unwrap();
         let id = spawned.id;
@@ -1546,17 +1525,13 @@ fn pi_retry_claude_no_osc_first_turn_failure_and_pi_untrusted_bridge_unavailable
             .sessions
             .spawn_direct(
                 &cc_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         let auth_id = authed.id;
@@ -1615,17 +1590,13 @@ fn pi_retry_claude_no_osc_first_turn_failure_and_pi_untrusted_bridge_unavailable
             .sessions
             .spawn_direct(
                 &pi_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         let id = spawned.id;
@@ -2122,17 +2093,13 @@ fn grok_and_opencode_osc7501_chats_and_missions_cover_waits_delivery_outcomes_ca
                     .sessions
                     .spawn_direct(
                         &agent_role,
-                        None,
-                        None,
-                        None,
-                        None,
-                        Some(dir.path().to_str().unwrap()),
-                        None,
-                        None,
+                        DirectLaunch {
+                            cwd: Some(dir.path().to_str().unwrap().into()),
+                            ..Default::default()
+                        },
                         dir.path(),
                         Arc::clone(&core.db),
                         Arc::clone(&events),
-                        None,
                     )
                     .unwrap();
                 let terminal = core
@@ -2498,17 +2465,14 @@ fn grok_and_opencode_osc7501_chats_and_missions_cover_waits_delivery_outcomes_ca
             .sessions
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    first_turn: Some("first turn".into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                Some("first turn".into()),
             )
             .unwrap();
         let id = spawned.id;
@@ -2628,17 +2592,14 @@ fn grok_without_transcript_and_opencode_without_db_release_no_osc_first_turn_whi
                         .sessions
                         .spawn_direct(
                             &agent_role,
-                            None,
-                            None,
-                            None,
-                            None,
-                            Some(dir.path().to_str().unwrap()),
-                            None,
-                            None,
+                            DirectLaunch {
+                                cwd: Some(dir.path().to_str().unwrap().into()),
+                                first_turn: Some("first turn".into()),
+                                ..Default::default()
+                            },
                             dir.path(),
                             Arc::clone(&core.db),
                             Arc::clone(&events),
-                            Some("first turn".into()),
                         )
                         .unwrap();
                     let terminal = core
@@ -2812,17 +2773,13 @@ fn opencode_watcher_reports_background_failure_after_route_switch_and_isolates_d
         .sessions
         .spawn_direct(
             &agent_role,
-            None,
-            None,
-            None,
-            None,
-            Some(dir.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(dir.path().to_str().unwrap().into()),
+                ..Default::default()
+            },
             dir.path(),
             Arc::clone(&core.db),
             Arc::clone(&events),
-            None,
         )
         .unwrap();
     let id = spawned.id;
@@ -3017,17 +2974,13 @@ fn opencode_late_failure_cas_undo_preserves_prior_durable_unread_error_ack_and_t
             .sessions
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         let id = spawned.id;
@@ -3152,17 +3105,13 @@ fn opencode_late_failure_cas_undo_preserves_prior_durable_unread_error_ack_and_t
             .sessions
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         let id = spawned.id;
@@ -3283,17 +3232,13 @@ fn opencode_mixed_multi_session_turn_reverts_false_durable_unread_in_both_store_
             .sessions
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         let id = spawned.id;
@@ -3437,17 +3382,13 @@ fn opencode_ignores_delayed_superseded_turn1_after_turn2_idle_and_foreign_db_cha
         .sessions
         .spawn_direct(
             &agent_role,
-            None,
-            None,
-            None,
-            None,
-            Some(dir.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(dir.path().to_str().unwrap().into()),
+                ..Default::default()
+            },
             dir.path(),
             Arc::clone(&core.db),
             Arc::clone(&events),
-            None,
         )
         .unwrap();
     let id = spawned.id;
@@ -3545,17 +3486,14 @@ fn grok_unreadable_transcript_path_releases_no_osc_first_turn_while_holding_live
             .sessions
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    first_turn: Some("first turn".into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                Some("first turn".into()),
             )
             .unwrap();
         let id = spawned.id;
@@ -3672,17 +3610,13 @@ fn opencode_viewed_idle_completion_and_db_leading_pty_reconcile_without_false_un
             .sessions
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         let id = spawned.id;
@@ -3816,17 +3750,13 @@ fn opencode_viewed_idle_completion_and_db_leading_pty_reconcile_without_false_un
             .sessions
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         let id = spawned.id;
@@ -4009,17 +3939,13 @@ fn opencode_cancel_confirmation_and_between_root_and_child_db_outcomes_attribute
             .sessions
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         let id = spawned.id;
@@ -4149,17 +4075,13 @@ fn opencode_cancel_confirmation_and_between_root_and_child_db_outcomes_attribute
             .sessions
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         let id = spawned.id;
@@ -4307,17 +4229,13 @@ fn opencode_cancel_confirmation_and_between_root_and_child_db_outcomes_attribute
             .sessions
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         let id = spawned.id;
@@ -4469,17 +4387,13 @@ fn opencode_permission_reject_via_session_message_overrides_completed_focused_an
             .sessions
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         let id = spawned.id;
@@ -4687,17 +4601,13 @@ fn opencode_turn1_failed_and_turn2_rejected_same_poll_reverts_turn1_unread() {
         .sessions
         .spawn_direct(
             &agent_role,
-            None,
-            None,
-            None,
-            None,
-            Some(dir.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(dir.path().to_str().unwrap().into()),
+                ..Default::default()
+            },
             dir.path(),
             Arc::clone(&core.db),
             Arc::clone(&events),
-            None,
         )
         .unwrap();
     let id = spawned.id;
@@ -4854,17 +4764,13 @@ fn grok_permission_reject_without_transcript_path_discovers_updates_jsonl_and_se
             .sessions
             .spawn_direct(
                 &agent_role,
-                None,
-                None,
-                None,
-                None,
-                Some(dir.path().to_str().unwrap()),
-                None,
-                None,
+                DirectLaunch {
+                    cwd: Some(dir.path().to_str().unwrap().into()),
+                    ..Default::default()
+                },
                 dir.path(),
                 Arc::clone(&core.db),
                 Arc::clone(&events),
-                None,
             )
             .unwrap();
         let id = spawned.id;

@@ -788,12 +788,13 @@ fn older_async_probe_completing_first_cannot_bypass_sync_launch_gate() {
     let events = Arc::new(state.session_events());
     let app_dir = dir.path().to_path_buf();
     let spawn_handle = std::thread::spawn(move || {
-        sessions.spawn_runtime_direct(
+        sessions.spawn_direct(
             &role,
-            None,
-            app_dir.to_str(),
-            None,
-            None,
+            crate::session::manager::DirectLaunch {
+                cwd: app_dir.to_str().map(str::to_owned),
+                runtime_direct: true,
+                ..Default::default()
+            },
             &app_dir,
             db,
             events,
@@ -985,12 +986,13 @@ fn same_path_replacement_before_refresh_refuses_launch_without_spawning_standalo
     let role = crate::session::manager::runtime_direct_role("opencode", None, None, None).unwrap();
     let err = state
         .sessions
-        .spawn_runtime_direct(
+        .spawn_direct(
             &role,
-            None,
-            dir.path().to_str(),
-            None,
-            None,
+            crate::session::manager::DirectLaunch {
+                cwd: dir.path().to_str().map(str::to_owned),
+                runtime_direct: true,
+                ..Default::default()
+            },
             dir.path(),
             Arc::clone(&state.db),
             Arc::new(state.session_events()),
@@ -1056,12 +1058,13 @@ fn classified_opencode_startup_error_clears_cached_probe_so_status_list_preserve
     let role = crate::session::manager::runtime_direct_role("opencode", None, None, None).unwrap();
     let spawned = state
         .sessions
-        .spawn_runtime_direct(
+        .spawn_direct(
             &role,
-            None,
-            dir.path().to_str(),
-            None,
-            None,
+            crate::session::manager::DirectLaunch {
+                cwd: dir.path().to_str().map(str::to_owned),
+                runtime_direct: true,
+                ..Default::default()
+            },
             dir.path(),
             Arc::clone(&state.db),
             Arc::new(state.session_events()),

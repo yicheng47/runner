@@ -562,12 +562,13 @@ mod tests {
         role.args = vec!["-c".into(), "read -r line".into()];
         let session = core
             .sessions
-            .spawn_runtime_direct(
+            .spawn_direct(
                 &role,
-                None,
-                dir.path().to_str(),
-                None,
-                None,
+                crate::session::manager::DirectLaunch {
+                    cwd: dir.path().to_str().map(str::to_owned),
+                    runtime_direct: true,
+                    ..Default::default()
+                },
                 dir.path(),
                 core.db.clone(),
                 Arc::new(core.session_events()),

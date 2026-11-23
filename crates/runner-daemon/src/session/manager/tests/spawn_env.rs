@@ -36,17 +36,13 @@ fn login_shell_proxy_env_reaches_spawn_with_role_env_taking_precedence() {
     );
     mgr.spawn_direct(
         &role,
-        None,
-        None,
-        None,
-        None,
-        Some(fixture_tmp_dir().to_str().unwrap()),
-        None,
-        None,
+        DirectLaunch {
+            cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+            ..Default::default()
+        },
         fixture_tmp_dir(),
         Arc::clone(&pool),
         capture(),
-        None,
     )
     .unwrap();
 
@@ -117,17 +113,13 @@ fn spawn_env_respects_configured_locale_and_falls_back_to_utf8() {
     localized.env.insert("LC_ALL".into(), "zh_CN.UTF-8".into());
     mgr.spawn_direct(
         &localized,
-        None,
-        None,
-        None,
-        None,
-        Some(fixture_tmp_dir().to_str().unwrap()),
-        None,
-        None,
+        DirectLaunch {
+            cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+            ..Default::default()
+        },
         fixture_tmp_dir(),
         Arc::clone(&pool),
         capture(),
-        None,
     )
     .unwrap();
     let spec = fake.last_spawn_spec().expect("spawn was called");
@@ -146,17 +138,13 @@ fn spawn_env_respects_configured_locale_and_falls_back_to_utf8() {
     bare.handle = "bare".into();
     mgr.spawn_direct(
         &bare,
-        None,
-        None,
-        None,
-        None,
-        Some(fixture_tmp_dir().to_str().unwrap()),
-        None,
-        None,
+        DirectLaunch {
+            cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+            ..Default::default()
+        },
         fixture_tmp_dir(),
         Arc::clone(&pool),
         capture(),
-        None,
     )
     .unwrap();
     let spec = fake.last_spawn_spec().expect("spawn was called");
@@ -201,17 +189,13 @@ fn every_session_names_its_daemons_runner_and_a_slot_names_its_shim() {
     let spawned = mgr
         .spawn_direct(
             &chat,
-            None,
-            None,
-            None,
-            None,
-            Some(cwd),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(cwd.into()),
+                ..Default::default()
+            },
             data.path(),
             Arc::clone(&pool),
             capture(),
-            None,
         )
         .unwrap();
     assert_eq!(session_cli(), Some(bundled.clone()), "chat");
@@ -219,12 +203,13 @@ fn every_session_names_its_daemons_runner_and_a_slot_names_its_shim() {
 
     let shell = runtime_direct_role("shell", Some("/bin/sh"), None, None).unwrap();
     let terminal = mgr
-        .spawn_runtime_direct(
+        .spawn_direct(
             &shell,
-            None,
-            Some(cwd),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(cwd.into()),
+                runtime_direct: true,
+                ..Default::default()
+            },
             data.path(),
             Arc::clone(&pool),
             capture(),

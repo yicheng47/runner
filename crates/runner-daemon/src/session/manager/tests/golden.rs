@@ -269,19 +269,16 @@ fn spawn_goldens() {
                 let spawned = mgr
                     .spawn_direct(
                         &configured,
-                        None,
-                        None,
-                        None,
-                        None,
-                        configured.working_dir.as_deref(),
-                        None,
-                        None,
+                        DirectLaunch {
+                            cwd: configured.working_dir.clone(),
+                            first_turn: crate::router::prompt::compose_direct_first_turn(
+                                configured.system_prompt.as_deref(),
+                            ),
+                            ..Default::default()
+                        },
                         root,
                         Arc::clone(&pool),
                         capture(),
-                        crate::router::prompt::compose_direct_first_turn(
-                            configured.system_prompt.as_deref(),
-                        ),
                     )
                     .unwrap();
                 if matches!(shape, "resume" | "missing") {
@@ -346,17 +343,14 @@ fn spawn_goldens() {
                 let spawned = mgr
                     .spawn_direct(
                         &configured,
-                        None,
-                        None,
-                        None,
-                        None,
-                        configured.working_dir.as_deref(),
-                        None,
-                        None,
+                        DirectLaunch {
+                            cwd: configured.working_dir.clone(),
+                            first_turn: Some("GOLDEN_PERSONA".into()),
+                            ..Default::default()
+                        },
                         data.path(),
                         Arc::clone(&pool),
                         capture(),
-                        Some("GOLDEN_PERSONA".into()),
                     )
                     .unwrap();
                 let mut normalizer = Normalizer::default();
@@ -558,17 +552,13 @@ fn trust_files_golden() {
             let spawned = mgr
                 .spawn_direct(
                     &configured,
-                    None,
-                    None,
-                    None,
-                    None,
-                    configured.working_dir.as_deref(),
-                    None,
-                    None,
+                    DirectLaunch {
+                        cwd: configured.working_dir.clone(),
+                        ..Default::default()
+                    },
                     app_data.path(),
                     pool,
                     capture(),
-                    None,
                 )
                 .unwrap();
             mgr.kill(&spawned.id).unwrap();

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::session::manager::{
-    ExitEvent, OutputEvent, SessionEvents, SessionSpawnedEvent, SessionUpdatedEvent,
+    DirectLaunch, ExitEvent, OutputEvent, SessionEvents, SessionSpawnedEvent, SessionUpdatedEvent,
 };
 
 use super::support::{TerminalBridge, TerminalSession, UserInputMode};
@@ -709,17 +709,15 @@ fn osc52_writes_are_emitted_as_session_clipboard_events() {
         .sessions
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(temp.path().to_str().unwrap()),
-            Some(80),
-            Some(24),
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
             &core.app_data_dir,
             Arc::clone(&core.db),
             Arc::new(core.session_events()),
-            None,
         )
         .unwrap();
     let mut events = core.events.subscribe();
@@ -850,17 +848,15 @@ fn hidden_terminal_answers_each_query_once() {
             .sessions
             .spawn_direct(
                 &role,
-                None,
-                None,
-                None,
-                None,
-                Some(temp.path().to_str().unwrap()),
-                Some(80),
-                Some(24),
+                DirectLaunch {
+                    cwd: Some(temp.path().to_str().unwrap().into()),
+                    cols: Some(80),
+                    rows: Some(24),
+                    ..Default::default()
+                },
                 &core.app_data_dir,
                 Arc::clone(&core.db),
                 Arc::new(core.session_events()),
-                None,
             )
             .unwrap();
         assert!(bridge.session(&spawned.id).is_some());
@@ -949,17 +945,15 @@ fn keys_follow_the_apps_kitty_keyboard_mode() {
         .sessions
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(temp.path().to_str().unwrap()),
-            Some(80),
-            Some(24),
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
             &core.app_data_dir,
             Arc::clone(&core.db),
             Arc::new(core.session_events()),
-            None,
         )
         .unwrap();
     let session = bridge.session(&spawned.id).unwrap();
@@ -1112,17 +1106,15 @@ fn a_subscribed_tui_learns_of_a_scheme_flip() {
         .sessions
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(temp.path().to_str().unwrap()),
-            Some(80),
-            Some(24),
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
             &core.app_data_dir,
             Arc::clone(&core.db),
             Arc::new(core.session_events()),
-            None,
         )
         .unwrap();
     assert!(bridge.session(&spawned.id).is_some());
@@ -1766,17 +1758,15 @@ fn da1_has_one_reply_with_zero_one_and_two_mirrors() {
             .sessions
             .spawn_direct(
                 &role,
-                None,
-                None,
-                None,
-                None,
-                Some(temp.path().to_str().unwrap()),
-                Some(80),
-                Some(24),
+                DirectLaunch {
+                    cwd: Some(temp.path().to_str().unwrap().into()),
+                    cols: Some(80),
+                    rows: Some(24),
+                    ..Default::default()
+                },
                 &core.app_data_dir,
                 Arc::clone(&core.db),
                 Arc::new(core.session_events()),
-                None,
             )
             .unwrap();
         let client = crate::daemon::InProcessTransport::client(core.clone());
@@ -2282,17 +2272,15 @@ fn browser_input_uses_the_terminal_queue_and_the_desktop_input_observation() {
         .sessions
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(temp.path().to_str().unwrap()),
-            Some(80),
-            Some(24),
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
             &core.app_data_dir,
             core.db.clone(),
             Arc::new(core.session_events()),
-            None,
         )
         .unwrap();
     let (input, queued) = std::sync::mpsc::channel();
@@ -2453,17 +2441,15 @@ async fn companion_backlog_sends_final_snapshot_after_exit_for_both_queue_limits
             .sessions
             .spawn_direct(
                 &role,
-                None,
-                None,
-                None,
-                None,
-                Some(temp.path().to_str().unwrap()),
-                Some(80),
-                Some(24),
+                DirectLaunch {
+                    cwd: Some(temp.path().to_str().unwrap().into()),
+                    cols: Some(80),
+                    rows: Some(24),
+                    ..Default::default()
+                },
                 &core.app_data_dir,
                 core.db.clone(),
                 Arc::new(core.session_events()),
-                None,
             )
             .unwrap();
         let backend = Arc::new(DaemonCore(Arc::downgrade(&core)));

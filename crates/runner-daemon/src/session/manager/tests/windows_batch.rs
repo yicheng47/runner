@@ -39,17 +39,14 @@ fn assert_windows_batch_first_turn(mode: &str) {
     let spawned = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(dir.path().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(dir.path().to_str().unwrap().into()),
+                first_turn: Some("first line\nsecond line".into()),
+                ..Default::default()
+            },
             dir.path(),
             Arc::clone(&pool),
             events.clone(),
-            Some("first line\nsecond line".into()),
         )
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);

@@ -34,17 +34,14 @@ fn pi_direct_spawn_and_relocated_agent_dir_resume_use_recorded_prompt_file_and_n
     let spawned = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(&cwd),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(cwd.clone()),
+                first_turn: Some("PERSONA_V1".into()),
+                ..Default::default()
+            },
             app_data.path(),
             Arc::clone(&pool),
             capture(),
-            Some("PERSONA_V1".into()),
         )
         .unwrap();
     let row = crate::repo::session::get_row(&pool.get().unwrap(), &spawned.id)

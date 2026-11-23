@@ -197,17 +197,13 @@ fn resume_reuses_row_and_preserves_agent_session_key() {
     let spawned = mgr
         .spawn_direct(
             &role,
-            None,
-            None,
-            None,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            None,
-            None,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                ..Default::default()
+            },
             fixture_tmp_dir(),
             Arc::clone(&pool),
             Arc::clone(&cap) as Arc<dyn SessionEvents>,
-            None,
         )
         .unwrap();
     let session_id = spawned.id.clone();
@@ -683,17 +679,13 @@ fn assert_claude_resume_uses_config_folder(variable: &str) {
     let chat = mgr
         .spawn_direct(
             &configured,
-            None,
-            None,
-            None,
-            None,
-            cwd.to_str(),
-            None,
-            None,
+            DirectLaunch {
+                cwd: cwd.to_str().map(str::to_owned),
+                ..Default::default()
+            },
             root.path(),
             pool.clone(),
             capture(),
-            None,
         )
         .unwrap();
     mgr.kill(&chat.id).unwrap();

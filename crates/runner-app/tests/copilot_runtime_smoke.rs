@@ -142,7 +142,21 @@ fn copilot_real_binary_direct_mission_and_relaunch_resume() {
         Arc::new(|| {}),
     )
     .unwrap();
-    let direct = core.sessions.spawn_direct(&role, None, None, None, None, None, Some(100), Some(30), &core.app_data_dir, db.clone(), Arc::new(core.session_events()), Some("You are the Runner smoke agent. Reply with exactly RUNNER_COPILOT_DIRECT_OK. Do not call tools or change files.".into())).unwrap();
+    let direct = core
+        .sessions
+        .spawn_direct(
+            &role,
+            runner_daemon::session::DirectLaunch {
+                cols: Some(100),
+                rows: Some(30),
+                first_turn: Some("You are the Runner smoke agent. Reply with exactly RUNNER_COPILOT_DIRECT_OK. Do not call tools or change files.".into()),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap();
     cleanup.0.push((core.sessions.clone(), direct.id.clone()));
     let key = runner_daemon::repo::session::get_row(&db.get().unwrap(), &direct.id)
         .unwrap()

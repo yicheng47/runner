@@ -17,12 +17,15 @@ fn core_with_fake(data: &Path, fake: Arc<FakeRuntime>) -> crate::AppCore {
 fn spawn(core: &crate::AppCore, runtime: &str) -> String {
     let configured = runtime_direct_role(runtime, Some("fake-agent"), None, None).unwrap();
     core.sessions
-        .spawn_runtime_direct(
+        .spawn_direct(
             &configured,
-            None,
-            Some(fixture_tmp_dir().to_str().unwrap()),
-            Some(80),
-            Some(24),
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                runtime_direct: true,
+                ..Default::default()
+            },
             &core.app_data_dir,
             core.db.clone(),
             Arc::new(core.session_events()),
