@@ -1,8 +1,8 @@
 # 1421 — Unified Files & Changes Viewer + Stable Per-Tab Panel Width (Option A)
 
-> Tracking issue: [#1421](https://github.com/yicheng47/runner/issues/1421). Scheduling and priority live on the issue and in the [roadmap](../roadmap.md). Platforms: macOS, Windows and Linux.
+> Tracking issue: [#1421](https://github.com/yicheng47/runner/issues/1421). Scheduling and priority live on the issue and in the [roadmap](../../roadmap.md). Platforms: macOS, Windows and Linux.
 > Design: `runner/desktop/specs/1421-unified-files-changes.pen` in `yeelinks_design` (signed off on **Option A**, 2026-11-23, commit `01fb5c7`). Boards: `uvxUZ` (Option A section `hHBbi` + Mission proof `C2`) and `C8P7J` (1:1 unified viewer Diff ↔ Code deep-dive, Runner Light verification `TVJPT`, and width contract `O2iqVZ`).
-> Builds on: [#1403](1403-right-side-panel.md) (Orca activity bar, S2 Info popover, narrow/split overlay sheets, per-tab open state), [#1141](archive/1141-git-changes.md) (Git changes & diff viewer), [#1345](https://github.com/yicheng47/runner/issues/1345) (Changes checkout/base pickers), and [#634](archive/634-file-preview.md) (Files viewer & daemon file service).
+> Builds on: [#1403](1403-right-side-panel.md) (Orca activity bar, S2 Info popover, narrow/split overlay sheets, per-tab open state), [#1141](1141-git-changes.md) (Git changes & diff viewer), [#1345](https://github.com/yicheng47/runner/issues/1345) (Changes checkout/base pickers), and [#634](634-file-preview.md) (Files viewer & daemon file service).
 
 ## Motivation
 

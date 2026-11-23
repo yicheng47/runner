@@ -4,7 +4,7 @@
 
 **Blocked at native control.** No feature checks ran in this attempt. Computer Use found the running development wrapper but returned `cgWindowNotFound` by path, bundle ID, and display name. Command+N, LaunchServices activation, and a wrapper relaunch did not recover the window. Finder accessibility responded. This establishes a QA access failure. There is no baseline comparison that attributes it to the candidate.
 
-- Authorized by the [#1051 phase 4 brief](../../impls/briefs/1051-grok-opencode-osc7501.md) and Runner handoff `01M7X39W03E5MJNYGR2N2WFWEX`. This is targeted feature QA.
+- Authorized by the [#1051 phase 4 brief](https://github.com/yicheng47/runner/blob/v0.20.3/docs/impls/briefs/1051-grok-opencode-osc7501.md) and Runner handoff `01M7X39W03E5MJNYGR2N2WFWEX`. This is targeted feature QA.
 - Branch `feat/1051-grok-opencode-osc7501`, reviewed commit `29ea241fcfaecfbcc5f0c2c2b9c98e699fcbb4d7`, clean at build. Worktree `/Users/jason/repos/yicheng47/runner/.worktrees/feat-1051-grok-opencode-osc7501`.
 - macOS 26.6.2 (25G83), arm64. Installed Grok 1.0.89 (28be5bb1bf65) and OpenCode 2.3.2. Runner 0.20.2 (dev), verified `com.wycstudios.runner-dev/runnerd.sock` using the absolute development CLI.
 - Acquired `script/qa-lock acquire --timeout 540` for mission `01M7WTFEMWHRCH1SWCTPGK2E10`, then ran `make run` with `NO_COLOR`, inherited Runner mission identity, and `CARGO_TARGET_DIR` removed. Copied the app and CLI to the temporary wrapper and verified both byte-for-byte. App SHA-256 `b0ce11682b176478bc76735e543bdc48df5dec40a4691df6f2ada92e855bf0b7`. Sidecar and development daemon SHA-256 `50c08e2e8d9da40bd3937317226a2052fd1f5a71294821243ef3cf3504377e54`.

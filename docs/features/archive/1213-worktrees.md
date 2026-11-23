@@ -1,17 +1,17 @@
 # 1213 — Git worktrees
 
-> Tracking issue: [#1213](https://github.com/yicheng47/runner/issues/1213). Scheduling and priority live on the issue and in the [roadmap](../roadmap.md). Platforms: macOS, Windows and Linux.
+> Tracking issue: [#1213](https://github.com/yicheng47/runner/issues/1213). Scheduling and priority live on the issue and in the [roadmap](../../roadmap.md). Platforms: macOS, Windows and Linux.
 > Status: implemented (m1 in PR #1350 on 2026-11-17; m2 app surfaces, archive cleanup, restore fallback, and guides in PR on branch `feat/1213-worktrees-app`), following the design signed off by Jason on 2026-11-16 and the [decisions](#decisions-settled-with-this-spec) below.
 > Design: `runner/desktop/specs/1213-worktrees.pen` in `yeelinks_design`, revision `685b8c9`, board `A0AUx`. Sections: 1 the launcher's Checkout control and its folder coupling, 2 New worktree…, 3 the sidebar rules with their edge-case table and both views side by side, 4 the Info panel, 5 cleanup at archive.
-> Supersedes: [#403](https://github.com/yicheng47/runner/issues/403), closed as not planned on 2026-09-22. Related: [#1141](./1141-git-changes.md) (Changes view), [#1345](https://github.com/yicheng47/runner/issues/1345) (Changes: choose the checkout and the base), [#748](./archive/748-mission-link.md) (chats linked to missions), [#1290](https://github.com/yicheng47/runner/issues/1290) (archiving linked missions).
+> Supersedes: [#403](https://github.com/yicheng47/runner/issues/403), closed as not planned on 2026-09-22. Related: [#1141](./1141-git-changes.md) (Changes view), [#1345](https://github.com/yicheng47/runner/issues/1345) (Changes: choose the checkout and the base), [#748](./748-mission-link.md) (chats linked to missions), [#1290](https://github.com/yicheng47/runner/issues/1290) (archiving linked missions).
 
 ## Motivation
 
 Running agents in parallel on one repository needs one checkout per task. Runner's own workflow does this by hand for every mission: `git worktree add .worktrees/<branch> -b <branch> origin/main`, then `runner mission start --cwd <that path>`, then `git worktree remove` and a branch delete after merge. Every person who runs two crews on one repository repeats this, or lets them collide in a shared checkout, where #1141's Changes mixes their edits.
 
-The app already reads worktrees but cannot make one: Files (#634) lists them in its picker, and the launcher has a project and a folder but no way to say "in a fresh checkout". Agents are the main callers ([agent environment](../product/agent-environment.md)), so a chat that starts a mission must be able to ask for its own checkout in the same command.
+The app already reads worktrees but cannot make one: Files (#634) lists them in its picker, and the launcher has a project and a folder but no way to say "in a fresh checkout". Agents are the main callers ([agent environment](../../product/agent-environment.md)), so a chat that starts a mission must be able to ask for its own checkout in the same command.
 
-This reverses the non-goal in [vision §6](../product/vision.md), "It does not create git worktrees". The boundary moves from "Runner never touches checkouts" to "Runner manages checkouts; it never writes history": it can create, show and remove a worktree, and commits, merges, pushes and pull requests stay with the agent and git.
+This reverses the non-goal in [vision §6](../../product/vision.md), "It does not create git worktrees". The boundary moves from "Runner never touches checkouts" to "Runner manages checkouts; it never writes history": it can create, show and remove a worktree, and commits, merges, pushes and pull requests stay with the agent and git.
 
 ## Principle
 
@@ -142,7 +142,7 @@ m1 changes no screen, but git-aware membership moves rows in the sidebar and eve
 - **m1-3 CLI create-and-start**: `runner chat start --worktree feat/x` and `runner mission start --worktree feat/y` create `.worktrees/feat-x` and `.worktrees/feat-y`, the app shows each session under the fixture's project, and its terminal's `pwd` is the worktree; repeating either command reuses the worktree without an error. Reason: the create-and-start request and its idempotency.
 - **m1-4 CLI removal**: `runner worktree remove feat/x` refuses while the chat is unarchived, succeeds after it is archived with the branch kept, and refuses the `../outside` worktree. Reason: the removal rules.
 
-Selected regression cases for m1: the sidebar's Projects and Active rows and the launcher's project/folder rows in [workspace](../tests/regression/workspace.md), because membership decides both.
+Selected regression cases for m1: the sidebar's Projects and Active rows and the launcher's project/folder rows in [workspace](../../tests/regression/workspace.md), because membership decides both.
 
 m2's `qa` runs checks 1–7 on macOS (and remote companion branch-switch/missing/recovery/offline display), and on Linux when a Linux machine is available, in a fixture repository under `/tmp` registered as a project, with an extra worktree made by `git worktree add ../outside`; Windows path handling is covered by Windows CI and automated path tests (Jason, 2026-11-17):
 
@@ -155,11 +155,11 @@ m2's `qa` runs checks 1–7 on macOS (and remote companion branch-switch/missing
 7. **Restore**: restoring the archived chat recreates its worktree and a Claude chat resumes with its history; after deleting the branch, the fallback warns. Reason: decision 6.
 8. **Windows paths (covered by Windows CI and automated tests)**: creation, membership, sidebar/hint formatting, and removal with drive-letter paths. Reason: platform path spelling.
 
-Selected regression cases: the sidebar's Projects and Active rows and the launcher's project/folder rows in [workspace](../tests/regression/workspace.md), and linked-group display from #748.
+Selected regression cases: the sidebar's Projects and Active rows and the launcher's project/folder rows in [workspace](../../tests/regression/workspace.md), and linked-group display from #748.
 
 ## Guide pages
 
-[Projects](../guide/concepts/projects.md) (worktrees file under their project), [Missions](../guide/concepts/missions.md) and [Your first mission](../guide/getting-started/first-mission.md) (starting in a worktree), [Build a crew](../guide/guides/build-a-crew.md), [Chats and windows](../guide/guides/chats-and-windows.md) (the Checkout control, the sidebar line, cleanup at archive), [Drive Runner from agents](../guide/guides/drive-runner-from-agents.md) (`--worktree`), each with its zh-CN mirror, and the CLI reference. Also [vision §6](../product/vision.md), [agent environment](../product/agent-environment.md) ("What it does not provide"), the [roadmap](../roadmap.md)'s product boundaries, and the Worktrees and Crew Missions sections of `AGENTS.md`.
+[Projects](../../guide/concepts/projects.md) (worktrees file under their project), [Missions](../../guide/concepts/missions.md) and [Your first mission](../../guide/getting-started/first-mission.md) (starting in a worktree), [Build a crew](../../guide/guides/build-a-crew.md), [Chats and windows](../../guide/guides/chats-and-windows.md) (the Checkout control, the sidebar line, cleanup at archive), [Drive Runner from agents](../../guide/guides/drive-runner-from-agents.md) (`--worktree`), each with its zh-CN mirror, and the CLI reference. Also [vision §6](../../product/vision.md), [agent environment](../../product/agent-environment.md) ("What it does not provide"), the [roadmap](../../roadmap.md)'s product boundaries, and the Worktrees and Crew Missions sections of `AGENTS.md`.
 
 ## Delivery
 
