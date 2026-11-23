@@ -898,3 +898,73 @@ fn antigravity_symlinked_cwd_seeds_both_paths_on_direct_resume_and_mission() {
     );
     mgr.kill(&mission_session.id).unwrap();
 }
+
+#[cfg(windows)]
+#[test]
+fn antigravity_windows_launch_and_resume_replace_lowercase_auto_update_alias() {
+    let pool = pool_with_schema();
+    let app_data = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let project = app_data.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut role = role("agy", &[]);
+    role.runtime = "antigravity".into();
+    role.env
+        .insert("agy_cli_disable_auto_update".into(), String::new());
+    insert_role_row(&pool.get().unwrap(), &role);
+
+    let fake = fake_runtime();
+    let mgr = manager_with_runtime(
+        crate::shell_path::LoginShellEnv {
+            path: None,
+            vars: BTreeMap::from([("Agy_Cli_Disable_Auto_Update".into(), "false".into())]),
+        },
+        Arc::clone(&fake) as Arc<dyn SessionRuntime>,
+    );
+    let spawned = crate::runtimes::with_conversation_home(home.path(), || {
+        mgr.spawn_direct(
+            &role,
+            None,
+            None,
+            None,
+            None,
+            Some(project.to_str().unwrap()),
+            None,
+            None,
+            app_data.path(),
+            Arc::clone(&pool),
+            capture(),
+            None,
+        )
+    })
+    .unwrap();
+    let assert_single_true = |spec: &SpawnSpec| {
+        let matches: Vec<_> = spec
+            .env
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("AGY_CLI_DISABLE_AUTO_UPDATE"))
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(matches, [("AGY_CLI_DISABLE_AUTO_UPDATE", "true")]);
+    };
+    assert_single_true(&fake.last_spawn_spec().unwrap());
+
+    let key = uuid::Uuid::new_v4().to_string();
+    append_log(app_data.path(), &spawned.id, &created_line(&key));
+    wait_for_key(&pool, &spawned.id, &key);
+    mgr.kill(&spawned.id).unwrap();
+    std::fs::write(conversation_db(home.path(), &key), "").unwrap();
+    crate::runtimes::with_conversation_home(home.path(), || {
+        mgr.resume(
+            &spawned.id,
+            None,
+            None,
+            app_data.path(),
+            Arc::clone(&pool),
+            capture(),
+        )
+    })
+    .unwrap();
+    assert_single_true(&fake.last_spawn_spec().unwrap());
+    mgr.kill(&spawned.id).unwrap();
+}

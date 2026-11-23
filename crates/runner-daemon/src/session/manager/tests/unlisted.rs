@@ -173,6 +173,63 @@ fn sessions_keep_the_quiet_flags_the_update_drops() {
 }
 
 #[test]
+fn apply_launch_env_strips_case_insensitive_aliases_when_folding_case() {
+    let mut windows_env = BTreeMap::from([
+        ("agy_cli_disable_auto_update".into(), String::new()),
+        ("Agy_Cli_Disable_Auto_Update".into(), "false".into()),
+        ("OTHER".into(), "keep".into()),
+    ]);
+    spawn::apply_launch_env(
+        &mut windows_env,
+        &[("AGY_CLI_DISABLE_AUTO_UPDATE", "true")],
+        true,
+    );
+    let matches: Vec<_> = windows_env
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("AGY_CLI_DISABLE_AUTO_UPDATE"))
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    assert_eq!(matches, [("AGY_CLI_DISABLE_AUTO_UPDATE", "true")]);
+    assert_eq!(windows_env.get("OTHER").map(String::as_str), Some("keep"));
+
+    let mut unix_env = BTreeMap::from([("agy_cli_disable_auto_update".into(), String::new())]);
+    spawn::apply_launch_env(
+        &mut unix_env,
+        &[("AGY_CLI_DISABLE_AUTO_UPDATE", "true")],
+        false,
+    );
+    assert_eq!(
+        unix_env
+            .get("AGY_CLI_DISABLE_AUTO_UPDATE")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        unix_env
+            .get("agy_cli_disable_auto_update")
+            .map(String::as_str),
+        Some("")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_antigravity_agent_env_replaces_case_insensitive_auto_update_aliases() {
+    let env = spawn::agent_env(
+        BTreeMap::from([("Agy_Cli_Disable_Auto_Update".into(), "false".into())]),
+        &HashMap::from([("agy_cli_disable_auto_update".into(), String::new())]),
+        BTreeMap::new(),
+        Runtime::Antigravity.key(),
+    );
+    let matches: Vec<_> = env
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("AGY_CLI_DISABLE_AUTO_UPDATE"))
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    assert_eq!(matches, [("AGY_CLI_DISABLE_AUTO_UPDATE", "true")]);
+}
+
+#[test]
 fn unlisted_pty_reports_only_to_its_listener_and_leaves_no_trace() {
     let fake = fake_runtime();
     let mgr = proxied_manager(&fake);
