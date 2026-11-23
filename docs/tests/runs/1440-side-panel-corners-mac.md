@@ -1,0 +1,27 @@
+# #1440 side panel corners — macOS live QA
+
+2026-11-23. **Passed. All seven required macOS checks passed on reviewed candidate `ef8a1af7`. NO REMAINING MUST-FIX QA ISSUES.**
+
+## Candidate and environment
+
+- Tested `ef8a1af7136ed70b5689c797ce48e7e32f724ea8` for [PR #1441](https://github.com/yicheng47/runner/pull/1441) in `/Volumes/samsung/repos/yicheng47/runner/.worktrees/fix-1440-side-panel-corners`. The worktree was clean before the build. Native coverage was macOS 26.6.2 (25G83), arm64, on a 2× display with Runner 0.20.3 (dev), CLI 0.20.3, Rust and Cargo 1.97.1, and Apple Git 2.50.1.
+- Acquired the shared lock with `script/qa-lock acquire --timeout 540`, then built and launched with `make run`. Copied the Runner binary and CLI sidecar into a temporary macOS app bundle and verified both with `cmp`. The app SHA-256 was `453fb84bae91116e7f4ba94c37b3b4154ecdb4b44ff3123a7365fa2518784f93`. Verified the development endpoint `com.wycstudios.runner-dev/runnerd.sock` with the development CLI. The [candidate review](https://github.com/yicheng47/runner/pull/1441#issuecomment-7103621186) records the four focused geometry tests and the headless 150% and 200% scaling checks.
+- Used native Computer Use for the selected parts of `WS-FILES-07`, `WS-FILES-08`, `WS-CHANGES-13`, and `SET-THEME-01`. The file and rail views exercise the shared card and background changes. The real-cursor helper resized the window to exercise the different overlay surface and to make the Sessions rail scroll. The archived chat exercised the docked panel with a single border.
+- Used one scratch Git repository with 85 tracked files, nested directories, and a 200-line file with 80 removed and 80 added lines. The owned chat and four mission slots used pi with `deepseek/deepseek-flash` at low effort. Four slots made the Sessions roster scroll at minimum window height. The chat needed no prompt, and only the final mission slot received a one-line task.
+- Evidence is under `/private/tmp/runner-qa-1440.pVcM5L/evidence/`. The table names original native screenshots. Matching `-corners.png` files show enlarged crops from the originals. `panel-pixel-samples.txt` records the fill, edge and bottom-clearance measurements.
+
+## Results
+
+| Check | Result | Observations and evidence |
+| --- | --- | --- |
+| 1. Docked chat, viewer only and overflowing tabs | Passed | All four card corners were rounded with a file open and the rail hidden. At 200% app zoom, opening 14 files overflowed the tabs. Selecting the first and then last file from the overflow list moved the strip right and exposed the clipped leading tab and its fade. The fade stayed inside the top-left corner. `01-carbon-chat-tree-hidden.jpg`, `01-settings-200-percent.jpg`, `01-carbon-200-tabs-comparison.png`. |
+| 2. Docked chat, Files and Changes | Passed | Files and Changes both met the right border and followed the upper and lower right curves. The edge remained visible as the rail changed. `02-carbon-chat-files.jpg`, `02-carbon-chat-changes.jpg`. |
+| 3. Bottom clearance | Passed | Scrolled the unified diff through red and green rows. Both tints stopped above the lower-left curve. Expanded nested folders, scrolled to the last file, then selected and hovered that row in separate captures. Both highlights stayed above the lower-right curve. `03-chat-diff-removed-bottom.jpg`, `03-chat-diff-added-bottom.jpg`, `03-chat-tree-selected-last.jpg`, `03-chat-tree-hover-last.jpg`. |
+| 4. Mission rail and Sessions | Passed | All corners stayed rounded with a file open and the rail hidden or on Files or Changes. At 200% with 13 open files, the left tab fade cleared the curve. At 560 pt window height, the fourth Sessions card started partially clipped. Scrolling the roster exposed the whole card and the Add role button above the bottom padding. `04-carbon-mission-tree-hidden.jpg`, `04-carbon-mission-files.jpg`, `04-carbon-mission-changes.jpg`, `04-carbon-mission-200-left-fade.jpg`, `04-carbon-mission-sessions-before-scroll.jpg`, `04-carbon-mission-sessions-bottom.jpg`. |
+| 5. Carbon and Runner Light | Passed | Repeated the hidden and shown rail views and the scrolled 200% fade in Runner Light. Both themes kept clean corners, the usual code background and a lighter Files and Changes rail. Native samples matched the viewer and panel colors from the parent revision's theme definitions. The theme comparison used the parent source and candidate pixels. `05-light-chat-tree-hidden.jpg`, `05-light-chat-files.jpg`, `05-light-chat-changes.jpg`, `05-light-200-tabs-scrolled-right.jpg`. |
+| 6. Narrow overlay sheet | Passed | Shrinking the window from 1915 to 710 pt moved the open viewer into an overlay above the dimmed chat. The file remained visible and the sheet fill followed all four rounded corners. `06-light-narrow-overlay.jpg`. |
+| 7. Archived chat | Passed | Archived the owned chat, opened it from Settings → Archived, then opened its docked Files panel and selected the fixture file. The tree's two right corners followed the work card with a continuous right edge. `07-carbon-archived-docked-files.jpg`. |
+
+## Cleanup
+
+Verified the owned chat and all four owned mission slots stopped, the chat and mission were archived, and the mission had zero live slots. Quit and unregistered the QA app, stopped its development daemon, and restored the backed-up development UI settings and window files byte for byte. Released the QA lock. The fixture, role, archived history and screenshots remain for review.
