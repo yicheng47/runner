@@ -205,6 +205,19 @@ fn antigravity_settings_inject_title_hook_across_launches_and_respect_role_setti
 }
 
 #[test]
+fn antigravity_launch_env_disables_auto_update_only_on_windows() {
+    assert_eq!(
+        antigravity_launch_env(true),
+        [("AGY_CLI_DISABLE_AUTO_UPDATE", "true")]
+    );
+    assert!(antigravity_launch_env(false).is_empty());
+    assert_eq!(
+        Antigravity.launch_env(),
+        antigravity_launch_env(cfg!(windows))
+    );
+}
+
+#[test]
 fn antigravity_uses_program_status_without_status_hooks() {
     let adapter = Antigravity;
     assert!(adapter.status_hooks().is_none());

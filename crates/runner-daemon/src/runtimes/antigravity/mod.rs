@@ -48,6 +48,16 @@ pub(crate) fn inject_antigravity_settings(role_args: &[String]) -> bool {
     })
 }
 
+pub(crate) fn antigravity_launch_env(windows: bool) -> &'static [(&'static str, &'static str)] {
+    if windows {
+        // agy's Windows background updater spawns `agy.EXE --version` without
+        // CREATE_NO_WINDOW, flashing a visible console or Windows Terminal window (#1422).
+        &[("AGY_CLI_DISABLE_AUTO_UPDATE", "true")]
+    } else {
+        &[]
+    }
+}
+
 pub(crate) fn antigravity_title_command(exe: &Path, windows: bool) -> String {
     #[cfg(windows)]
     let exe = ordinary_windows_path(exe);
@@ -239,6 +249,9 @@ impl RuntimeAdapter for Antigravity {
     // missions already use --dangerously-skip-permissions and reach the bus via `runner`.
     fn conversation_exists(&self, key: &str, _ctx: &ProbeContext<'_>) -> Option<bool> {
         Some(antigravity_conversation_exists(key))
+    }
+    fn launch_env(&self) -> &'static [(&'static str, &'static str)] {
+        antigravity_launch_env(cfg!(windows))
     }
     fn launch_args(&self, ctx: &LaunchContext<'_>) -> Vec<String> {
         let mut out = Vec::new();

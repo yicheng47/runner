@@ -121,6 +121,13 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
     assert!(!fresh
         .env
         .contains_key(runner_core::protocol::hook::GENERATION_ENV));
+    assert_eq!(
+        fresh
+            .env
+            .get("AGY_CLI_DISABLE_AUTO_UPDATE")
+            .map(String::as_str),
+        cfg!(windows).then_some("true")
+    );
     assert!(log.parent().unwrap().is_dir());
 
     let key = uuid::Uuid::new_v4().to_string();
@@ -163,6 +170,13 @@ fn antigravity_direct_chat_seeds_trust_captures_its_key_and_resumes_by_conversat
     assert!(!resumed_spec
         .env
         .contains_key("RUNNER_ANTIGRAVITY_WORKSPACE_CONTEXT"));
+    assert_eq!(
+        resumed_spec
+            .env
+            .get("AGY_CLI_DISABLE_AUTO_UPDATE")
+            .map(String::as_str),
+        cfg!(windows).then_some("true")
+    );
     let resumed = resumed_spec.args;
     assert!(!resumed.iter().any(|arg| arg == "--add-dir"));
     assert!(has_arg_pair(&resumed, "--conversation", &key));

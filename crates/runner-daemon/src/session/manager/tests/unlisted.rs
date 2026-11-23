@@ -46,6 +46,7 @@ fn update_spec_runs_the_update_in_home_without_runner_layers() {
         Some("xterm-256color")
     );
     for runner_layer in [
+        "AGY_CLI_DISABLE_AUTO_UPDATE",
         "DISABLE_INSTALLATION_CHECKS",
         "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
         "PI_SKIP_VERSION_CHECK",
@@ -156,6 +157,18 @@ fn sessions_keep_the_quiet_flags_the_update_drops() {
     assert_eq!(
         pi.get("PI_SKIP_VERSION_CHECK").map(String::as_str),
         Some("1")
+    );
+    let antigravity = spawn::agent_env(
+        BTreeMap::new(),
+        &HashMap::new(),
+        BTreeMap::new(),
+        Runtime::Antigravity.key(),
+    );
+    assert_eq!(
+        antigravity
+            .get("AGY_CLI_DISABLE_AUTO_UPDATE")
+            .map(String::as_str),
+        cfg!(windows).then_some("true")
     );
 }
 
