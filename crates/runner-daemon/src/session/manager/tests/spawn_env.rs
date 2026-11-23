@@ -64,6 +64,7 @@ fn login_shell_proxy_env_reaches_spawn_with_role_env_taking_precedence() {
     );
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn utf8_locale_fallback_applies_only_when_no_locale_present() {
     use super::spawn::ensure_utf8_locale;
@@ -73,7 +74,7 @@ fn utf8_locale_fallback_applies_only_when_no_locale_present() {
     assert_eq!(
         env.get("LC_CTYPE").map(String::as_str),
         Some("UTF-8"),
-        "no locale anywhere must fall back to LC_CTYPE=UTF-8",
+        "no locale anywhere on macOS must fall back to LC_CTYPE=UTF-8",
     );
 
     let mut env = std::collections::BTreeMap::new();
@@ -148,21 +149,60 @@ fn spawn_env_respects_configured_locale_and_falls_back_to_utf8() {
     )
     .unwrap();
     let spec = fake.last_spawn_spec().expect("spawn was called");
-    let process_has_locale = ["LANG", "LC_ALL", "LC_CTYPE"]
-        .iter()
-        .any(|var| std::env::var_os(var).is_some());
-    if process_has_locale {
-        assert!(
-            !spec.env.contains_key("LC_CTYPE"),
-            "children inherit the process locale — no fallback expected",
-        );
-    } else {
-        assert_eq!(
-            spec.env.get("LC_CTYPE").map(String::as_str),
-            Some("UTF-8"),
-            "locale-free spawn must get the UTF-8 fallback",
-        );
+    #[cfg(target_os = "macos")]
+    {
+        let process_has_locale = ["LANG", "LC_ALL", "LC_CTYPE"]
+            .iter()
+            .any(|var| std::env::var_os(var).is_some());
+        if process_has_locale {
+            assert!(
+                !spec.env.contains_key("LC_CTYPE"),
+                "children inherit the process locale — no fallback expected",
+            );
+        } else {
+            assert_eq!(
+                spec.env.get("LC_CTYPE").map(String::as_str),
+                Some("UTF-8"),
+                "locale-free macOS spawn must get the UTF-8 fallback",
+            );
+        }
     }
+    #[cfg(not(target_os = "macos"))]
+    assert!(
+        !spec.env.contains_key("LC_CTYPE"),
+        "non-macOS spawns must not inject bare LC_CTYPE=UTF-8",
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn non_macos_agent_env_skips_utf8_fallback_and_preserves_configured_locale() {
+    let bare = spawn::agent_env(BTreeMap::new(), &HashMap::new(), BTreeMap::new(), "shell");
+    assert!(
+        !bare.contains_key("LC_CTYPE"),
+        "non-macOS agent_env must not inject bare LC_CTYPE=UTF-8",
+    );
+
+    let localized = spawn::agent_env(
+        BTreeMap::from([("LANG".into(), "en_US.UTF-8".into())]),
+        &HashMap::from([("LC_ALL".into(), "zh_CN.UTF-8".into())]),
+        BTreeMap::new(),
+        "shell",
+    );
+    assert_eq!(
+        localized.get("LANG").map(String::as_str),
+        Some("en_US.UTF-8"),
+        "shell locale vars must pass through on non-macOS",
+    );
+    assert_eq!(
+        localized.get("LC_ALL").map(String::as_str),
+        Some("zh_CN.UTF-8"),
+        "explicit role.env locale must pass through on non-macOS",
+    );
+    assert!(
+        !localized.contains_key("LC_CTYPE"),
+        "configured locale must not trigger LC_CTYPE injection on non-macOS",
+    );
 }
 
 #[test]

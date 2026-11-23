@@ -1,15 +1,23 @@
 use super::*;
 
+#[cfg(target_os = "macos")]
 const LOCALE_VARS: [&str; 3] = ["LANG", "LC_ALL", "LC_CTYPE"];
 use runner_core::protocol::{SESSION_CLI_ENV, SESSION_ID_ENV};
 
-/// Dock-launched GUI apps inherit no locale, so children run in the
+/// Dock-launched macOS GUI apps inherit no locale, so children run in the
 /// POSIX C locale and macOS clipboard tools (claude's `pbpaste`)
 /// decode UTF-8 as Mac Roman — CJK text arrives as mojibake (#461).
 /// Mirror alacritty's minimal macOS fallback: set `LC_CTYPE=UTF-8`
 /// only when no layer supplies a locale (a full `LANG` would also
 /// switch tool message languages). Children inherit the app's own
 /// process env on top of the spec, so a locale there counts too.
+///
+/// Compiled only on macOS (`#[cfg(target_os = "macos")]`): bare `UTF-8` is a
+/// macOS/BSD locale name rejected by MSYS2/Cygwin newlib (forcing Git for
+/// Windows `less` into ASCII `<XX>` escapes, #1433) and glibc on locale-free
+/// Linux environments, whereas Windows Terminal leaves POSIX locale vars unset
+/// so Git for Windows and MSYS2 default to `C.UTF-8`.
+#[cfg(target_os = "macos")]
 pub(super) fn ensure_utf8_locale(env: &mut BTreeMap<String, String>, process_has_locale: bool) {
     if process_has_locale || LOCALE_VARS.iter().any(|var| env.contains_key(*var)) {
         return;
@@ -39,7 +47,10 @@ pub(super) fn apply_launch_env(
 /// layer on top so the user can't accidentally shadow them — PATH comes from
 /// the composed path and a role.env PATH is filtered by
 /// `launch::is_reserved_env_name` — then `extra_env`, the runtime's quiet
-/// flags (#475), and a UTF-8 locale when no layer supplies one.
+/// flags (#475), and on macOS only a `LC_CTYPE=UTF-8` fallback when no layer
+/// supplies a locale (Windows and Linux leave POSIX locale vars unset so Git
+/// for Windows/MSYS2 default to `C.UTF-8` and glibc is never handed bare
+/// `UTF-8`, #1433).
 pub(super) fn agent_env(
     shell_vars: BTreeMap<String, String>,
     role_env: &HashMap<String, String>,
@@ -61,10 +72,13 @@ pub(super) fn agent_env(
         crate::runtimes::for_key(runtime_key).launch_env(),
         cfg!(windows),
     );
-    let process_has_locale = LOCALE_VARS
-        .iter()
-        .any(|var| std::env::var_os(var).is_some());
-    ensure_utf8_locale(&mut env, process_has_locale);
+    #[cfg(target_os = "macos")]
+    {
+        let process_has_locale = LOCALE_VARS
+            .iter()
+            .any(|var| std::env::var_os(var).is_some());
+        ensure_utf8_locale(&mut env, process_has_locale);
+    }
     env
 }
 
