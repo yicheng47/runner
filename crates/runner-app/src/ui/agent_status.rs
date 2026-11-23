@@ -415,7 +415,6 @@ pub fn status_indicator(
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StatusIndicatorStyle {
     List,
-    PaneHeader,
     IslandHeader,
 }
 
@@ -463,25 +462,6 @@ struct MinuteTicker {
     _refresh_task: Task<()>,
 }
 
-pub fn pane_status_indicator(
-    status: StatusPresentation,
-    label: bool,
-    detail: bool,
-    id: impl Into<ElementId>,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    timed_status_indicator(
-        status,
-        label,
-        detail,
-        id.into(),
-        StatusIndicatorStyle::PaneHeader,
-        window,
-        cx,
-    )
-}
-
 fn island_status_indicator(
     status: StatusPresentation,
     label: bool,
@@ -501,16 +481,6 @@ fn island_status_indicator(
     )
 }
 
-fn header_status_width(label: bool, detail: bool) -> f32 {
-    if !label {
-        16.
-    } else if detail {
-        180.
-    } else {
-        108.
-    }
-}
-
 fn render_status_indicator(
     status: StatusPresentation,
     label: bool,
@@ -519,7 +489,6 @@ fn render_status_indicator(
     style: StatusIndicatorStyle,
     now: i64,
 ) -> AnyElement {
-    let header = style != StatusIndicatorStyle::List;
     let island = style == StatusIndicatorStyle::IslandHeader;
     let color = if status.warns() {
         theme::warning()
@@ -532,23 +501,14 @@ fn render_status_indicator(
     let text_size = if island {
         theme::text_ui()
     } else {
-        rems(
-            if header && !status.needs_you() && !status.is_error() {
-                10.
-            } else {
-                11.
-            } / 16.,
-        )
+        rems(11. / 16.)
     };
     let row = div()
         .flex_none()
         .flex()
-        .when(!header, |row| row.w_full().min_w(px(0.)).overflow_hidden())
-        .when(header && !island && label && !detail, |row| {
-            row.min_w(rems(header_status_width(label, detail) / 16.))
-        })
-        .when(header && ((!island && !label) || detail), |row| {
-            row.w(rems(header_status_width(label, detail) / 16.))
+        .when(!island, |row| row.w_full().min_w(px(0.)).overflow_hidden())
+        .when(island && detail, |row| {
+            row.w(rems(if label { 180. } else { 16. } / 16.))
         })
         .items_center()
         .gap(rems(if island { 6. / 16. } else { 5. / 16. }))
@@ -565,7 +525,7 @@ fn render_status_indicator(
                         .debug_selector(|| "ISLAND_STATUS_LABEL".into())
                 })
                 .text_color(color);
-            let label_el = if !header && short_label.detail.is_none() {
+            let label_el = if !island && short_label.detail.is_none() {
                 label_el.min_w(px(0.)).flex_initial().truncate()
             } else {
                 label_el.flex_none().whitespace_nowrap()
@@ -573,7 +533,7 @@ fn render_status_indicator(
             row.child(label_el.child(short_label.base))
         })
         .children(
-            (label && (!header || detail))
+            (label && (!island || detail))
                 .then_some(short_label.detail)
                 .flatten()
                 .into_iter()
