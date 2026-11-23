@@ -90,7 +90,7 @@ impl NativeRoot {
             self.active_chat_split_columns()
         };
         let is_sheet = side_panel::is_narrow(
-            self.chat_panel_available_width(),
+            self.chat_files.available_width(),
             self.settings(cx).chat_panel_width,
             split_columns,
         );
@@ -114,15 +114,6 @@ impl NativeRoot {
         side_panel::split_columns_for_layout(layout, has_maximized)
     }
 
-    fn chat_panel_available_width(&self) -> f32 {
-        let measured = self.chat_files.measured_width();
-        if measured > 0. {
-            (measured - 6.).max(0.)
-        } else {
-            0.
-        }
-    }
-
     pub(crate) fn chat_panel_is_open(&self, cx: &App) -> bool {
         let explicit = if self.remote_client.is_active() {
             self.remote_client.chat_panel_explicit_open()
@@ -137,7 +128,7 @@ impl NativeRoot {
         side_panel::resolved_open(
             surface,
             explicit,
-            self.chat_panel_available_width(),
+            self.chat_files.available_width(),
             self.settings(cx).chat_panel_width,
             self.active_chat_split_columns(),
         )
@@ -582,7 +573,6 @@ impl NativeRoot {
             &selection,
             subject.as_ref(),
             settings.chat_panel_width,
-            6.,
             split_columns,
             self.chat_panel_maximized && self.remote_client.is_local(),
             cx,

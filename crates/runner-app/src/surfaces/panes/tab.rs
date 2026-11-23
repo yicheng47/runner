@@ -667,6 +667,7 @@ impl NativeRoot {
                 "chat-panel-resize",
                 ResizeAxis::Columns,
                 self.chat_panel_resizing,
+                runner_app::ui::resize::RESIZE_GRAB,
                 zoom,
                 None,
                 false,
@@ -711,7 +712,10 @@ impl NativeRoot {
         };
         let reserved_spacer = (panel_sheet && panel_layout.reserved_docked_width > 0.).then(|| {
             div()
-                .w(rems((panel_layout.reserved_docked_width + 6.) / 16.))
+                .w(rems(
+                    (panel_layout.reserved_docked_width + runner_app::ui::work_card::ISLAND_GAP)
+                        / 16.,
+                ))
                 .h_full()
                 .flex_none()
         });
@@ -737,7 +741,12 @@ impl NativeRoot {
             .flex()
             .child(self.chat_files.measure(self.settings(cx).app_zoom))
             .when(!panel_maximized, |el| el.child(chat_column))
-            .children(docked_open.then(|| div().w(rems(6. / 16.)).h_full().flex_none()))
+            .children(docked_open.then(|| {
+                div()
+                    .w(rems(runner_app::ui::work_card::ISLAND_GAP / 16.))
+                    .h_full()
+                    .flex_none()
+            }))
             .children(reserved_spacer)
             .children(docked_panel)
             .children(panel_resize)

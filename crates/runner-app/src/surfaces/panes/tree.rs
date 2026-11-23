@@ -180,6 +180,7 @@ impl NativeRoot {
                         SplitOrientation::Column => ResizeAxis::Rows,
                     },
                     self.front_page_resizing_split() == Some(split.id.as_str()),
+                    runner_app::ui::work_card::ISLAND_GAP,
                     self.settings(cx).app_zoom,
                     None,
                     false,

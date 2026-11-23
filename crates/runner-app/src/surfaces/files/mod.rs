@@ -772,6 +772,7 @@ impl FilesPanel {
             "file-tree-resize",
             ResizeAxis::Columns,
             tree_resizing,
+            runner_app::ui::resize::RESIZE_GRAB,
             zoom,
             Some(theme::border()),
             false,
@@ -1376,8 +1377,15 @@ impl FilesPanel {
         .into_any_element()
     }
 
-    pub(crate) fn measured_width(&self) -> f32 {
-        self.surface.get()
+    /// The measured workspace width left for the panel and the main column, past the
+    /// docked panel's island gap, or `0` before the first measurement.
+    pub(crate) fn available_width(&self) -> f32 {
+        let measured = self.surface.get();
+        if measured > 0. {
+            (measured - runner_app::ui::work_card::ISLAND_GAP).max(0.)
+        } else {
+            0.
+        }
     }
 
     pub(crate) fn maximized_width(&self, fallback: f32) -> f32 {
@@ -1402,7 +1410,6 @@ impl FilesPanel {
         selection: &side_panel::PanelSelection,
         subject: Option<&PanelSubject>,
         standard: f32,
-        gap: f32,
         split_columns: usize,
         maximized: bool,
         cx: &App,
@@ -1412,12 +1419,7 @@ impl FilesPanel {
         let widened_tree = subject
             .filter(|_| viewer_enabled && active.is_some())
             .and_then(|subject| self.viewer_widening(subject, cx));
-        let measured = self.surface.get();
-        let available = if measured > 0. {
-            (measured - gap).max(0.)
-        } else {
-            0.
-        };
+        let available = self.available_width();
         let file = settings.file_viewer_width;
         let tree_width = settings.file_tree_width;
         let full = self.maximized_width(

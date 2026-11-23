@@ -35,7 +35,9 @@ impl NativeRoot {
         let zoom = self.settings(cx).app_zoom;
         if self.front_page_sidebar_collapsed() && cfg!(target_os = "macos") {
             // The card's scaled inset and unscaled edge already consume part of the window anchor.
-            platform_ui::navigation_left(window, zoom) - 8. * zoom - 1.
+            platform_ui::navigation_left(window, zoom)
+                - runner_app::ui::work_card::ISLAND_MARGIN * zoom
+                - 1.
         } else {
             16. * zoom
         }

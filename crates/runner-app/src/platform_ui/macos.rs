@@ -6,6 +6,9 @@ use crate::*;
 
 const TITLEBAR_HEIGHT: f32 = 52.;
 
+/// How far below the window's top edge the island area starts, before zoom.
+pub(crate) const ISLAND_AREA_TOP: f32 = runner_app::ui::work_card::ISLAND_TOP_MARGIN;
+
 pub(crate) const SETTINGS_DRAG_INSET: f32 = TITLEBAR_DRAG_HEIGHT;
 pub(crate) const SETTINGS_CONTENT_TOP: f32 = 56.;
 
@@ -194,7 +197,7 @@ impl NativeRoot {
                     .top_0()
                     .left_0()
                     .right_0()
-                    .h(rems(8. / 16.))
+                    .h(rems(runner_app::ui::work_card::ISLAND_TOP_MARGIN / 16.))
                     .debug_selector(|| "WINDOW_TOP_MARGIN_DRAG".into()),
                 cx,
             )

@@ -178,9 +178,11 @@ impl NativeRoot {
         };
         let pane_width =
             (f32::from(bounds.width) - sidebar_width - chat_panel_width).max(200.) * width_fraction;
-        let pane_height = (f32::from(bounds.height) - 16. * self.settings(cx).app_zoom).max(160.)
-            * height_fraction
-            - (PANE_HEADER_HEIGHT + 8.) * self.settings(cx).app_zoom;
+        let island_area_height = f32::from(bounds.height)
+            - (platform_ui::ISLAND_AREA_TOP + runner_app::ui::work_card::ISLAND_MARGIN)
+                * settings.app_zoom;
+        let pane_height = island_area_height.max(160.) * height_fraction
+            - (PANE_HEADER_HEIGHT + 8.) * settings.app_zoom;
         let font_size = self.settings(cx).terminal_font_size as f32 * self.settings(cx).app_zoom;
         let cell_width = font_size * 0.6;
         let line_height =

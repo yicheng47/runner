@@ -105,7 +105,13 @@ fn mission_drawer_island_stacks_below_mission_with_full_height_rail() {
                 let row_gutter = visual.debug_bounds("MISSION_DRAWER_GUTTER").unwrap();
                 let drawer_header = visual.debug_bounds("DRAWER_HEADER").unwrap();
                 assert_eq!(drawer_island.bottom(), area.bottom());
-                assert!((drawer_island.top() - mission.bottom() - px(6. * zoom)).abs() < px(0.5));
+                assert!(
+                    (drawer_island.top()
+                        - mission.bottom()
+                        - px(runner_app::ui::work_card::ISLAND_GAP * zoom))
+                    .abs()
+                        < px(0.5)
+                );
                 assert_eq!(row_gutter.top(), mission.bottom());
                 assert_eq!(row_gutter.bottom(), drawer_island.top());
                 assert!((drawer_island.size.height - px(280. * zoom)).abs() < px(0.5));
@@ -153,18 +159,33 @@ fn mission_drawer_island_stacks_below_mission_with_full_height_rail() {
                     theme::border(),
                 );
                 if collapsed {
-                    assert!((area.left() - px(8. * zoom)).abs() < px(0.5));
+                    assert!(
+                        (area.left() - px(runner_app::ui::work_card::ISLAND_MARGIN * zoom)).abs()
+                            < px(0.5)
+                    );
                 } else {
                     let sidebar = visual.debug_bounds("APP_SIDEBAR").unwrap();
                     let gutter = visual.debug_bounds("SIDEBAR_RESIZE_GUTTER").unwrap();
-                    assert!((area.left() - sidebar.right() - px(6. * zoom)).abs() < px(0.5));
-                    assert!((gutter.center().x - area.left()).abs() < px(0.5));
+                    assert!(
+                        (area.left()
+                            - sidebar.right()
+                            - px(runner_app::ui::work_card::ISLAND_GAP * zoom))
+                        .abs()
+                            < px(0.5)
+                    );
+                    assert!((gutter.center().x - area.left()).abs() <= px(0.5));
                     assert!((gutter.size.width - px(6. * zoom)).abs() < px(0.5));
                 }
                 if rail_open {
                     let rail = visual.debug_bounds("MISSION_RAIL").unwrap();
                     let gutter = visual.debug_bounds("MISSION_RAIL_GUTTER").unwrap();
-                    assert!((rail.left() - mission.right() - px(6. * zoom)).abs() < px(0.5));
+                    assert!(
+                        (rail.left()
+                            - mission.right()
+                            - px(runner_app::ui::work_card::ISLAND_GAP * zoom))
+                        .abs()
+                            < px(0.5)
+                    );
                     assert_eq!(rail.right(), area.right());
                     assert_eq!((rail.top(), rail.bottom()), (area.top(), area.bottom()));
                     assert!((gutter.center().x - rail.left()).abs() < px(0.5));

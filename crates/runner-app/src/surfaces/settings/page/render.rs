@@ -25,7 +25,10 @@ impl NativeRoot {
                 .collect()
         };
         // Keep the full-size footer sample when zoom leaves little room for page gutters.
-        let available = f32::from(window.viewport_size().width) - width - 8. * zoom - 4.;
+        let available = f32::from(window.viewport_size().width)
+            - width
+            - runner_app::ui::work_card::ISLAND_MARGIN * zoom
+            - 4.;
         let horizontal_padding = if active == SettingsPane::Usage {
             let preview_width = super::super::usage::USAGE_PREVIEW_WIDTH
                 + 2. * super::super::usage::USAGE_PREVIEW_PADDING;
