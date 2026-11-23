@@ -1,4 +1,4 @@
-//! Files panel state, initialization, focus, sizing and surface composition.
+//! Files panel state, initialization, focus, and right-rail tree surface (#1421).
 
 mod roots;
 mod tree;
@@ -22,7 +22,6 @@ use gpui::{
 };
 use runner_app::ui::{
     menu::{popup_layer_sized, ContextMenu, MenuItem, PopupWidth},
-    resize::{resize_strip, resize_strip_inset, ResizeAxis},
     Button, ButtonVariant, IconButton, Scrollbar, TextField,
 };
 use runner_core::protocol::files::{
@@ -31,7 +30,7 @@ use runner_core::protocol::files::{
 use runner_core::protocol::{ClientError, DaemonClient};
 
 use super::links::{LinkRoot, Links};
-use super::open_file::{reveal, reveal_label, Viewer};
+use super::open_file::{reveal, reveal_label, UnifiedViewer};
 use super::picker::{self, PickerItem, PickerKind, PickerSources};
 use super::tree::{FileTree, Letter, Moved, PreparedStatus, Row};
 use super::{FilesEvent, FilesHub};
@@ -40,7 +39,7 @@ use crate::surfaces::side_panel::{PanelContext, PanelSubject, PanelSurface, Wide
 use crate::text_util::{abbreviate_home, HomePath};
 use crate::theme;
 
-/// A drag of the divider between an open file and the tree.
+/// A drag of the inner divider between the unified viewer and the right rail.
 #[derive(Clone)]
 pub(crate) struct FileTreeResizeDrag;
 
@@ -73,10 +72,6 @@ struct RootState {
     /// arriving late never replaces a newer one.
     listed: std::collections::HashMap<String, u64>,
     next_listing: u64,
-    /// Paths with uncommitted changes against `HEAD` (`ChangesTarget::Uncommitted`),
-    /// so `Files`'s `Diff` toggle reflects actual `Working tree vs HEAD` diffs.
-    uncommitted_paths: Option<std::collections::HashSet<String>>,
-    uncommitted_seq: u64,
 }
 
 pub(super) struct Picker {
@@ -96,21 +91,16 @@ pub(super) struct Picker {
 #[derive(Clone, Debug)]
 pub(super) struct SavedFilesState {
     pub(super) root: PathBuf,
-    pub(super) open_paths: Vec<String>,
-    pub(super) active_path: Option<String>,
-    pub(super) tree_hidden: bool,
     pub(super) filter: TreeFilter,
 }
 
 pub(crate) struct FilesView {
     context: PanelContext,
     client: DaemonClient,
+    pub(crate) viewer: Entity<UnifiedViewer>,
     pub(super) focus: FocusHandle,
-    /// The file viewer's own focus, for a placeholder or a loading file
-    /// while the tree is hidden.
-    pub(super) viewer_focus: FocusHandle,
     /// The whole view, so focus lost inside it can be told from elsewhere.
-    root_focus: FocusHandle,
+    pub(super) root_focus: FocusHandle,
     _focus_lost: Option<Subscription>,
     body: Body,
     /// Bumped whenever the root changes, so a reply for an earlier root is dropped.
@@ -136,31 +126,27 @@ pub(crate) struct FilesView {
     pub(super) picker: Option<Picker>,
     picker_anchor: Rc<Cell<Bounds<Pixels>>>,
     pub(super) finder: Option<super::finder::Finder>,
-    /// The whole view, which the finder centres over.
+    /// This rail's bounds; used as fallback when centering the finder.
     pub(super) view_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Full composed side-panel bounds, so the finder centers over viewer + rail.
+    pub(crate) panel_bounds: Option<Rc<Cell<Bounds<Pixels>>>>,
     pub(super) menu: Option<Entity<ContextMenu>>,
     pub(super) scroll: UniformListScrollHandle,
     scrollbar: Entity<Scrollbar>,
-    pub(super) viewer: Viewer,
     pub(super) links: Links,
     pub(super) filter: TreeFilter,
-    pub(super) maximized: bool,
-    pub(super) on_request_maximize: Option<crate::surfaces::side_panel::PanelMaximizeCallback>,
-    pub(super) diff_mode_pref: crate::app_settings::DiffViewMode,
-    /// Redrawn when the panel's width should change.
+    /// Path waiting to scroll into view in the tree once its folder lists.
+    pub(super) reveal: Option<String>,
+    widened: Option<Widened>,
+    /// Redrawn when dirty-changes state changes.
     owner: Option<gpui::EntityId>,
-    /// The widening, open-file, and dirty-changes state last told to the owner.
-    reported: (Option<bool>, bool, bool),
+    reported_dirty: bool,
     /// Set when the view hides (watch stopped) and cleared when fresh status lands.
     pub(super) status_stale: bool,
-    /// Open file tabs / filter preserved across LRU view eviction (#1403).
+    /// Filter preserved across LRU view eviction.
     pub(super) pending_restore: Option<SavedFilesState>,
-    /// Whether the divider between the file and the tree is being dragged.
-    tree_resizing: bool,
     /// Settings → Side panel → Files as last drawn.
     pub(super) look: Option<super::Look>,
-    /// Reads an open ignored file again while the view shows.
-    ignored_refresh: Option<Task<()>>,
     _hub: Subscription,
     _settings: Subscription,
 }
@@ -184,7 +170,11 @@ pub(super) fn letter_color(letter: Letter) -> gpui::Hsla {
 }
 
 impl FilesView {
-    pub(crate) fn new(context: PanelContext, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        context: PanelContext,
+        viewer: Entity<UnifiedViewer>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let client = crate::app_store::global_app_store(cx)
             .read(cx)
             .client
@@ -231,8 +221,8 @@ impl FilesView {
             },
             context,
             client,
+            viewer,
             focus: cx.focus_handle(),
-            viewer_focus: cx.focus_handle(),
             root_focus: cx.focus_handle(),
             _focus_lost: None,
             generation: 0,
@@ -251,25 +241,19 @@ impl FilesView {
             picker_anchor: Rc::default(),
             finder: None,
             view_bounds: Rc::default(),
+            panel_bounds: None,
             menu: None,
             scroll,
             scrollbar,
-            viewer: Viewer::default(),
             links: Links::default(),
             filter: TreeFilter::All,
-            maximized: false,
-            on_request_maximize: None,
-            diff_mode_pref: super::settings(cx)
-                .map_or(crate::app_settings::DiffViewMode::Unified, |settings| {
-                    settings.changes_diff_mode
-                }),
+            reveal: None,
+            widened: None,
             owner: None,
-            reported: (None, false, false),
+            reported_dirty: false,
             status_stale: false,
             pending_restore: None,
-            tree_resizing: false,
             look: super::Look::current(cx),
-            ignored_refresh: None,
             _hub: hub_subscription,
             _settings: settings_subscription,
         };
@@ -308,103 +292,47 @@ impl FilesView {
         cx.notify();
     }
 
-    /// The focused element went undrawn: the tree hid, a tab closed, its
-    /// code became a placeholder, or find's field went with it. When that
-    /// was inside this view, focus moves to what the view still draws, so
-    /// its keys keep working; focus lost elsewhere is left alone.
+    fn settings_changed(&mut self, cx: &mut Context<Self>) {
+        let look = super::Look::current(cx);
+        if look != self.look {
+            self.look = look;
+            cx.notify();
+        }
+    }
+
     fn on_focus_lost(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ours = window
             .focus_lost_restore_target(cx)
-            .is_some_and(|target| target == self.root_focus || target == self.viewer_focus);
+            .is_some_and(|target| target == self.root_focus);
         if ours {
-            self.keep_focus(window, cx);
+            self.focus_tree(window, cx);
         }
     }
 
-    /// How the owner widened the panel for an open file, and so whether the
-    /// tree fits beside it and how wide it is.
     pub(crate) fn set_widened(&mut self, widened: Option<Widened>, cx: &mut Context<Self>) {
-        if self.viewer.widened != widened {
-            self.viewer.widened = widened;
-            self.sync_effective_diff_mode(cx);
+        if self.widened != widened {
+            self.widened = widened;
             cx.notify();
         }
     }
 
-    pub(crate) fn set_maximized(&mut self, maximized: bool, cx: &mut Context<Self>) {
-        if self.maximized != maximized {
-            self.maximized = maximized;
-            self.sync_effective_diff_mode(cx);
-            cx.notify();
-        }
+    pub(crate) fn set_panel_bounds(&mut self, bounds: Option<Rc<Cell<Bounds<Pixels>>>>) {
+        self.panel_bounds = bounds;
     }
 
-    pub(crate) fn set_on_request_maximize(
-        &mut self,
-        handler: Option<crate::surfaces::side_panel::PanelMaximizeCallback>,
-    ) {
-        self.on_request_maximize = handler;
+    pub(crate) fn focus_tree(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.body, Body::Root(_)) {
+            self.focus.focus(window, cx);
+        } else {
+            self.root_focus.focus(window, cx);
+        }
     }
 
     pub(crate) fn focus_default(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.root_focus.contains_focused(window, cx) {
             return;
         }
-        if matches!(self.body, Body::Root(_)) {
-            self.keep_focus(window, cx);
-        } else {
-            self.root_focus.focus(window, cx);
-        }
-    }
-
-    pub(super) fn diff_width(&self) -> f32 {
-        self.viewer
-            .widened
-            .map_or(crate::app_settings::FILE_VIEWER_DEFAULT, |widened| {
-                widened.file
-            })
-    }
-
-    pub(super) fn effective_diff_mode(&self, cx: &App) -> crate::app_settings::DiffViewMode {
-        let preferred = super::settings(cx).map_or(self.diff_mode_pref, |s| s.changes_diff_mode);
-        crate::surfaces::side_panel::effective_diff_mode(
-            preferred,
-            self.diff_width(),
-            self.maximized,
-        )
-    }
-
-    pub(super) fn select_diff_mode(
-        &mut self,
-        mode: crate::app_settings::DiffViewMode,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.diff_mode_pref = mode;
-        crate::app_store::global_app_store(cx).update(cx, |store, cx| {
-            store.update_settings(
-                |settings| {
-                    let changed = settings.changes_diff_mode != mode;
-                    settings.changes_diff_mode = mode;
-                    changed
-                },
-                true,
-                cx,
-            );
-        });
-        if !self.root_focus.contains_focused(window, cx) {
-            self.focus_default(window, cx);
-        }
-        if mode == crate::app_settings::DiffViewMode::Split
-            && !self.maximized
-            && self.diff_width() < crate::surfaces::side_panel::SPLIT_MIN_DIFF_WIDTH
-            && let Some(request) = self.on_request_maximize.clone()
-        {
-            self.maximized = true;
-            request(true, window, cx);
-        }
-        self.sync_effective_diff_mode(cx);
-        cx.notify();
+        self.focus_tree(window, cx);
     }
 
     pub(crate) fn set_owner(&mut self, owner: Option<gpui::EntityId>) {
@@ -417,82 +345,44 @@ impl FilesView {
         }
     }
 
-    /// Sizes the tree `tree` wide from the divider's drag, trading width
-    /// with the file so the panel keeps its width.
-    fn resize_tree(&mut self, tree: f32, cx: &mut Context<Self>) {
-        let Some(widened) = self.viewer.widened.filter(|widened| widened.tree) else {
-            return;
-        };
-        self.tree_resizing = true;
-        if self.maximized {
-            let total = widened.file + widened.tree_width;
-            let tree = crate::app_settings::clamp_file_tree_width(tree)
-                .min((total - widened.standard).max(crate::app_settings::FILE_TREE_MIN));
-            crate::app_store::global_app_store(cx).update(cx, |store, cx| {
-                store.update_settings(
-                    |settings| {
-                        let changed = settings.file_tree_width != tree;
-                        settings.file_tree_width = tree;
-                        changed
-                    },
-                    false,
-                    cx,
-                );
-            });
-        } else {
-            let (file, tree) = widened.resize_tree(tree);
-            crate::app_store::global_app_store(cx).update(cx, |store, cx| {
-                store.update_settings(
-                    |settings| {
-                        let changed =
-                            settings.file_tree_width != tree || settings.file_viewer_width != file;
-                        settings.file_tree_width = tree;
-                        settings.file_viewer_width = file;
-                        changed
-                    },
-                    false,
-                    cx,
-                );
-            });
-        }
-        if let Some(owner) = self.owner {
-            cx.defer(move |cx| cx.notify(owner));
-        }
-        cx.notify();
-    }
-
-    fn finish_tree_resize(&mut self, cx: &mut Context<Self>) {
-        if std::mem::take(&mut self.tree_resizing) {
-            crate::app_store::global_app_store(cx)
-                .read(cx)
-                .save_settings();
-            cx.notify();
-        }
-    }
-
-    /// Whether the view draws the file viewer area beside the tree.
-    pub(super) fn shows_file_area(&self) -> bool {
-        self.has_tabs()
-    }
-
     /// Whether a root is shown or loading, for the finder to search.
     pub(super) fn searchable(&self) -> bool {
         matches!(self.body, Body::Root(_) | Body::Loading)
     }
 
-    /// The panel widens only when a file tab is open: whether the tree toggle is on.
-    pub(crate) fn widening(&self) -> Option<bool> {
-        if self.has_tabs() {
-            return Some(!self.viewer.tree_hidden);
-        }
-        if matches!(self.body, Body::Loading) {
-            return self
-                .pending_restore
-                .as_ref()
-                .filter(|saved| !saved.open_paths.is_empty())
-                .map(|saved| !saved.tree_hidden);
-        }
-        None
+    pub(crate) fn open_file(&mut self, path: String, cx: &mut Context<Self>) {
+        self.viewer
+            .update(cx, |viewer, cx| viewer.open_pinned_file(path, None, cx));
+    }
+
+    pub(crate) fn open_cited(&mut self, path: String, line: Option<u32>, cx: &mut Context<Self>) {
+        self.viewer
+            .update(cx, |viewer, cx| viewer.open_pinned_file(path, line, cx));
+    }
+
+    pub(crate) fn reveal_in_tree(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(tree) = self.tree_mut() else {
+            return;
+        };
+        let moved = tree.reveal(path);
+        self.reveal = Some(path.to_owned());
+        self.after_move(moved, cx);
+        self.after_listing(cx);
+    }
+
+    pub(super) fn after_listing(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.reveal.clone() else {
+            return;
+        };
+        let Some(index) = self
+            .tree_ref()
+            .and_then(|tree| tree.rows().iter().position(|row| row.path == path))
+        else {
+            return;
+        };
+        self.reveal = None;
+        self.scroll.scroll_to_item(index, ScrollStrategy::Nearest);
+        cx.notify();
     }
 
     pub(crate) fn has_dirty_changes(&self) -> bool {
@@ -516,25 +406,11 @@ impl FilesView {
     pub(super) fn saved_state(&self) -> Option<SavedFilesState> {
         match &self.body {
             Body::Root(state) => {
-                let open_paths: Vec<String> = self
-                    .viewer
-                    .tabs
-                    .tabs()
-                    .iter()
-                    .map(|tab| tab.path.clone())
-                    .collect();
-                let active_path = self.viewer.tabs.active().map(|tab| tab.path.clone());
-                if open_paths.is_empty()
-                    && !self.viewer.tree_hidden
-                    && self.filter == TreeFilter::All
-                {
+                if self.filter == TreeFilter::All {
                     return None;
                 }
                 Some(SavedFilesState {
                     root: state.root.path.clone(),
-                    open_paths,
-                    active_path,
-                    tree_hidden: self.viewer.tree_hidden,
                     filter: self.filter,
                 })
             }
@@ -561,21 +437,10 @@ impl FilesView {
                 )
         );
         if !same_root {
-            self.notify_owner(cx);
             cx.notify();
             return;
         }
         self.filter = saved.filter;
-        self.viewer.tree_hidden = saved.tree_hidden;
-        for path in &saved.open_paths {
-            self.open_file(path.clone(), cx);
-        }
-        if let Some(active) = saved.active_path
-            && let Some(index) = self.viewer.tabs.position(&active)
-        {
-            self.viewer.tabs.activate(index);
-        }
-        self.notify_owner(cx);
         cx.notify();
     }
 
@@ -594,13 +459,14 @@ impl FilesView {
         if let Some(tree) = self.tree_ref() {
             let folders = tree.loaded_folders();
             self.load(folders, cx);
-            self.reload_changed(None, cx);
+            self.viewer
+                .update(cx, |viewer, cx| viewer.reload_changed(None, cx));
         }
         self.request(
             cx,
             move |client| client.files_status(&root).map(PreparedStatus::new),
             |this, result, cx| match result {
-                Ok(status) => this.apply_status(status, cx),
+                Ok(status) => this.apply_status(status, true, cx),
                 Err(error) => {
                     this.status_error = Some(error.to_string().into());
                     cx.notify();
@@ -634,9 +500,12 @@ impl FilesView {
 
 #[cfg(test)]
 impl FilesView {
-    /// A `files/*` event arriving from the daemon.
+    /// A `files/*` event arriving from the daemon; forwarded to both the rail
+    /// and the shared viewer for unit tests that inject events directly.
     pub(crate) fn receive(&mut self, event: FilesEvent, cx: &mut Context<Self>) {
         self.on_files_event(&event, cx);
+        self.viewer
+            .update(cx, |viewer, cx| viewer.on_files_event(&event, cx));
     }
 
     pub(crate) fn git_status(&self) -> Option<runner_core::protocol::files::GitStatus> {
@@ -670,22 +539,122 @@ impl FilesView {
             .and_then(|tree| tree.selected())
             .map(str::to_owned)
     }
+
+    pub(crate) fn has_tabs(&self, cx: &App) -> bool {
+        self.viewer.read(cx).has_tabs()
+    }
+
+    pub(crate) fn widening(&self, cx: &App) -> Option<bool> {
+        self.viewer.read(cx).widening()
+    }
+
+    pub(crate) fn has_uncommitted_diff(&self, path: &str, cx: &App) -> Option<bool> {
+        self.viewer.read(cx).has_uncommitted_diff(path)
+    }
+
+    pub(crate) fn open_tabs(&self, cx: &App) -> Vec<String> {
+        self.viewer.read(cx).open_tabs()
+    }
+
+    pub(crate) fn active_tab(&self, cx: &App) -> Option<String> {
+        self.viewer.read(cx).active_tab()
+    }
+
+    pub(crate) fn code_view(&self, cx: &App) -> Option<Entity<super::code::CodeView>> {
+        self.viewer.read(cx).code_view()
+    }
+
+    pub(crate) fn showing_diff(&self, cx: &App) -> bool {
+        self.viewer.read(cx).showing_diff()
+    }
+
+    pub(crate) fn tab_diff_view(
+        &self,
+        cx: &App,
+    ) -> Option<Entity<crate::surfaces::changes::UnifiedDiffView>> {
+        self.viewer.read(cx).tab_diff_view()
+    }
+
+    pub(crate) fn read_seq(&self, path: &str, cx: &App) -> Option<u64> {
+        self.viewer.read(cx).read_seq(path)
+    }
+
+    pub(crate) fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.viewer
+            .update(cx, |v, cx| v.close_tab(index, window, cx));
+    }
+
+    pub(crate) fn reply_text(&mut self, path: &str, read: u64, text: &str, cx: &mut Context<Self>) {
+        self.viewer
+            .update(cx, |v, cx| v.reply_text(path, read, text, cx));
+    }
+
+    pub(crate) fn reading(&self, path: &str, cx: &App) -> bool {
+        self.viewer.read(cx).reading(path)
+    }
+
+    pub(crate) fn last_search(&self, cx: &App) -> Option<u64> {
+        self.viewer.read(cx).last_search()
+    }
+
+    pub(crate) fn reply_search(&mut self, search: u64, count: usize, cx: &mut Context<Self>) {
+        self.viewer
+            .update(cx, |v, cx| v.reply_search(search, count, cx));
+    }
+
+    pub(crate) fn reply_binary(
+        &mut self,
+        path: &str,
+        read: u64,
+        size: u64,
+        cx: &mut Context<Self>,
+    ) {
+        self.viewer
+            .update(cx, |v, cx| v.reply_binary(path, read, size, cx));
+    }
+
+    pub(crate) fn hold_search(&mut self, hold: bool, cx: &mut Context<Self>) {
+        self.viewer.update(cx, |v, cx| v.hold_search(hold, cx));
+    }
+
+    pub(crate) fn step(&mut self, next: bool, cx: &mut Context<Self>) {
+        self.viewer.update(cx, |v, cx| v.step(next, cx));
+    }
+
+    pub(crate) fn launched(
+        &self,
+        cx: &App,
+    ) -> Vec<(
+        Option<crate::app_settings::FileLinkEditor>,
+        PathBuf,
+        Option<u32>,
+    )> {
+        self.viewer.read(cx).launched()
+    }
+
+    pub(crate) fn rendered_view(&self, cx: &App) -> Option<Entity<super::markdown::MarkdownView>> {
+        self.viewer.read(cx).rendered_view()
+    }
+
+    pub(crate) fn opened_urls(&self, cx: &App) -> Vec<String> {
+        self.viewer.read(cx).opened_urls()
+    }
+
+    pub(crate) fn follow_link(&mut self, href: &str, cx: &mut Context<Self>) {
+        self.viewer.update(cx, |v, cx| v.follow_link(href, cx));
+    }
+
+    pub(crate) fn find_state(&self, cx: &App) -> Option<(Option<String>, Option<usize>)> {
+        self.viewer.read(cx).find_state()
+    }
 }
 
 impl Render for FilesView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let reported = (self.widening(), self.has_tabs(), self.has_dirty_changes());
-        if reported != self.reported {
-            self.reported = reported;
-            if let Some(owner) = self.owner {
-                cx.defer(move |cx| cx.notify(owner));
-            }
-        }
-        if self.active_showing_diff()
-            && self.viewer_focus.is_focused(window)
-            && let Some(diff) = self.active_diff_view()
-        {
-            diff.read(cx).focus_handle().clone().focus(window, cx);
+        let dirty = self.has_dirty_changes();
+        if dirty != self.reported_dirty {
+            self.reported_dirty = dirty;
+            self.notify_owner(cx);
         }
         let context = self.context.clone();
         let body = match &self.body {
@@ -739,76 +708,10 @@ impl Render for FilesView {
         let finder = self.render_finder(window, cx);
         let view_bounds = self.view_bounds.clone();
         let finder_open = self.finder.is_some();
-        let tree_column = div()
-            .flex_1()
-            .min_h(px(0.))
-            .min_w(px(0.))
-            .flex()
-            .flex_col()
-            .child(header)
-            .children(
-                self.error
-                    .clone()
-                    .or(self.status_error.clone())
-                    .map(|error| {
-                        div()
-                            .when(cfg!(test), |element| {
-                                element.debug_selector(|| "FILES_ERROR".into())
-                            })
-                            .px_4()
-                            .py_2()
-                            .text_size(theme::text_meta())
-                            .text_color(theme::danger())
-                            .child(error)
-                    }),
-            )
-            .child(body);
-        let viewing = self.shows_file_area();
-        let tree_shown = self.tree_shown();
-        let tree_width = self
-            .viewer
-            .widened
-            .map_or(crate::app_settings::FILE_TREE_DEFAULT, |widened| {
-                widened.tree_width
-            });
-        let zoom = crate::app_store::global_app_store(cx)
-            .read(cx)
-            .settings
-            .app_zoom;
-        let tree_resize = (viewing && tree_shown).then(|| {
-            resize_strip(
-                "file-tree-resize",
-                ResizeAxis::Columns,
-                self.tree_resizing,
-                zoom,
-                None,
-                false,
-            )
-            .id("file-tree-resize")
-            .when(cfg!(test), |handle| {
-                handle.debug_selector(|| "FILE_TREE_GUTTER".into())
-            })
-            .map(|handle| {
-                #[cfg(any(windows, target_os = "linux"))]
-                let handle = handle.occlude();
-                handle
-            })
-            .absolute()
-            .top_0()
-            .right(px(tree_width * zoom - resize_strip_inset(zoom)))
-            .on_drag(
-                FileTreeResizeDrag,
-                |drag: &FileTreeResizeDrag, _, _, cx: &mut App| cx.new(|_| drag.clone()),
-            )
-        });
+        let viewing = self.viewer.read(cx).has_tabs();
         if self._focus_lost.is_none() {
             self._focus_lost = Some(cx.on_focus_lost(window, Self::on_focus_lost));
         }
-        let popups = if viewing {
-            self.render_viewer_popups(window, cx)
-        } else {
-            Vec::new()
-        };
         div()
             .when(cfg!(test), |view| {
                 view.debug_selector(|| format!("FILES_VIEW {context:?}"))
@@ -816,56 +719,84 @@ impl Render for FilesView {
             .key_context("FileViewer")
             .track_focus(&self.root_focus)
             .on_action(cx.listener(|this, _: &crate::CloseFileTab, window, cx| {
-                match this.viewer.tabs.active_index() {
-                    Some(index) => this.close_tab(index, window, cx),
+                let active = this.viewer.read(cx).tabs.active_index();
+                match active {
+                    Some(index) => {
+                        this.viewer
+                            .update(cx, |viewer, cx| viewer.close_tab(index, window, cx));
+                    }
                     None => cx.propagate(),
                 }
             }))
             .on_action(cx.listener(|this, _: &crate::NextFileTab, window, cx| {
-                this.cycle_tab(false, window, cx)
+                if this.viewer.read(cx).has_tabs() {
+                    this.viewer
+                        .update(cx, |viewer, cx| viewer.cycle_tab(false, window, cx));
+                } else {
+                    cx.propagate();
+                }
             }))
             .on_action(cx.listener(|this, _: &crate::PreviousFileTab, window, cx| {
-                this.cycle_tab(true, window, cx)
+                if this.viewer.read(cx).has_tabs() {
+                    this.viewer
+                        .update(cx, |viewer, cx| viewer.cycle_tab(true, window, cx));
+                } else {
+                    cx.propagate();
+                }
             }))
-            .on_action(
-                cx.listener(|this, _: &crate::FindInFile, window, cx| this.open_find(window, cx)),
-            )
-            .on_action(cx.listener(|this, _: &crate::ZoomFileIn, window, cx| {
-                this.zoom(1, Box::new(crate::ZoomIn), window, cx)
+            .on_action(cx.listener(|this, _: &crate::FindInFile, window, cx| {
+                if this.viewer.read(cx).has_tabs() {
+                    this.viewer
+                        .update(cx, |viewer, cx| viewer.open_find(window, cx));
+                } else {
+                    cx.propagate();
+                }
             }))
-            .on_action(cx.listener(|this, _: &crate::ZoomFileOut, window, cx| {
-                this.zoom(-1, Box::new(crate::ZoomOut), window, cx)
+            .on_action(cx.listener(|_, _: &crate::ZoomFileIn, window, cx| {
+                window.dispatch_action(Box::new(crate::ZoomIn), cx);
             }))
+            .on_action(cx.listener(|_, _: &crate::ZoomFileOut, window, cx| {
+                window.dispatch_action(Box::new(crate::ZoomOut), cx);
+            }))
+            .relative()
             .flex_1()
             .min_h(px(0.))
+            .min_w(px(0.))
             .flex()
-            .when(viewing, |view| {
-                view.flex_row().child(self.render_viewer(window, cx))
-            })
-            .when(!viewing, |view| view.flex_col())
-            .when(tree_shown, |view| {
-                view.child(
-                    tree_column
-                        .when(viewing, |column| {
-                            // One step lighter than the file, which sits on
-                            // the terminal's background (Jason, 2026-11-05).
-                            column
-                                .flex_none()
-                                .w(rems(tree_width / 16.))
-                                .bg(theme::panel())
-                                .border_l_1()
-                                .border_color(theme::border())
-                                .rounded_br(rems(11. / 16.))
-                        })
-                        .map(|element| {
-                            #[cfg(test)]
-                            let element =
-                                crate::theme_snapshot::record_fill("FILES_TREE_COLUMN", element);
-                            element
-                        }),
-                )
-            })
-            .relative()
+            .flex_col()
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .min_w(px(0.))
+                    .flex()
+                    .flex_col()
+                    .when(viewing, |column| column.bg(theme::panel()))
+                    .map(|element| {
+                        #[cfg(test)]
+                        let element =
+                            crate::theme_snapshot::record_fill("FILES_TREE_COLUMN", element);
+                        element
+                    })
+                    .child(header)
+                    .children(
+                        self.error
+                            .clone()
+                            .or(self.status_error.clone())
+                            .map(|error| {
+                                div()
+                                    .when(cfg!(test), |element| {
+                                        element.debug_selector(|| "FILES_ERROR".into())
+                                    })
+                                    .px_4()
+                                    .py_2()
+                                    .text_size(theme::text_meta())
+                                    .text_color(theme::danger())
+                                    .child(error)
+                            }),
+                    )
+                    .child(body),
+            )
             .child(
                 canvas(
                     move |bounds, window, _| {
@@ -880,25 +811,8 @@ impl Render for FilesView {
                 .absolute()
                 .inset_0(),
             )
-            .children(tree_resize)
-            .on_drag_move::<FileTreeResizeDrag>(cx.listener(
-                move |this, event: &gpui::DragMoveEvent<FileTreeResizeDrag>, _, cx| {
-                    let tree = f32::from(event.bounds.right() - event.event.position.x) / zoom;
-                    this.resize_tree(tree, cx);
-                },
-            ))
-            .on_drop(cx.listener(|this, _: &FileTreeResizeDrag, _, cx| this.finish_tree_resize(cx)))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.finish_tree_resize(cx)),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| this.finish_tree_resize(cx)),
-            )
             .children(picker)
             .children(finder)
             .children(self.menu.clone())
-            .children(popups)
     }
 }

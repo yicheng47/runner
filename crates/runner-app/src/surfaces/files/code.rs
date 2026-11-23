@@ -72,6 +72,9 @@ pub(crate) struct CodeView {
     deleted: bool,
     metrics: Cell<Option<Metrics>>,
     reveal: Option<Position>,
+    /// Explicit 1-based line cursor for successive `[` / `]` hunk jumps so
+    /// jumping across hunks that already fit in the viewport advances cleanly.
+    hunk_cursor: Option<u32>,
     /// A link's cited line holds the view: find's refreshed matches do not
     /// scroll away from it until the user steps through them or changes
     /// the query.
@@ -113,6 +116,7 @@ impl CodeView {
             deleted: false,
             metrics: Cell::new(None),
             reveal: None,
+            hunk_cursor: None,
             cited: false,
             bar_metrics,
             vertical_bar,
@@ -188,6 +192,7 @@ impl CodeView {
         self.matches = Arc::default();
         self.current = None;
         self.reveal = None;
+        self.hunk_cursor = None;
         cx.notify();
     }
 
@@ -238,6 +243,7 @@ impl CodeView {
         self.selection = Some((start, end));
         self.selects_all = false;
         self.reveal = Some(start);
+        self.hunk_cursor = None;
         self.cited = true;
         cx.notify();
     }
@@ -245,6 +251,67 @@ impl CodeView {
     /// The user took find over: its current match scrolls into view again.
     pub(crate) fn release_cited(&mut self) {
         self.cited = false;
+    }
+
+    /// Scrolls `line` (1-based) into view without changing the selection.
+    pub(crate) fn scroll_to_line(&mut self, line: u32, cx: &mut Context<Self>) {
+        let line = (line.max(1) as usize - 1).min(self.document.line_count().saturating_sub(1));
+        self.reveal = Some(Position { line, offset: 0 });
+        cx.notify();
+    }
+
+    /// Jumps to the next (or previous) 1-based hunk line, tracking the active
+    /// hunk explicitly so successive `]` / `[` presses advance even when
+    /// multiple hunks are already visible in the viewport.
+    pub(crate) fn jump_to_hunk(
+        &mut self,
+        hunk_lines: &[u32],
+        forward: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if hunk_lines.is_empty() {
+            return false;
+        }
+        let target = if let Some(current) = self.hunk_cursor {
+            if forward {
+                hunk_lines
+                    .iter()
+                    .copied()
+                    .find(|&line| line > current)
+                    .unwrap_or(hunk_lines[0])
+            } else {
+                hunk_lines
+                    .iter()
+                    .copied()
+                    .rev()
+                    .find(|&line| line < current)
+                    .unwrap_or(*hunk_lines.last().unwrap())
+            }
+        } else {
+            let current = self.line_in_view();
+            if forward {
+                hunk_lines
+                    .iter()
+                    .copied()
+                    .find(|&line| line >= current)
+                    .unwrap_or(hunk_lines[0])
+            } else {
+                hunk_lines
+                    .iter()
+                    .copied()
+                    .rev()
+                    .find(|&line| line < current)
+                    .unwrap_or(*hunk_lines.last().unwrap())
+            }
+        };
+        self.hunk_cursor = Some(target);
+        self.scroll_to_line(target, cx);
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hunk_cursor(&self) -> Option<u32> {
+        self.hunk_cursor
     }
 
     /// The first line in view, 1-based, for opening the file there.
@@ -298,6 +365,7 @@ impl CodeView {
     #[cfg(test)]
     pub(crate) fn scroll_to(&mut self, offset: Point<Pixels>, cx: &mut Context<Self>) {
         self.scroll = offset;
+        self.hunk_cursor = None;
         cx.notify();
     }
 
@@ -371,6 +439,7 @@ impl CodeView {
         self.scroll.y -= delta.y;
         self.clamp_scroll(&metrics);
         if self.scroll != before {
+            self.hunk_cursor = None;
             cx.notify();
         }
     }

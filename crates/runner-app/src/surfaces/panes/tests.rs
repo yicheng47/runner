@@ -1330,7 +1330,7 @@ fn a_hovered_link_names_the_panel_its_own_pane_will_show() {
         .read_with(&visual, |root, cx| {
             root.chat_files
                 .view(&subject)
-                .and_then(|view| view.read(cx).active_tab())
+                .and_then(|view| view.read(cx).active_tab(cx))
         })
         .unwrap()
         != Some("lib.rs".into())
@@ -1760,7 +1760,7 @@ fn a_file_link_opens_in_the_panel_preview_of_a_chat_or_a_terminal_tab() {
             host.read_with(visual, |root, cx| {
                 root.chat_files
                     .view(&subject)
-                    .and_then(|view| view.read(cx).active_tab())
+                    .and_then(|view| view.read(cx).active_tab(cx))
                     == Some("lib.rs".into())
             })
             .unwrap()
@@ -2065,7 +2065,7 @@ fn chat_tabs_restore_their_surfaces_open_state_and_file_after_a_delayed_link() {
         .read_with(&visual, |root, cx| {
             root.chat_files
                 .view(&subject)
-                .and_then(|view| view.read(cx).active_tab())
+                .and_then(|view| view.read(cx).active_tab(cx))
                 == Some("lib.rs".into())
         })
         .unwrap()
@@ -4034,21 +4034,22 @@ fn chat_panel_progressively_widens_on_file_or_diff_and_shrinks_back_to_300px() {
     assert!((panel_width(&mut visual) - 300.).abs() <= 1.);
     assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE").is_none());
 
-    // 2. Clicking Changes stays compact at 300 px (C1 list-only, no auto-diff).
+    // 2. Clicking Changes stays compact at 300 px (list-only, no auto-diff).
     click_selector(&mut visual, "PANEL_ACTIVITY Changes");
     wait(&mut visual, "Changes list loaded", &|v| {
         v.debug_bounds("CHANGES_ROW lib.rs").is_some()
     });
     assert!((panel_width(&mut visual) - 300.).abs() <= 1.);
-    assert!(visual.debug_bounds("CHANGES_CLOSE_DIFF").is_none());
+    assert!(visual.debug_bounds("FILE_TAB_CLOSE lib.rs").is_none());
 
-    // 3. Clicking a changed file widens Changes smoothly to ~740 px (500 diff + 240 list) with `×`
-    // close-diff button; dragging the gutter saves `changes_viewer_width` independently of
-    // `file_viewer_width`; clicking `×` shrinks smoothly back to 300 px list-only.
+    // 3. Clicking a changed file widens once to 700 px (460 unified viewer + 240 right rail)
+    // with an italic preview tab; dragging the outer gutter updates unified `file_viewer_width`
+    // (460 -> 500, total 740 px); switching right rail to Files keeps 740 px (0 px jump!).
     click_selector(&mut visual, "CHANGES_ROW lib.rs");
-    wait(&mut visual, "Changes diff widens to 740 px", &|v| {
-        v.debug_bounds("CHANGES_CLOSE_DIFF").is_some()
-            && (panel_width(v) - 740.).abs() <= 0.5
+    wait(&mut visual, "Changes diff widens to 700 px", &|v| {
+        v.debug_bounds("FILE_TAB_CLOSE lib.rs").is_some()
+            && v.debug_bounds("FILE_TAB_PREVIEW lib.rs").is_some()
+            && (panel_width(v) - 700.).abs() <= 0.5
             && host
                 .read_with(v, |r, _| r.chat_panel_width_anim.started_at.is_none())
                 .unwrap()
@@ -4074,60 +4075,59 @@ fn chat_panel_progressively_widens_on_file_or_diff_and_shrinks_back_to_300px() {
         gpui::Modifiers::default(),
     );
     visual.run_until_parked();
-    assert!((panel_width(&mut visual) - 780.).abs() <= 1.);
+    assert!((panel_width(&mut visual) - 740.).abs() <= 1.);
     assert_eq!(
-        store.read_with(&visual, |s, _| (
-            s.settings.changes_viewer_width,
-            s.settings.file_viewer_width
-        )),
-        (540., 440.)
+        store.read_with(&visual, |s, _| s.settings.file_viewer_width),
+        500.
     );
-    click_selector(&mut visual, "CHANGES_CLOSE_DIFF");
-    wait(&mut visual, "Changes diff closes back to 300 px", &|v| {
-        v.debug_bounds("CHANGES_CLOSE_DIFF").is_none() && (panel_width(v) - 300.).abs() <= 1.
-    });
-
-    // 4. Switching to Files stays compact at 300 px until clicking a file opens its tab (680 px);
-    // hiding tree narrows smoothly to 440 px; dragging the panel edge saves file_viewer_width (500 px);
-    // closing the last file tab shrinks smoothly back to 300 px.
+    // Switching right rail to Files while the diff tab is open yields 0 px jump
+    // and highlights the active diff's file in the tree!
     click_selector(&mut visual, "PANEL_ACTIVITY Files");
+    assert_eq!(
+        chat_surfaces(&host, &mut visual).selected(),
+        Some(crate::surfaces::side_panel::PanelViewId::Files),
+        "clicking PANEL_ACTIVITY Files must select Files"
+    );
+    wait(&mut visual, "Files tree beside open diff", &|v| {
+        v.debug_bounds("FILES_ROW_SELECTED").is_some()
+            && v.debug_bounds("FILES_ROW main.rs").is_some()
+    });
+    assert!(
+        (panel_width(&mut visual) - 740.).abs() <= 0.5,
+        "switching Changes -> Files with viewer open must produce 0 px jump"
+    );
+    click_selector(&mut visual, "FILE_TAB_CLOSE lib.rs");
+    wait(
+        &mut visual,
+        "Closing last tab shrinks back to 300 px",
+        &|v| {
+            v.debug_bounds("FILE_TAB_CLOSE lib.rs").is_none() && (panel_width(v) - 300.).abs() <= 1.
+        },
+    );
+
+    // 4. Opening main.rs from Files widens smoothly to 740 px (500 unified + 240 rail);
+    // hiding rail narrows smoothly to 500 px and keeps PANEL_COLLAPSE reachable;
+    // showing rail widens back to 740 px.
     assert!((panel_width(&mut visual) - 300.).abs() <= 1.);
-    wait(&mut visual, "Files row lib.rs", &|v| {
-        v.debug_bounds("FILES_ROW lib.rs").is_some()
+    wait(&mut visual, "Files row main.rs", &|v| {
+        v.debug_bounds("FILES_ROW main.rs").is_some()
     });
-    click_selector(&mut visual, "FILES_ROW lib.rs");
-    wait(&mut visual, "lib.rs opens and widens smoothly", &|v| {
-        v.debug_bounds("FILE_CODE").is_some() && (panel_width(v) - 680.).abs() <= 1.
-    });
-    click_selector(&mut visual, "FILE_TREE_TOGGLE");
-    wait(&mut visual, "hiding tree narrows to 440 px", &|v| {
-        (panel_width(v) - 440.).abs() <= 1.
+    click_selector(&mut visual, "FILES_ROW main.rs");
+    wait(&mut visual, "main.rs opens and widens smoothly", &|v| {
+        v.debug_bounds("FILE_CODE").is_some() && (panel_width(v) - 740.).abs() <= 1.
     });
     click_selector(&mut visual, "FILE_TREE_TOGGLE");
-    wait(&mut visual, "showing tree widens back to 680 px", &|v| {
-        (panel_width(v) - 680.).abs() <= 0.5
+    wait(&mut visual, "hiding rail narrows to 500 px", &|v| {
+        (panel_width(v) - 500.).abs() <= 1. && v.debug_bounds("PANEL_COLLAPSE").is_some()
+    });
+    click_selector(&mut visual, "FILE_TREE_TOGGLE");
+    wait(&mut visual, "showing rail widens back to 740 px", &|v| {
+        (panel_width(v) - 740.).abs() <= 0.5
             && host
                 .read_with(v, |r, _| r.chat_panel_width_anim.started_at.is_none())
                 .unwrap()
     });
 
-    let start = visual.debug_bounds("CHAT_PANEL_GUTTER").unwrap().center();
-    visual.simulate_mouse_down(start, gpui::MouseButton::Left, gpui::Modifiers::default());
-    for _ in 0..3 {
-        visual.simulate_mouse_move(
-            start + gpui::point(px(-60.), px(0.)),
-            Some(gpui::MouseButton::Left),
-            gpui::Modifiers::default(),
-        );
-        visual.run_until_parked();
-    }
-    visual.simulate_mouse_up(
-        start + gpui::point(px(-60.), px(0.)),
-        gpui::MouseButton::Left,
-        gpui::Modifiers::default(),
-    );
-    visual.run_until_parked();
-    assert!((panel_width(&mut visual) - 740.).abs() <= 1.);
     assert_eq!(
         store.read_with(&visual, |s, _| s.settings.file_viewer_width),
         500.
@@ -4152,7 +4152,7 @@ fn chat_panel_progressively_widens_on_file_or_diff_and_shrinks_back_to_300px() {
     assert!((panel_width(&mut visual) - 740.).abs() <= 1.);
 
     // Closing the last file tab shrinks smoothly back to 300 px.
-    click_selector(&mut visual, "FILE_TAB_CLOSE lib.rs");
+    click_selector(&mut visual, "FILE_TAB_CLOSE main.rs");
     wait(&mut visual, "closing last file shrinks to 300 px", &|v| {
         (panel_width(v) - 300.).abs() <= 1.
     });
@@ -4877,7 +4877,7 @@ fn per_tab_isolation_dirty_dot_narrow_sheet_split_auto_sheet_and_following_badge
         &|v| {
             v.debug_bounds("CHANGES_DIFF_CODE").is_some()
                 && v.debug_bounds("PANEL_OVERLAY_SHEET").is_some()
-                && v.debug_bounds("CHANGES_CLOSE_DIFF")
+                && v.debug_bounds("FILE_TAB_CLOSE lib.rs")
                     .is_some_and(|b| b.right() <= px(1120.))
                 && host
                     .read_with(v, |root, _| root.chat_sheet_anim.started_at.is_none())
@@ -4894,7 +4894,7 @@ fn per_tab_isolation_dirty_dot_narrow_sheet_split_auto_sheet_and_following_badge
         right_before,
         "split Changes auto-sheet must not resize right split column"
     );
-    click_selector(&mut visual, "CHANGES_CLOSE_DIFF");
+    click_selector(&mut visual, "FILE_TAB_CLOSE lib.rs");
     assert!(
         visual.debug_bounds("PANEL_OVERLAY_SHEET").is_none(),
         "closing split Changes diff must exit sheet immediately"
@@ -5337,6 +5337,140 @@ fn toggle_session_info_action_opens_per_pane_role_runtime_and_ignores_shell() {
     visual.dispatch_action(crate::ToggleSessionInfo);
     visual.run_until_parked();
     assert!(visual.debug_bounds("S2_CHAT_INFO_CARD").is_none());
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[test]
+fn search_files_opens_finder_when_rail_is_hidden_and_in_narrow_sheet() {
+    use std::time::{Duration, Instant};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (temp, _cx, store, host, mut visual) = panel_root("direct-agent");
+    let root = temp.path().join("checkout");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("lib.rs"), "pub fn lib() {}\n").unwrap();
+    std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+    store.update(&mut visual, |store, cx| {
+        store
+            .test_core
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET files_root = ?1 WHERE id = 'direct-agent'",
+                [root.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+        store.settings.sidebar_collapsed = true;
+        store.refresh(crate::app_store::StoreRefreshKind::All, cx);
+    });
+    host.update(&mut visual, |root, _, cx| root.chat_files.release(cx))
+        .unwrap();
+    visual.run_until_parked();
+
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                pred: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !pred(visual) {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::yield_now();
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+        }
+    };
+
+    // 1. Open Files panel and open `lib.rs`, then hide the right rail (`FILE_TREE_TOGGLE`).
+    open_chat_panel(&host, &mut visual);
+    wait(&mut visual, "checkout tree loaded", &|v| {
+        v.debug_bounds("FILES_ROW lib.rs").is_some()
+    });
+    click_selector(&mut visual, "FILES_ROW lib.rs");
+    wait(
+        &mut visual,
+        "lib.rs opened with rail visible and settled",
+        &|v| {
+            v.debug_bounds("FILE_CODE").is_some()
+                && v.debug_bounds("FILE_TAB_PINNED lib.rs").is_some()
+                && v.debug_bounds("FILES_TREE_COLUMN").is_some()
+                && host
+                    .read_with(v, |r, _| r.chat_panel_width_anim.started_at.is_none())
+                    .unwrap()
+        },
+    );
+
+    click_selector(&mut visual, "FILE_TREE_TOGGLE");
+    wait(
+        &mut visual,
+        "right rail hidden while viewer stays open",
+        &|v| {
+            v.debug_bounds("FILE_CODE").is_some()
+                && v.debug_bounds("FILES_TREE_COLUMN").is_none()
+                && host
+                    .read_with(v, |r, _| r.chat_panel_width_anim.started_at.is_none())
+                    .unwrap()
+        },
+    );
+
+    // 2. Dispatch SearchFiles (⇧⌘O) with rail hidden: finder must still render inside the viewer
+    // and open `main.rs` as a second pinned tab.
+    visual.dispatch_action(crate::SearchFiles);
+    wait(
+        &mut visual,
+        "finder opens over viewer with rail hidden",
+        &|v| {
+            v.debug_bounds("FILES_FINDER").is_some()
+                && v.debug_bounds("FILES_FINDER_ITEM 0").is_some()
+        },
+    );
+    visual.simulate_input("main.rs");
+    wait(&mut visual, "finder narrows to main.rs", &|v| {
+        v.debug_bounds("FILES_FINDER_ITEM 0").is_some()
+            && v.debug_bounds("FILES_FINDER_ITEM 1").is_none()
+    });
+    visual.simulate_keystrokes("enter");
+    wait(
+        &mut visual,
+        "finder opens main.rs as second pinned tab with rail still hidden",
+        &|v| {
+            v.debug_bounds("FILES_FINDER").is_none()
+                && v.debug_bounds("FILE_TAB_PINNED lib.rs").is_some()
+                && v.debug_bounds("FILE_TAB_PINNED main.rs").is_some()
+                && v.debug_bounds("FILES_TREE_COLUMN").is_none()
+        },
+    );
+
+    // 3. Restore rail, then shrink window so widened viewer auto-sheets with rail hidden
+    // (`widened.tree == false`): SearchFiles must still render the finder inside the sheet.
+    click_selector(&mut visual, "FILE_TREE_TOGGLE");
+    wait(&mut visual, "rail restored on wide window", &|v| {
+        v.debug_bounds("FILES_TREE_COLUMN").is_some()
+    });
+    visual.simulate_resize(size(px(640.), px(800.)));
+    wait(
+        &mut visual,
+        "narrow sheet hides rail column beside open viewer",
+        &|v| {
+            v.debug_bounds("PANEL_OVERLAY_SHEET").is_some()
+                && v.debug_bounds("FILES_TREE_COLUMN").is_none()
+                && v.debug_bounds("FILE_CODE").is_some()
+        },
+    );
+    visual.dispatch_action(crate::SearchFiles);
+    wait(
+        &mut visual,
+        "finder opens inside narrow sheet with rail omitted",
+        &|v| {
+            v.debug_bounds("FILES_FINDER").is_some()
+                && v.debug_bounds("FILES_FINDER_ITEM 0").is_some()
+        },
+    );
+    visual.simulate_keystrokes("escape");
+    wait(&mut visual, "Escape closes narrow-sheet finder", &|v| {
+        v.debug_bounds("FILES_FINDER").is_none()
+    });
 
     host.update(&mut visual, |_, window, _| window.remove_window())
         .unwrap();

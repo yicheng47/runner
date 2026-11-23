@@ -2,19 +2,17 @@
 
 use super::*;
 
-impl FilesView {
-    // ── Find ───────────────────────────────────────────────────────────
-
+impl UnifiedViewer {
     /// ⌘F: find over the active file; a rendered page switches to its
     /// source, which find searches.
-    pub(in super::super) fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_rendered().is_some() {
             self.toggle_source(window, cx);
         }
         if self.active_view().is_none() {
             return;
         }
-        if self.viewer.find.is_none() {
+        if self.find.is_none() {
             let seed = self
                 .active_view()
                 .and_then(|view| view.read(cx).selected_text())
@@ -41,7 +39,7 @@ impl FilesView {
             });
             let observe = cx.observe(&field, |this, field, cx| {
                 let text = field.read(cx).text().to_owned();
-                if let Some(find) = &mut this.viewer.find {
+                if let Some(find) = &mut this.find {
                     if find.query.text != text {
                         find.query.text = text;
                         find.current = None;
@@ -51,7 +49,7 @@ impl FilesView {
                 }
             });
             let text = field.read(cx).text().to_owned();
-            self.viewer.find = Some(Find {
+            self.find = Some(Find {
                 field,
                 query: FileQuery {
                     text,
@@ -65,7 +63,7 @@ impl FilesView {
             });
             self.search(cx);
         }
-        if let Some(find) = &self.viewer.find {
+        if let Some(find) = &self.find {
             find.field.update(cx, |field, field_cx| {
                 field.select_all(field_cx);
                 field.focus_handle().focus(window, field_cx);
@@ -75,7 +73,7 @@ impl FilesView {
     }
 
     fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.viewer.find = None;
+        self.find = None;
         if let Some(view) = self.active_view().cloned() {
             view.update(cx, |view, cx| view.set_find(Arc::default(), None, cx));
             view.read(cx).focus_handle().clone().focus(window, cx);
@@ -120,12 +118,10 @@ impl FilesView {
             return;
         };
         let document = view.read(cx).document().clone();
-        let Some(find) = &mut self.viewer.find else {
+        let Some(find) = &mut self.find else {
             view.update(cx, |view, cx| view.set_find(Arc::default(), None, cx));
             return;
         };
-        // Matches from another text name byte ranges that are not this
-        // one's: they go before anything can draw or step through them.
         if !find
             .searched
             .as_ref()
@@ -136,15 +132,15 @@ impl FilesView {
             find.current = None;
             view.update(cx, |view, cx| view.set_find(Arc::default(), None, cx));
         }
-        self.viewer.next_search += 1;
-        let search = self.viewer.next_search;
+        self.next_search += 1;
+        let search = self.next_search;
         find.search = search;
         let line_in_view = view.read(cx).line_in_view() as usize - 1;
         #[cfg(test)]
-        if self.viewer.hold_search {
+        if self.hold_search {
             return;
         }
-        let Some(find) = &mut self.viewer.find else {
+        let Some(find) = &mut self.find else {
             return;
         };
         let query = find.query.clone();
@@ -172,7 +168,7 @@ impl FilesView {
             let shown = self
                 .active_view()
                 .map(|view| view.read(cx).document().clone());
-            let Some(find) = &mut self.viewer.find else {
+            let Some(find) = &mut self.find else {
                 return;
             };
             let same_text = shown.is_some_and(|shown| Arc::ptr_eq(&shown, &searched));
@@ -205,10 +201,9 @@ impl FilesView {
         }
     }
 
-    /// The active text's matches: none unless find searched this very text.
     fn shown_matches(&self, cx: &App) -> Option<&Find> {
         let document = self.active_view()?.read(cx).document();
-        self.viewer.find.as_ref().filter(|find| {
+        self.find.as_ref().filter(|find| {
             find.searched
                 .as_ref()
                 .is_some_and(|searched| Arc::ptr_eq(searched, document))
@@ -236,7 +231,7 @@ impl FilesView {
             return;
         }
         self.release_cited(cx);
-        let Some(find) = &mut self.viewer.find else {
+        let Some(find) = &mut self.find else {
             return;
         };
         let Found::Matches(matches, _) = &find.found else {
@@ -255,7 +250,7 @@ impl FilesView {
     }
 
     fn toggle_find(&mut self, regex: bool, cx: &mut Context<Self>) {
-        if let Some(find) = &mut self.viewer.find {
+        if let Some(find) = &mut self.find {
             if regex {
                 find.query.regex = !find.query.regex;
             } else {
@@ -301,7 +296,7 @@ impl FilesView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let find = self.viewer.find.as_ref().map(|find| {
+        let find = self.find.as_ref().map(|find| {
             let root = cx.weak_entity();
             let action = |act: fn(&mut Self, &mut Window, &mut Context<Self>)| {
                 let root = root.clone();

@@ -145,6 +145,7 @@ impl FilesView {
                 if finder.query != query {
                     finder.query = query;
                     finder.refilter();
+                    this.notify_finder_host(cx);
                     cx.notify();
                 }
             }
@@ -165,7 +166,16 @@ impl FilesView {
             _observe: observe,
         });
         self.load_finder_index(cx);
+        self.notify_finder_host(cx);
+        self.notify_owner(cx);
         cx.notify();
+    }
+
+    fn notify_finder_host(&self, cx: &mut Context<Self>) {
+        // When the right rail is hidden, UnifiedViewer renders this finder popup.
+        if !self.shown {
+            self.viewer.update(cx, |_, cx| cx.notify());
+        }
     }
 
     /// Reads the root's files once a root is there to read: at once, or when
@@ -191,6 +201,7 @@ impl FilesView {
                         }
                         Err(error) => finder.error = Some(error.to_string().into()),
                     }
+                    this.notify_finder_host(cx);
                     cx.notify();
                 },
             );
@@ -211,8 +222,14 @@ impl FilesView {
         if let Some(finder) = self.finder.take() {
             match finder.return_focus {
                 Some(focus) => focus.focus(window, cx),
+                None if !self.shown => {
+                    self.viewer
+                        .update(cx, |viewer, cx| viewer.focus_active(window, cx));
+                }
                 None => self.focus.focus(window, cx),
             }
+            self.notify_finder_host(cx);
+            self.notify_owner(cx);
             cx.notify();
         }
     }
@@ -227,8 +244,15 @@ impl FilesView {
             return;
         };
         self.finder = None;
-        self.focus.focus(window, cx);
         self.open_file(path, cx);
+        if self.shown {
+            self.focus.focus(window, cx);
+        } else {
+            self.viewer
+                .update(cx, |viewer, cx| viewer.focus_active(window, cx));
+        }
+        self.notify_finder_host(cx);
+        self.notify_owner(cx);
         cx.notify();
     }
 
@@ -258,17 +282,23 @@ impl FilesView {
             }
             _ => return false,
         }
+        self.notify_finder_host(cx);
         cx.notify();
         true
     }
 
-    pub(super) fn render_finder(
+    pub(crate) fn render_finder(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let finder = self.finder.as_ref()?;
-        let bounds = self.view_bounds.get();
+        let bounds = self
+            .panel_bounds
+            .as_ref()
+            .map(|b| b.get())
+            .filter(|b| b.size.width > px(0.))
+            .unwrap_or_else(|| self.view_bounds.get());
         if bounds.size.width <= px(0.) {
             return None;
         }

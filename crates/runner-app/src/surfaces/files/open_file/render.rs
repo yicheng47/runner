@@ -1,12 +1,17 @@
-//! The file column, tab strip, overflow list and file content states.
+//! Unified viewer rendering (#1421): aligned 40 px viewer header (unified tab
+//! strip + `Code | Diff` + `Pin` + rail toggle + `Maximize` + fallback
+//! `Collapse`), 36 px context subbar (Diff mode & Code/Markdown mode), and
+//! document body.
 
 use super::*;
-
-const STRIP_HEIGHT: f32 = 44.;
+use crate::file_icons::{self, IconSet};
+use crate::surfaces::changes::{
+    render_shared_diff_header, render_shared_diff_placeholder, DiffHeaderProps, DiffModeCallback,
+    PlaceholderViewedFooter,
+};
 
 const LIST_WIDTH: f32 = 300.;
 
-/// A 28px control in the strip's right-hand group.
 fn strip_button(id: &'static str, active: bool) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
@@ -23,48 +28,186 @@ fn strip_button(id: &'static str, active: bool) -> gpui::Stateful<gpui::Div> {
         .gap(px(4.))
         .rounded_md()
         .border_1()
-        .border_color(theme::border())
+        .border_color(if active {
+            theme::border()
+        } else {
+            gpui::transparent_black()
+        })
         .cursor_pointer()
         .text_size(theme::text_meta())
-        .text_color(theme::muted())
-        .when(active, |element| element.bg(theme::sidebar_selected()))
+        .text_color(if active {
+            theme::text()
+        } else {
+            theme::muted()
+        })
+        .when(active, |element| element.bg(theme::raised()))
         .hover(|element| element.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
-impl FilesView {
-    // ── Rendering ──────────────────────────────────────────────────────
+impl UnifiedViewer {
+    fn file_icon(&self, name: &str) -> AnyElement {
+        let dark = !theme::active_variant().is_light();
+        let set = self
+            .look
+            .as_ref()
+            .map_or_else(IconSet::default, |look| look.icons);
+        match file_icons::file_icon(set, dark, name) {
+            Some(icon) if icon.monochrome => svg()
+                .flex_none()
+                .size(px(13.))
+                .path(icon.path)
+                .text_color(theme::muted())
+                .into_any_element(),
+            Some(icon) => img(ImageSource::Resource(Resource::Embedded(icon.path)))
+                .flex_none()
+                .size(px(13.))
+                .into_any_element(),
+            None => svg()
+                .flex_none()
+                .size(px(13.))
+                .path("file-text.svg")
+                .text_color(theme::muted())
+                .into_any_element(),
+        }
+    }
 
     fn tab_letter(&self, tab: &FileTab) -> Option<(&'static str, gpui::Hsla)> {
-        if matches!(
-            self.viewer.files.get(&tab.path).map(|file| &file.content),
-            Some(Content::Deleted(_))
-        ) {
-            return Some(("D", theme::danger()));
+        if let Some(doc) = self.docs.get(&tab.key) {
+            if matches!(doc.content, Content::Deleted(_)) {
+                return Some(("D", theme::danger()));
+            }
+            if let FileTabDiff::Loaded(loaded) = &doc.diff {
+                return Some(status_letter_and_color(&loaded.status));
+            }
+            if let Some(status) = &doc.hint_status {
+                return Some(status_letter_and_color(status));
+            }
         }
-        let letter: Letter = self.tree_ref()?.letter(&tab.path)?;
+        if tab.key.target != SelectedTarget::Uncommitted {
+            return None;
+        }
+        let status = self.status.as_ref()?;
+        let letter = status.letter(tab.path())?;
         Some((letter.text(), letter_color(letter)))
     }
 
+    fn tab_target_tag(&self, tab: &FileTab) -> Option<String> {
+        if !self.tabs.has_duplicate_path(tab.path()) {
+            return None;
+        }
+        match &tab.key.target {
+            SelectedTarget::Uncommitted => None,
+            SelectedTarget::Branch => Some(crate::i18n::text("viewer.tag_branch").to_owned()),
+            SelectedTarget::Commit(id) => Some(
+                self.docs
+                    .get(&tab.key)
+                    .and_then(|d| d.commit_short_id.clone())
+                    .unwrap_or_else(|| id[..id.len().min(7)].to_owned()),
+            ),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn active_diff_scope_label(&self) -> Option<String> {
+        let tab = self.tabs.active()?;
+        let doc = self.docs.get(&tab.key)?;
+        Some(self.diff_scope_label(&tab.key, doc))
+    }
+
+    fn diff_scope_label(&self, key: &TabKey, doc: &OpenDocument) -> String {
+        let has_head = match &doc.diff {
+            FileTabDiff::Loaded(loaded) => loaded.has_head,
+            _ => doc.has_head || self.root_has_head(),
+        };
+        match &key.target {
+            SelectedTarget::Uncommitted => crate::i18n::text(if has_head {
+                "changes.working_tree_vs_head"
+            } else {
+                "changes.working_tree_unborn"
+            })
+            .to_owned(),
+            SelectedTarget::Branch => {
+                let base_raw = doc.diff_base.as_deref().or(doc.resolved_base.as_deref());
+                let branch = if doc.branch_known {
+                    doc.branch_name.as_deref()
+                } else {
+                    doc.branch_name.as_deref().or_else(|| {
+                        self.root
+                            .as_ref()
+                            .and_then(|r| r.git.as_ref())
+                            .and_then(|g| g.branch.as_deref())
+                    })
+                };
+                match (branch, base_raw) {
+                    (Some(branch), Some(base)) => crate::i18n::tf(
+                        "viewer.all_changes_vs_base",
+                        &[
+                            ("branch", branch.to_owned()),
+                            ("base", display_base_ref(base).to_owned()),
+                        ],
+                    ),
+                    _ => crate::i18n::text("changes.all_changes").to_owned(),
+                }
+            }
+            SelectedTarget::Commit(id) => {
+                let short = doc
+                    .commit_short_id
+                    .clone()
+                    .unwrap_or_else(|| id[..id.len().min(7)].to_owned());
+                crate::i18n::tf("viewer.commit_vs_parent", &[("sha", short)])
+            }
+        }
+    }
+
     fn render_tab(&self, index: usize, tab: &FileTab, cx: &mut Context<Self>) -> AnyElement {
-        let active = self.viewer.tabs.active_index() == Some(index);
+        let active = self.tabs.active_index() == Some(index);
         let group: SharedString = format!("file-tab-{index}").into();
-        let path = tab.path.clone();
+        let path = tab.path().to_owned();
         let letter = self.tab_letter(tab);
+        let preview = tab.preview;
+        let is_diff = self
+            .docs
+            .get(&tab.key)
+            .is_some_and(|doc| doc.mode == DocMode::Diff);
+        let target_tag = self.tab_target_tag(tab);
+        let leading_icon = if is_diff {
+            let color = letter.map_or_else(theme::warning, |(_, c)| c);
+            svg()
+                .flex_none()
+                .size(px(12.))
+                .path("git-compare.svg")
+                .text_color(color)
+                .into_any_element()
+        } else {
+            self.file_icon(tab.name())
+        };
+        let label = div()
+            .whitespace_nowrap()
+            .when(preview, |el| el.italic())
+            .when(cfg!(test) && preview, {
+                let path = path.clone();
+                move |el| el.debug_selector(move || format!("FILE_TAB_PREVIEW {path}"))
+            })
+            .when(cfg!(test) && !preview, {
+                let path = path.clone();
+                move |el| el.debug_selector(move || format!("FILE_TAB_PINNED {path}"))
+            })
+            .child(tab.name().to_owned());
         div()
             .id(("file-tab", index))
-            .when(cfg!(test), |element| {
+            .when(cfg!(test), {
                 let path = path.clone();
-                element.debug_selector(move || format!("FILE_TAB {path}"))
+                move |element| element.debug_selector(move || format!("FILE_TAB {path}"))
             })
             .group(group.clone())
             .flex_none()
             .h(px(28.))
-            .pl(px(10.))
+            .pl(px(8.))
             .pr(px(6.))
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(px(5.))
             .rounded_md()
             .border_1()
             .border_color(if active {
@@ -81,30 +224,43 @@ impl FilesView {
             })
             .when(active, |element| element.bg(theme::raised()))
             .hover(|element| element.text_color(theme::text()))
+            .when(preview, |el| {
+                el.tooltip(|_, cx| {
+                    runner_app::ui::tooltip::tooltip_view(
+                        crate::i18n::t("viewer.preview_tab_hint"),
+                        cx,
+                    )
+                })
+            })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                 this.activate_tab(index, cx);
-                if let Some(diff) = this.active_diff_view() {
-                    diff.read(cx).focus_handle().clone().focus(window, cx);
-                } else if this.active_showing_diff() {
-                    this.viewer_focus.focus(window, cx);
-                } else if let Some(view) = this.active_view() {
-                    view.read(cx).focus_handle().clone().focus(window, cx);
-                } else if let Some(page) = this.active_rendered() {
-                    page.read(cx).focus_handle().clone().focus(window, cx);
-                } else {
-                    this.focus.focus(window, cx);
+                if event.click_count() >= 2 {
+                    this.pin_tab(index, cx);
                 }
+                this.focus_active(window, cx);
             }))
             .on_mouse_down(
                 MouseButton::Middle,
                 cx.listener(move |this, _, window, cx| this.close_tab(index, window, cx)),
             )
-            .child(div().whitespace_nowrap().child(tab.name().to_owned()))
+            .child(leading_icon)
+            .child(label)
+            .children(target_tag.map(|tag| {
+                div()
+                    .flex_none()
+                    .px(px(4.))
+                    .rounded(px(3.))
+                    .bg(theme::panel())
+                    .font_family(theme::UI_MONOSPACE_FONT)
+                    .text_size(theme::text_micro())
+                    .text_color(theme::faint())
+                    .child(tag)
+            }))
             .children(letter.map(|(text, color)| {
+                let path = path.clone();
                 div()
                     .when(cfg!(test), |element| {
-                        let path = path.clone();
                         element.debug_selector(move || format!("FILE_TAB_LETTER {path} {text}"))
                     })
                     .flex_none()
@@ -132,6 +288,7 @@ impl FilesView {
                             .group_hover(group, |element| element.visible())
                     })
                     .hover(|element| element.bg(theme::sidebar_selected()))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
                         this.close_tab(index, window, cx);
@@ -146,17 +303,126 @@ impl FilesView {
             .into_any_element()
     }
 
-    fn render_strip(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_code_diff_switch(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.active_can_diff() {
+            return None;
+        }
+        let showing_diff = self.active_showing_diff();
+        let deleted = self.active_deleted();
+        let code_active = !showing_diff && !deleted;
+        let diff_active = showing_diff;
+
+        let code_btn = div()
+            .id("viewer-mode-code")
+            .when(cfg!(test), move |el| {
+                el.debug_selector(move || {
+                    if deleted {
+                        "VIEWER_MODE_CODE disabled".into()
+                    } else if code_active {
+                        "VIEWER_MODE_CODE active".into()
+                    } else {
+                        "VIEWER_MODE_CODE".into()
+                    }
+                })
+            })
+            .h_full()
+            .px(px(8.))
+            .rounded(px(4.))
+            .flex()
+            .items_center()
+            .text_size(theme::text_meta())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .when(deleted, |el| {
+                el.opacity(0.4)
+                    .text_color(theme::faint())
+                    .cursor_default()
+                    .tooltip(|_, cx| {
+                        runner_app::ui::tooltip::tooltip_view(
+                            crate::i18n::t("viewer.file_deleted_code_unavailable"),
+                            cx,
+                        )
+                    })
+            })
+            .when(!deleted && code_active, |el| {
+                el.bg(theme::sidebar_selected())
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::text())
+                    .cursor_pointer()
+            })
+            .when(!deleted && !code_active, |el| {
+                el.text_color(theme::muted())
+                    .cursor_pointer()
+                    .hover(|h| h.text_color(theme::text()))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.set_active_mode(DocMode::Code, window, cx);
+                    }))
+            })
+            .child(crate::i18n::text("viewer.code"));
+
+        let diff_btn = div()
+            .id("viewer-mode-diff")
+            .when(cfg!(test), move |el| {
+                el.debug_selector(move || {
+                    if diff_active {
+                        "VIEWER_MODE_DIFF active".into()
+                    } else {
+                        "VIEWER_MODE_DIFF".into()
+                    }
+                })
+            })
+            .h_full()
+            .px(px(8.))
+            .rounded(px(4.))
+            .flex()
+            .items_center()
+            .cursor_pointer()
+            .text_size(theme::text_meta())
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .when(diff_active, |el| {
+                el.bg(theme::sidebar_selected())
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme::text())
+            })
+            .when(!diff_active, |el| {
+                el.text_color(theme::muted())
+                    .hover(|h| h.text_color(theme::text()))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.set_active_mode(DocMode::Diff, window, cx);
+                    }))
+            })
+            .child(crate::i18n::text("viewer.diff"));
+
+        Some(
+            div()
+                .when(cfg!(test), |el| {
+                    el.debug_selector(|| "VIEWER_MODE_SWITCH".into())
+                })
+                .flex_none()
+                .h(px(26.))
+                .p(px(2.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::panel())
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .child(code_btn)
+                .child(diff_btn)
+                .into_any_element(),
+        )
+    }
+
+    fn render_strip(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let tabs = self
-            .viewer
             .tabs
             .tabs()
             .iter()
             .enumerate()
             .map(|(index, tab)| self.render_tab(index, tab, cx))
             .collect::<Vec<_>>();
-        let offset = self.viewer.strip.offset().x;
-        let max = self.viewer.strip.max_offset().x;
+        let offset = self.strip.offset().x;
+        let max = self.strip.max_offset().x;
         let overflowing = max > px(0.5);
         let fade = |left: bool| {
             let bg = theme::bg();
@@ -173,23 +439,35 @@ impl FilesView {
                     linear_color_stop(theme::with_alpha(bg, 0.), 1.),
                 ))
         };
-        let count = self.viewer.tabs.tabs().len();
-        let list_anchor = self.viewer.list_anchor.clone();
-        let open_in_anchor = self.viewer.open_in_anchor.clone();
-        let (_, effective) = found_editors(cx);
-        let deleted = self.active_deleted();
-        let can_diff = self.active_can_diff();
-        let showing_diff = self.active_showing_diff();
-        let open_in_label = crate::i18n::tf(
-            "format.open_in_editor",
-            &[("editor", effective.label().to_owned())],
-        );
-        div()
+        let count = self.tabs.tabs().len();
+        let list_anchor = self.list_anchor.clone();
+        let active_is_preview = self.tabs.active().is_some_and(|t| t.preview);
+        let active_index = self.tabs.active_index();
+        let show_rail_column = self.chrome.show_rail_column;
+        let rail_toggle_tip = if self.tree_hidden || !show_rail_column {
+            "viewer.show_rail"
+        } else {
+            "viewer.hide_rail"
+        };
+        let macos_inset = self.chrome.macos_titlebar_inset.take();
+        let maximize_el = self.chrome.maximize_control.take().map(|control| {
+            let settings = crate::app_store::global_app_store(cx)
+                .read(cx)
+                .settings
+                .clone();
+            side_panel::maximize_button(control, &settings)
+        });
+        let collapse_el = (!show_rail_column)
+            .then(|| self.chrome.collapse_when_rail_hidden.take())
+            .flatten();
+        let code_diff_switch = self.render_code_diff_switch(cx);
+
+        let row = div()
             .when(cfg!(test), |element| {
                 element.debug_selector(|| "FILE_TAB_STRIP".into())
             })
             .flex_none()
-            .h(px(STRIP_HEIGHT))
+            .h(rems(40. / 16.))
             .pl(px(8.))
             .pr(px(8.))
             .flex()
@@ -197,6 +475,9 @@ impl FilesView {
             .gap(px(6.))
             .border_b_1()
             .border_color(theme::border())
+            .when_some(macos_inset, |header, (pad, spacer)| {
+                header.pl(px(pad)).children(spacer)
+            })
             .child(
                 div()
                     .relative()
@@ -211,7 +492,7 @@ impl FilesView {
                             .items_center()
                             .gap(px(2.))
                             .overflow_x_scroll()
-                            .track_scroll(&self.viewer.strip)
+                            .track_scroll(&self.strip)
                             .children(tabs),
                     )
                     .when(offset < px(-0.5), |element| element.child(fade(true)))
@@ -219,9 +500,9 @@ impl FilesView {
                         element.child(fade(false))
                     }),
             )
-            .when(overflowing || self.viewer.list_open, |element| {
+            .when(overflowing || self.list_open, |element| {
                 element.child(
-                    strip_button("file-tab-list", self.viewer.list_open)
+                    strip_button("file-tab-list", self.list_open)
                         .child(
                             canvas(move |bounds, _, _| list_anchor.set(bounds), |_, _, _, _| {})
                                 .absolute()
@@ -236,180 +517,282 @@ impl FilesView {
                         )
                         .child(count.to_string())
                         .on_click(cx.listener(|this, _, _, cx| {
-                            this.viewer.list_open = !this.viewer.list_open;
-                            this.viewer.open_in_open = false;
+                            this.list_open = !this.list_open;
+                            this.open_in_open = false;
                             cx.notify();
                         })),
                 )
             })
-            .when_some(
-                self.active_markdown().filter(|_| !showing_diff),
-                |element, source| {
-                    element.child(
-                        strip_button("file-markdown-source", source)
-                            .when(deleted, |element| element.opacity(0.4).cursor_default())
-                            .when(!source, |element| {
-                                element.border_color(gpui::transparent_black())
-                            })
-                            .tooltip(move |_, cx| {
-                                runner_app::ui::tooltip::tooltip_view(
-                                    crate::i18n::t(if source {
-                                        "ui.show_markdown_rendered"
-                                    } else {
-                                        "ui.show_markdown_source"
-                                    }),
-                                    cx,
-                                )
-                            })
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.toggle_source(window, cx)),
-                            )
-                            .child(svg().size(px(14.)).path("code.svg").text_color(if source {
-                                theme::text()
-                            } else {
-                                theme::muted()
-                            })),
-                    )
-                },
-            )
-            .when(can_diff, |element| {
+            .children(code_diff_switch)
+            .when(active_is_preview, |element| {
                 element.child(
-                    strip_button("file-diff-toggle", showing_diff)
-                        .tooltip(move |_, cx| {
+                    strip_button("viewer-pin-tab", false)
+                        .tooltip(|_, cx| {
                             runner_app::ui::tooltip::tooltip_view(
-                                crate::i18n::t(if showing_diff {
-                                    "changes.show_file"
-                                } else {
-                                    "changes.show_diff"
-                                }),
+                                crate::i18n::t("viewer.pin_tab"),
                                 cx,
                             )
                         })
-                        .on_click(cx.listener(|this, _, window, cx| this.toggle_diff(window, cx)))
-                        .child(svg().size(px(14.)).path("git-compare.svg").text_color(
-                            if showing_diff {
-                                theme::text()
-                            } else {
-                                theme::muted()
-                            },
-                        )),
-                )
-            })
-            .when(self.has_tabs(), |strip| {
-                strip.child(
-                    div()
-                        .relative()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(theme::border())
-                        // A deleted file has nothing to open: closing is its only action.
-                        .when(deleted, |element| element.opacity(0.4))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(index) = active_index {
+                                this.pin_tab(index, cx);
+                            }
+                        }))
                         .child(
-                            canvas(
-                                move |bounds, _, _| open_in_anchor.set(bounds),
-                                |_, _, _, _| {},
-                            )
-                            .absolute()
-                            .inset_0(),
-                        )
-                        .child(
-                            div()
-                                .id("file-open-in")
-                                .when(cfg!(test), |element| {
-                                    element.debug_selector(|| "FILE_OPEN_IN".into())
-                                })
-                                .h(px(24.))
-                                .w(px(26.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_l_md()
-                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .when(!deleted, |element| {
-                                    element
-                                        .cursor_pointer()
-                                        .hover(|element| {
-                                            element.bg(theme::with_alpha(
-                                                theme::sidebar_selected(),
-                                                0.6,
-                                            ))
-                                        })
-                                        .tooltip(move |_, cx| {
-                                            runner_app::ui::tooltip::tooltip_view(
-                                                open_in_label.clone(),
-                                                cx,
-                                            )
-                                        })
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.open_in(None, cx)),
-                                        )
-                                })
-                                .child(editor_icon(effective, 14.)),
-                        )
-                        .child(div().w(px(1.)).h(px(14.)).bg(theme::border()))
-                        .child(
-                            div()
-                                .id("file-open-in-menu")
-                                .when(cfg!(test), |element| {
-                                    element.debug_selector(|| "FILE_OPEN_IN_MENU".into())
-                                })
-                                .h(px(24.))
-                                .w(px(18.))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded_r_md()
-                                .when(self.viewer.open_in_open, |element| {
-                                    element.bg(theme::sidebar_selected())
-                                })
-                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .when(!deleted, |element| {
-                                    element
-                                        .cursor_pointer()
-                                        .hover(|element| {
-                                            element.bg(theme::with_alpha(
-                                                theme::sidebar_selected(),
-                                                0.6,
-                                            ))
-                                        })
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.viewer.open_in_open = !this.viewer.open_in_open;
-                                            this.viewer.list_open = false;
-                                            cx.notify();
-                                        }))
-                                })
-                                .child(
-                                    svg()
-                                        .size(px(11.))
-                                        .path("chevron-down.svg")
-                                        .text_color(theme::muted()),
-                                ),
+                            svg()
+                                .size(px(13.))
+                                .path("pin.svg")
+                                .text_color(theme::muted()),
                         ),
                 )
             })
             .child(
-                strip_button("file-tree-toggle", !self.viewer.tree_hidden)
-                    .tooltip(|_, cx| {
-                        runner_app::ui::tooltip::tooltip_view(
-                            crate::i18n::t("ui.toggle_file_tree"),
-                            cx,
-                        )
+                strip_button("file-tree-toggle", !self.tree_hidden && show_rail_column)
+                    .tooltip(move |_, cx| {
+                        runner_app::ui::tooltip::tooltip_view(crate::i18n::t(rail_toggle_tip), cx)
                     })
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.viewer.tree_hidden = !this.viewer.tree_hidden;
+                        this.tree_hidden = !this.tree_hidden;
+                        this.notify_owner(cx);
                         cx.notify();
                     }))
                     .child(svg().size(px(14.)).path("list-tree.svg").text_color(
-                        if self.viewer.tree_hidden {
+                        if self.tree_hidden || !show_rail_column {
                             theme::muted()
                         } else {
                             theme::text()
                         },
                     )),
             )
+            .children(maximize_el)
+            .children(collapse_el.map(|collapse| {
+                div()
+                    .flex_none()
+                    .debug_selector(|| "PANEL_COLLAPSE".into())
+                    .child(collapse)
+            }));
+
+        if let Some(wrap) = self.chrome.wrap_titlebar.clone() {
+            wrap("unified-viewer-titlebar-drag", row, cx)
+        } else {
+            row.into_any_element()
+        }
+    }
+
+    fn render_code_subbar(
+        &self,
+        tab: &FileTab,
+        doc: &OpenDocument,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let deleted = doc.is_working_tree_deleted(&tab.key);
+        let name = tab.name().to_owned();
+        let folder = abbreviate_folder(tab.path());
+        let hunks = self.active_hunk_lines();
+        let hunk_count = hunks.len();
+        let markdown_source = self.active_markdown();
+        let can_find = self.active_view().is_some() || self.active_rendered().is_some();
+        let find_shortcut = if cfg!(target_os = "macos") {
+            "⌘F"
+        } else {
+            "Ctrl+F"
+        };
+
+        div()
+            .when(cfg!(test), |el| {
+                el.debug_selector(|| "FILE_CODE_SUBBAR".into())
+            })
+            .flex_none()
+            .h(px(34.))
+            .pl(px(10.))
+            .pr(px(8.))
+            .bg(theme::panel())
+            .border_b_1()
+            .border_color(theme::border())
+            .overflow_x_hidden()
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .child(
+                div()
+                    .min_w(px(36.))
+                    .flex_1()
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .min_w(px(20.))
+                            .flex_shrink(1.)
+                            .truncate()
+                            .text_size(theme::text_ui())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .child(name),
+                    )
+                    .children(folder.map(|f| {
+                        div()
+                            .min_w(px(0.))
+                            .flex_shrink(3.)
+                            .truncate()
+                            .text_size(theme::text_meta())
+                            .text_color(theme::faint())
+                            .child(f)
+                    }))
+                    .when(hunk_count > 0 && !deleted, |el| {
+                        el.child(
+                            div()
+                                .id("file-hunks-badge")
+                                .when(cfg!(test), |d| {
+                                    d.debug_selector(|| "FILE_HUNKS_BADGE".into())
+                                })
+                                .flex_none()
+                                .h(px(20.))
+                                .px(px(6.))
+                                .rounded(px(4.))
+                                .bg(theme::with_alpha(theme::warning(), 0.14))
+                                .flex()
+                                .items_center()
+                                .gap(px(4.))
+                                .cursor_pointer()
+                                .text_size(theme::text_caption())
+                                .text_color(theme::warning())
+                                .tooltip(|_, cx| {
+                                    runner_app::ui::tooltip::tooltip_view(
+                                        crate::i18n::t("viewer.jump_next_hunk"),
+                                        cx,
+                                    )
+                                })
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.jump_hunk(true, cx);
+                                }))
+                                .child(crate::i18n::tn("viewer.changed_hunks", hunk_count))
+                                .child(
+                                    div()
+                                        .font_family(theme::UI_MONOSPACE_FONT)
+                                        .text_color(theme::with_alpha(theme::warning(), 0.8))
+                                        .child("[ ]"),
+                                ),
+                        )
+                    }),
+            )
+            .when_some(markdown_source, |el, source| {
+                let pill = |id: &'static str,
+                            selector: &'static str,
+                            label_key: &'static str,
+                            active: bool,
+                            target_source: bool| {
+                    div()
+                        .id(id)
+                        .when(cfg!(test), move |el| {
+                            el.debug_selector(move || {
+                                if active {
+                                    format!("{selector} active")
+                                } else {
+                                    selector.into()
+                                }
+                            })
+                        })
+                        .h(px(20.))
+                        .px(px(6.))
+                        .rounded(px(4.))
+                        .flex()
+                        .items_center()
+                        .text_size(theme::text_caption())
+                        .when(!deleted, |el| el.cursor_pointer())
+                        .when(active, |el| {
+                            el.bg(theme::raised())
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme::text())
+                        })
+                        .when(!active, |el| {
+                            el.text_color(theme::muted())
+                                .when(!deleted, |h| h.hover(|h| h.text_color(theme::text())))
+                        })
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .when(!deleted && !active, |el| {
+                            el.on_click(cx.listener(move |this, _, window, cx| {
+                                cx.stop_propagation();
+                                if this.active_markdown() != Some(target_source) {
+                                    this.toggle_source(window, cx);
+                                }
+                            }))
+                        })
+                        .child(crate::i18n::text(label_key))
+                };
+                el.child(
+                    div()
+                        .id("file-markdown-source")
+                        .when(cfg!(test), |el| {
+                            el.debug_selector(|| "FILE_MARKDOWN_SOURCE".into())
+                        })
+                        .flex_none()
+                        .p(px(2.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(theme::border())
+                        .bg(theme::bg())
+                        .flex()
+                        .items_center()
+                        .gap(px(2.))
+                        .when(deleted, |el| el.opacity(0.4))
+                        .child(pill(
+                            "file-md-rendered",
+                            "FILE_MD_RENDERED",
+                            "side_panel.rendered",
+                            !source,
+                            false,
+                        ))
+                        .child(pill(
+                            "file-md-source",
+                            "FILE_MD_SOURCE",
+                            "side_panel.source",
+                            source,
+                            true,
+                        )),
+                )
+            })
+            .when(can_find, |el| {
+                el.child(
+                    div()
+                        .id("file-find-button")
+                        .when(cfg!(test), |el| {
+                            el.debug_selector(|| "FILE_FIND_BUTTON".into())
+                        })
+                        .flex_none()
+                        .h(px(24.))
+                        .px(px(6.))
+                        .rounded(px(5.))
+                        .border_1()
+                        .border_color(theme::border())
+                        .bg(theme::bg())
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .cursor_pointer()
+                        .text_size(theme::text_caption())
+                        .text_color(theme::muted())
+                        .hover(|h| h.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
+                        .tooltip(|_, cx| {
+                            runner_app::ui::tooltip::tooltip_view(
+                                crate::i18n::t("viewer.find_in_file"),
+                                cx,
+                            )
+                        })
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(|this, _, window, cx| this.open_find(window, cx)))
+                        .child(
+                            svg()
+                                .size(px(11.))
+                                .path("search.svg")
+                                .text_color(theme::muted()),
+                        )
+                        .child(find_shortcut),
+                )
+            })
+            .child(self.render_open_in_control(deleted, cx))
             .into_any_element()
     }
 
@@ -459,177 +842,22 @@ impl FilesView {
             .into_any_element()
     }
 
-    fn search_button(&self, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .id("file-empty-search")
-            .when(cfg!(test), |element| {
-                element.debug_selector(|| "FILE_EMPTY_SEARCH".into())
-            })
-            .flex_none()
-            .px(px(10.))
-            .py(px(5.))
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .rounded_md()
-            .border_1()
-            .border_color(theme::border())
-            .cursor_pointer()
-            .text_size(theme::text_ui())
-            .text_color(theme::text())
-            .hover(|element| element.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
-            .on_click(cx.listener(|this, _, window, cx| this.toggle_finder(window, cx)))
-            .child(
-                svg()
-                    .size(px(13.))
-                    .path("search.svg")
-                    .text_color(theme::muted()),
-            )
-            .child(crate::i18n::text("ui.search_files"))
-            .children(super::super::finder::search_key_hint(cx))
-            .into_any_element()
-    }
-
-    /// Where the file goes before one is chosen: the checkout's changes, one
-    /// click from opening, or a prompt when there are none to list.
-    fn render_no_file(&self, cx: &mut Context<Self>) -> AnyElement {
-        let reading =
-            self.root_is_git() && self.tree_ref().is_none_or(|tree| tree.status().is_none());
-        if reading {
-            return div().flex_1().into_any_element();
-        }
-        let changed = self
-            .tree_ref()
-            .map(|tree| tree.changed_files())
-            .unwrap_or_default();
-        // More than listed when the status ran past its limits.
-        let total = self
-            .tree_ref()
-            .and_then(|tree| tree.status())
-            .map_or(changed.len(), |status| status.changed.max(changed.len()));
-        if changed.is_empty() {
-            return self.render_placeholder(
-                "FILE_NO_FILE",
-                "file-text.svg",
-                crate::i18n::t("ui.no_file_open").to_string(),
-                crate::i18n::t("ui.choose_a_file_or_search").to_string(),
-                self.search_button(cx),
-            );
-        }
-        let count = changed.len();
-        let rows = changed;
-        div()
-            .when(cfg!(test), |element| {
-                element.debug_selector(|| "FILE_CHANGED_LIST".into())
-            })
-            .flex_1()
-            .min_h(px(0.))
-            .flex()
-            .flex_col()
-            .px(px(16.))
-            .pt(px(12.))
-            .child(
-                div()
-                    .flex_none()
-                    .pb(px(8.))
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .truncate()
-                            .text_size(theme::text_ui())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme::text())
-                            .child(crate::i18n::tn("count.changed", total)),
-                    )
-                    .child(self.search_button(cx)),
-            )
-            .child(
-                gpui::uniform_list(
-                    "file-changed-list",
-                    count,
-                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                        rows[range]
-                            .iter()
-                            .map(|(path, letter)| this.render_changed_row(path, *letter, cx))
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .flex_1()
-                .min_h(px(0.)),
-            )
-            .into_any_element()
-    }
-
-    fn render_changed_row(&self, path: &str, letter: Letter, cx: &mut Context<Self>) -> AnyElement {
-        let (folder, name) = path.rsplit_once('/').unwrap_or(("", path));
-        let open = path.to_owned();
-        div()
-            .id(gpui::SharedString::from(format!("file-changed-{path}")))
-            .when(cfg!(test), |element| {
-                let selector = format!("FILE_CHANGED {path}");
-                element.debug_selector(move || selector)
-            })
-            .w_full()
-            .h(px(28.))
-            .px(px(8.))
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .rounded_md()
-            .cursor_pointer()
-            .text_size(theme::text_ui())
-            .hover(|element| element.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                this.focus.focus(window, cx);
-                this.open_file(open.clone(), cx);
-            }))
-            .child(self.file_icon(name))
-            .child(
-                div()
-                    .flex_none()
-                    .max_w(gpui::relative(0.6))
-                    .truncate()
-                    .text_color(theme::text())
-                    .child(name.to_owned()),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .truncate()
-                    .text_size(theme::text_meta())
-                    .text_color(theme::faint())
-                    .child(folder.to_owned()),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .font_family(theme::UI_MONOSPACE_FONT)
-                    .text_size(theme::text_meta())
-                    .text_color(letter_color(letter))
-                    .child(letter.text()),
-            )
-            .into_any_element()
-    }
-
     fn render_file(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let Some(tab) = self.viewer.tabs.active() else {
-            return self.render_no_file(cx);
-        };
-        let tab_path = tab.path.clone();
-        let name = tab.name().to_owned();
-        let Some(file) = self.viewer.files.get(&tab_path) else {
+        let Some(tab) = self.tabs.active() else {
             return div().flex_1().into_any_element();
         };
-        if file.showing_diff && self.active_can_diff() {
-            return self.render_tab_diff(&tab_path, cx);
+        let key = tab.key.clone();
+        let name = tab.name().to_owned();
+        let Some(doc) = self.docs.get(&key) else {
+            return div().flex_1().into_any_element();
+        };
+        if doc.mode == DocMode::Diff && self.active_can_diff() {
+            return self.render_tab_diff(&key, doc, cx);
         }
+        let subbar = self.render_code_subbar(tab, doc, cx);
         let root = cx.weak_entity();
-        match &file.content {
-            Content::Loading => div().flex_1().into_any_element(),
+        let body = match &doc.content {
+            Content::Idle | Content::Loading => div().flex_1().into_any_element(),
             Content::Failed(error) => div()
                 .p_4()
                 .text_size(theme::text_ui())
@@ -684,8 +912,8 @@ impl FilesView {
                     .into_any_element(),
                 )
             }
-            Content::Text(_) if self.shows_rendered(file) => {
-                self.render_rendered(file.rendered.clone(), None)
+            Content::Text(_) if self.shows_rendered(doc) => {
+                self.render_rendered(doc.rendered.clone(), None)
             }
             Content::Text(view) => self.render_code(view.clone(), None, window, cx),
             Content::Deleted(view) => {
@@ -744,7 +972,7 @@ impl FilesView {
                             .hover(|element| element.text_color(theme::text()))
                             .on_click(move |_, window, cx| {
                                 let _ = close_root.update(cx, |this, cx| {
-                                    if let Some(index) = this.viewer.tabs.active_index() {
+                                    if let Some(index) = this.tabs.active_index() {
                                         this.close_tab(index, window, cx);
                                     }
                                 });
@@ -753,8 +981,8 @@ impl FilesView {
                     )
                     .into_any_element();
                 match view {
-                    Some(_) if self.shows_rendered(file) => {
-                        self.render_rendered(file.rendered.clone(), Some(banner))
+                    Some(_) if self.shows_rendered(doc) => {
+                        self.render_rendered(doc.rendered.clone(), Some(banner))
                     }
                     Some(view) => self.render_code(view.clone(), Some(banner), window, cx),
                     None => div()
@@ -765,62 +993,76 @@ impl FilesView {
                         .into_any_element(),
                 }
             }
-        }
+        };
+        div()
+            .flex_1()
+            .min_w(px(0.))
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .child(subbar)
+            .child(body)
+            .into_any_element()
     }
 
-    fn render_tab_diff(&self, tab_path: &str, cx: &mut Context<Self>) -> AnyElement {
-        use crate::surfaces::changes::{
-            render_shared_diff_header, render_shared_diff_placeholder, DiffHeaderProps,
-            LoadedDiffKind,
-        };
-        use runner_core::protocol::files::FileStatus;
-
+    fn render_tab_diff(
+        &self,
+        key: &TabKey,
+        doc: &OpenDocument,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let effective_mode = self.effective_diff_mode(cx);
-        let Some(file) = self.viewer.files.get(tab_path) else {
-            return div().flex_1().into_any_element();
-        };
-
-        let (status_opt, counts_opt, mode_change, conflicted, has_head) = match &file.diff {
-            super::FileTabDiff::Loaded(loaded) => (
+        let (status_opt, counts_opt, mode_change, conflicted, viewed_tuple) = match &doc.diff {
+            FileTabDiff::Loaded(loaded) => (
                 Some(&loaded.status),
                 Some(loaded.counts),
                 loaded.mode_change.as_ref(),
                 loaded.conflicted,
-                loaded.has_head,
+                Some((loaded.viewed, loaded.changed_since_viewed)),
             ),
-            _ => (None, None, None, false, self.root_has_head()),
+            FileTabDiff::NoChanges => (None, None, None, false, None),
+            _ => (
+                doc.hint_status.as_ref(),
+                doc.hint_counts,
+                None,
+                false,
+                doc.hint_viewed,
+            ),
         };
-
+        let deleted = doc.is_working_tree_deleted(key);
         let weak = cx.weak_entity();
-        let mode_handler: crate::surfaces::changes::DiffModeCallback =
-            Rc::new(move |mode, window, cx| {
-                let _ = weak.update(cx, |this, cx| this.select_diff_mode(mode, window, cx));
+        let mode_handler: DiffModeCallback = Rc::new(move |mode, window, cx| {
+            let _ = weak.update(cx, |this, cx| this.select_diff_mode(mode, window, cx));
+        });
+        let viewed = viewed_tuple.map(|(is_viewed, changed_since)| {
+            let toggle_weak = cx.weak_entity();
+            let toggle_key = key.clone();
+            let on_toggle: crate::surfaces::changes::diff::DiffCallback = Rc::new(move |_, cx| {
+                let toggle_key = toggle_key.clone();
+                let _ =
+                    toggle_weak.update(cx, |this, cx| this.toggle_viewed_for_tab(&toggle_key, cx));
             });
-
-        let compare_label = Some(
-            crate::i18n::text(if has_head {
-                "changes.working_tree_vs_head"
-            } else {
-                "changes.working_tree_unborn"
-            })
-            .to_owned(),
-        );
+            (is_viewed, changed_since, on_toggle)
+        });
+        let compare_label = Some(self.diff_scope_label(key, doc));
+        let open_in_control = Some(self.render_open_in_control(deleted, cx));
 
         let header = render_shared_diff_header(DiffHeaderProps {
-            path: matches!(status_opt, Some(FileStatus::Renamed { .. })).then_some(tab_path),
+            path: Some(key.path.as_str()),
             status: status_opt,
             counts: counts_opt,
             mode_change,
             conflicted,
             compare_label,
             mode_switch: Some((effective_mode, mode_handler)),
-            viewed: None,
+            viewed,
             open_external: None,
+            open_in_control,
             on_close: None,
         });
 
-        let body = match &file.diff {
-            super::FileTabDiff::Idle | super::FileTabDiff::Loading => div()
+        let body = match &doc.diff {
+            FileTabDiff::Idle | FileTabDiff::Loading => div()
                 .when(cfg!(test), |el| {
                     el.debug_selector(|| "FILE_DIFF_LOADING".into())
                 })
@@ -833,14 +1075,52 @@ impl FilesView {
                 .text_color(theme::faint())
                 .child(crate::i18n::text("changes.loading"))
                 .into_any_element(),
-            super::FileTabDiff::Failed(error) => div()
+            FileTabDiff::NoChanges => {
+                let message = match &key.target {
+                    SelectedTarget::Branch => {
+                        let base = doc
+                            .diff_base
+                            .as_deref()
+                            .or(doc.resolved_base.as_deref())
+                            .map(display_base_ref)
+                            .unwrap_or("base");
+                        crate::i18n::tf(
+                            "changes.no_changes_since_base",
+                            &[("base", base.to_owned())],
+                        )
+                    }
+                    SelectedTarget::Commit(id) => {
+                        let sha = doc
+                            .commit_short_id
+                            .clone()
+                            .unwrap_or_else(|| id[..id.len().min(7)].to_owned());
+                        crate::i18n::tf("changes.no_changes_in_commit", &[("sha", sha)])
+                    }
+                    SelectedTarget::Uncommitted => crate::i18n::text("ui.empty").to_owned(),
+                };
+                div()
+                    .when(cfg!(test), |el| {
+                        el.debug_selector(|| "FILE_DIFF_NO_CHANGES".into())
+                    })
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .px_4()
+                    .text_size(theme::text_ui())
+                    .text_color(theme::faint())
+                    .child(message)
+                    .into_any_element()
+            }
+            FileTabDiff::Failed(error) => div()
                 .flex_1()
                 .p_4()
                 .text_size(theme::text_ui())
                 .text_color(theme::danger())
                 .child(error.clone())
                 .into_any_element(),
-            super::FileTabDiff::Loaded(loaded) => match &loaded.kind {
+            FileTabDiff::Loaded(loaded) => match &loaded.kind {
                 LoadedDiffKind::Unified(entity) => {
                     entity.update(cx, |v, cx| v.set_mode(effective_mode, cx));
                     entity.clone().into_any_element()
@@ -850,6 +1130,8 @@ impl FilesView {
                         return div().flex_1().into_any_element();
                     };
                     let open_entity = cx.entity();
+                    let toggle_entity = cx.entity();
+                    let toggle_key = key.clone();
                     render_shared_diff_placeholder(
                         root_path,
                         &loaded.path,
@@ -860,7 +1142,16 @@ impl FilesView {
                                 this.launch(editor, path, None, cx);
                             });
                         }),
-                        None,
+                        Some(PlaceholderViewedFooter {
+                            viewed: loaded.viewed,
+                            changed_since_viewed: loaded.changed_since_viewed,
+                            on_toggle: Rc::new(move |_, cx| {
+                                let toggle_key = toggle_key.clone();
+                                toggle_entity.update(cx, |this, cx| {
+                                    this.toggle_viewed_for_tab(&toggle_key, cx);
+                                });
+                            }),
+                        }),
                         cx,
                     )
                 }
@@ -868,11 +1159,10 @@ impl FilesView {
         };
 
         div()
-            .id("file-diff-column")
+            .id("changes-diff-column")
             .when(cfg!(test), |el| {
-                el.debug_selector(|| "FILE_DIFF_COLUMN".into())
+                el.debug_selector(|| "CHANGES_DIFF_COLUMN".into())
             })
-            .on_key_down(cx.listener(Self::on_placeholder_diff_key))
             .flex_1()
             .min_w(px(0.))
             .min_h(px(0.))
@@ -899,12 +1189,11 @@ impl FilesView {
     }
 
     fn render_tab_list(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.viewer.list_open {
+        if !self.list_open {
             return None;
         }
-        let active = self.viewer.tabs.active_index();
+        let active = self.tabs.active_index();
         let rows = self
-            .viewer
             .tabs
             .tabs()
             .iter()
@@ -912,10 +1201,12 @@ impl FilesView {
             .map(|(index, tab)| {
                 let group: SharedString = format!("file-list-{index}").into();
                 let letter = self.tab_letter(tab);
+                let preview = tab.preview;
+                let path = tab.path().to_owned();
                 div()
                     .id(("file-list-item", index))
                     .when(cfg!(test), |element| {
-                        let path = tab.path.clone();
+                        let path = path.clone();
                         element.debug_selector(move || format!("FILE_LIST_ITEM {path}"))
                     })
                     .group(group.clone())
@@ -931,9 +1222,9 @@ impl FilesView {
                     })
                     .hover(|element| element.bg(theme::with_alpha(theme::sidebar_selected(), 0.6)))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.viewer.list_open = false;
+                        this.list_open = false;
                         this.activate_tab(index, cx);
-                        this.keep_focus(window, cx);
+                        this.focus_active(window, cx);
                     }))
                     .child(self.file_icon(tab.name()))
                     .child(
@@ -941,6 +1232,7 @@ impl FilesView {
                             .flex_none()
                             .text_size(theme::text_ui())
                             .text_color(theme::text())
+                            .when(preview, |el| el.italic())
                             .child(tab.name().to_owned()),
                     )
                     .child(
@@ -1009,57 +1301,125 @@ impl FilesView {
                     .pb(px(4.))
                     .text_size(theme::text_meta())
                     .text_color(theme::faint())
-                    .child(crate::i18n::tn(
-                        "count.open_files",
-                        self.viewer.tabs.tabs().len(),
-                    )),
+                    .child(crate::i18n::tn("count.open_files", self.tabs.tabs().len())),
             )
             .children(rows)
             .into_any_element();
         let root = cx.entity();
         Some(popup_layer_sized(
-            self.viewer.list_anchor.get(),
+            self.list_anchor.get(),
             window,
             PopupWidth::Fixed(px(LIST_WIDTH)),
             content,
             Rc::new(move |_, cx| {
                 root.update(cx, |this, cx| {
-                    this.viewer.list_open = false;
+                    this.list_open = false;
                     cx.notify();
                 })
             }),
         ))
     }
 
-    /// The viewer's column: the strip, then the active file.
-    pub(in super::super) fn render_viewer(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_viewer_popups(&self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let hidden_rail_finder = (!self.chrome.show_rail_column)
+            .then(|| {
+                self.chrome
+                    .finder_host
+                    .as_ref()
+                    .and_then(gpui::WeakEntity::upgrade)
+                    .and_then(|files| files.update(cx, |f, cx| f.render_finder(window, cx)))
+            })
+            .flatten();
+        self.render_tab_list(window, cx)
+            .into_iter()
+            .chain(self.render_open_in_menu(window, cx))
+            .chain(hidden_rail_finder)
+            .collect()
+    }
+}
+
+impl Render for UnifiedViewer {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let reported = (self.widening(), self.has_tabs(), self.has_dirty_changes());
+        if reported != self.reported {
+            self.reported = reported;
+            self.notify_owner(cx);
+        }
+        if self._focus_lost.is_none() {
+            self._focus_lost = Some(cx.on_focus_lost(window, Self::on_focus_lost));
+        }
+        if !self.chrome.show_rail_column
+            && self.has_tabs()
+            && self
+                .chrome
+                .hidden_rail_focus
+                .as_ref()
+                .is_some_and(|rail| rail.contains_focused(window, cx))
+        {
+            self.focus_active(window, cx);
+        }
+        // Promote placeholder focus once an async Diff/Code/Markdown load completes,
+        // strictly while focus is still waiting on the viewer wrapper itself.
+        if self.viewer_focus.is_focused(window) {
+            if self.active_showing_diff() {
+                if let Some(diff) = self.active_diff_view() {
+                    diff.read(cx).focus_handle().clone().focus(window, cx);
+                }
+            } else if let Some(page) = self.active_rendered() {
+                page.read(cx).focus_handle().clone().focus(window, cx);
+            } else if let Some(code) = self.active_view() {
+                code.read(cx).focus_handle().clone().focus(window, cx);
+            }
+        }
+        let strip = self.render_strip(cx);
+        let file = self.render_file(window, cx);
+        let popups = self.render_viewer_popups(window, cx);
         div()
             .when(cfg!(test), |element| {
                 element.debug_selector(|| "FILE_VIEWER".into())
             })
-            .track_focus(&self.viewer_focus)
+            .key_context("FileViewer")
+            .track_focus(&self.root_focus)
+            .on_action(cx.listener(|this, _: &crate::CloseFileTab, window, cx| {
+                match this.tabs.active_index() {
+                    Some(index) => this.close_tab(index, window, cx),
+                    None => cx.propagate(),
+                }
+            }))
+            .on_action(cx.listener(|this, _: &crate::NextFileTab, window, cx| {
+                this.cycle_tab(false, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::PreviousFileTab, window, cx| {
+                this.cycle_tab(true, window, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::FindInFile, window, cx| this.open_find(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &crate::ZoomFileIn, window, cx| {
+                this.zoom(1, Box::new(crate::ZoomIn), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::ZoomFileOut, window, cx| {
+                this.zoom(-1, Box::new(crate::ZoomOut), window, cx)
+            }))
+            .on_key_down(cx.listener(Self::on_viewer_key))
+            .relative()
             .flex_1()
             .min_w(px(0.))
             .h_full()
+            .bg(theme::bg())
             .flex()
             .flex_col()
-            .child(self.render_strip(cx))
-            .child(self.render_file(window, cx))
-            .into_any_element()
-    }
-
-    pub(in super::super) fn render_viewer_popups(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
-        self.render_tab_list(window, cx)
-            .into_iter()
-            .chain(self.render_open_in_menu(window, cx))
-            .collect()
+            .child(strip)
+            .child(
+                div()
+                    .track_focus(&self.viewer_focus)
+                    .flex_1()
+                    .min_w(px(0.))
+                    .min_h(px(0.))
+                    .flex()
+                    .flex_col()
+                    .child(file),
+            )
+            .children(popups)
     }
 }

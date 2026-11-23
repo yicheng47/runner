@@ -132,13 +132,14 @@ impl FilesView {
         if !same {
             self.generation += 1;
         }
+        let sync_outcome = outcome.as_ref().ok().cloned();
         self.error = None;
         self.status_error = None;
         match outcome {
             Ok(FilesRootOutcome::Root(root)) => match &mut self.body {
                 Body::Root(state) if same => state.root = root,
                 _ => {
-                    self.reset_viewer();
+                    self.reveal = None;
                     self.finder_root_changed();
                     let tree = FileTree::new(root.cwd.clone());
                     let loads = tree.initial_loads();
@@ -147,8 +148,6 @@ impl FilesView {
                         tree,
                         listed: Default::default(),
                         next_listing: 0,
-                        uncommitted_paths: None,
-                        uncommitted_seq: 0,
                     }));
                     self.scroll = UniformListScrollHandle::new();
                     let owner = cx.entity_id();
@@ -162,27 +161,27 @@ impl FilesView {
             },
             Ok(FilesRootOutcome::ChooseFolder) => {
                 self.pending_restore = None;
-                self.reset_viewer();
+                self.reveal = None;
                 self.body = Body::Choose;
                 self.load_recent(cx);
                 self.notify_owner(cx);
             }
             Ok(FilesRootOutcome::Missing { path }) => {
                 self.pending_restore = None;
-                self.reset_viewer();
+                self.reveal = None;
                 self.body = Body::Missing { path };
                 self.notify_owner(cx);
             }
             Err(error) => {
                 self.pending_restore = None;
-                self.reset_viewer();
+                self.reveal = None;
                 self.body = Body::Failed(error.to_string().into());
                 self.notify_owner(cx);
             }
         }
-        if same {
-            self.read_again_after_resolve(cx);
-            self.refresh_uncommitted_paths(true, cx);
+        if let Some(root_outcome) = sync_outcome {
+            self.viewer
+                .update(cx, |viewer, cx| viewer.sync_root(root_outcome, cx));
         }
         if !self.searchable() {
             self.finder = None;
@@ -931,13 +930,6 @@ impl FilesView {
 
     pub(in super::super) fn root_is_git(&self) -> bool {
         matches!(&self.body, Body::Root(state) if state.root.git.is_some())
-    }
-
-    pub(in super::super) fn root_has_head(&self) -> bool {
-        matches!(
-            &self.body,
-            Body::Root(state) if state.root.git.as_ref().is_some_and(|git| git.commit.is_some())
-        )
     }
 
     pub(super) fn render_picker(

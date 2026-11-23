@@ -500,10 +500,48 @@ pub(crate) struct MaximizeControl {
     pub(crate) on_toggle: PanelCallback,
 }
 
+pub(crate) fn maximize_button(control: MaximizeControl, settings: &AppSettings) -> Div {
+    let maximized = control.maximized;
+    let on_toggle = control.on_toggle;
+    let label = crate::i18n::text(if maximized {
+        "ui.restore_chat"
+    } else {
+        "ui.maximize_side_panel"
+    });
+    let tooltip =
+        crate::keymap::effective_binding("toggle-maximize-pane", &settings.keymap_overrides)
+            .map_or_else(
+                || label.to_owned(),
+                |combo| format!("{label} · {}", crate::keymap::format_combo(&combo)),
+            );
+    div()
+        .flex_none()
+        .debug_selector(move || {
+            if maximized {
+                "SIDE_PANEL_MAXIMIZE active".into()
+            } else {
+                "SIDE_PANEL_MAXIMIZE".into()
+            }
+        })
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            IconButton::new(
+                "side-panel-maximize",
+                if maximized {
+                    "minimize-2.svg"
+                } else {
+                    "maximize-2.svg"
+                },
+            )
+            .when(maximized, |button| button.variant(ButtonVariant::Secondary))
+            .tooltip(tooltip)
+            .on_press(move |window, cx| on_toggle(window, cx)),
+        )
+}
+
 /// Orca-style 40 px top icon activity bar: fixed icon buttons (`Sessions`,
 /// `Files`, `Changes` with amber dirty dot), active raised tile + 2 px bottom
-/// accent indicator, optional `Maximize` (shown only when widened or already
-/// maximized), and `Collapse`.
+/// accent indicator, optional `Maximize`, and `Collapse`.
 pub(crate) fn activity_bar(
     surface: PanelSurface,
     settings: &AppSettings,
@@ -520,44 +558,7 @@ pub(crate) fn activity_bar(
             activity_button(view, active == Some(view.id), dot, handler.clone())
         })
         .collect::<Vec<_>>();
-    let maximize = maximize.map(|control| {
-        let maximized = control.maximized;
-        let on_toggle = control.on_toggle;
-        let label = crate::i18n::text(if maximized {
-            "ui.restore_chat"
-        } else {
-            "ui.maximize_side_panel"
-        });
-        let tooltip =
-            crate::keymap::effective_binding("toggle-maximize-pane", &settings.keymap_overrides)
-                .map_or_else(
-                    || label.to_owned(),
-                    |combo| format!("{label} · {}", crate::keymap::format_combo(&combo)),
-                );
-        div()
-            .flex_none()
-            .debug_selector(move || {
-                if maximized {
-                    "SIDE_PANEL_MAXIMIZE active".into()
-                } else {
-                    "SIDE_PANEL_MAXIMIZE".into()
-                }
-            })
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                IconButton::new(
-                    "side-panel-maximize",
-                    if maximized {
-                        "minimize-2.svg"
-                    } else {
-                        "maximize-2.svg"
-                    },
-                )
-                .when(maximized, |button| button.variant(ButtonVariant::Secondary))
-                .tooltip(tooltip)
-                .on_press(move |window, cx| on_toggle(window, cx)),
-            )
-    });
+    let maximize = maximize.map(|control| maximize_button(control, settings));
     div()
         .flex_1()
         .min_w(px(0.))
