@@ -6,6 +6,10 @@ use runner_app::ui::CAPTION_BUTTON_WIDTH;
 
 const TITLEBAR_HEIGHT: f32 = 32.;
 
+/// How far below the window's top edge the island area starts, before zoom: the caption bar,
+/// since the islands have no top margin under it.
+pub(crate) const ISLAND_AREA_TOP: f32 = TITLEBAR_HEIGHT;
+
 // The chrome titlebar already reserves the band macOS Settings pads for, so
 // the content starts at the same window height on both platforms.
 pub(crate) const SETTINGS_DRAG_INSET: f32 = 0.;

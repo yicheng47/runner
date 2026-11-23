@@ -387,7 +387,7 @@ impl NativeRoot {
     /// island area's left edge, past the gap, when there are islands.
     pub(crate) fn sidebar_border_offset(&self, cx: &App) -> f32 {
         if self.front_page_has_islands() && !self.front_page_sidebar_collapsed() {
-            runner_app::ui::work_card::SIDEBAR_GAP * self.settings(cx).app_zoom
+            runner_app::ui::work_card::ISLAND_GAP * self.settings(cx).app_zoom
         } else {
             0.
         }
@@ -400,6 +400,7 @@ impl NativeRoot {
             "sidebar-resize",
             ResizeAxis::Columns,
             self.sidebar_resizing,
+            runner_app::ui::resize::RESIZE_GRAB,
             zoom,
             None,
             false,

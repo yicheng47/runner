@@ -18,20 +18,11 @@ use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, PanelSurface
 use crate::*;
 
 impl MissionWorkspace {
-    fn rail_available_width(&self) -> f32 {
-        let measured = self.rail_files.measured_width();
-        if measured > 0. {
-            (measured - 6.).max(0.)
-        } else {
-            0.
-        }
-    }
-
     pub(super) fn rail_is_open(&self, cx: &App) -> bool {
         side_panel::resolved_open(
             PanelSurface::Mission,
             self.rail_open,
-            self.rail_available_width(),
+            self.rail_files.available_width(),
             self.settings(cx).mission_rail_width,
             1,
         )
@@ -132,7 +123,6 @@ impl MissionWorkspace {
             &self.rail_surfaces.selection,
             subject.as_ref(),
             settings.mission_rail_width,
-            6.,
             1,
             self.rail_maximized && !self.presentation.is_remote(),
             cx,

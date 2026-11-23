@@ -33,19 +33,19 @@ impl gpui::RenderOnce for WindowScrim {
 pub(crate) use linux::{
     finish_window_close, initial_window_bounds, navigation_left, other_shortcut_modifiers_held,
     primary_modifier_held, round_window_corners, sidebar_row_wrapper, sidebar_section,
-    sync_traffic_lights, window_background, DESKTOP_APP_ID, PRIMARY_MODIFIER, SETTINGS_CONTENT_TOP,
-    SETTINGS_DRAG_INSET, SHORTCUT_REQUIREMENTS_KEY,
+    sync_traffic_lights, window_background, DESKTOP_APP_ID, ISLAND_AREA_TOP, PRIMARY_MODIFIER,
+    SETTINGS_CONTENT_TOP, SETTINGS_DRAG_INSET, SHORTCUT_REQUIREMENTS_KEY,
 };
 #[cfg(target_os = "macos")]
 pub(crate) use macos::{
     finish_window_close, navigation_left, other_shortcut_modifiers_held, primary_modifier_held,
-    sidebar_row_wrapper, sidebar_section, sync_traffic_lights, PRIMARY_MODIFIER,
+    sidebar_row_wrapper, sidebar_section, sync_traffic_lights, ISLAND_AREA_TOP, PRIMARY_MODIFIER,
     SETTINGS_CONTENT_TOP, SETTINGS_DRAG_INSET, SHORTCUT_REQUIREMENTS_KEY,
 };
 #[cfg(windows)]
 pub(crate) use windows::{
     finish_window_close, navigation_left, other_shortcut_modifiers_held, primary_modifier_held,
-    sidebar_row_wrapper, sidebar_section, sync_traffic_lights, PRIMARY_MODIFIER,
+    sidebar_row_wrapper, sidebar_section, sync_traffic_lights, ISLAND_AREA_TOP, PRIMARY_MODIFIER,
     SETTINGS_CONTENT_TOP, SETTINGS_DRAG_INSET, SHORTCUT_REQUIREMENTS_KEY,
 };
 

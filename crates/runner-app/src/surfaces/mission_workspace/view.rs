@@ -22,7 +22,9 @@ impl MissionWorkspace {
     pub(super) fn workspace_titlebar_padding(&self, window: &Window, cx: &App) -> f32 {
         let zoom = self.settings(cx).app_zoom;
         if self.sidebar_collapsed && cfg!(target_os = "macos") {
-            platform_ui::navigation_left(window, zoom) - 8. * zoom - 1.
+            platform_ui::navigation_left(window, zoom)
+                - runner_app::ui::work_card::ISLAND_MARGIN * zoom
+                - 1.
         } else {
             16. * zoom
         }
@@ -205,6 +207,7 @@ impl MissionWorkspace {
                             "mission-drawer-gutter",
                             ResizeAxis::Rows,
                             false,
+                            runner_app::ui::work_card::ISLAND_GAP,
                             self.settings(cx).app_zoom,
                             None,
                             false,
@@ -406,6 +409,7 @@ impl MissionWorkspace {
                 "mission-rail-resize",
                 ResizeAxis::Columns,
                 false,
+                runner_app::ui::resize::RESIZE_GRAB,
                 zoom,
                 None,
                 false,
@@ -450,7 +454,10 @@ impl MissionWorkspace {
         };
         let reserved_spacer = (rail_sheet && rail_layout.reserved_docked_width > 0.).then(|| {
             div()
-                .w(rems((rail_layout.reserved_docked_width + 6.) / 16.))
+                .w(rems(
+                    (rail_layout.reserved_docked_width + runner_app::ui::work_card::ISLAND_GAP)
+                        / 16.,
+                ))
                 .h_full()
                 .flex_none()
         });
@@ -475,7 +482,12 @@ impl MissionWorkspace {
             .flex()
             .child(self.rail_files.measure(self.settings(cx).app_zoom))
             .when(!rail_maximized, |el| el.child(center))
-            .children(docked_open.then(|| div().w(rems(6. / 16.)).h_full().flex_none()))
+            .children(docked_open.then(|| {
+                div()
+                    .w(rems(runner_app::ui::work_card::ISLAND_GAP / 16.))
+                    .h_full()
+                    .flex_none()
+            }))
             .children(reserved_spacer)
             .children(docked_rail)
             .children(rail_resize)

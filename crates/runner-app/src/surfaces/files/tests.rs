@@ -1689,7 +1689,6 @@ fn an_open_file_widens_the_panel_into_the_room_the_mission_leaves() {
                     &selection,
                     Some(&subject),
                     300.,
-                    6.,
                     1,
                     false,
                     cx,
@@ -1709,17 +1708,17 @@ fn an_open_file_widens_the_panel_into_the_room_the_mission_leaves() {
 
     h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
-    // 6 + 420 + 460 + 240: the tree fits beside the file.
-    let fit = panel_at(&mut h, selection, 1126.);
+    // 4 + 420 + 460 + 240: the tree fits beside the file.
+    let fit = panel_at(&mut h, selection, 1124.);
     assert_eq!(fit.width, 700.);
     assert_eq!(fit.presentation, PanelPresentation::Docked);
     assert!(fit.widened.unwrap().tree);
     // Narrower: the file gives way to the mission first, and the tree stays.
-    let tighter = panel_at(&mut h, selection, 1125.);
+    let tighter = panel_at(&mut h, selection, 1123.);
     assert_eq!(tighter.width, 699.);
     assert_eq!(tighter.presentation, PanelPresentation::Docked);
     assert!(tighter.widened.unwrap().tree);
-    assert_eq!(panel_at(&mut h, selection, 1000.).width, 574.);
+    assert_eq!(panel_at(&mut h, selection, 1000.).width, 576.);
     // Narrower than 420 px main room: promotes to overlay sheet instead of squeezing mission.
     let sheet = panel_at(&mut h, selection, 800.);
     assert_eq!(sheet.presentation, PanelPresentation::Sheet);
@@ -1763,7 +1762,6 @@ fn a_saved_tree_width_widens_the_panel_and_narrows_the_file_sooner() {
                     &selection,
                     Some(&subject),
                     300.,
-                    6.,
                     1,
                     false,
                     cx,
@@ -1773,17 +1771,17 @@ fn a_saved_tree_width_widens_the_panel_and_narrows_the_file_sooner() {
     };
     h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
-    // 6 + 420 + 440 + 320: the wider tree fits beside the file.
-    let fit = layout(&mut h, 1186.);
+    // 4 + 420 + 440 + 320: the wider tree fits beside the file.
+    let fit = layout(&mut h, 1184.);
     assert_eq!(fit.width, 760.);
     assert_eq!(fit.presentation, PanelPresentation::Docked);
     assert!(fit.widened.unwrap().tree);
     // Narrower: the file gives way to the mission, and the tree stays.
-    let tighter = layout(&mut h, 1185.);
+    let tighter = layout(&mut h, 1183.);
     assert_eq!(tighter.width, 759.);
     assert_eq!(tighter.presentation, PanelPresentation::Docked);
     assert!(tighter.widened.unwrap().tree);
-    assert_eq!(layout(&mut h, 1080.).width, 654.);
+    assert_eq!(layout(&mut h, 1080.).width, 656.);
     assert_eq!(layout(&mut h, 900.).presentation, PanelPresentation::Sheet);
 }
 
@@ -3342,7 +3340,6 @@ fn a_chat_widens_by_the_same_rule_as_a_mission() {
                     &selection,
                     Some(&subject),
                     300.,
-                    6.,
                     1,
                     false,
                     cx,
@@ -3352,10 +3349,10 @@ fn a_chat_widens_by_the_same_rule_as_a_mission() {
     };
     h.open("a.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
-    assert_eq!(layout(&mut h, 1126.).width, 700.);
-    // 6 + 420 + 334 + 240: the file narrows, the tree stays.
+    assert_eq!(layout(&mut h, 1124.).width, 700.);
+    // 4 + 420 + 336 + 240: the file narrows, the tree stays.
     let tighter = layout(&mut h, 1000.);
-    assert_eq!(tighter.width, 574.);
+    assert_eq!(tighter.width, 576.);
     assert_eq!(tighter.presentation, PanelPresentation::Docked);
     assert!(
         tighter.widened.unwrap().tree,
@@ -3988,7 +3985,6 @@ fn the_layout_stays_compact_until_a_file_opens_and_shrinks_back_when_closed() {
                     &selection,
                     Some(&subject),
                     300.,
-                    6.,
                     split_columns,
                     false,
                     cx,
@@ -4003,8 +3999,13 @@ fn the_layout_stays_compact_until_a_file_opens_and_shrinks_back_when_closed() {
     assert!(compact.widened.is_none());
     assert_eq!(compact.presentation, PanelPresentation::Docked);
 
+    // 4 + 420 + 300: the compact panel docks exactly at the boundary.
+    let boundary = layout(&mut h, 724., 1);
+    assert_eq!(boundary.width, 300.);
+    assert_eq!(boundary.presentation, PanelPresentation::Docked);
+
     // Narrow window (< 420 px main left after 300 px panel) promotes to overlay sheet.
-    let narrow = layout(&mut h, 719., 1);
+    let narrow = layout(&mut h, 723., 1);
     assert_eq!(narrow.width, 300.);
     assert_eq!(narrow.presentation, PanelPresentation::Sheet);
 

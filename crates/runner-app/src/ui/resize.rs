@@ -3,7 +3,7 @@ use gpui::{div, px, CursorStyle, Div, Hsla};
 
 use crate::theme;
 
-/// How wide a splitter is to the pointer, and how wide the bar it lights.
+/// How wide a splitter that overlays an edge is to the pointer, and how wide the bar it lights.
 pub const RESIZE_GRAB: f32 = 6.;
 pub const RESIZE_BAR: f32 = 3.;
 
@@ -34,18 +34,22 @@ impl ResizeAxis {
 /// over the border a neighbouring panel paints for the splitters that pass
 /// `None`.
 ///
+/// `grab` is the strip's width before zoom: `RESIZE_GRAB` for a splitter laid over an edge,
+/// `ISLAND_GAP` for a gutter that is itself the gap between two islands.
+///
 /// Island gutters, sidebar and side panel edges pass `lights: false`: they keep the grab
 /// strip and resize cursor but never paint the accent bar.
 pub fn resize_strip(
     group: &'static str,
     axis: ResizeAxis,
     active: bool,
+    grab: f32,
     zoom: f32,
     rest: Option<Hsla>,
     lights: bool,
 ) -> Div {
     let lit = theme::with_alpha(theme::accent(), 0.4);
-    let grab = RESIZE_GRAB * zoom;
+    let grab = grab * zoom;
     let bar_size = px(RESIZE_BAR * zoom);
     let line_size = px(zoom);
     let line_inset = px((grab - zoom) / 2.);

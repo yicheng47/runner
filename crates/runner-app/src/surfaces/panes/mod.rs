@@ -521,7 +521,7 @@ fn restored_pane_size(
         &layout.root,
         outer,
         pane_id,
-        px(runner_app::ui::resize::RESIZE_GRAB * zoom),
+        px(runner_app::ui::work_card::ISLAND_GAP * zoom),
     )
     .map_or(filled, |restored| Size {
         width: (restored.width - border).max(px(0.)),

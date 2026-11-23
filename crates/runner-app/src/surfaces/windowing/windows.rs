@@ -8,8 +8,17 @@ const MIN_WINDOW_HEIGHT: f32 = 400.;
 
 fn opening_window_minimum(settings: &AppSettings) -> gpui::Size<gpui::Pixels> {
     size(
-        px((settings.sidebar_width + 6. + MIN_SPLIT_PANE_WIDTH + 8.) * settings.app_zoom),
-        px(MIN_WINDOW_HEIGHT.max(8. + 40. + MIN_SPLIT_PANE_HEIGHT + 8.) * settings.app_zoom),
+        px((settings.sidebar_width
+            + runner_app::ui::work_card::ISLAND_GAP
+            + MIN_SPLIT_PANE_WIDTH
+            + runner_app::ui::work_card::ISLAND_MARGIN)
+            * settings.app_zoom),
+        px(MIN_WINDOW_HEIGHT.max(
+            runner_app::ui::work_card::ISLAND_TOP_MARGIN
+                + 40.
+                + MIN_SPLIT_PANE_HEIGHT
+                + runner_app::ui::work_card::ISLAND_MARGIN,
+        ) * settings.app_zoom),
     )
 }
 
@@ -431,9 +440,9 @@ mod minimum_tests {
             app_zoom: 1.,
             ..Default::default()
         };
-        assert_eq!(opening_window_minimum(&settings), size(px(494.), px(400.)));
+        assert_eq!(opening_window_minimum(&settings), size(px(490.), px(400.)));
         settings.sidebar_width = 320.;
         settings.app_zoom = 1.5;
-        assert_eq!(opening_window_minimum(&settings), size(px(861.), px(600.)));
+        assert_eq!(opening_window_minimum(&settings), size(px(855.), px(600.)));
     }
 }

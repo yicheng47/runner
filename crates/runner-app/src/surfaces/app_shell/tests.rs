@@ -126,21 +126,42 @@ fn work_card_insets_every_route_and_contains_chat_and_mission_columns() {
             let second = visual.debug_bounds("PANE_ISLAND:p3").unwrap();
             let third = visual.debug_bounds("PANE_ISLAND:p5").unwrap();
             let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
-            assert_eq!(third.top() - second.bottom(), px(6.));
-            assert_eq!(second.left() - first.right(), px(6.));
-            assert_eq!(panel.left() - second.right(), px(6.));
+            assert_eq!(
+                third.top() - second.bottom(),
+                px(runner_app::ui::work_card::ISLAND_GAP)
+            );
+            assert_eq!(
+                second.left() - first.right(),
+                px(runner_app::ui::work_card::ISLAND_GAP)
+            );
+            assert_eq!(
+                panel.left() - second.right(),
+                px(runner_app::ui::work_card::ISLAND_GAP)
+            );
         }
-        let top_inset = if cfg!(target_os = "linux") { 0. } else { 8. };
+        let top_inset = if cfg!(target_os = "linux") {
+            0.
+        } else {
+            runner_app::ui::work_card::ISLAND_TOP_MARGIN
+        };
         assert_eq!(card.top(), chrome.top() + px(top_inset), "{path}");
-        assert_eq!(card.right(), chrome.right() - px(8.), "{path}");
-        assert_eq!(card.bottom(), chrome.bottom() - px(8.), "{path}");
+        assert_eq!(
+            card.right(),
+            chrome.right() - px(runner_app::ui::work_card::ISLAND_MARGIN),
+            "{path}"
+        );
+        assert_eq!(
+            card.bottom(),
+            chrome.bottom() - px(runner_app::ui::work_card::ISLAND_MARGIN),
+            "{path}"
+        );
         assert_eq!(
             card.left(),
             chrome.left()
                 + px(store.read_with(&visual, |store, _| store.settings.sidebar_width))
                 + px(
                     if path.starts_with("/chats/") || path.starts_with("/missions/") {
-                        6.
+                        runner_app::ui::work_card::ISLAND_GAP
                     } else {
                         0.
                     }
@@ -189,7 +210,7 @@ fn work_card_insets_every_route_and_contains_chat_and_mission_columns() {
             visual.run_until_parked();
             assert_eq!(
                 visual.debug_bounds("APP_CONTENT_COLUMN").unwrap().left(),
-                px(8.)
+                px(runner_app::ui::work_card::ISLAND_MARGIN)
             );
         }
         host.update(&mut visual, |_, window, _| window.remove_window())
@@ -744,8 +765,14 @@ fn capped_banner_stays_in_each_windows_main_content() {
     let sidebar = chat_visual.debug_bounds("APP_SIDEBAR").unwrap();
     let panel = chat_visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
     assert_eq!(banner.top(), area.top());
-    assert_eq!(banner.left(), sidebar.right() + px(6.));
-    assert_eq!(banner.right(), panel.left() - px(6.));
+    assert_eq!(
+        banner.left(),
+        sidebar.right() + px(runner_app::ui::work_card::ISLAND_GAP)
+    );
+    assert_eq!(
+        banner.right(),
+        panel.left() - px(runner_app::ui::work_card::ISLAND_GAP)
+    );
     assert_eq!(banner.size.height, px(41.));
     let text = chat_visual.debug_bounds("DAEMON_CRASH_MESSAGE").unwrap();
     let log = chat_visual.debug_bounds("DAEMON_OPEN_LOG").unwrap();
@@ -1603,7 +1630,10 @@ fn sidebar_resize_strip_centres_on_the_island_border_at_each_zoom() {
         let sidebar = visual.debug_bounds("APP_SIDEBAR").unwrap();
         let island_area = visual.debug_bounds("APP_CONTENT_COLUMN").unwrap();
         let gutter = visual.debug_bounds("SIDEBAR_RESIZE_GUTTER").unwrap();
-        assert_eq!(island_area.left() - sidebar.right(), px(6. * zoom));
+        assert_eq!(
+            island_area.left() - sidebar.right(),
+            px(runner_app::ui::work_card::ISLAND_GAP * zoom)
+        );
         assert_eq!(gutter.size.width, px(6. * zoom));
         assert_eq!(gutter.left() + gutter.size.width / 2., island_area.left());
         for offset in [-2.9, 0., 2.9] {
@@ -1642,7 +1672,7 @@ fn sidebar_resize_strip_centres_on_the_island_border_at_each_zoom() {
     visual.run_until_parked();
     assert_eq!(
         visual.debug_bounds("APP_CONTENT_COLUMN").unwrap().left(),
-        px(8. * 1.5)
+        px(runner_app::ui::work_card::ISLAND_MARGIN * 1.5)
     );
     assert!(visual.debug_bounds("SIDEBAR_RESIZE_GUTTER").is_none());
 }
@@ -2106,5 +2136,47 @@ fn antigravity_usage_section_renders_grouped_pools_filters_five_hour_and_shows_c
             assert!(signed_out.size.height > px(0.));
             assert!(signed_out.size.height < weekly.size.height);
         }
+    }
+}
+
+#[test]
+fn estimated_terminal_rows_fill_the_island_area_to_its_margins() {
+    use gpui::{size, TestAppContext, VisualTestContext};
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    let host = cx.add_window(|window, cx| {
+        NativeRoot::new(
+            "terminal-estimate".into(),
+            temp.path().join("logs"),
+            Some("/roles".into()),
+            None,
+            store.clone(),
+            window,
+            cx,
+        )
+    });
+    let mut visual = VisualTestContext::from_window(host.into(), &cx);
+    let layout = runner_app::pane_layout::PaneLayout::single(Some("pane"), &["pane".into()]);
+    let settings = store.read_with(&visual, |store, _| store.settings.clone());
+    let line_height = crate::terminal::element::row_height(
+        settings.terminal_font_size as f32,
+        settings.terminal_line_height,
+    );
+    let rows = 30.;
+    let height = crate::platform_ui::ISLAND_AREA_TOP
+        + runner_app::ui::work_card::ISLAND_MARGIN
+        + crate::surfaces::root::PANE_HEADER_HEIGHT
+        + 8.
+        + rows * line_height;
+    for (window_height, expected) in [(height, 30), (height - 1., 29)] {
+        visual.simulate_resize(size(px(1200.), px(window_height)));
+        visual.run_until_parked();
+        let (_, estimated) = host
+            .update(&mut visual, |root, window, cx| {
+                root.estimated_terminal_size(&layout, "pane", window, cx)
+            })
+            .unwrap();
+        assert_eq!(estimated, expected, "window height {window_height}");
     }
 }

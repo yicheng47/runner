@@ -412,7 +412,7 @@ fn a_maximized_pane_splits_by_its_restored_size() {
     let restored = super::restored_pane_size(filled, &layout, &left, 1.);
     assert_eq!(
         restored,
-        size(px(475.), px(698.)),
+        size(px(476.), px(698.)),
         "neither the gutter nor the borders are shared"
     );
     assert!(matches!(
@@ -429,9 +429,10 @@ fn a_maximized_pane_splits_by_its_restored_size() {
     ));
 
     let lower = layout.split(&right, SplitOrientation::Column).unwrap();
+    let gutter = runner_app::ui::work_card::ISLAND_GAP * 1.5;
     assert_eq!(
         super::restored_pane_size(filled, &layout, &lower, 1.5),
-        size(px((960. - 9.) / 2. - 2.), px((700. - 9.) / 2. - 2.)),
+        size(px((960. - gutter) / 2. - 2.), px((700. - gutter) / 2. - 2.)),
         "nested splits each take their zoomed gutter"
     );
 }
@@ -2290,7 +2291,13 @@ fn cached_chat_header_spans_the_chat_column_with_or_without_the_side_panel() {
                 if panel_open {
                     let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
                     let gutter = visual.debug_bounds("CHAT_PANEL_GUTTER").unwrap();
-                    assert!((panel.left() - column.right() - px(6. * zoom)).abs() <= px(0.5));
+                    assert!(
+                        (panel.left()
+                            - column.right()
+                            - px(runner_app::ui::work_card::ISLAND_GAP * zoom))
+                        .abs()
+                            <= px(0.5)
+                    );
                     assert!((gutter.center().x - panel.left()).abs() <= px(0.5));
                     assert_eq!(gutter.size.width, px(6. * zoom));
                 }
