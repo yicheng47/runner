@@ -17,6 +17,22 @@ pub(super) fn ensure_utf8_locale(env: &mut BTreeMap<String, String>, process_has
     env.insert("LC_CTYPE".into(), "UTF-8".into());
 }
 
+pub(super) fn apply_launch_env(
+    env: &mut BTreeMap<String, String>,
+    entries: &[(&str, &str)],
+    fold_case: bool,
+) {
+    for &(name, value) in entries {
+        if fold_case {
+            // Windows env names are case-insensitive; a lowercase alias in a
+            // BTreeMap sorts after the canonical uppercase key and would win
+            // when portable-pty folds keys on spawn (#1422).
+            env.retain(|existing, _| !existing.eq_ignore_ascii_case(name));
+        }
+        env.insert(name.into(), value.into());
+    }
+}
+
 /// The environment an agent process starts from. Login-shell vars (the
 /// captured configuration and proxy variables) are the bottom layer; a role row can override
 /// any of them, being the most specific configuration surface. System vars
@@ -40,9 +56,11 @@ pub(super) fn agent_env(
         env.remove("RUNNER_CREW_ID");
     }
     env.extend(extra_env);
-    for &(name, value) in crate::runtimes::for_key(runtime_key).launch_env() {
-        env.insert(name.into(), value.into());
-    }
+    apply_launch_env(
+        &mut env,
+        crate::runtimes::for_key(runtime_key).launch_env(),
+        cfg!(windows),
+    );
     let process_has_locale = LOCALE_VARS
         .iter()
         .any(|var| std::env::var_os(var).is_some());

@@ -46,6 +46,7 @@ fn update_spec_runs_the_update_in_home_without_runner_layers() {
         Some("xterm-256color")
     );
     for runner_layer in [
+        "AGY_CLI_DISABLE_AUTO_UPDATE",
         "DISABLE_INSTALLATION_CHECKS",
         "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY",
         "PI_SKIP_VERSION_CHECK",
@@ -157,6 +158,75 @@ fn sessions_keep_the_quiet_flags_the_update_drops() {
         pi.get("PI_SKIP_VERSION_CHECK").map(String::as_str),
         Some("1")
     );
+    let antigravity = spawn::agent_env(
+        BTreeMap::new(),
+        &HashMap::new(),
+        BTreeMap::new(),
+        Runtime::Antigravity.key(),
+    );
+    assert_eq!(
+        antigravity
+            .get("AGY_CLI_DISABLE_AUTO_UPDATE")
+            .map(String::as_str),
+        cfg!(windows).then_some("true")
+    );
+}
+
+#[test]
+fn apply_launch_env_strips_case_insensitive_aliases_when_folding_case() {
+    let mut windows_env = BTreeMap::from([
+        ("agy_cli_disable_auto_update".into(), String::new()),
+        ("Agy_Cli_Disable_Auto_Update".into(), "false".into()),
+        ("OTHER".into(), "keep".into()),
+    ]);
+    spawn::apply_launch_env(
+        &mut windows_env,
+        &[("AGY_CLI_DISABLE_AUTO_UPDATE", "true")],
+        true,
+    );
+    let matches: Vec<_> = windows_env
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("AGY_CLI_DISABLE_AUTO_UPDATE"))
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    assert_eq!(matches, [("AGY_CLI_DISABLE_AUTO_UPDATE", "true")]);
+    assert_eq!(windows_env.get("OTHER").map(String::as_str), Some("keep"));
+
+    let mut unix_env = BTreeMap::from([("agy_cli_disable_auto_update".into(), String::new())]);
+    spawn::apply_launch_env(
+        &mut unix_env,
+        &[("AGY_CLI_DISABLE_AUTO_UPDATE", "true")],
+        false,
+    );
+    assert_eq!(
+        unix_env
+            .get("AGY_CLI_DISABLE_AUTO_UPDATE")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        unix_env
+            .get("agy_cli_disable_auto_update")
+            .map(String::as_str),
+        Some("")
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_antigravity_agent_env_replaces_case_insensitive_auto_update_aliases() {
+    let env = spawn::agent_env(
+        BTreeMap::from([("Agy_Cli_Disable_Auto_Update".into(), "false".into())]),
+        &HashMap::from([("agy_cli_disable_auto_update".into(), String::new())]),
+        BTreeMap::new(),
+        Runtime::Antigravity.key(),
+    );
+    let matches: Vec<_> = env
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("AGY_CLI_DISABLE_AUTO_UPDATE"))
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    assert_eq!(matches, [("AGY_CLI_DISABLE_AUTO_UPDATE", "true")]);
 }
 
 #[test]

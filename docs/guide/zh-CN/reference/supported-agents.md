@@ -41,7 +41,7 @@ Runner 在全平台都按 shell 词法拆分 **自定义参数**，且不展开 
 | --- | --- | --- |
 | Codex | `codex` | [Codex CLI 设置](https://developers.openai.com/codex/cli)；通过 Codex 登录 |
 | Claude Code | `claude-code` | [Claude Code 设置](https://code.claude.com/docs/en/setup)；通过 Claude Code 登录 |
-| Antigravity CLI | `antigravity` | [Antigravity CLI 参考](https://antigravity.google/docs/cli/reference)；Google 账号；启动时自动更新 |
+| Antigravity CLI | `antigravity` | [Antigravity CLI 参考](https://antigravity.google/docs/cli/reference)；Google 账号；在 macOS 和 Linux 上启动时自动更新（Windows 上 Runner 会禁用其后台自动更新以避免终端窗口闪烁，需在普通终端运行 `agy` 更新） |
 | pi | `pi` | [pi 设置](https://github.com/earendil-works/pi)；配置模型提供商 |
 | GitHub Copilot CLI | `copilot` | [Copilot CLI 设置](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)；需要 Copilot 订阅 |
 | Cursor Agent CLI | `cursor` | [Cursor CLI 设置](https://cursor.com/docs/cli/installation)；需独立于编辑器安装 CLI |

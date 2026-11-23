@@ -41,7 +41,7 @@ Use each provider's setup instructions, then run its CLI in a normal terminal to
 | --- | --- | --- |
 | Codex | `codex` | [Codex CLI setup](https://developers.openai.com/codex/cli); sign in through Codex |
 | Claude Code | `claude-code` | [Claude Code setup](https://code.claude.com/docs/en/setup); sign in through Claude Code |
-| Antigravity CLI | `antigravity` | [Antigravity CLI reference](https://antigravity.google/docs/cli/reference); Google account; updates itself at startup |
+| Antigravity CLI | `antigravity` | [Antigravity CLI reference](https://antigravity.google/docs/cli/reference); Google account; updates itself at startup on macOS and Linux (Runner disables its background auto-updater on Windows to avoid terminal window flashes; run `agy` in a normal terminal to update) |
 | pi | `pi` | [pi setup](https://github.com/earendil-works/pi); configure your model provider |
 | GitHub Copilot CLI | `copilot` | [Copilot CLI setup](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli); Copilot subscription |
 | Cursor Agent CLI | `cursor` | [Cursor CLI setup](https://cursor.com/docs/cli/installation); install the CLI separately from the editor |
