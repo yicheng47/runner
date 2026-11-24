@@ -288,20 +288,84 @@ impl MissionWorkspace {
         .into_any_element()
     }
 
+    pub(crate) fn add_role_context(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Option<crate::surfaces::start_chat::AddRoleContext> {
+        let mission = self.mission_view()?;
+        if !self.remote_supports(&["catalog", "addMissionRole"])
+            || !mission_slot_actions_available(
+                Some(mission.status),
+                self.archived(),
+                self.secondary_state(cx).secondary,
+            )
+        {
+            return None;
+        }
+        let mut current: HashSet<String> = self
+            .members()
+            .into_iter()
+            .map(|member| member.handle)
+            .collect();
+        if !self.presentation.is_remote() {
+            current.extend(self.roster.iter().map(|slot| slot.slot.slot_handle.clone()));
+        }
+        let mut removed: HashSet<String> = self
+            .events
+            .iter()
+            .filter(|event| {
+                event.from == "human"
+                    && event.kind == EventKind::Signal
+                    && event
+                        .signal_type
+                        .as_ref()
+                        .is_some_and(|kind| kind.as_str() == "role_removed")
+            })
+            .filter_map(|event| event.payload["handle"].as_str().map(str::to_owned))
+            .collect();
+        if let Some(summary) = self.remote_summary() {
+            removed.extend(summary.removed_handles.iter().cloned());
+        }
+        let viewport_size = self
+            .client
+            .is_remote()
+            .then(|| self.current_mission_terminal_size(window, cx));
+        Some(crate::surfaces::start_chat::AddRoleContext {
+            mission_id: mission.id,
+            title: mission.title,
+            cwd: mission.cwd.unwrap_or_default(),
+            current,
+            removed,
+            client: self.client.clone(),
+            viewport_size,
+        })
+    }
+
     pub(super) fn request_remove_role(
         &mut self,
         session_id: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.presentation.is_remote() {
+        if !self.remote_supports(&["removeMissionRole"])
+            || self.stopping
+            || self.resuming
+            || self.archiving
+            || !mission_slot_actions_available(
+                self.mission_view().map(|mission| mission.status),
+                self.archived(),
+                self.secondary_state(cx).secondary,
+            )
+            || self.slot_actions.contains(session_id)
+            || (!self.client.is_remote() && self.transitions.contains_key(session_id))
+        {
             return;
         }
         if self
-            .sessions
+            .members()
             .iter()
             .any(|session| session.session.id == session_id)
-            && !self.slot_actions.contains(session_id)
         {
             self.remove_confirm = Some(session_id.to_owned());
             self.root_focus.focus(window, cx);
@@ -335,21 +399,28 @@ impl MissionWorkspace {
         ).icon("log-out.svg").into_any_element()
     }
 
-    fn remove_role(
+    pub(super) fn remove_role(
         &mut self,
         session_id: &str,
         handle: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.presentation.is_remote() {
+        let remote = self.client.is_remote();
+        if !self.remote_supports(&["removeMissionRole"])
+            || (remote
+                && !self
+                    .members()
+                    .iter()
+                    .any(|member| member.session.id == session_id))
+        {
             return;
         }
         if self.stopping
             || self.resuming
             || self.archiving
             || self.slot_actions.contains(session_id)
-            || self.transitions.contains_key(session_id)
+            || (!remote && self.transitions.contains_key(session_id))
             || !mission_slot_actions_available(
                 self.mission_view().map(|mission| mission.status),
                 self.archived(),
@@ -361,19 +432,30 @@ impl MissionWorkspace {
         let Some(mission_id) = self.mission_id.clone() else {
             return;
         };
+        let Some(operation) =
+            self.prepare_mission_action("removeMissionRole", session_id.to_owned())
+        else {
+            return;
+        };
         let session_id = session_id.to_owned();
         self.slot_actions.insert(session_id.clone());
         let generation = self.generation;
-        let core = self.core(cx).clone();
+        let client = self.client.clone();
         let remove_id = mission_id.clone();
         let handle = handle.to_owned();
         let remove = cx.background_spawn(async move {
-            core.mission_remove_role(&remove_id, &handle)
+            client
+                .mission_remove_role(&remove_id, &handle)
                 .map_err(|error| error.to_string())
         });
         cx.spawn_in(window, async move |weak, cx| {
             let result = remove.await;
             let _ = weak.update_in(cx, |this, window, cx| {
+                let Some(result) =
+                    this.complete_mission_action(operation, result, |_| Vec::new(), cx)
+                else {
+                    return;
+                };
                 if !this.is_current(&mission_id, generation) {
                     return;
                 }

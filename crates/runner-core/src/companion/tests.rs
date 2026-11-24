@@ -51,6 +51,8 @@ const CLIENT_FIXTURES: &[&str] = &[
     "resume_mission",
     "link_mission",
     "unlink_mission",
+    "add_mission_role",
+    "remove_mission_role",
     "overview_request",
     "feed_request",
     "follow",
@@ -78,6 +80,7 @@ const HOST_FIXTURES: &[&str] = &[
     "result_folders",
     "result_session",
     "result_mission",
+    "result_mission_role",
     "result_resume_mission",
     "result_layout",
     "result_project",
@@ -913,6 +916,7 @@ fn action_fields_are_required_when_load_bearing_and_debug_keeps_bodies_private()
         "fork",
         "start_mission",
         "resume_mission",
+        "add_mission_role",
     ] {
         for field in ["cols", "rows"] {
             let mut value = fixture(name);
@@ -1415,4 +1419,126 @@ fn overview_session_model_and_effort_round_trip_and_default_when_omitted() {
     assert_eq!(wire["effort"], "xhigh");
     let decoded: Session = serde_json::from_value(wire).unwrap();
     assert_eq!(decoded, full);
+}
+
+#[test]
+fn mission_role_actions_validate_fields_optional_omission_and_privacy() {
+    assert!(ActionRequest::NAMES.contains(&"addMissionRole"));
+    assert!(ActionRequest::NAMES.contains(&"removeMissionRole"));
+
+    // Minimal addMissionRole omits all optional fields and decodes cleanly.
+    let minimal = json!({
+        "type": "addMissionRole",
+        "id": 42,
+        "mission": "mission-a",
+        "role": "role-reviewer",
+        "cols": 120,
+        "rows": 40
+    });
+    let ClientMessage::Action(action) =
+        ClientMessage::decode(&serde_json::to_vec(&minimal).unwrap()).unwrap()
+    else {
+        panic!("addMissionRole expected");
+    };
+    assert_eq!(
+        *action,
+        ActionRequest::AddMissionRole {
+            id: 42,
+            mission: "mission-a".into(),
+            role: "role-reviewer".into(),
+            handle: None,
+            runtime: None,
+            model: None,
+            effort: None,
+            speed: None,
+            task: None,
+            cols: 120,
+            rows: 40,
+        }
+    );
+
+    for name in ["add_mission_role", "remove_mission_role"] {
+        let body = fixture(name);
+        let message = ClientMessage::decode(&serde_json::to_vec(&body).unwrap()).unwrap();
+        let ClientMessage::Action(mut action) = message else {
+            panic!("{name}")
+        };
+        assert_eq!(action.id(), 42);
+        action.set_id(99);
+        assert_eq!(action.id(), 99);
+        let debug = format!("{action:?}");
+        assert!(!debug.contains("mission-a"));
+        assert!(!debug.contains("Review the changes"));
+
+        for field in body
+            .as_object()
+            .unwrap()
+            .keys()
+            .filter(|key| !matches!(key.as_str(), "id" | "type"))
+        {
+            let mut invalid = body.clone();
+            invalid[field] = json!({"private-body-canary": true});
+            let error = ClientMessage::decode(&serde_json::to_vec(&invalid).unwrap()).unwrap_err();
+            assert_eq!(error.code, ErrorCode::BadRequest, "{name}.{field}");
+            assert!(
+                error.message.contains(&format!("field {field} must be")),
+                "{name}.{field}: {}",
+                error.message
+            );
+            assert!(!error.message.contains("private-body-canary"));
+
+            let mut missing = body.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            if let Err(error) = ClientMessage::decode(&serde_json::to_vec(&missing).unwrap()) {
+                assert_eq!(error.code, ErrorCode::BadRequest, "{name}.{field}");
+                assert_eq!(
+                    error.message,
+                    format!("{}: missing field {field}.", body["type"].as_str().unwrap())
+                );
+                assert!(
+                    matches!(field.as_str(), "mission" | "role" | "cols" | "rows")
+                        || (name == "remove_mission_role" && field == "handle"),
+                    "unexpected required field {name}.{field}"
+                );
+            } else {
+                assert!(
+                    name == "add_mission_role"
+                        && matches!(
+                            field.as_str(),
+                            "handle" | "runtime" | "model" | "effort" | "speed" | "task"
+                        ),
+                    "required field should not omit cleanly: {name}.{field}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn overview_mission_removed_handles_round_trips_and_defaults_when_omitted() {
+    let old: Mission = serde_json::from_value(json!({
+        "id": "m1",
+        "project": null,
+        "title": "Old mission",
+        "crew": "Duo",
+        "state": "running",
+        "pinned": false,
+        "members": [],
+        "asks": [],
+        "shells": []
+    }))
+    .unwrap();
+    assert!(old.removed_handles.is_empty());
+    let old_wire = serde_json::to_value(&old).unwrap();
+    assert!(
+        old_wire.get("removedHandles").is_none(),
+        "empty removedHandles must be omitted for backward compatibility"
+    );
+
+    let mut with_removed = old;
+    with_removed.removed_handles = vec!["qa".into(), "reviewer".into()];
+    let wire = serde_json::to_value(&with_removed).unwrap();
+    assert_eq!(wire["removedHandles"], json!(["qa", "reviewer"]));
+    let decoded: Mission = serde_json::from_value(wire).unwrap();
+    assert_eq!(decoded, with_removed);
 }

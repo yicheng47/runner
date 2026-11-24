@@ -370,7 +370,8 @@ record!(MissionStatusSnapshot {
     recent_warnings,
     last_event_id,
     last_event_offset,
-    skipped_event_count
+    skipped_event_count,
+    removed_handles
 });
 record!(SessionStatusSnapshot {
     state,

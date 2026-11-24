@@ -60,6 +60,7 @@ pub(super) struct RemoteMission {
     pub(super) feed: Option<Entity<MissionFeed>>,
     pub(super) feed_subscription: Option<Subscription>,
     feed_ids: Vec<String>,
+    projected_asks: Option<Vec<runner_core::companion::Ask>>,
     pending: HashSet<String>,
     pub(super) shell_pending: bool,
     pub(super) shell_started: Arc<std::sync::Mutex<Option<String>>>,
@@ -169,6 +170,7 @@ impl MissionWorkspace {
                 self.generation += 1;
                 self.active = false;
                 self.mission_id = None;
+                self.remote_feed_history_loaded = false;
             }
         }
         if !self.presentation.is_remote() {
@@ -188,6 +190,32 @@ impl MissionWorkspace {
         self.active = mission_id.is_some();
         self.loading = false;
         let members = self.members();
+        let actions_available = mission_slot_actions_available(
+            self.mission_view().as_ref().map(|mission| mission.status),
+            self.archived(),
+            self.secondary,
+        );
+        if let Some(remove_id) = self.remove_confirm.as_ref() {
+            if !actions_available || !members.iter().any(|member| &member.session.id == remove_id) {
+                self.remove_confirm = None;
+                self.presentation.reset_dialog_focus(true);
+            }
+        }
+        if changed || !actions_available || mission_id.is_none() {
+            let shell = self.shell.clone();
+            let target = self.client.target.clone();
+            let active_running_mission =
+                actions_available.then(|| self.mission_id.clone()).flatten();
+            cx.defer(move |cx| {
+                let _ = shell.update(cx, |root, cx| {
+                    root.close_stale_remote_add_role_modal(
+                        &target,
+                        active_running_mission.as_deref(),
+                        cx,
+                    );
+                });
+            });
+        }
         self.open_tabs = if changed && !restored {
             members
                 .iter()
@@ -239,6 +267,10 @@ impl MissionWorkspace {
         self.presentation.bind_feed(client, mission_id, clients, cx);
         self.sync_remote_feed(cx);
         cx.notify();
+    }
+
+    pub(crate) fn reset_remote_dialog_focus(&mut self) {
+        self.presentation.reset_dialog_focus(true);
     }
 
     pub(crate) fn restore_remote_dialog_focus(
@@ -303,6 +335,12 @@ impl MissionWorkspace {
     }
 
     fn sync_remote_feed(&mut self, cx: &mut Context<Self>) {
+        let prev_history_loaded = self.remote_feed_history_loaded;
+        self.remote_feed_history_loaded = self
+            .presentation
+            .feed()
+            .is_some_and(|feed| feed.read(cx).history_loaded);
+        let mut events_changed = false;
         if let Some((appended, events)) = self
             .presentation
             .feed_events(self.mission_id.as_deref(), cx)
@@ -311,8 +349,19 @@ impl MissionWorkspace {
                 self.handle_feed_append(&event);
             }
             self.events = events;
+            events_changed = true;
         }
-        self.rebuild_event_projection();
+        let asks_changed = self
+            .presentation
+            .update_projected_asks(self.mission_id.as_deref());
+        let item_count_changed = self.feed_item_count() != self.feed_list.item_count();
+        if events_changed
+            || asks_changed
+            || prev_history_loaded != self.remote_feed_history_loaded
+            || item_count_changed
+        {
+            self.rebuild_event_projection();
+        }
         cx.notify();
     }
 
@@ -837,6 +886,7 @@ impl MissionPresentation {
         remote.feed = None;
         remote.feed_subscription = None;
         remote.feed_ids.clear();
+        remote.projected_asks = None;
         remote.reset_actions();
         remote.selected_handle = None;
         next.and_then(|id| remote.presentations.get(id)).cloned()
@@ -861,6 +911,7 @@ impl MissionPresentation {
         };
         if changed {
             remote.reset_actions();
+            remote.projected_asks = None;
         }
         if let Some(overview) = overview.as_ref() {
             for (mission_id, saved) in &mut remote.presentations {
@@ -1130,6 +1181,20 @@ impl MissionPresentation {
 }
 
 impl MissionPresentation {
+    fn update_projected_asks(&mut self, mission_id: Option<&str>) -> bool {
+        let current = self
+            .summary(mission_id)
+            .map(|mission| mission.asks.clone())
+            .unwrap_or_default();
+        let Some(remote) = self.remote_mut() else {
+            return false;
+        };
+        if remote.projected_asks.as_ref() == Some(&current) {
+            return false;
+        }
+        remote.projected_asks = Some(current);
+        true
+    }
     fn new_remote(settings: AppSettings, cx: &mut Context<MissionWorkspace>) -> Self {
         MissionPresentation::Remote(Box::new(RemoteMission {
             settings: cx.new(|_| settings),
@@ -1139,6 +1204,7 @@ impl MissionPresentation {
             feed: None,
             feed_subscription: None,
             feed_ids: Vec::new(),
+            projected_asks: None,
             pending: HashSet::new(),
             shell_pending: false,
             shell_started: Arc::new(std::sync::Mutex::new(None)),

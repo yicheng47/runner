@@ -1,0 +1,14 @@
+{
+  "type": "addMissionRole",
+  "id": 42,
+  "mission": "mission-a",
+  "role": "role-reviewer",
+  "handle": "reviewer-2",
+  "runtime": "codex",
+  "model": "gpt-5.4",
+  "effort": "high",
+  "speed": "fast",
+  "task": "Review the changes",
+  "cols": 120,
+  "rows": 40
+}

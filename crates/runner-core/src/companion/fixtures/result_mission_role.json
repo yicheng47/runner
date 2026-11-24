@@ -1,0 +1,9 @@
+{
+  "type": "result",
+  "id": 42,
+  "result": {
+    "mission": "mission-a",
+    "handle": "reviewer-2",
+    "session": "session-a"
+  }
+}

@@ -395,6 +395,7 @@ pub(crate) struct MissionWorkspace {
     feed_empty_panel_min_height: std::cell::Cell<Pixels>,
     feed_was_near_bottom: bool,
     feed_has_new_messages: bool,
+    remote_feed_history_loaded: bool,
     roster: Vec<SlotWithRole>,
     composer: ComposerState,
     composer_input: Entity<TextField>,

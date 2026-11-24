@@ -31,6 +31,12 @@ impl Transport for Fake {
                     "resumeMission" => {
                         json!({"mission":value["mission"],"sessions":["resumed-member"]})
                     }
+                    "addMissionRole" => {
+                        json!({"mission":value["mission"],"handle":value["handle"].as_str().unwrap_or("coder"),"session":"added-member"})
+                    }
+                    "removeMissionRole" => {
+                        json!({"mission":value["mission"],"handle":value["handle"],"session":"removed-member"})
+                    }
                     "layout" => json!({"target": value["target"]}),
                     "createProject" => json!({"project":"host-project"}),
                     "catalog" => {
@@ -63,6 +69,8 @@ impl Transport for Fake {
                         "deleteProject",
                         "stopMission",
                         "resumeMission",
+                        "addMissionRole",
+                        "removeMissionRole",
                         "linkMission",
                         "unlinkMission",
                     ]
@@ -178,6 +186,28 @@ fn typed_remote_requests_keep_computer_scope_dimensions_defaults_and_host_paths(
         .unwrap()
         .is_none());
     assert!(b.unlink_mission("mission-1".into()).unwrap().is_none());
+    let added = a
+        .mission_add_role(
+            runner_core::protocol::mission::MissionAddRoleInput {
+                mission_id: "mission-1".into(),
+                role_id: "role-reviewer".into(),
+                handle: Some("reviewer".into()),
+                runtime: Some(runner_core::protocol::model::Runtime::Codex),
+                model: Some("gpt-5.4".into()),
+                effort: Some("high".into()),
+                speed: Some(runner_core::protocol::model::CodexSpeed::Fast),
+                task: Some("Review changes".into()),
+            },
+            Some((120, 40)),
+        )
+        .unwrap();
+    assert_eq!(added.mission_id, "mission-1");
+    assert_eq!(added.handle, "reviewer");
+    assert_eq!(added.session_id, "added-member");
+    let removed = b.mission_remove_role("mission-1", "reviewer").unwrap();
+    assert_eq!(removed.mission_id, "mission-1");
+    assert_eq!(removed.handle, "reviewer");
+    assert_eq!(removed.session_id, "removed-member");
     let requests = fake.requests.lock().unwrap();
     assert_eq!(
         requests[5],
@@ -217,7 +247,80 @@ fn typed_remote_requests_keep_computer_scope_dimensions_defaults_and_host_paths(
             json!({"type":"unlinkMission","id":0,"mission":"mission-1"})
         )
     );
+    assert_eq!(
+        requests[17],
+        (
+            "a".into(),
+            json!({
+                "type":"addMissionRole",
+                "id":0,
+                "mission":"mission-1",
+                "role":"role-reviewer",
+                "handle":"reviewer",
+                "runtime":"codex",
+                "model":"gpt-5.4",
+                "effort":"high",
+                "speed":"fast",
+                "task":"Review changes",
+                "cols":120,
+                "rows":40
+            })
+        )
+    );
+    assert_eq!(
+        requests[18],
+        (
+            "b".into(),
+            json!({
+                "type":"removeMissionRole",
+                "id":0,
+                "mission":"mission-1",
+                "handle":"reviewer"
+            })
+        )
+    );
     assert!(fake.local.lock().unwrap().is_empty());
+}
+
+#[test]
+fn remote_mission_role_actions_require_advertised_capabilities() {
+    let fake = Arc::new(Fake::default());
+    let (client, access) = remote(&fake, "a");
+    let input = runner_core::protocol::mission::MissionAddRoleInput {
+        mission_id: "mission-1".into(),
+        role_id: "role-reviewer".into(),
+        handle: None,
+        runtime: None,
+        model: None,
+        effort: None,
+        speed: None,
+        task: None,
+    };
+    assert!(client
+        .mission_add_role(input.clone(), Some((80, 24)))
+        .is_err());
+    assert!(client.mission_remove_role("mission-1", "reviewer").is_err());
+    access.set_features(vec!["catalog".into()]);
+    assert!(client
+        .mission_add_role(input.clone(), Some((80, 24)))
+        .is_err());
+    assert!(client.mission_remove_role("mission-1", "reviewer").is_err());
+    access.set_features(vec!["addMissionRole".into()]);
+    assert!(client
+        .mission_add_role(input.clone(), Some((80, 24)))
+        .is_err());
+    assert!(client.mission_remove_role("mission-1", "reviewer").is_err());
+    assert!(fake.requests.lock().unwrap().is_empty());
+    access.set_features(vec!["removeMissionRole".into()]);
+    assert!(client.mission_add_role(input, Some((80, 24))).is_err());
+    let removed = client.mission_remove_role("mission-1", "reviewer").unwrap();
+    assert_eq!(removed.mission_id, "mission-1");
+    assert_eq!(removed.handle, "reviewer");
+    assert_eq!(fake.requests.lock().unwrap().len(), 1);
+    assert_eq!(
+        fake.requests.lock().unwrap()[0].1["type"],
+        "removeMissionRole"
+    );
 }
 
 #[test]
@@ -662,6 +765,29 @@ fn local_workspace_mutations_keep_daemon_requests_arguments_and_errors() {
         client.archive_mission_state("mission".into()),
         Request::mission_archive_impl {
             id: "mission".into()
+        }
+    );
+    let add_role_input = runner_core::protocol::mission::MissionAddRoleInput {
+        mission_id: "mission".into(),
+        role_id: "role".into(),
+        handle: Some("reviewer".into()),
+        runtime: Some(runner_core::protocol::model::Runtime::Codex),
+        model: Some("gpt-5.4".into()),
+        effort: Some("high".into()),
+        speed: Some(CodexSpeed::Fast),
+        task: Some("Review".into()),
+    };
+    dispatch!(
+        client.mission_add_role(add_role_input.clone(), Some((90, 30))),
+        Request::mission_add_role {
+            input: add_role_input
+        }
+    );
+    dispatch!(
+        client.mission_remove_role("mission", "reviewer"),
+        Request::mission_remove_role {
+            mission_id: "mission".into(),
+            handle: "reviewer".into()
         }
     );
     dispatch!(

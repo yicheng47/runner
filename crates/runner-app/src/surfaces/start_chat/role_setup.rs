@@ -15,21 +15,28 @@ impl NativeRoot {
         let mut field = Field::new(
             "start-chat-role-field",
             crate::i18n::text("ui.role"),
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(card)
-                .when(modal.roles.is_empty(), |field| {
+            div().flex().flex_col().gap_1().child(card).when(
+                modal.roles.is_empty() && !modal.loading_catalog() && !modal.catalog_failed(),
+                |field| {
                     field.child(
                         div()
+                            .when(cfg!(test), |el| {
+                                el.debug_selector(|| "ADD_ROLE_EMPTY_ROLES".into())
+                            })
                             .text_size(theme::text_meta())
                             .text_color(theme::warning())
-                            .child(crate::i18n::text(
-                                "ui.no_roles_yet_create_one_from_the_roles_page_first",
-                            )),
+                            .child(if modal.is_remote() {
+                                crate::i18n::text(
+                                    "ui.no_roles_yet_on_this_computer_create_one_on_the_host_first",
+                                )
+                            } else {
+                                crate::i18n::text(
+                                    "ui.no_roles_yet_create_one_from_the_roles_page_first",
+                                )
+                            }),
                     )
-                }),
+                },
+            ),
         )
         .focus_target(modal.role_select.read(cx).focus_handle())
         .emphasized(true);

@@ -230,6 +230,24 @@ pub enum ActionRequest {
         id: u64,
         mission: String,
     },
+    AddMissionRole {
+        id: u64,
+        mission: String,
+        role: String,
+        handle: Option<String>,
+        runtime: Option<String>,
+        model: Option<String>,
+        effort: Option<String>,
+        speed: Option<String>,
+        task: Option<String>,
+        cols: u16,
+        rows: u16,
+    },
+    RemoveMissionRole {
+        id: u64,
+        mission: String,
+        handle: String,
+    },
 }
 
 impl ActionRequest {
@@ -317,6 +335,12 @@ impl ActionRequest {
             "resumeMission" => {
                 fields!(mission: String => "a string", cols: u16 => "an unsigned 16-bit integer", rows: u16 => "an unsigned 16-bit integer")
             }
+            "addMissionRole" => {
+                fields!(mission: String => "a string", role: String => "a string", handle: Option<String> => "a string or null", runtime: Option<String> => "a string or null", model: Option<String> => "a string or null", effort: Option<String> => "a string or null", speed: Option<String> => "a string or null", task: Option<String> => "a string or null", cols: u16 => "an unsigned 16-bit integer", rows: u16 => "an unsigned 16-bit integer")
+            }
+            "removeMissionRole" => {
+                fields!(mission: String => "a string", handle: String => "a string")
+            }
             _ => None,
         }
     }
@@ -359,6 +383,8 @@ impl ActionRequest {
         "resumeMission",
         "linkMission",
         "unlinkMission",
+        "addMissionRole",
+        "removeMissionRole",
     ];
     pub fn id(&self) -> u64 {
         match self {
@@ -399,6 +425,8 @@ impl ActionRequest {
             Self::ResumeMission { id, .. } => *id,
             Self::LinkMission { id, .. } => *id,
             Self::UnlinkMission { id, .. } => *id,
+            Self::AddMissionRole { id, .. } => *id,
+            Self::RemoveMissionRole { id, .. } => *id,
         }
     }
     pub fn set_id(&mut self, value: u64) {
@@ -440,6 +468,8 @@ impl ActionRequest {
             Self::ResumeMission { id, .. } => *id = value,
             Self::LinkMission { id, .. } => *id = value,
             Self::UnlinkMission { id, .. } => *id = value,
+            Self::AddMissionRole { id, .. } => *id = value,
+            Self::RemoveMissionRole { id, .. } => *id = value,
         }
     }
 }

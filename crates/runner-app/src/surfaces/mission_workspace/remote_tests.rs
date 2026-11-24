@@ -269,14 +269,12 @@ fn remote_mission_uses_shared_sections_without_local_rows_or_private_metadata() 
         "MISSION_TABS",
         "MISSION_RAIL",
         "MISSION_FEED",
+        "MISSION_RAIL_ADD_ROLE",
+        "MISSION_CARD_REMOVE member",
     ] {
         assert!(visual.debug_bounds(selector).is_some(), "{selector}");
     }
-    for selector in [
-        "MISSION_CARD_KEY member",
-        "MISSION_RAIL_ADD_ROLE",
-        "MISSION_META_STARTED",
-    ] {
+    for selector in ["MISSION_CARD_KEY member", "MISSION_META_STARTED"] {
         assert!(visual.debug_bounds(selector).is_none(), "{selector}");
     }
     assert_eq!(fake.request_count("follow"), 1);
@@ -1619,109 +1617,137 @@ fn clicking_the_remote_linked_chat_opens_its_tab() {
 #[test]
 fn remote_zero_role_mission_does_not_flash_no_roles_or_no_events_before_feed_loads() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
-    for with_events in [true, false] {
-        let temp = tempfile::tempdir().unwrap();
-        let mut cx = TestAppContext::single();
-        let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
-        remote_test::enable_missions(&fake);
-        let mut data = overview();
-        data.missions[0].members.clear();
-        data.missions[0].asks.clear();
-        data.sessions.clear();
-        fake.set_overview(data.clone());
-        let window = remote_test::add_window(&mut cx, &store, temp.path(), "remote-empty-roles");
-        window
-            .update(&mut cx, |root, window, cx| {
-                remote_test::choose_host(root, window, cx)
-            })
-            .unwrap();
-        cx.run_until_parked();
-        if with_events {
-            fake.queue_result(
-                "feed",
-                Ok(serde_json::json!({
-                    "entries": [entry("e1", serde_json::json!({"kind":"message","text":"Mission started"}))],
-                    "before": null
-                })),
-            );
-        }
-        window
-            .update(&mut cx, |root, _, cx| {
-                root.select_remote_item(RemoteItem::Mission("remote-mission".into()), cx)
-            })
-            .unwrap();
-        let workspace = workspace(window, &cx);
-        let feed = workspace.read_with(&cx, |workspace, _| {
-            assert!(!workspace.loading);
-            assert_eq!(workspace.feed_item_count(), 1);
-            assert_eq!(workspace.feed_empty_panel_min_height.get(), px(0.));
-            workspace
-                .presentation
-                .remote_for_test()
-                .unwrap()
-                .feed
-                .clone()
-                .unwrap()
-        });
-        feed.read_with(&cx, |feed, _| {
-            assert!(feed.loading);
-            assert!(!feed.history_loaded);
-        });
-        let mut visual = VisualTestContext::from_window(window.into(), &cx);
-        visual.update(|window, _| window.refresh());
-        feed.read_with(&visual, |feed, _| {
-            assert!(feed.loading);
-            assert!(!feed.history_loaded);
-        });
-        assert!(visual.debug_bounds("MISSION_FEED").is_some());
-        assert!(visual.debug_bounds("MISSION_NO_ROLES").is_none());
-        assert!(visual.debug_bounds("MISSION_NO_EVENTS").is_none());
-        assert!(visual.debug_bounds("MISSION_RAIL_NO_ROLES").is_some());
-        assert!(visual.debug_bounds("MISSION_RAIL_ADD_ROLE").is_none());
-        workspace.read_with(&visual, |workspace, _| {
-            assert_eq!(workspace.feed_item_count(), 1);
-            assert_eq!(workspace.feed_empty_panel_min_height.get(), px(0.));
-        });
-
-        visual.run_until_parked();
-        feed.read_with(&visual, |feed, _| {
-            assert!(!feed.loading);
-            assert!(feed.history_loaded);
-        });
-        assert!(visual.debug_bounds("MISSION_NO_ROLES").is_none());
-        assert!(visual.debug_bounds("MISSION_RAIL_NO_ROLES").is_some());
-        assert!(visual.debug_bounds("MISSION_RAIL_ADD_ROLE").is_none());
-        workspace.read_with(&visual, |workspace, _| {
-            assert_eq!(workspace.feed_empty_panel_min_height.get(), px(0.));
-        });
-        let initial_no_events_bounds = if with_events {
-            assert!(visual.debug_bounds("MISSION_NO_EVENTS").is_none());
-            assert!(visual.debug_bounds("MISSION_MESSAGE_GROUP e1").is_some());
-            None
-        } else {
-            let bounds = visual.debug_bounds("MISSION_NO_EVENTS");
-            assert!(bounds.is_some());
-            bounds
-        };
-
-        for _ in 0..3 {
+    for capable in [true, false] {
+        for with_events in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
+            remote_test::enable_missions(&fake);
+            if !capable {
+                fake.without_features(&["addMissionRole"]);
+            }
+            let mut data = overview();
+            data.missions[0].members.clear();
+            data.missions[0].asks.clear();
+            data.sessions.clear();
             fake.set_overview(data.clone());
-            visual.run_until_parked();
+            let window =
+                remote_test::add_window(&mut cx, &store, temp.path(), "remote-empty-roles");
+            window
+                .update(&mut cx, |root, window, cx| {
+                    remote_test::choose_host(root, window, cx)
+                })
+                .unwrap();
+            cx.run_until_parked();
+            if with_events {
+                fake.queue_result(
+                    "feed",
+                    Ok(serde_json::json!({
+                        "entries": [entry("e1", serde_json::json!({"kind":"message","text":"Mission started"}))],
+                        "before": null
+                    })),
+                );
+            }
+            window
+                .update(&mut cx, |root, _, cx| {
+                    root.select_remote_item(RemoteItem::Mission("remote-mission".into()), cx)
+                })
+                .unwrap();
+            let workspace = workspace(window, &cx);
+            let feed = workspace.read_with(&cx, |workspace, _| {
+                assert!(!workspace.loading);
+                assert_eq!(workspace.feed_item_count(), 1);
+                assert_eq!(workspace.feed_empty_panel_min_height.get(), px(0.));
+                workspace
+                    .presentation
+                    .remote_for_test()
+                    .unwrap()
+                    .feed
+                    .clone()
+                    .unwrap()
+            });
+            feed.read_with(&cx, |feed, _| {
+                assert!(feed.loading);
+                assert!(!feed.history_loaded);
+            });
+            let mut visual = VisualTestContext::from_window(window.into(), &cx);
             visual.update(|window, _| window.refresh());
+            feed.read_with(&visual, |feed, _| {
+                assert!(feed.loading);
+                assert!(!feed.history_loaded);
+            });
+            assert!(visual.debug_bounds("MISSION_FEED").is_some());
             assert!(visual.debug_bounds("MISSION_NO_ROLES").is_none());
+            assert!(visual.debug_bounds("MISSION_NO_EVENTS").is_none());
             assert!(visual.debug_bounds("MISSION_RAIL_NO_ROLES").is_some());
-            assert!(visual.debug_bounds("MISSION_RAIL_ADD_ROLE").is_none());
+            assert_eq!(
+                visual.debug_bounds("MISSION_RAIL_ADD_ROLE").is_some(),
+                capable
+            );
             workspace.read_with(&visual, |workspace, _| {
+                assert_eq!(workspace.feed_item_count(), 1);
                 assert_eq!(workspace.feed_empty_panel_min_height.get(), px(0.));
             });
-            if with_events {
+
+            visual.run_until_parked();
+            visual.update(|window, _| window.refresh());
+            visual.run_until_parked();
+            feed.read_with(&visual, |feed, _| {
+                assert!(!feed.loading);
+                assert!(feed.history_loaded);
+            });
+            assert_eq!(visual.debug_bounds("MISSION_NO_ROLES").is_some(), capable);
+            assert!(visual.debug_bounds("MISSION_RAIL_NO_ROLES").is_some());
+            assert_eq!(
+                visual.debug_bounds("MISSION_RAIL_ADD_ROLE").is_some(),
+                capable
+            );
+            let initial_no_roles_bounds = visual.debug_bounds("MISSION_NO_ROLES");
+            let initial_min_height = workspace.read_with(&visual, |workspace, _| {
+                assert_eq!(workspace.feed_item_count(), if capable { 2 } else { 1 });
+                if !capable {
+                    assert_eq!(workspace.feed_empty_panel_min_height.get(), px(0.));
+                }
+                workspace.feed_empty_panel_min_height.get()
+            });
+            let initial_no_events_bounds = if with_events {
                 assert!(visual.debug_bounds("MISSION_NO_EVENTS").is_none());
                 assert!(visual.debug_bounds("MISSION_MESSAGE_GROUP e1").is_some());
+                None
             } else {
+                let bounds = visual.debug_bounds("MISSION_NO_EVENTS");
+                assert!(bounds.is_some());
+                bounds
+            };
+
+            for _ in 0..3 {
+                fake.set_overview(data.clone());
+                visual.run_until_parked();
+                visual.update(|window, _| window.refresh());
                 assert_eq!(
-                    visual.debug_bounds("MISSION_NO_EVENTS"),
-                    initial_no_events_bounds
+                    visual.debug_bounds("MISSION_NO_ROLES"),
+                    initial_no_roles_bounds
                 );
+                assert!(visual.debug_bounds("MISSION_RAIL_NO_ROLES").is_some());
+                assert_eq!(
+                    visual.debug_bounds("MISSION_RAIL_ADD_ROLE").is_some(),
+                    capable
+                );
+                workspace.read_with(&visual, |workspace, _| {
+                    assert_eq!(
+                        workspace.feed_empty_panel_min_height.get(),
+                        initial_min_height
+                    );
+                });
+                if with_events {
+                    assert!(visual.debug_bounds("MISSION_NO_EVENTS").is_none());
+                    assert!(visual.debug_bounds("MISSION_MESSAGE_GROUP e1").is_some());
+                } else {
+                    assert_eq!(
+                        visual.debug_bounds("MISSION_NO_EVENTS"),
+                        initial_no_events_bounds
+                    );
+                }
             }
         }
     }
@@ -2986,5 +3012,961 @@ fn remote_mission_rail_shows_runtime_line_handles_older_hosts_and_hides_session_
 
     window
         .update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+fn rich_host_catalog() -> serde_json::Value {
+    serde_json::json!({
+        "roles": [
+            {
+                "id": "role-coder",
+                "name": "Host Coder",
+                "handle": "coder",
+                "runtime": "codex",
+                "model": "gpt-5.4",
+                "effort": "high",
+                "speed": null
+            },
+            {
+                "id": "role-reviewer",
+                "name": "Host Reviewer",
+                "handle": "reviewer",
+                "runtime": "claude-code",
+                "model": "claude-opus-4-6",
+                "effort": "medium",
+                "speed": null
+            }
+        ],
+        "runtimes": [
+            {
+                "name": "codex",
+                "label": "Host Codex",
+                "available": true,
+                "nativeFork": true,
+                "defaultModel": "gpt-5.4",
+                "defaultEffort": "medium",
+                "models": [
+                    {"value": "gpt-5.4", "label": "gpt-5.4"},
+                    {"value": "gpt-5.4-mini", "label": "gpt-5.4-mini"}
+                ],
+                "efforts": [
+                    {"value": "low", "label": "Low"},
+                    {"value": "medium", "label": "Medium"},
+                    {"value": "high", "label": "High"}
+                ],
+                "speeds": ["standard", "fast"]
+            },
+            {
+                "name": "claude-code",
+                "label": "Host Claude",
+                "available": true,
+                "nativeFork": true,
+                "defaultModel": "claude-opus-4-6",
+                "defaultEffort": "medium",
+                "models": [
+                    {"value": "claude-opus-4-6", "label": "Claude Opus 4.6"}
+                ],
+                "efforts": [
+                    {"value": "low", "label": "Low"},
+                    {"value": "medium", "label": "Medium"},
+                    {"value": "high", "label": "High"}
+                ],
+                "speeds": []
+            }
+        ],
+        "accounts": [{"id": "host-account", "name": "Host account"}],
+        "activeAccount": "host-account",
+        "crews": [],
+        "projects": [],
+        "recentFolders": []
+    })
+}
+
+fn wait_until(
+    visual: &mut VisualTestContext,
+    mut pred: impl FnMut(&mut VisualTestContext) -> bool,
+    what: &str,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        visual.run_until_parked();
+        if pred(visual) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn older_host_capability_gating_and_stopped_mission_hide_remote_role_controls() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    for (omit, expect_add, expect_remove) in [
+        (&["addMissionRole"][..], false, true),
+        (&["catalog"][..], false, true),
+        (&["removeMissionRole"][..], true, false),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
+        remote_test::enable_missions(&fake);
+        fake.without_features(omit);
+        fake.set_overview(overview());
+        let window = remote_test::add_window(&mut cx, &store, temp.path(), "remote-role-caps");
+        window
+            .update(&mut cx, |root, window, cx| {
+                remote_test::choose_host(root, window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |root, _, cx| {
+                root.select_remote_item(RemoteItem::Mission("remote-mission".into()), cx)
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.run_until_parked();
+        let ws = workspace(window, &visual);
+        assert_eq!(
+            visual.debug_bounds("MISSION_RAIL_ADD_ROLE").is_some(),
+            expect_add,
+            "omit={omit:?}"
+        );
+        assert_eq!(
+            visual.debug_bounds("MISSION_CARD_REMOVE member").is_some(),
+            expect_remove,
+            "omit={omit:?}"
+        );
+        window
+            .update(&mut visual, |_, window, cx| {
+                assert_eq!(
+                    ws.read(cx).add_role_context(window, cx).is_some(),
+                    expect_add,
+                    "omit={omit:?}"
+                );
+                if !expect_remove {
+                    ws.update(cx, |ws, cx| ws.request_remove_role("member", window, cx));
+                    assert!(ws.read(cx).remove_confirm.is_none());
+                }
+            })
+            .unwrap();
+        // Stopped remote mission hides all role mutation controls even when host advertises them.
+        let mut stopped = overview();
+        stopped.missions[0].state = runner_core::companion::MissionState::Stopped;
+        fake.set_overview(stopped);
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("MISSION_RAIL_ADD_ROLE").is_none());
+        assert!(visual.debug_bounds("MISSION_CARD_REMOVE member").is_none());
+    }
+}
+
+#[test]
+fn remote_add_role_modal_loads_catalog_validates_removed_handles_and_submits_with_overrides() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
+    remote_test::enable_missions(&fake);
+    let mut data = overview();
+    data.missions[0].removed_handles = vec!["coder-2".into()];
+    fake.set_overview(data.clone());
+    let window = remote_test::add_window(&mut cx, &store, temp.path(), "remote-add-role");
+    window
+        .update(&mut cx, |root, window, cx| {
+            remote_test::choose_host(root, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    fake.queue_result(
+        "feed",
+        Ok(serde_json::json!({
+            "entries": [{
+                "id": "e-rem-3",
+                "ts": "2026-10-24T05:01:00Z",
+                "from": "human",
+                "to": [],
+                "kind": "signal",
+                "signal": "role_removed",
+                "payload": {"handle": "coder-3"}
+            }],
+            "before": null
+        })),
+    );
+    window
+        .update(&mut cx, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Mission("remote-mission".into()), cx)
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.run_until_parked();
+    let ws = workspace(window, &visual);
+    fake.queue_result("catalog", Ok(rich_host_catalog()));
+    let local_calls_before = fake.local_call_count();
+
+    window
+        .update(&mut visual, |root, window, cx| {
+            let context = ws.read(cx).add_role_context(window, cx).unwrap();
+            root.open_add_role_modal(context, window, cx);
+        })
+        .unwrap();
+    // Before background catalog completes, modal renders in loading state with controls disabled.
+    visual.update(|window, _| window.refresh());
+    window
+        .read_with(&visual, |root, cx| {
+            assert!(root.create_modal_open());
+            assert!(root.add_role_loading_catalog_for_test());
+            assert_eq!(
+                root.add_role_placeholder_for_test(cx).as_deref(),
+                Some("Loading…")
+            );
+            assert_eq!(
+                root.add_role_controls_disabled_for_test(cx),
+                Some((true, true, true))
+            );
+            assert!(!root.add_role_can_submit_for_test(cx));
+        })
+        .unwrap();
+    assert!(visual.debug_bounds("ADD_ROLE_FORM").is_some());
+    assert!(visual.debug_bounds("ADD_ROLE_EMPTY_ROLES").is_none());
+
+    wait_until(
+        &mut visual,
+        |visual| {
+            window
+                .read_with(visual, |root, _| !root.add_role_loading_catalog_for_test())
+                .unwrap()
+        },
+        "remote catalog load",
+    );
+    assert_eq!(
+        fake.local_call_count(),
+        local_calls_before,
+        "remote Add Role modal must never call local daemon runtime_refresh_models"
+    );
+    window
+        .read_with(&visual, |root, cx| {
+            assert_eq!(
+                root.add_role_handle_for_test(cx).as_deref(),
+                Some("coder-4"),
+                "must skip active coder, Overview.removedHandles coder-2, and loaded role_removed coder-3"
+            );
+            assert_eq!(
+                root.add_role_controls_disabled_for_test(cx),
+                Some((false, false, false))
+            );
+            assert!(root.add_role_can_submit_for_test(cx));
+        })
+        .unwrap();
+
+    for taken in ["coder", "coder-2", "coder-3"] {
+        window
+            .update(&mut visual, |root, _, cx| {
+                root.set_add_role_handle_for_test(taken, cx);
+                assert!(!root.add_role_can_submit_for_test(cx), "{taken}");
+            })
+            .unwrap();
+    }
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.set_add_role_handle_for_test("coder-4", cx);
+            root.set_add_role_overrides_for_test(
+                None,
+                Some("gpt-5.4-mini"),
+                Some("low"),
+                Some("fast"),
+                cx,
+            );
+            root.set_add_role_task_for_test("Audit the patch", cx);
+            assert!(root.add_role_can_submit_for_test(cx));
+        })
+        .unwrap();
+
+    // First submit is rejected by the host (e.g. handle taken concurrently).
+    fake.queue_result(
+        "addMissionRole",
+        Err(runner_core::protocol::ClientError::msg(
+            "That handle is already in use in this mission.",
+        )),
+    );
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.submit_add_role_for_test(window, cx);
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        |visual| {
+            window
+                .read_with(visual, |root, _| root.add_role_error_for_test().is_some())
+                .unwrap()
+        },
+        "rejected addMissionRole response",
+    );
+    window
+        .read_with(&visual, |root, cx| {
+            assert!(root.create_modal_open());
+            assert_eq!(
+                root.add_role_error_for_test().as_deref(),
+                Some("That handle is already in use in this mission.")
+            );
+            assert_eq!(
+                root.add_role_controls_disabled_for_test(cx),
+                Some((false, false, false))
+            );
+        })
+        .unwrap();
+    assert!(visual.debug_bounds("ADD_ROLE_ERROR").is_some());
+    assert_eq!(ws.read_with(&visual, |ws, _| ws.members().len()), 1);
+
+    // Second submit succeeds: modal closes and wire request carries overrides, task and size.
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.set_add_role_handle_for_test("coder-5", cx);
+            root.submit_add_role_for_test(window, cx);
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        |visual| {
+            window
+                .read_with(visual, |root, _| !root.create_modal_open())
+                .unwrap()
+        },
+        "successful addMissionRole close",
+    );
+    let requests = remote_test::action_trace(&fake, "addMissionRole");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1]["mission"], "remote-mission");
+    assert_eq!(requests[1]["role"], "role-coder");
+    assert_eq!(requests[1]["handle"], "coder-5");
+    assert_eq!(requests[1]["model"], "gpt-5.4-mini");
+    assert_eq!(requests[1]["effort"], "low");
+    assert_eq!(requests[1]["speed"], "fast");
+    assert_eq!(requests[1]["task"], "Audit the patch");
+    assert!(requests[1]["cols"].as_u64().unwrap() >= 20);
+    assert!(requests[1]["rows"].as_u64().unwrap() >= 8);
+
+    // Pushed Overview adds the member card, auto-opens its tab and updates composer roster.
+    push_member(
+        &mut data,
+        0,
+        "coder-5",
+        "added-member",
+        runner_core::companion::Status::Working,
+    );
+    fake.set_overview(data);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("MISSION_CARD added-member").is_some());
+    assert!(visual.debug_bounds("MISSION_TAB added-member").is_some());
+    ws.read_with(&visual, |ws, _| {
+        assert!(ws
+            .mission_composer_roster()
+            .iter()
+            .any(|entry| entry.handle == "coder-5"));
+    });
+}
+
+#[test]
+fn remote_add_role_modal_handles_empty_catalog_and_catalog_failure_cleanly() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (_temp, cx, window, _, fake) = setup();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    let ws = workspace(window, &visual);
+
+    // Empty host catalog shows remote-specific hint and keeps Submit disabled.
+    fake.queue_result(
+        "catalog",
+        Ok(serde_json::json!({
+            "roles": [],
+            "runtimes": [],
+            "accounts": [],
+            "activeAccount": "",
+            "crews": [],
+            "projects": [],
+            "recentFolders": []
+        })),
+    );
+    window
+        .update(&mut visual, |root, window, cx| {
+            let context = ws.read(cx).add_role_context(window, cx).unwrap();
+            root.open_add_role_modal(context, window, cx);
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        |visual| {
+            window
+                .read_with(visual, |root, _| !root.add_role_loading_catalog_for_test())
+                .unwrap()
+        },
+        "empty catalog load",
+    );
+    visual.update(|window, _| window.refresh());
+    assert!(visual.debug_bounds("ADD_ROLE_EMPTY_ROLES").is_some());
+    assert!(visual.debug_bounds("ADD_ROLE_ERROR").is_none());
+    window
+        .read_with(&visual, |root, cx| {
+            assert!(!root.add_role_can_submit_for_test(cx));
+        })
+        .unwrap();
+    // Verify both locales exist and carry the remote host-accurate wording.
+    assert_eq!(
+        crate::i18n::text_for(
+            crate::i18n::Locale::English,
+            "ui.no_roles_yet_on_this_computer_create_one_on_the_host_first"
+        ),
+        "No roles yet on this computer. Create one on the host first."
+    );
+    assert_eq!(
+        crate::i18n::text_for(
+            crate::i18n::Locale::SimplifiedChinese,
+            "ui.no_roles_yet_on_this_computer_create_one_on_the_host_first"
+        ),
+        "该电脑暂无角色。请先在主机上创建。"
+    );
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.close_add_role_for_test(window, cx);
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    // Failed catalog load displays notice_banner, hides empty-roles warning, and lets Cancel close.
+    fake.queue_result(
+        "catalog",
+        Err(runner_core::protocol::ClientError::msg(
+            "Host catalog unreachable.",
+        )),
+    );
+    window
+        .update(&mut visual, |root, window, cx| {
+            let context = ws.read(cx).add_role_context(window, cx).unwrap();
+            root.open_add_role_modal(context, window, cx);
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        |visual| {
+            window
+                .read_with(visual, |root, _| root.add_role_catalog_failed_for_test())
+                .unwrap()
+        },
+        "failed catalog load",
+    );
+    visual.update(|window, _| window.refresh());
+    assert!(visual.debug_bounds("ADD_ROLE_ERROR").is_some());
+    assert!(visual.debug_bounds("ADD_ROLE_EMPTY_ROLES").is_none());
+    window
+        .read_with(&visual, |root, cx| {
+            assert_eq!(
+                root.add_role_error_for_test().as_deref(),
+                Some("Host catalog unreachable.")
+            );
+            assert_eq!(
+                root.add_role_controls_disabled_for_test(cx),
+                Some((true, true, true))
+            );
+            assert!(!root.add_role_can_submit_for_test(cx));
+        })
+        .unwrap();
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.close_add_role_for_test(window, cx);
+        })
+        .unwrap();
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| assert!(!root.create_modal_open()))
+        .unwrap();
+}
+
+#[test]
+fn remote_add_role_modal_discards_stale_replies_and_closes_when_mission_stops() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (_temp, cx, window, _, fake) = setup();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    let ws = workspace(window, &visual);
+
+    struct StaleCatalogTransport(std::sync::atomic::AtomicUsize);
+    impl runner_core::protocol::Transport for StaleCatalogTransport {
+        fn call(
+            &self,
+            _: runner_core::protocol::Request,
+        ) -> Result<runner_core::protocol::Response, runner_core::protocol::ClientError> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(runner_core::protocol::Response::remote_request(Err(
+                runner_core::protocol::ClientError::msg("stale catalog error"),
+            )))
+        }
+        fn subscribe(&self) -> Box<dyn runner_core::protocol::EventSubscription> {
+            unreachable!()
+        }
+    }
+
+    // 1. Close and reopen while the first catalog request is still in-flight: give modal #1 its
+    // own failing transport so regardless of background task execution order, modal #1 always
+    // receives the stale error and modal #2 always receives the fresh catalog cleanly.
+    let stale_transport = Arc::new(StaleCatalogTransport(Default::default()));
+    let catalog_before = fake.request_count("catalog");
+    fake.queue_result("catalog", Ok(rich_host_catalog()));
+    window
+        .update(&mut visual, |root, window, cx| {
+            let mut stale_context = ws.read(cx).add_role_context(window, cx).unwrap();
+            let stale_access =
+                crate::surfaces::front_page::RemoteAccess::new(stale_context.client.target.clone());
+            stale_access.set_features(vec!["catalog".into(), "addMissionRole".into()]);
+            stale_context.client = crate::surfaces::front_page::FrontPageClient::remote(
+                runner_core::protocol::DaemonClient::new(stale_transport.clone()),
+                stale_access,
+            );
+            root.open_add_role_modal(stale_context, window, cx);
+            assert!(root.add_role_loading_catalog_for_test());
+            root.close_add_role_for_test(window, cx);
+            assert!(!root.create_modal_open());
+            let fresh_context = ws.read(cx).add_role_context(window, cx).unwrap();
+            root.open_add_role_modal(fresh_context, window, cx);
+            assert!(root.add_role_loading_catalog_for_test());
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        |visual| {
+            stale_transport.0.load(std::sync::atomic::Ordering::SeqCst) == 1
+                && fake.request_count("catalog") > catalog_before
+                && window
+                    .read_with(visual, |root, _| !root.add_role_loading_catalog_for_test())
+                    .unwrap()
+        },
+        "both catalog replies settled",
+    );
+    window
+        .read_with(&visual, |root, cx| {
+            assert!(root.create_modal_open());
+            assert_eq!(root.add_role_error_for_test(), None);
+            assert!(!root.add_role_catalog_failed_for_test());
+            assert_eq!(
+                root.add_role_handle_for_test(cx).as_deref(),
+                Some("coder-2")
+            );
+        })
+        .unwrap();
+
+    // 2. Mission stops while an open, non-submitting modal is active: modal closes automatically.
+    let mut stopped = overview();
+    stopped.missions[0].state = runner_core::companion::MissionState::Stopped;
+    fake.set_overview(stopped);
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| {
+            assert!(
+                !root.create_modal_open(),
+                "non-submitting remote Add Role modal must close when mission stops"
+            );
+        })
+        .unwrap();
+
+    // 3. Mission restarts; open modal, then stop mission while catalog is loading -> closes cleanly.
+    fake.set_overview(overview());
+    visual.run_until_parked();
+    fake.queue_result("catalog", Ok(rich_host_catalog()));
+    window
+        .update(&mut visual, |root, window, cx| {
+            let context = ws.read(cx).add_role_context(window, cx).unwrap();
+            root.open_add_role_modal(context, window, cx);
+            assert!(root.add_role_loading_catalog_for_test());
+        })
+        .unwrap();
+    let mut stopped = overview();
+    stopped.missions[0].state = runner_core::companion::MissionState::Stopped;
+    fake.set_overview(stopped);
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| assert!(!root.create_modal_open()))
+        .unwrap();
+
+    // 4. Mission restarts; submit addMissionRole, then immediately return to this computer while
+    // the submit is still in-flight -> stale submit reply is discarded and modal stays closed.
+    fake.set_overview(overview());
+    visual.run_until_parked();
+    fake.queue_result("catalog", Ok(rich_host_catalog()));
+    window
+        .update(&mut visual, |root, window, cx| {
+            let context = ws.read(cx).add_role_context(window, cx).unwrap();
+            root.open_add_role_modal(context, window, cx);
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        |visual| {
+            window
+                .read_with(visual, |root, _| !root.add_role_loading_catalog_for_test())
+                .unwrap()
+        },
+        "catalog load before submit",
+    );
+    let submits_before = fake.request_count("addMissionRole");
+    fake.queue_result(
+        "addMissionRole",
+        Err(runner_core::protocol::ClientError::msg(
+            "stale submit error",
+        )),
+    );
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.submit_add_role_for_test(window, cx);
+            root.return_to_this_computer(window, cx);
+            assert!(!root.create_modal_open());
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        |_| fake.request_count("addMissionRole") == submits_before + 1,
+        "in-flight submit request completion",
+    );
+    window
+        .read_with(&visual, |root, _| {
+            assert!(!root.create_modal_open());
+            assert_eq!(root.add_role_error_for_test(), None);
+        })
+        .unwrap();
+}
+
+#[test]
+fn remote_remove_role_confirms_handles_rejection_dismisses_on_disappear_and_updates_on_overview() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (_temp, cx, window, _, fake) = setup();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    let ws = workspace(window, &visual);
+    let mut data = overview();
+    push_member(
+        &mut data,
+        0,
+        "qa",
+        "qa-member",
+        runner_core::companion::Status::Working,
+    );
+    fake.set_overview(data.clone());
+    visual.run_until_parked();
+
+    // Activate member tab, open remove confirm, cancel -> no request.
+    window
+        .update(&mut visual, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.select_mission_session("member", window, cx);
+                ws.request_remove_role("member", window, cx);
+            });
+        })
+        .unwrap();
+    visual.run_until_parked();
+    ws.read_with(&visual, |ws, _| {
+        assert_eq!(ws.active_tab, MissionTab::Session("member".into()));
+        assert_eq!(ws.remove_confirm.as_deref(), Some("member"));
+    });
+    assert_eq!(fake.request_count("removeMissionRole"), 0);
+
+    // If the member disappears remotely before confirm, dialog dismisses and resets focus.
+    let mut without_member = data.clone();
+    without_member.missions[0]
+        .members
+        .retain(|m| m.session != "member");
+    without_member.sessions.remove("member");
+    fake.set_overview(without_member);
+    visual.run_until_parked();
+    ws.read_with(&visual, |ws, _| {
+        assert!(ws.remove_confirm.is_none());
+        assert_eq!(ws.active_tab, MissionTab::Feed);
+    });
+
+    // Restore member, confirm removal with host rejection -> error banner, pending cleared, roster intact.
+    fake.set_overview(data.clone());
+    visual.run_until_parked();
+    fake.queue_result(
+        "removeMissionRole",
+        Err(runner_core::protocol::ClientError::msg(
+            "That role is being resumed or restarted; try again once it is up.",
+        )),
+    );
+    window
+        .update(&mut visual, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.select_mission_session("member", window, cx);
+                ws.request_remove_role("member", window, cx);
+                ws.remove_confirm = None;
+                ws.remove_role("member", "coder", window, cx);
+            });
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        |visual| ws.read_with(visual, |ws, _| ws.slot_actions.is_empty()),
+        "rejected removeMissionRole completion",
+    );
+    ws.read_with(&visual, |ws, _| {
+        assert!(ws
+            .error
+            .as_ref()
+            .is_some_and(|e| e.resolve().contains("resumed or restarted")));
+        assert_eq!(ws.members().len(), 2);
+    });
+
+    // Successful removal dispatches removeMissionRole; pushed Overview removes card, closes active tab to Feed, and records removedHandles.
+    window
+        .update(&mut visual, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.error = None;
+                ws.remove_role("member", "coder", window, cx);
+            });
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        |visual| {
+            fake.request_count("removeMissionRole") == 2
+                && ws.read_with(visual, |ws, _| ws.slot_actions.is_empty())
+        },
+        "successful removeMissionRole completion",
+    );
+    let requests = remote_test::action_trace(&fake, "removeMissionRole");
+    assert_eq!(requests[1]["mission"], "remote-mission");
+    assert_eq!(requests[1]["handle"], "coder");
+
+    let mut after_remove = data;
+    after_remove.missions[0]
+        .members
+        .retain(|m| m.session != "member");
+    after_remove.missions[0]
+        .removed_handles
+        .push("coder".into());
+    after_remove.sessions.remove("member");
+    fake.set_overview(after_remove);
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("MISSION_CARD member").is_none());
+    assert!(visual.debug_bounds("MISSION_TAB member").is_none());
+    assert!(visual.debug_bounds("MISSION_CARD qa-member").is_some());
+    ws.read_with(&visual, |ws, _| {
+        assert_eq!(ws.active_tab, MissionTab::Feed);
+        assert!(!ws
+            .mission_composer_roster()
+            .iter()
+            .any(|entry| entry.handle == "coder"));
+    });
+    window
+        .update(&mut visual, |_, window, cx| {
+            let ctx = ws.read(cx).add_role_context(window, cx).unwrap();
+            assert!(ctx.removed.contains("coder"));
+        })
+        .unwrap();
+}
+
+#[test]
+fn remote_add_role_submit_rejection_dismisses_if_mission_stopped_or_vanished_in_flight() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let (_temp, cx, window, _, fake) = setup();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    let ws = workspace(window, &visual);
+
+    // 1. Stopped Overview arrives while submit is in-flight; held rejection dismisses the modal
+    // and restores focus to the mission workspace instead of re-enabling Submit over a stopped mission.
+    fake.queue_result("catalog", Ok(rich_host_catalog()));
+    window
+        .update(&mut visual, |root, window, cx| {
+            let context = ws.read(cx).add_role_context(window, cx).unwrap();
+            root.open_add_role_modal(context, window, cx);
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        |visual| {
+            window
+                .read_with(visual, |root, _| !root.add_role_loading_catalog_for_test())
+                .unwrap()
+        },
+        "catalog load for stopped-in-flight case",
+    );
+    let (gate, handle) = crate::test_support::StagedReplyGate::pair();
+    fake.queue_result(
+        "addMissionRole",
+        Err(runner_core::protocol::ClientError::msg(
+            "The mission is not running.",
+        )),
+    );
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.stage_add_role_submit_gate_for_test(gate);
+            root.submit_add_role_for_test(window, cx);
+        })
+        .unwrap();
+    wait_until(&mut visual, |_| handle.is_entered(), "submit reply staged");
+    let mut stopped = overview();
+    stopped.missions[0].state = runner_core::companion::MissionState::Stopped;
+    fake.set_overview(stopped);
+    visual.run_until_parked();
+    ws.read_with(&visual, |ws, _| {
+        assert_eq!(
+            ws.mission_view().unwrap().status,
+            runner_core::protocol::model::MissionStatus::Completed
+        );
+    });
+    window
+        .read_with(&visual, |root, _| {
+            assert!(
+                root.create_modal_open(),
+                "submitting modal waits for its in-flight reply before dismissing"
+            );
+        })
+        .unwrap();
+    let applied = handle.release();
+    wait_until(
+        &mut visual,
+        |_| applied.is_applied(),
+        "stopped-in-flight rejection applied",
+    );
+    window
+        .update(&mut visual, |root, window, cx| {
+            assert!(!root.create_modal_open());
+            assert!(
+                ws.read(cx).root_focus.is_focused(window)
+                    || ws
+                        .read(cx)
+                        .composer_input
+                        .read(cx)
+                        .focus_handle()
+                        .is_focused(window)
+            );
+        })
+        .unwrap();
+
+    // 2. Mission vanishes from Overview while submit is in-flight (host switches active item to
+    // remote-tab); held rejection dismisses the modal and restores focus instead of leaving it over the tab.
+    fake.set_overview(overview());
+    visual.run_until_parked();
+    fake.queue_result("catalog", Ok(rich_host_catalog()));
+    window
+        .update(&mut visual, |root, window, cx| {
+            let context = ws.read(cx).add_role_context(window, cx).unwrap();
+            root.open_add_role_modal(context, window, cx);
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        |visual| {
+            window
+                .read_with(visual, |root, _| !root.add_role_loading_catalog_for_test())
+                .unwrap()
+        },
+        "catalog load for vanished-in-flight case",
+    );
+    let (gate, handle) = crate::test_support::StagedReplyGate::pair();
+    fake.queue_result(
+        "addMissionRole",
+        Err(runner_core::protocol::ClientError::msg(
+            "No mission has that id.",
+        )),
+    );
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.stage_add_role_submit_gate_for_test(gate);
+            root.submit_add_role_for_test(window, cx);
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        |_| handle.is_entered(),
+        "vanished submit reply staged",
+    );
+    let mut vanished = overview();
+    vanished.missions.clear();
+    vanished.sessions.clear();
+    fake.set_overview(vanished);
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |root, _| {
+            assert!(matches!(
+                root.remote_client.active_item(),
+                Some(RemoteItem::Tab(id)) if id == "remote-tab"
+            ));
+            assert!(root.create_modal_open());
+        })
+        .unwrap();
+    let applied = handle.release();
+    wait_until(
+        &mut visual,
+        |_| applied.is_applied(),
+        "vanished-in-flight rejection applied",
+    );
+    window
+        .update(&mut visual, |root, window, cx| {
+            assert!(!root.create_modal_open());
+            assert!(window.focused(cx).is_some());
+        })
+        .unwrap();
+
+    // 3. Same running mission rejects submit (e.g. handle taken) while Overview refreshes:
+    // modal stays open with the inline error and re-enabled controls.
+    fake.set_overview(overview());
+    visual.run_until_parked();
+    window
+        .update(&mut visual, |root, _, cx| {
+            root.select_remote_item(RemoteItem::Mission("remote-mission".into()), cx);
+        })
+        .unwrap();
+    visual.run_until_parked();
+    fake.queue_result("catalog", Ok(rich_host_catalog()));
+    window
+        .update(&mut visual, |root, window, cx| {
+            let context = ws.read(cx).add_role_context(window, cx).unwrap();
+            root.open_add_role_modal(context, window, cx);
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        |visual| {
+            window
+                .read_with(visual, |root, _| !root.add_role_loading_catalog_for_test())
+                .unwrap()
+        },
+        "catalog load for running rejection case",
+    );
+    let (gate, handle) = crate::test_support::StagedReplyGate::pair();
+    fake.queue_result(
+        "addMissionRole",
+        Err(runner_core::protocol::ClientError::msg(
+            "That handle is already in use in this mission.",
+        )),
+    );
+    window
+        .update(&mut visual, |root, window, cx| {
+            root.stage_add_role_submit_gate_for_test(gate);
+            root.submit_add_role_for_test(window, cx);
+        })
+        .unwrap();
+    wait_until(
+        &mut visual,
+        |_| handle.is_entered(),
+        "running rejection reply staged",
+    );
+    fake.set_overview(overview());
+    visual.run_until_parked();
+    let applied = handle.release();
+    wait_until(
+        &mut visual,
+        |_| applied.is_applied(),
+        "running rejection reply applied",
+    );
+    window
+        .read_with(&visual, |root, cx| {
+            assert!(root.create_modal_open());
+            assert_eq!(
+                root.add_role_error_for_test().as_deref(),
+                Some("That handle is already in use in this mission.")
+            );
+            assert_eq!(
+                root.add_role_controls_disabled_for_test(cx),
+                Some((false, false, false))
+            );
+        })
         .unwrap();
 }

@@ -1,7 +1,22 @@
 use super::*;
 use crate::test_support::*;
 use runner_core::protocol::mission::PostMessageInput;
+use std::cell::Cell;
 use std::time::{Duration, Instant};
+
+thread_local! {
+    static FAIL_LEAVE_NOTICE: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(crate) fn inject_leave_notice_failure_for_test() {
+    FAIL_LEAVE_NOTICE.with(|flag| flag.set(true));
+}
+
+pub(super) fn take_leave_notice_error() -> Option<String> {
+    FAIL_LEAVE_NOTICE
+        .with(|flag| flag.replace(false))
+        .then(|| "injected leave notice append failure".to_owned())
+}
 
 struct Fixture {
     state: AppCore,
@@ -342,6 +357,7 @@ fn cancellation_after_checks_keeps_newcomer_stopped_and_visible() {
             speed: None,
             task: None,
         },
+        None,
         cancel,
     )
     .unwrap();

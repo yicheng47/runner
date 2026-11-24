@@ -14,6 +14,41 @@ fn launch_failed(error: crate::error::Error) -> Failure {
     }
 }
 
+fn role_failed(error: crate::error::Error) -> Failure {
+    use crate::error::RoleRejection;
+    match error {
+        crate::error::Error::RoleRejected { kind, .. } => {
+            let code = match kind {
+                RoleRejection::NotRunning => ErrorCode::NotRunning,
+                RoleRejection::NotInMission
+                | RoleRejection::AlreadyRemoved
+                | RoleRejection::NoSession => ErrorCode::NotFound,
+                RoleRejection::SpawnPending
+                | RoleRejection::HandleInUse
+                | RoleRejection::HandleRemoved
+                | RoleRejection::FirstTurnTooLarge
+                | RoleRejection::Resuming => ErrorCode::Failed,
+            };
+            Failure(code, kind.companion_message(), None)
+        }
+        crate::error::Error::RuntimeVersionGate(gate) => {
+            launch_failed(crate::error::Error::RuntimeVersionGate(gate))
+        }
+        error => failed(error),
+    }
+}
+
+fn mission_exists(core: &AppCore, id: &str) -> Result<()> {
+    repo::mission::get(&*core.db.get().map_err(failed)?, id)
+        .map_err(failed)?
+        .ok_or(Failure(
+            ErrorCode::NotFound,
+            "No mission has that id.",
+            None,
+        ))
+        .map(drop)
+}
+
 fn bad_request() -> Failure {
     Failure(
         ErrorCode::BadRequest,
@@ -915,6 +950,75 @@ impl DaemonCore {
                 mission_changed(core, Some(&mission.id));
                 Ok(Value::Null)
             }
+            AddMissionRole {
+                mission: mission_id,
+                role: role_id,
+                handle: slot_handle,
+                runtime,
+                model,
+                effort,
+                speed: value_speed,
+                task,
+                cols,
+                rows,
+                ..
+            } => {
+                let runtime = runtime.as_deref().map(agent).transpose()?;
+                let speed = speed(value_speed)?;
+                if let Some(value) = slot_handle.as_deref() {
+                    handle(value)?;
+                }
+                mission_exists(core, &mission_id)?;
+                role(core, &role_id)?;
+                let size = (cols.clamp(20, 512), rows.clamp(8, 256));
+                let output = ops::mission::roles::add_role_with_size(
+                    core,
+                    p::MissionAddRoleInput {
+                        mission_id,
+                        role_id,
+                        handle: slot_handle,
+                        runtime,
+                        model,
+                        effort,
+                        speed,
+                        task,
+                    },
+                    Some(size),
+                )
+                .map_err(role_failed)?;
+                mission_changed(core, None);
+                core.events.emit(
+                    "session/updated",
+                    &json!({"mission_id": output.mission_id, "session_id": output.session_id}),
+                );
+                Ok(json!({
+                    "mission": output.mission_id,
+                    "handle": output.handle,
+                    "session": output.session_id,
+                }))
+            }
+            RemoveMissionRole {
+                mission: mission_id,
+                handle: slot_handle,
+                ..
+            } => {
+                if slot_handle.trim().is_empty() {
+                    return Err(bad_request());
+                }
+                mission_exists(core, &mission_id)?;
+                let output = ops::mission::roles::remove_role(core, &mission_id, &slot_handle)
+                    .map_err(role_failed)?;
+                mission_changed(core, None);
+                core.events.emit(
+                    "session/updated",
+                    &json!({"mission_id": output.mission_id, "session_id": output.session_id}),
+                );
+                Ok(json!({
+                    "mission": output.mission_id,
+                    "handle": output.handle,
+                    "session": output.session_id,
+                }))
+            }
         }
     }
 }
@@ -1285,5 +1389,510 @@ mod tests {
         assert!(repo::node::list(&core.db.get().unwrap())
             .unwrap()
             .is_empty());
+    }
+
+    struct MissionRoleFixture {
+        core: std::sync::Arc<AppCore>,
+        _dir: tempfile::TempDir,
+    }
+
+    impl MissionRoleFixture {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let core = std::sync::Arc::new(crate::test_support::test_core_in(dir.path().into()));
+            let executable = std::env::current_exe().unwrap();
+            crate::db::set_runtime_override(&core.db, "codex", executable.to_str()).unwrap();
+            crate::db::set_runtime_override(&core.db, "claude-code", executable.to_str()).unwrap();
+            {
+                let conn = core.db.get().unwrap();
+                conn.execute_batch(
+                    "INSERT INTO crews (id,name,created_at,updated_at) VALUES ('c','Team','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z');
+                     INSERT INTO missions (id,crew_id,title,status,started_at) VALUES ('m','c','secret-title-canary','running','2026-10-01T00:00:00Z');",
+                )
+                .unwrap();
+                crate::test_support::insert_test_role(&conn, "r-coder", "coder", "codex", "codex");
+                crate::test_support::insert_test_role(
+                    &conn,
+                    "r-reviewer",
+                    "reviewer",
+                    "codex",
+                    "codex",
+                );
+                crate::test_support::insert_test_slot(
+                    &conn, "s-coder", "c", "r-coder", "coder", 0, true,
+                );
+                let mut row = crate::test_support::test_session_row(
+                    "session-coder",
+                    crate::model::SessionStatus::Stopped,
+                );
+                row.mission_id = Some("m".into());
+                row.slot_id = Some("s-coder".into());
+                row.role_id = Some("r-coder".into());
+                crate::test_support::insert_session_row(&conn, &row).unwrap();
+                repo::node::upsert(
+                    &conn,
+                    &repo::node::NodeRow {
+                        id: "node-m".into(),
+                        parent_id: None,
+                        position: 0,
+                        node_type: repo::node::NodeType::Mission,
+                        name: None,
+                        ref_id: Some("m".into()),
+                        layout: None,
+                        pinned_position: None,
+                        last_completed_at: None,
+                        last_viewed_at: None,
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                    },
+                )
+                .unwrap();
+                ops::mission::roster::load(
+                    &conn,
+                    &core.app_data_dir,
+                    &ops::mission::get(&conn, "m").unwrap(),
+                )
+                .unwrap();
+            }
+            crate::daemon::block_on(ops::mission::ensure_mission_router_mounted(&core, "m"))
+                .unwrap();
+            Self { core, _dir: dir }
+        }
+
+        fn daemon(&self) -> DaemonCore {
+            DaemonCore(std::sync::Arc::downgrade(&self.core))
+        }
+
+        fn settle(&self) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while self.core.sessions.has_pending_mission_spawns("m")
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(!self.core.sessions.has_pending_mission_spawns("m"));
+        }
+    }
+
+    impl Drop for MissionRoleFixture {
+        fn drop(&mut self) {
+            self.settle();
+            self.core.buses.unmount("m");
+            self.core.routers.unregister("m");
+        }
+    }
+
+    #[test]
+    fn add_and_remove_mission_role_happy_paths_emit_events_and_populate_overview_removed_handles() {
+        use crate::companion::core::Core as _;
+
+        assert!(crate::companion::FEATURES.contains(&"addMissionRole"));
+        assert!(crate::companion::FEATURES.contains(&"removeMissionRole"));
+
+        let fixture = MissionRoleFixture::new();
+        let daemon = fixture.daemon();
+        let mut events = fixture.core.events.subscribe();
+
+        // 1. Add with defaults (suggested handle, no overrides, no task).
+        let added = daemon
+            .action(ActionRequest::AddMissionRole {
+                id: 1,
+                mission: "m".into(),
+                role: "r-reviewer".into(),
+                handle: None,
+                runtime: None,
+                model: None,
+                effort: None,
+                speed: None,
+                task: None,
+                cols: 140,
+                rows: 42,
+            })
+            .unwrap();
+        assert_eq!(added["mission"], "m");
+        assert_eq!(added["handle"], "reviewer");
+        let first_session = added["session"].as_str().unwrap().to_owned();
+        fixture.settle();
+
+        let mut saw_mission_changed = false;
+        let mut saw_session_updated = false;
+        while let Ok(event) = events.try_recv() {
+            if event.name == "mission/changed" {
+                saw_mission_changed = true;
+            }
+            if event.name == "session/updated"
+                && event.payload["mission_id"] == "m"
+                && event.payload["session_id"] == first_session
+            {
+                saw_session_updated = true;
+            }
+        }
+        assert!(
+            saw_mission_changed,
+            "addMissionRole must emit mission/changed"
+        );
+        assert!(
+            saw_session_updated,
+            "addMissionRole must emit session/updated"
+        );
+        {
+            let conn = fixture.core.db.get().unwrap();
+            let row = repo::session::get_row(&conn, &first_session)
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.last_cols, Some(140));
+            assert_eq!(row.last_rows, Some(42));
+        }
+
+        // 2. Add a claude-code role overridden to codex with explicit handle, model/effort/speed, task, and clamped size (20x256).
+        {
+            let conn = fixture.core.db.get().unwrap();
+            crate::test_support::insert_test_role(
+                &conn,
+                "r-claude",
+                "claude-reviewer",
+                "claude-code",
+                "claude",
+            );
+        }
+        let custom = daemon
+            .action(ActionRequest::AddMissionRole {
+                id: 2,
+                mission: "m".into(),
+                role: "r-claude".into(),
+                handle: Some("reviewer-custom".into()),
+                runtime: Some("codex".into()),
+                model: Some("gpt-5.4".into()),
+                effort: Some("high".into()),
+                speed: Some("fast".into()),
+                task: Some("Audit this change".into()),
+                cols: 5,
+                rows: 999,
+            })
+            .unwrap();
+        assert_eq!(custom["mission"], "m");
+        assert_eq!(custom["handle"], "reviewer-custom");
+        let custom_session = custom["session"].as_str().unwrap().to_owned();
+        fixture.settle();
+        {
+            let conn = fixture.core.db.get().unwrap();
+            let row = repo::session::get_row(&conn, &custom_session)
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.agent_runtime.as_deref(), Some("codex"));
+            assert_eq!(row.last_cols, Some(20));
+            assert_eq!(row.last_rows, Some(256));
+            let def = row.launch_definition.unwrap();
+            assert_eq!(def.model.as_deref(), Some("gpt-5.4"));
+            assert_eq!(def.effort.as_deref(), Some("high"));
+            assert_eq!(def.codex_speed, Some(p::CodexSpeed::Fast));
+            let log_events =
+                ops::mission::read_events(&fixture.core.app_data_dir, &conn, "m").unwrap();
+            assert!(log_events.iter().any(|event| {
+                event.from == "human"
+                    && event.payload["text"] == "Audit this change"
+                    && event.recipients().first().map(String::as_str) == Some("reviewer-custom")
+            }));
+        }
+
+        // 3. Remove the custom role and verify events + Overview.removedHandles.
+        while events.try_recv().is_ok() {}
+        let removed = daemon
+            .action(ActionRequest::RemoveMissionRole {
+                id: 3,
+                mission: "m".into(),
+                handle: "reviewer-custom".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            removed,
+            json!({"mission": "m", "handle": "reviewer-custom", "session": custom_session})
+        );
+        let mut saw_remove_mission_changed = false;
+        let mut saw_remove_session_updated = false;
+        while let Ok(event) = events.try_recv() {
+            if event.name == "mission/changed" {
+                saw_remove_mission_changed = true;
+            }
+            if event.name == "session/updated"
+                && event.payload["mission_id"] == "m"
+                && event.payload["session_id"] == custom_session
+            {
+                saw_remove_session_updated = true;
+            }
+        }
+        assert!(
+            saw_remove_mission_changed,
+            "removeMissionRole must emit mission/changed"
+        );
+        assert!(
+            saw_remove_session_updated,
+            "removeMissionRole must emit session/updated"
+        );
+
+        let overview = daemon.overview().unwrap();
+        assert_eq!(overview.missions.len(), 1);
+        assert_eq!(
+            overview.missions[0].removed_handles,
+            vec!["reviewer-custom"]
+        );
+        assert!(!overview.missions[0]
+            .members
+            .iter()
+            .any(|member| member.handle == "reviewer-custom"));
+    }
+
+    #[test]
+    fn add_and_remove_mission_role_map_every_rejection_and_preserve_privacy() {
+        let fixture = MissionRoleFixture::new();
+        let daemon = fixture.daemon();
+
+        let add = |mission: &str,
+                   role: &str,
+                   handle: Option<&str>,
+                   runtime: Option<&str>,
+                   speed: Option<&str>| {
+            ActionRequest::AddMissionRole {
+                id: 1,
+                mission: mission.into(),
+                role: role.into(),
+                handle: handle.map(str::to_owned),
+                runtime: runtime.map(str::to_owned),
+                model: None,
+                effort: None,
+                speed: speed.map(str::to_owned),
+                task: None,
+                cols: 120,
+                rows: 40,
+            }
+        };
+        let remove = |mission: &str, handle: &str| ActionRequest::RemoveMissionRole {
+            id: 2,
+            mission: mission.into(),
+            handle: handle.into(),
+        };
+
+        // Pre-validation errors.
+        for req in [
+            add("m", "r-reviewer", None, Some("shell"), None),
+            add("m", "r-reviewer", None, Some("unknown"), None),
+            add("m", "r-reviewer", None, None, Some("turbo")),
+            add("m", "r-reviewer", Some(""), None, None),
+            add("m", "r-reviewer", Some("Bad Handle"), None, None),
+            remove("m", ""),
+            remove("m", "   "),
+        ] {
+            let err = daemon.action(req).unwrap_err();
+            assert_eq!(err.0, ErrorCode::BadRequest);
+        }
+
+        // Missing mission and missing role.
+        let err = daemon
+            .action(add("missing-mission", "r-reviewer", None, None, None))
+            .unwrap_err();
+        assert_eq!(err.0, ErrorCode::NotFound);
+        assert_eq!(err.1, "No mission has that id.");
+
+        let err = daemon
+            .action(add("m", "missing-role", None, None, None))
+            .unwrap_err();
+        assert_eq!(err.0, ErrorCode::NotFound);
+        assert_eq!(err.1, "No role has that id.");
+
+        let err = daemon
+            .action(remove("missing-mission", "coder"))
+            .unwrap_err();
+        assert_eq!(err.0, ErrorCode::NotFound);
+        assert_eq!(err.1, "No mission has that id.");
+
+        // HandleInUse.
+        let err = daemon
+            .action(add("m", "r-reviewer", Some("coder"), None, None))
+            .unwrap_err();
+        assert_eq!(err.0, ErrorCode::Failed);
+        assert_eq!(err.1, "That handle is already in use in this mission.");
+
+        // NotInMission.
+        let err = daemon.action(remove("m", "ghost")).unwrap_err();
+        assert_eq!(err.0, ErrorCode::NotFound);
+        assert_eq!(err.1, "That role is not in this mission.");
+
+        // Add then remove a role to exercise HandleRemoved & AlreadyRemoved.
+        daemon
+            .action(add("m", "r-reviewer", Some("qa"), None, None))
+            .unwrap();
+        fixture.settle();
+        daemon.action(remove("m", "qa")).unwrap();
+
+        let err = daemon
+            .action(add("m", "r-reviewer", Some("qa"), None, None))
+            .unwrap_err();
+        assert_eq!(err.0, ErrorCode::Failed);
+        assert_eq!(
+            err.1,
+            "That handle was already removed from this mission; choose another handle."
+        );
+
+        let err = daemon.action(remove("m", "qa")).unwrap_err();
+        assert_eq!(err.0, ErrorCode::NotFound);
+        assert_eq!(err.1, "That role was already removed from this mission.");
+
+        // SpawnPending (both add and remove).
+        let cancel = fixture.core.sessions.register_pending_mission_cancel("m");
+        for req in [
+            add("m", "r-reviewer", Some("qa-2"), None, None),
+            remove("m", "coder"),
+        ] {
+            let err = daemon.action(req).unwrap_err();
+            assert_eq!(err.0, ErrorCode::Failed);
+            assert_eq!(
+                err.1,
+                "A session in this mission is still starting; try again once it is up."
+            );
+            assert!(!err.1.contains("secret-title-canary"));
+        }
+        fixture
+            .core
+            .sessions
+            .drop_pending_mission_cancel("m", &cancel);
+
+        // Resuming.
+        let claim = fixture
+            .core
+            .sessions
+            .try_claim_resume("session-coder")
+            .unwrap();
+        let err = daemon.action(remove("m", "coder")).unwrap_err();
+        assert_eq!(err.0, ErrorCode::Failed);
+        assert_eq!(
+            err.1,
+            "That role is being resumed or restarted; try again once it is up."
+        );
+        drop(claim);
+
+        // NoSession (archive the session row while leaving the slot in roster).
+        fixture
+            .core
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET archived_at='2026-10-02T00:00:00Z' WHERE id='session-coder'",
+                [],
+            )
+            .unwrap();
+        let err = daemon.action(remove("m", "coder")).unwrap_err();
+        assert_eq!(err.0, ErrorCode::NotFound);
+        assert_eq!(err.1, "That role has no session in this mission.");
+
+        // FirstTurnTooLarge.
+        let huge = "x".repeat(crate::router::runtime::FIRST_TURN_ARGV_MAX_BYTES + 1024);
+        fixture
+            .core
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE roles SET system_prompt=?1 WHERE id='r-reviewer'",
+                rusqlite::params![huge],
+            )
+            .unwrap();
+        let err = daemon
+            .action(add("m", "r-reviewer", Some("qa-2"), None, None))
+            .unwrap_err();
+        assert_eq!(err.0, ErrorCode::Failed);
+        assert_eq!(err.1, "The mission brief is too large to launch that role.");
+
+        // NotRunning (both add and remove; never leaks mission title).
+        fixture
+            .core
+            .db
+            .get()
+            .unwrap()
+            .execute("UPDATE missions SET status='completed' WHERE id='m'", [])
+            .unwrap();
+        for req in [
+            add("m", "r-reviewer", Some("qa-3"), None, None),
+            remove("m", "coder"),
+        ] {
+            let err = daemon.action(req).unwrap_err();
+            assert_eq!(err.0, ErrorCode::NotRunning);
+            assert_eq!(err.1, "The mission is not running.");
+            assert!(!err.1.contains("secret-title-canary"));
+        }
+
+        // RuntimeVersionGate & generic fallback through role_failed.
+        let gate = p::RuntimeVersionGate {
+            runtime: p::Runtime::Codex,
+            installed_version: "0.140.0".into(),
+            min_version: "0.164.0".into(),
+        };
+        let mapped = role_failed(crate::error::Error::RuntimeVersionGate(gate.clone()));
+        assert_eq!(mapped.0, ErrorCode::Failed);
+        assert_eq!(mapped.1, "The agent is too old for Runner.");
+        assert_eq!(mapped.2, Some(gate));
+
+        let generic = role_failed(crate::error::Error::msg("internal /secret/path failure"));
+        assert_eq!(generic.0, ErrorCode::Failed);
+        assert_eq!(generic.1, "The host could not complete the request.");
+        assert!(!generic.1.contains("/secret/path"));
+    }
+
+    #[test]
+    fn remove_mission_role_succeeds_and_notifies_when_leave_notice_append_fails() {
+        use crate::companion::core::Core as _;
+
+        let fixture = MissionRoleFixture::new();
+        let daemon = fixture.daemon();
+        let mut events = fixture.core.events.subscribe();
+
+        ops::mission::roles::tests::inject_leave_notice_failure_for_test();
+        let removed = daemon
+            .action(ActionRequest::RemoveMissionRole {
+                id: 9,
+                mission: "m".into(),
+                handle: "coder".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            removed,
+            json!({"mission": "m", "handle": "coder", "session": "session-coder"})
+        );
+
+        let mut saw_mission_changed = false;
+        let mut saw_session_updated = false;
+        while let Ok(event) = events.try_recv() {
+            if event.name == "mission/changed" {
+                saw_mission_changed = true;
+            }
+            if event.name == "session/updated"
+                && event.payload["mission_id"] == "m"
+                && event.payload["session_id"] == "session-coder"
+            {
+                saw_session_updated = true;
+            }
+        }
+        assert!(saw_mission_changed, "must still emit mission/changed");
+        assert!(saw_session_updated, "must still emit session/updated");
+
+        let overview = daemon.overview().unwrap();
+        assert!(overview.missions[0].members.is_empty());
+        assert_eq!(overview.missions[0].removed_handles, vec!["coder"]);
+
+        let conn = fixture.core.db.get().unwrap();
+        let log_events = ops::mission::read_events(&fixture.core.app_data_dir, &conn, "m").unwrap();
+        assert!(log_events.iter().any(|event| {
+            event.from == "human"
+                && event
+                    .signal_type
+                    .as_ref()
+                    .is_some_and(|kind| kind.as_str() == "role_removed")
+                && event.payload["handle"] == "coder"
+        }));
+        assert!(!log_events.iter().any(|event| {
+            event.from == "runner"
+                && event.payload["text"]
+                    .as_str()
+                    .is_some_and(|text| text.starts_with("@coder left the mission."))
+        }));
     }
 }
