@@ -280,8 +280,7 @@ impl NativeRoot {
             .capture_key_down(move |event, window, cx| {
                 if event.keystroke.key == "escape" {
                     usage_root.update(cx, |this, cx| {
-                        if this.usage_open {
-                            this.usage_open = false;
+                        if this.usage.close() {
                             cx.stop_propagation();
                             cx.notify();
                         } else if !this.close_unfocused_update_popover(window, cx)

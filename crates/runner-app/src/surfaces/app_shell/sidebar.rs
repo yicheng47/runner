@@ -330,9 +330,9 @@ impl NativeRoot {
         let show_usage = (older_host || !visible_usage_runtimes.is_empty())
             && !self.front_page_sidebar_collapsed();
         if !show_usage {
-            self.usage_open = false;
+            self.usage.close();
         }
-        self.remote_client.sync_usage_popover(self.usage_open, cx);
+        self.remote_client.sync_usage_popover(self.usage.open, cx);
         let anchor_owner = cx.entity();
         let usage = show_usage.then(|| {
             let available = (self.front_page_sidebar_width(cx) - 96.) * zoom;
@@ -347,14 +347,14 @@ impl NativeRoot {
                 .when(dimmed, |usage| usage.opacity(0.45))
                 .occlude()
                 .cursor_pointer()
-                .when(self.usage_open && !older_host, |button| {
+                .when(self.usage.open && !older_host, |button| {
                     button.border_color(theme::muted())
                 })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(|this, _, _, cx| {
-                    this.usage_open = !this.usage_open;
-                    this.remote_client.sync_usage_popover(this.usage_open, cx);
-                    if this.usage_open && this.remote_client.is_local() {
+                    let open = this.usage.toggle();
+                    this.remote_client.sync_usage_popover(open, cx);
+                    if open && this.remote_client.is_local() {
                         this.start_usage_refresh_timer(cx);
                         let core = this.core(cx).clone();
                         let _ = core.usage_refresh(RefreshReason::Open);
@@ -366,7 +366,7 @@ impl NativeRoot {
                 canvas(
                     |_, _, _| {},
                     move |bounds, _, _, cx| {
-                        anchor_owner.update(cx, |this, _| this.usage_anchor = Some(bounds));
+                        anchor_owner.update(cx, |this, _| this.usage.anchor = Some(bounds));
                     },
                 )
                 .absolute()
@@ -416,9 +416,9 @@ impl NativeRoot {
             .child(self.front_page_sidebar())
             .child(footer)
             .children(
-                (self.usage_open && show_usage)
+                (self.usage.open && show_usage)
                     .then(|| {
-                        self.usage_anchor.map(|anchor| {
+                        self.usage.anchor.map(|anchor| {
                             let owner = cx.entity();
                             popup_layer(
                                 anchor,
@@ -427,7 +427,7 @@ impl NativeRoot {
                                 self.render_usage_popover(window, cx),
                                 Rc::new(move |_, cx| {
                                     owner.update(cx, |this, cx| {
-                                        this.usage_open = false;
+                                        this.usage.close();
                                         cx.notify();
                                     });
                                 }),

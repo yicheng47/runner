@@ -615,7 +615,7 @@ fn usage_stays_solid_and_settings_gear_opens_usage_in_both_materials() {
                 window,
                 cx,
             );
-            root.usage_installed = vec![Runtime::Codex];
+            root.usage.installed = vec![Runtime::Codex];
             root
         });
         let mut visual = VisualTestContext::from_window(host.into(), &cx);
@@ -630,7 +630,7 @@ fn usage_stays_solid_and_settings_gear_opens_usage_in_both_materials() {
         visual.simulate_click(gear.center(), Modifiers::default());
         visual.run_until_parked();
         host.read_with(&visual, |root, _| {
-            assert!(!root.usage_open);
+            assert!(!root.usage.open);
             assert_eq!(root.route, AppRoute::Settings);
             assert_eq!(root.settings_page.pane, SettingsPane::Usage);
         })
@@ -658,7 +658,7 @@ fn usage_preview_keeps_its_natural_size_and_wraps_inside_the_sidebar_card() {
     let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
     visual.simulate_resize(gpui::size(px(1440.), px(1000.)));
     host.update(&mut visual, |root, window, cx| {
-        root.usage_installed = vec![
+        root.usage.installed = vec![
             runner_core::Runtime::ClaudeCode,
             runner_core::Runtime::Codex,
         ];
@@ -742,7 +742,7 @@ fn usage_preview_tracks_badges_and_keeps_the_same_footer_anchors() {
             window,
             cx,
         );
-        root.usage_installed = vec![Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity];
+        root.usage.installed = vec![Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity];
         root
     });
     let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
@@ -854,7 +854,7 @@ fn usage_settings_centers_codex_row_without_subtitle_and_labels_antigravity_gemi
             window,
             cx,
         );
-        root.usage_installed = vec![Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity];
+        root.usage.installed = vec![Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity];
         root.enter_settings_pane(SettingsPane::Usage, window, cx);
         root
     });
@@ -977,7 +977,8 @@ fn usage_page_account_picker_follows_refreshed_accounts_and_usage() {
     visual.run_until_parked();
     host.read_with(&visual, |root, cx| {
         assert_eq!(
-            root.claude_account_picker
+            root.usage
+                .claude_account_picker
                 .as_ref()
                 .unwrap()
                 .read(cx)
@@ -1018,7 +1019,7 @@ fn usage_page_account_picker_follows_refreshed_accounts_and_usage() {
             "work",
             "refreshed account snapshot"
         );
-        let picker = root.claude_account_picker.as_ref().unwrap().read(cx);
+        let picker = root.usage.claude_account_picker.as_ref().unwrap().read(cx);
         assert_eq!(picker.value(), "work");
         assert_eq!(
             picker

@@ -947,7 +947,7 @@ fn sidebar_footer_fits_weekly_values_and_settings_in_one_row() {
                         window,
                         cx,
                     );
-                    root.usage_installed = vec![Runtime::Codex, Runtime::ClaudeCode];
+                    root.usage.installed = vec![Runtime::Codex, Runtime::ClaudeCode];
                     root
                 });
                 let mut visual = VisualTestContext::from_window(host.into(), &cx);
@@ -1058,7 +1058,7 @@ fn sidebar_footer_opens_usage_and_settings_and_hides_usage_in_collapsed_preview(
             window,
             cx,
         );
-        root.usage_installed = vec![Runtime::Codex];
+        root.usage.installed = vec![Runtime::Codex];
         root
     });
     let mut visual = VisualTestContext::from_window(host.into(), &cx);
@@ -1067,7 +1067,7 @@ fn sidebar_footer_opens_usage_and_settings_and_hides_usage_in_collapsed_preview(
     let usage = visual.debug_bounds("SIDEBAR_USAGE").unwrap();
     visual.simulate_click(usage.center(), Modifiers::default());
     visual.run_until_parked();
-    assert!(host.read_with(&visual, |root, _| root.usage_open).unwrap());
+    assert!(host.read_with(&visual, |root, _| root.usage.open).unwrap());
     assert!(visual.debug_bounds("USAGE_POPOVER_PANEL").is_some());
     visual.simulate_click(usage.center(), Modifiers::default());
     visual.run_until_parked();
@@ -1093,7 +1093,7 @@ fn sidebar_footer_opens_usage_and_settings_and_hides_usage_in_collapsed_preview(
     host.update(&mut visual, |root, _, cx| {
         root.sidebar_collapsed = false;
         root.sidebar_preview.open = false;
-        root.usage_installed.clear();
+        root.usage.installed.clear();
         cx.notify();
     })
     .unwrap();
@@ -1983,7 +1983,7 @@ fn sidebar_footer_overflow_collapses_lowest_usage_badges_across_three_runtimes()
                 window,
                 cx,
             );
-            root.usage_installed = vec![Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity];
+            root.usage.installed = vec![Runtime::Codex, Runtime::ClaudeCode, Runtime::Antigravity];
             root
         });
         let mut visual = VisualTestContext::from_window(host.into(), &cx);

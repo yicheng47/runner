@@ -99,7 +99,7 @@ impl NativeRoot {
         let changed = self.sidebar_collapsed != collapsed;
         self.sidebar_collapsed = collapsed;
         if collapsed {
-            self.usage_open = false;
+            self.usage.close();
             self.update_popover.close_without_focus();
         }
         self.mission_workspace
