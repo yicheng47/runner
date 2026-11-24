@@ -329,7 +329,7 @@ impl ReadView<'_> {
         self.view.launched(self.cx)
     }
 
-    fn rendered_view(&self) -> Option<Entity<super::markdown::MarkdownView>> {
+    fn rendered_view(&self) -> Option<Entity<crate::ui::markdown::MarkdownView>> {
         self.view.rendered_view(self.cx)
     }
 
@@ -2747,7 +2747,7 @@ fn a_drag_selects_rendered_text_across_rows_and_copies_it() {
 
     let page = h.read(|view| view.rendered_view()).unwrap();
     page.update(&mut h.visual, |page, cx| {
-        use super::markdown::Position;
+        use crate::ui::markdown::Position;
         page.select(
             Position { row: 1, offset: 3 },
             Position { row: 1, offset: 7 },
@@ -2772,9 +2772,9 @@ fn a_single_long_code_line_shapes_only_the_rows_in_view() {
     assert!(rows > 1_000, "{rows} rows");
     for row in [0, rows / 2, rows - 1] {
         page.update(&mut h.visual, |page, _| page.scroll_to_row(row));
-        super::markdown::DRAWN_CODE_BYTES.set(0);
+        crate::ui::markdown::DRAWN_CODE_BYTES.set(0);
         h.redraw();
-        let drawn = super::markdown::DRAWN_CODE_BYTES.get();
+        let drawn = crate::ui::markdown::DRAWN_CODE_BYTES.get();
         assert!(
             drawn > 0 && drawn < 100 * 520,
             "shaped {drawn} bytes at {row}"
@@ -3098,7 +3098,7 @@ fn an_unchanged_change_event_during_markdown_drag_preserves_selection_and_copy()
         page.read_with(&h.visual, |page, _| page.selected_text()),
         Some(selected_text)
     );
-    let edited = Arc::new(super::markdown::Page::parse(
+    let edited = Arc::new(crate::ui::markdown::Page::parse(
         "Different content.\n",
         "DRAG.md",
     ));
@@ -3180,7 +3180,7 @@ fn a_link_target_or_formatting_edit_updates_page_while_preserving_selection() {
     let has_strong = page.read_with(&h.visual, |page, _| {
         matches!(
             &page.page().rows[1].kind,
-            super::markdown::RowKind::Paragraph(inline)
+            crate::ui::markdown::RowKind::Paragraph(inline)
                 if inline.styles.iter().any(|(_, style)| style.strong)
         )
     });

@@ -11,7 +11,6 @@ pub(crate) mod command_palette;
 pub(crate) mod crews;
 pub(crate) mod files;
 pub(crate) mod front_page;
-pub(crate) mod mission_markdown;
 pub(crate) mod mission_workspace;
 pub(crate) mod panes;
 pub(crate) mod profile_page;
