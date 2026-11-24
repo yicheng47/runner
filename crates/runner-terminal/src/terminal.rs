@@ -27,13 +27,17 @@ use runner_core::protocol::{ClientError, ClientEvent, DaemonClient};
 pub mod find;
 mod links;
 mod model;
-pub use links::{LinkTarget, TerminalLink};
+pub use links::{FileLinkContext, LinkTarget, TerminalLink};
 pub use model::{ClipboardTarget, ModelOptions, TerminalHost, TerminalModel, MAX_CLIPBOARD_BYTES};
 
 #[cfg(any(test, windows))]
 use links::strip_drive_slash;
 #[cfg(test)]
-use links::{candidate_paths, file_link_regex, file_target_from_uri_with_platform};
+use links::{
+    candidate_paths, file_target_from_editor_uri_with_platform, file_target_from_uri_with_platform,
+    scan_plain_file_candidates, stripped_prefix_candidates, terminal_link_at_with_prober,
+    MAX_LINK_PATH_PROBES, MAX_WRAP_JOIN_ROWS,
+};
 use links::{percent_decode, percent_decode_bytes, strip_file_scheme, terminal_link_at};
 
 use crate::palette;
@@ -1355,6 +1359,12 @@ impl TerminalMirror {
     /// Relative paths try the shell's live cwd first, then the spawn cwd, so
     /// output printed before a `cd` still resolves.
     pub fn link_at(&self, point: Point) -> Option<TerminalLink> {
+        self.link_at_with(point, &FileLinkContext::default())
+    }
+
+    /// Relative paths try the shell's live cwd, then the spawn cwd, then any
+    /// extra root from `context`, without duplicates.
+    pub fn link_at_with(&self, point: Point, context: &FileLinkContext) -> Option<TerminalLink> {
         let live = self.metadata.lock().unwrap().live_cwd.clone();
         let spawn = self.link_cwd.get_or_init(|| {
             self.client
@@ -1362,11 +1372,19 @@ impl TerminalMirror {
                 .ok()
                 .flatten()
         });
-        let cwds: Vec<&Path> = live
-            .as_deref()
-            .into_iter()
-            .chain(spawn.as_deref())
-            .collect();
+        let mut cwds: Vec<&Path> = Vec::with_capacity(3);
+        for root in [
+            live.as_deref(),
+            spawn.as_deref(),
+            context.extra_root.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if !cwds.contains(&root) {
+                cwds.push(root);
+            }
+        }
         terminal_link_at(&*self.term.lock_unfair(), point, &cwds)
     }
 
