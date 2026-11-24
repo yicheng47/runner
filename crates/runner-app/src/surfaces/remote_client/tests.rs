@@ -8434,7 +8434,7 @@ fn the_update_hint_fits_beside_the_footer_buttons_at_every_width_zoom_and_langua
                     );
                     assert!(text.right() <= hint.right(), "{case}: {text:?} {hint:?}");
                     assert!(
-                        (hint.size.height - px(32. * zoom)).abs() <= px(1.),
+                        (hint.size.height - px(28. * zoom)).abs() <= px(1.),
                         "{case}"
                     );
                 }

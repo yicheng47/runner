@@ -965,10 +965,10 @@ fn sidebar_footer_fits_weekly_values_and_settings_in_one_row() {
                 );
                 let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
                 let host_button = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
-                assert!((gear.left() - host_button.right() - px(8. * zoom)).abs() < px(1.));
+                assert!((gear.left() - host_button.right() - px(4. * zoom)).abs() < px(1.));
                 let row = visual.debug_bounds("SIDEBAR_FOOTER_ROW").unwrap();
-                assert!((usage.size.height - px(32. * zoom)).abs() <= px(1.));
-                assert!((gear.size.width - px(32. * zoom)).abs() <= px(1.));
+                assert!((usage.size.height - px(28. * zoom)).abs() <= px(1.));
+                assert!((gear.size.width - px(28. * zoom)).abs() <= px(1.));
                 assert_eq!(usage.size.height, gear.size.height);
                 assert_eq!(usage.top(), gear.top());
                 assert!(usage.top() >= row.top() && usage.bottom() <= row.bottom());
@@ -2019,7 +2019,7 @@ fn sidebar_footer_overflow_collapses_lowest_usage_badges_across_three_runtimes()
         let usage = visual.debug_bounds("SIDEBAR_USAGE").unwrap();
         let host_btn = visual.debug_bounds("SIDEBAR_HOST_BUTTON").unwrap();
         let gear = visual.debug_bounds("SIDEBAR_SETTINGS").unwrap();
-        assert!((gear.left() - host_btn.right() - px(8. * zoom)).abs() <= px(0.5));
+        assert!((gear.left() - host_btn.right() - px(4. * zoom)).abs() <= px(0.5));
         assert!(usage.right() <= host_btn.left() - px(8. * zoom - 1.));
 
         // Narrow 200 px sidebar collapses lowest usage percentages first and preserves highest.
