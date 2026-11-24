@@ -60,7 +60,12 @@ impl SessionManager {
         });
         let (terminal, terminal_started_at) = match prepared {
             Some((terminal, started_at)) => {
-                self.rebind_terminal_session_from_binding(&terminal, &started_at, binding);
+                self.rebind_terminal_session_from_binding(
+                    session_id,
+                    &terminal,
+                    &started_at,
+                    binding,
+                );
                 (terminal, started_at)
             }
             None => self

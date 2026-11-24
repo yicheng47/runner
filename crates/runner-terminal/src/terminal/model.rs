@@ -5,6 +5,9 @@ pub trait TerminalHost: Send + Sync + 'static {
     fn write_reply(&self, session_id: &str, bytes: &[u8]) -> Result<()>;
     fn report_input_state(&self, session_id: &str, observation: InputObservation);
     fn set_live_title(&self, session_id: &str, title: &str) -> Result<()>;
+    /// Called on every accepted OSC title before cache deduplication so a runtime can track
+    /// title freshness even when the title text matches the cached value or persistence fails.
+    fn observe_live_title(&self, _session_id: &str, _title: &str) {}
     fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<()>;
     fn is_local_host(&self, host: &str) -> bool;
     /// An OSC 52 write from the program in the pane; `text` is never empty and
@@ -271,6 +274,7 @@ impl TerminalModel {
                                 }
                                 _ => sanitize_title(&raw),
                             };
+                            host.observe_live_title(&session_id, &cleaned);
                             let changed = {
                                 let mut held = title.lock().unwrap();
                                 let changed = *held != cleaned;
@@ -1044,6 +1048,70 @@ mod delivery_tests {
             *host.persisted.lock().unwrap(),
             vec!["Fix login bug", "Follow-up topic"]
         );
+
+        for worker in model.stop_workers() {
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn observe_live_title_fires_on_repeated_accepted_osc_titles_without_duplicate_persists() {
+        struct ObservingHost {
+            observed: Mutex<Vec<String>>,
+            persisted: Mutex<Vec<String>>,
+        }
+        impl TerminalHost for ObservingHost {
+            fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+                Ok(())
+            }
+            fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+                Ok(())
+            }
+            fn report_input_state(&self, _: &str, _: InputObservation) {}
+            fn observe_live_title(&self, _: &str, title: &str) {
+                self.observed.lock().unwrap().push(title.to_owned());
+            }
+            fn set_live_title(&self, _: &str, title: &str) -> Result<()> {
+                self.persisted.lock().unwrap().push(title.to_owned());
+                Ok(())
+            }
+            fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+                Ok(())
+            }
+            fn is_local_host(&self, _: &str) -> bool {
+                true
+            }
+            fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+        }
+
+        let host = Arc::new(ObservingHost {
+            observed: Mutex::default(),
+            persisted: Mutex::default(),
+        });
+        let model = TerminalModel::new(
+            host.clone(),
+            "agy-observe".into(),
+            80,
+            4,
+            ModelOptions {
+                runtime: Some(runner_core::Runtime::Antigravity),
+                initial_title: "Title B".into(),
+                ..ModelOptions::default()
+            },
+        )
+        .unwrap();
+
+        model.feed_output(1, b"\x1b]2;Antigravity CLI\x07");
+        model.feed_output(2, b"\x1b]2;Title B\x07");
+        model.feed_output(3, b"\x1b]2;Title B\x07");
+        model.feed_output(4, b"\x1b]2;Title C\x07");
+        model.flush_events();
+
+        assert_eq!(
+            *host.observed.lock().unwrap(),
+            vec!["Title B", "Title B", "Title C"]
+        );
+        assert_eq!(*host.persisted.lock().unwrap(), vec!["Title C"]);
 
         for worker in model.stop_workers() {
             worker.join().unwrap();
