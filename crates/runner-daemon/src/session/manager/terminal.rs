@@ -249,13 +249,204 @@ impl SessionState {
 
 pub(super) type TerminalStartedAt = Arc<Mutex<Option<String>>>;
 
+#[derive(Clone, Debug)]
+pub(crate) struct OscObservation {
+    pub(crate) title: String,
+    pub(crate) observed_at: DateTime<Utc>,
+    pub(crate) seq: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OscConversationSnapshot {
+    pub(crate) superseded: bool,
+    pub(crate) observation: Option<OscObservation>,
+}
+
+pub(crate) struct OscTitleTracker {
+    generation: String,
+    agy_log_path: Option<PathBuf>,
+    agy_log_tail: crate::runtimes::antigravity::agy_capture::LogTail,
+    log_seen_key: bool,
+    active_conversation_id: Option<String>,
+    seq: u64,
+    unbound: Option<OscObservation>,
+    by_conversation: HashMap<String, OscObservation>,
+}
+
+impl OscTitleTracker {
+    fn new(
+        generation: String,
+        initial_conversation_id: Option<String>,
+        agy_log_path: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            generation,
+            agy_log_path,
+            agy_log_tail: Default::default(),
+            log_seen_key: false,
+            active_conversation_id: initial_conversation_id,
+            seq: 0,
+            unbound: None,
+            by_conversation: HashMap::new(),
+        }
+    }
+
+    fn bind_unbound_observation(&mut self, conversation_id: &str) {
+        if let Some(unbound) = self.unbound.take() {
+            self.by_conversation
+                .entry(conversation_id.to_owned())
+                .and_modify(|existing| {
+                    if unbound.seq > existing.seq {
+                        existing.title = unbound.title.clone();
+                        existing.seq = unbound.seq;
+                    }
+                    existing.observed_at = existing.observed_at.max(unbound.observed_at);
+                })
+                .or_insert(unbound);
+        }
+    }
+
+    fn sync_from_log(&mut self) {
+        let Some(path) = self.agy_log_path.as_deref() else {
+            return;
+        };
+        for key in self.agy_log_tail.next_conversations(path) {
+            self.log_seen_key = true;
+            if self.active_conversation_id.is_none() {
+                self.bind_unbound_observation(&key);
+            }
+            self.active_conversation_id = Some(key);
+        }
+    }
+
+    pub(crate) fn note_conversation_key(&mut self, key: Option<&str>) {
+        self.sync_from_log();
+        if self.log_seen_key {
+            return;
+        }
+        match key {
+            Some(key) => {
+                if self.active_conversation_id.is_none() {
+                    self.bind_unbound_observation(key);
+                }
+                self.active_conversation_id = Some(key.to_owned());
+            }
+            None => {
+                self.active_conversation_id = None;
+            }
+        }
+    }
+
+    pub(crate) fn observe_osc_title(&mut self, title: &str, observed_at: DateTime<Utc>) {
+        self.sync_from_log();
+        self.seq = self.seq.saturating_add(1);
+        let seq = self.seq;
+        if let Some(conversation_id) = self.active_conversation_id.clone() {
+            match self.by_conversation.get_mut(&conversation_id) {
+                Some(existing) => {
+                    existing.title.clear();
+                    existing.title.push_str(title);
+                    existing.observed_at = existing.observed_at.max(observed_at);
+                    existing.seq = seq;
+                }
+                None => {
+                    self.by_conversation.insert(
+                        conversation_id,
+                        OscObservation {
+                            title: title.to_owned(),
+                            observed_at,
+                            seq,
+                        },
+                    );
+                }
+            }
+        } else {
+            let observed_at = self
+                .unbound
+                .as_ref()
+                .map_or(observed_at, |prev| prev.observed_at.max(observed_at));
+            self.unbound = Some(OscObservation {
+                title: title.to_owned(),
+                observed_at,
+                seq,
+            });
+        }
+    }
+
+    fn current_observation(&self, conversation_id: &str) -> Option<&OscObservation> {
+        self.by_conversation.get(conversation_id).or_else(|| {
+            self.active_conversation_id
+                .is_none()
+                .then_some(self.unbound.as_ref())
+                .flatten()
+        })
+    }
+
+    pub(crate) fn snapshot_for_generation(
+        &mut self,
+        expected_started_at: &str,
+        conversation_id: &str,
+    ) -> OscConversationSnapshot {
+        if self.generation != expected_started_at {
+            return OscConversationSnapshot::default();
+        }
+        self.sync_from_log();
+        let superseded = self
+            .active_conversation_id
+            .as_deref()
+            .is_some_and(|active| active != conversation_id);
+        let observation = self.current_observation(conversation_id).cloned();
+        OscConversationSnapshot {
+            superseded,
+            observation,
+        }
+    }
+
+    pub(crate) fn rejects_provider_title(
+        &mut self,
+        expected_started_at: &str,
+        conversation_id: &str,
+        source_modified_at: Option<DateTime<Utc>>,
+    ) -> bool {
+        let snapshot = self.snapshot_for_generation(expected_started_at, conversation_id);
+        if snapshot.superseded {
+            return true;
+        }
+        let Some(modified_at) = source_modified_at else {
+            return false;
+        };
+        snapshot
+            .observation
+            .is_some_and(|obs| modified_at < obs.observed_at)
+    }
+}
+
 pub(crate) struct ProviderTitleUpdate<'a> {
     pub(crate) session_id: &'a str,
     pub(crate) expected_started_at: &'a str,
+    pub(crate) conversation_id: &'a str,
     pub(crate) cleaned_title: &'a str,
+    pub(crate) source_modified_at: Option<DateTime<Utc>>,
+    pub(crate) osc_tracker: Option<&'a Arc<Mutex<OscTitleTracker>>>,
     pub(crate) mission_id: Option<&'a str>,
     pub(crate) pool: &'a DbPool,
     pub(crate) events: &'a Arc<dyn SessionEvents>,
+}
+
+fn rejects_provider_title(
+    tracker: Option<&Arc<Mutex<OscTitleTracker>>>,
+    expected_started_at: &str,
+    conversation_id: &str,
+    source_modified_at: Option<DateTime<Utc>>,
+) -> bool {
+    let Some(tracker) = tracker else {
+        return false;
+    };
+    tracker.lock().unwrap().rejects_provider_title(
+        expected_started_at,
+        conversation_id,
+        source_modified_at,
+    )
 }
 
 fn persist_live_title_for_generation(
@@ -289,6 +480,7 @@ struct Host {
     pool: DbPool,
     events: Arc<dyn SessionEvents>,
     agent: bool,
+    track_osc_floor: bool,
     started_at: TerminalStartedAt,
     model: OnceLock<Weak<TerminalModel>>,
 }
@@ -316,6 +508,17 @@ impl TerminalHost for Host {
     fn report_input_state(&self, id: &str, observation: InputObservation) {
         if let Some(manager) = self.manager.upgrade() {
             manager.report_input_state(id, observation);
+        }
+    }
+    fn observe_live_title(&self, id: &str, title: &str) {
+        if !self.track_osc_floor || title.is_empty() {
+            return;
+        }
+        let Some(generation) = self.started_at.lock().unwrap().clone() else {
+            return;
+        };
+        if let Some(manager) = self.manager.upgrade() {
+            manager.observe_osc_title(id, &generation, title, Utc::now());
         }
     }
     fn set_live_title(&self, id: &str, title: &str) -> HostResult<()> {
@@ -361,6 +564,7 @@ pub(super) struct SessionTerminalBinding {
     agent: bool,
     cwd: Option<String>,
     initial_title: String,
+    initial_conversation_id: Option<String>,
     started_at: Option<String>,
 }
 
@@ -380,6 +584,7 @@ pub(super) fn session_terminal_binding(
         .and_then(|row| row.live_title.as_deref())
         .and_then(|title| crate::session::title::provider_title(title, cwd.as_deref()))
         .unwrap_or_default();
+    let initial_conversation_id = row.as_ref().and_then(|row| row.agent_session_key.clone());
     let started_at = row
         .and_then(|row| row.started_at)
         .map(|time| time.to_rfc3339());
@@ -388,6 +593,7 @@ pub(super) fn session_terminal_binding(
         agent,
         cwd,
         initial_title,
+        initial_conversation_id,
         started_at,
     })
 }
@@ -479,7 +685,7 @@ impl SessionManager {
         pool: &DbPool,
         events: &Arc<dyn SessionEvents>,
     ) -> Result<(Arc<TerminalModel>, TerminalStartedAt)> {
-        let started_at = Arc::new(Mutex::new(binding.started_at));
+        let started_at = Arc::new(Mutex::new(binding.started_at.clone()));
         if let Some(runtime) = binding.runtime {
             let semantics = crate::runtimes::adapter(runtime).status_semantics();
             let state = self.session_state_or_insert(id);
@@ -509,11 +715,22 @@ impl SessionManager {
             );
             state.model.set_native_attention(semantics.native_attention);
         }
+        if binding.runtime == Some(Runtime::Antigravity) {
+            if let Some(generation) = binding.started_at.as_deref() {
+                self.osc_title_tracker_for_generation(
+                    id,
+                    generation,
+                    binding.initial_conversation_id.clone(),
+                    None,
+                );
+            }
+        }
         let host = Arc::new(Host {
             manager: Arc::downgrade(self),
             pool: pool.clone(),
             events: Arc::clone(events),
             agent: binding.agent,
+            track_osc_floor: binding.runtime == Some(Runtime::Antigravity),
             started_at: Arc::clone(&started_at),
             model: OnceLock::new(),
         });
@@ -545,33 +762,132 @@ impl SessionManager {
             let conn = pool.get()?;
             session_terminal_binding(&conn, id)?
         };
-        self.rebind_terminal_session_from_binding(terminal, started_at, binding);
+        self.rebind_terminal_session_from_binding(id, terminal, started_at, binding);
         Ok(())
     }
     pub(super) fn rebind_terminal_session_from_binding(
         &self,
+        id: &str,
         terminal: &TerminalModel,
         started_at: &TerminalStartedAt,
         binding: SessionTerminalBinding,
     ) {
+        if binding.runtime == Some(Runtime::Antigravity) {
+            if let Some(generation) = binding.started_at.as_deref() {
+                self.osc_title_tracker_for_generation(
+                    id,
+                    generation,
+                    binding.initial_conversation_id,
+                    None,
+                );
+            }
+        }
         let started_at = Arc::clone(started_at);
         let next_started_at = binding.started_at;
         terminal.sync_session_title(binding.initial_title, move || {
             *started_at.lock().unwrap() = next_started_at;
         });
     }
-    pub(crate) fn apply_provider_title(&self, update: ProviderTitleUpdate<'_>) -> Result<bool> {
-        let attached = self.session_state(update.session_id).and_then(|state| {
+    pub(crate) fn osc_title_tracker_for_generation(
+        &self,
+        session_id: &str,
+        generation: &str,
+        initial_conversation_id: Option<String>,
+        agy_log_path: Option<PathBuf>,
+    ) -> Arc<Mutex<OscTitleTracker>> {
+        let state = self
+            .sessions
+            .lock()
+            .unwrap()
+            .entry(session_id.to_owned())
+            .or_insert_with(|| {
+                Arc::new(Mutex::new(SessionState {
+                    key_only: true,
+                    ..Default::default()
+                }))
+            })
+            .clone();
+        let (tracker, reused) = {
+            let mut state = state.lock().unwrap();
+            match &state.osc_title_tracker {
+                Some((existing_gen, tracker)) if existing_gen == generation => {
+                    (Arc::clone(tracker), true)
+                }
+                _ => {
+                    let tracker = Arc::new(Mutex::new(OscTitleTracker::new(
+                        generation.to_owned(),
+                        initial_conversation_id.clone(),
+                        agy_log_path.clone(),
+                    )));
+                    state.osc_title_tracker = Some((generation.to_owned(), Arc::clone(&tracker)));
+                    (tracker, false)
+                }
+            }
+        };
+        if reused {
+            let mut guard = tracker.lock().unwrap();
+            if guard.agy_log_path.is_none() && agy_log_path.is_some() {
+                guard.agy_log_path = agy_log_path;
+            }
+            if guard.active_conversation_id.is_none() {
+                if let Some(key) = initial_conversation_id {
+                    guard.bind_unbound_observation(&key);
+                    guard.active_conversation_id = Some(key);
+                }
+            }
+        }
+        tracker
+    }
+
+    pub(crate) fn observe_osc_title(
+        &self,
+        session_id: &str,
+        generation: &str,
+        title: &str,
+        observed_at: DateTime<Utc>,
+    ) {
+        let tracker = self.raw_session_state(session_id).and_then(|state| {
             let state = state.lock().unwrap();
             state
-                .terminal
-                .clone()
-                .zip(state.terminal_started_at.clone())
+                .osc_title_tracker
+                .as_ref()
+                .filter(|(existing_gen, _)| existing_gen == generation)
+                .map(|(_, tracker)| Arc::clone(tracker))
         });
+        if let Some(tracker) = tracker {
+            tracker
+                .lock()
+                .unwrap()
+                .observe_osc_title(title, observed_at);
+        }
+    }
+
+    pub(crate) fn apply_provider_title(&self, update: ProviderTitleUpdate<'_>) -> Result<bool> {
+        let state_arc = self.session_state(update.session_id);
+        let (attached, state_tracker) = match &state_arc {
+            Some(state) => {
+                let state = state.lock().unwrap();
+                let attached = state
+                    .terminal
+                    .clone()
+                    .zip(state.terminal_started_at.clone());
+                let tracker = state
+                    .osc_title_tracker
+                    .as_ref()
+                    .filter(|(generation, _)| generation == update.expected_started_at)
+                    .map(|(_, tracker)| Arc::clone(tracker));
+                (attached, tracker)
+            }
+            None => (None, None),
+        };
+        let tracker = update.osc_tracker.cloned().or(state_tracker);
         if let Some((terminal, terminal_started_at)) = attached {
             let (tx, rx) = mpsc::sync_channel(1);
             let session_id = update.session_id.to_owned();
             let expected = update.expected_started_at.to_owned();
+            let conversation_id = update.conversation_id.to_owned();
+            let source_modified_at = update.source_modified_at;
+            let closure_tracker = tracker.clone();
             let fallback_mission = update.mission_id.map(str::to_owned);
             let pool = update.pool.clone();
             let events = Arc::clone(update.events);
@@ -579,6 +895,15 @@ impl SessionManager {
                 update.cleaned_title.to_owned(),
                 move |cleaned, cache_changed| {
                     if terminal_started_at.lock().unwrap().as_deref() != Some(expected.as_str()) {
+                        let _ = tx.send(Ok(false));
+                        return None;
+                    }
+                    if rejects_provider_title(
+                        closure_tracker.as_ref(),
+                        &expected,
+                        &conversation_id,
+                        source_modified_at,
+                    ) {
                         let _ = tx.send(Ok(false));
                         return None;
                     }
@@ -612,6 +937,14 @@ impl SessionManager {
                     return outcome;
                 }
             }
+        }
+        if rejects_provider_title(
+            tracker.as_ref(),
+            update.expected_started_at,
+            update.conversation_id,
+            update.source_modified_at,
+        ) {
+            return Ok(false);
         }
         match persist_live_title_for_generation(
             update.pool,

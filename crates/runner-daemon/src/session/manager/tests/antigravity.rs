@@ -765,6 +765,374 @@ fn antigravity_summary_title_updates_attached_terminal_metadata_and_preferred_ti
 }
 
 #[test]
+fn antigravity_stale_summary_rollback_does_not_revert_live_osc_title_or_manual_runner_rename() {
+    let app_data = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let agy_home = home.path().join(".gemini/antigravity-cli");
+    std::fs::create_dir_all(&agy_home).unwrap();
+    let summaries_db = agy_home.join("conversation_summaries.db");
+    let writer = rusqlite::Connection::open(&summaries_db).unwrap();
+    writer.pragma_update(None, "journal_mode", "WAL").unwrap();
+    writer
+        .execute_batch(
+            "CREATE TABLE conversation_summaries (
+                conversation_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                last_modified_time TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+
+    let project = app_data.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let fake = fake_runtime();
+    let mut core = crate::test_support::test_core_in(app_data.path().to_owned());
+    core.db = Arc::new(db::open_pool(&app_data.path().join("runner.db")).unwrap());
+    core.sessions = manager_with_runtime(
+        crate::shell_path::LoginShellEnv::default(),
+        Arc::clone(&fake) as Arc<dyn SessionRuntime>,
+    );
+    core.db
+        .get()
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE title_writes (title TEXT);
+             CREATE TRIGGER record_title AFTER UPDATE OF live_title ON sessions
+             BEGIN INSERT INTO title_writes VALUES (NEW.live_title); END;",
+        )
+        .unwrap();
+
+    let registry = runner_terminal::terminal::TerminalBridge::new(
+        crate::daemon::InProcessTransport::client(core.clone()),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let direct_role = runtime_direct_role("antigravity", Some("agy"), None, None).unwrap();
+    let spawned = crate::runtimes::with_conversation_home(home.path(), || {
+        core.sessions.spawn_direct(
+            &direct_role,
+            DirectLaunch {
+                cwd: Some(project.to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                runtime_direct: true,
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+    })
+    .unwrap();
+    let id = spawned.id;
+
+    let deadline = Instant::now() + ci_scaled_budget(Duration::from_secs(5));
+    let mirror = loop {
+        if let Some(mirror) = registry.session(&id) {
+            break mirror;
+        }
+        assert!(Instant::now() < deadline, "mirror never attached for {id}");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    let wait_for_mirror_title = |expected: &str| {
+        let wait_deadline = Instant::now() + ci_scaled_budget(Duration::from_secs(5));
+        while mirror.title() != expected {
+            assert!(
+                Instant::now() < wait_deadline,
+                "timed out waiting for mirror title {expected:?} (got {:?})",
+                mirror.title()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        core.sessions.terminal_model(&id).unwrap().flush_events();
+    };
+
+    let wait_for_summary_polls = |target: u64| {
+        let wait_deadline = Instant::now() + ci_scaled_budget(Duration::from_secs(5));
+        while core.sessions.agy_summary_poll_count() < target {
+            assert!(
+                Instant::now() < wait_deadline,
+                "timed out waiting for summary poll count {target} (got {})",
+                core.sessions.agy_summary_poll_count()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        core.sessions.terminal_model(&id).unwrap().flush_events();
+    };
+
+    let push_and_flush_osc = |bytes: &[u8], expected_mirror_title: &str| {
+        let prev_seq = core.sessions.terminal_output_sequence(&id);
+        fake.push_output(0, bytes);
+        let wait_deadline = Instant::now() + ci_scaled_budget(Duration::from_secs(5));
+        while core.sessions.terminal_output_sequence(&id) <= prev_seq
+            || mirror.title() != expected_mirror_title
+        {
+            assert!(
+                Instant::now() < wait_deadline,
+                "timed out waiting for output seq > {prev_seq} and mirror title {expected_mirror_title:?} (got {:?})",
+                mirror.title()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        core.sessions.terminal_model(&id).unwrap().flush_events();
+    };
+
+    let title_state = || {
+        let row = crate::repo::session::get_row(&core.db.get().unwrap(), &id)
+            .unwrap()
+            .unwrap();
+        let entry = crate::ops::session::session_list_recent_direct(&core)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.session_id == id)
+            .unwrap();
+        let live = mirror.title();
+        (
+            row.title,
+            row.live_title,
+            live.clone(),
+            entry.preferred_title(Some(&live)),
+        )
+    };
+
+    let written_titles = || -> Vec<Option<String>> {
+        let conn = core.db.get().unwrap();
+        let mut stmt = conn.prepare("SELECT title FROM title_writes").unwrap();
+        stmt.query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+
+    let format_ts =
+        |dt: chrono::DateTime<chrono::Utc>| dt.format("%Y-%m-%d %H:%M:%S%.6f+00:00").to_string();
+
+    // 1. Capture c1 and adopt its turn-1 summary title.
+    let c1 = uuid::Uuid::new_v4().to_string();
+    let t_turn1 = format_ts(chrono::Utc::now() - chrono::Duration::minutes(20));
+    writer
+        .execute(
+            "INSERT INTO conversation_summaries (conversation_id, title, last_modified_time)
+             VALUES (?1, ?2, ?3)",
+            [&c1, "Turn One Topic", &t_turn1],
+        )
+        .unwrap();
+    append_log(app_data.path(), &id, &created_line(&c1));
+    wait_for_key(&core.db, &id, &c1);
+    wait_for_mirror_title("Turn One Topic");
+
+    // 2. Rename twice via live OSC 2 (A -> B), then rename manually in Runner to C.
+    push_and_flush_osc(b"\x1b]2;Rename A\x07", "Rename A");
+    push_and_flush_osc(b"\x1b]2;Rename B\x07", "Rename B");
+    crate::ops::session::session_rename(&core, &id, Some("Runner C".into())).unwrap();
+    assert_eq!(
+        title_state(),
+        (
+            Some("Runner C".into()),
+            Some("Rename B".into()),
+            "Rename B".into(),
+            Some("Runner C".into()),
+        )
+    );
+
+    // 3. Summary reconciliation rolls back conversation_summaries.db to an older snapshot
+    // (newer than Turn One Topic, but older than the live OSC 2 rename B). Two full poll
+    // cycles must leave Rename B and Runner C intact with zero writes of the stale title.
+    let t_stale = format_ts(chrono::Utc::now() - chrono::Duration::minutes(10));
+    writer
+        .execute(
+            "UPDATE conversation_summaries SET title = ?2, last_modified_time = ?3 WHERE conversation_id = ?1",
+            [&c1, "Stale Rollback A", &t_stale],
+        )
+        .unwrap();
+    let polls_before = core.sessions.agy_summary_poll_count();
+    wait_for_summary_polls(polls_before + 2);
+    assert_eq!(
+        title_state(),
+        (
+            Some("Runner C".into()),
+            Some("Rename B".into()),
+            "Rename B".into(),
+            Some("Runner C".into()),
+        )
+    );
+    assert!(
+        !written_titles()
+            .iter()
+            .any(|title| title.as_deref() == Some("Stale Rollback A")),
+        "stale summary row wrote to sessions.live_title: {:?}",
+        written_titles()
+    );
+
+    // 4. A genuinely newer summary row still updates live_title, TerminalModel, and replaces
+    // the manual Runner title (#1442).
+    let t_newer = format_ts(chrono::Utc::now() + chrono::Duration::minutes(1));
+    writer
+        .execute(
+            "UPDATE conversation_summaries SET title = ?2, last_modified_time = ?3 WHERE conversation_id = ?1",
+            [&c1, "Newer Summary D", &t_newer],
+        )
+        .unwrap();
+    wait_for_mirror_title("Newer Summary D");
+    assert_eq!(
+        title_state(),
+        (
+            None,
+            Some("Newer Summary D".into()),
+            "Newer Summary D".into(),
+            Some("Newer Summary D".into()),
+        )
+    );
+
+    // 5. Switching to an older conversation c2 adopts c2's summary title despite c1's newer
+    // OSC floor and watermark, and then rejects an even older rollback on c2.
+    let c2 = uuid::Uuid::new_v4().to_string();
+    let t_c2 = format_ts(chrono::Utc::now() - chrono::Duration::hours(24));
+    writer
+        .execute(
+            "INSERT INTO conversation_summaries (conversation_id, title, last_modified_time)
+             VALUES (?1, ?2, ?3)",
+            [&c2, "Older C2 Topic", &t_c2],
+        )
+        .unwrap();
+    append_log(app_data.path(), &id, &created_line(&c2));
+    wait_for_key(&core.db, &id, &c2);
+    wait_for_mirror_title("Older C2 Topic");
+    assert_eq!(
+        title_state(),
+        (
+            None,
+            Some("Older C2 Topic".into()),
+            "Older C2 Topic".into(),
+            Some("Older C2 Topic".into()),
+        )
+    );
+
+    let t_c2_stale = format_ts(chrono::Utc::now() - chrono::Duration::hours(48));
+    writer
+        .execute(
+            "UPDATE conversation_summaries SET title = ?2, last_modified_time = ?3 WHERE conversation_id = ?1",
+            [&c2, "Stale C2 Rollback", &t_c2_stale],
+        )
+        .unwrap();
+    let polls_before = core.sessions.agy_summary_poll_count();
+    wait_for_summary_polls(polls_before + 2);
+    assert_eq!(
+        title_state(),
+        (
+            None,
+            Some("Older C2 Topic".into()),
+            "Older C2 Topic".into(),
+            Some("Older C2 Topic".into()),
+        )
+    );
+    assert!(
+        !written_titles()
+            .iter()
+            .any(|title| title.as_deref() == Some("Stale C2 Rollback")),
+        "stale c2 summary row wrote to sessions.live_title: {:?}",
+        written_titles()
+    );
+
+    // 6. Returning to c1 keeps c1's watermark, rejects the rolled-back c1 summary, and
+    // restores c1's last trusted title ("Newer Summary D") once with zero stale writes.
+    let t_c1_rollback = format_ts(chrono::Utc::now() - chrono::Duration::minutes(5));
+    writer
+        .execute(
+            "UPDATE conversation_summaries SET title = ?2, last_modified_time = ?3 WHERE conversation_id = ?1",
+            [&c1, "Stale C1 Return", &t_c1_rollback],
+        )
+        .unwrap();
+    append_log(app_data.path(), &id, &created_line(&c1));
+    wait_for_key(&core.db, &id, &c1);
+    wait_for_mirror_title("Newer Summary D");
+    let polls_before = core.sessions.agy_summary_poll_count();
+    wait_for_summary_polls(polls_before + 2);
+    assert_eq!(
+        title_state(),
+        (
+            None,
+            Some("Newer Summary D".into()),
+            "Newer Summary D".into(),
+            Some("Newer Summary D".into()),
+        )
+    );
+    assert!(
+        !written_titles()
+            .iter()
+            .any(|title| title.as_deref() == Some("Stale C1 Return")),
+        "stale c1 return wrote to sessions.live_title: {:?}",
+        written_titles()
+    );
+
+    // 7. Switching to c3 with an OSC rename protects c3 from an older summary row,
+    // and stopping the session retains that floor through the final post-stop poll.
+    let c3 = uuid::Uuid::new_v4().to_string();
+    append_log(app_data.path(), &id, &created_line(&c3));
+    push_and_flush_osc(b"\x1b]2;Live OSC C3\x07", "Live OSC C3");
+    wait_for_key(&core.db, &id, &c3);
+    let t_c3_stale = format_ts(chrono::Utc::now() - chrono::Duration::minutes(30));
+    writer
+        .execute(
+            "INSERT INTO conversation_summaries (conversation_id, title, last_modified_time)
+             VALUES (?1, ?2, ?3)",
+            [&c3, "Stale C3 Pre-Capture", &t_c3_stale],
+        )
+        .unwrap();
+    let polls_before = core.sessions.agy_summary_poll_count();
+    wait_for_summary_polls(polls_before + 2);
+    assert_eq!(
+        title_state(),
+        (
+            None,
+            Some("Live OSC C3".into()),
+            "Live OSC C3".into(),
+            Some("Live OSC C3".into()),
+        )
+    );
+    assert!(
+        !written_titles()
+            .iter()
+            .any(|title| title.as_deref() == Some("Stale C3 Pre-Capture")),
+        "stale c3 summary row wrote to sessions.live_title: {:?}",
+        written_titles()
+    );
+
+    crate::ops::session::session_rename(&core, &id, Some("Runner Final".into())).unwrap();
+    let t_c3_exit_stale = format_ts(chrono::Utc::now() - chrono::Duration::minutes(5));
+    writer
+        .execute(
+            "UPDATE conversation_summaries SET title = ?2, last_modified_time = ?3 WHERE conversation_id = ?1",
+            [&c3, "Stale C3 On Exit", &t_c3_exit_stale],
+        )
+        .unwrap();
+    let exits_before = core.sessions.agy_capture_exit_count();
+    crate::ops::session::session_stop(&core, &id).unwrap();
+    let exit_deadline = Instant::now() + ci_scaled_budget(Duration::from_secs(5));
+    while core.sessions.agy_capture_exit_count() < exits_before + 1 {
+        assert!(
+            Instant::now() < exit_deadline,
+            "timed out waiting for agy capture thread final post-stop poll to exit"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let stopped_row = crate::repo::session::get_row(&core.db.get().unwrap(), &id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stopped_row.title.as_deref(), Some("Runner Final"));
+    assert_eq!(stopped_row.live_title.as_deref(), Some("Live OSC C3"));
+    assert!(
+        !written_titles()
+            .iter()
+            .any(|title| title.as_deref() == Some("Stale C3 On Exit")),
+        "post-exit stale summary wrote to sessions.live_title: {:?}",
+        written_titles()
+    );
+    core.sessions.drain_terminal_workers();
+}
+
+#[test]
 fn antigravity_daemon_startup_removes_legacy_hook_files_and_keeps_the_folder() {
     let pool = pool_with_schema();
     let app_data = tempfile::tempdir().unwrap();

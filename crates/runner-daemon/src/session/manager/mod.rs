@@ -276,6 +276,7 @@ struct SessionState {
     controller: terminal::Controller,
     terminal: Option<Arc<runner_terminal::terminal::TerminalModel>>,
     terminal_started_at: Option<terminal::TerminalStartedAt>,
+    osc_title_tracker: Option<(String, Arc<Mutex<terminal::OscTitleTracker>>)>,
     terminal_input: Option<terminal::TerminalInput>,
     terminal_input_worker: Option<thread::JoinHandle<()>>,
     subscribers: Vec<(u64, Arc<terminal::FrameQueue>)>,
@@ -465,6 +466,10 @@ pub struct SessionManager {
     #[cfg(test)]
     live_session_scan_count: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
+    agy_summary_poll_count: AtomicU64,
+    #[cfg(test)]
+    agy_capture_exit_count: AtomicU64,
+    #[cfg(test)]
     install_checkout_hooks: Mutex<HashMap<String, Box<dyn FnOnce() + Send>>>,
     #[cfg(test)]
     after_install_snapshot_hooks: Mutex<HashMap<String, Box<dyn FnOnce() + Send>>>,
@@ -605,6 +610,10 @@ impl SessionManager {
             terminal_retention_read: Mutex::default(),
             #[cfg(test)]
             live_session_scan_count: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            agy_summary_poll_count: AtomicU64::new(0),
+            #[cfg(test)]
+            agy_capture_exit_count: AtomicU64::new(0),
             #[cfg(test)]
             install_checkout_hooks: Mutex::default(),
             #[cfg(test)]

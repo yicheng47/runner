@@ -85,10 +85,30 @@ impl SessionManager {
             .unwrap();
         let written = persist(&effect);
         if matches!(written, Ok(true)) {
-            session.lock().unwrap().model.apply(
-                SessionEvent::KeyPersisted(effect),
-                super::super::clock::state_now(),
-            );
+            let tracker = {
+                let mut session = session.lock().unwrap();
+                let tracker = match &session.osc_title_tracker {
+                    Some((generation, tracker)) if generation == &effect.generation => {
+                        Some(Arc::clone(tracker))
+                    }
+                    Some(_) => {
+                        session.osc_title_tracker = None;
+                        None
+                    }
+                    None => None,
+                };
+                session.model.apply(
+                    SessionEvent::KeyPersisted(effect.clone()),
+                    super::super::clock::state_now(),
+                );
+                tracker
+            };
+            if let Some(tracker) = tracker {
+                tracker
+                    .lock()
+                    .unwrap()
+                    .note_conversation_key(effect.key.as_deref());
+            }
         } else {
             self.prune_key_only_session_state(session_id);
         }
@@ -230,6 +250,26 @@ impl SessionManager {
     pub(crate) fn live_session_scan_count(&self) -> usize {
         self.live_session_scan_count
             .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_agy_summary_poll(&self) {
+        self.agy_summary_poll_count.fetch_add(1, Ordering::AcqRel);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn agy_summary_poll_count(&self) -> u64 {
+        self.agy_summary_poll_count.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_agy_capture_exit(&self) {
+        self.agy_capture_exit_count.fetch_add(1, Ordering::AcqRel);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn agy_capture_exit_count(&self) -> u64 {
+        self.agy_capture_exit_count.load(Ordering::Acquire)
     }
 
     pub fn session_live(&self, session_id: &str) -> bool {
