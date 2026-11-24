@@ -46,6 +46,7 @@ fn opencode_optional_extensions_keep_existing_agents_on_baseline() {
                         model: Some("provider/override"),
                         effort: Some("high"),
                         codex_speed: None,
+                        codex_tui_workspace: false,
                         system_prompt: None,
                         first_turn: Some("fixture prompt"),
                     })

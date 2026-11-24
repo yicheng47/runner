@@ -106,6 +106,7 @@ fn antigravity_settings_inject_title_hook_across_launches_and_respect_role_setti
             model: None,
             effort: None,
             codex_speed: None,
+            codex_tui_workspace: false,
             system_prompt: None,
             first_turn,
         });
@@ -194,6 +195,7 @@ fn antigravity_settings_inject_title_hook_across_launches_and_respect_role_setti
             model: None,
             effort: None,
             codex_speed: None,
+            codex_tui_workspace: false,
             system_prompt: None,
             first_turn: Some("first turn"),
         });

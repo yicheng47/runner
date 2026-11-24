@@ -2904,6 +2904,7 @@ fn hook_status_argv_survives_a_batch_shim_launch_windows() {
                 model: Some("fixture-model-with-a-long-name"),
                 effort: Some("xhigh"),
                 codex_speed: None,
+                codex_tui_workspace: false,
                 system_prompt: None,
                 first_turn: None,
                 mission: false,

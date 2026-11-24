@@ -366,6 +366,7 @@ impl SessionManager {
                 model: role.model.as_deref(),
                 effort: role.effort.as_deref(),
                 codex_speed: role.codex_speed,
+                codex_tui_workspace: options.tui_workspace,
                 system_prompt: None,
                 first_turn,
             }));
@@ -387,6 +388,7 @@ impl SessionManager {
                 model: role.model.as_deref(),
                 effort: role.effort.as_deref(),
                 codex_speed: role.codex_speed,
+                codex_tui_workspace: options.tui_workspace,
                 system_prompt: system_prompt_path
                     .map(|path| path.to_string_lossy())
                     .as_deref(),
@@ -652,6 +654,7 @@ pub(crate) fn compose_preview_args(
         model: role.model.as_deref(),
         effort: role.effort.as_deref(),
         codex_speed,
+        codex_tui_workspace: options.tui_workspace,
         system_prompt,
         first_turn: Some(first_turn),
     };
@@ -784,6 +787,10 @@ fn command_lines(
         if code.contains("features.remote_plugin=false") {
             note = Note::CatalogOff;
             option = Some(OptionKey::RemotePluginCatalog);
+        }
+        if code.contains("features.tui_workspace=false") {
+            note = Note::TuiWorkspaceOff;
+            option = Some(OptionKey::TuiWorkspace);
         }
         if [
             "--ask-for-approval",
@@ -923,6 +930,7 @@ mod launch_preview_tests {
         let options = RuntimeLaunchOptions {
             bypass: true,
             remote_plugin_catalog: false,
+            tui_workspace: false,
             status_hooks: false,
             custom_flags: String::new(),
         };
@@ -946,10 +954,48 @@ mod launch_preview_tests {
             "--model <model>",
             "model_reasoning_effort=<effort>",
             "features.remote_plugin=false",
+            "features.tui_workspace=false",
             "hooks.<event>=[…] × 2",
             "<first message>",
         ] {
             assert!(text.contains(value), "{value}: {text}");
+        }
+        let tui_workspace_line = preview
+            .lines
+            .iter()
+            .find(|line| line.command.contains("features.tui_workspace=false"))
+            .expect("Codex preview should include -c features.tui_workspace=false when off");
+        assert_eq!(
+            tui_workspace_line.note,
+            runner_core::protocol::runtime::RuntimeCommandNote::TuiWorkspaceOff
+        );
+        assert_eq!(
+            tui_workspace_line.option,
+            Some(runner_core::protocol::runtime::RuntimeLaunchOption::TuiWorkspace)
+        );
+        for mission_flag in [false, true] {
+            let enabled_preview = core.sessions.command_preview(
+                Runtime::Codex,
+                "codex",
+                mission_flag,
+                &RuntimeLaunchOptions {
+                    tui_workspace: true,
+                    ..Default::default()
+                },
+                root.path(),
+                BTreeMap::new(),
+            );
+            assert!(
+                enabled_preview.lines.iter().all(|line| !line
+                    .command
+                    .contains("features.tui_workspace=false")
+                    && line.note
+                        != runner_core::protocol::runtime::RuntimeCommandNote::TuiWorkspaceOff
+                    && line.option
+                        != Some(runner_core::protocol::runtime::RuntimeLaunchOption::TuiWorkspace)),
+                "turning TUI workspace on should omit the flag (mission={mission_flag}): {:?}",
+                enabled_preview.lines
+            );
         }
         let mission = core.sessions.command_preview(
             Runtime::Codex,
@@ -995,6 +1041,7 @@ mod launch_preview_tests {
             model: Some("<model>"),
             effort: Some("<effort>"),
             codex_speed: None,
+            codex_tui_workspace: false,
             system_prompt: None,
             first_turn: Some("<first message>"),
         };
@@ -1131,6 +1178,7 @@ mod launch_preview_tests {
             &RuntimeLaunchOptions {
                 bypass: false,
                 remote_plugin_catalog: true,
+                tui_workspace: false,
                 status_hooks: true,
                 custom_flags: String::new(),
             },
@@ -1356,6 +1404,7 @@ mod launch_preview_tests {
                 &RuntimeLaunchOptions {
                     bypass: false,
                     remote_plugin_catalog: true,
+                    tui_workspace: false,
                     status_hooks: false,
                     custom_flags: String::new(),
                 },
@@ -1449,6 +1498,7 @@ mod launch_preview_tests {
                     &RuntimeLaunchOptions {
                         bypass: false,
                         remote_plugin_catalog: true,
+                        tui_workspace: false,
                         status_hooks: false,
                         custom_flags: String::new(),
                     },

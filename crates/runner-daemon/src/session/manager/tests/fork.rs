@@ -668,11 +668,14 @@ fn codex_headless_fork_honors_catalog_switch() {
             super::super::fork::run_headless_fork(&spec, &plan, Duration::from_secs(5)).unwrap(),
             fork
         );
+        let captured = std::fs::read_to_string(capture).unwrap();
         assert_eq!(
-            std::fs::read_to_string(capture)
-                .unwrap()
-                .contains("arg=features.remote_plugin=false"),
+            captured.contains("arg=features.remote_plugin=false"),
             !enabled
+        );
+        assert!(
+            !captured.contains("features.tui_workspace"),
+            "headless codex exec fork must not pass features.tui_workspace: {captured}"
         );
     }
 }

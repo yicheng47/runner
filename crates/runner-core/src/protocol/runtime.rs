@@ -7,6 +7,7 @@ use std::collections::HashSet;
 pub struct RuntimeLaunchOptions {
     pub bypass: bool,
     pub remote_plugin_catalog: bool,
+    pub tui_workspace: bool,
     pub status_hooks: bool,
     #[serde(default)]
     pub custom_flags: String,
@@ -17,6 +18,7 @@ impl Default for RuntimeLaunchOptions {
         Self {
             bypass: false,
             remote_plugin_catalog: true,
+            tui_workspace: false,
             status_hooks: true,
             custom_flags: String::new(),
         }
@@ -28,6 +30,7 @@ impl Default for RuntimeLaunchOptions {
 pub enum RuntimeLaunchOption {
     Bypass,
     RemotePluginCatalog,
+    TuiWorkspace,
     StatusHooks,
 }
 
@@ -38,7 +41,7 @@ impl RuntimeLaunchOption {
                 runtime,
                 Runtime::Codex | Runtime::ClaudeCode | Runtime::Antigravity
             ),
-            Self::RemotePluginCatalog => runtime == Runtime::Codex,
+            Self::RemotePluginCatalog | Self::TuiWorkspace => runtime == Runtime::Codex,
             Self::StatusHooks => runtime == Runtime::Copilot,
         }
     }
@@ -49,6 +52,7 @@ impl RuntimeLaunchOptions {
         match option {
             RuntimeLaunchOption::Bypass => self.bypass,
             RuntimeLaunchOption::RemotePluginCatalog => self.remote_plugin_catalog,
+            RuntimeLaunchOption::TuiWorkspace => self.tui_workspace,
             RuntimeLaunchOption::StatusHooks => self.status_hooks,
         }
     }
@@ -56,6 +60,7 @@ impl RuntimeLaunchOptions {
         match option {
             RuntimeLaunchOption::Bypass => self.bypass = enabled,
             RuntimeLaunchOption::RemotePluginCatalog => self.remote_plugin_catalog = enabled,
+            RuntimeLaunchOption::TuiWorkspace => self.tui_workspace = enabled,
             RuntimeLaunchOption::StatusHooks => self.status_hooks = enabled,
         }
     }
@@ -77,6 +82,7 @@ pub enum RuntimeCommandNote {
     ClaudeBypass,
     AntigravityBypass,
     CatalogOff,
+    TuiWorkspaceOff,
     CustomFlags,
     StatusHooks,
     HooksBypass,

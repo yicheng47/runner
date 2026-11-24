@@ -31,6 +31,7 @@ fn fresh_prompt_and_explicit_model_preserve_the_body_without_effort() {
             model: Some(" account-model "),
             effort: Some("high"),
             codex_speed: None,
+            codex_tui_workspace: false,
             system_prompt: None,
             first_turn: Some(body),
         });

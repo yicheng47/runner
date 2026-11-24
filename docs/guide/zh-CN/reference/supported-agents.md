@@ -20,12 +20,15 @@ Runner 将智能体分为两级支持。**一级支持**的智能体是 Claude C
 | 跳过权限确认 | Claude Code | 关闭 | 所有账号的聊天 |
 | 跳过权限确认 | Antigravity CLI | 关闭 | 聊天 |
 | 远程插件目录 | Codex | 开启 | 聊天、恢复、任务和分叉 |
+| TUI 工作区 | Codex | 关闭 | 聊天、恢复和任务 |
 | 状态钩子 | Copilot CLI | 开启 | 聊天 |
 | 自定义参数 | 所有智能体 | 空 | 聊天、角色、任务、恢复和分叉 |
 
 Bypass 让聊天无需权限确认即可运行；Codex 还会跳过沙盒。仅对信任的文件夹开启。Bypass 开关适用于所有 Codex、Claude Code 和 Antigravity CLI 聊天，包括使用角色的聊天。聊天启动、恢复和分叉都会去除角色已保存的权限参数；关闭 Bypass 时，由智能体自身配置决定审批行为。任务始终使用宽松权限与（受支持运行时的）状态钩子，不受聊天开关影响。
 
 关闭 **远程插件目录** 可跳过 Codex 每次启动时的目录下载，但目录中的插件也将不再加载。Runner 仅为该进程添加 `-c features.remote_plugin=false`，不修改 Codex 配置文件。
+
+保持 **TUI 工作区** 关闭时，Codex 会显示本地 Markdown 文件路径而非打开内置 TUI 侧栏预览，便于在 Runner 的文件侧面板中打开点击的文件链接。Runner 仅为交互式 Codex 启动（聊天、恢复和任务）添加 `-c features.tui_workspace=false`，不修改 Codex 配置文件，也不影响无界面 `codex exec fork`。开启后可使用 Codex 内置的文件预览和侧边窗格。
 
 关闭 **状态钩子** 后，Copilot CLI 会改用终端活动判断状态，不再提供详细等待和结果报告，但仍保留 `SessionStart` 会话标识钩子，确保恢复时打开同一段对话。Codex（0.164.0+）、Claude Code（2.1.295+）、pi（1.1.0+）、Grok（1.0.89+）、OpenCode v2（2.1.0+）与 Antigravity CLI 在聊天和任务中均原生使用 OSC 7501 终端状态而不挂载状态钩子（Codex、Claude Code 和 Grok 仅保留 `SessionStart` 和 `UserPromptSubmit` 会话标识钩子以及对话记录中的中断/错误信号；OpenCode v2 仅保留对话路由标识 TUI 插件以及 `opencode.db` 中的轮次结果读取；pi 保留 `session_start`、`input`、编辑器草稿与窄 UI 提示等待叠加扩展处理以及对话记录中的中断/错误信号；Antigravity 的会话标题回调独立运行），Cursor 只有会话标识钩子，TRAE 没有钩子，因此这八个运行时均无此开关。
 

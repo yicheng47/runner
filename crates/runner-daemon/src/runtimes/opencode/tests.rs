@@ -130,6 +130,7 @@ fn model_variant_is_configured_only_for_fresh_explicit_selection() {
         model: Some("p/custom/nested"),
         effort: Some("deep"),
         codex_speed: None,
+        codex_tui_workspace: false,
         system_prompt: None,
         first_turn: Some("first turn"),
     };

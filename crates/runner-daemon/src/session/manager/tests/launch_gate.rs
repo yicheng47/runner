@@ -213,6 +213,9 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
     assert!(codex
         .windows(2)
         .any(|args| args == ["-c", crate::runtimes::codex::CODEX_TERMINAL_TITLE]));
+    assert!(codex
+        .windows(2)
+        .any(|args| args == ["-c", "features.tui_workspace=false"]));
     assert_eq!(codex.last().map(String::as_str), Some("first turn"));
 
     let resumed = compose(
@@ -226,13 +229,17 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
     assert!(resumed
         .windows(2)
         .any(|args| args == ["-c", crate::runtimes::codex::CODEX_TERMINAL_TITLE]));
+    assert!(resumed
+        .windows(2)
+        .any(|args| args == ["-c", "features.tui_workspace=false"]));
     assert!(!resumed.iter().any(|arg| arg == "first turn"));
 
     for runtime in ["claude-code", "trae", "copilot", "pi", "antigravity"] {
         let args = compose(runtime, crate::runtimes::for_key(runtime).resume_plan(None));
         assert!(!args
             .iter()
-            .any(|arg| arg.contains("check_for_update_on_startup")));
+            .any(|arg| arg.contains("check_for_update_on_startup")
+                || arg.contains("features.tui_workspace")));
     }
 
     let agy_fresh = compose(

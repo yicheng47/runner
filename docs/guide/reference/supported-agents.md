@@ -20,12 +20,15 @@ Every agent page has a **Launch** card and a read-only **Command** preview, incl
 | Bypass permissions | Claude Code | Off | Chats, every account |
 | Bypass permissions | Antigravity CLI | Off | Chats |
 | Remote plugin catalog | Codex | On | Chats, resumes, missions and forks |
+| TUI workspace | Codex | Off | Chats, resumes and missions |
 | Status hooks | Copilot CLI | On | Chats |
 | Custom flags | All agents | Empty | Chats, roles, missions, resumes and forks |
 
 Bypass lets a chat run without asking for permission; Codex also runs outside its sandbox. Enable it only for trusted folders. The Bypass switch applies to every Codex, Claude Code and Antigravity CLI chat, including role-backed chats. Chat starts, resumes and forks strip stored role permission flags; with Bypass off, the agent’s own configuration governs approvals. Missions always use their broad-access permissions and status hooks (where supported), regardless of the chat switches.
 
 Turn **Remote plugin catalog** off to skip Codex’s catalog download on each launch. Catalog plugins then do not load. Runner adds `-c features.remote_plugin=false` for that process and leaves Codex’s config file untouched.
+
+Leave **TUI workspace** off so Codex renders local Markdown file paths instead of opening its built-in TUI sidebar viewer, letting Runner open clicked file links in its Files panel. Runner adds `-c features.tui_workspace=false` to interactive Codex launches (chats, resumes and missions) and leaves Codex’s config file and headless `codex exec fork` untouched. Turn it on to use Codex’s built-in file previews and side panes.
 
 With **Status hooks** off, Copilot CLI uses terminal activity instead of hooks, losing detailed wait and outcome reports while keeping its `SessionStart` identity hook so Resume still opens the same conversation. Codex (0.164.0+), Claude Code (2.1.295+), pi (1.1.0+), Grok (1.0.89+), OpenCode v2 (2.1.0+) and Antigravity CLI use OSC 7501 terminal status natively in chats and missions without status hooks (Codex, Claude Code and Grok keep only their `SessionStart` and `UserPromptSubmit` identity hooks plus transcript abort/error signals; OpenCode v2 keeps only its conversation-route identity TUI plugin plus `opencode.db` turn-outcome reads; pi keeps its `session_start`, `input`, editor-draft and narrow UI-prompt wait-overlay extension handlers plus transcript abort/error signals; Antigravity’s chat-title callback is separate), Cursor has only an identity hook, and TRAE has no hooks, so none of those eight has this switch.
 

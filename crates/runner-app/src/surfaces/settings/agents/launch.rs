@@ -29,6 +29,11 @@ fn switch_copy(
             "ui.launch_catalog_description",
             "Off: -c features.remote_plugin=false",
         ),
+        RuntimeLaunchOption::TuiWorkspace => (
+            "ui.launch_tui_workspace",
+            "ui.launch_tui_workspace_description",
+            "Off: -c features.tui_workspace=false",
+        ),
         RuntimeLaunchOption::StatusHooks => (
             "ui.launch_status_hooks",
             "ui.launch_activity_hooks_description",
@@ -147,6 +152,7 @@ impl AgentsPane {
         for option in [
             RuntimeLaunchOption::Bypass,
             RuntimeLaunchOption::RemotePluginCatalog,
+            RuntimeLaunchOption::TuiWorkspace,
             RuntimeLaunchOption::StatusHooks,
         ] {
             if !option.supported(name) {
@@ -183,7 +189,11 @@ impl AgentsPane {
                                     )
                                     .child(Badge::new(
                                         crate::i18n::text(
-                                            if option == RuntimeLaunchOption::RemotePluginCatalog {
+                                            if matches!(
+                                                option,
+                                                RuntimeLaunchOption::RemotePluginCatalog
+                                                    | RuntimeLaunchOption::TuiWorkspace
+                                            ) {
                                                 "ui.launch_chats_and_missions"
                                             } else {
                                                 "ui.launch_chats"
@@ -485,6 +495,7 @@ pub(super) fn preview_note(note: &RuntimeCommandNote) -> SharedString {
         Note::ClaudeBypass => "ui.launch_claude_bypass",
         Note::AntigravityBypass => "ui.launch_antigravity_bypass",
         Note::CatalogOff => "ui.launch_catalog_off",
+        Note::TuiWorkspaceOff => "ui.launch_tui_workspace_off",
         Note::CustomFlags => "ui.launch_custom_flags_note",
         Note::StatusHooks => "ui.launch_status_hooks_chats",
         Note::HooksBypass => "ui.launch_hooks_bypass",
