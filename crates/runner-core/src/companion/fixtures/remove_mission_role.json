@@ -1,0 +1,6 @@
+{
+  "type": "removeMissionRole",
+  "id": 42,
+  "mission": "mission-a",
+  "handle": "reviewer-2"
+}

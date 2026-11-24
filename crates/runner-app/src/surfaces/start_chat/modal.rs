@@ -169,6 +169,14 @@ impl NativeRoot {
     }
 
     pub(super) fn refresh_start_chat_models(&self, cx: &Context<Self>) {
+        if self.remote_client.is_active()
+            || self
+                .start_chat_modal
+                .as_ref()
+                .is_some_and(StartChatModal::is_remote)
+        {
+            return;
+        }
         if let Some(runtime) = self
             .start_chat_modal
             .as_ref()
@@ -215,7 +223,7 @@ impl NativeRoot {
             return;
         }
         self.start_chat_modal = None;
-        self.focus_active_terminal(window, cx);
+        self.focus_after_add_role_modal(window, cx);
         cx.notify();
     }
 

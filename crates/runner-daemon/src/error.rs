@@ -1,5 +1,50 @@
 use thiserror::Error;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoleRejection {
+    NotRunning,
+    SpawnPending,
+    HandleInUse,
+    HandleRemoved,
+    FirstTurnTooLarge,
+    NotInMission,
+    AlreadyRemoved,
+    NoSession,
+    Resuming,
+}
+
+impl RoleRejection {
+    pub(crate) const ALL: [Self; 9] = [
+        Self::NotRunning,
+        Self::SpawnPending,
+        Self::HandleInUse,
+        Self::HandleRemoved,
+        Self::FirstTurnTooLarge,
+        Self::NotInMission,
+        Self::AlreadyRemoved,
+        Self::NoSession,
+        Self::Resuming,
+    ];
+
+    pub(crate) const fn companion_message(self) -> &'static str {
+        match self {
+            Self::NotRunning => "The mission is not running.",
+            Self::SpawnPending => {
+                "A session in this mission is still starting; try again once it is up."
+            }
+            Self::HandleInUse => "That handle is already in use in this mission.",
+            Self::HandleRemoved => {
+                "That handle was already removed from this mission; choose another handle."
+            }
+            Self::FirstTurnTooLarge => "The mission brief is too large to launch that role.",
+            Self::NotInMission => "That role is not in this mission.",
+            Self::AlreadyRemoved => "That role was already removed from this mission.",
+            Self::NoSession => "That role has no session in this mission.",
+            Self::Resuming => "That role is being resumed or restarted; try again once it is up.",
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("sqlite: {0}")]
@@ -20,11 +65,24 @@ pub enum Error {
     #[error(transparent)]
     RuntimeVersionGate(#[from] runner_core::protocol::runtime::RuntimeVersionGate),
 
+    #[error("{message}")]
+    RoleRejected {
+        kind: RoleRejection,
+        message: String,
+    },
+
     #[error("{0}")]
     Msg(String),
 }
 
 impl Error {
+    pub fn role_rejected(kind: RoleRejection, message: impl Into<String>) -> Self {
+        Self::RoleRejected {
+            kind,
+            message: message.into(),
+        }
+    }
+
     pub fn context(self, context: &str) -> Self {
         match self {
             Self::RuntimeVersionGate(_) => self,

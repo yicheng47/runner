@@ -260,6 +260,7 @@ impl MissionWorkspace {
             feed_empty_panel_min_height: std::cell::Cell::new(px(0.)),
             feed_was_near_bottom: true,
             feed_has_new_messages: false,
+            remote_feed_history_loaded: false,
             roster: Vec::new(),
             composer: ComposerState::default(),
             composer_input,
@@ -381,6 +382,7 @@ impl MissionWorkspace {
         self.feed_empty_panel_min_height.set(px(0.));
         self.feed_was_near_bottom = true;
         self.feed_has_new_messages = false;
+        self.remote_feed_history_loaded = false;
         self.roster.clear();
         self.composer = ComposerState::default();
         self.composer_posting = false;
@@ -424,6 +426,7 @@ impl MissionWorkspace {
         if self.presentation.release_feed() {
             self.generation += 1;
         }
+        self.remote_feed_history_loaded = false;
         self.feed_list.scrollbar_drag_ended();
         self.attached.clear();
         self.feed_selection = None;

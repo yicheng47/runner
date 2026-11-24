@@ -24,7 +24,7 @@ impl NativeRoot {
         let Some(modal) = self.start_chat_modal.as_mut() else {
             return;
         };
-        if modal.submitting {
+        if modal.submitting || modal.loading_catalog() {
             return;
         }
         let focus = match kind {
@@ -53,13 +53,11 @@ impl NativeRoot {
         };
         focus.focus(window, cx);
         if kind == ResetKind::Runtime {
-            if let Some(runtime) = self
-                .start_chat_modal
-                .as_ref()
-                .and_then(|modal| modal.active_runtime())
-            {
-                if self.remote_client.is_local() {
-                    self.request_model_catalog(runtime.name.key(), cx);
+            if let Some(modal) = self.start_chat_modal.as_ref() {
+                if !modal.is_remote() && self.remote_client.is_local() {
+                    if let Some(runtime) = modal.active_runtime() {
+                        self.request_model_catalog(runtime.name.key(), cx);
+                    }
                 }
             }
         }

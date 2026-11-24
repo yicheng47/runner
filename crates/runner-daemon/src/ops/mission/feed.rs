@@ -4,7 +4,7 @@ use crate::ops::{mission, session};
 use runner_core::event_log::{self, LogEntry, SkipReport};
 use runner_core::model::EventKind::Signal;
 use runner_core::protocol::*;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 const DEFAULT_FEED_LIMIT: usize = 50;
 const MAX_FEED_LIMIT: usize = 500;
 const STATUS_WARNING_LIMIT: usize = 5;
@@ -13,6 +13,7 @@ struct EventProjection {
     latest_session_status_by_handle: BTreeMap<String, SessionStatusSnapshot>,
     pending_asks: BTreeMap<String, PendingAskSnapshot>,
     recent_warnings: Vec<MissionWarningSnapshot>,
+    removed_handles: BTreeSet<String>,
 }
 
 impl EventProjection {
@@ -106,6 +107,11 @@ impl EventProjection {
                     });
                     if projection.recent_warnings.len() > STATUS_WARNING_LIMIT {
                         projection.recent_warnings.remove(0);
+                    }
+                }
+                "role_removed" if event.from == "human" => {
+                    if let Some(handle) = event.payload.get("handle").and_then(|v| v.as_str()) {
+                        projection.removed_handles.insert(handle.to_owned());
                     }
                 }
                 _ => {}
@@ -318,6 +324,7 @@ pub fn mission_status(state: &crate::AppCore, id: &str) -> Result<MissionStatusS
         last_event_id,
         last_event_offset,
         skipped_event_count: skipped.len(),
+        removed_handles: projection.removed_handles.into_iter().collect(),
     };
     Ok(snapshot)
 }
@@ -611,5 +618,43 @@ mod tests {
         assert_eq!(feed.skipped.len(), 1);
         assert!(expected_next > feed.events[0].next_offset);
         assert_eq!(feed.next_offset, Some(expected_next));
+    }
+
+    #[test]
+    fn event_projection_collects_unique_human_removed_handles() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = EventLog::open(dir.path()).unwrap();
+        log.append(signal(
+            "human",
+            "role_removed",
+            serde_json::json!({ "handle": "reviewer" }),
+        ))
+        .unwrap();
+        log.append(signal(
+            "human",
+            "role_removed",
+            serde_json::json!({ "handle": "qa" }),
+        ))
+        .unwrap();
+        log.append(signal(
+            "human",
+            "role_removed",
+            serde_json::json!({ "handle": "reviewer" }),
+        ))
+        .unwrap();
+        log.append(signal(
+            "coder",
+            "role_removed",
+            serde_json::json!({ "handle": "spoofed" }),
+        ))
+        .unwrap();
+        let (entries, _) = log.read_from_lossy(0).unwrap();
+
+        let projection = EventProjection::from_entries(&entries);
+
+        assert_eq!(
+            projection.removed_handles.into_iter().collect::<Vec<_>>(),
+            vec!["qa".to_owned(), "reviewer".to_owned()]
+        );
     }
 }

@@ -11,7 +11,7 @@ use runner_core::{
 };
 
 use crate::{
-    error::{Error, Result},
+    error::{Error, Result, RoleRejection},
     model::{Mission, MissionStatus, SessionStatus, Slot, SlotWithRole},
     ops::{role, session, slot},
     repo,
@@ -34,16 +34,19 @@ fn mission_lock(state: &AppCore, mission_id: &str) -> Arc<Mutex<()>> {
 fn checked_mission(state: &AppCore, mission_id: &str) -> Result<Mission> {
     let mission = super::get(&*state.db.get()?, mission_id)?;
     if mission.status != MissionStatus::Running || mission.archived_at.is_some() {
-        return Err(Error::msg(format!(
-            "mission “{}” is not running",
-            mission.title
-        )));
+        return Err(Error::role_rejected(
+            RoleRejection::NotRunning,
+            format!("mission “{}” is not running", mission.title),
+        ));
     }
     if state.sessions.has_pending_mission_spawns(mission_id) {
-        return Err(Error::msg(format!(
-            "a session of mission “{}” is still starting; try again once it is up",
-            mission.title
-        )));
+        return Err(Error::role_rejected(
+            RoleRejection::SpawnPending,
+            format!(
+                "a session of mission “{}” is still starting; try again once it is up",
+                mission.title
+            ),
+        ));
     }
     Ok(mission)
 }
@@ -99,11 +102,19 @@ fn leave(
 }
 
 pub fn add_role(state: &AppCore, input: MissionAddRoleInput) -> Result<MissionRoleChange> {
+    add_role_with_size(state, input, None)
+}
+
+pub fn add_role_with_size(
+    state: &AppCore,
+    input: MissionAddRoleInput,
+    grid_hint: Option<(u16, u16)>,
+) -> Result<MissionRoleChange> {
     let lock = mission_lock(state, &input.mission_id);
     let _guard = lock.lock().unwrap();
     let mission = checked_mission(state, &input.mission_id)?;
     let cancel = state.sessions.register_pending_mission_cancel(&mission.id);
-    let result = add_checked(state, &mission, input, Arc::clone(&cancel));
+    let result = add_checked(state, &mission, input, grid_hint, Arc::clone(&cancel));
     if result.is_err() {
         state
             .sessions
@@ -116,6 +127,7 @@ fn add_checked(
     state: &AppCore,
     mission: &Mission,
     input: MissionAddRoleInput,
+    grid_hint: Option<(u16, u16)>,
     cancel: Arc<AtomicBool>,
 ) -> Result<MissionRoleChange> {
     let (mut loaded, role) = {
@@ -141,6 +153,14 @@ fn add_checked(
         return Err(Error::msg("handle must not be empty"));
     }
     if let Some(error) = slot_handle_error(&handle, &existing, &removed, "mission") {
+        if runner_core::slot_handle::validate_slot_handle(&handle).is_none() {
+            if removed.contains(&handle) {
+                return Err(Error::role_rejected(RoleRejection::HandleRemoved, error));
+            }
+            if existing.contains(&handle) {
+                return Err(Error::role_rejected(RoleRejection::HandleInUse, error));
+            }
+        }
         return Err(Error::msg(error));
     }
     let runtime = slot::validate_runtime_override(input.runtime.map(|runtime| runtime.key()))?;
@@ -177,7 +197,9 @@ fn add_checked(
     let (system_prompt, first_turn) =
         crate::router::prompt::member_prompt_channels(adapter, &member, &loaded.file, &log, false);
     if let Some(body) = &first_turn {
-        super::ensure_first_turn_fits(&handle, body)?;
+        super::ensure_first_turn_fits(&handle, body).map_err(|error| {
+            Error::role_rejected(RoleRejection::FirstTurnTooLarge, error.to_string())
+        })?;
     }
     crate::ops::session::restore_missing_worktree_for_cwd(
         state,
@@ -198,7 +220,7 @@ fn add_checked(
         state.db.clone(),
         system_prompt,
         first_turn,
-        *state.mission_grid_hint.lock().unwrap(),
+        grid_hint.or_else(|| *state.mission_grid_hint.lock().unwrap()),
         "mission-add-role",
     )?;
     let change = MissionRoleChange {
@@ -336,22 +358,34 @@ pub fn remove_role(state: &AppCore, mission_id: &str, handle: &str) -> Result<Mi
         .find(|slot| slot.handle == handle)
         .ok_or_else(|| {
             if removed_handles(&log).is_ok_and(|removed| removed.contains(handle)) {
-                Error::msg(format!("@{handle} was already removed from this mission"))
+                Error::role_rejected(
+                    RoleRejection::AlreadyRemoved,
+                    format!("@{handle} was already removed from this mission"),
+                )
             } else {
-                Error::msg(format!("@{handle} is not in this mission"))
+                Error::role_rejected(
+                    RoleRejection::NotInMission,
+                    format!("@{handle} is not in this mission"),
+                )
             }
         })?
         .clone();
     let session_id =
         repo::session::latest_unarchived_id_for_slot(&*state.db.get()?, mission_id, &slot.id)?
-            .ok_or_else(|| Error::msg(format!("@{handle} has no session in this mission")))?;
+            .ok_or_else(|| {
+                Error::role_rejected(
+                    RoleRejection::NoSession,
+                    format!("@{handle} has no session in this mission"),
+                )
+            })?;
     let _claim = state
         .sessions
         .try_claim_resume(&session_id)
         .ok_or_else(|| {
-            Error::msg(format!(
-                "@{handle} is being resumed or restarted; try again once it is up"
-            ))
+            Error::role_rejected(
+                RoleRejection::Resuming,
+                format!("@{handle} is being resumed or restarted; try again once it is up"),
+            )
         })?;
     crate::daemon::block_on(super::ensure_mission_router_mounted(state, mission_id))?;
     if state.sessions.live_session_ids().contains(&session_id) {
@@ -378,10 +412,47 @@ pub fn remove_role(state: &AppCore, mission_id: &str, handle: &str) -> Result<Mi
         }
         return Err(error);
     }
-    log.append(EventDraft::message(mission.crew_id.as_deref(), mission_id, "runner", None,
-        format!("@{handle} left the mission. Messages to @{handle} are refused from now on. The team is now {}. `runner mission show` lists the current team.", team(&loaded.file.slots))))?;
+    append_leave_notice(
+        &log,
+        mission.crew_id.as_deref(),
+        mission_id,
+        handle,
+        &loaded.file.slots,
+    );
     Ok(change)
 }
 
+fn append_leave_notice(
+    log: &EventLog,
+    crew_id: Option<&str>,
+    mission_id: &str,
+    handle: &str,
+    slots: &[RosterSlot],
+) {
+    let draft = EventDraft::message(
+        crew_id,
+        mission_id,
+        "runner",
+        None,
+        format!(
+            "@{handle} left the mission. Messages to @{handle} are refused from now on. The team is now {}. `runner mission show` lists the current team.",
+            team(slots)
+        ),
+    );
+    #[cfg(test)]
+    let result = if let Some(error) = tests::take_leave_notice_error() {
+        Err(error)
+    } else {
+        log.append(draft).map(|_| ()).map_err(|e| e.to_string())
+    };
+    #[cfg(not(test))]
+    let result = log.append(draft).map(|_| ()).map_err(|e| e.to_string());
+    if let Err(error) = result {
+        log::warn!(
+            "mission {mission_id} leave notice append failed for @{handle} after removal committed: {error}"
+        );
+    }
+}
+
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

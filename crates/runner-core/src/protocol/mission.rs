@@ -325,6 +325,8 @@ pub struct MissionStatusSnapshot {
     pub last_event_id: Option<String>,
     pub last_event_offset: Option<u64>,
     pub skipped_event_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_handles: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

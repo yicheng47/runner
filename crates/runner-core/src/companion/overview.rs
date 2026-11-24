@@ -142,6 +142,9 @@ pub struct Mission {
     /// Host-derived git worktree state and auto-detected base (#1213); older hosts send none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout: Option<Checkout>,
+    /// Handles previously removed from the mission (#1235); older hosts send none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed_handles: Vec<String>,
 }
 
 impl MissionPhase {

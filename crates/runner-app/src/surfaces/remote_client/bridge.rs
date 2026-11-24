@@ -100,6 +100,7 @@ impl NativeRoot {
         if self.remote_client.sync_remote_state(cx) {
             self.clear_remote_transients();
         }
+        self.prune_remote_add_role_modal(cx);
         if !was_empty && self.launcher_is_empty_state() {
             self.reset_launcher_page(cx);
         }

@@ -10,6 +10,8 @@ mod role_setup;
 pub(crate) mod setup;
 mod terminal;
 
+pub(crate) use add_role::AddRoleContext;
+
 use self::project_field::{ProjectChoice, ProjectField};
 use super::profile_page::{column_text, section_label, text_action};
 use super::*;
@@ -217,7 +219,22 @@ impl StartChatModal {
     }
 
     fn can_submit(&self) -> bool {
-        !self.submitting && self.selected_role().is_some()
+        !self.submitting && !self.loading_catalog() && self.selected_role().is_some()
+    }
+    fn is_remote(&self) -> bool {
+        self.mission_role
+            .as_ref()
+            .is_some_and(add_role::MissionRoleForm::is_remote)
+    }
+    fn loading_catalog(&self) -> bool {
+        self.mission_role
+            .as_ref()
+            .is_some_and(add_role::MissionRoleForm::loading_catalog)
+    }
+    fn catalog_failed(&self) -> bool {
+        self.mission_role
+            .as_ref()
+            .is_some_and(add_role::MissionRoleForm::catalog_failed)
     }
     fn is_composing(&self, cx: &App) -> bool {
         self.model.read(cx).is_composing()
@@ -450,7 +467,9 @@ pub(super) mod tests {
                     cx,
                 );
                 if mode == ChatMode::Role {
-                    let form = add_role::MissionRoleForm::fixture(cx);
+                    let client =
+                        crate::surfaces::front_page::FrontPageClient::local(root.core(cx).clone());
+                    let form = add_role::MissionRoleForm::fixture(client, cx);
                     root.start_chat_modal.as_mut().unwrap().mission_role = Some(form);
                 }
             });

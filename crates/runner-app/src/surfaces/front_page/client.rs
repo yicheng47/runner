@@ -868,6 +868,84 @@ impl FrontPageClient {
         .map(|()| None)
     }
 
+    pub(crate) fn mission_add_role(
+        &self,
+        input: runner_core::protocol::mission::MissionAddRoleInput,
+        size: Option<(u16, u16)>,
+    ) -> ClientResult<runner_core::protocol::mission::MissionRoleChange> {
+        if !self.is_remote() {
+            return self.daemon.mission_add_role(input);
+        }
+        if !self.supports(&["catalog", "addMissionRole"]) {
+            return Err(ClientError::msg(
+                "This action is unavailable on the selected computer.",
+            ));
+        }
+        #[derive(serde::Deserialize)]
+        struct RoleChangeResult {
+            mission: String,
+            handle: String,
+            session: String,
+        }
+        let (cols, rows) = size.unwrap_or((80, 24));
+        self.action::<RoleChangeResult>(
+            "addMissionRole",
+            ActionRequest::AddMissionRole {
+                id: 0,
+                mission: input.mission_id,
+                role: input.role_id,
+                handle: input.handle,
+                runtime: input.runtime.map(|runtime| runtime.key().into()),
+                model: input.model,
+                effort: input.effort,
+                speed: input.speed.map(|speed| {
+                    match speed {
+                        runner_core::protocol::model::CodexSpeed::Standard => "standard",
+                        runner_core::protocol::model::CodexSpeed::Fast => "fast",
+                    }
+                    .into()
+                }),
+                task: input.task,
+                cols,
+                rows,
+            },
+        )
+        .map(|result| runner_core::protocol::mission::MissionRoleChange {
+            mission_id: result.mission,
+            handle: result.handle,
+            session_id: result.session,
+        })
+    }
+
+    pub(crate) fn mission_remove_role(
+        &self,
+        mission_id: &str,
+        handle: &str,
+    ) -> ClientResult<runner_core::protocol::mission::MissionRoleChange> {
+        if !self.is_remote() {
+            return self.daemon.mission_remove_role(mission_id, handle);
+        }
+        #[derive(serde::Deserialize)]
+        struct RoleChangeResult {
+            mission: String,
+            handle: String,
+            session: String,
+        }
+        self.action::<RoleChangeResult>(
+            "removeMissionRole",
+            ActionRequest::RemoveMissionRole {
+                id: 0,
+                mission: mission_id.into(),
+                handle: handle.into(),
+            },
+        )
+        .map(|result| runner_core::protocol::mission::MissionRoleChange {
+            mission_id: result.mission,
+            handle: result.handle,
+            session_id: result.session,
+        })
+    }
+
     pub(crate) fn archive_mission_state(
         &self,
         mission: String,

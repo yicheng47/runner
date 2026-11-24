@@ -615,6 +615,7 @@ fn overview(core: &AppCore) -> crate::error::Result<Overview> {
                     phase: snapshot.phase.map(Into::into),
                     cwd: snapshot.mission.cwd,
                     checkout: mission_checkout,
+                    removed_handles: snapshot.removed_handles,
                 });
             }
         }

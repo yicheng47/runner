@@ -2037,3 +2037,160 @@ async fn claim_control_uses_if_free_and_never_steals_when_host_or_other_browser_
     }
     crate::ops::session::session_stop(&host.core, &session).unwrap();
 }
+
+#[tokio::test]
+async fn remote_mission_role_add_remove_and_rejections_preserve_allowlisted_messages() {
+    for rejection in crate::error::RoleRejection::ALL {
+        let expected = rejection.companion_message();
+        assert_eq!(
+            super::route::request_error(&c::ErrorMessage {
+                id: Some(1),
+                code: c::ErrorCode::Failed,
+                message: expected.into(),
+                versions: None,
+                version_gate: None,
+            }),
+            expected
+        );
+    }
+    assert_eq!(
+        super::route::request_error(&c::ErrorMessage {
+            id: Some(1),
+            code: c::ErrorCode::Failed,
+            message: "arbitrary /host/path error".into(),
+            versions: None,
+            version_gate: None,
+        }),
+        "The remote computer refused the request."
+    );
+
+    let host = Host::new().await;
+    let mission = host
+        .ok(json!({
+            "type":"startMission",
+            "crew":"crew",
+            "title":"Remote roles mission",
+            "cwd":host.path(),
+            "cols":80,
+            "rows":24
+        }))
+        .await["mission"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while host.core.sessions.has_pending_mission_spawns(&mission)
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // Add a worker remotely with an explicit handle.
+    let added = host
+        .ok(json!({
+            "type":"addMissionRole",
+            "mission":mission,
+            "role":"role",
+            "handle":"rmr-dup",
+            "cols":100,
+            "rows":30
+        }))
+        .await;
+    assert_eq!(added["mission"], mission);
+    assert_eq!(added["handle"], "rmr-dup");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while host.core.sessions.has_pending_mission_spawns(&mission)
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // Duplicate handle reaches the viewer with the exact mapped host message (not the generic fallback).
+    let dup_error = host
+        .request(json!({
+            "type":"addMissionRole",
+            "mission":mission,
+            "role":"role",
+            "handle":"rmr-dup",
+            "cols":100,
+            "rows":30
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(dup_error, "That handle is already in use in this mission.");
+
+    // Removing a missing handle returns the exact NotInMission message.
+    let missing_error = host
+        .request(json!({
+            "type":"removeMissionRole",
+            "mission":mission,
+            "handle":"no-such-role"
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(missing_error, "That role is not in this mission.");
+
+    // Removing @rmr-dup succeeds, populates Overview.removedHandles, and guards re-add / re-remove.
+    let removed = host
+        .ok(json!({
+            "type":"removeMissionRole",
+            "mission":mission,
+            "handle":"rmr-dup"
+        }))
+        .await;
+    assert_eq!(removed["handle"], "rmr-dup");
+    let overview = host.fixture.client.overview("2".into()).await.unwrap();
+    assert_eq!(overview.missions[0].removed_handles, vec!["rmr-dup"]);
+
+    let reuse_error = host
+        .request(json!({
+            "type":"addMissionRole",
+            "mission":mission,
+            "role":"role",
+            "handle":"rmr-dup",
+            "cols":100,
+            "rows":30
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        reuse_error,
+        "That handle was already removed from this mission; choose another handle."
+    );
+
+    let already_removed_error = host
+        .request(json!({
+            "type":"removeMissionRole",
+            "mission":mission,
+            "handle":"rmr-dup"
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        already_removed_error,
+        "That role was already removed from this mission."
+    );
+
+    // Archiving/stopping the mission surfaces NotRunning verbatim on add.
+    host.core
+        .db
+        .get()
+        .unwrap()
+        .execute(
+            "UPDATE missions SET status='completed' WHERE id=?1",
+            rusqlite::params![&mission],
+        )
+        .unwrap();
+    let stopped_error = host
+        .request(json!({
+            "type":"addMissionRole",
+            "mission":mission,
+            "role":"role",
+            "handle":"after-stop",
+            "cols":100,
+            "rows":30
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(stopped_error, "The mission is not running.");
+}

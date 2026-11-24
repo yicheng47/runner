@@ -417,8 +417,15 @@ async fn send(socket: &mut transport::Socket, bytes: Vec<u8>) -> Result<()> {
     .map_err(|_| "Remote route write timed out")?
     .map_err(|_| "Remote route closed".into())
 }
-fn request_error(error: &c::ErrorMessage) -> &'static str {
-    match error.message.as_str() {
+pub(super) fn request_error(error: &c::ErrorMessage) -> &'static str {
+    let message = error.message.as_str();
+    if let Some(rejection) = crate::error::RoleRejection::ALL
+        .into_iter()
+        .find(|rejection| rejection.companion_message() == message)
+    {
+        return rejection.companion_message();
+    }
+    match message {
         "The project has running chats or missions." => {
             "The project has running chats or missions."
         }

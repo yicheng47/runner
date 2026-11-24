@@ -800,6 +800,7 @@
 "ui.no_roles_yet" = "No roles yet"
 "ui.no_roles_yet_create_one_first_then_add_it_here" = "No roles yet. Create one first, then add it here."
 "ui.no_roles_yet_create_one_from_the_roles_page_first" = "No roles yet. Create one from the Roles page first."
+"ui.no_roles_yet_on_this_computer_create_one_on_the_host_first" = "No roles yet on this computer. Create one on the host first."
 "ui.no_server_selected" = "No server selected"
 "ui.no_session_key_captured_yet" = "No session key captured yet"
 "ui.no_skills_catalogs_available" = "No skills catalogs available."

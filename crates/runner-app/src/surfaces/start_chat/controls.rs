@@ -199,7 +199,10 @@ pub(super) fn sync_runtime_controls(modal: &mut StartChatModal, cx: &mut Context
         .unwrap_or_default();
     modal.model_field.update(cx, |field, field_cx| {
         field.set_suggestions(models, field_cx);
-        field.set_disabled(modal.submitting || runtime.is_none(), field_cx);
+        field.set_disabled(
+            modal.submitting || modal.loading_catalog() || runtime.is_none(),
+            field_cx,
+        );
     });
     let placeholder = model_placeholder(inheriting_role(modal));
     modal.model.update(cx, |input, input_cx| {
@@ -236,7 +239,10 @@ pub(super) fn sync_speed_control(modal: &mut StartChatModal, cx: &mut Context<Na
     modal.speed_select.update(cx, |select, select_cx| {
         select.set_options(options, select_cx);
         select.set_value(modal.speed.clone(), select_cx);
-        select.set_disabled(modal.submitting || !visible, select_cx);
+        select.set_disabled(
+            modal.submitting || modal.loading_catalog() || !visible,
+            select_cx,
+        );
     });
 }
 
@@ -288,7 +294,7 @@ pub(super) fn sync_effort_control(modal: &mut StartChatModal, cx: &mut Context<N
     if !options.iter().any(|option| option.value == modal.effort) {
         modal.effort = baseline;
     }
-    let disabled = modal.submitting || options.len() <= 1;
+    let disabled = modal.submitting || modal.loading_catalog() || options.len() <= 1;
     modal.effort_select.update(cx, |select, select_cx| {
         select.set_options(options, select_cx);
         select.set_value(modal.effort.clone(), select_cx);

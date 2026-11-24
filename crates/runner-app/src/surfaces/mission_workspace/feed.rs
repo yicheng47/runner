@@ -556,21 +556,22 @@ impl MissionWorkspace {
     pub(super) fn feed_item_count(&self) -> usize {
         self.feed_rows.len().max(1)
             + usize::from(
-                !self.presentation.is_remote()
-                    && self.mission_composer_roster().is_empty()
+                self.mission_composer_roster().is_empty()
                     && !self.loading
                     && mission_slot_actions_available(
                         self.mission_view().as_ref().map(|mission| mission.status),
                         self.archived(),
                         self.secondary,
-                    ),
+                    )
+                    && (!self.presentation.is_remote()
+                        || (self.remote_supports(&["catalog", "addMissionRole"])
+                            && self.remote_feed_history_loaded)),
             )
     }
 
-    fn render_empty_mission(&self, _cx: &mut Context<Self>) -> AnyElement {
+    fn render_empty_mission(&self, cx: &mut Context<Self>) -> AnyElement {
         let shell = self.shell.clone();
-        let mission = self.mission.clone();
-        let events = self.events.clone();
+        let workspace = cx.entity();
         let description = crate::i18n::text("ui.roles_join_one_at_a_time_each_as_a_worker_every_role_gets_the_goal_give_each_one_its_own_t");
         div()
             .debug_selector(|| "MISSION_NO_ROLES".into())
@@ -608,15 +609,9 @@ impl MissionWorkspace {
                     .variant(ButtonVariant::Primary)
                     .icon("plus.svg")
                     .on_press(move |window, cx| {
-                        if let Some(mission) = mission.clone() {
+                        if let Some(context) = workspace.read(cx).add_role_context(window, cx) {
                             let _ = shell.update(cx, |this, cx| {
-                                this.open_add_role_modal(
-                                    mission,
-                                    Vec::new(),
-                                    events.clone(),
-                                    window,
-                                    cx,
-                                )
+                                this.open_add_role_modal(context, window, cx)
                             });
                         }
                     }),

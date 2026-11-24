@@ -313,6 +313,8 @@ impl Transport for Fake {
                     "feed" => serde_json::json!({"entries":[],"before":null}),
                     "startMission" => serde_json::json!({"mission":"created-mission"}),
                     "resumeMission" => serde_json::json!({"mission":value["mission"],"sessions":["member"]}),
+                    "addMissionRole" => serde_json::json!({"mission":value["mission"],"handle":value["handle"].as_str().unwrap_or("host-coder"),"session":"added-member"}),
+                    "removeMissionRole" => serde_json::json!({"mission":value["mission"],"handle":value["handle"],"session":"member"}),
                     "layout" => serde_json::json!({"target":value["target"]}),
                     "createProject" => serde_json::json!({"project":"new-project"}),
                     "deleteProject" => serde_json::json!({"archivedMissions":[],"archivedSessions":[]}),
@@ -7186,6 +7188,8 @@ pub(crate) fn enable_missions(fake: &Fake) {
             "post",
             "restart",
             "startMission",
+            "addMissionRole",
+            "removeMissionRole",
         ]
         .map(str::to_owned),
     );
