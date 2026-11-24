@@ -1,7 +1,6 @@
 use crate::app_settings::UsageSettings;
 use crate::surfaces::app_shell::{
-    is_five_hour, sidebar_usage_element, usage_section_with_account, visible_usage_runtimes,
-    SidebarFooterControl,
+    is_five_hour, sidebar_usage_element, usage_section_with_account, SidebarFooterControl,
 };
 use crate::{theme, NativeRoot};
 use gpui::prelude::*;
@@ -23,15 +22,15 @@ impl NativeRoot {
                 }
             }
         }
-        let runtimes = crate::surfaces::app_shell::usage_popover_runtimes(
-            &self.usage_installed,
-            &self.settings(cx).model_runtimes(),
-        );
-        let visible: Vec<_> =
-            visible_usage_runtimes(&self.usage_installed, &self.settings(cx).model_runtimes())
-                .into_iter()
-                .filter(|r| settings.badge(*r))
-                .collect();
+        let runtimes = self
+            .usage
+            .popover_runtimes(&self.settings(cx).model_runtimes());
+        let visible: Vec<_> = self
+            .usage
+            .visible_runtimes(&self.settings(cx).model_runtimes())
+            .into_iter()
+            .filter(|r| settings.badge(*r))
+            .collect();
         let now = chrono::Utc::now();
         let updated = snapshot
             .runtimes

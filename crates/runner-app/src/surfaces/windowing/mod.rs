@@ -242,7 +242,7 @@ impl NativeRoot {
             || self.fork_confirm.is_some()
             || self.quit_dialog.is_some()
             || self.agent_update.is_some()
-            || self.usage_open)
+            || self.usage.open)
     }
 
     pub(crate) fn can_auto_focus_remote_terminal(&self, window: &Window, cx: &App) -> bool {

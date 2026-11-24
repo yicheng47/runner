@@ -2767,7 +2767,7 @@ fn host_button_sits_in_the_footer_and_the_popup_puts_this_computer_first() {
     let window = add_window(&mut cx, &store, temp.path(), "host-button");
     window
         .update(&mut cx, |root, _, cx| {
-            root.usage_installed = vec![runner_core::protocol::model::Runtime::Codex];
+            root.usage.installed = vec![runner_core::protocol::model::Runtime::Codex];
             cx.notify();
         })
         .unwrap();
@@ -2932,7 +2932,7 @@ fn switching_to_another_computer_closes_the_usage_popover_for_good() {
     let window = add_window(&mut cx, &store, temp.path(), "usage-closes-remote");
     window
         .update(&mut cx, |root, _, cx| {
-            root.usage_installed = vec![runner_core::protocol::model::Runtime::Codex];
+            root.usage.installed = vec![runner_core::protocol::model::Runtime::Codex];
             cx.notify();
         })
         .unwrap();
@@ -2951,7 +2951,7 @@ fn switching_to_another_computer_closes_the_usage_popover_for_good() {
     visual.run_until_parked();
     assert!(visual.debug_bounds("USAGE_POPOVER_PANEL").is_none());
     assert!(window
-        .read_with(&visual, |root, _| !root.usage_open)
+        .read_with(&visual, |root, _| !root.usage.open)
         .unwrap());
     window
         .update(&mut visual, |root, window, cx| {
@@ -8193,7 +8193,7 @@ fn remote_footer_and_readonly_popover_use_the_hosts_usage_and_keep_it_while_disc
     let window = add_window(&mut cx, &store, temp.path(), "remote-usage");
     window
         .update(&mut cx, |root, _, cx| {
-            root.usage_installed = vec![Runtime::Codex];
+            root.usage.installed = vec![Runtime::Codex];
             cx.notify();
         })
         .unwrap();
@@ -8373,7 +8373,7 @@ fn a_host_without_usage_shows_the_update_hint_and_receives_no_usage_request() {
     let window = add_window(&mut cx, &store, temp.path(), "no-usage");
     window
         .update(&mut cx, |root, window, cx| {
-            root.usage_installed = vec![runner_core::protocol::model::Runtime::Codex];
+            root.usage.installed = vec![runner_core::protocol::model::Runtime::Codex];
             choose_host(root, window, cx);
         })
         .unwrap();

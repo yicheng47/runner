@@ -898,7 +898,7 @@ impl NativeRoot {
             self.settings_page
                 .search
                 .update(cx, |input, input_cx| input.reset("", input_cx));
-            self.usage_open = false;
+            self.usage.close();
             self.remote_client.ui.picker_open = false;
             if self.remote_client.ui.pair.take().is_some() {
                 self.remote_client.ui.pair_generation += 1;
@@ -1375,7 +1375,7 @@ impl NativeRoot {
     fn settings_escape_blocked(&self, cx: &gpui::App) -> bool {
         self.quit_dialog.is_some()
             || self.agent_update.is_some()
-            || self.usage_open
+            || self.usage.open
             || self.update_popover.open
             || self.remote_client.ui.picker_open
             || self.remote_client.ui.pair.is_some()

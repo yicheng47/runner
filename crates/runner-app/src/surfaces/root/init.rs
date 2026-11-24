@@ -124,7 +124,7 @@ impl NativeRoot {
                             this.refresh_slot_override_runtimes(cx);
                             this.refresh_agents_pane(cx);
                             this.refresh_setup_data(cx);
-                            this.usage_installed =
+                            this.usage.installed =
                                 crate::surfaces::app_shell::usage_installed(this.core(cx));
                             let runtimes = this
                                 .core(cx)
@@ -405,13 +405,9 @@ impl NativeRoot {
             route: initial_route.clone(),
             settings_return_route: initial_route,
             settings_return_remote_drawer_shell: None,
-            usage_open: false,
-            usage_refresh_task: None,
-            usage_checked: None,
-            usage_enabled: None,
-            claude_account_picker: None,
-            usage_anchor: None,
-            usage_installed: crate::surfaces::app_shell::usage_installed(&core),
+            usage: surfaces::app_shell::UsageState::new(
+                crate::surfaces::app_shell::usage_installed(&core),
+            ),
             agent_updates: crate::surfaces::app_shell::agents_with_updates(&core),
             runtime_navigation_history,
             runtime_navigation_index,

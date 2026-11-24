@@ -1,5 +1,48 @@
 use super::*;
 
+/// Usage popover, runtime tracking, and Claude account picker state owned by `NativeRoot`.
+#[derive(Default)]
+pub(crate) struct UsageState {
+    pub(crate) open: bool,
+    pub(crate) refresh_task: Option<gpui::Task<()>>,
+    pub(crate) claude_account_picker: Option<Entity<runner_app::ui::select::StyledSelect>>,
+    pub(crate) anchor: Option<Bounds<Pixels>>,
+    pub(crate) installed: Vec<Runtime>,
+    pub(crate) checked: Option<Vec<Runtime>>,
+    pub(crate) enabled: Option<Vec<Runtime>>,
+}
+
+impl UsageState {
+    pub(crate) fn new(installed: Vec<Runtime>) -> Self {
+        Self {
+            installed,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn close(&mut self) -> bool {
+        std::mem::replace(&mut self.open, false)
+    }
+
+    pub(crate) fn toggle(&mut self) -> bool {
+        self.open = !self.open;
+        self.open
+    }
+
+    pub(crate) fn clear_daemon_sync(&mut self) {
+        self.checked = None;
+        self.enabled = None;
+    }
+
+    pub(crate) fn visible_runtimes(&self, enabled: &[Runtime]) -> Vec<Runtime> {
+        visible_usage_runtimes(&self.installed, enabled)
+    }
+
+    pub(crate) fn popover_runtimes(&self, enabled: &[Runtime]) -> Vec<Runtime> {
+        usage_popover_runtimes(&self.installed, enabled)
+    }
+}
+
 /// Agents whose npm `latest` is newer than the installed version.
 pub(crate) fn agents_with_updates(core: &DaemonClient) -> Vec<Runtime> {
     core.runtime_status_list()
@@ -841,13 +884,13 @@ pub(crate) fn alpha(mut color: gpui::Hsla, value: f32) -> gpui::Hsla {
 
 impl NativeRoot {
     pub(crate) fn start_usage_refresh_timer(&mut self, cx: &mut Context<Self>) {
-        self.usage_refresh_task = Some(cx.spawn(async move |weak, cx| loop {
+        self.usage.refresh_task = Some(cx.spawn(async move |weak, cx| loop {
             cx.background_executor()
                 .timer(std::time::Duration::from_secs(5 * 60))
                 .await;
             let keep = weak
                 .update(cx, |root, cx| {
-                    if !root.usage_open || root.remote_client.is_active() {
+                    if !root.usage.open || root.remote_client.is_active() {
                         return false;
                     }
                     let _ = root.core(cx).usage_refresh(RefreshReason::Open);
@@ -880,7 +923,8 @@ impl NativeRoot {
         } else {
             (
                 self.app_store.read(cx).usage.clone(),
-                visible_usage_runtimes(&self.usage_installed, &self.settings(cx).model_runtimes())
+                self.usage
+                    .visible_runtimes(&self.settings(cx).model_runtimes())
                     .into_iter()
                     .filter(|runtime| self.settings(cx).usage.badge(*runtime))
                     .collect(),
@@ -931,7 +975,7 @@ impl NativeRoot {
                 .separator_before(true),
         );
         let owner = cx.weak_entity();
-        let picker = self.claude_account_picker.get_or_insert_with(|| {
+        let picker = self.usage.claude_account_picker.get_or_insert_with(|| {
             cx.new(|cx| {
                 StyledSelect::new(
                     "claude-usage-account",
@@ -941,7 +985,7 @@ impl NativeRoot {
                     Rc::new(move |id, window, cx| {
                         let _ = owner.update(cx, |this, cx| {
                             if id == "manage" {
-                                this.usage_open = false;
+                                this.usage.close();
                                 this.open_this_computer_settings(Some("agents"), window, cx);
                                 this.open_claude_accounts(cx);
                             } else {
@@ -1081,7 +1125,7 @@ impl NativeRoot {
                 .hover(|button| button.bg(theme::sidebar_selected()))
                 .on_click(move |_, window, cx| {
                     let _ = owner.update(cx, |this, cx| {
-                        this.usage_open = false;
+                        this.usage.close();
                         this.open_this_computer_settings(Some("usage"), window, cx);
                     });
                 })
@@ -1113,7 +1157,8 @@ impl NativeRoot {
             let agents: Vec<_> = snapshot.runtimes.keys().copied().collect();
             usage_popover_runtimes(&agents, &agents)
         } else {
-            usage_popover_runtimes(&self.usage_installed, &self.settings(cx).model_runtimes())
+            self.usage
+                .popover_runtimes(&self.settings(cx).model_runtimes())
         };
         let sections: Vec<AnyElement> = runtimes
             .into_iter()
