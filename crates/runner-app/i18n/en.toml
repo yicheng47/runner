@@ -537,6 +537,7 @@
 "ui.checking_the_windows_registry_for_path" = "Checking the Windows registry for PATH…"
 "ui.choose_a_file_or_search" = "Choose a file from the tree, or search by name."
 "ui.choose_a_folder_to_show" = "Choose a folder to show"
+"ui.choose_another_folder" = "Choose another folder…"
 "ui.choose_ellipsis" = "Choose…"
 "ui.choose_folder" = "Choose folder…"
 "ui.choose_how_you_want_to_work" = "Choose how you want to work."
