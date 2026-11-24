@@ -180,11 +180,11 @@ impl NativeRoot {
             field.select_all(input_cx);
         });
         let focus = input.read(cx).focus_handle();
-        self._pane_rename_focus_subscription =
+        self.panes._rename_focus_subscription =
             Some(cx.on_focus_out(&focus, window, |this, _, window, cx| {
                 this.submit_pane_rename(window, cx)
             }));
-        self.pane_rename = Some(PaneRename {
+        self.panes.rename = Some(PaneRename {
             session_id,
             original: value,
             input,
@@ -198,8 +198,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn cancel_pane_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.pane_rename = None;
-        self._pane_rename_focus_subscription = None;
+        self.panes.clear_rename();
         self.focus_active_terminal(window, cx);
         cx.notify();
     }

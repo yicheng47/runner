@@ -132,11 +132,10 @@ impl NativeRoot {
         let preview_trigger = self.render_sidebar_preview_trigger(cx);
         let modal = (self.route != AppRoute::Settings && self.start_chat_modal.is_some())
             .then(|| self.render_start_chat_modal(window, cx));
-        let terminal_close_confirm = (self.remote_client.is_active()
+        let terminal_close_confirm = ((self.remote_client.is_active()
             || matches!(self.route, AppRoute::Chat | AppRoute::Mission(_)))
-        .then_some(self.terminal_close_confirm.as_ref())
-        .flatten()
-        .map(|_| self.render_terminal_close_confirm(cx));
+            && self.panes.has_close_confirm())
+        .then(|| self.render_terminal_close_confirm(cx));
         let fork_confirm = ((self.remote_client.is_active() || self.route == AppRoute::Chat)
             && self.chat_lifecycle.is_fork_confirm_open())
         .then(|| self.render_fork_confirm(cx));
@@ -152,7 +151,7 @@ impl NativeRoot {
                 Some(workspace) => {
                     let fallback = (!self.create_modal_open()
                         && !self.chat_lifecycle.is_fork_confirm_open()
-                        && self.terminal_close_confirm.is_none()
+                        && !self.panes.has_close_confirm()
                         && self.remote_client.ui.pair.is_none()
                         && !self.remote_client.ui.picker_open)
                         .then(|| self.root_focus.clone());

@@ -401,7 +401,7 @@ fn open_archive_confirmation_follows_the_other_window_language() {
                 root.request_archive_all(
                     None,
                     vec!["owned-shell".into()],
-                    ArchiveAllSource::Chat,
+                    crate::surfaces::panes::ArchiveAllSource::Chat,
                     window,
                     cx,
                 );
@@ -410,7 +410,7 @@ fn open_archive_confirmation_follows_the_other_window_language() {
         cx.run_until_parked();
         let confirm_focus = windows[1]
             .read_with(&cx, |root, _| {
-                root.terminal_close_confirm.as_ref().unwrap().focus.clone()
+                root.panes.close_confirm.as_ref().unwrap().focus.clone()
             })
             .unwrap();
         for (language, body) in [
@@ -436,8 +436,8 @@ fn open_archive_confirmation_follows_the_other_window_language() {
             cx.run_until_parked();
             windows[1]
                 .read_with(&cx, |root, _| {
-                    let confirm = root.terminal_close_confirm.as_ref().unwrap();
-                    let TerminalCloseTarget::ArchiveAll {
+                    let confirm = root.panes.close_confirm.as_ref().unwrap();
+                    let crate::surfaces::panes::TerminalCloseTarget::ArchiveAll {
                         confirmation_body,
                         session_ids,
                         ..

@@ -644,7 +644,7 @@ impl NativeRoot {
                     }
                     let was_stopping = self.chat_lifecycle.record_exit(&session_id, exit_code);
                     let focus_on_completion = was_stopping
-                        || self.pending_pane_closes.contains_key(&session_id)
+                        || self.panes.has_pending_close(&session_id)
                         || self.sidebar.read(cx).session_archiving(&session_id);
                     self.refresh_store(StoreRefreshKind::All, cx);
                     self.sync_cached_active_chat_detail(cx);
@@ -959,7 +959,7 @@ mod tests {
         ChatLifecycleState, PaneRenameChange, TabCloseBehavior,
     };
     use crate::surfaces::chat_lifecycle::TransitionKind;
-    use crate::{PendingPaneClose, TerminalCloseTarget};
+    use crate::surfaces::panes::{PendingPaneClose, TerminalCloseTarget};
     use runner_app::pane_layout::{PaneLayout, SplitOrientation};
     use runner_core::protocol::model::{Runtime, SessionStatus};
     use runner_core::protocol::session::DirectSessionEntry;
@@ -1123,7 +1123,10 @@ mod tests {
                 root.reload_tabs(cx).unwrap();
                 root.tabs.activate(&tab_id);
                 root.close_terminal_pane("p1", "exited-shell", window, cx);
-                assert_eq!(root.pending_tab_close.is_some(), variant != "filled-sibling");
+                assert_eq!(
+                    root.panes.pending_tab_close.is_some(),
+                    variant != "filled-sibling"
+                );
             });
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
@@ -1427,16 +1430,17 @@ mod terminal_close_tests {
                 } else {
                     root.request_close_terminal_tab(&tab, "close-shell", window, cx);
                 }
-                assert!(root.terminal_close_confirm.is_none());
+                assert!(root.panes.close_confirm.is_none());
             });
             harness.act(|root, window, cx| {
                 assert!(root.session_entry("close-shell", cx).is_none());
-                assert!(root.terminal_close_confirm.is_none());
+                assert!(root.panes.close_confirm.is_none());
                 if entry == "pane" {
                     let pane = root.tabs.active().unwrap().focused_pane_id.clone();
                     root.request_close_chat_pane(&pane, "kept-chat", window, cx);
                     assert!(matches!(
-                        root.terminal_close_confirm
+                        root.panes
+                            .close_confirm
                             .as_ref()
                             .map(|confirm| &confirm.target),
                         Some(TerminalCloseTarget::ArchiveChatPane { .. })

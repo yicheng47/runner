@@ -127,7 +127,7 @@ fn check_async_close(runtime: &str, archive_all: bool) {
             } else {
                 let before = window.focused(cx);
                 root.request_close_chat_pane("p1", "closing", window, cx);
-                assert!(root.terminal_close_confirm.is_some());
+                assert!(root.panes.close_confirm.is_some());
                 root.cancel_terminal_close(window, cx);
                 assert_eq!(window.focused(cx), before);
                 root.request_close_chat_pane("p1", "closing", window, cx);
@@ -200,7 +200,7 @@ fn check_async_close(runtime: &str, archive_all: bool) {
         });
         harness.act(|root, window, cx| {
             assert!(!root.chat_lifecycle.stopping_sessions.contains("closing"));
-            assert!(root.pending_pane_closes.is_empty());
+            assert!(root.panes.pending_closes.is_empty());
             if archive_all {
                 assert_eq!(
                     root.tabs.active_tab_id(),
@@ -335,9 +335,10 @@ fn wait_for_confirm_worktrees(
     loop {
         visual.run_until_parked();
         harness.act(|root, _, _| {
-            has_confirm = root.terminal_close_confirm.is_some();
+            has_confirm = root.panes.close_confirm.is_some();
             snapshot = root
-                .terminal_close_confirm
+                .panes
+                .close_confirm
                 .as_ref()
                 .map(|confirm| confirm.worktree_options.clone())
                 .unwrap_or_default();
@@ -474,11 +475,7 @@ fn archive_worktree_clean_and_dirty_options_and_branch_retention(_cx: &mut gpui:
     harness.act(|root, window, cx| {
         root.toggle_confirm_worktree(0, cx);
         assert!(matches!(
-            root.terminal_close_confirm
-                .as_ref()
-                .unwrap()
-                .worktree_options[0]
-                .state,
+            root.panes.close_confirm.as_ref().unwrap().worktree_options[0].state,
             crate::surfaces::sidebar::WorktreeRemoveState::Dirty { .. }
         ));
         root.confirm_terminal_close(window, cx);
@@ -517,11 +514,7 @@ fn archive_worktree_clean_and_dirty_options_and_branch_retention(_cx: &mut gpui:
     harness.act(|root, window, cx| {
         root.toggle_confirm_worktree(0, cx);
         assert!(matches!(
-            root.terminal_close_confirm
-                .as_ref()
-                .unwrap()
-                .worktree_options[0]
-                .state,
+            root.panes.close_confirm.as_ref().unwrap().worktree_options[0].state,
             crate::surfaces::sidebar::WorktreeRemoveState::Clean { checked: false }
         ));
         root.toggle_confirm_worktree(0, cx);
@@ -917,7 +910,7 @@ fn archive_confirm_monotonic_id_ignores_stale_reply_and_terminal_close_never_pro
     harness.act(|root, window, cx| {
         root.tabs.activate("01ARZ3NDEKTSV4RRFFQ69G5FB2");
         root.request_close_terminal_tab("01ARZ3NDEKTSV4RRFFQ69G5FB2", "term-r2", window, cx);
-        assert!(root.terminal_close_confirm.is_none());
+        assert!(root.panes.close_confirm.is_none());
     });
     wait_for_condition(&visual, "terminal tab archived without confirm", || {
         let mut closed = false;
@@ -941,7 +934,7 @@ fn archive_confirm_monotonic_id_ignores_stale_reply_and_terminal_close_never_pro
         root.archive_check_gates.push_back(gate_a);
         root.tabs.activate("01ARZ3NDEKTSV4RRFFQ69G5FB1");
         root.request_close_chat_pane("p1", "chat-r2", window, cx);
-        confirm_a_id = root.terminal_close_confirm.as_ref().unwrap().id;
+        confirm_a_id = root.panes.close_confirm.as_ref().unwrap().id;
     });
     wait_for_condition(&visual, "dialog A check entered apply gate", || {
         handle_a.is_entered()
@@ -950,9 +943,9 @@ fn archive_confirm_monotonic_id_ignores_stale_reply_and_terminal_close_never_pro
     let mut confirm_b_id = 0;
     harness.act(|root, window, cx| {
         root.cancel_terminal_close(window, cx);
-        assert!(root.terminal_close_confirm.is_none());
+        assert!(root.panes.close_confirm.is_none());
         root.request_close_chat_pane("p1", "chat-r2", window, cx);
-        let confirm_b = root.terminal_close_confirm.as_ref().unwrap();
+        let confirm_b = root.panes.close_confirm.as_ref().unwrap();
         assert!(confirm_b.id > confirm_a_id);
         confirm_b_id = confirm_b.id;
     });
@@ -966,7 +959,7 @@ fn archive_confirm_monotonic_id_ignores_stale_reply_and_terminal_close_never_pro
 
     harness.act(|root, _, cx| {
         root.toggle_confirm_worktree(0, cx);
-        let confirm = root.terminal_close_confirm.as_ref().unwrap();
+        let confirm = root.panes.close_confirm.as_ref().unwrap();
         assert!(matches!(
             confirm.worktree_options[0].state,
             crate::surfaces::sidebar::WorktreeRemoveState::Clean { checked: false }
@@ -980,7 +973,7 @@ fn archive_confirm_monotonic_id_ignores_stale_reply_and_terminal_close_never_pro
     });
 
     harness.act(|root, window, cx| {
-        let confirm = root.terminal_close_confirm.as_ref().unwrap();
+        let confirm = root.panes.close_confirm.as_ref().unwrap();
         assert_eq!(confirm.id, confirm_b_id);
         assert!(matches!(
             confirm.worktree_options[0].state,

@@ -76,7 +76,7 @@ use gpui::SystemMenuType;
 use gpui::{
     actions, div, point, prelude::*, px, relative, rems, size, AnyElement, App, Bounds, Context,
     CursorStyle, DragMoveEvent, Entity, FocusHandle, Global, KeyDownEvent, Menu, MenuItem,
-    MouseButton, OsAction, Pixels, ScrollHandle, SharedString, Size, Subscription, TitlebarOptions,
+    MouseButton, OsAction, Pixels, ScrollHandle, SharedString, Subscription, TitlebarOptions,
     Window, WindowBounds, WindowOptions,
 };
 use runner_app::bootstrap::NativePaths;
@@ -113,7 +113,7 @@ use toast::ToastHost;
 use surfaces::{pane_close_behavior, PaneCloseBehavior};
 use surfaces::{
     AppRoute, CommandPaletteState, CrewSurfaces, MissionWorkspace, PaneKey, ProjectModal,
-    RoleSurfaces, SettingsPane, SettingsState, Sidebar, SplitMenuKey, StartChatModal,
+    RoleSurfaces, SettingsPane, SettingsState, Sidebar, StartChatModal,
 };
 
 actions!(

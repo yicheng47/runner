@@ -8,7 +8,7 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((target, side)) = self.pane_drop.take() else {
+        let Some((target, side)) = self.panes.take_drop_target() else {
             return;
         };
         cx.notify();
@@ -112,7 +112,7 @@ impl NativeRoot {
             }
             return;
         }
-        if self.maximized_panes.remove(&original.id).is_some() {
+        if self.panes.clear_maximized_tab(&original.id) {
             cx.notify();
         }
         let terminal_location = self.active_tab_is_terminal(cx).then(|| {
@@ -268,7 +268,7 @@ impl NativeRoot {
         let Some(layout) = self.front_page_layout().cloned() else {
             return;
         };
-        toggle_maximized(&mut self.maximized_panes, &layout, pane_id);
+        self.panes.toggle_maximized(&layout, pane_id);
         cx.notify();
     }
 
@@ -332,11 +332,10 @@ impl NativeRoot {
             .active_mut()
             .is_some_and(|layout| layout.set_split_sizes(split_id, [ratio, 100. - ratio]))
         {
-            self.split_sizes_dirty = true;
+            self.panes.mark_split_sizes_dirty();
             cx.notify();
         }
-        if self.resizing_split.as_deref() != Some(split_id) {
-            self.resizing_split = Some(split_id.to_owned());
+        if self.panes.begin_split_resize(split_id) {
             cx.notify();
         }
     }
@@ -355,13 +354,12 @@ impl NativeRoot {
             return;
         }
 
-        if self.resizing_split.take().is_some() {
+        if self.panes.take_resizing_split() {
             cx.notify();
         }
-        if !self.split_sizes_dirty {
+        if !self.panes.take_split_sizes_dirty() {
             return;
         }
-        self.split_sizes_dirty = false;
         if let Err(error) = self.persist_active_tab(cx) {
             self.chat_error = Some(error.to_string().into());
         }

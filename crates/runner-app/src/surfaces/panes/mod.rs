@@ -5,6 +5,7 @@ mod header;
 mod pane;
 mod panel;
 mod start;
+mod state;
 mod tab;
 mod tree;
 
@@ -17,6 +18,7 @@ pub(crate) use panel::{
     resolve_info_location_rows,
 };
 use start::*;
+pub(crate) use state::*;
 
 use super::*;
 
@@ -444,39 +446,6 @@ fn pane_menu_items(
         .collect()
 }
 
-/// The pane a tab shows alone. Maximize lasts only while that pane is in a
-/// split and holds the tab's focus, so anything that moves the focus to
-/// another pane, closes the pane or collapses the split shows the split again.
-pub(crate) fn maximized_leaf<'a>(
-    maximized: &HashMap<String, String>,
-    layout: &'a PaneLayout,
-) -> Option<&'a PaneLeaf> {
-    let pane_id = maximized.get(&layout.id)?;
-    let leaves = layout.root.leaves();
-    (leaves.len() > 1 && layout.focused_pane_id == *pane_id)
-        .then(|| leaves.into_iter().find(|leaf| leaf.id == *pane_id))
-        .flatten()
-}
-
-/// Maximizes `pane_id`, which the caller has focused, or restores the split
-/// when it already is maximized. Returns whether the pane is maximized now.
-pub(crate) fn toggle_maximized(
-    maximized: &mut HashMap<String, String>,
-    layout: &PaneLayout,
-    pane_id: &str,
-) -> bool {
-    if maximized_leaf(maximized, layout).is_some_and(|leaf| leaf.id == pane_id) {
-        maximized.remove(&layout.id);
-        return false;
-    }
-    maximized.insert(layout.id.clone(), pane_id.to_owned());
-    if maximized_leaf(maximized, layout).is_none() {
-        maximized.remove(&layout.id);
-        return false;
-    }
-    true
-}
-
 /// A maximized pane's measured size once its split is restored, from the
 /// size measured while it fills the tab. Like the pane tree, each split first
 /// gives its resize strip a fixed width and shares the rest by its sizes. The
@@ -527,25 +496,6 @@ fn restored_pane_size(
         width: (restored.width - border).max(px(0.)),
         height: (restored.height - border).max(px(0.)),
     })
-}
-
-/// Whether a pane of `layout` shows `session_id`; a pane hidden behind a
-/// maximized neighbour does not, though it keeps running.
-pub(crate) fn pane_shows_session(
-    maximized: &HashMap<String, String>,
-    layout: &PaneLayout,
-    session_id: &str,
-) -> bool {
-    match maximized_leaf(maximized, layout) {
-        Some(leaf) => leaf.session_id.as_deref() == Some(session_id),
-        None => layout.contains_session(session_id),
-    }
-}
-
-pub(crate) fn prune_maximized(maximized: &mut HashMap<String, String>, layout: &PaneLayout) {
-    if maximized.contains_key(&layout.id) && maximized_leaf(maximized, layout).is_none() {
-        maximized.remove(&layout.id);
-    }
 }
 
 pub(crate) fn pane_fractions(node: &PaneNode, pane_id: &str) -> Option<(f32, f32)> {

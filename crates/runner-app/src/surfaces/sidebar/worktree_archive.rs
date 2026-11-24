@@ -8,7 +8,8 @@ use runner_core::protocol::worktree::WorktreeCheckout;
 
 use super::archive::linked_missions_for_local_chats;
 use crate::app_store::AppStore;
-use crate::{theme, App, Context, NativeRoot, TerminalCloseConfirm, TerminalCloseTarget};
+use crate::surfaces::panes::{TerminalCloseConfirm, TerminalCloseTarget};
+use crate::{theme, App, Context, NativeRoot};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum WorktreeRemoveState {
@@ -476,11 +477,11 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.terminal_close_confirm.is_some() {
+        if self.panes.has_close_confirm() {
             return;
         }
-        TerminalCloseConfirm::open(&mut self.terminal_close_confirm, target, window, cx);
-        let Some(confirm) = self.terminal_close_confirm.as_mut() else {
+        TerminalCloseConfirm::open(&mut self.panes.close_confirm, target, window, cx);
+        let Some(confirm) = self.panes.close_confirm.as_mut() else {
             return;
         };
         if worktree_options.is_empty() {
@@ -519,7 +520,7 @@ impl NativeRoot {
             let _ = weak.update(cx, |this, cx| {
                 #[cfg(test)]
                 let _applied = applied;
-                let Some(confirm) = this.terminal_close_confirm.as_mut() else {
+                let Some(confirm) = this.panes.close_confirm.as_mut() else {
                     return;
                 };
                 if confirm.id != confirm_id || confirm.worktree_check_generation != generation {
@@ -555,7 +556,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn toggle_confirm_worktree(&mut self, index: usize, cx: &mut Context<Self>) {
-        if let Some(confirm) = self.terminal_close_confirm.as_mut()
+        if let Some(confirm) = self.panes.close_confirm.as_mut()
             && let Some(option) = confirm.worktree_options.get_mut(index)
             && let WorktreeRemoveState::Clean { checked } = &mut option.state
         {

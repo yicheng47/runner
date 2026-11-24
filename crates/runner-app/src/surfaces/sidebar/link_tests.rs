@@ -3138,12 +3138,12 @@ fn archiving_a_linked_chat_prompts_cancels_and_archives_missions_while_unlinked_
             root.request_archive_all(
                 Some(&unlinked_tab),
                 vec!["unlinked".into()],
-                crate::ArchiveAllSource::Sidebar,
+                crate::surfaces::panes::ArchiveAllSource::Sidebar,
                 window,
                 cx,
             );
             assert!(
-                root.terminal_close_confirm.is_none(),
+                root.panes.close_confirm.is_none(),
                 "unlinked chat without shells archives immediately"
             );
         })
@@ -3169,12 +3169,12 @@ fn archiving_a_linked_chat_prompts_cancels_and_archives_missions_while_unlinked_
             root.request_archive_all(
                 Some(&tab),
                 vec!["chat".into()],
-                crate::ArchiveAllSource::Sidebar,
+                crate::surfaces::panes::ArchiveAllSource::Sidebar,
                 window,
                 cx,
             );
             assert!(
-                root.terminal_close_confirm.is_some(),
+                root.panes.close_confirm.is_some(),
                 "linked chat opens confirmation"
             );
         })
@@ -3194,7 +3194,7 @@ fn archiving_a_linked_chat_prompts_cancels_and_archives_missions_while_unlinked_
     f.visual.run_until_parked();
     f.window
         .read_with(&f.visual, |root, _| {
-            assert!(root.terminal_close_confirm.is_none());
+            assert!(root.panes.close_confirm.is_none());
         })
         .unwrap();
     assert!(
@@ -3227,7 +3227,7 @@ fn archiving_a_linked_chat_prompts_cancels_and_archives_missions_while_unlinked_
             assert_eq!(root.route, crate::AppRoute::Mission("m1".into()));
             root.archive_chat_sessions(vec!["chat".into()], window, cx);
             assert!(
-                root.terminal_close_confirm.is_some(),
+                root.panes.close_confirm.is_some(),
                 "StoppedChatCard archive_chat_sessions prompts when linked missions exist"
             );
             root.confirm_terminal_close(window, cx);
@@ -3300,7 +3300,7 @@ fn split_tab_single_pane_close_scopes_linked_missions_to_that_pane() {
                 .id
                 .clone();
             root.request_close_chat_pane(&pane_a, "chat-a", window, cx);
-            assert!(root.terminal_close_confirm.is_some());
+            assert!(root.panes.close_confirm.is_some());
             pane_a
         })
         .unwrap();

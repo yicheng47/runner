@@ -77,8 +77,8 @@ impl NativeRoot {
             .iter()
             .map(|session| session.session_id.as_str())
             .collect::<std::collections::HashSet<_>>();
-        self.pane_action_menus
-            .retain(|id, _| direct_visible.contains(id.as_str()));
+        self.panes
+            .retain_action_menus(|id| direct_visible.contains(id));
         self.chat_lifecycle
             .retain_exit_codes(|id| direct_visible.contains(id));
     }

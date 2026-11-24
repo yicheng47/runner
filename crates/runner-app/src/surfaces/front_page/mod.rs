@@ -121,19 +121,19 @@ impl crate::NativeRoot {
     ) -> &std::collections::HashMap<crate::surfaces::PaneKey, gpui::Size<gpui::Pixels>> {
         self.remote_client
             .pane_bounds()
-            .unwrap_or(&self.pane_bounds)
+            .unwrap_or(&self.panes.bounds)
     }
     pub(crate) fn front_page_pane_bounds_mut(
         &mut self,
     ) -> &mut std::collections::HashMap<crate::surfaces::PaneKey, gpui::Size<gpui::Pixels>> {
         self.remote_client
             .pane_bounds_mut()
-            .unwrap_or(&mut self.pane_bounds)
+            .unwrap_or(&mut self.panes.bounds)
     }
     pub(crate) fn front_page_resizing_split(&self) -> Option<&str> {
         self.remote_client
             .resizing_split()
-            .unwrap_or(self.resizing_split.as_deref())
+            .unwrap_or(self.panes.resizing_split.as_deref())
     }
 }
 

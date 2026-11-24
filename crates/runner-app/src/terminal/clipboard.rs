@@ -5,7 +5,6 @@ use gpui::{App, AppContext, ClipboardItem};
 use runner_core::protocol::ClientEvent;
 use runner_terminal::terminal::ClipboardTarget;
 
-use crate::surfaces::pane_shows_session;
 use crate::{global_app_store, AppRoute, NativeRoot};
 
 /// One listener for the whole app, so a session shown in several windows
@@ -75,8 +74,7 @@ impl NativeRoot {
         if self.remote_client.is_active() {
             let hidden = runner_core::remote::terminal_target(id).is_some_and(|(_, session)| {
                 self.front_page_layout().is_some_and(|layout| {
-                    layout.contains_session(session)
-                        && !pane_shows_session(&self.maximized_panes, layout, session)
+                    layout.contains_session(session) && !self.panes.shows_session(layout, session)
                 })
             });
             return !hidden && self.remote_client.shows_remote_terminal(id, cx);
@@ -85,7 +83,7 @@ impl NativeRoot {
             AppRoute::Chat => {
                 !self.chat_panel_effectively_maximized(cx)
                     && self.tabs.active().is_some_and(|tab| {
-                        pane_shows_session(&self.maximized_panes, tab, id)
+                        self.panes.shows_session(tab, id)
                             || tab.drawer_open() && tab.active_drawer_shell() == Some(id)
                     })
             }
@@ -244,7 +242,8 @@ mod tests {
             .unwrap();
         windows[0]
             .update(&mut cx, |root, _, _| {
-                root.maximized_panes
+                root.panes
+                    .maximized
                     .insert("01ARZ3NDEKTSV4RRFFQ69G5FAX".into(), "p1".into());
             })
             .unwrap();
@@ -259,7 +258,7 @@ mod tests {
             .update(&mut cx, |root, _, _| root.route = AppRoute::Settings)
             .unwrap();
         windows[0]
-            .update(&mut cx, |root, _, _| root.maximized_panes.clear())
+            .update(&mut cx, |root, _, _| root.panes.clear_maximized())
             .unwrap();
         assert!(
             decide(&mut cx, "back"),

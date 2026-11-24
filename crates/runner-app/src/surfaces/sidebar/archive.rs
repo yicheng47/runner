@@ -154,20 +154,6 @@ pub(crate) fn archive_targets_for_chats(
     session_ids
 }
 
-pub(super) fn take_pending_pane_closes(
-    pending: &mut HashMap<String, PendingPaneClose>,
-    attempted: &[String],
-    removed: &[String],
-) -> Vec<PendingPaneClose> {
-    attempted
-        .iter()
-        .filter_map(|session_id| {
-            let close = pending.remove(session_id)?;
-            removed.contains(session_id).then_some(close)
-        })
-        .collect()
-}
-
 pub(super) fn pane_close_after_archive<'a>(
     tabs: &'a [PaneLayout],
     pending: &PendingPaneClose,
@@ -393,7 +379,7 @@ impl NativeRoot {
         };
         let local_plan = if !remote {
             if let (Some(id), Some(close)) = (session_ids.first(), pane_close.clone()) {
-                self.pending_pane_closes.insert(id.clone(), close);
+                self.panes.track_pending_close(id.clone(), close);
             }
             let active = self.active_focused_session_id();
             self.prepare_tab_close(&session_ids, cx);
@@ -653,8 +639,7 @@ impl NativeRoot {
             self.chat_lifecycle.clear_exit_code(session_id);
             self.chat_lifecycle.clear_transition(session_id);
         }
-        let pane_closes =
-            take_pending_pane_closes(&mut self.pending_pane_closes, &attempted, &removed);
+        let pane_closes = self.panes.take_pending_closes(&attempted, &removed);
         if self.remote_client.is_active() {
             self.clear_pending_tab_close(&attempted);
             cx.notify();
@@ -750,7 +735,7 @@ mod focus_tests {
                 root.ensure_active_tab_attached(window, cx).unwrap();
                 root.focus_active_terminal(window, cx);
                 focus = PaneCloseFocus::capture(root, window, cx);
-                root.pending_pane_closes.insert("closing".into(), PendingPaneClose { tab_id: layout.id, pane_id: "p1".into() });
+                root.panes.pending_closes.insert("closing".into(), PendingPaneClose { tab_id: layout.id, pane_id: "p1".into() });
                 if navigate {
                     let find = root.attached["surviving"].terminal_find.clone();
                     find.update(cx, |find, cx| find.open(window, cx));
