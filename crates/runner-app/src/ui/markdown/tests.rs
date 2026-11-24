@@ -8,9 +8,14 @@ use gpui::{
 };
 use pulldown_cmark::Alignment;
 
-use super::draw::{compact_highlights, openable_links, with_selection, MarkdownLinkHover};
+use super::code::CompactCodeStates;
+use super::draw::{
+    compact_code_highlights, compact_highlights, openable_links, with_selection, MarkdownLinkHover,
+};
+use super::feed::{clear_compact_syntax_theme_cache, SYNTAX_THEME_BUILDS};
 use super::layout::fragments;
 use super::*;
+use crate::surfaces::files::syntax::{SyntaxTheme, CAPTURES};
 use crate::theme;
 
 fn deep_files() -> Vec<String> {
@@ -403,7 +408,8 @@ fn long_blocks_lay_out_as_a_row_each() {
         .filter(|row| matches!(row.kind, RowKind::Code { .. }))
         .count();
     assert_eq!(code, 1000);
-    assert_eq!(page.rows[999].text(), "line 999");
+    assert!(matches!(page.rows[0].kind, RowKind::CodeHeader { .. }));
+    assert_eq!(page.rows[1000].text(), "line 999");
     let bullets = page
         .rows
         .iter()
@@ -469,21 +475,24 @@ fn a_long_code_line_splits_into_rows_that_copy_back_whole() {
 
     let page = page(&format!("```\n{line}\nnext\n```\n"));
     let rows = page.rows.len();
-    assert_eq!(rows, pieces.len() + 1);
+    assert_eq!(rows, pieces.len() + 2);
+    assert!(matches!(page.rows[0].kind, RowKind::CodeHeader { .. }));
+    assert_eq!(page.rows[0].text(), "");
     // Tabs keep their stops across a split: every piece expands as the
     // whole line would.
-    let drawn: String = (0..pieces.len()).map(|row| page.rows[row].text()).collect();
+    let drawn: String = (1..=pieces.len())
+        .map(|row| page.rows[row].text())
+        .collect();
     assert_eq!(drawn, "é   ".repeat(600) + "end");
-    let view_text = {
-        let mut copied = String::new();
-        for (index, row) in page.rows.iter().enumerate() {
-            if index > 0 && !row.continues() {
-                copied.push('\n');
-            }
-            copied.push_str(&row.text());
-        }
-        copied
-    };
+    let view_text = page
+        .selected_text(
+            Position { row: 0, offset: 0 },
+            Position {
+                row: rows - 1,
+                offset: page.rows[rows - 1].text().len(),
+            },
+        )
+        .unwrap();
     assert_eq!(view_text, format!("{drawn}\nnext"));
 }
 
@@ -664,34 +673,45 @@ fn compact_commonmark_rules_setext_heading_indented_code_literal_stars_and_multi
 
     assert!(matches!(
         &compact.rows[1].kind,
-        RowKind::Code { code, line: 0, .. }
-            if code.document.line(0) == "let indented = 1;" && code.highlights.is_none()
+        RowKind::CodeHeader { code } if code.language.is_none()
     ));
     assert_eq!(compact.rows[1].top, 8.);
+    assert!(matches!(
+        &compact.rows[2].kind,
+        RowKind::Code { code, line: 0, .. }
+            if code.document.line(0) == "let indented = 1;" && code.highlights().is_none()
+    ));
+    assert_eq!(compact.rows[2].top, 0.);
 
-    let RowKind::Paragraph(math) = &compact.rows[2].kind else {
-        panic!("{:?}", compact.rows[2]);
+    let RowKind::Paragraph(math) = &compact.rows[3].kind else {
+        panic!("{:?}", compact.rows[3]);
     };
     assert_eq!(math.text, "2 * 3 * 4 and *escaped*");
     assert!(math.styles.iter().all(|(_, style)| !style.emphasis));
-    assert_eq!(compact.rows[2].top, 8.);
-
-    assert_eq!(compact.rows[3].quotes, 1);
-    assert_eq!(compact.rows[3].text(), "line one");
     assert_eq!(compact.rows[3].top, 8.);
-    assert_eq!(compact.rows[3].inner_top, 0.);
-    assert_eq!(compact.rows[4].quotes, 1);
-    assert_eq!(compact.rows[4].text(), "line two");
-    assert_eq!(compact.rows[4].top, 0.);
-    assert_eq!(compact.rows[4].inner_top, 0.);
 
-    // Compact code blocks stay unhighlighted until #1444.
+    assert_eq!(compact.rows[4].quotes, 1);
+    assert_eq!(compact.rows[4].text(), "line one");
+    assert_eq!(compact.rows[4].top, 8.);
+    assert_eq!(compact.rows[4].inner_top, 0.);
+    assert_eq!(compact.rows[5].quotes, 1);
+    assert_eq!(compact.rows[5].text(), "line two");
+    assert_eq!(compact.rows[5].top, 0.);
+    assert_eq!(compact.rows[5].inner_top, 0.);
+
     assert!(matches!(
-        &compact.rows[5].kind,
-        RowKind::Code { code, line: 0, .. }
-            if code.document.line(0) == "fn main() {}" && code.highlights.is_none()
+        &compact.rows[6].kind,
+        RowKind::CodeHeader { code } if code.language.as_deref() == Some("rust")
     ));
-    assert_eq!(compact.rows[5].top, 8.);
+    assert_eq!(compact.rows[6].top, 8.);
+    assert!(matches!(
+        &compact.rows[7].kind,
+        RowKind::Code { code, line: 0, .. }
+            if code.document.line(0) == "fn main() {}"
+                && code.highlights().is_none()
+                && code.pending_grammar().is_some()
+    ));
+    assert_eq!(compact.rows[7].top, 0.);
     assert_eq!(compact.bottom, 8.);
 }
 
@@ -755,16 +775,17 @@ fn compact_selection_copies_paragraphs_table_rows_and_code_lines() {
     let feed = FeedMarkdown::new(&source);
     let rows: Vec<String> = feed.page().rows.iter().map(Row::text).collect();
     // Row 0: Intro line, Row 1: Second line, Row 2: Key\tVal, Row 3: one\ttwo,
-    // Row 4..=5: long_code split into 2 fragments, Row 6: last.
-    assert_eq!(rows.len(), 7);
+    // Row 4: CodeHeader (""), Row 5..=6: long_code split into 2 fragments, Row 7: last.
+    assert_eq!(rows.len(), 8);
     assert_eq!(rows[2], "Key\tVal");
     assert_eq!(rows[3], "one\ttwo");
-    assert!(feed.page().rows[5].continues());
+    assert_eq!(rows[4], "");
+    assert!(feed.page().rows[6].continues());
 
-    // Reverse selection from row 6 offset 4 back to row 1 offset 7.
+    // Reverse selection from row 7 offset 4 back to row 1 offset 7 skips the header row.
     let sel = FeedSelection {
         event_id: "e1".into(),
-        anchor: Position { row: 6, offset: 4 },
+        anchor: Position { row: 7, offset: 4 },
         head: Position { row: 1, offset: 7 },
     };
     assert_eq!(
@@ -791,12 +812,12 @@ fn compact_selection_copies_paragraphs_table_rows_and_code_lines() {
     // Distinct endpoints spanning zero bytes across a 512-byte code fragment
     // boundary keep Files' Some("") semantics in Page::selected_text while
     // FeedMarkdown filters empty copies out.
-    let frag0_len = feed.page().rows[4].text().len();
+    let frag0_len = feed.page().rows[5].text().len();
     let boundary_start = Position {
-        row: 4,
+        row: 5,
         offset: frag0_len,
     };
-    let boundary_end = Position { row: 5, offset: 0 };
+    let boundary_end = Position { row: 6, offset: 0 };
     assert_eq!(
         feed.page().selected_text(boundary_start, boundary_end),
         Some(String::new())
@@ -929,7 +950,8 @@ fn compact_block_margins_match_the_spec_table() {
             4.,  // item 2: list+list = 4, bottom 6
             12., // Rule: max(6, 12) = 12, bottom 12
             12., // Quote: max(12, 8) = 12, bottom 8
-            8.,  // Code: max(8, 8) = 8, bottom 8
+            8.,  // Code header: max(8, 8) = 8
+            0.,  // Code line: 0, bottom 8
             8.,  // Table head: max(8, 8) = 8
             0.,  // Table body: 0, bottom 8
         ]
@@ -1046,7 +1068,7 @@ fn inline_markdown_table_and_code_wrap_inside_a_narrow_feed() {
     assert!(wrapped_cell.size.height > header_cell.size.height);
 
     let code_line = window
-        .debug_bounds("COMPACT_MD_TEXT wrap-test 3")
+        .debug_bounds("COMPACT_MD_TEXT wrap-test 4")
         .expect("code line bounds");
     assert!(code_line.right() <= container.right());
     assert!(
@@ -1375,5 +1397,815 @@ fn document_link_out_and_back_excursion_does_not_open_link() {
     assert_eq!(
         *opened.borrow(),
         vec![LinkTarget::Url("https://example.com/doc".into())]
+    );
+}
+
+// ── Code block header, Copy, Wrap & Feed highlighting (#1444) ──────────
+
+#[test]
+fn code_block_language_extracts_first_info_word_and_omits_unlabelled_and_indented() {
+    let source = concat!(
+        "```rust title=\"x\"\nfn a() {}\n```\n\n",
+        "```  sh,copy\necho hi\n```\n\n",
+        "```ts{linenos}\nconst x = 1;\n```\n\n",
+        "```\nunlabelled\n```\n\n",
+        "```   \nspaces\n```\n\n",
+        "    indented\n",
+    );
+    let expected = [Some("rust"), Some("sh"), Some("ts"), None, None, None];
+    for parsed in [page(source), Page::parse_compact(source)] {
+        let langs: Vec<Option<&str>> = parsed
+            .blocks
+            .iter()
+            .map(|block| match block {
+                Block::Code(code) => code.language.as_deref(),
+                other => panic!("expected code block, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(langs, expected);
+
+        let headers: Vec<Option<&str>> = parsed
+            .rows
+            .iter()
+            .filter_map(|row| match &row.kind {
+                RowKind::CodeHeader { code } => Some(code.language.as_deref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(headers, expected);
+    }
+
+    // A language-only edit must mark the rendered page changed so live reload updates the bar.
+    let before = page("```\nplain\n```\n");
+    let after = page("```txt\nplain\n```\n");
+    assert!(before.matches_text(&after));
+    assert!(!before.same_rendered(&after));
+}
+
+#[test]
+fn code_header_row_precedes_code_and_stays_empty_to_selection_and_copy() {
+    let source = "Before\n\n```rust\nlet a = 1;\nlet b = 2;\n```\n\nAfter\n";
+    for parsed in [page(source), Page::parse_compact(source)] {
+        assert_eq!(parsed.rows.len(), 5);
+        assert_eq!(parsed.rows[0].text(), "Before");
+        assert!(matches!(
+            &parsed.rows[1].kind,
+            RowKind::CodeHeader { code } if code.language.as_deref() == Some("rust")
+        ));
+        assert_eq!(parsed.rows[1].text(), "");
+        assert_eq!(parsed.rows[2].text(), "let a = 1;");
+        assert_eq!(parsed.rows[3].text(), "let b = 2;");
+        assert_eq!(parsed.rows[4].text(), "After");
+
+        // Selection spanning the whole document omits the header bar cleanly.
+        assert_eq!(
+            parsed.selected_text(
+                Position { row: 0, offset: 0 },
+                Position { row: 4, offset: 5 }
+            ),
+            Some("Before\nlet a = 1;\nlet b = 2;\nAfter".into())
+        );
+        // Select-all starting directly on a code header adds no leading newline.
+        assert_eq!(
+            parsed.selected_text(
+                Position { row: 1, offset: 0 },
+                Position { row: 3, offset: 10 }
+            ),
+            Some("let a = 1;\nlet b = 2;".into())
+        );
+    }
+}
+
+#[test]
+fn compact_code_highlighting_styles_known_languages_and_keeps_unknown_plain() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    theme::set_active_variant(theme::ThemeVariant::Carbon);
+    let syntax = SyntaxTheme::for_palette(&runner_terminal::palette::RUNNER);
+    let keyword_idx = CAPTURES.iter().position(|name| *name == "keyword").unwrap() as u16;
+    let keyword_color = syntax.color(keyword_idx).expect("keyword colour");
+
+    HIGHLIGHT_COUNT.set(0);
+    let feed = FeedMarkdown::new("```rust\nfn main() {}\n```\n\n```notalang\nfn plain() {}\n```\n");
+    assert_eq!(
+        HIGHLIGHT_COUNT.get(),
+        0,
+        "compact parsing defers tree-sitter highlighting until drawn"
+    );
+    let Block::Code(rust) = &feed.page().blocks[0] else {
+        panic!("{:?}", feed.page().blocks);
+    };
+    let Block::Code(unknown) = &feed.page().blocks[1] else {
+        panic!("{:?}", feed.page().blocks);
+    };
+    let rust = Arc::clone(rust);
+    let unknown = Arc::clone(unknown);
+    assert!(rust.highlights().is_none());
+    assert!(unknown.highlights().is_none());
+
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(move |_, _| CompactAsyncHighlightTest { feed });
+    cx.run_until_parked();
+    let _visual = VisualTestContext::from_window(window.into(), &cx);
+    assert_eq!(
+        HIGHLIGHT_COUNT.get(),
+        1,
+        "only the recognised language runs tree-sitter when drawn"
+    );
+
+    let spans = rust
+        .highlights()
+        .expect("rust highlighted in compact after draw")
+        .line(0);
+    assert_eq!(CAPTURES[spans[0].capture as usize], "keyword");
+    let (_, fragment_spans) = rust.fragment(0, 0..rust.document.line(0).len());
+    let styled = compact_code_highlights(&fragment_spans, Some(&syntax), 0..0, theme::raised());
+    assert!(
+        styled
+            .iter()
+            .any(|(range, style)| *range == (0..2) && style.color == Some(keyword_color)),
+        "expected keyword highlight on 'fn', got {styled:?}"
+    );
+    // Selection background overlays without losing the token's syntax colour.
+    let selected = compact_code_highlights(&fragment_spans, Some(&syntax), 0..5, theme::raised());
+    assert!(
+        selected.iter().any(|(range, style)| *range == (0..2)
+            && style.color == Some(keyword_color)
+            && style.background_color == Some(theme::raised())),
+        "expected selected keyword style, got {selected:?}"
+    );
+
+    assert!(unknown.highlights().is_none());
+    let (_, unknown_spans) = unknown.fragment(0, 0..unknown.document.line(0).len());
+    assert!(
+        compact_code_highlights(&unknown_spans, Some(&syntax), 0..0, theme::raised()).is_empty()
+    );
+}
+
+struct CompactAsyncHighlightTest {
+    feed: FeedMarkdown,
+}
+
+impl Render for CompactAsyncHighlightTest {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div().w(px(360.)).child(self.feed.render_all(
+            "async-hl",
+            cx.entity_id(),
+            None,
+            theme::raised(),
+            None,
+            cx,
+        ))
+    }
+}
+
+#[test]
+fn large_compact_rust_block_highlights_in_background_without_extra_parses() {
+    let mut source = String::from("```rust\n");
+    for i in 0..300 {
+        source.push_str(&format!("let value_{i} = {i};\n"));
+    }
+    source.push_str("```\n");
+    assert!(source.len() > 4 * 1024);
+
+    PARSE_COUNT.set(0);
+    HIGHLIGHT_COUNT.set(0);
+    let feed = FeedMarkdown::new(&source);
+    assert_eq!(PARSE_COUNT.get(), 1);
+    assert_eq!(HIGHLIGHT_COUNT.get(), 0);
+    let Block::Code(code) = &feed.page().blocks[0] else {
+        panic!("code block");
+    };
+    let code = Arc::clone(code);
+    assert!(
+        code.highlights().is_none(),
+        "compact block defers highlighting off the UI thread"
+    );
+
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(move |_, _| CompactAsyncHighlightTest { feed });
+    cx.run_until_parked();
+    let _visual = VisualTestContext::from_window(window.into(), &cx);
+    assert_eq!(PARSE_COUNT.get(), 1, "highlighting must not re-parse");
+    assert_eq!(HIGHLIGHT_COUNT.get(), 1, "block highlights exactly once");
+    let spans = code
+        .highlights()
+        .expect("background highlight completed")
+        .line(0);
+    assert_eq!(CAPTURES[spans[0].capture as usize], "keyword");
+}
+
+#[test]
+fn document_code_block_hover_copy_timer_and_drag_exclusion() {
+    use std::time::Duration;
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let mut cx = TestAppContext::single();
+    let raw_code = "fn main() {\n    println!(\"hi\");\n}";
+    let source = format!("```rust title=\"demo\"\n{raw_code}\n```\n\n```\nplain\n```\n");
+    let window = cx.add_window(move |_, cx| {
+        let parsed = Arc::new(Page::parse(&source, "docs/README.md"));
+        MarkdownView::new(parsed, "docs/README.md".into(), Default::default(), cx)
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+
+    let first_code = window
+        .read_with(&visual, |view, _| {
+            let Block::Code(code) = &view.page().blocks[0] else {
+                panic!("first block");
+            };
+            Arc::clone(code)
+        })
+        .unwrap();
+
+    // Header bars are visible; labelled block shows its language, unlabelled has no lang node.
+    assert!(visual.debug_bounds("FILE_MD_CODE_HEADER 0").is_some());
+    assert!(visual.debug_bounds("FILE_MD_CODE_LANG 0").is_some());
+    assert!(visual.debug_bounds("FILE_MD_CODE_HEADER 4").is_some());
+    assert!(visual.debug_bounds("FILE_MD_CODE_LANG 4").is_none());
+    // Controls stay hidden until hovered.
+    assert!(visual.debug_bounds("FILE_MD_CODE_WRAP 0").is_none());
+    assert!(visual.debug_bounds("FILE_MD_CODE_COPY 0").is_none());
+
+    // Hovering a code line reveals the bar's Wrap and Copy buttons.
+    let line0 = visual.debug_bounds("FILE_MD_TEXT 1").unwrap();
+    visual.simulate_mouse_move(line0.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("FILE_MD_CODE_WRAP 0").is_some());
+    let copy_bounds = visual.debug_bounds("FILE_MD_CODE_COPY 0").unwrap();
+
+    // Dragging starting on the Copy button selects nothing.
+    let drag_start = copy_bounds.center();
+    let drag_end = line0.center();
+    visual.simulate_mouse_down(drag_start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(drag_end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(drag_end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    window
+        .read_with(&visual, |view, _| {
+            assert_eq!(view.selected_text(), None);
+        })
+        .unwrap();
+
+    // Moving onto the header keeps the controls visible; clicking Copy copies raw code.
+    let header = visual.debug_bounds("FILE_MD_CODE_HEADER 0").unwrap();
+    visual.simulate_mouse_move(header.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    let copy_bounds = visual.debug_bounds("FILE_MD_CODE_COPY 0").unwrap();
+    visual.simulate_click(copy_bounds.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some(raw_code)
+    );
+    assert!(visual.debug_bounds("FILE_MD_CODE_COPIED 0").is_some());
+    assert!(window
+        .read_with(&visual, |view, _| view.is_code_copied(&first_code))
+        .unwrap());
+
+    // Copied stays visible for 2 seconds of test-executor time, then clears.
+    visual.executor().advance_clock(Duration::from_millis(1999));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("FILE_MD_CODE_COPIED 0").is_some());
+    visual.executor().advance_clock(Duration::from_millis(1));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("FILE_MD_CODE_COPIED 0").is_none());
+    assert!(!window
+        .read_with(&visual, |view, _| view.is_code_copied(&first_code))
+        .unwrap());
+}
+
+struct CompactCodeInteractiveTest {
+    feed: FeedMarkdown,
+    handler: FeedSelectionHandler,
+    readonly_md: &'static str,
+}
+
+impl Render for CompactCodeInteractiveTest {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w(px(280.))
+            .flex()
+            .flex_col()
+            .child(self.feed.render_all(
+                "feed-code",
+                cx.entity_id(),
+                None,
+                theme::raised(),
+                Some(&self.handler),
+                cx,
+            ))
+            .child(render_compact(
+                "readonly-code",
+                self.readonly_md,
+                cx.entity_id(),
+                cx,
+            ))
+    }
+}
+
+#[test]
+fn compact_code_block_hover_copy_timer_and_wrap_per_block() {
+    use std::time::Duration;
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let long_a = "let very_long_first_code_block_line_that_exceeds_the_narrow_viewport_width_by_far = 1234567890;";
+    let long_b = "let second_long_line_in_first_block_moves_together_with_line_one_when_scrolled = 9876543210;";
+    let other_long =
+        "let independent_second_code_block_line_that_must_stay_wrapped_when_first_unwraps = 42;";
+    let feed_md = format!("```rust\n{long_a}\n{long_b}\n```\n\n```sh\n{other_long}\n```\n");
+    let readonly_md = "```sh\necho from-preview\n```\n";
+    let selection_events = Rc::new(RefCell::new(Vec::new()));
+    let recorded = Rc::clone(&selection_events);
+    let handler = FeedSelectionHandler::new(move |phase, doc, pos, _, _| {
+        recorded.borrow_mut().push((phase, doc.to_owned(), pos));
+    });
+
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(move |_, _| CompactCodeInteractiveTest {
+        feed: FeedMarkdown::new(&feed_md),
+        handler,
+        readonly_md,
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+
+    // Block 0: header=row 0, line0=row 1, line1=row 2.
+    // Block 1: header=row 3, line0=row 4.
+    let wrapped_h_block0 = visual
+        .debug_bounds("COMPACT_MD_TEXT feed-code 1")
+        .unwrap()
+        .size
+        .height;
+    let wrapped_h_block1 = visual
+        .debug_bounds("COMPACT_MD_TEXT feed-code 4")
+        .unwrap()
+        .size
+        .height;
+    assert!(wrapped_h_block0 > px(24.), "block 0 starts wrapped");
+    assert!(wrapped_h_block1 > px(24.), "block 1 starts wrapped");
+    assert!(visual
+        .debug_bounds("COMPACT_MD_CODE_SCROLLBAR feed-code 2")
+        .is_none());
+
+    // Hovering line 1 of block 0 reveals Wrap & Copy on block 0 only.
+    let line0 = visual.debug_bounds("COMPACT_MD_TEXT feed-code 1").unwrap();
+    visual.simulate_mouse_move(line0.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    let wrap_btn = visual
+        .debug_bounds("COMPACT_MD_CODE_WRAP feed-code 0")
+        .expect("block 0 wrap button");
+    assert!(visual
+        .debug_bounds("COMPACT_MD_CODE_WRAP feed-code 3")
+        .is_none());
+
+    // Dragging starting on the Wrap button never begins a feed selection.
+    visual.simulate_mouse_down(wrap_btn.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        line0.center(),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(line0.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        !selection_events
+            .borrow()
+            .iter()
+            .any(|(phase, ..)| *phase == FeedSelectionPhase::Begin),
+        "dragging from Wrap button must not start selection: {:?}",
+        selection_events.borrow()
+    );
+
+    // Clicking Wrap turns wrapping off on block 0 only and shows its horizontal scrollbar.
+    let wrap_btn = visual
+        .debug_bounds("COMPACT_MD_CODE_WRAP feed-code 0")
+        .unwrap();
+    visual.simulate_click(wrap_btn.center(), Modifiers::default());
+    visual.run_until_parked();
+    let unwrapped_line0 = visual.debug_bounds("COMPACT_MD_TEXT feed-code 1").unwrap();
+    let unwrapped_line1 = visual.debug_bounds("COMPACT_MD_TEXT feed-code 2").unwrap();
+    assert!(
+        unwrapped_line0.size.height < wrapped_h_block0,
+        "block 0 unwrapped: {:?} vs {:?}",
+        unwrapped_line0.size.height,
+        wrapped_h_block0
+    );
+    assert_eq!(
+        visual
+            .debug_bounds("COMPACT_MD_TEXT feed-code 4")
+            .unwrap()
+            .size
+            .height,
+        wrapped_h_block1,
+        "block 1 stays wrapped"
+    );
+    assert!(visual
+        .debug_bounds("COMPACT_MD_CODE_SCROLLBAR feed-code 2")
+        .is_some());
+
+    // Horizontal wheel over line 0 shifts both lines of block 0 together.
+    let header0 = visual
+        .debug_bounds("COMPACT_MD_CODE_HEADER feed-code 0")
+        .unwrap();
+    let before_left0 = unwrapped_line0.left();
+    let before_left1 = unwrapped_line1.left();
+    assert_eq!(before_left0, before_left1);
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: point(header0.center().x, unwrapped_line0.center().y),
+        delta: gpui::ScrollDelta::Pixels(point(px(-80.), px(0.))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let scrolled_line0 = visual.debug_bounds("COMPACT_MD_TEXT feed-code 1").unwrap();
+    let scrolled_line1 = visual.debug_bounds("COMPACT_MD_TEXT feed-code 2").unwrap();
+    assert!(
+        scrolled_line0.left() < before_left0,
+        "line 0 scrolled left: {:?} vs {:?}",
+        scrolled_line0.left(),
+        before_left0
+    );
+    assert_eq!(
+        scrolled_line0.left(),
+        scrolled_line1.left(),
+        "both lines share one horizontal offset"
+    );
+
+    // Clicking Wrap again re-wraps block 0 and hides its scrollbar.
+    let header0 = visual
+        .debug_bounds("COMPACT_MD_CODE_HEADER feed-code 0")
+        .unwrap();
+    visual.simulate_mouse_move(header0.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    let wrap_btn = visual
+        .debug_bounds("COMPACT_MD_CODE_WRAP feed-code 0")
+        .unwrap();
+    visual.simulate_click(wrap_btn.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .debug_bounds("COMPACT_MD_TEXT feed-code 1")
+            .unwrap()
+            .size
+            .height,
+        wrapped_h_block0
+    );
+    assert!(visual
+        .debug_bounds("COMPACT_MD_CODE_SCROLLBAR feed-code 2")
+        .is_none());
+
+    // Copy in `render_compact` (Skills / role prompt previews) copies raw code and clears after 2s.
+    let preview_hdr = visual
+        .debug_bounds("COMPACT_MD_CODE_HEADER readonly-code 0")
+        .unwrap();
+    visual.simulate_mouse_move(preview_hdr.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    let copy_btn = visual
+        .debug_bounds("COMPACT_MD_CODE_COPY readonly-code 0")
+        .unwrap();
+    visual.simulate_click(copy_btn.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("echo from-preview")
+    );
+    assert!(visual
+        .debug_bounds("COMPACT_MD_CODE_COPIED readonly-code 0")
+        .is_some());
+    visual.executor().advance_clock(Duration::from_millis(1999));
+    visual.run_until_parked();
+    assert!(visual
+        .debug_bounds("COMPACT_MD_CODE_COPIED readonly-code 0")
+        .is_some());
+    visual.executor().advance_clock(Duration::from_millis(1));
+    visual.run_until_parked();
+    assert!(visual
+        .debug_bounds("COMPACT_MD_CODE_COPIED readonly-code 0")
+        .is_none());
+}
+
+#[test]
+fn document_code_block_wrap_toggle_shared_offset_scrollbar_and_block_isolation() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let long0 =
+        "let document_block_zero_line_zero_is_much_wider_than_a_narrow_markdown_panel = 100;";
+    let long1 =
+        "let document_block_zero_line_one_scrolls_horizontally_in_lockstep_with_line_zero = 200;";
+    let other = "let document_block_one_remains_wrapped_independently_of_block_zero_state = 300;";
+    let source = format!("```rust\n{long0}\n{long1}\n```\n\n```rust\n{other}\n```\n");
+
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(move |_, cx| {
+        let parsed = Arc::new(Page::parse(&source, "docs/WRAP.md"));
+        MarkdownView::new(parsed, "docs/WRAP.md".into(), Default::default(), cx)
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.simulate_resize(gpui::size(px(320.), px(600.)));
+    visual.run_until_parked();
+
+    let (block0, block1) = window
+        .read_with(&visual, |view, _| {
+            let Block::Code(b0) = &view.page().blocks[0] else {
+                panic!("block 0");
+            };
+            let Block::Code(b1) = &view.page().blocks[1] else {
+                panic!("block 1");
+            };
+            (Arc::clone(b0), Arc::clone(b1))
+        })
+        .unwrap();
+
+    // Row 0: header0, Row 1: long0, Row 2: long1, Row 3: header1, Row 4: other.
+    let wrapped_h0 = visual.debug_bounds("FILE_MD_TEXT 1").unwrap().size.height;
+    let wrapped_h1 = visual.debug_bounds("FILE_MD_TEXT 4").unwrap().size.height;
+    assert!(wrapped_h0 > px(26.), "block 0 wraps by default");
+    assert!(wrapped_h1 > px(26.), "block 1 wraps by default");
+
+    // Hover and click Wrap on block 0.
+    let header0 = visual.debug_bounds("FILE_MD_CODE_HEADER 0").unwrap();
+    visual.simulate_mouse_move(header0.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    let wrap_btn = visual.debug_bounds("FILE_MD_CODE_WRAP 0").unwrap();
+    visual.simulate_click(wrap_btn.center(), Modifiers::default());
+    visual.run_until_parked();
+
+    window
+        .read_with(&visual, |view, _| {
+            assert!(view.is_code_unwrapped(&block0));
+            assert!(!view.is_code_unwrapped(&block1));
+        })
+        .unwrap();
+    let line0 = visual.debug_bounds("FILE_MD_TEXT 1").unwrap();
+    let line1 = visual.debug_bounds("FILE_MD_TEXT 2").unwrap();
+    assert!(line0.size.height < wrapped_h0);
+    assert_eq!(
+        visual.debug_bounds("FILE_MD_TEXT 4").unwrap().size.height,
+        wrapped_h1
+    );
+    let scrollbar = visual
+        .debug_bounds("FILE_MD_CODE_SCROLLBAR 2")
+        .expect("horizontal scrollbar under last line");
+
+    // Wheel scroll over line 1 shifts both lines together.
+    let before_left = line0.left();
+    visual.simulate_event(gpui::ScrollWheelEvent {
+        position: point(header0.center().x, line1.center().y),
+        delta: gpui::ScrollDelta::Pixels(point(px(-90.), px(0.))),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    let after_scroll = window
+        .read_with(&visual, |view, _| view.code_scroll_x(&block0))
+        .unwrap();
+    assert!(after_scroll > 0., "horizontal wheel scrolled block 0");
+    let shifted0 = visual.debug_bounds("FILE_MD_TEXT 1").unwrap();
+    let shifted1 = visual.debug_bounds("FILE_MD_TEXT 2").unwrap();
+    assert!(shifted0.left() < before_left);
+    assert_eq!(shifted0.left(), shifted1.left());
+
+    // Clicking near the right end of the scrollbar track jumps further right without selecting.
+    let track_right = point(scrollbar.right() - px(4.), scrollbar.center().y);
+    visual.simulate_mouse_down(track_right, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(track_right, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let jumped_scroll = window
+        .read_with(&visual, |view, _| view.code_scroll_x(&block0))
+        .unwrap();
+    assert!(jumped_scroll > after_scroll);
+    assert_eq!(
+        window
+            .read_with(&visual, |view, _| view.selected_text())
+            .unwrap(),
+        None
+    );
+
+    // Clicking Wrap again re-wraps block 0 and hides the scrollbar.
+    let header0 = visual.debug_bounds("FILE_MD_CODE_HEADER 0").unwrap();
+    visual.simulate_mouse_move(header0.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    let wrap_btn = visual.debug_bounds("FILE_MD_CODE_WRAP 0").unwrap();
+    visual.simulate_click(wrap_btn.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(!window
+        .read_with(&visual, |view, _| view.is_code_unwrapped(&block0))
+        .unwrap());
+    assert_eq!(
+        visual.debug_bounds("FILE_MD_TEXT 1").unwrap().size.height,
+        wrapped_h0
+    );
+    assert!(visual.debug_bounds("FILE_MD_CODE_SCROLLBAR 2").is_none());
+}
+
+struct CompactPreviewLifecycleTest {
+    show_preview: bool,
+    markdown: String,
+    redraws: usize,
+}
+
+impl Render for CompactPreviewLifecycleTest {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w(px(280.))
+            .flex()
+            .flex_col()
+            .when(self.show_preview, |el| {
+                el.child(render_compact(
+                    "lifecycle-preview",
+                    &self.markdown,
+                    cx.entity_id(),
+                    cx,
+                ))
+            })
+    }
+}
+
+#[test]
+fn compact_preview_teardown_and_reopen_resets_wrap_and_prunes_state() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let long = "let preview_code_line_long_enough_to_wrap_inside_a_narrow_preview_card = 42;";
+    let markdown = format!("```rust\n{long}\n```\n");
+
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(move |_, _| CompactPreviewLifecycleTest {
+        show_preview: true,
+        markdown,
+        redraws: 0,
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+
+    let wrapped_h = visual
+        .debug_bounds("COMPACT_MD_TEXT lifecycle-preview 1")
+        .unwrap()
+        .size
+        .height;
+    assert!(wrapped_h > px(24.), "starts wrapped");
+
+    // Hover and turn Wrap off.
+    let header = visual
+        .debug_bounds("COMPACT_MD_CODE_HEADER lifecycle-preview 0")
+        .unwrap();
+    visual.simulate_mouse_move(header.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    let wrap_btn = visual
+        .debug_bounds("COMPACT_MD_CODE_WRAP lifecycle-preview 0")
+        .unwrap();
+    visual.simulate_click(wrap_btn.center(), Modifiers::default());
+    visual.run_until_parked();
+    let unwrapped_h = visual
+        .debug_bounds("COMPACT_MD_TEXT lifecycle-preview 1")
+        .unwrap()
+        .size
+        .height;
+    assert!(unwrapped_h < wrapped_h, "unwrapped on click");
+
+    // Unrelated redraws while mounted preserve the Wrap choice.
+    window
+        .update(&mut visual, |view, _, cx| {
+            view.redraws += 1;
+            cx.notify();
+        })
+        .unwrap();
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .debug_bounds("COMPACT_MD_TEXT lifecycle-preview 1")
+            .unwrap()
+            .size
+            .height,
+        unwrapped_h,
+        "redraw preserves unwrapped state while preview stays open"
+    );
+
+    // Closing the preview drops its element state; reopening starts wrapped again
+    // and prunes the closed preview's state from CompactCodeStates.
+    visual.simulate_mouse_move(point(px(0.), px(500.)), None, Modifiers::default());
+    window
+        .update(&mut visual, |view, _, cx| {
+            view.show_preview = false;
+            cx.notify();
+        })
+        .unwrap();
+    visual.run_until_parked();
+    assert!(visual
+        .debug_bounds("COMPACT_MD_CODE_HEADER lifecycle-preview 0")
+        .is_none());
+
+    window
+        .update(&mut visual, |view, _, cx| {
+            view.show_preview = true;
+            cx.notify();
+        })
+        .unwrap();
+    visual.run_until_parked();
+    assert_eq!(
+        visual
+            .debug_bounds("COMPACT_MD_TEXT lifecycle-preview 1")
+            .unwrap()
+            .size
+            .height,
+        wrapped_h,
+        "reopening a closed preview resets Wrap to default"
+    );
+    assert!(visual
+        .debug_bounds("COMPACT_MD_CODE_SCROLLBAR lifecycle-preview 1")
+        .is_none());
+    visual.read(|cx| {
+        assert!(
+            cx.try_global::<CompactCodeStates>()
+                .is_none_or(CompactCodeStates::is_empty),
+            "closed preview leaves no state in CompactCodeStates"
+        );
+    });
+}
+
+struct CompactSyntaxThemeReuseTest {
+    prose: FeedMarkdown,
+    code_a: FeedMarkdown,
+    code_b: FeedMarkdown,
+    show_code: bool,
+}
+
+impl Render for CompactSyntaxThemeReuseTest {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w(px(360.))
+            .flex()
+            .flex_col()
+            .child(self.prose.render_all(
+                "prose-only",
+                cx.entity_id(),
+                None,
+                theme::raised(),
+                None,
+                cx,
+            ))
+            .when(self.show_code, |el| {
+                el.child(self.code_a.render_all(
+                    "code-a",
+                    cx.entity_id(),
+                    None,
+                    theme::raised(),
+                    None,
+                    cx,
+                ))
+                .child(self.code_b.render_all(
+                    "code-b",
+                    cx.entity_id(),
+                    None,
+                    theme::raised(),
+                    None,
+                    cx,
+                ))
+            })
+    }
+}
+
+#[test]
+fn compact_syntax_theme_skips_prose_and_reuses_palette_for_code_chunks() {
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let mut cx = TestAppContext::single();
+    clear_compact_syntax_theme_cache();
+    let window = cx.add_window(|_, _| CompactSyntaxThemeReuseTest {
+        prose: FeedMarkdown::new("Just a paragraph.\n\n- And a list item"),
+        code_a: FeedMarkdown::new("```rust\nlet a = 1;\n```"),
+        code_b: FeedMarkdown::new("```rust\nlet b = 2;\n```"),
+        show_code: false,
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    assert_eq!(
+        SYNTAX_THEME_BUILDS.get(),
+        0,
+        "prose chunks never build a SyntaxTheme"
+    );
+
+    window
+        .update(&mut visual, |view, _, cx| {
+            view.show_code = true;
+            cx.notify();
+        })
+        .unwrap();
+    visual.run_until_parked();
+    assert_eq!(
+        SYNTAX_THEME_BUILDS.get(),
+        1,
+        "first highlighted draw builds SyntaxTheme once and shares it across both code chunks"
+    );
+
+    SYNTAX_THEME_BUILDS.set(0);
+    window.update(&mut visual, |_, _, cx| cx.notify()).unwrap();
+    visual.run_until_parked();
+    assert_eq!(
+        SYNTAX_THEME_BUILDS.get(),
+        0,
+        "redrawing highlighted code reuses the cached SyntaxTheme"
     );
 }

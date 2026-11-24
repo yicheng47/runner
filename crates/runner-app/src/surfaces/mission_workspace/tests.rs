@@ -3053,13 +3053,19 @@ fn feed_appends_match_full_projection_and_deduplicate_sorted_insertion() {
 
 #[test]
 fn long_feed_builds_visible_blocks_caches_markdown_and_preserves_scroll_and_selection() {
-    use crate::ui::markdown::{Position, PARSE_COUNT};
+    use crate::ui::markdown::{Block, Position, HIGHLIGHT_COUNT, PARSE_COUNT};
     use gpui::{ListOffset, VisualTestContext};
     let (_temp, mut cx, host, workspace) = mission_workspace_test();
+    HIGHLIGHT_COUNT.set(0);
     workspace.update(&mut cx, |this, _| {
         this.events = long_feed_events();
         this.rebuild_event_projection();
     });
+    assert_eq!(
+        HIGHLIGHT_COUNT.get(),
+        0,
+        "initial projection of 2,000 short code blocks must do zero tree-sitter work"
+    );
     host.update(&mut cx, |host, _, cx| {
         host.show_feed = true;
         cx.notify();
@@ -3067,27 +3073,58 @@ fn long_feed_builds_visible_blocks_caches_markdown_and_preserves_scroll_and_sele
     .unwrap();
     let mut visual = VisualTestContext::from_window(host.into(), &cx);
     visual.run_until_parked();
+    let initial_highlights = HIGHLIGHT_COUNT.get();
+    assert!(
+        initial_highlights > 0 && initial_highlights < 50,
+        "first draw highlights only visible code blocks, got {initial_highlights}"
+    );
     workspace.read_with(&visual, |this, _| {
         assert_feed_projection(this);
         assert!(this.feed_list.is_following_tail());
-        assert!(this.feed_list.bounds_for_item(1999).is_some());
+        assert!(this
+            .feed_list
+            .bounds_for_item(this.feed_rows.len() - 1)
+            .is_some());
         assert!(this.feed_block_builds.get() > 0);
         assert!(this.feed_block_builds.get() < 100);
+        let feed_md = this.feed_markdown.borrow();
+        let last_md = &feed_md[&this.events[1999].id];
+        let Block::Code(last_code) = last_md.page().blocks.last().unwrap() else {
+            panic!("last message code block");
+        };
+        assert!(
+            last_code.highlights().is_some(),
+            "visible bottom message code block is highlighted"
+        );
+        let first_md = &feed_md[&this.events[0].id];
+        let Block::Code(first_code) = first_md.page().blocks.last().unwrap() else {
+            panic!("first message code block");
+        };
+        assert!(
+            first_code.highlights().is_none(),
+            "off-screen first message stays unhighlighted until scrolled into view"
+        );
     });
     PARSE_COUNT.set(0);
+    HIGHLIGHT_COUNT.set(0);
     workspace.update(&mut visual, |this, cx| {
         this.feed_block_builds.set(0);
         cx.notify();
     });
     visual.run_until_parked();
     assert_eq!(PARSE_COUNT.get(), 0);
+    assert_eq!(HIGHLIGHT_COUNT.get(), 0);
     visual.simulate_input("typing in a long feed");
     visual.run_until_parked();
     workspace.read_with(&visual, |this, _| {
-        assert!(this.feed_block_builds.get() < 100);
+        // Each 5-row message spans two 4-row feed chunks, so ~6 visible chunks
+        // build per frame across typing renders instead of the 4,000 total rows.
+        let builds = this.feed_block_builds.get();
+        assert!(builds < 200, "feed_block_builds={builds}");
         assert_eq!(this.composer.draft, "typing in a long feed");
     });
     assert_eq!(PARSE_COUNT.get(), 0);
+    assert_eq!(HIGHLIGHT_COUNT.get(), 0);
     workspace.update(&mut visual, |this, cx| {
         let mut event = this.events.last().unwrap().clone();
         event.id = "2000".into();
@@ -3096,6 +3133,7 @@ fn long_feed_builds_visible_blocks_caches_markdown_and_preserves_scroll_and_sele
     });
     visual.run_until_parked();
     assert!(PARSE_COUNT.get() <= 1);
+    HIGHLIGHT_COUNT.set(0);
     workspace.update(&mut visual, |this, cx| {
         assert!(this.feed_list.is_following_tail());
         this.feed_list.scroll_by(px(-40.));
@@ -3116,6 +3154,11 @@ fn long_feed_builds_visible_blocks_caches_markdown_and_preserves_scroll_and_sele
         cx.notify();
     });
     visual.run_until_parked();
+    let scrolled_highlights = HIGHLIGHT_COUNT.get();
+    assert!(
+        scrolled_highlights > 0 && scrolled_highlights < 50,
+        "scrolling highlights only newly visible code blocks, got {scrolled_highlights}"
+    );
     let top = workspace.read_with(&visual, |this, _| this.feed_list.logical_scroll_top());
     workspace.update(&mut visual, |this, cx| {
         assert!(!this.feed_is_near_bottom());
@@ -3160,7 +3203,7 @@ fn long_feed_builds_visible_blocks_caches_markdown_and_preserves_scroll_and_sele
     visual.run_until_parked();
     workspace.update(&mut visual, |this, cx| {
         this.feed_list.scroll_to(ListOffset {
-            item_ix: this.feed_blocks.len() - 1,
+            item_ix: this.feed_rows.len() - 1,
             offset_in_item: px(0.),
         });
         cx.notify();
@@ -3401,10 +3444,8 @@ fn feed_wheel_reaches_unmeasured_history_and_preserves_horizontal_padding() {
             top + 10 < initial_top,
             "wheel scrolling stuck at {top} after starting at {initial_top}"
         );
-        assert!(this
-            .feed_markdown
-            .borrow()
-            .contains_key(&this.events[top].id));
+        let (event_id, _) = this.feed_row_key(top).unwrap();
+        assert!(this.feed_markdown.borrow().contains_key(event_id));
     });
     host.update(&mut visual, |_, window, _| window.remove_window())
         .unwrap();
@@ -3495,7 +3536,7 @@ fn long_feed_same_author_group_builds_only_visible_messages() {
             .collect();
         this.rebuild_event_projection();
         assert_eq!(this.feed_blocks.len(), 1);
-        assert_eq!(this.feed_rows.len(), 2000);
+        assert_eq!(this.feed_rows.len(), 4000);
     });
     host.update(&mut cx, |host, _, cx| {
         host.show_feed = true;
@@ -3534,7 +3575,7 @@ fn long_feed_same_author_group_builds_only_visible_messages() {
         event.id = format!("{:026}", 2000);
         this.append_event(event);
         assert_eq!(this.feed_blocks.len(), 1);
-        assert_eq!(this.feed_rows.len(), 2001);
+        assert_eq!(this.feed_rows.len(), 4002);
         assert_eq!(this.feed_list.logical_scroll_top().item_ix, top.item_ix);
         assert_eq!(
             this.feed_list.logical_scroll_top().offset_in_item,
@@ -3830,7 +3871,7 @@ fn long_feed_code_block_builds_only_visible_lines() {
         this.events = vec![event];
         this.rebuild_event_projection();
         assert_eq!(this.feed_blocks.len(), 1);
-        assert_eq!(this.feed_rows.len(), 500);
+        assert_eq!(this.feed_rows.len(), 501);
     });
     host.update(&mut cx, |host, _, cx| {
         host.show_feed = true;
@@ -3859,11 +3900,11 @@ fn long_feed_code_block_builds_only_visible_lines() {
         this.feed_selection = Some(FeedSelection {
             event_id: this.events[0].id.clone(),
             anchor: Position {
-                row: 1998,
+                row: 1999,
                 offset: 0,
             },
             head: Position {
-                row: 1999,
+                row: 2000,
                 offset: 19,
             },
         });
@@ -3953,12 +3994,12 @@ fn feed_selection_across_paragraph_table_code_scroll_escape_and_link_drag() {
     let message_id = format!("{:026}", 40);
     let question_id = format!("{:026}", 41);
 
-    // Select across paragraph (row 0), table header & row (rows 1..=2), and code lines (rows 3..=5).
+    // Select across paragraph (row 0), table header & row (rows 1..=2), code header (row 3), and code lines (rows 4..=6).
     workspace.update(&mut visual, |this, cx| {
         this.feed_selection = Some(FeedSelection {
             event_id: message_id.clone(),
             anchor: Position { row: 0, offset: 0 },
-            head: Position { row: 5, offset: 3 },
+            head: Position { row: 6, offset: 3 },
         });
         this.feed_list.scroll_to(ListOffset::default());
         cx.notify();
@@ -4032,7 +4073,7 @@ fn feed_selection_across_paragraph_table_code_scroll_escape_and_link_drag() {
         .debug_bounds("COMPACT_MD_TABLE_ROW 00000000000000000000000040 2")
         .unwrap();
     let code_row = visual
-        .debug_bounds("COMPACT_MD_TEXT 00000000000000000000000040 5")
+        .debug_bounds("COMPACT_MD_TEXT 00000000000000000000000040 6")
         .unwrap();
     let drag_end = point(code_row.left() + px(30.), code_row.center().y);
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
@@ -4247,8 +4288,10 @@ fn feed_scrollbar_track_drag_and_wheel_reach_unmeasured_history() {
     visual.run_until_parked();
     let top = workspace.read_with(&visual, |this, _| {
         let top = this.feed_list.logical_scroll_top();
+        let mid_low = this.feed_rows.len() * 4 / 10;
+        let mid_high = this.feed_rows.len() * 6 / 10;
         assert!(
-            (800..1200).contains(&top.item_ix),
+            (mid_low..mid_high).contains(&top.item_ix),
             "track click reached {:?}",
             top
         );
@@ -4300,7 +4343,12 @@ fn feed_scrollbar_track_drag_and_wheel_reach_unmeasured_history() {
     workspace.read_with(&visual, |this, _| {
         assert!((this.measure_feed_scrollbar().content - content).abs() < 1.);
         assert!(this.feed_list.logical_scroll_top().item_ix > 100);
-        assert!(this.feed_block_builds.get() < 200);
+        // Each 5-row message spans two 4-row chunks plus one coalesced
+        // background highlight repaint per newly visited region across the
+        // initial draw, two resizes, track clicks, wheel and drag (~215 vs
+        // 4,000 total rows).
+        let builds = this.feed_block_builds.get();
+        assert!(builds < 300, "feed_block_builds={builds}");
     });
     let bottom = point(gutter.center().x, gutter.bottom() - px(10.));
     visual.simulate_mouse_move(bottom, Some(MouseButton::Left), Modifiers::default());

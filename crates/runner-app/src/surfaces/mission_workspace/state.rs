@@ -570,7 +570,7 @@ impl MissionWorkspace {
         }
     }
 
-    fn feed_row_key(&self, index: usize) -> Option<(&str, usize)> {
+    pub(super) fn feed_row_key(&self, index: usize) -> Option<(&str, usize)> {
         match *self.feed_rows.get(index)? {
             FeedRow::Block(group) => Some((self.feed_blocks[group].id(), 0)),
             FeedRow::Message { group, event, part } => match &self.feed_blocks[group] {

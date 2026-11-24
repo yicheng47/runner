@@ -1047,6 +1047,231 @@ fn the_prompt_starts_collapsed_and_collapses_again_for_another_role() {
 }
 
 #[test]
+fn clamped_role_prompt_copy_before_show_all_copies_entire_code_block() {
+    let mut page = role_page_harness("role-prompt-clamped-copy");
+    let mut code_lines = vec![
+        "let very_wide_collapsed_role_prompt_line_that_must_overflow_the_card_width_and_show_a_horizontal_scrollbar_when_unwrapped = 1;".to_owned(),
+    ];
+    code_lines.extend((2..=39).map(|index| format!("let line_{index:02} = {index};")));
+    code_lines.push("const SENTINEL_BEYOND_LINE_24: &str = \"full-block-copied\";".into());
+    let expected_code = code_lines.join("\n");
+    let prompt = format!("```rust\n{expected_code}\n```\n");
+    let role = create_test_role(&page.core, "page-code-prompt", Some(prompt));
+
+    page.open_role("page-code-prompt");
+    assert!(!page.read(|root| root.role_surfaces.prompt_expanded));
+    assert!(
+        page.visual.debug_bounds("ROLE_PROMPT_TOGGLE").is_some(),
+        "40-line code block prompt starts collapsed with Show all toggle"
+    );
+    let collapsed = page.visual.debug_bounds("ROLE_PROMPT_TEXT").unwrap();
+
+    // Hover the visible header bar and click Copy BEFORE expanding via Show all.
+    let header_selector: &'static str =
+        Box::leak(format!("COMPACT_MD_CODE_HEADER role-prompt-{} 0", role.id).into_boxed_str());
+    let copy_selector: &'static str =
+        Box::leak(format!("COMPACT_MD_CODE_COPY role-prompt-{} 0", role.id).into_boxed_str());
+    let copied_selector: &'static str =
+        Box::leak(format!("COMPACT_MD_CODE_COPIED role-prompt-{} 0", role.id).into_boxed_str());
+    let wrap_selector: &'static str =
+        Box::leak(format!("COMPACT_MD_CODE_WRAP role-prompt-{} 0", role.id).into_boxed_str());
+    let line1_selector: &'static str =
+        Box::leak(format!("COMPACT_MD_TEXT role-prompt-{} 1", role.id).into_boxed_str());
+    let collapsed_sb_selector: &'static str =
+        Box::leak(format!("COMPACT_MD_CODE_SCROLLBAR role-prompt-{} 23", role.id).into_boxed_str());
+
+    let wrapped_line1_h = page
+        .visual
+        .debug_bounds(line1_selector)
+        .unwrap()
+        .size
+        .height;
+    let header = page
+        .visual
+        .debug_bounds(header_selector)
+        .expect("visible code header before Show all");
+    page.visual
+        .simulate_mouse_move(header.center(), None, gpui::Modifiers::default());
+    page.visual.run_until_parked();
+    let copy_btn = page
+        .visual
+        .debug_bounds(copy_selector)
+        .expect("copy button on hover");
+    page.visual
+        .simulate_click(copy_btn.center(), gpui::Modifiers::default());
+    page.visual.run_until_parked();
+
+    assert!(page.visual.debug_bounds(copied_selector).is_some());
+    assert_eq!(
+        page.visual
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some(expected_code.as_str()),
+        "Copy before Show all must copy lines beyond the 24-line clamp"
+    );
+
+    // Turning Wrap off while still collapsed unwraps the visible lines and shows
+    // the horizontal scrollbar under the last visible line (row 23).
+    let wrap_btn = page
+        .visual
+        .debug_bounds(wrap_selector)
+        .expect("wrap button on hover");
+    page.visual
+        .simulate_click(wrap_btn.center(), gpui::Modifiers::default());
+    page.visual.run_until_parked();
+    let unwrapped_line1 = page.visual.debug_bounds(line1_selector).unwrap();
+    assert!(
+        unwrapped_line1.size.height < wrapped_line1_h,
+        "line 1 unwraps while collapsed: {:?} vs {wrapped_line1_h:?}",
+        unwrapped_line1.size.height
+    );
+    assert!(
+        page.visual.debug_bounds(collapsed_sb_selector).is_some(),
+        "collapsed unwrapped code block shows its horizontal scrollbar under its last visible line"
+    );
+
+    // Advance halfway through the 2 s Copied timer and scroll horizontally
+    // while still collapsed.
+    page.visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(1000));
+    page.visual.run_until_parked();
+    assert!(
+        page.visual.debug_bounds(copied_selector).is_some(),
+        "Copied stays active 1 s in"
+    );
+    let header_before = page.visual.debug_bounds(header_selector).unwrap();
+    let before_shift = header_before.left() - unwrapped_line1.left();
+    page.visual.simulate_event(gpui::ScrollWheelEvent {
+        position: gpui::point(header_before.center().x, unwrapped_line1.center().y),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(px(-80.), px(0.))),
+        ..Default::default()
+    });
+    page.visual.run_until_parked();
+    let scrolled_line1 = page.visual.debug_bounds(line1_selector).unwrap();
+    let scrolled_shift = header_before.left() - scrolled_line1.left();
+    assert!(
+        scrolled_shift > before_shift,
+        "horizontal wheel scrolled collapsed block: {scrolled_shift:?} vs {before_shift:?}"
+    );
+
+    // Clicking Show all expands the card while preserving Wrap=off, horizontal
+    // scroll offset and the active Copied confirmation.
+    page.click("ROLE_PROMPT_TOGGLE");
+    assert!(page.read(|root| root.role_surfaces.prompt_expanded));
+    let expanded = page.visual.debug_bounds("ROLE_PROMPT_TEXT").unwrap();
+    assert!(
+        expanded.size.height > collapsed.size.height,
+        "collapsed presentation is preserved before Show all: {collapsed:?} vs {expanded:?}"
+    );
+    let expanded_header = page.visual.debug_bounds(header_selector).unwrap();
+    let expanded_line1 = page.visual.debug_bounds(line1_selector).unwrap();
+    assert_eq!(
+        expanded_line1.size.height, unwrapped_line1.size.height,
+        "line 1 stays unwrapped after Show all"
+    );
+    assert_eq!(
+        expanded_header.left() - expanded_line1.left(),
+        scrolled_shift,
+        "horizontal scroll offset survives Show all"
+    );
+    assert!(
+        page.visual.debug_bounds(copied_selector).is_some(),
+        "Copied confirmation survives Show all"
+    );
+
+    // Collapsing back via Show less preserves Wrap=off, horizontal offset and
+    // the original 2 s Copied deadline.
+    page.click("ROLE_PROMPT_TOGGLE");
+    assert!(!page.read(|root| root.role_surfaces.prompt_expanded));
+    let recollapsed_header = page.visual.debug_bounds(header_selector).unwrap();
+    let recollapsed_line1 = page.visual.debug_bounds(line1_selector).unwrap();
+    assert_eq!(
+        recollapsed_line1.size.height, unwrapped_line1.size.height,
+        "line 1 stays unwrapped after Show less"
+    );
+    assert_eq!(
+        recollapsed_header.left() - recollapsed_line1.left(),
+        scrolled_shift,
+        "horizontal scroll offset survives Show less"
+    );
+    assert!(
+        page.visual.debug_bounds(copied_selector).is_some(),
+        "Copied confirmation survives Show less"
+    );
+    page.visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(999));
+    page.visual.run_until_parked();
+    assert!(
+        page.visual.debug_bounds(copied_selector).is_some(),
+        "Copied stays active at 1,999 ms from original Copy"
+    );
+    page.visual
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(1));
+    page.visual.run_until_parked();
+    assert!(
+        page.visual.debug_bounds(copied_selector).is_none(),
+        "Copied clears at its original 2,000 ms deadline"
+    );
+
+    // Navigating away and reopening the role resets Wrap back to default.
+    create_test_role(&page.core, "page-other-reset", Some("Short.".into()));
+    page.open_role("page-other-reset");
+    page.open_role("page-code-prompt");
+    assert_eq!(
+        page.visual
+            .debug_bounds(line1_selector)
+            .unwrap()
+            .size
+            .height,
+        wrapped_line1_h,
+        "reopening the role resets Wrap to default"
+    );
+}
+
+#[test]
+fn clamped_role_prompt_preserves_prefix_boundary_before_setext_heading_and_sentinel() {
+    let mut page = role_page_harness("role-prompt-setext-boundary");
+    let prefix_lines = (1..=24)
+        .map(|index| format!("Plain prompt line {index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prompt = format!("{prefix_lines}\n===\n\n```rust\nconst SENTINEL_PAST_24: u8 = 1;\n```\n");
+    let role = create_test_role(&page.core, "page-setext-prompt", Some(prompt));
+
+    page.open_role("page-setext-prompt");
+    assert!(!page.read(|root| root.role_surfaces.prompt_expanded));
+    assert!(page.visual.debug_bounds("ROLE_PROMPT_TOGGLE").is_some());
+
+    // Prefix parses as 24 plain paragraph rows; the sentinel code block past
+    // line 25 (`===`) must not appear before Show all.
+    let prefix_last_row: &'static str =
+        Box::leak(format!("COMPACT_MD_TEXT role-prompt-{} 23", role.id).into_boxed_str());
+    let sentinel_header: &'static str =
+        Box::leak(format!("COMPACT_MD_CODE_HEADER role-prompt-{} 1", role.id).into_boxed_str());
+    assert!(
+        page.visual.debug_bounds(prefix_last_row).is_some(),
+        "collapsed card renders the 24-line prefix"
+    );
+    assert!(
+        page.visual.debug_bounds(sentinel_header).is_none(),
+        "sentinel past the Setext boundary stays hidden before Show all"
+    );
+
+    // Clicking Show all reveals the full page (Setext heading row 0 + sentinel
+    // code block header at row 1).
+    page.click("ROLE_PROMPT_TOGGLE");
+    assert!(page.read(|root| root.role_surfaces.prompt_expanded));
+    assert!(
+        page.visual.debug_bounds(sentinel_header).is_some(),
+        "Show all reveals the sentinel code block after the Setext heading"
+    );
+}
+
+#[test]
 fn edit_edits_in_place_and_cancel_discards_the_draft() {
     let mut page = role_page_harness("role-edit-cancel");
     let role = create_test_role(&page.core, "page-coder", Some("Ship it.".into()));
