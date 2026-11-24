@@ -29,7 +29,7 @@ pub(crate) fn compact_missing_path(path: &Path) -> String {
 }
 
 impl FilesView {
-    pub(in super::super) fn root_path(&self) -> Option<&Path> {
+    pub(crate) fn root_path(&self) -> Option<&Path> {
         match &self.body {
             Body::Root(state) => Some(&state.root.path),
             _ => None,
@@ -67,7 +67,7 @@ impl FilesView {
 
     /// Saves `path` as the root. A path the daemon refuses leaves the view as
     /// it was, with the error shown, so another path can be tried.
-    pub(in super::super) fn set_root(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
+    pub(crate) fn set_root(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
         if self.context.remote {
             return;
         }
@@ -157,6 +157,7 @@ impl FilesView {
                     if let Some(saved) = self.pending_restore.take() {
                         self.apply_saved_files(saved, cx);
                     }
+                    self.notify_owner(cx);
                 }
             },
             Ok(FilesRootOutcome::ChooseFolder) => {

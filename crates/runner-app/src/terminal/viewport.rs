@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use gpui::{
     prelude::*, AnyElement, App, Bounds, Context, Element, ElementId, Entity, GlobalElementId,
     InspectorElementId, LayoutId, Pixels, StyleRefinement, Subscription, Window,
@@ -7,6 +9,7 @@ use super::element::TerminalElement;
 
 struct TerminalViewport {
     element: TerminalElement,
+    last_link_root: Option<PathBuf>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -68,14 +71,21 @@ impl Element for TerminalViewportElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, AnyElement) {
+        let next_link_root = self
+            .element
+            .file_links
+            .as_ref()
+            .and_then(|route| route.link_context(cx).extra_root);
         let view =
             window.with_element_state::<Entity<TerminalViewport>, _>(id.unwrap(), |view, _| {
                 let view = view.unwrap_or_else(|| {
                     let element = self.element.clone();
+                    let last_link_root = next_link_root.clone();
                     cx.new(|cx| {
                         let subscriptions = TerminalViewport::subscriptions(&element, cx);
                         TerminalViewport {
                             element,
+                            last_link_root,
                             _subscriptions: subscriptions,
                         }
                     })
@@ -83,6 +93,7 @@ impl Element for TerminalViewportElement {
                 view.update(cx, |view, cx| {
                     let old = &view.element;
                     let new = &self.element;
+                    let link_root_changed = view.last_link_root != next_link_root;
                     let changed = !std::sync::Arc::ptr_eq(&old.session, &new.session)
                         || old.interaction != new.interaction
                         || old.input != new.input
@@ -91,7 +102,8 @@ impl Element for TerminalViewportElement {
                         || old.scrollable != new.scrollable
                         || old.resize_owner != new.resize_owner
                         || old.style != new.style
-                        || old.find != new.find;
+                        || old.find != new.find
+                        || link_root_changed;
                     if old.interaction != new.interaction
                         || old.input != new.input
                         || old.find != new.find
@@ -99,6 +111,7 @@ impl Element for TerminalViewportElement {
                         view._subscriptions = TerminalViewport::subscriptions(new, cx);
                     }
                     view.element = new.clone();
+                    view.last_link_root = next_link_root;
                     if changed {
                         cx.notify();
                     }

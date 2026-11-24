@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use gpui::{App, AppContext as _, Context, Entity, SharedString, WeakEntity};
 use runner_core::protocol::runtime_paths::find_executable;
-use runner_terminal::terminal::LinkTarget;
+use runner_terminal::terminal::{FileLinkContext, LinkTarget};
 
 use crate::app_settings::FileLinkEditor;
 use crate::app_store::global_app_store;
@@ -31,6 +31,7 @@ impl FileLinkTarget {
 }
 
 type LinkView = Rc<dyn Fn(&mut App) -> Option<(Entity<FilesView>, ShowPreview)>>;
+type ExistingLinkView = Rc<dyn Fn(&App) -> Option<Entity<FilesView>>>;
 
 /// Where a terminal's ⌘-clicked file links open first: the side panel of
 /// the chat, terminal tab or mission the terminal is in, whose preview takes
@@ -39,17 +40,21 @@ type LinkView = Rc<dyn Fn(&mut App) -> Option<(Entity<FilesView>, ShowPreview)>>
 #[derive(Clone)]
 pub(crate) struct FileLinkRoute {
     view: LinkView,
+    existing_view: ExistingLinkView,
 }
 
 impl FileLinkRoute {
     /// `view` gives the panel's Files view while its preview can take links,
+    /// `existing_view` reads an already-created Files view without fetching,
     /// and `show` opens the panel on it.
     pub(crate) fn new<T: 'static>(
         owner: WeakEntity<T>,
         view: impl Fn(&mut T, &mut Context<T>) -> Option<Entity<FilesView>> + 'static,
+        existing_view: impl Fn(&T, &App) -> Option<Entity<FilesView>> + 'static,
         show: impl Fn(&mut T, &mut Context<T>) + 'static,
     ) -> Self {
         let show = Rc::new(show);
+        let existing_owner = owner.clone();
         Self {
             view: Rc::new(move |cx| {
                 let view = owner.update(cx, |this, cx| view(this, cx)).ok().flatten()?;
@@ -60,7 +65,19 @@ impl FileLinkRoute {
                 });
                 Some((view, show))
             }),
+            existing_view: Rc::new(move |cx| {
+                let owner = existing_owner.upgrade()?;
+                existing_view(owner.read(cx), cx)
+            }),
         }
+    }
+
+    /// Reads the resolved root the Files view already holds, synchronously and
+    /// without fetching.
+    pub(crate) fn link_context(&self, cx: &App) -> FileLinkContext {
+        let extra_root = (self.existing_view)(cx)
+            .and_then(|view| view.read(cx).root_path().map(Path::to_path_buf));
+        FileLinkContext { extra_root }
     }
 
     pub(crate) fn open(&self, target: FileLinkTarget, cx: &mut App) {
@@ -389,9 +406,9 @@ mod tests {
                     line_height_factor: crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
                     copy_on_select: false,
                 };
-                let route = self
-                    .routed
-                    .then(|| FileLinkRoute::new(cx.weak_entity(), Self::view, Self::show));
+                let route = self.routed.then(|| {
+                    FileLinkRoute::new(cx.weak_entity(), Self::view, |_, _| None, Self::show)
+                });
                 div().size_full().child(
                     div()
                         .debug_selector(|| "LINK_TERMINAL".into())
@@ -475,6 +492,44 @@ mod tests {
                 "routed {routed}"
             );
         }
+    }
+
+    #[test]
+    fn link_context_reads_existing_files_root_without_fetching() {
+        use gpui::TestAppContext;
+        struct Host {
+            asked: usize,
+            existing: Option<Entity<FilesView>>,
+        }
+        impl Host {
+            fn view(&mut self, _: &mut Context<Self>) -> Option<Entity<FilesView>> {
+                self.asked += 1;
+                None
+            }
+            fn existing_view(&self, _: &App) -> Option<Entity<FilesView>> {
+                self.existing.clone()
+            }
+            fn show(&mut self, _: &mut Context<Self>) {}
+        }
+
+        let mut cx = TestAppContext::single();
+        let host = cx.new(|_| Host {
+            asked: 0,
+            existing: None,
+        });
+        let route = FileLinkRoute::new(
+            host.downgrade(),
+            Host::view,
+            Host::existing_view,
+            Host::show,
+        );
+        let context = cx.read(|cx| route.link_context(cx));
+        assert_eq!(context, FileLinkContext::default());
+        assert_eq!(
+            host.read_with(&cx, |host, _| host.asked),
+            0,
+            "link_context must stay synchronous and never invoke the lazy view fetcher"
+        );
     }
 
     #[test]

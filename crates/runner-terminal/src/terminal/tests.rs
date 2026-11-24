@@ -1289,25 +1289,10 @@ fn plain_text_and_osc8_file_uris_resolve_to_file_links() {
 fn file_link_regex_matches_windows_drive_and_unc_paths_with_suffixes() {
     let parse_match = |text: &str, needle: &str| {
         let offset = text.find(needle)?;
-        let captures = super::file_link_regex()
-            .captures_iter(text)
-            .find(|captures| {
-                captures
-                    .get(0)
-                    .is_some_and(|m| m.start() <= offset && m.end() > offset)
-            })?;
-        let number = |name: &str| {
-            captures
-                .name(name)
-                .and_then(|matched| matched.as_str().parse::<u32>().ok())
-        };
-        Some((
-            captures.name("path")?.as_str().to_owned(),
-            number("line")
-                .or_else(|| number("pline"))
-                .or_else(|| number("hline")),
-            number("column").or_else(|| number("pcolumn")),
-        ))
+        let candidate = super::scan_plain_file_candidates(text)
+            .into_iter()
+            .find(|c| c.full_range.start <= offset && c.full_range.end > offset)?;
+        Some((candidate.path, candidate.line, candidate.column))
     };
 
     for (input, needle, expected) in [
@@ -1974,4 +1959,1201 @@ fn snapshot_provenance_preserves_paint_and_output_seq_across_attach_and_resync_r
     for worker in model.stop_workers() {
         worker.join().unwrap();
     }
+}
+
+fn link_term_sized(
+    columns: usize,
+    rows: usize,
+    bytes: &[u8],
+) -> Term<alacritty_terminal::event::VoidListener> {
+    let mut term = Term::new(
+        Config::default(),
+        &TermSize::new(columns, rows),
+        alacritty_terminal::event::VoidListener,
+    );
+    crate::snapshot::TrackedProcessor::new().advance(&mut term, bytes);
+    term
+}
+
+fn test_root(temp: &tempfile::TempDir) -> PathBuf {
+    if cfg!(windows) {
+        temp.path().to_path_buf()
+    } else {
+        temp.path().canonicalize().unwrap()
+    }
+}
+
+fn native_path(root: &Path, rel: &str) -> PathBuf {
+    rel.split('/')
+        .fold(root.to_path_buf(), |path, part| path.join(part))
+}
+
+#[test]
+fn hard_wrapped_paths_join_across_rows_including_1451_shape_suffixes_and_cjk() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = test_root(&temp);
+
+    // 1. The #1451 Codex wrapped shape: `(<path-part-1>` + `<path-part-2>)` with indentation.
+    let nested = native_path(&root, "runner-1451-qa.UAUZ0TI8/codex-chat/qa-link-1451.md");
+    std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+    std::fs::write(&nested, "# qa\n").unwrap();
+    let full = nested.to_string_lossy().into_owned();
+    let split_at = full.find("1451-qa").unwrap();
+    let (part1, part2) = full.split_at(split_at);
+    let bytes = format!("  ({part1}\r\n  {part2})");
+    let term = link_term_sized(80, 12, bytes.as_bytes());
+    // Ensure WRAPLINE is unset, matching agent TUI hard-wrapping.
+    assert!(!term.grid()[Line(0)][Column(79)]
+        .flags
+        .contains(Flags::WRAPLINE));
+    let on_row0 = terminal_link_at(&term, Point::new(Line(0), Column(5)), &[]).unwrap();
+    let on_row1 = terminal_link_at(&term, Point::new(Line(1), Column(6)), &[]).unwrap();
+    assert_eq!(on_row0, on_row1);
+    assert_eq!(
+        on_row0.target,
+        LinkTarget::File {
+            path: nested.clone(),
+            line: None,
+            column: None,
+        }
+    );
+    assert_eq!(on_row0.start, Point::new(Line(0), Column(3)));
+    assert_eq!(
+        on_row0.end,
+        Point::new(Line(1), Column(2 + part2.len() - 1))
+    );
+    // Indentation, `(` and `)` are never highlighted.
+    assert!(!on_row0.contains(Point::new(Line(0), Column(0))));
+    assert!(!on_row0.contains(Point::new(Line(0), Column(2))));
+    assert!(!on_row0.contains(Point::new(Line(1), Column(1))));
+    assert!(!on_row0.contains(Point::new(Line(1), Column(2 + part2.len()))));
+
+    // 2. Path spanning 8 rows (MAX_WRAP_JOIN_ROWS) via cursor positioning, plus 9-row cap check.
+    let deep_dir = native_path(&root, "aa/bb/cc/dd/ee/ff/gg");
+    std::fs::create_dir_all(&deep_dir).unwrap();
+    let deep_file = deep_dir.join("target.rs");
+    std::fs::write(&deep_file, "fn main() {}\n").unwrap();
+    let rel_parts = ["aa/", "bb/", "cc/", "dd/", "ee/", "ff/", "gg/", "target.rs"];
+    assert_eq!(rel_parts.len(), MAX_WRAP_JOIN_ROWS);
+    let mut positioned = String::new();
+    for (idx, chunk) in rel_parts.iter().enumerate() {
+        positioned.push_str(&format!("\x1b[{};3H{chunk}", idx + 1));
+    }
+    let term8 = link_term_sized(40, 12, positioned.as_bytes());
+    let first_row = terminal_link_at(&term8, Point::new(Line(0), Column(2)), &[&root]).unwrap();
+    let last_row = terminal_link_at(
+        &term8,
+        Point::new(Line((MAX_WRAP_JOIN_ROWS - 1) as i32), Column(4)),
+        &[&root],
+    )
+    .unwrap();
+    assert_eq!(first_row, last_row);
+    assert_eq!(
+        first_row.target,
+        LinkTarget::File {
+            path: deep_file.clone(),
+            line: None,
+            column: None,
+        }
+    );
+    assert!(!first_row.contains(Point::new(Line(0), Column(1))));
+    assert!(!first_row.contains(Point::new(Line(7), Column(1))));
+
+    // 9 rows exceeds MAX_WRAP_JOIN_ROWS = 8 so it must not join across all 9.
+    let nine_parts = [
+        "aa/", "bb/", "cc/", "dd/", "ee/", "ff/", "gg/", "tar", "get.rs",
+    ];
+    let term9 = link_term_sized(40, 12, nine_parts.join("\r\n").as_bytes());
+    assert!(terminal_link_at(&term9, Point::new(Line(0), Column(0)), &[&root]).is_none());
+
+    // 3. `:42` suffix wrapped onto the next row after an existing file path.
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let lib = native_path(&root, "src/lib.rs");
+    std::fs::write(&lib, "pub fn hi() {}\n").unwrap();
+    let suffix_term = link_term_sized(40, 8, b"  src/lib.rs\r\n  :42");
+    let top = terminal_link_at(&suffix_term, Point::new(Line(0), Column(4)), &[&root]).unwrap();
+    let bottom = terminal_link_at(&suffix_term, Point::new(Line(1), Column(3)), &[&root]).unwrap();
+    assert_eq!(top, bottom);
+    assert_eq!(
+        top.target,
+        LinkTarget::File {
+            path: lib.clone(),
+            line: Some(42),
+            column: None,
+        }
+    );
+    assert_eq!(top.start, Point::new(Line(0), Column(2)));
+    assert_eq!(top.end, Point::new(Line(1), Column(4)));
+
+    // 4. Wrapped CJK path.
+    let cjk_dir = native_path(&root, "docs/我的项目");
+    std::fs::create_dir_all(&cjk_dir).unwrap();
+    let cjk_file = cjk_dir.join("计划.md");
+    std::fs::write(&cjk_file, "# 计划\n").unwrap();
+    let cjk_term = link_term_sized(40, 8, "  docs/我的项目/\r\n  计划.md:5".as_bytes());
+    let cjk_top = terminal_link_at(&cjk_term, Point::new(Line(0), Column(3)), &[&root]).unwrap();
+    let cjk_bot = terminal_link_at(&cjk_term, Point::new(Line(1), Column(2)), &[&root]).unwrap();
+    assert_eq!(cjk_top, cjk_bot);
+    assert_eq!(
+        cjk_top.target,
+        LinkTarget::File {
+            path: cjk_file,
+            line: Some(5),
+            column: None,
+        }
+    );
+    assert!(!cjk_top.contains(Point::new(Line(0), Column(1))));
+    assert!(!cjk_top.contains(Point::new(Line(1), Column(1))));
+
+    // 5. Path starting with a bare `/` root prefix on the row above the pointer.
+    let full_no_slash = lib.to_string_lossy();
+    if let Some(after_slash) = full_no_slash.strip_prefix('/') {
+        let root_wrap = format!("see /\r\n{after_slash}");
+        let term = link_term_sized(120, 8, root_wrap.as_bytes());
+        let link = terminal_link_at(&term, Point::new(Line(1), Column(2)), &[]).unwrap();
+        assert_eq!(
+            link.target,
+            LinkTarget::File {
+                path: lib.clone(),
+                line: None,
+                column: None,
+            }
+        );
+        assert_eq!(link.start, Point::new(Line(0), Column(4)));
+    }
+
+    // 6. Soft-wrapped spaced path preserves the boundary space rather than joining into a
+    // non-spaced sibling file.
+    let spaced = native_path(&root, "src/dir file.rs");
+    let unspaced = native_path(&root, "src/dirfile.rs");
+    std::fs::write(&spaced, "spaced\n").unwrap();
+    std::fs::write(&unspaced, "unspaced\n").unwrap();
+    let soft_term = link_term_sized(8, 4, b"src/dir file.rs");
+    assert!(soft_term.grid()[Line(0)][Column(7)]
+        .flags
+        .contains(Flags::WRAPLINE));
+    let soft_top = terminal_link_at(&soft_term, Point::new(Line(0), Column(2)), &[&root]).unwrap();
+    let soft_bot = terminal_link_at(&soft_term, Point::new(Line(1), Column(2)), &[&root]).unwrap();
+    assert_eq!(soft_top, soft_bot);
+    assert_eq!(
+        soft_top.target,
+        LinkTarget::File {
+            path: spaced,
+            line: None,
+            column: None,
+        }
+    );
+    assert_eq!(soft_top.start, Point::new(Line(0), Column(0)));
+    assert_eq!(soft_top.end, Point::new(Line(1), Column(6)));
+
+    // 7. Hard-wrapped mixed final row containing a trailing URL still joins its leading fragment.
+    let dir_file = native_path(&root, "src/dir/file.rs");
+    std::fs::create_dir_all(dir_file.parent().unwrap()).unwrap();
+    std::fs::write(&dir_file, "ok\n").unwrap();
+    let mixed_term = link_term_sized(60, 4, b"src/dir/\r\nfile.rs see https://example.com");
+    let mixed_top =
+        terminal_link_at(&mixed_term, Point::new(Line(0), Column(2)), &[&root]).unwrap();
+    let mixed_bot =
+        terminal_link_at(&mixed_term, Point::new(Line(1), Column(2)), &[&root]).unwrap();
+    assert_eq!(mixed_top, mixed_bot);
+    assert_eq!(
+        mixed_top.target,
+        LinkTarget::File {
+            path: dir_file,
+            line: None,
+            column: None,
+        }
+    );
+    assert_eq!(mixed_top.start, Point::new(Line(0), Column(0)));
+    assert_eq!(mixed_top.end, Point::new(Line(1), Column(6)));
+    let trailing_url =
+        terminal_link_at(&mixed_term, Point::new(Line(1), Column(15)), &[&root]).unwrap();
+    assert_eq!(
+        trailing_url.target,
+        LinkTarget::Url("https://example.com".into())
+    );
+
+    // 8. A mixed final logical line with many soft-wrapped prose rows still joins when the
+    // included file fragment stays within MAX_WRAP_JOIN_ROWS, hovering either row.
+    let long_prose = format!("src/dir/\r\nfile.rs see {}", "word ".repeat(80));
+    let long_term = link_term_sized(32, 20, long_prose.as_bytes());
+    let long_top = terminal_link_at(&long_term, Point::new(Line(0), Column(2)), &[&root]).unwrap();
+    let long_bot = terminal_link_at(&long_term, Point::new(Line(1), Column(2)), &[&root]).unwrap();
+    assert_eq!(long_top, long_bot);
+    assert_eq!(
+        long_top.target,
+        LinkTarget::File {
+            path: native_path(&root, "src/dir/file.rs"),
+            line: None,
+            column: None,
+        }
+    );
+    assert_eq!(long_top.start, Point::new(Line(0), Column(0)));
+    assert_eq!(long_top.end, Point::new(Line(1), Column(6)));
+
+    // 9. Unicode boundary safety: CJK punctuation before a custom scheme and a combining mark
+    // attached to a punctuation cell before a wrapped path never panic.
+    let cjk_scheme = link_term(80, "查看，custom://src/lib.rs".as_bytes());
+    let custom_col = unicode_width::UnicodeWidthStr::width("查看，custom://");
+    assert!(terminal_link_at(
+        &cjk_scheme,
+        Point::new(Line(0), Column(custom_col)),
+        &[&root]
+    )
+    .is_none());
+    let combining_wrap = link_term_sized(40, 6, "  (\u{0301}src/\r\n  lib.rs".as_bytes());
+    let _ = terminal_link_at(&combining_wrap, Point::new(Line(0), Column(4)), &[&root]);
+    let _ = terminal_link_at(&combining_wrap, Point::new(Line(1), Column(3)), &[&root]);
+}
+
+#[test]
+fn hard_wrapped_rows_that_must_not_join_stay_separate_and_bounded() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = test_root(&temp);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let a = native_path(&root, "src/a.rs");
+    let b = native_path(&root, "src/b.rs");
+    std::fs::write(&a, "a\n").unwrap();
+    std::fs::write(&b, "b\n").unwrap();
+
+    // 1. Consecutive file paths stay separate.
+    let term = link_term(40, b"src/a.rs\r\nsrc/b.rs");
+    let first = terminal_link_at(&term, Point::new(Line(0), Column(2)), &[&root]).unwrap();
+    let second = terminal_link_at(&term, Point::new(Line(1), Column(2)), &[&root]).unwrap();
+    assert_eq!(
+        first.target,
+        LinkTarget::File {
+            path: a.clone(),
+            line: None,
+            column: None,
+        }
+    );
+    assert_eq!(first.start.line, Line(0));
+    assert_eq!(first.end.line, Line(0));
+    assert_eq!(
+        second.target,
+        LinkTarget::File {
+            path: b,
+            line: None,
+            column: None,
+        }
+    );
+    assert_eq!(second.start.line, Line(1));
+    assert_eq!(second.end.line, Line(1));
+
+    // 2. A path row followed by a URL or editor-scheme row does not join.
+    for next_url in [
+        "https://example.com/foo",
+        "file:///tmp/other.rs",
+        "vscode://file/tmp/other.rs",
+        "vscode-insiders://file/tmp/other.rs",
+    ] {
+        let bytes = format!("src/a.rs\r\n{next_url}");
+        let term = link_term(60, bytes.as_bytes());
+        let top = terminal_link_at(&term, Point::new(Line(0), Column(2)), &[&root]).unwrap();
+        assert_eq!(top.start.line, Line(0), "{next_url}");
+        assert_eq!(top.end.line, Line(0), "{next_url}");
+        assert_eq!(
+            top.target,
+            LinkTarget::File {
+                path: a.clone(),
+                line: None,
+                column: None,
+            }
+        );
+    }
+
+    // Also verify underlined URL hard-wrap join (`link_rows_joined`) stops at editor schemes.
+    let underlined_editor = link_term(
+        60,
+        b"\x1b[4;34mhttps://example.com/path\x1b[0m\r\n  \x1b[4;34mvscode-insiders://file/tmp/x.rs\x1b[0m",
+    );
+    let top_url =
+        terminal_link_at(&underlined_editor, Point::new(Line(0), Column(5)), &[]).unwrap();
+    assert_eq!(
+        top_url.target,
+        LinkTarget::Url("https://example.com/path".into())
+    );
+    assert_eq!(top_url.end.line, Line(0));
+
+    // 3. A 3,000-row scrollback block of path-like rows stays bounded by MAX_LINK_PATH_PROBES.
+    let mut scrollback = String::new();
+    for row in 0..3000 {
+        if row > 0 {
+            scrollback.push_str("\r\n");
+        }
+        scrollback.push_str(&format!("dir/sub/row_{row}"));
+    }
+    let big_term = link_term(40, scrollback.as_bytes());
+    let mut probes = 0usize;
+    let found = terminal_link_at_with_prober(
+        &big_term,
+        Point::new(Line(0), Column(4)),
+        &[&root],
+        &mut |_| {
+            probes += 1;
+            false
+        },
+    );
+    assert!(found.is_none());
+    assert!(
+        probes > 0 && probes <= MAX_LINK_PATH_PROBES,
+        "probes={probes}"
+    );
+}
+
+#[test]
+fn path_allow_list_brackets_closers_prefixes_and_location_suffixes() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = test_root(&temp);
+    for rel in [
+        "src/lib.rs",
+        "src/call().rs",
+        "src/[[[name]]]/page.tsx",
+        "docs/计划.md",
+        "docs/guide.md",
+        "docs/cafe\u{0301}.md",
+        "docs/report(1).pdf",
+        "qa-link-1451.md",
+        "app/users/[id]/page.tsx",
+        "app/(marketing)/layout.tsx",
+        "src/routes/[...slug]/+page.svelte",
+        "app/[[optional]]/page.tsx",
+        "a/foo.rs",
+        "@types/foo/index.d.ts",
+    ] {
+        let full = native_path(&root, rel);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, "ok\n").unwrap();
+    }
+    let cwds = [root.as_path()];
+
+    // CJK punctuation, em dash, CJK filename, decomposed accent, box border.
+    let check_single =
+        |line: &str, needle: &str, expected_rel: &str, exp_line, exp_col, exp_text: &str| {
+            let term = link_term(120, line.as_bytes());
+            let byte_col = line.find(needle).unwrap();
+            let cell_col = unicode_width::UnicodeWidthStr::width(&line[..byte_col]);
+            let link = terminal_link_at(&term, Point::new(Line(0), Column(cell_col)), &cwds)
+                .unwrap_or_else(|| panic!("expected link in {line:?} at {needle:?}"));
+            assert_eq!(
+                link.target,
+                LinkTarget::File {
+                    path: native_path(&root, expected_rel),
+                    line: exp_line,
+                    column: exp_col,
+                },
+                "{line:?}"
+            );
+            let exp_start =
+                unicode_width::UnicodeWidthStr::width(&line[..line.find(exp_text).unwrap()]);
+            let exp_width = unicode_width::UnicodeWidthStr::width(exp_text);
+            assert_eq!(
+                link.start,
+                Point::new(Line(0), Column(exp_start)),
+                "{line:?}"
+            );
+            // Wide last char occupies two cells; its anchor cell is the leading cell.
+            let last_char_width = exp_text
+                .chars()
+                .rev()
+                .find(|c| unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0) > 0)
+                .and_then(unicode_width::UnicodeWidthChar::width)
+                .unwrap_or(1);
+            assert_eq!(
+                link.end,
+                Point::new(Line(0), Column(exp_start + exp_width - last_char_width)),
+                "{line:?}"
+            );
+        };
+
+    check_single(
+        "查看 src/lib.rs，测试",
+        "src/lib.rs",
+        "src/lib.rs",
+        None,
+        None,
+        "src/lib.rs",
+    );
+    check_single(
+        "src/lib.rs—see",
+        "src/lib.rs",
+        "src/lib.rs",
+        None,
+        None,
+        "src/lib.rs",
+    );
+    check_single(
+        "查看 docs/计划.md。",
+        "docs/",
+        "docs/计划.md",
+        None,
+        None,
+        "docs/计划.md",
+    );
+    check_single(
+        "│ src/lib.rs │",
+        "src/lib.rs",
+        "src/lib.rs",
+        None,
+        None,
+        "src/lib.rs",
+    );
+    check_single(
+        "docs/cafe\u{0301}.md",
+        "docs/",
+        "docs/cafe\u{0301}.md",
+        None,
+        None,
+        "docs/cafe\u{0301}.md",
+    );
+
+    // Parentheses, brackets, wrappers, and `(LINE)` / `(LINE, COL)` suffixes.
+    check_single(
+        "app/users/[id]/page.tsx",
+        "users",
+        "app/users/[id]/page.tsx",
+        None,
+        None,
+        "app/users/[id]/page.tsx",
+    );
+    check_single(
+        "app/(marketing)/layout.tsx",
+        "marketing",
+        "app/(marketing)/layout.tsx",
+        None,
+        None,
+        "app/(marketing)/layout.tsx",
+    );
+    check_single(
+        "src/routes/[...slug]/+page.svelte",
+        "slug",
+        "src/routes/[...slug]/+page.svelte",
+        None,
+        None,
+        "src/routes/[...slug]/+page.svelte",
+    );
+    check_single(
+        "app/[[optional]]/page.tsx",
+        "optional",
+        "app/[[optional]]/page.tsx",
+        None,
+        None,
+        "app/[[optional]]/page.tsx",
+    );
+    check_single(
+        "src/call().rs",
+        "call",
+        "src/call().rs",
+        None,
+        None,
+        "src/call().rs",
+    );
+    check_single(
+        "src/[[[name]]]/page.tsx",
+        "name",
+        "src/[[[name]]]/page.tsx",
+        None,
+        None,
+        "src/[[[name]]]/page.tsx",
+    );
+    check_single(
+        "Read(src/call().rs:5)",
+        "call",
+        "src/call().rs",
+        Some(5),
+        None,
+        "src/call().rs:5",
+    );
+    check_single(
+        "foo/(src/lib.rs",
+        "lib.rs",
+        "src/lib.rs",
+        None,
+        None,
+        "src/lib.rs",
+    );
+    // Repeated unclosed openers stay linear and still recover the inner path.
+    let repeated_unclosed = format!("{}src/lib.rs", "a/(".repeat(4000));
+    let scanned = super::scan_plain_file_candidates(&repeated_unclosed);
+    assert_eq!(scanned.last().map(|c| c.path.as_str()), Some("src/lib.rs"));
+    check_single(
+        "docs/report(1).pdf(42)",
+        "report",
+        "docs/report(1).pdf",
+        Some(42),
+        None,
+        "docs/report(1).pdf(42)",
+    );
+    check_single(
+        "docs/report(1).pdf.",
+        "report",
+        "docs/report(1).pdf",
+        None,
+        None,
+        "docs/report(1).pdf",
+    );
+    check_single(
+        "(qa-link-1451.md)",
+        "qa-link",
+        "qa-link-1451.md",
+        None,
+        None,
+        "qa-link-1451.md",
+    );
+    check_single(
+        "Read(src/lib.rs)",
+        "src/lib.rs",
+        "src/lib.rs",
+        None,
+        None,
+        "src/lib.rs",
+    );
+    check_single(
+        "Read(app/(marketing)/layout.tsx)",
+        "marketing",
+        "app/(marketing)/layout.tsx",
+        None,
+        None,
+        "app/(marketing)/layout.tsx",
+    );
+    check_single(
+        "[label](docs/guide.md)",
+        "docs/guide.md",
+        "docs/guide.md",
+        None,
+        None,
+        "docs/guide.md",
+    );
+    check_single(
+        "src/lib.rs(12, 4)",
+        "src/lib.rs",
+        "src/lib.rs",
+        Some(12),
+        Some(4),
+        "src/lib.rs(12, 4)",
+    );
+    check_single(
+        "src/lib.rs(42)",
+        "src/lib.rs",
+        "src/lib.rs",
+        Some(42),
+        None,
+        "src/lib.rs(42)",
+    );
+
+    // Location ranges and `#L` anchors: open at start line/col, highlight whole suffix.
+    check_single(
+        "src/lib.rs:10-25",
+        "src/lib.rs",
+        "src/lib.rs",
+        Some(10),
+        None,
+        "src/lib.rs:10-25",
+    );
+    check_single(
+        "src/lib.rs:10–25",
+        "src/lib.rs",
+        "src/lib.rs",
+        Some(10),
+        None,
+        "src/lib.rs:10–25",
+    );
+    check_single(
+        "src/lib.rs:10:5-20",
+        "src/lib.rs",
+        "src/lib.rs",
+        Some(10),
+        Some(5),
+        "src/lib.rs:10:5-20",
+    );
+    check_single(
+        "src/lib.rs:10:5-14:9",
+        "src/lib.rs",
+        "src/lib.rs",
+        Some(10),
+        Some(5),
+        "src/lib.rs:10:5-14:9",
+    );
+    check_single(
+        "src/lib.rs#L10C3",
+        "src/lib.rs",
+        "src/lib.rs",
+        Some(10),
+        Some(3),
+        "src/lib.rs#L10C3",
+    );
+    check_single(
+        "src/lib.rs#L10-L20",
+        "src/lib.rs",
+        "src/lib.rs",
+        Some(10),
+        None,
+        "src/lib.rs#L10-L20",
+    );
+    check_single(
+        "src/lib.rs#L10C3-L14C9",
+        "src/lib.rs",
+        "src/lib.rs",
+        Some(10),
+        Some(3),
+        "src/lib.rs#L10C3-L14C9",
+    );
+
+    // Prefix fallbacks (`@`, `a/`, `b/`): highlight leaves out stripped prefix; real paths resolve verbatim.
+    check_single(
+        "@src/lib.rs:3-5",
+        "src/lib.rs",
+        "src/lib.rs",
+        Some(3),
+        None,
+        "src/lib.rs:3-5",
+    );
+    check_single(
+        "a/src/lib.rs",
+        "src/lib.rs",
+        "src/lib.rs",
+        None,
+        None,
+        "src/lib.rs",
+    );
+    check_single(
+        "b/src/lib.rs",
+        "src/lib.rs",
+        "src/lib.rs",
+        None,
+        None,
+        "src/lib.rs",
+    );
+    // Hovering directly on the stripped prefix does not link.
+    let at_term = link_term(40, b"@src/lib.rs");
+    assert!(terminal_link_at(&at_term, Point::new(Line(0), Column(0)), &cwds).is_none());
+    let diff_term = link_term(40, b"b/src/lib.rs");
+    assert!(terminal_link_at(&diff_term, Point::new(Line(0), Column(0)), &cwds).is_none());
+    // Real paths starting with `a/` or `@` resolve verbatim (including prefix in highlight).
+    check_single("a/foo.rs", "a/foo.rs", "a/foo.rs", None, None, "a/foo.rs");
+    check_single(
+        "@types/foo/index.d.ts",
+        "@types",
+        "@types/foo/index.d.ts",
+        None,
+        None,
+        "@types/foo/index.d.ts",
+    );
+
+    // Cross-platform Windows git-diff prefix stripping helper.
+    assert_eq!(
+        stripped_prefix_candidates(r"a\src\lib.rs", true),
+        vec![(2, r"src\lib.rs")]
+    );
+    assert_eq!(
+        stripped_prefix_candidates(r"b\src\lib.rs", true),
+        vec![(2, r"src\lib.rs")]
+    );
+    assert_eq!(stripped_prefix_candidates(r"a\src\lib.rs", false), vec![]);
+}
+
+#[test]
+fn spaced_paths_grow_rooted_and_relative_without_joining_adjacent_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = test_root(&temp);
+    let project_file = native_path(&root, "My Project/readme.md");
+    std::fs::create_dir_all(project_file.parent().unwrap()).unwrap();
+    std::fs::write(&project_file, "# readme\n").unwrap();
+    let plan_file = native_path(&root, "docs/my plan.md");
+    std::fs::create_dir_all(plan_file.parent().unwrap()).unwrap();
+    std::fs::write(&plan_file, "# plan\n").unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let a = native_path(&root, "src/a.rs");
+    let b = native_path(&root, "src/b.rs");
+    std::fs::write(&a, "a\n").unwrap();
+    std::fs::write(&b, "b\n").unwrap();
+    let cwds = [root.as_path()];
+
+    // Rooted spaced path with suffix, hovered on start, middle word, and filename.
+    let abs_text = format!("open {}:2 now", project_file.display());
+    let abs_term = link_term(200, abs_text.as_bytes());
+    let start_col = "open ".len();
+    let mid_col = abs_text.find("Project").unwrap();
+    let end_col = abs_text.find("readme.md").unwrap();
+    let expected_end = abs_text.rfind(":2").unwrap() + 1;
+    for col in [start_col, mid_col, end_col] {
+        let link = terminal_link_at(&abs_term, Point::new(Line(0), Column(col)), &cwds).unwrap();
+        assert_eq!(
+            link.target,
+            LinkTarget::File {
+                path: project_file.clone(),
+                line: Some(2),
+                column: None,
+            }
+        );
+        assert_eq!(link.start, Point::new(Line(0), Column(start_col)));
+        assert_eq!(link.end, Point::new(Line(0), Column(expected_end)));
+    }
+
+    // Quoted relative spaced path excludes quotes from highlight.
+    let rel_term = link_term(80, b"read \"docs/my plan.md\" here");
+    for col in [6, 15] {
+        let link = terminal_link_at(&rel_term, Point::new(Line(0), Column(col)), &cwds).unwrap();
+        assert_eq!(
+            link.target,
+            LinkTarget::File {
+                path: plan_file.clone(),
+                line: None,
+                column: None,
+            }
+        );
+        assert_eq!(link.start, Point::new(Line(0), Column(6)));
+        assert_eq!(link.end, Point::new(Line(0), Column(20)));
+    }
+
+    // Adjacent relative paths stay separate links.
+    let pair_term = link_term(80, b"src/a.rs src/b.rs");
+    let first = terminal_link_at(&pair_term, Point::new(Line(0), Column(2)), &cwds).unwrap();
+    let second = terminal_link_at(&pair_term, Point::new(Line(0), Column(12)), &cwds).unwrap();
+    assert_eq!(
+        first.target,
+        LinkTarget::File {
+            path: a,
+            line: None,
+            column: None,
+        }
+    );
+    assert_eq!(first.end, Point::new(Line(0), Column(7)));
+    assert_eq!(
+        second.target,
+        LinkTarget::File {
+            path: b,
+            line: None,
+            column: None,
+        }
+    );
+    assert_eq!(second.start, Point::new(Line(0), Column(9)));
+}
+
+#[test]
+fn editor_scheme_links_and_osc8_bare_paths_resolve_and_reject_malformed_uris() {
+    let file_target = |path: &str, line: Option<u32>, column: Option<u32>| LinkTarget::File {
+        path: PathBuf::from(path),
+        line,
+        column,
+    };
+
+    // All five editor schemes, case-insensitively, on POSIX and Windows helpers.
+    for scheme in ["vscode", "VSCODE-INSIDERS", "Cursor", "windsurf", "ZED"] {
+        assert_eq!(
+            file_target_from_editor_uri_with_platform(
+                &format!("{scheme}://file/tmp/my%20file.rs:10:5-14:9"),
+                false,
+            ),
+            Some(file_target("/tmp/my file.rs", Some(10), Some(5))),
+            "posix {scheme}"
+        );
+        assert_eq!(
+            file_target_from_editor_uri_with_platform(
+                &format!("{scheme}://FILE/C:/Users/me/app.rs#L10C3-L14C9"),
+                true,
+            ),
+            Some(file_target(r"C:\Users\me\app.rs", Some(10), Some(3))),
+            "windows {scheme}"
+        );
+    }
+    // New location suffixes in `file://` URIs too.
+    assert_eq!(
+        file_target_from_uri_with_platform("file:///tmp/a.rs:10-25", false, None),
+        Some(file_target("/tmp/a.rs", Some(10), None))
+    );
+    assert_eq!(
+        file_target_from_uri_with_platform("file:///tmp/a.rs#L10C3-L14C9", false, None),
+        Some(file_target("/tmp/a.rs", Some(10), Some(3)))
+    );
+
+    // Malformed editor file URIs are rejected on both POSIX and Windows.
+    for malformed in [
+        "vscode://file/",
+        "vscode://file",
+        "vscode://file//host/share/a.rs",
+        r"vscode://file/\\host\share\a.rs",
+        "cursor://file/tmp/bad%00path",
+        "zed://file/tmp/%FF",
+    ] {
+        assert_eq!(
+            file_target_from_editor_uri_with_platform(malformed, false),
+            None,
+            "posix {malformed}"
+        );
+        assert_eq!(
+            file_target_from_editor_uri_with_platform(malformed, true),
+            None,
+            "windows {malformed}"
+        );
+    }
+    // POSIX single-letter filenames with line suffixes keep working; Windows bare-drive forms stay rejected.
+    assert_eq!(
+        file_target_from_uri_with_platform("file:///a:42", false, None),
+        Some(file_target("/a", Some(42), None))
+    );
+    assert_eq!(
+        file_target_from_editor_uri_with_platform("vscode://file/a:42", false),
+        Some(file_target("/a", Some(42), None))
+    );
+    for win_malformed in [
+        "vscode://file/C:/",
+        "vscode://file/C:",
+        "vscode://file/C:relative.rs",
+        "vscode://file/C:12",
+    ] {
+        assert_eq!(
+            file_target_from_editor_uri_with_platform(win_malformed, true),
+            None,
+            "windows {win_malformed}"
+        );
+    }
+    assert_eq!(
+        file_target_from_uri_with_platform("file:///C:12", true, None),
+        None
+    );
+
+    // Table-driven end-to-end transport checks across all five editor schemes in both OSC 8 and
+    // plain text.
+    for scheme in ["vscode", "VSCODE-INSIDERS", "Cursor", "windsurf", "ZED"] {
+        let plain = format!("{scheme}://file/tmp/b.rs:7:2");
+        let output = format!("\x1b]8;;{scheme}://file/tmp/a.rs:3\x1b\\open\x1b]8;;\x1b\\ {plain}");
+        let term = link_term(120, output.as_bytes());
+        let osc = terminal_link_at(&term, Point::new(Line(0), Column(1)), &[]).unwrap();
+        assert_eq!(
+            osc.target,
+            file_target("/tmp/a.rs", Some(3), None),
+            "osc8 {scheme}"
+        );
+        assert_eq!(osc.start, Point::new(Line(0), Column(0)));
+        assert_eq!(osc.end, Point::new(Line(0), Column(3)));
+
+        let plain_start = "open ".len();
+        let plain_end = plain_start + plain.len() - 1;
+        for col in [plain_start + 2, plain_end] {
+            let link = terminal_link_at(&term, Point::new(Line(0), Column(col)), &[]).unwrap();
+            assert_eq!(
+                link.target,
+                file_target("/tmp/b.rs", Some(7), Some(2)),
+                "plain {scheme} col {col}"
+            );
+            assert_eq!(link.start, Point::new(Line(0), Column(plain_start)));
+            assert_eq!(link.end, Point::new(Line(0), Column(plain_end)));
+        }
+    }
+
+    // Plain-text `file://` and editor URIs preserve `(LINE)` / `(LINE, COL)` suffixes and
+    // balanced `(...)` / `[...]` route segments, while HTTP(S) keeps stopping before `(`.
+    let uri_line = "see file:///tmp/x.rs(42) and cursor://file/tmp/x.rs(12, 4)\r\n\
+         (vscode://file/tmp/app/(marketing)/layout.tsx:3). (file:///tmp/app/[id]/page.tsx(7)).\r\n\
+         https://example.com/path(42)";
+    let uri_term = link_term(120, uri_line.as_bytes());
+    let first_start = "see ".len();
+    let first_end = first_start + "file:///tmp/x.rs(42)".len() - 1;
+    for col in [first_start + 4, first_end - 1] {
+        let link = terminal_link_at(&uri_term, Point::new(Line(0), Column(col)), &[]).unwrap();
+        assert_eq!(link.target, file_target("/tmp/x.rs", Some(42), None));
+        assert_eq!(link.start, Point::new(Line(0), Column(first_start)));
+        assert_eq!(link.end, Point::new(Line(0), Column(first_end)));
+    }
+    let second_start = "see file:///tmp/x.rs(42) and ".len();
+    let second_end = second_start + "cursor://file/tmp/x.rs(12, 4)".len() - 1;
+    for col in [second_start + 8, second_end - 1] {
+        let link = terminal_link_at(&uri_term, Point::new(Line(0), Column(col)), &[]).unwrap();
+        assert_eq!(link.target, file_target("/tmp/x.rs", Some(12), Some(4)));
+        assert_eq!(link.start, Point::new(Line(0), Column(second_start)));
+        assert_eq!(link.end, Point::new(Line(0), Column(second_end)));
+    }
+    let route_start = 1;
+    let route_end = route_start + "vscode://file/tmp/app/(marketing)/layout.tsx:3".len() - 1;
+    for col in [route_start + 15, route_start + 26, route_end] {
+        let link = terminal_link_at(&uri_term, Point::new(Line(1), Column(col)), &[]).unwrap();
+        assert_eq!(
+            link.target,
+            file_target("/tmp/app/(marketing)/layout.tsx", Some(3), None)
+        );
+        assert_eq!(link.start, Point::new(Line(1), Column(route_start)));
+        assert_eq!(link.end, Point::new(Line(1), Column(route_end)));
+    }
+    let bracket_start = "(vscode://file/tmp/app/(marketing)/layout.tsx:3). (".len();
+    let bracket_end = bracket_start + "file:///tmp/app/[id]/page.tsx(7)".len() - 1;
+    for col in [bracket_start + 18, bracket_end - 1] {
+        let link = terminal_link_at(&uri_term, Point::new(Line(1), Column(col)), &[]).unwrap();
+        assert_eq!(
+            link.target,
+            file_target("/tmp/app/[id]/page.tsx", Some(7), None)
+        );
+        assert_eq!(link.start, Point::new(Line(1), Column(bracket_start)));
+        assert_eq!(link.end, Point::new(Line(1), Column(bracket_end)));
+    }
+    let http_link = terminal_link_at(&uri_term, Point::new(Line(2), Column(10)), &[]).unwrap();
+    assert_eq!(
+        http_link.target,
+        LinkTarget::Url("https://example.com/path".into())
+    );
+
+    // An outer HTTP(S) or non-file editor URL owns its entire range even when it carries a nested
+    // local `file://` or `<editor>://file/` URI in its query string.
+    for outer_url in [
+        "https://example.org/open?target=file:///tmp/report.md",
+        "cursor://settings/open?target=vscode://file/tmp/report.md",
+    ] {
+        let nested_term = link_term(120, outer_url.as_bytes());
+        let first_half =
+            terminal_link_at(&nested_term, Point::new(Line(0), Column(8)), &[]).unwrap();
+        let inner_col = outer_url.rfind("://").unwrap() + 4;
+        let second_half =
+            terminal_link_at(&nested_term, Point::new(Line(0), Column(inner_col)), &[]).unwrap();
+        assert_eq!(first_half, second_half, "{outer_url}");
+        assert_eq!(
+            first_half.target,
+            LinkTarget::Url(outer_url.to_owned()),
+            "{outer_url}"
+        );
+        assert_eq!(first_half.start, Point::new(Line(0), Column(0)));
+        assert_eq!(
+            first_half.end,
+            Point::new(Line(0), Column(outer_url.len() - 1))
+        );
+    }
+
+    // End-to-end in terminal: non-file editor URLs, malformed OSC 8 rejection without label
+    // fallback, opaque external OSC 8 schemes, ambiguous `Makefile:12`, and OSC 8 bare paths.
+    let temp = tempfile::tempdir().unwrap();
+    let root = test_root(&temp);
+    std::fs::create_dir_all(root.join("docs")).unwrap();
+    let guide = native_path(&root, "docs/guide.md");
+    let makefile = root.join("Makefile");
+    let report = root.join("report.html");
+    std::fs::write(&guide, "# guide\n").unwrap();
+    std::fs::write(&makefile, "all:\n").unwrap();
+    std::fs::write(&report, "<html/>\n").unwrap();
+    #[cfg(not(windows))]
+    let single_a = {
+        let path = root.join("a");
+        std::fs::write(&path, "a\n").unwrap();
+        path
+    };
+    let cwds = [root.as_path()];
+
+    let output = "\
+        vscode://vscode-remote/ssh-remote+box/tmp/c.rs \
+        \x1b]8;;cursor://settings/editor\x1b\\prefs\x1b]8;;\x1b\\\r\n\
+        \x1b]8;;vscode://file/\x1b\\docs/guide.md\x1b]8;;\x1b\\ \
+        \x1b]8;;docs/guide.md:4\x1b\\guide\x1b]8;;\x1b\\ \
+        \x1b]8;;docs/missing.md\x1b\\docs/guide.md\x1b]8;;\x1b\\\r\n\
+        \x1b]8;;urn:123\x1b\\urn\x1b]8;;\x1b\\ \
+        \x1b]8;;tel:12345\x1b\\tel\x1b]8;;\x1b\\ \
+        \x1b]8;;mailto:user@example.com\x1b\\mail\x1b]8;;\x1b\\ \
+        \x1b]8;;scheme:/path\x1b\\opaque\x1b]8;;\x1b\\ \
+        \x1b]8;;Makefile:12\x1b\\make\x1b]8;;\x1b\\ \
+        \x1b]8;;report.html:12\x1b\\rep\x1b]8;;\x1b\\ \
+        \x1b]8;;a:42\x1b\\short\x1b]8;;\x1b\\";
+    let term = link_term(120, output.as_bytes());
+
+    let remote_url = terminal_link_at(&term, Point::new(Line(0), Column(5)), &cwds).unwrap();
+    assert_eq!(
+        remote_url.target,
+        LinkTarget::Url("vscode://vscode-remote/ssh-remote+box/tmp/c.rs".into())
+    );
+    let prefs = terminal_link_at(&term, Point::new(Line(0), Column(48)), &cwds).unwrap();
+    assert_eq!(
+        prefs.target,
+        LinkTarget::Url("cursor://settings/editor".into())
+    );
+
+    assert!(
+        terminal_link_at(&term, Point::new(Line(1), Column(2)), &cwds).is_none(),
+        "malformed OSC 8 vscode://file/ must reject without falling back to label"
+    );
+
+    let bare_osc = terminal_link_at(&term, Point::new(Line(1), Column(15)), &cwds).unwrap();
+    assert_eq!(
+        bare_osc.target,
+        LinkTarget::File {
+            path: guide,
+            line: Some(4),
+            column: None,
+        }
+    );
+
+    assert!(
+        terminal_link_at(&term, Point::new(Line(1), Column(22)), &cwds).is_none(),
+        "missing OSC 8 bare path must not link or fall back to label"
+    );
+
+    // Opaque external schemes stay LinkTarget::Url.
+    assert_eq!(
+        terminal_link_at(&term, Point::new(Line(2), Column(1)), &cwds)
+            .unwrap()
+            .target,
+        LinkTarget::Url("urn:123".into())
+    );
+    assert_eq!(
+        terminal_link_at(&term, Point::new(Line(2), Column(5)), &cwds)
+            .unwrap()
+            .target,
+        LinkTarget::Url("tel:12345".into())
+    );
+    assert_eq!(
+        terminal_link_at(&term, Point::new(Line(2), Column(9)), &cwds)
+            .unwrap()
+            .target,
+        LinkTarget::Url("mailto:user@example.com".into())
+    );
+    assert_eq!(
+        terminal_link_at(&term, Point::new(Line(2), Column(15)), &cwds)
+            .unwrap()
+            .target,
+        LinkTarget::Url("scheme:/path".into())
+    );
+    // Ambiguous `Makefile:12` resolves to a file when present, and falls back to Url when absent.
+    assert_eq!(
+        terminal_link_at(&term, Point::new(Line(2), Column(22)), &cwds)
+            .unwrap()
+            .target,
+        LinkTarget::File {
+            path: makefile,
+            line: Some(12),
+            column: None,
+        }
+    );
+    assert_eq!(
+        terminal_link_at(&term, Point::new(Line(2), Column(22)), &[])
+            .unwrap()
+            .target,
+        LinkTarget::Url("Makefile:12".into())
+    );
+    // Dotted `report.html:12` is a bare path: resolves when present, rejects when missing.
+    assert_eq!(
+        terminal_link_at(&term, Point::new(Line(2), Column(27)), &cwds)
+            .unwrap()
+            .target,
+        LinkTarget::File {
+            path: report,
+            line: Some(12),
+            column: None,
+        }
+    );
+    assert!(terminal_link_at(&term, Point::new(Line(2), Column(27)), &[]).is_none());
+    #[cfg(not(windows))]
+    assert_eq!(
+        terminal_link_at(&term, Point::new(Line(2), Column(31)), &cwds)
+            .unwrap()
+            .target,
+        LinkTarget::File {
+            path: single_a,
+            line: Some(42),
+            column: None,
+        }
+    );
+    #[cfg(windows)]
+    assert!(terminal_link_at(&term, Point::new(Line(2), Column(31)), &cwds).is_none());
+}
+
+#[test]
+fn link_probe_budget_caps_lookups_and_extra_root_resolves_via_link_at_with() {
+    let temp = tempfile::tempdir().unwrap();
+    let spawn_dir = temp.path().join("spawn");
+    let extra_dir = temp.path().join("extra");
+    std::fs::create_dir_all(&spawn_dir).unwrap();
+    std::fs::create_dir_all(extra_dir.join("src")).unwrap();
+    let only_in_extra = native_path(&extra_dir, "src/only_extra.rs");
+    std::fs::write(&only_in_extra, "fn extra() {}\n").unwrap();
+
+    // 1. Lookup stops at MAX_LINK_PATH_PROBES even when many hard-wrap & spaced candidates fail
+    // across 3 distinct roots, and probes in order: single-line, hard-wrap (longest first),
+    // spaced readings, then prefix-stripped forms.
+    let many_words = format!(
+        "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}",
+        "@miss/a",
+        "miss/b",
+        "miss/c",
+        "miss/d",
+        "miss/e",
+        "miss/f",
+        "miss/g",
+        "./miss/h w1 w2 w3 w4 w5 w6 w7 w8 w9 w10"
+    );
+    let term = link_term_sized(80, 12, many_words.as_bytes());
+    let third_dir = temp.path().join("third");
+    let cwds = [
+        spawn_dir.as_path(),
+        extra_dir.as_path(),
+        third_dir.as_path(),
+    ];
+    let mut probed = Vec::new();
+    let res =
+        terminal_link_at_with_prober(&term, Point::new(Line(7), Column(2)), &cwds, &mut |path| {
+            probed.push(path.to_path_buf());
+            false
+        });
+    assert!(res.is_none());
+    assert_eq!(probed.len(), MAX_LINK_PATH_PROBES);
+    // Single-line match is probed first (across all 3 roots), followed by longest hard-wrap join,
+    // followed by spaced readings before hitting the cap.
+    assert_eq!(probed[0], native_path(&spawn_dir, "miss/h"));
+    assert_eq!(probed[1], native_path(&extra_dir, "miss/h"));
+    assert_eq!(probed[2], native_path(&third_dir, "miss/h"));
+    assert_eq!(
+        probed[3],
+        candidate_paths(
+            "@miss/amiss/bmiss/cmiss/dmiss/emiss/fmiss/g./miss/h",
+            &[spawn_dir.as_path()],
+            None,
+            cfg!(windows),
+        )[0],
+        "expected longest hard-wrap join next"
+    );
+
+    // Also verify all 4 stages in order (1: single-line, 2: hard-wrap, 3: spaced, 4: prefix-stripped)
+    // within one lookup on a single root.
+    let order_term = link_term_sized(80, 8, b"@dir/part1\r\n@dir/part2 word.md");
+    let mut order = Vec::new();
+    let _ = terminal_link_at_with_prober(
+        &order_term,
+        Point::new(Line(1), Column(3)),
+        &[spawn_dir.as_path()],
+        &mut |path| {
+            order.push(path.to_path_buf());
+            false
+        },
+    );
+    assert_eq!(
+        order,
+        [
+            "@dir/part2",
+            "@dir/part1@dir/part2",
+            "@dir/part2 word.md",
+            "dir/part2",
+            "dir/part1@dir/part2",
+            "dir/part2 word.md",
+        ]
+        .map(|rel| native_path(&spawn_dir, rel))
+        .to_vec()
+    );
+
+    // 2. `TerminalMirror::link_at_with` resolves a path that exists only under `extra_root`.
+    let mirror = snapshot_mirror(1, &[b"src/only_extra.rs:3"]);
+    assert!(
+        mirror.link_at(Point::new(Line(0), Column(4))).is_none(),
+        "default link_at has no extra_root"
+    );
+    let linked = mirror
+        .link_at_with(
+            Point::new(Line(0), Column(4)),
+            &FileLinkContext {
+                extra_root: Some(extra_dir),
+            },
+        )
+        .expect("resolved under extra_root");
+    assert_eq!(
+        linked.target,
+        LinkTarget::File {
+            path: only_in_extra,
+            line: Some(3),
+            column: None,
+        }
+    );
 }

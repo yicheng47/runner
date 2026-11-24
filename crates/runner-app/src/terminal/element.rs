@@ -8,6 +8,7 @@
 //! font's advance can never skew the grid. gpui caches shaped lines,
 //! so per-cell shaping of repetitive glyphs stays cheap.
 
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -36,7 +37,7 @@ use runner_terminal::mappings::{
     encode_mouse_motion, encode_mouse_press, encode_mouse_release, MouseButton, MouseModifiers,
 };
 use runner_terminal::palette::{self, TerminalPalette};
-use runner_terminal::terminal::{LinkTarget, TerminalLink, TerminalMirror};
+use runner_terminal::terminal::{FileLinkContext, LinkTarget, TerminalLink, TerminalMirror};
 
 use super::glyphs::{snapped_cell_bounds, ProceduralCell};
 use crate::file_links::FileLinkRoute;
@@ -126,6 +127,8 @@ struct LinkTooltip {
     mouse_position: Point<Pixels>,
 }
 
+type HoverSignature = (GridPoint, u64, usize, (u16, u16), Option<PathBuf>);
+
 pub(crate) struct TerminalInteraction {
     session: Arc<TerminalMirror>,
     pub(crate) pane_size: Option<TerminalGridSize>,
@@ -133,7 +136,7 @@ pub(crate) struct TerminalInteraction {
     drag: Option<DragState>,
     next_generation: u64,
     hovered_link: Option<TerminalLink>,
-    hover_signature: Option<(GridPoint, u64, usize, (u16, u16))>,
+    hover_signature: Option<HoverSignature>,
     hover_modifiers: Option<(bool, bool, bool, bool)>,
     link_modifier_held: bool,
     hover_since: Option<Instant>,
@@ -214,6 +217,11 @@ impl TerminalInteraction {
         Some(CURSOR_BLINK_INTERVAL)
     }
 
+    #[cfg(test)]
+    pub(crate) fn hovered_link(&self) -> Option<&TerminalLink> {
+        self.hovered_link.as_ref()
+    }
+
     fn link_tooltip_visible(&self) -> bool {
         self.hovered_link.is_some()
             && self
@@ -280,6 +288,7 @@ impl TerminalInteraction {
         position: Point<Pixels>,
         hovered: bool,
         interactive: bool,
+        link_context: &FileLinkContext,
     ) -> bool {
         if !hovered {
             self.hover_signature = None;
@@ -312,13 +321,14 @@ impl TerminalInteraction {
             activity.last_seq,
             display_offset,
             self.session.size(),
+            link_context.extra_root.clone(),
         );
-        if self.hover_signature == Some(signature) {
+        if self.hover_signature.as_ref() == Some(&signature) {
             return modifiers_changed;
         }
 
         self.hover_signature = Some(signature);
-        let hovered_link = self.session.link_at(point);
+        let hovered_link = self.session.link_at_with(point, link_context);
         let changed = hovered_link != self.hovered_link;
         if changed {
             self.hover_since = hovered_link.is_some().then(Instant::now);
@@ -332,6 +342,7 @@ impl TerminalInteraction {
         event: &MouseDownEvent,
         geometry: TerminalGeometry,
         interactive: bool,
+        link_context: &FileLinkContext,
         cx: &mut Context<Self>,
     ) {
         let Some(button) = mouse_button(event.button) else {
@@ -346,7 +357,7 @@ impl TerminalInteraction {
         let generation = self.next_generation;
 
         if interactive && button == MouseButton::Left && link_modifier(event.modifiers) {
-            if let Some(link) = self.session.link_at(hit.point) {
+            if let Some(link) = self.session.link_at_with(hit.point, link_context) {
                 self.drag = Some(DragState {
                     generation,
                     button,
@@ -491,6 +502,7 @@ impl TerminalInteraction {
         self.drag = Some(drag);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn mouse_up(
         &mut self,
         event: &MouseUpEvent,
@@ -498,6 +510,7 @@ impl TerminalInteraction {
         interactive: bool,
         copy_on_select: bool,
         file_links: Option<&FileLinkRoute>,
+        link_context: &FileLinkContext,
         cx: &mut Context<Self>,
     ) {
         let Some(button) = mouse_button(event.button) else {
@@ -520,7 +533,7 @@ impl TerminalInteraction {
                 && link_modifier(event.modifiers)
                 && self
                     .session
-                    .link_at(hit.point)
+                    .link_at_with(hit.point, link_context)
                     .is_some_and(|link| link.target == target) =>
             {
                 match target {
@@ -788,6 +801,21 @@ fn cell_text(c: char, zerowidth: Option<&[char]>) -> Option<String> {
     Some(text)
 }
 
+/// Text shaped for painting a cell. Plain spaces stay unshaped outside hovered
+/// links, but spaces inside a hovered link (such as `docs/my plan.md`) are kept
+/// so the hover underline runs continuously across the whole path.
+fn painted_cell_text(
+    c: char,
+    zerowidth: Option<&[char]>,
+    hidden: bool,
+    link_underlined: bool,
+) -> Option<String> {
+    if hidden {
+        return None;
+    }
+    cell_text(c, zerowidth).or_else(|| link_underlined.then(|| String::from(' ')))
+}
+
 fn text_presentation_font(base: &Font) -> Font {
     let symbols = runner_app::platform_fonts::TERMINAL_SYMBOL_FALLBACKS;
     if symbols.is_empty() {
@@ -912,24 +940,34 @@ impl TerminalElement {
         let focus_handle = self.focus_handle.clone();
         let interactive = self.interactive;
         let down_hitbox = hitbox.clone();
+        let down_file_links = self.file_links.clone();
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble || !down_hitbox.is_hovered(window) {
                 return;
             }
             focus_handle.focus(window, cx);
+            let link_context = down_file_links
+                .as_ref()
+                .map(|route| route.link_context(cx))
+                .unwrap_or_default();
             interaction.update(cx, |interaction, interaction_cx| {
-                interaction.mouse_down(event, geometry, interactive, interaction_cx);
+                interaction.mouse_down(event, geometry, interactive, &link_context, interaction_cx);
             });
         });
 
         let interaction = self.interaction.clone();
         let interactive = self.interactive;
         let move_hitbox = hitbox.clone();
+        let move_file_links = self.file_links.clone();
         let current_view = window.current_view();
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
             if phase != DispatchPhase::Capture {
                 return;
             }
+            let link_context = move_file_links
+                .as_ref()
+                .map(|route| route.link_context(cx))
+                .unwrap_or_default();
             let changed = interaction.update(cx, |interaction, _| {
                 interaction.refresh_hovered_link(
                     event.modifiers,
@@ -937,6 +975,7 @@ impl TerminalElement {
                     event.position,
                     move_hitbox.is_hovered(window),
                     interactive,
+                    &link_context,
                 )
             });
             if changed {
@@ -969,6 +1008,10 @@ impl TerminalElement {
             if phase != DispatchPhase::Capture || interaction.read(cx).drag.is_none() {
                 return;
             }
+            let link_context = file_links
+                .as_ref()
+                .map(|route| route.link_context(cx))
+                .unwrap_or_default();
             interaction.update(cx, |interaction, interaction_cx| {
                 interaction.mouse_up(
                     event,
@@ -976,6 +1019,7 @@ impl TerminalElement {
                     interactive,
                     copy_on_select,
                     file_links.as_ref(),
+                    &link_context,
                     interaction_cx,
                 );
             });
@@ -983,9 +1027,14 @@ impl TerminalElement {
 
         let interaction = self.interaction.clone();
         let modifier_hitbox = hitbox;
+        let modifier_file_links = self.file_links.clone();
         let current_view = window.current_view();
         window.on_modifiers_changed(move |event, window, cx| {
             let hovered = modifier_hitbox.is_hovered(window);
+            let link_context = modifier_file_links
+                .as_ref()
+                .map(|route| route.link_context(cx))
+                .unwrap_or_default();
             let changed = interaction.update(cx, |interaction, _| {
                 interaction.refresh_hovered_link(
                     event.modifiers,
@@ -993,6 +1042,7 @@ impl TerminalElement {
                     window.mouse_position(),
                     hovered,
                     interactive,
+                    &link_context,
                 )
             });
             if hovered || changed {
@@ -1157,6 +1207,11 @@ impl Element for TerminalElement {
         // recomputed after prepaint, so `hitbox.is_hovered` is always false
         // here; test the bounds directly, as gpui's own hover tooltips do.
         let hovered = bounds.contains(&window.mouse_position());
+        let link_context = self
+            .file_links
+            .as_ref()
+            .map(|route| route.link_context(cx))
+            .unwrap_or_default();
         let (hovered_link, link_modifier_held) = self.interaction.update(cx, |interaction, _| {
             interaction.refresh_hovered_link(
                 window.modifiers(),
@@ -1164,6 +1219,7 @@ impl Element for TerminalElement {
                 window.mouse_position(),
                 hovered,
                 self.interactive,
+                &link_context,
             );
             (
                 interaction.hovered_link.clone(),
@@ -1372,14 +1428,17 @@ impl Element for TerminalElement {
                     }
                 }
 
-                let text = match cell_text(cell.c, cell.zerowidth()) {
-                    Some(text) if !cell.flags.contains(Flags::HIDDEN) => text,
-                    _ => continue,
-                };
-
                 let link_underlined = hovered_link
                     .as_ref()
                     .is_some_and(|link| link.contains(indexed.point));
+                let Some(text) = painted_cell_text(
+                    cell.c,
+                    cell.zerowidth(),
+                    cell.flags.contains(Flags::HIDDEN),
+                    link_underlined,
+                ) else {
+                    continue;
+                };
                 let uses_text_decorations = link_underlined
                     || cell
                         .flags
@@ -1830,8 +1889,8 @@ mod tests {
 
     use super::{
         accumulate_scroll, autoscroll_amount, cell_and_side, cell_text, link_modifier,
-        point_for_viewport, push_match_cell, text_presentation_font, viewport_cell,
-        wants_text_presentation, TerminalElement, TerminalGeometry, TerminalInput,
+        painted_cell_text, point_for_viewport, push_match_cell, text_presentation_font,
+        viewport_cell, wants_text_presentation, TerminalElement, TerminalGeometry, TerminalInput,
         TerminalInteraction, TerminalStyle,
     };
     use alacritty_terminal::term::TermMode;
@@ -2664,6 +2723,41 @@ mod tests {
             assert_eq!(letters, "abcdefg");
             assert!(texts.iter().flatten().all(|text| !text.contains('\t')));
         }
+    }
+
+    #[test]
+    fn hovered_link_paints_interior_spaces_without_painting_padding() {
+        let term = runner_terminal::replay::replay_bytes(30, 2, b"  docs/my plan.md  ");
+        let row = &term.grid()[Line(0)];
+        let link_cols = 2..17;
+        let texts = (0..19)
+            .map(|col| {
+                let cell = &row[Column(col)];
+                painted_cell_text(
+                    cell.c,
+                    cell.zerowidth(),
+                    cell.flags
+                        .contains(alacritty_terminal::term::cell::Flags::HIDDEN),
+                    link_cols.contains(&col),
+                )
+            })
+            .collect::<Vec<_>>();
+        // Padding outside the hovered link stays unshaped.
+        assert_eq!(texts[0], None);
+        assert_eq!(texts[1], None);
+        assert_eq!(texts[17], None);
+        assert_eq!(texts[18], None);
+        // The interior space inside the hovered link is kept so its underline is unbroken.
+        assert_eq!(texts[9].as_deref(), Some(" "));
+        let linked: String = texts[2..17].iter().flatten().cloned().collect();
+        assert_eq!(linked, "docs/my plan.md");
+        // Hidden cells stay unshaped even inside a link, and tabs still normalize to spaces.
+        assert_eq!(painted_cell_text(' ', None, true, true), None);
+        assert_eq!(
+            painted_cell_text('\t', None, false, true).as_deref(),
+            Some(" ")
+        );
+        assert_eq!(painted_cell_text('\t', None, false, false), None);
     }
 
     #[test]
