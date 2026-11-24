@@ -4377,10 +4377,9 @@ fn an_ignored_file_stays_refreshed_after_the_status_stops_listing_it() {
 #[test]
 fn a_file_opened_before_the_status_arrives_is_noted_when_it_does() {
     use runner_core::protocol::files::GitStatus;
-    let mut h = viewer(chat("in-project"));
+    let mut h = viewer_after_startup_watcher(chat("in-project"));
     h.open("old.txt");
     h.wait("the file", |h| h.has("FILE_CODE"));
-    h.wait("the status", |h| h.read(|view| view.git_status().is_some()));
     let view = h.view();
     let reads = |h: &mut Harness, view: &Entity<FilesView>| {
         view.read_with(&h.visual, |view, cx| view.read_seq("old.txt", cx))
@@ -4491,8 +4490,7 @@ fn receive_status(h: &mut Harness, status: runner_core::protocol::files::GitStat
 #[test]
 fn a_status_past_its_limits_says_so() {
     use runner_core::protocol::files::{FileStatus, GitStatus, StatusEntry};
-    let mut h = viewer(chat("in-project"));
-    h.wait("the status", |h| h.read(|view| view.git_status().is_some()));
+    let mut h = viewer_after_startup_watcher(chat("in-project"));
     assert!(!h.has("FILES_STATUS_TRUNCATED"));
     receive_status(
         &mut h,
@@ -4521,8 +4519,7 @@ fn a_status_past_its_limits_says_so() {
 #[test]
 fn a_nested_repository_is_no_changed_file() {
     use runner_core::protocol::files::{FileStatus, GitStatus, StatusEntry};
-    let mut h = viewer(chat("in-project"));
-    h.wait("the status", |h| h.read(|view| view.git_status().is_some()));
+    let mut h = viewer_after_startup_watcher(chat("in-project"));
     let entry = |path: &str, status| StatusEntry {
         path: path.into(),
         status,
