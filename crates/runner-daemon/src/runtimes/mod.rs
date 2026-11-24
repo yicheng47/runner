@@ -81,6 +81,7 @@ pub struct LaunchContext<'a> {
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
     pub codex_speed: Option<CodexSpeed>,
+    pub codex_tui_workspace: bool,
     pub system_prompt: Option<&'a str>,
     pub first_turn: Option<&'a str>,
 }

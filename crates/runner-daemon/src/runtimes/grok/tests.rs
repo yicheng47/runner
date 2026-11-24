@@ -23,6 +23,7 @@ fn fresh_resume_and_model_effort_keep_exact_prompt_and_native_defaults() {
         model: None,
         effort: Some("high"),
         codex_speed: None,
+        codex_tui_workspace: false,
         system_prompt: None,
         first_turn: Some(body),
     };
@@ -236,6 +237,7 @@ fn stored_model_and_effort_options_cannot_bypass_the_effective_model_gate() {
         model: None,
         effort: None,
         codex_speed: None,
+        codex_tui_workspace: false,
         system_prompt: None,
         first_turn: None,
     };
@@ -289,6 +291,7 @@ fn environment_model_precedes_native_and_cached_defaults_but_not_explicit_model(
                 model: None,
                 effort: Some("high"),
                 codex_speed: None,
+                codex_tui_workspace: false,
                 system_prompt: None,
                 first_turn: None,
             };

@@ -83,6 +83,7 @@ pub(crate) fn trailing_runtime_args(
         model,
         effort,
         codex_speed,
+        codex_tui_workspace: false,
         system_prompt,
         first_turn,
     })

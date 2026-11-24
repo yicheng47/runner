@@ -50,6 +50,8 @@
         "check_for_update_on_startup=false",
         "-c",
         "tui.terminal_title=[\"activity\",\"thread-title\",\"project-name\"]",
+        "-c",
+        "features.tui_workspace=false",
         "--enable",
         "hooks",
         "--dangerously-bypass-hook-trust",

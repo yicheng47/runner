@@ -736,7 +736,7 @@ fn launch_switches_cover_chat_resume_mission_and_role_permissions() {
             for mission in [false, true] {
                 let plan = crate::runtimes::adapter(runtime)
                     .resume_plan(resuming.then_some("eec53725-8f5d-428a-8afb-46510ddfb000"));
-                let compose = |bypass, catalog, hooks| {
+                let compose = |bypass, catalog, tui_workspace, hooks| {
                     crate::db::set_runtime_launch_option(&pool, runtime, OptionKey::Bypass, bypass)
                         .unwrap();
                     crate::db::set_runtime_launch_option(
@@ -744,6 +744,13 @@ fn launch_switches_cover_chat_resume_mission_and_role_permissions() {
                         runtime,
                         OptionKey::RemotePluginCatalog,
                         catalog,
+                    )
+                    .unwrap();
+                    crate::db::set_runtime_launch_option(
+                        &pool,
+                        runtime,
+                        OptionKey::TuiWorkspace,
+                        tui_workspace,
                     )
                     .unwrap();
                     crate::db::set_runtime_launch_option(
@@ -779,8 +786,29 @@ fn launch_switches_cover_chat_resume_mission_and_role_permissions() {
                     );
                     spec
                 };
-                let baseline = compose(false, true, true);
-                let bypass = compose(true, true, true);
+                let baseline = compose(false, true, false, true);
+                assert_eq!(
+                    baseline
+                        .args
+                        .windows(2)
+                        .any(|pair| pair == ["-c", "features.tui_workspace=false"]),
+                    runtime == Runtime::Codex,
+                    "default tui_workspace=false for {runtime} mission={mission} resuming={resuming}"
+                );
+                let tui_workspace_on = compose(false, true, true, true);
+                assert!(
+                    !tui_workspace_on
+                        .args
+                        .iter()
+                        .any(|arg| arg.contains("features.tui_workspace")),
+                    "tui_workspace=true must omit flag for {runtime} mission={mission} resuming={resuming}"
+                );
+                assert_eq!(
+                    baseline.env.keys().collect::<Vec<_>>(),
+                    tui_workspace_on.env.keys().collect::<Vec<_>>(),
+                    "tui_workspace switch must not add child env keys"
+                );
+                let bypass = compose(true, true, false, true);
                 if mission
                     || !matches!(
                         runtime,
@@ -802,7 +830,7 @@ fn launch_switches_cover_chat_resume_mission_and_role_permissions() {
                             .any(|arg| arg.contains("\"skipDangerousModePermissionPrompt\":true")));
                     }
                 }
-                let catalog = compose(false, false, true);
+                let catalog = compose(false, false, false, true);
                 assert_eq!(
                     catalog
                         .args
@@ -810,7 +838,7 @@ fn launch_switches_cover_chat_resume_mission_and_role_permissions() {
                         .any(|arg| arg == "features.remote_plugin=false"),
                     runtime == Runtime::Codex
                 );
-                let no_hooks = compose(false, true, false);
+                let no_hooks = compose(false, true, false, false);
                 if runtime == Runtime::Antigravity {
                     assert!(!baseline
                         .args
@@ -933,12 +961,16 @@ fn launch_options_persist_under_one_key_and_publish_in_status() {
             false,
         )
         .unwrap();
+        crate::db::set_runtime_launch_option(&pool, Runtime::Codex, OptionKey::TuiWorkspace, true)
+            .unwrap();
     }
     let pool = crate::db::open_pool(&path).unwrap();
     let options = crate::db::runtime_launch_options(&pool).unwrap();
     assert!(options["codex"].bypass);
     assert!(!options["codex"].remote_plugin_catalog);
+    assert!(options["codex"].tui_workspace);
     assert!(options["codex"].status_hooks);
+    assert!(!options["claude-code"].tui_workspace);
     assert!(!options["claude-code"].status_hooks);
     let count: i64 = pool
         .get()
@@ -987,6 +1019,28 @@ fn launch_options_persist_under_one_key_and_publish_in_status() {
         Runtime::Cursor,
         OptionKey::StatusHooks,
         false
+    )
+    .is_err());
+    assert!(
+        crate::ops::runtime::runtime_set_launch_option(
+            &core,
+            Runtime::Codex,
+            OptionKey::TuiWorkspace,
+            true,
+        )
+        .unwrap()
+        .runtimes
+        .iter()
+        .find(|row| row.name == Runtime::Codex)
+        .unwrap()
+        .launch_options
+        .tui_workspace
+    );
+    assert!(crate::ops::runtime::runtime_set_launch_option(
+        &core,
+        Runtime::ClaudeCode,
+        OptionKey::TuiWorkspace,
+        true
     )
     .is_err());
 }

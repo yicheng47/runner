@@ -1350,6 +1350,23 @@ fn optional_catalog_account_preserves_older_requests() {
     assert_eq!(old_options.custom_flags, "");
     assert!(old_options.bypass);
     assert!(!old_options.remote_plugin_catalog);
+    assert!(!old_options.tui_workspace);
+    let mut options = RuntimeLaunchOptions::default();
+    assert!(!options.tui_workspace);
+    assert!(!options.get(RuntimeLaunchOption::TuiWorkspace));
+    options.set(RuntimeLaunchOption::TuiWorkspace, true);
+    assert!(options.tui_workspace);
+    assert!(options.get(RuntimeLaunchOption::TuiWorkspace));
+    round_trip(options);
+    round_trip(RuntimeLaunchOption::TuiWorkspace);
+    round_trip(RuntimeCommandNote::TuiWorkspaceOff);
+    for runtime in Runtime::ALL {
+        assert_eq!(
+            RuntimeLaunchOption::TuiWorkspace.supported(runtime),
+            runtime == Runtime::Codex,
+            "{runtime:?}"
+        );
+    }
     let old_preview: RuntimeCommandPreview =
         serde_json::from_value(serde_json::json!({"lines": []})).unwrap();
     assert_eq!(old_preview.custom_flags_warning, None);

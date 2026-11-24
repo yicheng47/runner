@@ -331,6 +331,7 @@ fn custom_flags_validation_save_refusal_warning_and_clear() {
         "--search \"unclosed",
         "--model gpt-5",
         "-c features.remote_plugin=true",
+        "-c features.tui_workspace=true",
     ] {
         assert!(
             runtime_set_custom_flags(&state, Runtime::Codex, bad).is_err(),

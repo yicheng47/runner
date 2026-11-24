@@ -141,6 +141,8 @@ fn codex_resume_skips_first_prompt_injection() {
         "check_for_update_on_startup=false".into(),
         "-c".into(),
         crate::runtimes::codex::CODEX_TERMINAL_TITLE.into(),
+        "-c".into(),
+        "features.tui_workspace=false".into(),
     ];
     expected.extend(crate::runtimes::codex::codex_status_args(
         &[],

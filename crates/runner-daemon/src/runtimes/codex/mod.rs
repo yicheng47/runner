@@ -392,6 +392,9 @@ impl RuntimeAdapter for Codex {
         {
             out.extend(strings(&["-c", "features.remote_plugin=false"]));
         }
+        if !ctx.codex_tui_workspace {
+            out.extend(strings(&["-c", "features.tui_workspace=false"]));
+        }
         out.extend(codex_hook_args(ctx.role_args, ctx.app_data_dir));
         out.extend(self.first_turn_argv(if ctx.resuming { None } else { ctx.first_turn }));
         out

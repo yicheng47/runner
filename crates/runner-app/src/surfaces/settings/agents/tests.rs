@@ -1270,6 +1270,7 @@ fn launch_card_switches_follow_the_runtime_table() {
         for option in [
             runner_core::protocol::runtime::RuntimeLaunchOption::Bypass,
             runner_core::protocol::runtime::RuntimeLaunchOption::RemotePluginCatalog,
+            runner_core::protocol::runtime::RuntimeLaunchOption::TuiWorkspace,
             runner_core::protocol::runtime::RuntimeLaunchOption::StatusHooks,
         ] {
             assert_eq!(
@@ -1524,6 +1525,9 @@ fn antigravity_launch_card_renders_bypass_switch_and_preview_note() {
         .debug_bounds("AGENT_LAUNCH_SWITCH_antigravity_RemotePluginCatalog")
         .is_none());
     assert!(window
+        .debug_bounds("AGENT_LAUNCH_SWITCH_antigravity_TuiWorkspace")
+        .is_none());
+    assert!(window
         .debug_bounds("AGENT_LAUNCH_SWITCH_antigravity_StatusHooks")
         .is_none());
     pane.read_with(&window, |pane, cx| {
@@ -1595,11 +1599,18 @@ fn custom_flags_renders_for_agents_with_and_without_switches_and_matches_copy() 
                     .is_none(),
                 "Codex must not show a Status hooks switch once OSC 7501 owns its status"
             );
-            let switch_bounds = window
+            let catalog_bounds = window
                 .debug_bounds("AGENT_LAUNCH_SWITCH_codex_RemotePluginCatalog")
                 .unwrap();
+            let tui_workspace_bounds = window
+                .debug_bounds("AGENT_LAUNCH_SWITCH_codex_TuiWorkspace")
+                .unwrap();
             assert!(
-                row_bounds.top() > switch_bounds.bottom(),
+                tui_workspace_bounds.top() >= catalog_bounds.bottom(),
+                "TUI workspace switch should sit below Remote plugin catalog"
+            );
+            assert!(
+                row_bounds.top() > tui_workspace_bounds.bottom(),
                 "custom flags should sit below the switches"
             );
         }
@@ -2258,4 +2269,118 @@ fn osc7501_runtimes_hide_status_hooks_switch_while_copilot_keeps_it() {
             "{runtime_name:?} StatusHooks switch visibility mismatch"
         );
     }
+}
+
+#[test]
+fn codex_tui_workspace_switch_toggles_preview_and_copy_in_both_locales() {
+    use runner_core::protocol::runtime::{RuntimeCommandNote, RuntimeLaunchOption};
+
+    for (locale, expected_title, expected_note) in [
+        (
+            crate::i18n::Locale::English,
+            "TUI workspace",
+            "TUI workspace off",
+        ),
+        (
+            crate::i18n::Locale::SimplifiedChinese,
+            "TUI 工作区",
+            "TUI 工作区已关闭",
+        ),
+    ] {
+        crate::i18n::testing::with_locale(locale, || {
+            assert_eq!(crate::i18n::text("ui.launch_tui_workspace"), expected_title);
+            assert_eq!(
+                super::launch::preview_note(&RuntimeCommandNote::TuiWorkspaceOff).as_ref(),
+                expected_note
+            );
+            let description = crate::i18n::text("ui.launch_tui_workspace_description");
+            assert!(!description.is_empty());
+            assert!(
+                !description.contains('⌘'),
+                "description must stay platform-neutral: {description}"
+            );
+        });
+    }
+
+    let mut cx = gpui::TestAppContext::single();
+    let (_temp, pane) = test_pane(vec![runtime(RuntimeRowState::Detected)], false, &mut cx);
+    let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+    open_test_page(pane, Runtime::Codex, &mut window);
+    window.run_until_parked();
+
+    let switch_row = window
+        .debug_bounds("AGENT_LAUNCH_SWITCH_codex_TuiWorkspace")
+        .expect("Codex Launch card should render TUI workspace switch");
+    pane.read_with(&window, |pane, _| {
+        for mission in [false, true] {
+            let preview = pane
+                .launch_previews
+                .get(&(Runtime::Codex, mission))
+                .expect("Codex preview should load");
+            let line = preview
+                .lines
+                .iter()
+                .find(|line| line.command.contains("-c features.tui_workspace=false"))
+                .expect("default Codex preview should show -c features.tui_workspace=false");
+            assert_eq!(line.note, RuntimeCommandNote::TuiWorkspaceOff);
+            assert_eq!(line.option, Some(RuntimeLaunchOption::TuiWorkspace));
+        }
+    })
+    .unwrap();
+
+    // Toggle TUI workspace On -> flag disappears from both Chat and Mission previews.
+    let toggle_center = gpui::point(switch_row.right() - px(36.), switch_row.center().y);
+    window.simulate_click(toggle_center, gpui::Modifiers::default());
+    window.run_until_parked();
+    pane.read_with(&window, |pane, _| {
+        let codex = pane
+            .status
+            .as_ref()
+            .unwrap()
+            .runtimes
+            .iter()
+            .find(|r| r.name == Runtime::Codex)
+            .unwrap();
+        assert!(codex.launch_options.tui_workspace);
+        for mission in [false, true] {
+            let preview = &pane.launch_previews[&(Runtime::Codex, mission)];
+            assert!(
+                preview
+                    .lines
+                    .iter()
+                    .all(|line| !line.command.contains("features.tui_workspace=false")),
+                "TUI workspace On should remove flag (mission={mission}): {:?}",
+                preview.lines
+            );
+        }
+    })
+    .unwrap();
+
+    // Toggle back Off -> flag and note return to both previews.
+    let switch_row = window
+        .debug_bounds("AGENT_LAUNCH_SWITCH_codex_TuiWorkspace")
+        .expect("TUI workspace switch should remain rendered after toggling on");
+    let toggle_center = gpui::point(switch_row.right() - px(36.), switch_row.center().y);
+    window.simulate_click(toggle_center, gpui::Modifiers::default());
+    window.run_until_parked();
+    pane.read_with(&window, |pane, _| {
+        let codex = pane
+            .status
+            .as_ref()
+            .unwrap()
+            .runtimes
+            .iter()
+            .find(|r| r.name == Runtime::Codex)
+            .unwrap();
+        assert!(!codex.launch_options.tui_workspace);
+        for mission in [false, true] {
+            let preview = &pane.launch_previews[&(Runtime::Codex, mission)];
+            assert!(preview.lines.iter().any(|line| {
+                line.command.contains("-c features.tui_workspace=false")
+                    && line.note == RuntimeCommandNote::TuiWorkspaceOff
+                    && line.option == Some(RuntimeLaunchOption::TuiWorkspace)
+            }));
+        }
+    })
+    .unwrap();
 }

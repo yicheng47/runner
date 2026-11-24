@@ -199,6 +199,7 @@ pub(crate) fn reserved_flags(runtime: Runtime) -> ReservedFlags {
                         bypass,
                         status_hooks,
                         remote_plugin_catalog,
+                        tui_workspace: false,
                         custom_flags: String::new(),
                     };
                     for prior_key in [None, Some(prior)] {
@@ -229,6 +230,7 @@ pub(crate) fn reserved_flags(runtime: Runtime) -> ReservedFlags {
             bypass: true,
             status_hooks: true,
             remote_plugin_catalog: true,
+            tui_workspace: false,
             custom_flags: String::new(),
         };
         for mission in [false, true] {
@@ -748,28 +750,31 @@ mod tests {
                 for bypass in [false, true] {
                     for status_hooks in [false, true] {
                         for remote_plugin_catalog in [false, true] {
-                            let options = RuntimeLaunchOptions {
-                                bypass,
-                                status_hooks,
-                                remote_plugin_catalog,
-                                custom_flags: String::new(),
-                            };
-                            for prior_key in [None, Some(prior)] {
-                                let (args, _) =
-                                    crate::session::manager::spawn_spec::compose_preview_args(
-                                        runtime,
-                                        mission,
-                                        &options,
-                                        scratch.path(),
-                                        Default::default(),
-                                        crate::session::manager::spawn_spec::PreviewArgsOverrides {
-                                            prior_key,
-                                            codex_speed: Some(CodexSpeed::Fast),
-                                            system_prompt: Some("<system prompt>"),
-                                            ..Default::default()
-                                        },
-                                    );
-                                check_composed_flags_are_reserved(runtime, &reserved, &args);
+                            for tui_workspace in [false, true] {
+                                let options = RuntimeLaunchOptions {
+                                    bypass,
+                                    status_hooks,
+                                    remote_plugin_catalog,
+                                    tui_workspace,
+                                    custom_flags: String::new(),
+                                };
+                                for prior_key in [None, Some(prior)] {
+                                    let (args, _) =
+                                        crate::session::manager::spawn_spec::compose_preview_args(
+                                            runtime,
+                                            mission,
+                                            &options,
+                                            scratch.path(),
+                                            Default::default(),
+                                            crate::session::manager::spawn_spec::PreviewArgsOverrides {
+                                                prior_key,
+                                                codex_speed: Some(CodexSpeed::Fast),
+                                                system_prompt: Some("<system prompt>"),
+                                                ..Default::default()
+                                            },
+                                        );
+                                    check_composed_flags_are_reserved(runtime, &reserved, &args);
+                                }
                             }
                         }
                     }
@@ -980,6 +985,22 @@ mod tests {
             (
                 "-c 'features={remote_plugin=true}'",
                 "Runner already sets -c features.remote_plugin.",
+            ),
+            (
+                "-c features.tui_workspace=true",
+                "Runner already sets -c features.tui_workspace.",
+            ),
+            (
+                "--config features.tui_workspace=false",
+                "Runner already sets --config features.tui_workspace.",
+            ),
+            (
+                "-c features.tui_workspace=bareword",
+                "Runner already sets -c features.tui_workspace.",
+            ),
+            (
+                "-c 'features={tui_workspace=true}'",
+                "Runner already sets -c features.tui_workspace.",
             ),
             ("-c 'hooks={}'", "Runner already sets -c hooks."),
             (
