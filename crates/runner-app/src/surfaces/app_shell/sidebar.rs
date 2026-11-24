@@ -500,7 +500,7 @@ impl SidebarFooterControl {
         };
         div()
             .flex_none()
-            .size(px(32. * zoom))
+            .size(px(28. * zoom))
             .flex()
             .items_center()
             .justify_center()
@@ -530,7 +530,7 @@ pub(crate) fn sidebar_footer_contents(
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(8. * zoom))
+                .gap(px(4. * zoom))
                 .child(host)
                 .child(settings),
         )

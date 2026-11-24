@@ -706,8 +706,8 @@ fn usage_preview_keeps_its_natural_size_and_wraps_inside_the_sidebar_card() {
         let gear = visual.debug_bounds("USAGE_PREVIEW_SETTINGS").unwrap();
         assert!(visual.debug_bounds("USAGE_PREVIEW_RECENT").is_none());
         assert!((sample.size.width - px(240. * zoom)).abs() < px(1.));
-        assert!((sample.size.height - px(56. * zoom)).abs() < px(1.));
-        assert!((footer.size.height - px(32. * zoom)).abs() < px(1.));
+        assert!((sample.size.height - px(52. * zoom)).abs() < px(1.));
+        assert!((footer.size.height - px(28. * zoom)).abs() < px(1.));
         assert!((footer.left() - sample.left() - px(12. * zoom)).abs() < px(1.));
         assert!((sample.bottom() - footer.bottom() - px(12. * zoom)).abs() < px(1.));
         assert!(sample.left() >= preview.left() && sample.right() <= preview.right());
@@ -717,7 +717,7 @@ fn usage_preview_keeps_its_natural_size_and_wraps_inside_the_sidebar_card() {
             assert!((sample.center().y - label.center().y).abs() < px(1.));
             assert!((sample.right() - preview.right() + px(20. * zoom)).abs() < px(1.));
         }
-        assert!((gear.left() - host.right() - px(8. * zoom)).abs() < px(1.));
+        assert!((gear.left() - host.right() - px(4. * zoom)).abs() < px(1.));
         assert!(
             badges.size.width <= px((super::super::usage::USAGE_PREVIEW_WIDTH - 96.) * zoom + 1.)
         );
