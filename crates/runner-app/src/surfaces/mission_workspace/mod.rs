@@ -35,10 +35,10 @@ use runner_core::protocol::session::SessionRow;
 
 use super::front_page::client::is_concurrent_resume_error;
 use super::*;
-use crate::surfaces::mission_markdown::{FeedMarkdown, FeedSelection};
 use crate::surfaces::mission_workspace::composer_model::ComposerState;
 use crate::surfaces::mission_workspace::feed_model::{message_text, FeedBlock};
 use crate::surfaces::side_panel::PanelViewId;
+use crate::ui::markdown::{FeedMarkdown, FeedSelection};
 use crate::*;
 
 const WORKSPACE_TABS_HEIGHT: f32 = 38.;
@@ -486,20 +486,6 @@ fn action_failure(
         "format.couldn_t",
         &[("action", action.into()), ("detail", detail.into())],
     )
-}
-
-fn selectable_event_text(event: &Event) -> String {
-    let message = message_text(event);
-    if !message.is_empty() {
-        message
-    } else {
-        event
-            .payload
-            .get("prompt")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_owned()
-    }
 }
 
 fn mission_notice(

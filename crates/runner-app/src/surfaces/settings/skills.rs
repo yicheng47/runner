@@ -17,8 +17,8 @@ use runner_app::ui::{
 use runner_core::protocol::skills::{parse_skill_document, GlobalState, SkillCatalog, SkillEntry};
 
 use crate::app_store::AppStore;
-use crate::surfaces::mission_markdown;
 use crate::theme;
+use crate::ui::markdown;
 
 fn catalog_caption(runtime: Runtime) -> &'static str {
     crate::runtime_ui::runtime_ui(runtime).skills_caption
@@ -1271,13 +1271,10 @@ impl SkillDetail {
                                 },
                             )),
                     )
-                    .child(mission_markdown::render_markdown(
+                    .child(markdown::render_compact(
                         "skill-preview-document",
-                        &mission_markdown::parse_blocks(&doc.body),
+                        &doc.body,
                         cx.entity_id(),
-                        None,
-                        theme::accent(),
-                        None,
                         cx,
                     ))
                     .into_any_element()

@@ -3053,7 +3053,7 @@ fn feed_appends_match_full_projection_and_deduplicate_sorted_insertion() {
 
 #[test]
 fn long_feed_builds_visible_blocks_caches_markdown_and_preserves_scroll_and_selection() {
-    use crate::surfaces::mission_markdown::PARSE_COUNT;
+    use crate::ui::markdown::{Position, PARSE_COUNT};
     use gpui::{ListOffset, VisualTestContext};
     let (_temp, mut cx, host, workspace) = mission_workspace_test();
     workspace.update(&mut cx, |this, _| {
@@ -3110,8 +3110,8 @@ fn long_feed_builds_visible_blocks_caches_markdown_and_preserves_scroll_and_sele
         });
         this.feed_selection = Some(FeedSelection {
             event_id: this.events[1900].id.clone(),
-            anchor: (0, 0),
-            head: (0, 3),
+            anchor: Position { row: 0, offset: 0 },
+            head: Position { row: 0, offset: 3 },
         });
         cx.notify();
     });
@@ -3482,7 +3482,7 @@ fn feed_near_bottom_boundary_includes_vertical_padding_and_zoom() {
 
 #[test]
 fn long_feed_same_author_group_builds_only_visible_messages() {
-    use crate::surfaces::mission_markdown::{PARSE_COUNT, RENDER_COUNT};
+    use crate::ui::markdown::{PARSE_COUNT, RENDER_COUNT};
     use gpui::{ListOffset, VisualTestContext};
     let (_temp, mut cx, host, workspace) = mission_workspace_test();
     workspace.update(&mut cx, |this, _| {
@@ -3551,7 +3551,7 @@ fn long_feed_same_author_group_builds_only_visible_messages() {
 
 #[test]
 fn long_feed_single_post_builds_visible_sections_and_keeps_selection_offsets() {
-    use crate::surfaces::mission_markdown::{PARSE_COUNT, RENDER_COUNT};
+    use crate::ui::markdown::{Position, PARSE_COUNT, RENDER_COUNT};
     use gpui::{ListOffset, VisualTestContext};
     let (_temp, mut cx, host, workspace) = mission_workspace_test();
     workspace.update(&mut cx, |this, _| {
@@ -3585,8 +3585,14 @@ fn long_feed_single_post_builds_visible_sections_and_keeps_selection_offsets() {
     workspace.update(&mut visual, |this, cx| {
         this.feed_selection = Some(FeedSelection {
             event_id: this.events[0].id.clone(),
-            anchor: (1996, 0),
-            head: (1997, 15),
+            anchor: Position {
+                row: 1996,
+                offset: 0,
+            },
+            head: Position {
+                row: 1997,
+                offset: 15,
+            },
         });
         this.feed_list.scroll_to(ListOffset::default());
         cx.notify();
@@ -3670,7 +3676,7 @@ fn feed_message_and_section_continuations_align_at_non_default_zoom() {
 
 #[test]
 fn long_feed_multiline_paragraph_and_table_build_only_visible_lines_and_cells() {
-    use crate::surfaces::mission_markdown::{LINE_COUNT, PARSE_COUNT};
+    use crate::ui::markdown::{Position, LINE_COUNT, PARSE_COUNT};
     use gpui::{ListOffset, VisualTestContext};
     for table in [false, true] {
         let (_temp, mut cx, host, workspace) = mission_workspace_test();
@@ -3714,8 +3720,28 @@ fn long_feed_multiline_paragraph_and_table_build_only_visible_lines_and_cells() 
         workspace.update(&mut visual, |this, cx| {
             this.feed_selection = Some(FeedSelection {
                 event_id: this.events[0].id.clone(),
-                anchor: if table { (4000, 0) } else { (1998, 0) },
-                head: if table { (4001, 5) } else { (1999, 10) },
+                anchor: if table {
+                    Position {
+                        row: 2000,
+                        offset: 0,
+                    }
+                } else {
+                    Position {
+                        row: 1998,
+                        offset: 0,
+                    }
+                },
+                head: if table {
+                    Position {
+                        row: 2000,
+                        offset: 11,
+                    }
+                } else {
+                    Position {
+                        row: 1999,
+                        offset: 10,
+                    }
+                },
             });
             this.feed_list.scroll_to(ListOffset::default());
             cx.notify();
@@ -3731,14 +3757,16 @@ fn long_feed_multiline_paragraph_and_table_build_only_visible_lines_and_cells() 
             focus.focus(window, cx);
         })
         .unwrap();
+        PARSE_COUNT.set(0);
         visual.dispatch_action(Copy);
+        assert_eq!(PARSE_COUNT.get(), 0, "copy reads cached FeedMarkdown");
         assert_eq!(
             visual
                 .read_from_clipboard()
                 .and_then(|item| item.text())
                 .as_deref(),
             Some(if table {
-                "L1999\nR1999"
+                "L1999\tR1999"
             } else {
                 "Line 1998.\nLine 1999."
             })
@@ -3750,50 +3778,14 @@ fn long_feed_multiline_paragraph_and_table_build_only_visible_lines_and_cells() 
             })
             .unwrap();
             visual.run_until_parked();
+            let viewport = workspace.read_with(&visual, |this, _| this.feed_list.viewport_bounds());
             let last = visual
-                .debug_bounds("MISSION_TABLE_ROW 00000000000000000000000000 0 2000")
-                .unwrap();
-            visual.simulate_event(gpui::ScrollWheelEvent {
-                position: point(last.left() + px(20.), last.center().y),
-                delta: gpui::ScrollDelta::Pixels(point(px(-60.), px(0.))),
-                ..Default::default()
-            });
-            visual.run_until_parked();
-            let next = visual
-                .debug_bounds("MISSION_TABLE_ROW 00000000000000000000000000 0 2000")
-                .unwrap();
-            let previous = visual
-                .debug_bounds("MISSION_TABLE_ROW 00000000000000000000000000 0 1999")
+                .debug_bounds("COMPACT_MD_TABLE_ROW 00000000000000000000000000 2000")
                 .unwrap();
             assert!(
-                next.left() < last.left(),
-                "table gutter wheel did not scroll horizontally"
+                last.right() <= viewport.right(),
+                "narrow table stays inside viewport instead of overflowing: {last:?} vs {viewport:?}"
             );
-            assert_eq!(next.left(), previous.left());
-            workspace.update(&mut visual, |this, cx| {
-                this.feed_list.scroll_to(ListOffset::default());
-                cx.notify();
-            });
-            visual.run_until_parked();
-            workspace.update(&mut visual, |this, cx| {
-                this.scroll_feed_to_bottom();
-                cx.notify();
-            });
-            visual.run_until_parked();
-            let restored = visual
-                .debug_bounds("MISSION_TABLE_ROW 00000000000000000000000000 0 2000")
-                .unwrap();
-            assert_eq!(restored.left(), next.left());
-            host.update(&mut visual, |host, _, cx| {
-                host.width = 800.;
-                cx.notify();
-            })
-            .unwrap();
-            visual.run_until_parked();
-            let widened = visual
-                .debug_bounds("MISSION_TABLE_ROW 00000000000000000000000000 0 2000")
-                .unwrap();
-            assert_eq!(widened.left(), last.left());
         }
         let ask_row = workspace.update(&mut visual, |this, cx| {
             let row = this.feed_rows.len();
@@ -3819,6 +3811,281 @@ fn long_feed_multiline_paragraph_and_table_build_only_visible_lines_and_cells() 
         host.update(&mut visual, |_, window, _| window.remove_window())
             .unwrap();
     }
+}
+
+#[test]
+fn long_feed_code_block_builds_only_visible_lines() {
+    use crate::ui::markdown::{Position, LINE_COUNT, PARSE_COUNT, RENDER_COUNT};
+    use gpui::{ListOffset, VisualTestContext};
+    let (_temp, mut cx, host, workspace) = mission_workspace_test();
+    workspace.update(&mut cx, |this, _| {
+        let mut event = long_feed_events().remove(0);
+        event.payload["text"] = format!(
+            "```rust\n{}```\n",
+            (0..2000)
+                .map(|i| format!("let line_{i} = {i};\n"))
+                .collect::<String>()
+        )
+        .into();
+        this.events = vec![event];
+        this.rebuild_event_projection();
+        assert_eq!(this.feed_blocks.len(), 1);
+        assert_eq!(this.feed_rows.len(), 500);
+    });
+    host.update(&mut cx, |host, _, cx| {
+        host.show_feed = true;
+        cx.notify();
+    })
+    .unwrap();
+    let mut visual = VisualTestContext::from_window(host.into(), &cx);
+    visual.run_until_parked();
+    PARSE_COUNT.set(0);
+    RENDER_COUNT.set(0);
+    LINE_COUNT.set(0);
+    visual.simulate_input("x");
+    visual.run_until_parked();
+    assert_eq!(PARSE_COUNT.get(), 0);
+    assert!(
+        RENDER_COUNT.get() > 0 && RENDER_COUNT.get() < 100,
+        "built {} code rows",
+        RENDER_COUNT.get()
+    );
+    assert!(
+        LINE_COUNT.get() > 0 && LINE_COUNT.get() < 200,
+        "built {} code lines",
+        LINE_COUNT.get()
+    );
+    workspace.update(&mut visual, |this, cx| {
+        this.feed_selection = Some(FeedSelection {
+            event_id: this.events[0].id.clone(),
+            anchor: Position {
+                row: 1998,
+                offset: 0,
+            },
+            head: Position {
+                row: 1999,
+                offset: 19,
+            },
+        });
+        this.feed_list.scroll_to(ListOffset::default());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    workspace.update(&mut visual, |this, cx| {
+        this.scroll_feed_to_bottom();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    host.update(&mut visual, |_, window, cx| {
+        let focus = workspace.read(cx).root_focus.clone();
+        focus.focus(window, cx);
+    })
+    .unwrap();
+    PARSE_COUNT.set(0);
+    visual.dispatch_action(Copy);
+    assert_eq!(PARSE_COUNT.get(), 0);
+    assert_eq!(
+        visual
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("let line_1998 = 1998;\nlet line_1999 = 199")
+    );
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[test]
+fn feed_selection_across_paragraph_table_code_scroll_escape_and_link_drag() {
+    use crate::ui::markdown::{Position, PARSE_COUNT};
+    use gpui::{ListOffset, Modifiers, MouseButton, VisualTestContext};
+    let (_temp, mut cx, host, workspace) = mission_workspace_test();
+    let long_code = "z".repeat(540);
+    workspace.update(&mut cx, |this, _| {
+        let mut events: Vec<Event> = (0..40)
+            .map(|index| Event {
+                id: format!("{index:026}"),
+                ts: chrono::DateTime::from_timestamp(1_700_000_000 + index, 0).unwrap(),
+                crew_id: Some("crew".into()),
+                mission_id: "mission".into(),
+                kind: EventKind::Message,
+                from: if index % 2 == 0 { "coder" } else { "reviewer" }.into(),
+                to: Default::default(),
+                signal_type: None,
+                payload: serde_json::json!({"text": format!("Filler message {index}")}),
+            })
+            .collect();
+        events.push(Event {
+            id: format!("{:026}", 40),
+            ts: chrono::DateTime::from_timestamp(1_700_000_040, 0).unwrap(),
+            crew_id: Some("crew".into()),
+            mission_id: "mission".into(),
+            kind: EventKind::Message,
+            from: "coder".into(),
+            to: Default::default(),
+            signal_type: None,
+            payload: serde_json::json!({
+                "text": format!(
+                    "Check [the docs](https://example.com) and [local](file:///etc/hosts)\n\n| ColA | ColB |\n| --- | --- |\n| one | two |\n\n```\n{long_code}\nend\n```\n"
+                )
+            }),
+        });
+        let mut question = signal(
+            "human_question",
+            serde_json::json!({
+                "prompt": "Approve **plan**?\nSecond line",
+                "choices": ["yes", "no"]
+            }),
+        );
+        question.id = format!("{:026}", 41);
+        events.push(question);
+        this.events = events;
+        this.rebuild_event_projection();
+    });
+    host.update(&mut cx, |host, _, cx| {
+        host.show_feed = true;
+        cx.notify();
+    })
+    .unwrap();
+    let mut visual = VisualTestContext::from_window(host.into(), &cx);
+    visual.run_until_parked();
+
+    let message_id = format!("{:026}", 40);
+    let question_id = format!("{:026}", 41);
+
+    // Select across paragraph (row 0), table header & row (rows 1..=2), and code lines (rows 3..=5).
+    workspace.update(&mut visual, |this, cx| {
+        this.feed_selection = Some(FeedSelection {
+            event_id: message_id.clone(),
+            anchor: Position { row: 0, offset: 0 },
+            head: Position { row: 5, offset: 3 },
+        });
+        this.feed_list.scroll_to(ListOffset::default());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    workspace.update(&mut visual, |this, cx| {
+        this.scroll_feed_to_bottom();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    host.update(&mut visual, |_, window, cx| {
+        let focus = workspace.read(cx).root_focus.clone();
+        focus.focus(window, cx);
+    })
+    .unwrap();
+    PARSE_COUNT.set(0);
+    visual.dispatch_action(Copy);
+    assert_eq!(PARSE_COUNT.get(), 0, "copy must not re-parse");
+    assert_eq!(
+        visual
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some(format!("Check the docs and local\nColA\tColB\none\ttwo\n{long_code}\nend").as_str())
+    );
+
+    // Escape clears the selection.
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    workspace.read_with(&visual, |this, _| {
+        assert!(this.feed_selection.is_none());
+    });
+
+    // Question card prompt renders and copies from the cache without re-parsing.
+    workspace.update(&mut visual, |this, cx| {
+        this.feed_selection = Some(FeedSelection {
+            event_id: question_id.clone(),
+            anchor: Position { row: 0, offset: 0 },
+            head: Position { row: 1, offset: 6 },
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+    PARSE_COUNT.set(0);
+    visual.dispatch_action(Copy);
+    assert_eq!(PARSE_COUNT.get(), 0);
+    assert_eq!(
+        visual
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("Approve plan?\nSecond")
+    );
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+
+    // Drag ending on a link opens nothing; a plain click opens https: only.
+    let link_row = visual
+        .debug_bounds("COMPACT_MD_TEXT 00000000000000000000000040 0")
+        .unwrap();
+    let start = point(link_row.left() + px(2.), link_row.center().y);
+    let on_link = point(link_row.left() + px(65.), link_row.center().y);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(on_link, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(on_link, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.cx.opened_url(), None);
+
+    // Drag across paragraph -> table row -> code line and copy from cache.
+    let table_row = visual
+        .debug_bounds("COMPACT_MD_TABLE_ROW 00000000000000000000000040 2")
+        .unwrap();
+    let code_row = visual
+        .debug_bounds("COMPACT_MD_TEXT 00000000000000000000000040 5")
+        .unwrap();
+    let drag_end = point(code_row.left() + px(30.), code_row.center().y);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        table_row.center(),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_move(drag_end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(drag_end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    PARSE_COUNT.set(0);
+    visual.dispatch_action(Copy);
+    assert_eq!(PARSE_COUNT.get(), 0);
+    let dragged_copy = visual
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .expect("dragged selection copied");
+    assert!(
+        dragged_copy.contains("ColA\tColB\none\ttwo\n") && dragged_copy.contains(&long_code),
+        "unexpected dragged copy: {dragged_copy:?}"
+    );
+    assert_eq!(visual.cx.opened_url(), None);
+
+    // Dragging starting and ending inside the https: link opens nothing;
+    // clicking the file: link opens nothing; clicking the https: link opens it.
+    let link_start = point(link_row.left() + px(48.), link_row.center().y);
+    let link_end = point(link_row.left() + px(82.), link_row.center().y);
+    visual.simulate_mouse_down(link_start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(link_end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(link_end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(visual.cx.opened_url(), None);
+
+    visual.simulate_click(
+        point(link_row.left() + px(140.), link_row.center().y),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert_eq!(visual.cx.opened_url(), None);
+
+    visual.simulate_click(
+        point(link_row.left() + px(60.), link_row.center().y),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert_eq!(
+        visual.cx.opened_url().as_deref(),
+        Some("https://example.com")
+    );
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
 }
 
 #[test]
@@ -4009,8 +4276,8 @@ fn feed_scrollbar_track_drag_and_wheel_reach_unmeasured_history() {
         assert_eq!(this.feed_list.logical_scroll_top().item_ix, 0);
         this.feed_selection = Some(FeedSelection {
             event_id: this.events[0].id.clone(),
-            anchor: (0, 0),
-            head: (0, 3),
+            anchor: crate::ui::markdown::Position { row: 0, offset: 0 },
+            head: crate::ui::markdown::Position { row: 0, offset: 3 },
         });
     });
     let grab = point(gutter.center().x, gutter.top() + px(10.));

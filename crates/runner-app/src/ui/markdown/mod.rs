@@ -5,6 +5,7 @@
 //! documents and blocks draw only what is in view.
 
 mod draw;
+mod feed;
 mod layout;
 mod links;
 mod parse;
@@ -22,15 +23,21 @@ use unicode_width::UnicodeWidthChar as _;
 use crate::surfaces::files::document::{Document, TAB_WIDTH};
 use crate::surfaces::files::highlight::Highlights;
 
+pub(crate) use draw::reset_compact_press;
+pub(crate) use feed::{
+    render_compact, FeedMarkdown, FeedSelection, FeedSelectionHandler, FeedSelectionPhase,
+};
+#[cfg(test)]
+pub(crate) use feed::{LINE_COUNT, PARSE_COUNT, RENDER_COUNT};
 #[cfg(test)]
 pub(crate) use layout::Marker;
 pub(crate) use layout::{Row, RowKind};
-#[cfg(test)]
-pub(crate) use links::route;
 pub(crate) use links::{image_format, LinkTarget};
-pub(crate) use view::{MarkdownView, OpenLink};
 #[cfg(test)]
-pub(crate) use view::{Position, DRAWN_CODE_BYTES};
+pub(crate) use links::{route, route_web};
+#[cfg(test)]
+pub(crate) use view::DRAWN_CODE_BYTES;
+pub(crate) use view::{MarkdownView, OpenLink, Position};
 
 /// How many quotes, lists and list items may nest. Parsing, laying out and
 /// dropping a page each recurse once per level, and a file of a few KB can ask
@@ -56,7 +63,7 @@ pub(crate) struct Inline {
     pub(crate) text: String,
     /// Consecutive, covering `text`.
     pub(crate) styles: Vec<(Range<usize>, InlineStyle)>,
-    pub(crate) links: Vec<(Range<usize>, String)>,
+    pub(crate) links: Vec<(Range<usize>, Arc<str>)>,
 }
 
 impl Inline {
@@ -84,7 +91,7 @@ impl Inline {
 pub(crate) struct ImageRef {
     pub(crate) path: String,
     pub(crate) alt: String,
-    pub(crate) link: Option<String>,
+    pub(crate) link: Option<Arc<str>>,
 }
 
 /// Inline content: text, or a local image drawn as itself.
@@ -197,27 +204,70 @@ pub(crate) enum Block {
     Html(String),
 }
 
-/// A file's Markdown parsed into blocks and laid out as rows, its code
-/// highlighted. Slow on a large file: run it off the UI thread.
+/// Markdown parsed into blocks and laid out as rows. Slow on a large file
+/// with syntax highlighting: run [`Page::parse`] off the UI thread.
 #[derive(Debug, Default)]
 pub(crate) struct Page {
     /// The parsed blocks the rows were laid out from, for tests.
     #[cfg(test)]
     pub(crate) blocks: Vec<Block>,
     pub(crate) rows: Vec<Row>,
+    /// Trailing bottom padding for the Compact look (in pixels).
+    pub(super) bottom: f32,
 }
 
 impl Page {
-    /// Parses `text`, the Markdown file at `path` from the root.
+    /// Parses `text`, the Markdown file at `path` from the root, for the
+    /// Document look (Files preview).
     pub(crate) fn parse(text: &str, path: &str) -> Self {
         let blocks = parse::parse_document_blocks(text, path);
         let mut rows = Vec::new();
-        layout::flatten(&blocks, 0, 0, &mut rows);
+        let bottom = layout::flatten(&blocks, layout::LayoutLook::Document, &mut rows);
         Self {
             #[cfg(test)]
             blocks,
             rows,
+            bottom,
         }
+    }
+
+    /// Parses `text` for the Compact look (feed, question cards, prompts,
+    /// Skills preview and Info popover).
+    pub(crate) fn parse_compact(text: &str) -> Self {
+        #[cfg(test)]
+        feed::PARSE_COUNT.set(feed::PARSE_COUNT.get() + 1);
+        let blocks = parse::parse_compact_blocks(text);
+        let mut rows = Vec::new();
+        let bottom = layout::flatten(&blocks, layout::LayoutLook::Compact, &mut rows);
+        Self {
+            #[cfg(test)]
+            blocks,
+            rows,
+            bottom,
+        }
+    }
+
+    /// The selected text, rows joined by line breaks without one before the
+    /// continued piece of a long code line; a table row is taken whole, its
+    /// cells joined by tabs. Returns `None` only for a collapsed or
+    /// out-of-range selection, preserving `Some("")` when distinct endpoints
+    /// cover zero bytes (e.g. across a code-fragment boundary).
+    pub(crate) fn selected_text(&self, anchor: Position, head: Position) -> Option<String> {
+        let (start, end) = (anchor.min(head), anchor.max(head));
+        if start == end || start.row >= self.rows.len() {
+            return None;
+        }
+        let mut copied = String::new();
+        for row in start.row..=end.row.min(self.rows.len().saturating_sub(1)) {
+            let line = &self.rows[row];
+            let text = line.text();
+            let range = layout::selected_range(line, row, start, end, &text);
+            if row > start.row && !line.continues() {
+                copied.push('\n');
+            }
+            copied.push_str(&text[range]);
+        }
+        Some(copied)
     }
 
     /// Whether row continuation and rendered row text match `other`, keeping

@@ -5,7 +5,7 @@ use runner_core::protocol::model::Runtime;
 use runner_core::protocol::worktree::WorktreeCheckout;
 
 use super::*;
-use crate::surfaces::mission_markdown::{parse_blocks, render_markdown};
+use crate::ui::markdown::render_compact;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct InfoBranchRow {
@@ -740,13 +740,10 @@ pub(super) fn render_s2_chat_info_card(
                         .text_size(theme::text_meta())
                         .line_height(rems(18. / 16.))
                         .text_color(theme::muted())
-                        .child(render_markdown(
+                        .child(render_compact(
                             &format!("s2-info-prompt-{}", detail.session_id),
-                            &parse_blocks(prompt),
+                            prompt,
                             actions.view,
-                            None,
-                            theme::accent(),
-                            None,
                             cx,
                         )),
                 )

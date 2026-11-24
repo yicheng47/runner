@@ -7,10 +7,10 @@ use runner_app::ui::{app_scrollbar_gutter, Button, ButtonVariant, RoleAvatar, To
 use runner_core::protocol::model::{Event, EventKind};
 
 use super::*;
-use crate::surfaces::mission_markdown::{
-    FeedPosition, FeedSelection, FeedSelectionHandler, FeedSelectionPhase,
-};
 use crate::surfaces::mission_workspace::feed_model::{message_target, FeedBlock};
+use crate::ui::markdown::{
+    reset_compact_press, FeedSelection, FeedSelectionHandler, FeedSelectionPhase, Position,
+};
 use crate::*;
 
 impl MissionWorkspace {
@@ -335,6 +335,7 @@ impl MissionWorkspace {
                         });
                     })
                     .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+                        reset_compact_press(cx);
                         feed_out_root.update(cx, |this, _| {
                             this.feed_selecting = false;
                         });
@@ -631,7 +632,7 @@ impl MissionWorkspace {
         &mut self,
         phase: FeedSelectionPhase,
         event_id: &str,
-        position: FeedPosition,
+        position: Position,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -662,6 +663,13 @@ impl MissionWorkspace {
                             selection.head = position;
                         }
                     }
+                }
+                if self
+                    .feed_selection
+                    .as_ref()
+                    .is_some_and(|selection| selection.anchor == selection.head)
+                {
+                    self.feed_selection = None;
                 }
                 self.feed_selecting = false;
                 cx.notify();
@@ -699,9 +707,8 @@ impl MissionWorkspace {
             1.,
         );
         let markdown = self.cached_feed_markdown(event_id, text);
-        crate::surfaces::mission_markdown::render_markdown(
+        markdown.render_all(
             event_id,
-            &markdown.blocks,
             cx.entity_id(),
             self.feed_selection.as_ref(),
             selection_color,
@@ -722,16 +729,15 @@ impl MissionWorkspace {
         let Some(selection) = self.feed_selection.as_ref() else {
             return;
         };
-        let Some(event) = self
-            .events
-            .iter()
-            .find(|event| event.id == selection.event_id)
+        let Some(markdown) = self
+            .feed_markdown
+            .borrow()
+            .get(&selection.event_id)
+            .cloned()
         else {
             return;
         };
-        let source = selectable_event_text(event);
-        let Some(text) = crate::surfaces::mission_markdown::selected_plain_text(&source, selection)
-        else {
+        let Some(text) = markdown.selected_text(selection) else {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -931,7 +937,7 @@ impl MissionWorkspace {
                                 theme::text()
                             })
                             .children({
-                                if markdown.blocks.is_empty() {
+                                if markdown.is_empty() {
                                     goal.then(|| {
                                         div()
                                             .text_color(theme::faint())

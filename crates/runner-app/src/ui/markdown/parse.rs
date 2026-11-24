@@ -7,15 +7,45 @@ use super::{Block, Cell, CodeBlock, ImageRef, Inline, InlineStyle, ListItem, Pie
 use crate::surfaces::files::document::Document;
 use crate::surfaces::files::highlight;
 
-pub(super) fn parse_document_blocks(text: &str, path: &str) -> Vec<Block> {
+struct ParseConfig<'p> {
+    /// The Markdown file's path from the workspace root, for local images.
+    /// `None` in Compact mode, where images render as alt text without disk access.
+    path: Option<&'p str>,
+    highlight_code: bool,
+    soft_break_as_newline: bool,
+}
+
+fn parse_blocks(text: &str, config: ParseConfig<'_>) -> Vec<Block> {
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
     let mut parser = Parser {
         events: bounded(pulldown_cmark::Parser::new_ext(text, options)),
         at: 0,
-        path,
+        config,
     };
     parser.blocks(None)
+}
+
+pub(super) fn parse_document_blocks(text: &str, path: &str) -> Vec<Block> {
+    parse_blocks(
+        text,
+        ParseConfig {
+            path: Some(path),
+            highlight_code: true,
+            soft_break_as_newline: false,
+        },
+    )
+}
+
+pub(super) fn parse_compact_blocks(text: &str) -> Vec<Block> {
+    parse_blocks(
+        text,
+        ParseConfig {
+            path: None,
+            highlight_code: false,
+            soft_break_as_newline: true,
+        },
+    )
 }
 
 /// `events` with the quotes, lists and items below [`MAX_NESTING`] taken away:
@@ -67,8 +97,7 @@ fn bounded<'a>(events: impl Iterator<Item = Event<'a>>) -> Vec<Event<'a>> {
 struct Parser<'a, 'p> {
     events: Vec<Event<'a>>,
     at: usize,
-    /// The Markdown file's path from the root, for its images.
-    path: &'p str,
+    config: ParseConfig<'p>,
 }
 
 impl<'a> Parser<'a, '_> {
@@ -85,6 +114,8 @@ impl<'a> Parser<'a, '_> {
     /// Blocks until `end`, or to the end of the document.
     fn blocks(&mut self, end: Option<TagEnd>) -> Vec<Block> {
         let mut blocks = Vec::new();
+        let allow_images = self.config.path.is_some();
+        let soft_break_newline = self.config.soft_break_as_newline;
         while let Some(event) = self.peek() {
             match event {
                 Event::End(tag) if Some(*tag) == end => {
@@ -93,7 +124,8 @@ impl<'a> Parser<'a, '_> {
                 }
                 Event::Start(Tag::Paragraph) => {
                     self.at += 1;
-                    let pieces = self.inline(Some(TagEnd::Paragraph), true);
+                    let pieces =
+                        self.inline(Some(TagEnd::Paragraph), allow_images, soft_break_newline);
                     push_pieces(&mut blocks, pieces);
                 }
                 Event::Start(Tag::Heading { .. }) => {
@@ -105,7 +137,7 @@ impl<'a> Parser<'a, '_> {
                         TagEnd::Heading(level) => level as u8,
                         _ => unreachable!(),
                     };
-                    let text = flatten_inline(self.inline(Some(end), false));
+                    let text = flatten_inline(self.inline(Some(end), false, false));
                     blocks.push(Block::Heading(level, text));
                 }
                 Event::Start(Tag::BlockQuote(_)) => {
@@ -135,10 +167,14 @@ impl<'a> Parser<'a, '_> {
                     }
                     let document =
                         Document::decode(text.strip_suffix('\n').unwrap_or(&text).as_bytes());
-                    let highlights = language
-                        .as_deref()
-                        .and_then(highlight::grammar_named)
-                        .and_then(|grammar| highlight::highlight(&document, grammar, None));
+                    let highlights = if self.config.highlight_code {
+                        language
+                            .as_deref()
+                            .and_then(highlight::grammar_named)
+                            .and_then(|grammar| highlight::highlight(&document, grammar, None))
+                    } else {
+                        None
+                    };
                     blocks.push(Block::Code(Arc::new(CodeBlock {
                         document,
                         highlights,
@@ -170,7 +206,8 @@ impl<'a> Parser<'a, '_> {
                     while let Some(event) = self.next() {
                         match event {
                             Event::Start(Tag::TableCell) => {
-                                let mut cell = self.inline(Some(TagEnd::TableCell), true);
+                                let mut cell =
+                                    self.inline(Some(TagEnd::TableCell), allow_images, false);
                                 cell.retain(
                                     |piece| !matches!(piece, Piece::Text(text) if text.is_blank()),
                                 );
@@ -210,7 +247,7 @@ impl<'a> Parser<'a, '_> {
                 }
                 _ => {
                     // Text straight inside a tight list's item.
-                    let pieces = self.inline(None, true);
+                    let pieces = self.inline(None, allow_images, soft_break_newline);
                     push_pieces(&mut blocks, pieces);
                 }
             }
@@ -229,7 +266,9 @@ impl<'a> Parser<'a, '_> {
             }
             (Some(Event::Start(Tag::Paragraph)), Some(Event::TaskListMarker(checked))) => {
                 let checked = *checked;
-                self.events.remove(self.at + 1);
+                // Swap in place and advance so loose checklists stay O(n) instead of O(n²).
+                self.events.swap(self.at, self.at + 1);
+                self.at += 1;
                 Some(checked)
             }
             _ => None,
@@ -239,12 +278,17 @@ impl<'a> Parser<'a, '_> {
     /// Inline content until `end`, or, with none, until the next block.
     /// With `images`, a local image becomes a piece of its own, linked when
     /// it sits in a link; without, it shows its alt text.
-    fn inline(&mut self, end: Option<TagEnd>, images: bool) -> Vec<Piece> {
+    fn inline(
+        &mut self,
+        end: Option<TagEnd>,
+        images: bool,
+        soft_break_as_newline: bool,
+    ) -> Vec<Piece> {
         let mut pieces = Vec::new();
         let mut current = Inline::default();
         let mut style = InlineStyle::default();
         let mut styles: Vec<InlineStyle> = Vec::new();
-        let mut links: Vec<(usize, String)> = Vec::new();
+        let mut links: Vec<(usize, Arc<str>)> = Vec::new();
         while let Some(event) = self.peek() {
             if end.is_none() && !is_inline(event) {
                 break;
@@ -266,7 +310,9 @@ impl<'a> Parser<'a, '_> {
                 Event::InlineMath(text) => current.push(&format!("${text}$"), style),
                 Event::DisplayMath(text) => current.push(&format!("$${text}$$"), style),
                 Event::FootnoteReference(name) => current.push(&format!("[^{name}]"), style),
-                Event::SoftBreak => current.push(" ", style),
+                Event::SoftBreak => {
+                    current.push(if soft_break_as_newline { "\n" } else { " " }, style)
+                }
                 Event::HardBreak => current.push("\n", style),
                 Event::TaskListMarker(checked) => {
                     current.push(if checked { "[x] " } else { "[ ] " }, style)
@@ -286,7 +332,7 @@ impl<'a> Parser<'a, '_> {
                 Event::Start(Tag::Link { dest_url, .. }) => {
                     styles.push(style);
                     style.link = true;
-                    links.push((current.text.len(), dest_url.into_string()));
+                    links.push((current.text.len(), Arc::from(dest_url.as_ref())));
                 }
                 Event::End(TagEnd::Link) => {
                     style = styles.pop().unwrap_or_default();
@@ -312,15 +358,15 @@ impl<'a> Parser<'a, '_> {
                             _ => {}
                         }
                     }
-                    match route(&dest_url, self.path) {
-                        LinkTarget::File(path) if images => {
+                    match self.config.path.map(|from| route(&dest_url, from)) {
+                        Some(LinkTarget::File(path)) if images => {
                             // The text so far keeps its part of the open links,
                             // whose text resumes after the image.
                             for (start, url) in &mut links {
                                 if current.text.len() > *start {
                                     current
                                         .links
-                                        .push((*start..current.text.len(), url.clone()));
+                                        .push((*start..current.text.len(), Arc::clone(url)));
                                 }
                                 *start = 0;
                             }
@@ -331,7 +377,7 @@ impl<'a> Parser<'a, '_> {
                             pieces.push(Piece::Image(ImageRef {
                                 path,
                                 alt,
-                                link: links.last().map(|(_, url)| url.clone()),
+                                link: links.last().map(|(_, url)| Arc::clone(url)),
                             }));
                         }
                         _ => current.push(&alt, style),

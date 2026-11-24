@@ -12,8 +12,8 @@ use gpui::{
 };
 use runner_app::ui::{focus_ring, TextField};
 
-use crate::surfaces::mission_markdown::render_markdown;
 use crate::theme;
+use crate::ui::markdown::render_compact;
 
 /// The profile column's width: the picture, name, setup and short lists.
 pub(crate) const PROFILE_COLUMN_WIDTH: f32 = 272.;
@@ -340,15 +340,7 @@ pub(crate) fn clamped_markdown(
                 .min_w(px(0.))
                 .text_size(theme::text_body())
                 .text_color(theme::text())
-                .child(render_markdown(
-                    id,
-                    &crate::surfaces::mission_markdown::parse_blocks(shown),
-                    view,
-                    None,
-                    theme::accent(),
-                    None,
-                    cx,
-                ))
+                .child(render_compact(id, shown, view, cx))
                 .when(clamped, |text| {
                     text.child(
                         div()
@@ -445,15 +437,7 @@ pub(crate) fn markdown_editor_body(
                     .child(crate::i18n::text("ui.nothing_to_preview"))
                     .into_any_element()
             } else {
-                render_markdown(
-                    id,
-                    &crate::surfaces::mission_markdown::parse_blocks(&draft),
-                    view,
-                    None,
-                    theme::accent(),
-                    None,
-                    cx,
-                )
+                render_compact(id, &draft, view, cx)
             })
             .into_any_element()
     } else {

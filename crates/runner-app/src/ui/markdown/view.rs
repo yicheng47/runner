@@ -1,14 +1,15 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, px, App, Context, FocusHandle, ListAlignment, ListOffset, ListState, Pixels, SharedString,
-    Window,
+    canvas, div, px, App, Bounds, Context, DispatchPhase, FocusHandle, ListAlignment, ListOffset,
+    ListState, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Window,
 };
 
-use super::draw::{Draw, Look, MARGIN};
+use super::draw::{ClickGuard, Draw, Look, Surface, MARGIN};
 use super::layout::selected_range;
 use super::links::LinkTarget;
 use super::Page;
@@ -41,10 +42,7 @@ pub(crate) struct MarkdownView {
     /// The anchor and the head, which moves.
     selection: Option<(Position, Position)>,
     dragging: bool,
-    /// Where the left button went down in the page, and whether it has
-    /// moved since: a press that moved was a drag, which opens no link.
-    press: Option<gpui::Point<Pixels>>,
-    pressed_moved: bool,
+    click_guard: ClickGuard,
     /// The file was deleted: the page is dimmed and its links do nothing.
     deleted: bool,
 }
@@ -66,8 +64,7 @@ impl MarkdownView {
             open_link: None,
             selection: None,
             dragging: false,
-            press: None,
-            pressed_moved: false,
+            click_guard: ClickGuard::default(),
             deleted: false,
         }
     }
@@ -127,21 +124,7 @@ impl MarkdownView {
     /// whole, its cells joined by tabs.
     pub(crate) fn selected_text(&self) -> Option<String> {
         let (anchor, head) = self.selection?;
-        let (start, end) = (anchor.min(head), anchor.max(head));
-        if start == end {
-            return None;
-        }
-        let mut copied = String::new();
-        for row in start.row..=end.row.min(self.page.rows.len().saturating_sub(1)) {
-            let line = &self.page.rows[row];
-            let text = line.text();
-            let range = selected_range(line, row, start, end, text.len());
-            if row > start.row && !line.continues() {
-                copied.push('\n');
-            }
-            copied.push_str(&text[range]);
-        }
-        Some(copied)
+        self.page.selected_text(anchor, head)
     }
 
     pub(crate) fn select(&mut self, anchor: Position, head: Position, cx: &mut Context<Self>) {
@@ -181,12 +164,6 @@ impl MarkdownView {
         self.selection = Some((anchor, at));
         self.dragging = true;
         cx.notify();
-    }
-
-    /// Whether the press now ending moved: a click on a link then opens
-    /// nothing, as the press was a drag.
-    fn press_moved(&self) -> bool {
-        self.pressed_moved
     }
 
     pub(super) fn drag_to(&mut self, at: Position, cx: &mut Context<Self>) {
@@ -238,12 +215,11 @@ fn same_images(
         })
 }
 
-/// Whether the press that ends in a click moved, as a drag that selects
-/// does, so the link under it opens nothing; a selection left from an
-/// earlier press does not count.
-pub(super) fn dragged(view: &gpui::WeakEntity<MarkdownView>, cx: &App) -> bool {
+/// Whether the press ending now was a genuine primary click without drag or
+/// displacement, so a link under it may open.
+pub(super) fn document_allows_click(view: &gpui::WeakEntity<MarkdownView>, cx: &App) -> bool {
     view.upgrade()
-        .is_some_and(|view| view.read(cx).press_moved())
+        .is_some_and(|view| view.read(cx).click_guard.allows_click())
 }
 
 impl Render for MarkdownView {
@@ -256,8 +232,36 @@ impl Render for MarkdownView {
         let selection = self.selection;
         let view = cx.weak_entity();
         let count = page.rows.len();
+        let bounds_cell = Rc::new(Cell::new(Bounds::<Pixels>::default()));
+        let down_bounds = Rc::clone(&bounds_cell);
+        let paint_bounds = Rc::clone(&bounds_cell);
+        let move_view = view.clone();
+        let exit_view = view.clone();
+        let tracker = canvas(
+            move |bounds, _, _| paint_bounds.set(bounds),
+            move |_, _, window, _| {
+                let move_view = move_view.clone();
+                let exit_view = exit_view.clone();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = move_view.update(cx, |view, _| {
+                            view.click_guard
+                                .on_mouse_move(event.position, event.pressed_button);
+                        });
+                    }
+                });
+                window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Capture {
+                        let _ = exit_view.update(cx, |view, _| view.click_guard.on_mouse_exit());
+                    }
+                });
+            },
+        )
+        .absolute()
+        .inset_0();
         div()
             .id("file-markdown")
+            .relative()
             .when(cfg!(test), |element| {
                 element.debug_selector(|| "FILE_MARKDOWN".into())
             })
@@ -265,25 +269,14 @@ impl Render for MarkdownView {
             .size_full()
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::select_all))
-            .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|view, event: &gpui::MouseDownEvent, _, _| {
-                    view.press = Some(event.position);
-                    view.pressed_moved = false;
+            .capture_any_mouse_down(
+                cx.listener(move |view, event: &gpui::MouseDownEvent, _, _| {
+                    view.click_guard
+                        .on_mouse_down(event.button, event.position, down_bounds.get());
                 }),
             )
-            .on_mouse_move(cx.listener(|view, event: &gpui::MouseMoveEvent, _, _| {
-                let Some(press) = view.press else {
-                    return;
-                };
-                if event.pressed_button != Some(gpui::MouseButton::Left) {
-                    view.press = None;
-                    return;
-                }
-                let moved = event.position - press;
-                if moved.x.abs() > px(2.) || moved.y.abs() > px(2.) {
-                    view.pressed_moved = true;
-                }
+            .capture_any_mouse_up(cx.listener(|view, event: &gpui::MouseUpEvent, _, _| {
+                view.click_guard.on_mouse_up(event.button, event.position);
             }))
             .on_mouse_up(
                 gpui::MouseButton::Left,
@@ -291,7 +284,10 @@ impl Render for MarkdownView {
             )
             .on_mouse_up_out(
                 gpui::MouseButton::Left,
-                cx.listener(|view, _, _, _| view.dragging = false),
+                cx.listener(|view, _, _, _| {
+                    view.dragging = false;
+                    view.click_guard.reset();
+                }),
             )
             .when(self.deleted, |element| element.opacity(0.5))
             .child(
@@ -303,25 +299,28 @@ impl Render for MarkdownView {
                     let selected = match selection {
                         Some((anchor, head)) => {
                             let (start, end) = (anchor.min(head), anchor.max(head));
-                            let len = if (start.row..=end.row).contains(&index) {
-                                row.text().len()
+                            if (start.row..=end.row).contains(&index) {
+                                let text = row.text();
+                                selected_range(row, index, start, end, &text)
                             } else {
-                                0
-                            };
-                            selected_range(row, index, start, end, len)
+                                0..0
+                            }
                         }
                         None => 0..0,
                     };
+                    let top = if index == 0 { 0. } else { row.top };
                     let draw = Draw {
-                        look: &look,
-                        images: &images,
-                        from: &path,
-                        open_link: open_link.clone(),
-                        view: view.clone(),
+                        surface: Surface::Document {
+                            look: &look,
+                            images: &images,
+                            from: &path,
+                            open_link: open_link.clone(),
+                            view: view.clone(),
+                            top,
+                        },
                         index,
                         selected,
                     };
-                    let top = if index == 0 { 0. } else { row.top };
                     div()
                         .when(cfg!(test), move |element| {
                             element.debug_selector(move || format!("FILE_MD_ROW {index}"))
@@ -329,10 +328,11 @@ impl Render for MarkdownView {
                         .px(px(MARGIN))
                         .when(index == 0, |element| element.pt(px(MARGIN - 4.)))
                         .when(index + 1 == count, |element| element.pb(px(MARGIN * 2.)))
-                        .child(draw.row(row, top))
+                        .child(draw.row(row))
                         .into_any_element()
                 })
                 .size_full(),
             )
+            .child(tracker)
     }
 }
