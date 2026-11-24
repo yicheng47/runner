@@ -216,7 +216,7 @@ impl NativeRoot {
             return;
         }
         if self.route == AppRoute::ArchivedChat {
-            if self.chat_panel_maximized || self.chat_panel_contains_focus(window, cx) {
+            if self.side_panel.maximized || self.chat_panel_contains_focus(window, cx) {
                 self.toggle_chat_panel_maximized(window, cx);
             }
             return;
@@ -225,7 +225,7 @@ impl NativeRoot {
             return;
         }
         if self.remote_client.is_local()
-            && (self.chat_panel_maximized || self.chat_panel_contains_focus(window, cx))
+            && (self.side_panel.maximized || self.chat_panel_contains_focus(window, cx))
         {
             let surface = side_panel_surface(self.active_tab_is_terminal(cx));
             if !start_surface_visible(self.tabs.active())
@@ -342,11 +342,9 @@ impl NativeRoot {
     }
 
     pub(crate) fn finish_chat_panel_resize(&mut self, cx: &mut Context<Self>) {
-        if !self.chat_panel_resizing {
-            return;
+        if self.side_panel.finish_resize() {
+            cx.notify();
         }
-        self.chat_panel_resizing = false;
-        cx.notify();
     }
 
     pub(crate) fn finish_split_resize(&mut self, cx: &mut Context<Self>) {

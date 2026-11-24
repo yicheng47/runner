@@ -614,7 +614,7 @@ impl NativeRoot {
                 self.remote_client
                     .remember_panel_chat(tab_id, session.clone());
             } else {
-                self.panel_chat_by_tab.insert(tab_id, session.clone());
+                self.side_panel.remember_chat(tab_id, session.clone());
             }
         }
         Some(session)
@@ -645,7 +645,7 @@ impl NativeRoot {
         let remembered = if self.remote_client.is_active() {
             self.remote_client.panel_chat_for(&layout.id)
         } else {
-            self.panel_chat_by_tab.get(&layout.id)
+            self.side_panel.remembered_chat(&layout.id)
         };
         remembered
             .filter(|id| chats.contains(id))

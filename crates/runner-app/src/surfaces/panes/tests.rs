@@ -1177,7 +1177,7 @@ fn side_panel_keeps_the_last_focused_chat_while_a_split_terminal_has_focus() {
         visual.run_until_parked();
         host.read_with(visual, |root, _| {
             (
-                root.chat_panel_visibility.target,
+                root.side_panel.visibility.target,
                 root.active_chat_detail
                     .as_ref()
                     .map(|detail| detail.session_id.clone()),
@@ -1329,7 +1329,8 @@ fn a_hovered_link_names_the_panel_its_own_pane_will_show() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while host
         .read_with(&visual, |root, cx| {
-            root.chat_files
+            root.side_panel
+                .files
                 .view(&subject)
                 .and_then(|view| view.read(cx).active_tab(cx))
         })
@@ -1400,7 +1401,7 @@ fn open_chat_panel(
 ) {
     host.update(visual, |root, _, cx| {
         root.set_chat_panel_open(true, cx);
-        root.chat_panel_visibility = crate::surfaces::root::SidebarVisibilityTransition::new(true);
+        root.side_panel.visibility = crate::surfaces::root::SidebarVisibilityTransition::new(true);
     })
     .unwrap();
     visual.run_until_parked();
@@ -1462,9 +1463,9 @@ fn double_clicking_the_panel_collapse_control_does_not_zoom_the_window() {
     host.update(&mut visual, |root, _, cx| {
         // Hold the collapse halfway, where a real double-click's second
         // press lands while the panel is still shrinking.
-        root.chat_panel_visibility.start = 0.5;
-        root.chat_panel_visibility.target = 0.;
-        root.chat_panel_visibility.started_at =
+        root.side_panel.visibility.start = 0.5;
+        root.side_panel.visibility.target = 0.;
+        root.side_panel.visibility.started_at =
             Some(std::time::Instant::now() + std::time::Duration::from_secs(3600));
         cx.notify();
     })
@@ -1489,7 +1490,7 @@ fn chat_surfaces(
     host: &gpui::WindowHandle<crate::NativeRoot>,
     visual: &mut gpui::VisualTestContext,
 ) -> crate::surfaces::side_panel::PanelSelection {
-    host.read_with(visual, |root, _| root.chat_surfaces.selection)
+    host.read_with(visual, |root, _| root.side_panel.surfaces.selection)
         .unwrap()
 }
 
@@ -1626,7 +1627,7 @@ fn a_new_chat_starts_collapsed_and_opens_on_files_project_tree() {
 
     let (_temp, _cx, store, host, mut visual) = panel_root("direct-agent");
     host.update(&mut visual, |root, window, cx| {
-        root.chat_surfaces.select(PanelViewId::Changes);
+        root.side_panel.surfaces.select(PanelViewId::Changes);
         root.finish_local_chat_launch(
             Some("direct-agent".into()),
             Ok(ChatLaunched {
@@ -1719,7 +1720,7 @@ fn a_file_link_opens_in_the_panel_preview_of_a_chat_or_a_terminal_tab() {
         // A terminal tab showed its Files view before the root was saved.
         host.update(&mut visual, |root, _, cx| {
             root.set_chat_panel_open(false, cx);
-            root.chat_files.release(cx);
+            root.side_panel.files.release(cx);
             assert!(!root.chat_panel_is_open(cx));
         })
         .unwrap();
@@ -1759,7 +1760,8 @@ fn a_file_link_opens_in_the_panel_preview_of_a_chat_or_a_terminal_tab() {
         let subject = PanelSubject::Session(session.into());
         wait(&mut visual, &|visual| {
             host.read_with(visual, |root, cx| {
-                root.chat_files
+                root.side_panel
+                    .files
                     .view(&subject)
                     .and_then(|view| view.read(cx).active_tab(cx))
                     == Some("lib.rs".into())
@@ -1820,7 +1822,7 @@ fn search_files_opens_the_collapsed_panel_on_files_and_its_finder() {
     visual.run_until_parked();
     host.update(&mut visual, |root, _, cx| {
         root.set_chat_panel_open(false, cx);
-        root.chat_files.release(cx);
+        root.side_panel.files.release(cx);
         assert!(!root.chat_panel_is_open(cx));
     })
     .unwrap();
@@ -1998,7 +2000,7 @@ fn terminal_tab_panel_holds_files_and_changes_and_keeps_its_own_panel_state() {
     .unwrap();
     visual.run_until_parked();
     assert_eq!(
-        host.read_with(&visual, |root, _| root.chat_panel_visibility.target)
+        host.read_with(&visual, |root, _| root.side_panel.visibility.target)
             .unwrap(),
         0.
     );
@@ -2021,7 +2023,7 @@ fn chat_tabs_restore_their_surfaces_open_state_and_file_after_a_delayed_link() {
             ).unwrap();
             store.refresh(crate::app_store::StoreRefreshKind::All, cx);
         });
-    host.update(&mut visual, |root, _, cx| root.chat_files.release(cx))
+    host.update(&mut visual, |root, _, cx| root.side_panel.files.release(cx))
         .unwrap();
     visual.run_until_parked();
     let switch = |session: &str, visual: &mut gpui::VisualTestContext| {
@@ -2039,7 +2041,7 @@ fn chat_tabs_restore_their_surfaces_open_state_and_file_after_a_delayed_link() {
         .unwrap());
     open_chat_panel(&host, &mut visual);
     host.update(&mut visual, |root, _, cx| {
-        root.chat_surfaces.select(PanelViewId::Changes);
+        root.side_panel.surfaces.select(PanelViewId::Changes);
         cx.notify();
     })
     .unwrap();
@@ -2064,7 +2066,8 @@ fn chat_tabs_restore_their_surfaces_open_state_and_file_after_a_delayed_link() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while !host
         .read_with(&visual, |root, cx| {
-            root.chat_files
+            root.side_panel
+                .files
                 .view(&subject)
                 .and_then(|view| view.read(cx).active_tab(cx))
                 == Some("lib.rs".into())
@@ -2101,7 +2104,7 @@ fn chat_tabs_restore_their_surfaces_open_state_and_file_after_a_delayed_link() {
             .widened
             .is_some());
         assert!(
-            root.chat_panel_visibility.started_at.is_none(),
+            root.side_panel.visibility.started_at.is_none(),
             "switching tabs does not animate"
         );
     })
@@ -2136,7 +2139,10 @@ fn chat_tabs_restore_their_surfaces_open_state_and_file_after_a_delayed_link() {
             !root.chat_panel_is_open(cx),
             "a newly launched chat must start with its side panel collapsed"
         );
-        assert_eq!(root.chat_surfaces.selection, PanelSelection::default());
+        assert_eq!(
+            root.side_panel.surfaces.selection,
+            PanelSelection::default()
+        );
     })
     .unwrap();
     switch("direct-agent", &mut visual);
@@ -2177,7 +2183,7 @@ fn settings_remove_the_chat_panel_and_its_toggle() {
         })
         .unwrap();
         visual.run_until_parked();
-        host.read_with(visual, |root, _| root.chat_panel_visibility.target)
+        host.read_with(visual, |root, _| root.side_panel.visibility.target)
             .unwrap()
     };
     assert!(visual.debug_bounds("CHAT_SIDE_PANEL").is_none());
@@ -2213,7 +2219,7 @@ fn settings_remove_the_chat_panel_and_its_toggle() {
     .unwrap();
     visual.run_until_parked();
     assert_eq!(
-        host.read_with(&visual, |root, _| root.chat_panel_visibility.target)
+        host.read_with(&visual, |root, _| root.side_panel.visibility.target)
             .unwrap(),
         0.
     );
@@ -2273,7 +2279,7 @@ fn cached_chat_header_spans_the_chat_column_with_or_without_the_side_panel() {
                 root.route = AppRoute::Chat;
                 root.sync_active_chat_detail(cx);
                 root.set_chat_panel_open(panel_open, cx);
-                root.chat_panel_visibility =
+                root.side_panel.visibility =
                     crate::surfaces::root::SidebarVisibilityTransition::new(panel_open);
                 root
             });
@@ -2435,7 +2441,7 @@ fn claude_header_preserves_account_spacing_and_controls_in_narrow_panes() {
         root.route = crate::AppRoute::Chat;
         root.sync_active_chat_detail(cx);
         root.set_chat_panel_open(false, cx);
-        root.chat_panel_visibility = crate::surfaces::root::SidebarVisibilityTransition::new(false);
+        root.side_panel.visibility = crate::surfaces::root::SidebarVisibilityTransition::new(false);
         root
     });
     let mut visual = gpui::VisualTestContext::from_window(host.into(), &cx);
@@ -2486,7 +2492,7 @@ fn claude_header_preserves_account_spacing_and_controls_in_narrow_panes() {
             true
         });
         root.set_chat_panel_open(false, cx);
-        root.chat_panel_visibility = crate::surfaces::root::SidebarVisibilityTransition::new(false);
+        root.side_panel.visibility = crate::surfaces::root::SidebarVisibilityTransition::new(false);
     })
     .unwrap();
     visual.simulate_resize(size(px((240. + sidebar_width + 14.) * 1.3), px(900.)));
@@ -3776,13 +3782,13 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
     // pane maximize and side-panel maximize coexist in the same tab.
     let right_pane = host
         .update(&mut visual, |root, _, cx| {
-            root.chat_files.release(cx);
+            root.side_panel.files.release(cx);
             let layout = root.tabs.active_mut().unwrap();
             let right = layout.split("p1", SplitOrientation::Row).unwrap();
             layout.assign_session(&right, "busy-shell").unwrap();
             assert!(layout.focus_pane("p1"));
             root.sync_active_chat_detail(cx);
-            root.chat_surfaces.select(PanelViewId::Files);
+            root.side_panel.surfaces.select(PanelViewId::Files);
             cx.notify();
             right
         })
@@ -3807,7 +3813,7 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
     assert_eq!(
         host.read_with(&visual, |root, _| {
             (
-                root.chat_panel_maximized,
+                root.side_panel.maximized,
                 root.maximized_panes.values().cloned().collect::<Vec<_>>(),
             )
         })
@@ -3846,8 +3852,8 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
         v.debug_bounds("FILE_CODE").is_some()
             && host
                 .read_with(v, |r, _| {
-                    r.chat_sheet_anim.started_at.is_none()
-                        && r.chat_panel_width_anim.started_at.is_none()
+                    r.side_panel.sheet_anim.started_at.is_none()
+                        && r.side_panel.width_anim.started_at.is_none()
                 })
                 .unwrap()
     });
@@ -3857,7 +3863,7 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
     let unmax_panel_width = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap().size.width;
     click_selector(&mut visual, "SIDE_PANEL_MAXIMIZE");
     assert!(host
-        .read_with(&visual, |root, _| root.chat_panel_maximized)
+        .read_with(&visual, |root, _| root.side_panel.maximized)
         .unwrap());
     assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE active").is_some());
     assert!(visual.debug_bounds("PANE_ISLAND:p1").is_none());
@@ -3876,7 +3882,7 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
     .unwrap();
     visual.run_until_parked();
     assert!(!host
-        .read_with(&visual, |root, _| root.chat_panel_maximized)
+        .read_with(&visual, |root, _| root.side_panel.maximized)
         .unwrap());
     assert!(visual.debug_bounds("PANE_ISLAND:p1").is_some());
     assert!(visual.debug_bounds(right_selector).is_some());
@@ -3895,7 +3901,7 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
     visual.run_until_parked();
     assert_eq!(
         host.read_with(&visual, |root, _| {
-            (root.chat_panel_maximized, root.maximized_panes.is_empty())
+            (root.side_panel.maximized, root.maximized_panes.is_empty())
         })
         .unwrap(),
         (true, true)
@@ -3904,7 +3910,7 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
     // 5. Closing the last file tab while maximized shrinks back and exits maximize.
     click_selector(&mut visual, "FILE_TAB_CLOSE lib.rs");
     assert!(!host
-        .read_with(&visual, |root, _| root.chat_panel_maximized)
+        .read_with(&visual, |root, _| root.side_panel.maximized)
         .unwrap());
     assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE").is_none());
 
@@ -3926,7 +3932,7 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
         root
     });
     let restarted_max = restarted
-        .read_with(&cx, |root, _| root.chat_panel_maximized)
+        .read_with(&cx, |root, _| root.side_panel.maximized)
         .unwrap();
     assert!(
         !restarted_max,
@@ -4004,7 +4010,7 @@ fn chat_panel_progressively_widens_on_file_or_diff_and_shrinks_back_to_300px() {
     });
     visual.run_until_parked();
     host.update(&mut visual, |root, _, cx| {
-        root.chat_files.release(cx);
+        root.side_panel.files.release(cx);
         root.sync_active_chat_detail(cx);
         cx.notify();
     })
@@ -4035,7 +4041,7 @@ fn chat_panel_progressively_widens_on_file_or_diff_and_shrinks_back_to_300px() {
             && v.debug_bounds("CHAT_SIDE_PANEL")
                 .is_some_and(|b| (f32::from(b.size.width) - 300.).abs() <= 1.)
             && host
-                .read_with(v, |r, _| r.chat_panel_visibility.started_at.is_none())
+                .read_with(v, |r, _| r.side_panel.visibility.started_at.is_none())
                 .unwrap()
     });
     assert!((panel_width(&mut visual) - 300.).abs() <= 1.);
@@ -4058,7 +4064,7 @@ fn chat_panel_progressively_widens_on_file_or_diff_and_shrinks_back_to_300px() {
             && v.debug_bounds("FILE_TAB_PREVIEW lib.rs").is_some()
             && (panel_width(v) - 700.).abs() <= 0.5
             && host
-                .read_with(v, |r, _| r.chat_panel_width_anim.started_at.is_none())
+                .read_with(v, |r, _| r.side_panel.width_anim.started_at.is_none())
                 .unwrap()
     });
     assert!(visual.debug_bounds("SIDE_PANEL_MAXIMIZE").is_some());
@@ -4131,7 +4137,7 @@ fn chat_panel_progressively_widens_on_file_or_diff_and_shrinks_back_to_300px() {
     wait(&mut visual, "showing rail widens back to 740 px", &|v| {
         (panel_width(v) - 740.).abs() <= 0.5
             && host
-                .read_with(v, |r, _| r.chat_panel_width_anim.started_at.is_none())
+                .read_with(v, |r, _| r.side_panel.width_anim.started_at.is_none())
                 .unwrap()
     });
 
@@ -4605,7 +4611,7 @@ fn per_tab_isolation_dirty_dot_narrow_sheet_split_auto_sheet_and_following_badge
             && v.debug_bounds("CHAT_SIDE_PANEL")
                 .is_some_and(|b| (f32::from(b.size.width) - 300.).abs() <= 1.)
             && host
-                .read_with(v, |r, _| r.chat_panel_visibility.started_at.is_none())
+                .read_with(v, |r, _| r.side_panel.visibility.started_at.is_none())
                 .unwrap()
     });
     assert!(visual.debug_bounds("FILES_FOLLOWING_BADGE").is_none());
@@ -4667,7 +4673,8 @@ fn per_tab_isolation_dirty_dot_narrow_sheet_split_auto_sheet_and_following_badge
     wait(&mut visual, "clean tab opens docked at 300 px", &|v| {
         let clean_status_arrived = host
             .read_with(v, |root, cx| {
-                root.chat_files
+                root.side_panel
+                    .files
                     .view(&crate::surfaces::side_panel::PanelSubject::Session(
                         "tab-clean".into(),
                     ))
@@ -4681,7 +4688,7 @@ fn per_tab_isolation_dirty_dot_narrow_sheet_split_auto_sheet_and_following_badge
             && v.debug_bounds("CHAT_SIDE_PANEL")
                 .is_some_and(|b| (f32::from(b.size.width) - 300.).abs() <= 1.)
             && host
-                .read_with(v, |r, _| r.chat_panel_visibility.started_at.is_none())
+                .read_with(v, |r, _| r.side_panel.visibility.started_at.is_none())
                 .unwrap()
     });
     assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_none());
@@ -4697,7 +4704,7 @@ fn per_tab_isolation_dirty_dot_narrow_sheet_split_auto_sheet_and_following_badge
     assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_none());
     host.update(&mut visual, |root, _, cx| {
         root.set_chat_panel_open(false, cx);
-        root.chat_panel_visibility = crate::surfaces::root::SidebarVisibilityTransition::new(false);
+        root.side_panel.visibility = crate::surfaces::root::SidebarVisibilityTransition::new(false);
     })
     .unwrap();
     visual.run_until_parked();
@@ -4724,7 +4731,7 @@ fn per_tab_isolation_dirty_dot_narrow_sheet_split_auto_sheet_and_following_badge
     assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_some());
     host.update(&mut visual, |root, _, cx| {
         root.set_chat_panel_open(true, cx);
-        root.chat_panel_visibility = crate::surfaces::root::SidebarVisibilityTransition::new(true);
+        root.side_panel.visibility = crate::surfaces::root::SidebarVisibilityTransition::new(true);
     })
     .unwrap();
     visual.run_until_parked();
@@ -4824,7 +4831,7 @@ fn per_tab_isolation_dirty_dot_narrow_sheet_split_auto_sheet_and_following_badge
                 && v.debug_bounds("FILE_TAB_CLOSE lib.rs")
                     .is_some_and(|b| b.right() <= px(1120.))
                 && host
-                    .read_with(v, |root, _| root.chat_sheet_anim.started_at.is_none())
+                    .read_with(v, |root, _| root.side_panel.sheet_anim.started_at.is_none())
                     .unwrap()
         },
     );
@@ -4847,7 +4854,7 @@ fn per_tab_isolation_dirty_dot_narrow_sheet_split_auto_sheet_and_following_badge
         "closing last file tab in split auto-sheet must exit sheet immediately"
     );
     assert!(
-        host.read_with(&visual, |root, _| root.chat_panel_width_anim.started_at.is_none())
+        host.read_with(&visual, |root, _| root.side_panel.width_anim.started_at.is_none())
             .unwrap(),
         "exiting split auto-sheet back to docked 300 px must not animate from the 680 px sheet width"
     );
@@ -4887,7 +4894,7 @@ fn per_tab_isolation_dirty_dot_narrow_sheet_split_auto_sheet_and_following_badge
                 && v.debug_bounds("FILE_TAB_CLOSE lib.rs")
                     .is_some_and(|b| b.right() <= px(1120.))
                 && host
-                    .read_with(v, |root, _| root.chat_sheet_anim.started_at.is_none())
+                    .read_with(v, |root, _| root.side_panel.sheet_anim.started_at.is_none())
                     .unwrap()
         },
     );
@@ -4908,7 +4915,8 @@ fn per_tab_isolation_dirty_dot_narrow_sheet_split_auto_sheet_and_following_badge
     );
     assert!(
         host.read_with(&visual, |root, _| root
-            .chat_panel_width_anim
+            .side_panel
+            .width_anim
             .started_at
             .is_none())
             .unwrap(),
@@ -5373,7 +5381,7 @@ fn search_files_opens_finder_when_rail_is_hidden_and_in_narrow_sheet() {
         store.settings.sidebar_collapsed = true;
         store.refresh(crate::app_store::StoreRefreshKind::All, cx);
     });
-    host.update(&mut visual, |root, _, cx| root.chat_files.release(cx))
+    host.update(&mut visual, |root, _, cx| root.side_panel.files.release(cx))
         .unwrap();
     visual.run_until_parked();
 
@@ -5403,7 +5411,7 @@ fn search_files_opens_finder_when_rail_is_hidden_and_in_narrow_sheet() {
                 && v.debug_bounds("FILE_TAB_PINNED lib.rs").is_some()
                 && v.debug_bounds("FILES_TREE_COLUMN").is_some()
                 && host
-                    .read_with(v, |r, _| r.chat_panel_width_anim.started_at.is_none())
+                    .read_with(v, |r, _| r.side_panel.width_anim.started_at.is_none())
                     .unwrap()
         },
     );
@@ -5416,7 +5424,7 @@ fn search_files_opens_finder_when_rail_is_hidden_and_in_narrow_sheet() {
             v.debug_bounds("FILE_CODE").is_some()
                 && v.debug_bounds("FILES_TREE_COLUMN").is_none()
                 && host
-                    .read_with(v, |r, _| r.chat_panel_width_anim.started_at.is_none())
+                    .read_with(v, |r, _| r.side_panel.width_anim.started_at.is_none())
                     .unwrap()
         },
     );
@@ -5504,7 +5512,7 @@ fn an_open_file_and_its_tree_stay_inside_the_chat_panel_card() {
             .unwrap();
         store.refresh(crate::app_store::StoreRefreshKind::All, cx);
     });
-    host.update(&mut visual, |root, _, cx| root.chat_files.release(cx))
+    host.update(&mut visual, |root, _, cx| root.side_panel.files.release(cx))
         .unwrap();
     visual.run_until_parked();
     let wait = |visual: &mut gpui::VisualTestContext,
@@ -5528,7 +5536,7 @@ fn an_open_file_and_its_tree_stay_inside_the_chat_panel_card() {
         v.debug_bounds("FILE_CODE").is_some()
             && v.debug_bounds("FILES_TREE_COLUMN").is_some()
             && host
-                .read_with(v, |r, _| r.chat_panel_width_anim.started_at.is_none())
+                .read_with(v, |r, _| r.side_panel.width_anim.started_at.is_none())
                 .unwrap()
     });
 

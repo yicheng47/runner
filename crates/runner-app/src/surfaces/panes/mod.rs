@@ -44,7 +44,7 @@ use crate::surfaces::roles::logic::{role_setting_label, runtime_display_name};
 
 use runner_app::ui::RoleAvatar;
 
-use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, PanelSurface, PanelViewId};
+use crate::surfaces::side_panel::{self, PanelContext, PanelSubject, PanelSurface};
 
 const CHAT_PANEL_TRANSITION_MS: u64 = 200;
 

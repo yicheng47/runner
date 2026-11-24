@@ -480,7 +480,7 @@ impl NativeRoot {
             return;
         };
         let (pane_id, session_id) = &leaves[next];
-        self.chat_panel_maximized = false;
+        self.side_panel.maximized = false;
         if let Some(session_id) = session_id {
             self.focus_terminal(pane_id, session_id, window, cx);
         } else {

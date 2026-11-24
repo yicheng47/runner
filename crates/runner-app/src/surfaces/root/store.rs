@@ -65,12 +65,7 @@ impl NativeRoot {
         if revisions.settings != previous.settings {
             let settings = self.settings(cx).clone();
             if !settings.show_side_panel {
-                self.chat_panel_maximized = false;
-            }
-            for panel in self.chat_panels_by_tab.values_mut() {
-                if !settings.show_side_panel {
-                    panel.maximized = false;
-                }
+                self.side_panel.clear_all_maximized();
             }
             self.sync_role_page_size(cx);
             self.sync_crew_page_size(cx);
@@ -111,10 +106,7 @@ impl NativeRoot {
             }
             if store.daemon_disconnected {
                 self.maximized_panes.clear();
-                self.chat_panel_maximized = false;
-                for panel in self.chat_panels_by_tab.values_mut() {
-                    panel.maximized = false;
-                }
+                self.side_panel.clear_all_maximized();
                 self.toasts.dismiss();
             } else if store.daemon_notice.is_some() || store.error.is_none() {
                 self.chat_error = None;

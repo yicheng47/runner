@@ -2357,7 +2357,7 @@ fn project_trigger_is_inline_with_one_location_icon_and_keeps_its_menu() {
     harness.act(|root, window, cx| {
         root.start_chat_modal = None;
         root.set_route(AppRoute::Chat, cx);
-        root.chat_panel_visibility = SidebarVisibilityTransition::new(false);
+        root.side_panel.visibility = SidebarVisibilityTransition::new(false);
         root.core(cx)
             .project_create_checked(
                 "Zeta destination with a long project name and directory preview".into(),

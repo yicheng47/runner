@@ -1448,7 +1448,7 @@ fn remote_chat_info_shows_host_worktree_on_open_and_tracks_connection() {
     wait(&mut visual, "opened remote chat side panel", |v| {
         window
             .read_with(v, |root, cx| {
-                root.chat_panel_is_open(cx) && root.chat_panel_visibility.started_at.is_none()
+                root.chat_panel_is_open(cx) && root.side_panel.visibility.started_at.is_none()
             })
             .unwrap()
             && v.debug_bounds("PANEL_ACTIVITY Files active").is_some()
@@ -1723,7 +1723,7 @@ fn remote_panel_defaults_closed_isolates_from_open_archive_and_snaps_across_remo
     wait(&mut visual, "local archived chat panel opens", |v| {
         window
             .read_with(v, |root, cx| {
-                root.chat_panel_is_open(cx) && root.chat_panel_visibility.started_at.is_none()
+                root.chat_panel_is_open(cx) && root.side_panel.visibility.started_at.is_none()
             })
             .unwrap()
             && v.debug_bounds("PANEL_ACTIVITY Files active").is_some()
@@ -1746,9 +1746,9 @@ fn remote_panel_defaults_closed_isolates_from_open_archive_and_snaps_across_remo
             .read_with(&visual, |root, cx| (
                 root.route.clone(),
                 root.chat_panel_is_open(cx),
-                root.chat_panel_open,
-                root.chat_panel_visibility.target,
-                root.chat_panel_visibility.started_at.is_none(),
+                root.side_panel.open,
+                root.side_panel.visibility.target,
+                root.side_panel.visibility.started_at.is_none(),
             ))
             .unwrap(),
         (crate::AppRoute::ArchivedChat, false, Some(true), 0., true)
@@ -1767,8 +1767,8 @@ fn remote_panel_defaults_closed_isolates_from_open_archive_and_snaps_across_remo
                 root.sync_chat_panel(cx);
                 (
                     root.chat_panel_is_open(cx),
-                    root.chat_panel_visibility.target,
-                    root.chat_panel_open,
+                    root.side_panel.visibility.target,
+                    root.side_panel.open,
                 )
             })
             .unwrap(),
@@ -1777,7 +1777,7 @@ fn remote_panel_defaults_closed_isolates_from_open_archive_and_snaps_across_remo
     );
     wait(&mut visual, "remote tab A panel finishes opening", |v| {
         window
-            .read_with(v, |root, _| root.chat_panel_visibility.started_at.is_none())
+            .read_with(v, |root, _| root.side_panel.visibility.started_at.is_none())
             .unwrap()
             && v.debug_bounds("PANEL_ACTIVITY Files active").is_some()
             && v.debug_bounds("CHAT_SIDE_PANEL")
@@ -1800,8 +1800,8 @@ fn remote_panel_defaults_closed_isolates_from_open_archive_and_snaps_across_remo
         window
             .read_with(&visual, |root, cx| (
                 root.chat_panel_is_open(cx),
-                root.chat_panel_visibility.target,
-                root.chat_panel_visibility.started_at.is_none(),
+                root.side_panel.visibility.target,
+                root.side_panel.visibility.started_at.is_none(),
             ))
             .unwrap(),
         (false, 0., true),
@@ -1827,8 +1827,8 @@ fn remote_panel_defaults_closed_isolates_from_open_archive_and_snaps_across_remo
         window
             .read_with(&visual, |root, cx| (
                 root.chat_panel_is_open(cx),
-                root.chat_panel_visibility.target,
-                root.chat_panel_visibility.started_at.is_none(),
+                root.side_panel.visibility.target,
+                root.side_panel.visibility.started_at.is_none(),
             ))
             .unwrap(),
         (true, 1., true),
@@ -1848,8 +1848,8 @@ fn remote_panel_defaults_closed_isolates_from_open_archive_and_snaps_across_remo
                 root.sync_chat_panel(cx);
                 (
                     root.chat_panel_is_open(cx),
-                    root.chat_panel_visibility.target,
-                    root.chat_panel_open,
+                    root.side_panel.visibility.target,
+                    root.side_panel.open,
                 )
             })
             .unwrap(),
@@ -1858,7 +1858,7 @@ fn remote_panel_defaults_closed_isolates_from_open_archive_and_snaps_across_remo
     );
     wait(&mut visual, "remote tab A collapses", |v| {
         window
-            .read_with(v, |root, _| root.chat_panel_visibility.started_at.is_none())
+            .read_with(v, |root, _| root.side_panel.visibility.started_at.is_none())
             .unwrap()
             && v.debug_bounds("CHAT_SIDE_PANEL").is_none()
             && v.debug_bounds("CHAT_PANEL_TOGGLE").is_some()
@@ -1878,8 +1878,8 @@ fn remote_panel_defaults_closed_isolates_from_open_archive_and_snaps_across_remo
                 root.remote_client.is_local(),
                 root.route.clone(),
                 root.chat_panel_is_open(cx),
-                root.chat_panel_visibility.target,
-                root.chat_panel_visibility.started_at.is_none(),
+                root.side_panel.visibility.target,
+                root.side_panel.visibility.started_at.is_none(),
             ))
             .unwrap(),
         (true, crate::AppRoute::ArchivedChat, true, 1., true)

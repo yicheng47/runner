@@ -413,7 +413,7 @@ impl NativeRoot {
         }) else {
             return;
         };
-        self.chat_panel_maximized = false;
+        self.side_panel.maximized = false;
         self.focus_terminal(&pane_id, session_id, window, cx);
     }
 
