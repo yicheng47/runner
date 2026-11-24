@@ -1,6 +1,5 @@
 use super::archive::archive_session_plan;
 use super::archive::pane_close_after_archive;
-use super::archive::take_pending_pane_closes;
 use super::elements::chat_tab_row_active;
 use super::elements::command_held_alone;
 use super::elements::default_session_label_parts;
@@ -1202,20 +1201,21 @@ fn pane_close_after_archive_finds_the_emptied_leaf_by_tab_id() {
 
 #[test]
 fn pending_pane_closes_are_consumed_only_by_the_archive_that_attempted_them() {
-    let mut pending = HashMap::from([
-        ("a".to_owned(), pending_pane_close("tab", "p1")),
-        ("b".to_owned(), pending_pane_close("tab", "p2")),
-    ]);
+    let mut panes = crate::surfaces::panes::PaneState::default();
+    panes.track_pending_close("a".to_owned(), pending_pane_close("tab", "p1"));
+    panes.track_pending_close("b".to_owned(), pending_pane_close("tab", "p2"));
 
-    let closes = take_pending_pane_closes(&mut pending, &["b".into()], &["b".into()]);
+    let closes = panes.take_pending_closes(&["b".into()], &["b".into()]);
     assert_eq!(closes, [pending_pane_close("tab", "p2")]);
-    assert!(pending.contains_key("a"));
+    assert!(panes.has_pending_close("a"));
 
-    assert!(take_pending_pane_closes(&mut pending, &["c".into()], &["c".into()]).is_empty());
-    assert!(pending.contains_key("a"));
+    assert!(panes
+        .take_pending_closes(&["c".into()], &["c".into()])
+        .is_empty());
+    assert!(panes.has_pending_close("a"));
 
-    assert!(take_pending_pane_closes(&mut pending, &["a".into()], &[]).is_empty());
-    assert!(pending.is_empty());
+    assert!(panes.take_pending_closes(&["a".into()], &[]).is_empty());
+    assert!(panes.pending_closes.is_empty());
 }
 
 #[test]
@@ -1225,13 +1225,12 @@ fn overlapping_pane_closes_collapse_a_three_way_split_one_leaf_at_a_time() {
     layout.assign_session(&third, "c").unwrap();
     layout.id = "tab".into();
     let mut tabs = vec![layout];
-    let mut pending = HashMap::from([
-        ("a".to_owned(), pending_pane_close("tab", "p1")),
-        ("b".to_owned(), pending_pane_close("tab", "p3")),
-    ]);
+    let mut panes = crate::surfaces::panes::PaneState::default();
+    panes.track_pending_close("a".to_owned(), pending_pane_close("tab", "p1"));
+    panes.track_pending_close("b".to_owned(), pending_pane_close("tab", "p3"));
 
     tabs[0].remove_session("b");
-    for close in take_pending_pane_closes(&mut pending, &["b".into()], &["b".into()]) {
+    for close in panes.take_pending_closes(&["b".into()], &["b".into()]) {
         assert_eq!(
             pane_close_after_archive(&tabs, &close).map(|layout| layout.id.as_str()),
             Some("tab")
@@ -1242,13 +1241,13 @@ fn overlapping_pane_closes_collapse_a_three_way_split_one_leaf_at_a_time() {
     assert_eq!(tabs[0].root.leaves().len(), 2);
 
     tabs[0].remove_session("a");
-    for close in take_pending_pane_closes(&mut pending, &["a".into()], &["a".into()]) {
+    for close in panes.take_pending_closes(&["a".into()], &["a".into()]) {
         assert!(pane_close_after_archive(&tabs, &close).is_some());
         assert!(tabs[0].close_pane(&close.pane_id));
     }
     assert_eq!(tabs[0].session_ids(), ["c"]);
     assert!(matches!(tabs[0].root, PaneNode::Leaf(_)));
-    assert!(pending.is_empty());
+    assert!(panes.pending_closes.is_empty());
 }
 
 #[test]

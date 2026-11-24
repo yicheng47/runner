@@ -78,8 +78,7 @@ impl NativeRoot {
             return 1;
         }
         let layout = self.front_page_layout();
-        let has_maximized =
-            layout.is_some_and(|l| maximized_leaf(&self.maximized_panes, l).is_some());
+        let has_maximized = layout.is_some_and(|l| self.panes.is_maximized(l));
         side_panel::split_columns_for_layout(layout, has_maximized)
     }
 
@@ -215,7 +214,9 @@ impl NativeRoot {
         if start_surface_visible(Some(layout))
             || self.chat_panel_is_open(cx)
             || !self.active_chat_panel_surface(cx).1
-            || maximized_leaf(&self.maximized_panes, layout)
+            || self
+                .panes
+                .maximized_leaf(layout)
                 .unwrap_or_else(|| top_right_pane(&layout.root))
                 .id
                 != pane_id
@@ -554,7 +555,8 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> Entity<CopyValueButton> {
         let copy = self
-            .pane_session_key_copies
+            .panes
+            .session_key_copies
             .entry(session_id.to_owned())
             .or_insert_with(|| {
                 let value = value.clone();
@@ -579,7 +581,8 @@ impl NativeRoot {
     ) -> Option<Entity<CopyValueButton>> {
         let path = path?;
         let copy = self
-            .pane_worktree_copies
+            .panes
+            .worktree_copies
             .entry(session_id.to_owned())
             .or_insert_with(|| {
                 let path = path.clone();
@@ -740,7 +743,7 @@ impl NativeRoot {
             cx.propagate();
             return;
         }
-        let Some(menu) = self.pane_action_menus.get(&session_id).cloned() else {
+        let Some(menu) = self.panes.action_menus.get(&session_id).cloned() else {
             cx.propagate();
             return;
         };

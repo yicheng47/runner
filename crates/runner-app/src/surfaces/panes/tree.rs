@@ -19,8 +19,7 @@ impl NativeRoot {
             .collect::<HashSet<_>>();
         self.render_regions
             .retain(|key, _| !key.starts_with("pane:") || region_keys.contains(key));
-        self.split_menus
-            .retain(|key, _| key.tab_id == tab_id && panes.contains(key.pane_id.as_str()));
+        self.panes.retain_split_menus_for_tab(tab_id, &panes);
         self.front_page_pane_bounds_mut()
             .retain(|key, _| key.tab_id == tab_id && panes.contains(key.pane_id.as_str()));
     }
@@ -37,6 +36,7 @@ impl NativeRoot {
     ) -> Entity<PopoverMenu> {
         let key = PaneKey::new(tab_id, pane_id);
         let menu = self
+            .panes
             .split_menus
             .entry(SplitMenuKey {
                 surface,
@@ -101,9 +101,7 @@ impl NativeRoot {
         let Some(layout) = self
             .front_page_layout()
             .filter(|layout| layout.id == tab_id)
-            .filter(|layout| {
-                maximized_leaf(&self.maximized_panes, layout).is_some_and(|leaf| leaf.id == pane_id)
-            })
+            .filter(|layout| self.panes.is_pane_maximized(layout, pane_id))
         else {
             return Some(measured);
         };
@@ -248,7 +246,8 @@ impl NativeRoot {
             return None;
         }
         let menu = self
-            .pane_action_menus
+            .panes
+            .action_menus
             .entry(session_id.to_owned())
             .or_insert_with(|| {
                 let root = cx.entity();

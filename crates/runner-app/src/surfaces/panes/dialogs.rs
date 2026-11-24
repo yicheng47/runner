@@ -261,7 +261,8 @@ fn render_linked_missions_note(missions: &[LinkedMissionArchiveItem]) -> AnyElem
 impl NativeRoot {
     pub(crate) fn render_terminal_close_confirm(&self, cx: &mut Context<Self>) -> AnyElement {
         let confirm = self
-            .terminal_close_confirm
+            .panes
+            .close_confirm
             .as_ref()
             .expect("archive confirm is open");
         let (copy, linked_missions, scope) = match &confirm.target {

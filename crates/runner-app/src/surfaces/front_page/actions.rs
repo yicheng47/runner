@@ -1,4 +1,5 @@
 use super::FrontPageClient;
+use crate::surfaces::panes::{ArchiveAllSource, PendingPaneClose};
 use crate::*;
 use runner_core::companion::{ActionKind, ActionTarget};
 
@@ -544,7 +545,7 @@ impl NativeRoot {
 
 impl NativeRoot {
     pub(crate) fn submit_workspace_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(rename) = &self.pane_rename else {
+        let Some(rename) = &self.panes.rename else {
             return;
         };
         let input = rename.input.clone();
@@ -622,14 +623,10 @@ impl NativeRoot {
         }
         match result {
             Ok(()) => {
-                if !remote
-                    || self
-                        .pane_rename
-                        .as_ref()
-                        .is_some_and(|rename| rename.input == input)
-                {
-                    self.pane_rename = None;
-                    self._pane_rename_focus_subscription = None;
+                if !remote {
+                    self.panes.clear_rename();
+                } else {
+                    self.panes.clear_rename_matching_input(&input);
                 }
                 if !remote {
                     self.refresh_sessions(cx);
@@ -647,7 +644,7 @@ impl NativeRoot {
                     self.remote_client.set_error(error);
                 } else {
                     self.chat_error = Some(error.into());
-                    if let Some(rename) = self.pane_rename.as_ref().filter(|_| kept_focus) {
+                    if let Some(rename) = self.panes.rename.as_ref().filter(|_| kept_focus) {
                         rename.input.read(cx).focus_handle().focus(window, cx);
                     }
                 }

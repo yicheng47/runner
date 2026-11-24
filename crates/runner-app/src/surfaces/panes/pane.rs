@@ -15,8 +15,7 @@ impl NativeRoot {
         crate::render_counts::count_render(&format!("pane:{}", leaf.id), cx);
         let focused = layout.focused_pane_id == leaf.id;
         let grouped = layout.root.leaves().len() > 1;
-        let maximized =
-            maximized_leaf(&self.maximized_panes, layout).is_some_and(|shown| shown.id == leaf.id);
+        let maximized = self.panes.is_pane_maximized(layout, &leaf.id);
         let pane_id = leaf.id.clone();
         let pane_id_for_focus = pane_id.clone();
         let entry = leaf
@@ -41,12 +40,9 @@ impl NativeRoot {
             let close_behavior =
                 pane_close_behavior(entry.as_ref().map(|entry| entry.agent_runtime.as_str()));
             let close_session_id = entry.as_ref().map(|entry| entry.session_id.clone());
-            let rename_input = entry.as_ref().and_then(|entry| {
-                self.pane_rename
-                    .as_ref()
-                    .filter(|rename| rename.session_id == entry.session_id)
-                    .map(|rename| rename.input.clone())
-            });
+            let rename_input = entry
+                .as_ref()
+                .and_then(|entry| self.panes.rename_input_for(&entry.session_id));
             let mark_icon =
                 pane_identity_icon(entry.as_ref().map(|entry| entry.agent_runtime.as_str()));
             let mark_live = entry
@@ -908,10 +904,7 @@ impl NativeRoot {
         let measure_root = cx.entity();
         let measured = PaneKey::new(&layout.id, &pane_id);
         let drop_key = measured.clone();
-        let preview = self
-            .pane_drop
-            .as_ref()
-            .and_then(|(key, side)| (key == &drop_key).then_some(*side));
+        let preview = self.panes.drop_preview_for(&drop_key);
         div()
             .id(SharedString::from(format!("pane-{pane_id}")))
             .debug_selector({
@@ -999,17 +992,12 @@ impl NativeRoot {
                                 this.settings(cx).app_zoom,
                             ))
                         .then(|| (drop_key.clone(), side))
-                    } else if this
-                        .pane_drop
-                        .as_ref()
-                        .is_some_and(|(key, _)| key == &drop_key)
-                    {
+                    } else if this.panes.is_drop_target(&drop_key) {
                         None
                     } else {
                         return;
                     };
-                    if this.pane_drop != next {
-                        this.pane_drop = next;
+                    if this.panes.update_drop_target(next) {
                         cx.notify();
                     }
                 },

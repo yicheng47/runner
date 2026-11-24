@@ -5,10 +5,10 @@ impl NativeRoot {
         self.usage.close();
         self.remote_client.usage_popover = None;
         self.start_chat_modal = None;
-        self.pane_rename = None;
-        self.maximized_panes.clear();
+        self.panes.rename = None;
+        self.panes.clear_maximized();
         self.chat_lifecycle.clear_fork_confirm();
-        self.terminal_close_confirm = None;
+        self.panes.clear_close_confirm();
     }
 
     fn clear_chat_secondaries(&mut self) {
@@ -104,7 +104,7 @@ impl NativeRoot {
             self.reset_launcher_page(cx);
         }
         if self.remote_client.connection_marker() != connection {
-            self.maximized_panes.clear();
+            self.panes.clear_maximized();
         }
         if self.remote_client.is_active() {
             let subjects = self.current_subjects();

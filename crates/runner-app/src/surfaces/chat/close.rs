@@ -48,17 +48,17 @@ impl PaneCloseFocus {
 
     pub(crate) fn defer_restore(self, window: &mut Window, cx: &mut Context<NativeRoot>) {
         cx.defer_in(window, move |root, window, cx| {
-            root._pane_close_focus_subscription = None;
+            root.panes._close_focus_subscription = None;
             if self.restore_remote_if_closed(root, window, cx) {
                 return;
             }
             // A remote acknowledgement can precede the overview's new topology.
             let clients = root.app_store.read(cx).remote_clients.clone();
-            root._pane_close_focus_subscription =
+            root.panes._close_focus_subscription =
                 Some(cx.observe_in(&clients, window, move |root, _, window, cx| {
                     root.sync_remote_state(cx);
                     if self.restore_remote_if_closed(root, window, cx) {
-                        root._pane_close_focus_subscription = None;
+                        root.panes._close_focus_subscription = None;
                     }
                 }));
         });
@@ -168,11 +168,8 @@ impl NativeRoot {
             .map(|()| true);
         match result {
             Ok(true) => {
-                if self.pane_rename.as_ref().is_some_and(|rename| {
-                    closing_session_id.as_deref() == Some(rename.session_id.as_str())
-                }) {
-                    self.pane_rename = None;
-                    self._pane_rename_focus_subscription = None;
+                if let Some(session_id) = closing_session_id.as_deref() {
+                    self.panes.clear_rename_for_session(session_id);
                 }
                 self.chat_error = None;
                 self.remember_active_role(cx);
@@ -209,7 +206,7 @@ impl NativeRoot {
             return;
         }
         if !remote {
-            self.terminal_close_confirm = None;
+            self.panes.clear_close_confirm();
             if !self.chat_lifecycle.begin_stopping(session_id) {
                 return;
             }
@@ -272,14 +269,7 @@ impl NativeRoot {
                             }
                             Ok(())
                         });
-                        if this
-                            .pane_rename
-                            .as_ref()
-                            .is_some_and(|rename| rename.session_id == target)
-                        {
-                            this.pane_rename = None;
-                            this._pane_rename_focus_subscription = None;
-                        }
+                        this.panes.clear_rename_for_session(&target);
                         if let Err(error) = refresh {
                             this.chat_error = Some(error.to_string().into());
                         }
@@ -325,7 +315,7 @@ impl NativeRoot {
             }
             if let Some(layout) = self.front_page_layout() {
                 let target = archive_chat_pane_target(layout, pane_id, session_id);
-                TerminalCloseConfirm::open(&mut self.terminal_close_confirm, target, window, cx);
+                TerminalCloseConfirm::open(&mut self.panes.close_confirm, target, window, cx);
                 cx.notify();
             }
             return;
@@ -395,7 +385,7 @@ impl NativeRoot {
                     .map_err(anyhow::Error::from)
                     .and_then(|_| self.reload_tabs(cx))
                     .and_then(|_| self.ensure_active_tab_attached(window, cx));
-                self.pending_tab_close = None;
+                self.panes.clear_pending_tab_close();
                 if let Err(error) = result {
                     self.chat_error = Some(error.to_string().into());
                 } else {
@@ -440,21 +430,20 @@ impl NativeRoot {
             return;
         };
         let tab_id = layout.id.clone();
-        self.pending_tab_close = Some(PendingTabClose { tab_id });
+        self.panes.set_pending_tab_close(tab_id);
     }
 
     pub(crate) fn clear_pending_tab_close(&mut self, attempted: &[String]) {
-        if self.pending_tab_close.as_ref().is_some_and(|close| {
-            self.tabs.tabs().iter().any(|layout| {
+        let tabs = self.tabs.tabs();
+        self.panes.clear_pending_tab_close_if(|close| {
+            tabs.iter().any(|layout| {
                 layout.id == close.tab_id
                     && layout
                         .all_session_ids()
                         .iter()
                         .any(|id| attempted.contains(id))
             })
-        }) {
-            self.pending_tab_close = None;
-        }
+        });
     }
 
     pub(crate) fn request_close_terminal_tab(
@@ -481,7 +470,7 @@ impl NativeRoot {
         }
         let remote = self.front_page_client(cx).is_remote();
         if !remote {
-            self.terminal_close_confirm = None;
+            self.panes.clear_close_confirm();
             if !self.chat_lifecycle.begin_stopping(session_id) {
                 return;
             }
@@ -580,7 +569,7 @@ impl NativeRoot {
                 );
             }
             TerminalCloseConfirm::open(
-                &mut self.terminal_close_confirm,
+                &mut self.panes.close_confirm,
                 TerminalCloseTarget::ArchiveAll {
                     session_ids,
                     source,
@@ -622,7 +611,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn confirm_terminal_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(confirm) = self.terminal_close_confirm.take() else {
+        let Some(confirm) = self.panes.take_close_confirm() else {
             return;
         };
         let worktree_removals = super::super::sidebar::checked_worktrees_to_remove(&confirm);
@@ -657,7 +646,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn cancel_terminal_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(confirm) = self.terminal_close_confirm.take() {
+        if let Some(confirm) = self.panes.take_close_confirm() {
             confirm.restore_focus(window, cx);
         }
         cx.notify();

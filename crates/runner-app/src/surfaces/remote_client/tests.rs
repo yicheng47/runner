@@ -7932,16 +7932,14 @@ fn remote_terminal_pane_shortcut_and_sidebar_close_dispatch_without_confirmation
                     "sidebar" => root.request_close_terminal_tab(&layout.id, "s", window, cx),
                     _ => unreachable!(),
                 }
-                assert!(root.terminal_close_confirm.is_none());
+                assert!(root.panes.close_confirm.is_none());
             })
             .unwrap();
         cx.run_until_parked();
         assert_eq!(fake.request_count("close"), 1, "{entry}");
         assert_eq!(fake.request_count("archive"), 0, "{entry}");
         window
-            .read_with(&cx, |root, _| {
-                assert!(root.terminal_close_confirm.is_none())
-            })
+            .read_with(&cx, |root, _| assert!(root.panes.close_confirm.is_none()))
             .unwrap();
     }
 }
@@ -7971,8 +7969,12 @@ fn remote_single_chat_tab_shortcut_archives_only_after_confirmation() {
         visual.run_until_parked();
         window
             .read_with(&visual, |root, _| {
-                let Some(TerminalCloseTarget::ArchiveChatPane { session_id, close }) = root
-                    .terminal_close_confirm
+                let Some(crate::surfaces::panes::TerminalCloseTarget::ArchiveChatPane {
+                    session_id,
+                    close,
+                }) = root
+                    .panes
+                    .close_confirm
                     .as_ref()
                     .map(|confirm| &confirm.target)
                 else {
@@ -7987,7 +7989,7 @@ fn remote_single_chat_tab_shortcut_archives_only_after_confirmation() {
         visual.run_until_parked();
         window
             .read_with(&visual, |root, _| {
-                assert!(root.terminal_close_confirm.is_none(), "{key}")
+                assert!(root.panes.close_confirm.is_none(), "{key}")
             })
             .unwrap();
         assert_eq!(
@@ -8057,7 +8059,7 @@ fn remote_title_menu_pin_runs_after_the_root_update() {
     let mut visual = VisualTestContext::from_window(window.into(), &cx);
     visual.run_until_parked();
     let menu = window
-        .read_with(&visual, |root, _| root.pane_action_menus.get("s").cloned())
+        .read_with(&visual, |root, _| root.panes.action_menus.get("s").cloned())
         .unwrap()
         .expect("the remote chat's title menu");
     visual.update(|window, cx| menu.read(cx).focus_handle(cx).focus(window, cx));
@@ -8077,8 +8079,8 @@ fn remote_title_menu_pin_runs_after_the_root_update() {
     assert!(
         window
             .read_with(&visual, |root, _| matches!(
-                root.terminal_close_confirm.as_ref().map(|c| &c.target),
-                Some(crate::TerminalCloseTarget::ArchiveChatPane { session_id, .. })
+                root.panes.close_confirm.as_ref().map(|c| &c.target),
+                Some(crate::surfaces::panes::TerminalCloseTarget::ArchiveChatPane { session_id, .. })
                     if session_id == "s"
             ))
             .unwrap(),
@@ -8112,7 +8114,8 @@ fn reconnecting_to_or_leaving_a_host_restores_a_maximized_split() {
                 let layout = root.front_page_layout().unwrap();
                 assert_eq!(layout.root.leaves().len(), 2);
                 assert_eq!(
-                    crate::surfaces::panes::maximized_leaf(&root.maximized_panes, layout)
+                    root.panes
+                        .maximized_leaf(layout)
                         .map(|leaf| leaf.id.clone()),
                     Some(pane.clone())
                 );
@@ -8138,7 +8141,7 @@ fn reconnecting_to_or_leaving_a_host_restores_a_maximized_split() {
                 layout.focused_pane_id, pane,
                 "the split and its focus are intact"
             );
-            assert!(root.maximized_panes.is_empty());
+            assert!(root.panes.maximized.is_empty());
         })
         .unwrap();
     cx.run_until_parked();
@@ -8147,7 +8150,7 @@ fn reconnecting_to_or_leaving_a_host_restores_a_maximized_split() {
     window
         .update(&mut cx, |root, window, cx| {
             root.return_to_this_computer(window, cx);
-            assert!(root.maximized_panes.is_empty());
+            assert!(root.panes.maximized.is_empty());
         })
         .unwrap();
 }
@@ -8813,7 +8816,7 @@ fn remote_archive_intermediate_launcher_waits_for_collapse_without_stealing_find
                     root,
                     vec!["s".into()],
                     None,
-                    Some(crate::PendingPaneClose {
+                    Some(crate::surfaces::panes::PendingPaneClose {
                         tab_id: layout.id.clone(),
                         pane_id: pane,
                     }),
@@ -8973,12 +8976,12 @@ fn remote_chat_archive_prompts_for_linked_missions_and_supports_new_and_legacy_h
                 root.request_archive_all(
                     Some("remote-tab"),
                     vec!["s".into()],
-                    crate::ArchiveAllSource::Sidebar,
+                    crate::surfaces::panes::ArchiveAllSource::Sidebar,
                     window,
                     cx,
                 );
                 assert!(
-                    root.terminal_close_confirm.is_some(),
+                    root.panes.close_confirm.is_some(),
                     "legacy_host={legacy_host}: linked remote chat opens confirmation"
                 );
             })
@@ -9009,7 +9012,7 @@ fn remote_chat_archive_prompts_for_linked_missions_and_supports_new_and_legacy_h
                 root.request_archive_all(
                     Some("remote-tab"),
                     vec!["s".into()],
-                    crate::ArchiveAllSource::Sidebar,
+                    crate::surfaces::panes::ArchiveAllSource::Sidebar,
                     window,
                     cx,
                 );
@@ -9100,11 +9103,11 @@ fn remote_chat_archive_tracks_linked_mission_pending_state_across_hosts_and_erro
             root.request_archive_all(
                 Some("remote-tab"),
                 vec!["s".into()],
-                crate::ArchiveAllSource::Sidebar,
+                crate::surfaces::panes::ArchiveAllSource::Sidebar,
                 window,
                 cx,
             );
-            assert!(root.terminal_close_confirm.is_some());
+            assert!(root.panes.close_confirm.is_some());
             root.confirm_terminal_close(window, cx);
 
             assert!(root.sidebar_archiving_session("s", cx));
@@ -9118,11 +9121,11 @@ fn remote_chat_archive_tracks_linked_mission_pending_state_across_hosts_and_erro
             root.request_archive_all(
                 Some("remote-tab"),
                 vec!["s".into()],
-                crate::ArchiveAllSource::Sidebar,
+                crate::surfaces::panes::ArchiveAllSource::Sidebar,
                 window,
                 cx,
             );
-            assert!(root.terminal_close_confirm.is_none());
+            assert!(root.panes.close_confirm.is_none());
             root.remote_archive_sessions(vec!["s".into()], cx);
         })
         .unwrap();
@@ -9159,11 +9162,11 @@ fn remote_chat_archive_tracks_linked_mission_pending_state_across_hosts_and_erro
             root.request_archive_all(
                 Some("remote-tab"),
                 vec!["s".into()],
-                crate::ArchiveAllSource::Sidebar,
+                crate::surfaces::panes::ArchiveAllSource::Sidebar,
                 window,
                 cx,
             );
-            assert!(root.terminal_close_confirm.is_some());
+            assert!(root.panes.close_confirm.is_some());
             root.confirm_terminal_close(window, cx);
             assert!(root.sidebar_archiving_session("s", cx));
             assert!(root.sidebar_archiving_mission("remote-mission", cx));
@@ -9220,7 +9223,7 @@ fn remote_chat_archive_tracks_linked_mission_pending_state_across_hosts_and_erro
             root.request_archive_all(
                 Some("remote-tab"),
                 vec!["s".into()],
-                crate::ArchiveAllSource::Sidebar,
+                crate::surfaces::panes::ArchiveAllSource::Sidebar,
                 window,
                 cx,
             );
@@ -9262,7 +9265,7 @@ fn remote_chat_archive_tracks_linked_mission_pending_state_across_hosts_and_erro
             root.request_archive_all(
                 Some("remote-tab"),
                 vec!["s".into()],
-                crate::ArchiveAllSource::Sidebar,
+                crate::surfaces::panes::ArchiveAllSource::Sidebar,
                 window,
                 cx,
             );

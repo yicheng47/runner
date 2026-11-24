@@ -1031,13 +1031,13 @@ fn chat_lifecycle_entry_points_dispatch_once_for_local_and_remote_targets() {
                     "stop" => root.stop_chat(session, window, cx),
                     "resume" => root.resume_chat("p1", session, window, cx),
                     "archive" => {
-                        let close = crate::PendingPaneClose {
+                        let close = crate::surfaces::panes::PendingPaneClose {
                             tab_id: root.front_page_layout().unwrap().id.clone(),
                             pane_id: "p1".into(),
                         };
-                        crate::TerminalCloseConfirm::open(
-                            &mut root.terminal_close_confirm,
-                            crate::TerminalCloseTarget::ArchiveChatPane {
+                        crate::surfaces::panes::TerminalCloseConfirm::open(
+                            &mut root.panes.close_confirm,
+                            crate::surfaces::panes::TerminalCloseTarget::ArchiveChatPane {
                                 session_id: session.into(),
                                 close,
                             },
@@ -1261,7 +1261,7 @@ fn remote_actions_publish_pending_and_clear_errors_before_held_requests_complete
                 } else {
                     root.archive_workspace_sessions(
                         vec!["s".into()],
-                        crate::ArchiveAllSource::Chat,
+                        crate::surfaces::panes::ArchiveAllSource::Chat,
                         None,
                         window,
                         cx,

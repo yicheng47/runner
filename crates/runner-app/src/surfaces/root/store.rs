@@ -104,7 +104,7 @@ impl NativeRoot {
                 self.error = None;
             }
             if store.daemon_disconnected {
-                self.maximized_panes.clear();
+                self.panes.clear_maximized();
                 self.side_panel.clear_all_maximized();
                 self.toasts.dismiss();
             } else if store.daemon_notice.is_some() || store.error.is_none() {

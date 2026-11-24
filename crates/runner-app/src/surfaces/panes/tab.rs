@@ -439,8 +439,8 @@ impl NativeRoot {
         if self.remote_client.is_local() {
             self.prune_pane_state(&layout);
         }
-        prune_maximized(&mut self.maximized_panes, &layout);
-        let pane_tree = match maximized_leaf(&self.maximized_panes, &layout).cloned() {
+        self.panes.prune_maximized(&layout);
+        let pane_tree = match self.panes.maximized_leaf(&layout).cloned() {
             Some(leaf) => self.render_pane_node(&PaneNode::Leaf(leaf), &layout, cx),
             None => self.render_pane_node(&layout.root, &layout, cx),
         };
@@ -503,10 +503,8 @@ impl NativeRoot {
             .child(tab_body);
         let (surface, panel_available) = self.active_chat_panel_surface(cx);
         let local = self.remote_client.is_local();
-        let split_columns = side_panel::split_columns_for_layout(
-            Some(&layout),
-            maximized_leaf(&self.maximized_panes, &layout).is_some(),
-        );
+        let split_columns =
+            side_panel::split_columns_for_layout(Some(&layout), self.panes.is_maximized(&layout));
         let panel_open = !show_start && panel_available && self.chat_panel_is_open(cx);
         if local && !panel_open && self.side_panel.maximized {
             self.side_panel.maximized = false;

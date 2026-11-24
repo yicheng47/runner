@@ -24,7 +24,7 @@ impl Render for ShellComposition {
         self.root
             .update(cx, |root, cx| {
                 if !cx.has_active_drag() {
-                    root.pane_drop = None;
+                    root.panes.clear_drop_target();
                 }
                 root.render_app_shell(window, cx)
             })

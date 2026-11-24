@@ -163,10 +163,8 @@ impl NativeRoot {
         };
         let settings = self.settings(cx);
         let available_px = (f32::from(bounds.width) - sidebar_width).max(0.) / settings.app_zoom;
-        let split_columns = side_panel::split_columns_for_layout(
-            Some(layout),
-            crate::surfaces::panes::maximized_leaf(&self.maximized_panes, layout).is_some(),
-        );
+        let split_columns =
+            side_panel::split_columns_for_layout(Some(layout), self.panes.is_maximized(layout));
         let (_, panel_available) = self.active_chat_panel_surface(cx);
         let chat_panel_width = if panel_available
             && self.chat_panel_is_open(cx)
@@ -207,10 +205,8 @@ impl NativeRoot {
         };
         let settings = self.settings(cx);
         let available_px = (f32::from(bounds.width) - sidebar_width).max(0.) / settings.app_zoom;
-        let split_columns = side_panel::split_columns_for_layout(
-            Some(layout),
-            crate::surfaces::panes::maximized_leaf(&self.maximized_panes, layout).is_some(),
-        );
+        let split_columns =
+            side_panel::split_columns_for_layout(Some(layout), self.panes.is_maximized(layout));
         let (_, panel_available) = self.active_chat_panel_surface(cx);
         let chat_panel_width = if panel_available
             && self.chat_panel_is_open(cx)

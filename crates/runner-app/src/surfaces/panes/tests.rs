@@ -1,11 +1,11 @@
 use super::{
     adjacent_pane_index, archive_chat_confirm_body, drop_allowed, drop_preview, drop_side,
-    header_fork_state, maximized_leaf, pane_body_opacity, pane_close_behavior, pane_identity_icon,
-    pane_menu_actions, pane_menu_items, pane_rename_key, prune_maximized, side_panel_available,
-    side_panel_surface, split_allowed, split_decision, split_menu_items, split_tab_archiving,
-    starting_overlay_label, terminal_drawer_tooltip, toggle_maximized, HeaderForkState,
-    PaneCloseBehavior, PaneRenameKey, PanelSurface, SplitDecision, MIN_SPLIT_PANE_HEIGHT,
-    MIN_SPLIT_PANE_WIDTH, TOO_SMALL_TO_SPLIT, UNFOCUSED_PANE_OPACITY,
+    header_fork_state, pane_body_opacity, pane_close_behavior, pane_identity_icon,
+    pane_menu_actions, pane_menu_items, pane_rename_key, side_panel_available, side_panel_surface,
+    split_allowed, split_decision, split_menu_items, split_tab_archiving, starting_overlay_label,
+    terminal_drawer_tooltip, HeaderForkState, PaneCloseBehavior, PaneRenameKey, PaneState,
+    PanelSurface, SplitDecision, MIN_SPLIT_PANE_HEIGHT, MIN_SPLIT_PANE_WIDTH, TOO_SMALL_TO_SPLIT,
+    UNFOCUSED_PANE_OPACITY,
 };
 use crate::app_settings::AppSettings;
 use crate::keymap;
@@ -194,8 +194,8 @@ fn dragging_an_empty_pane_grip_preserves_its_id_and_sibling_chat() {
         visual.run_until_parked();
         window
             .update(&mut visual, |root, _, cx| {
-                assert!(root.pane_rename.is_some());
-                root.pane_rename = None;
+                assert!(root.panes.rename.is_some());
+                root.panes.rename = None;
                 cx.notify();
             })
             .unwrap();
@@ -388,7 +388,7 @@ fn a_maximized_pane_fills_the_tab_and_its_toggle_restores_the_split() {
     window
         .read_with(&visual, |root, _| {
             assert_eq!(root.tabs.active().unwrap().focused_pane_id, "p1");
-            assert!(root.maximized_panes.is_empty());
+            assert!(root.panes.maximized.is_empty());
         })
         .unwrap();
 
@@ -396,7 +396,7 @@ fn a_maximized_pane_fills_the_tab_and_its_toggle_restores_the_split() {
         .update(&mut visual, |root, window, cx| {
             root.toggle_maximize_pane("p1", window, cx);
             root.split_pane("p1", SplitOrientation::Column, window, cx);
-            assert!(root.maximized_panes.is_empty());
+            assert!(root.panes.maximized.is_empty());
         })
         .unwrap();
     visual.run_until_parked();
@@ -505,7 +505,7 @@ fn title_clicks_select_their_pane_and_maximize_respects_split_floors_and_disconn
     visual.run_until_parked();
     window
         .read_with(&visual, |root, _| {
-            assert_eq!(root.maximized_panes.values().collect::<Vec<_>>(), [&right]);
+            assert_eq!(root.panes.maximized.values().collect::<Vec<_>>(), [&right]);
         })
         .unwrap();
     assert!(visual.debug_bounds("PANE_ISLAND:p1").is_none());
@@ -517,7 +517,7 @@ fn title_clicks_select_their_pane_and_maximize_respects_split_floors_and_disconn
     });
     visual.run_until_parked();
     window
-        .read_with(&visual, |root, _| assert!(root.maximized_panes.is_empty()))
+        .read_with(&visual, |root, _| assert!(root.panes.maximized.is_empty()))
         .unwrap();
     store.update(&mut visual, |store, cx| {
         store.daemon_disconnected = false;
@@ -588,7 +588,7 @@ fn title_clicks_select_their_pane_and_maximize_respects_split_floors_and_disconn
                 root.split_pane("p1", SplitOrientation::Row, window, cx);
                 assert_eq!(root.tabs.active().unwrap().root.leaves().len(), 2);
                 assert!(
-                    !root.maximized_panes.is_empty(),
+                    !root.panes.maximized.is_empty(),
                     "a refused split stays maximized"
                 );
                 root.toggle_maximize_pane("p1", window, cx);
@@ -609,7 +609,7 @@ fn title_clicks_select_their_pane_and_maximize_respects_split_floors_and_disconn
         .update(&mut visual, |root, window, cx| {
             root.split_pane("p1", SplitOrientation::Row, window, cx);
             assert_eq!(root.tabs.active().unwrap().root.leaves().len(), 3);
-            assert!(root.maximized_panes.is_empty());
+            assert!(root.panes.maximized.is_empty());
         })
         .unwrap();
 }
@@ -662,7 +662,7 @@ fn clicking_away_from_an_inline_rename_saves_it() {
                 window,
                 cx,
             );
-            root.pane_rename.as_ref().unwrap().input.clone()
+            root.panes.rename.as_ref().unwrap().input.clone()
         })
         .unwrap();
     input.update(&mut visual, |field, cx| field.set_text("After", cx));
@@ -672,7 +672,7 @@ fn clicking_away_from_an_inline_rename_saves_it() {
     visual.run_until_parked();
     window
         .read_with(&visual, |root, cx| {
-            assert!(root.pane_rename.is_none(), "losing focus ends the rename");
+            assert!(root.panes.rename.is_none(), "losing focus ends the rename");
             assert_eq!(
                 root.front_page_session("direct-agent", cx)
                     .and_then(|entry| entry.title),
@@ -685,7 +685,8 @@ fn clicking_away_from_an_inline_rename_saves_it() {
     window
         .read_with(&visual, |root, _| {
             assert_eq!(
-                root.pane_rename
+                root.panes
+                    .rename
                     .as_ref()
                     .map(|rename| rename.session_id.as_str()),
                 Some("busy-shell"),
@@ -739,7 +740,7 @@ fn pane_title_menu_labels_fit_one_line() {
                     visual.run_until_parked();
                     let menu = window
                         .read_with(&visual, |root, _| {
-                            root.pane_action_menus["direct-agent"].clone()
+                            root.panes.action_menus["direct-agent"].clone()
                         })
                         .unwrap();
                     visual.update(|window, cx| {
@@ -3003,13 +3004,12 @@ fn title_menu_lists_rename_fork_pin_and_archive_for_chats_only() {
 
 #[test]
 fn maximize_holds_the_focused_pane_and_ends_on_navigation_split_close_or_single_pane() {
-    use std::collections::HashMap;
     let mut layout = PaneLayout::single(Some("chat"), &[]);
     let left = layout.focused_pane_id.clone();
-    let mut maximized = HashMap::new();
-    assert!(!toggle_maximized(&mut maximized, &layout, &left));
+    let mut panes = PaneState::default();
+    assert!(!panes.toggle_maximized(&layout, &left));
     assert!(
-        maximized.is_empty(),
+        panes.maximized.is_empty(),
         "a single pane has nothing to maximize"
     );
 
@@ -3021,38 +3021,38 @@ fn maximize_holds_the_focused_pane_and_ends_on_navigation_split_close_or_single_
     assert!(layout.set_split_sizes(&split_id, [70., 30.]));
     let before = layout.serialize().unwrap();
     assert!(layout.focus_pane(&left));
-    assert!(toggle_maximized(&mut maximized, &layout, &left));
-    assert_eq!(maximized_leaf(&maximized, &layout).unwrap().id, left);
+    assert!(panes.toggle_maximized(&layout, &left));
+    assert_eq!(panes.maximized_leaf(&layout).unwrap().id, left);
     assert_eq!(
         layout.serialize().unwrap(),
         before,
         "maximize is view state and never reaches the persisted layout"
     );
 
-    assert!(!toggle_maximized(&mut maximized, &layout, &left));
-    assert!(maximized_leaf(&maximized, &layout).is_none());
-    assert!(maximized.is_empty());
+    assert!(!panes.toggle_maximized(&layout, &left));
+    assert!(panes.maximized_leaf(&layout).is_none());
+    assert!(panes.maximized.is_empty());
 
-    assert!(toggle_maximized(&mut maximized, &layout, &left));
+    assert!(panes.toggle_maximized(&layout, &left));
     assert!(layout.focus_pane(&right));
     assert!(
-        maximized_leaf(&maximized, &layout).is_none(),
+        panes.maximized_leaf(&layout).is_none(),
         "focusing a hidden pane restores the split"
     );
-    prune_maximized(&mut maximized, &layout);
-    assert!(maximized.is_empty());
+    panes.prune_maximized(&layout);
+    assert!(panes.maximized.is_empty());
     assert!(layout.focus_pane(&left));
     assert!(
-        maximized_leaf(&maximized, &layout).is_none(),
+        panes.maximized_leaf(&layout).is_none(),
         "returning to the pane does not maximize it again"
     );
 
-    assert!(toggle_maximized(&mut maximized, &layout, &left));
+    assert!(panes.toggle_maximized(&layout, &left));
     assert!(layout.close_pane(&left));
-    assert!(maximized_leaf(&maximized, &layout).is_none());
-    prune_maximized(&mut maximized, &layout);
+    assert!(panes.maximized_leaf(&layout).is_none());
+    panes.prune_maximized(&layout);
     assert!(
-        maximized.is_empty(),
+        panes.maximized.is_empty(),
         "a tab reduced to one pane drops the state"
     );
 
@@ -3061,28 +3061,28 @@ fn maximize_holds_the_focused_pane_and_ends_on_navigation_split_close_or_single_
     let second = layout.split(&first, SplitOrientation::Row).unwrap();
     let third = layout.split(&second, SplitOrientation::Column).unwrap();
     assert!(layout.focus_pane(&second));
-    assert!(toggle_maximized(&mut maximized, &layout, &second));
+    assert!(panes.toggle_maximized(&layout, &second));
     assert!(layout.close_pane(&second));
-    prune_maximized(&mut maximized, &layout);
+    panes.prune_maximized(&layout);
     assert!(
-        maximized.is_empty(),
+        panes.maximized.is_empty(),
         "closing the maximized pane leaves the rest unmaximized"
     );
     assert_eq!(layout.root.leaves().len(), 2);
 
     assert!(layout.focus_pane(&third));
-    assert!(toggle_maximized(&mut maximized, &layout, &third));
+    assert!(panes.toggle_maximized(&layout, &third));
     let mut other = PaneLayout::single(Some("other"), &[]);
     other.id = "other-tab".into();
     let other_left = other.focused_pane_id.clone();
     other.split(&other_left, SplitOrientation::Row).unwrap();
-    prune_maximized(&mut maximized, &other);
+    panes.prune_maximized(&other);
     assert_eq!(
-        maximized_leaf(&maximized, &layout).unwrap().id,
+        panes.maximized_leaf(&layout).unwrap().id,
         third,
         "each tab keeps its own maximized pane"
     );
-    assert!(maximized_leaf(&maximized, &other).is_none());
+    assert!(panes.maximized_leaf(&other).is_none());
 }
 
 #[test]
@@ -3814,7 +3814,7 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
         host.read_with(&visual, |root, _| {
             (
                 root.side_panel.maximized,
-                root.maximized_panes.values().cloned().collect::<Vec<_>>(),
+                root.panes.maximized.values().cloned().collect::<Vec<_>>(),
             )
         })
         .unwrap(),
@@ -3901,7 +3901,7 @@ fn side_panel_maximize_fills_tab_hides_chat_routes_shortcut_by_focus_and_stays_e
     visual.run_until_parked();
     assert_eq!(
         host.read_with(&visual, |root, _| {
-            (root.side_panel.maximized, root.maximized_panes.is_empty())
+            (root.side_panel.maximized, root.panes.maximized.is_empty())
         })
         .unwrap(),
         (true, true)
@@ -5326,15 +5326,15 @@ fn toggle_session_info_action_opens_per_pane_role_runtime_and_ignores_shell() {
     wait(&mut visual, "Title menu Archive opens confirmation", &|v| {
         host.read_with(v, |root, _| {
             matches!(
-                root.terminal_close_confirm.as_ref().map(|c| &c.target),
-                Some(crate::TerminalCloseTarget::ArchiveChatPane { session_id, .. })
+                root.panes.close_confirm.as_ref().map(|c| &c.target),
+                Some(crate::surfaces::panes::TerminalCloseTarget::ArchiveChatPane { session_id, .. })
                     if session_id == "runtime-chat"
             )
         })
         .unwrap()
     });
     host.update(&mut visual, |root, _, cx| {
-        root.terminal_close_confirm = None;
+        root.panes.clear_close_confirm();
         cx.notify();
     })
     .unwrap();
