@@ -537,6 +537,7 @@
 "ui.checking_the_windows_registry_for_path" = "正在检查 Windows 注册表中的 PATH…"
 "ui.choose_a_file_or_search" = "从文件树中选择文件，或按名称搜索。"
 "ui.choose_a_folder_to_show" = "选择要显示的文件夹"
+"ui.choose_another_folder" = "选择其他文件夹…"
 "ui.choose_ellipsis" = "选择…"
 "ui.choose_folder" = "选择文件夹…"
 "ui.choose_how_you_want_to_work" = "选择工作方式。"
