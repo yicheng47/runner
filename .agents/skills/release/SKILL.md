@@ -18,7 +18,7 @@ An explicit request to `run` authorizes the bump commit, the push, the tag, and 
 1. **Preflight — stop on any failure and report it.**
    - `<version>` must match `^[0-9]+\.[0-9]+\.[0-9]+$` and be greater than the current tag from `gh release list`.
    - `git fetch origin`; require branch `main`, a clean tree, and `git rev-parse main origin/main` equal. Everything meant for the release is already merged.
-   - CI on `origin/main` is green: `gh run list --branch main --workflow ci.yaml --limit 1 --json conclusion`.
+   - CI is green on the newest `origin/main` commit that changes code: `gh run list --branch main --workflow ci.yaml --limit 5 --json conclusion,headSha`. Doc-only commits after it (`docs/`, Markdown, `examples/`) do not wait for their own run: bump straight away. The bump push cancels that run, and `release.yml`'s publish job waits for CI on the tagged commit anyway (Jason, 2026-11-20).
    - No release run is in flight: `gh run list --workflow release.yml --limit 3 --json status`.
 2. **Bump.** Set `version` under `[workspace.package]` in the root `Cargo.toml` to `<version>`. Every crate inherits it with `version.workspace = true` (since #635), so there is no per-crate edit. Run `cargo check --workspace` to refresh `Cargo.lock`, which updates each crate's entry, then `cargo test -p runner-app --test bundle_mac`. Commit `Cargo.toml` and `Cargo.lock` as `chore: bump version to <version>` and push `main`.
 3. **Tag.** `git tag -a v<version> -m "Runner <version>" && git push origin v<version>`. The push starts `release.yml`.
