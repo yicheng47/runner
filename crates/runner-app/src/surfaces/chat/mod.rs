@@ -84,6 +84,226 @@ fn tab_close_behavior(runtime: Option<&str>, has_drawer_shells: bool) -> TabClos
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ChatTransition {
+    pub(crate) kind: chat_lifecycle::TransitionKind,
+    pub(crate) started_at: Instant,
+    pub(crate) baseline_seq: u64,
+    pub(crate) generation: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ForkConfirm {
+    pub(crate) session_id: String,
+    pub(crate) pending: bool,
+}
+
+/// Chat stop, resume, fork, transition, and exit-code state owned by `NativeRoot`.
+#[derive(Default)]
+pub(crate) struct ChatLifecycleState {
+    pub(crate) stopping_sessions: HashSet<String>,
+    pub(crate) transitions: HashMap<String, ChatTransition>,
+    pub(crate) next_transition_generation: u64,
+    pub(crate) exit_codes: HashMap<String, Option<i32>>,
+    pub(crate) fork_confirm: Option<ForkConfirm>,
+    pub(crate) forking_sessions: HashMap<String, String>,
+}
+
+impl ChatLifecycleState {
+    pub(crate) fn start_transition(
+        &mut self,
+        session_id: &str,
+        kind: chat_lifecycle::TransitionKind,
+        baseline_seq: u64,
+    ) -> u64 {
+        self.next_transition_generation += 1;
+        let generation = self.next_transition_generation;
+        self.transitions.insert(
+            session_id.to_owned(),
+            ChatTransition {
+                kind,
+                started_at: Instant::now(),
+                baseline_seq,
+                generation,
+            },
+        );
+        generation
+    }
+
+    pub(crate) fn transition(&self, session_id: &str) -> Option<ChatTransition> {
+        self.transitions.get(session_id).copied()
+    }
+
+    pub(crate) fn transition_kind(
+        &self,
+        session_id: &str,
+    ) -> Option<chat_lifecycle::TransitionKind> {
+        self.transitions.get(session_id).map(|item| item.kind)
+    }
+
+    pub(crate) fn has_transition(&self, session_id: &str) -> bool {
+        self.transitions.contains_key(session_id)
+    }
+
+    pub(crate) fn update_transition_baseline(&mut self, session_id: &str, baseline_seq: u64) {
+        if let Some(transition) = self.transitions.get_mut(session_id) {
+            transition.baseline_seq = baseline_seq;
+        }
+    }
+
+    pub(crate) fn clear_transition(&mut self, session_id: &str) {
+        self.transitions.remove(session_id);
+    }
+
+    pub(crate) fn begin_stopping(&mut self, session_id: &str) -> bool {
+        self.stopping_sessions.insert(session_id.to_owned())
+    }
+
+    pub(crate) fn end_stopping(&mut self, session_id: &str) -> bool {
+        self.stopping_sessions.remove(session_id)
+    }
+
+    pub(crate) fn is_stopping(&self, session_id: &str) -> bool {
+        self.stopping_sessions.contains(session_id)
+    }
+
+    pub(crate) fn exit_code(&self, session_id: &str) -> Option<i32> {
+        self.exit_codes.get(session_id).copied().flatten()
+    }
+
+    pub(crate) fn has_exit_code(&self, session_id: &str) -> bool {
+        self.exit_codes.contains_key(session_id)
+    }
+
+    pub(crate) fn clear_exit_code(&mut self, session_id: &str) {
+        self.exit_codes.remove(session_id);
+    }
+
+    pub(crate) fn retain_exit_codes(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.exit_codes.retain(|id, _| keep(id));
+    }
+
+    pub(crate) fn record_exit(&mut self, session_id: &str, exit_code: Option<i32>) -> bool {
+        self.exit_codes.insert(session_id.to_owned(), exit_code);
+        self.transitions.remove(session_id);
+        self.stopping_sessions.remove(session_id)
+    }
+
+    pub(crate) fn clear_session(&mut self, session_id: &str) {
+        self.exit_codes.remove(session_id);
+        self.transitions.remove(session_id);
+        self.stopping_sessions.remove(session_id);
+    }
+
+    pub(crate) fn is_fork_confirm_open(&self) -> bool {
+        self.fork_confirm.is_some()
+    }
+
+    pub(crate) fn is_fork_confirm_pending(&self) -> bool {
+        self.fork_confirm
+            .as_ref()
+            .is_some_and(|confirm| confirm.pending)
+    }
+
+    pub(crate) fn is_fork_pending(&self, session_id: &str) -> bool {
+        self.fork_confirm
+            .as_ref()
+            .is_some_and(|confirm| confirm.pending && confirm.session_id == session_id)
+            || self.is_fork_in_progress(session_id)
+    }
+
+    pub(crate) fn is_fork_in_progress(&self, session_id: &str) -> bool {
+        self.forking_sessions.contains_key(session_id)
+            || self
+                .forking_sessions
+                .values()
+                .any(|fork_id| fork_id == session_id)
+    }
+
+    pub(crate) fn is_fork_materializing(&self, session_id: &str) -> bool {
+        self.forking_sessions
+            .values()
+            .any(|fork_id| fork_id == session_id)
+    }
+
+    pub(crate) fn open_remote_fork_confirm(&mut self, session_id: &str) {
+        self.fork_confirm = Some(ForkConfirm {
+            session_id: session_id.to_owned(),
+            pending: false,
+        });
+    }
+
+    pub(crate) fn open_fork_confirm(&mut self, entry: Option<&DirectSessionEntry>) {
+        self.fork_confirm = fork_confirmation(entry);
+    }
+
+    pub(crate) fn take_fork_confirm(&mut self) -> Option<ForkConfirm> {
+        self.fork_confirm.take()
+    }
+
+    pub(crate) fn clear_fork_confirm(&mut self) {
+        self.fork_confirm = None;
+    }
+
+    pub(crate) fn begin_fork_submission(&mut self) -> Option<String> {
+        let confirm = self.fork_confirm.as_mut()?;
+        if confirm.pending {
+            return None;
+        }
+        confirm.pending = true;
+        Some(confirm.session_id.clone())
+    }
+
+    pub(crate) fn cancel_fork_confirm(&mut self) {
+        if self
+            .fork_confirm
+            .as_ref()
+            .is_some_and(|confirm| !confirm.pending)
+        {
+            self.fork_confirm = None;
+        }
+    }
+
+    pub(crate) fn accept_fork_started(
+        &mut self,
+        source_session_id: &str,
+        fork_session_id: &str,
+    ) -> bool {
+        if !self
+            .fork_confirm
+            .as_ref()
+            .is_some_and(|confirm| confirm.pending && confirm.session_id == source_session_id)
+        {
+            return false;
+        }
+        self.fork_confirm = None;
+        self.forking_sessions
+            .insert(source_session_id.to_owned(), fork_session_id.to_owned());
+        true
+    }
+
+    pub(crate) fn finish_fork_tracking(&mut self, fork_session_id: &str) -> Option<String> {
+        let source_session_id = self
+            .forking_sessions
+            .iter()
+            .find_map(|(source_id, fork_id)| {
+                (fork_id == fork_session_id).then(|| source_id.clone())
+            })?;
+        self.forking_sessions.remove(&source_session_id);
+        Some(source_session_id)
+    }
+
+    pub(crate) fn cancel_fork_source(&mut self, source_session_id: &str) -> Option<String> {
+        self.forking_sessions.remove(source_session_id)
+    }
+
+    pub(crate) fn fail_fork(&mut self, source_session_id: &str) -> Option<String> {
+        let fork_session_id = self.forking_sessions.remove(source_session_id)?;
+        self.transitions.remove(&fork_session_id);
+        Some(fork_session_id)
+    }
+}
+
 fn fork_confirmation(entry: Option<&DirectSessionEntry>) -> Option<ForkConfirm> {
     entry
         .filter(|entry| {
@@ -93,57 +313,6 @@ fn fork_confirmation(entry: Option<&DirectSessionEntry>) -> Option<ForkConfirm> 
             session_id: entry.session_id.clone(),
             pending: false,
         })
-}
-
-fn begin_fork_submission(confirm: &mut Option<ForkConfirm>) -> Option<String> {
-    let confirm = confirm.as_mut()?;
-    if confirm.pending {
-        return None;
-    }
-    confirm.pending = true;
-    Some(confirm.session_id.clone())
-}
-
-fn cancel_fork_confirmation(confirm: &mut Option<ForkConfirm>) {
-    if confirm.as_ref().is_some_and(|confirm| !confirm.pending) {
-        *confirm = None;
-    }
-}
-
-pub(crate) fn fork_in_progress(forks: &HashMap<String, String>, session_id: &str) -> bool {
-    forks.contains_key(session_id) || forks.values().any(|fork_id| fork_id == session_id)
-}
-
-pub(crate) fn fork_materializing(forks: &HashMap<String, String>, session_id: &str) -> bool {
-    forks.values().any(|fork_id| fork_id == session_id)
-}
-
-fn accept_fork_started(
-    confirm: &mut Option<ForkConfirm>,
-    forks: &mut HashMap<String, String>,
-    source_session_id: &str,
-    fork_session_id: &str,
-) -> bool {
-    if !confirm
-        .as_ref()
-        .is_some_and(|confirm| confirm.pending && confirm.session_id == source_session_id)
-    {
-        return false;
-    }
-    *confirm = None;
-    forks.insert(source_session_id.to_owned(), fork_session_id.to_owned());
-    true
-}
-
-fn finish_fork_tracking(
-    forks: &mut HashMap<String, String>,
-    fork_session_id: &str,
-) -> Option<String> {
-    let source_session_id = forks
-        .iter()
-        .find_map(|(source_id, fork_id)| (fork_id == fork_session_id).then(|| source_id.clone()))?;
-    forks.remove(&source_session_id);
-    Some(source_session_id)
 }
 
 impl NativeRoot {
@@ -182,26 +351,20 @@ impl NativeRoot {
                     .front_page_session(session_id, cx)
                     .is_some_and(|entry| entry.native_fork)
             {
-                self.fork_confirm = Some(ForkConfirm {
-                    session_id: session_id.into(),
-                    pending: false,
-                });
+                self.chat_lifecycle.open_remote_fork_confirm(session_id);
                 cx.notify();
             }
             return;
         }
 
-        if self
-            .fork_confirm
-            .as_ref()
-            .is_some_and(|confirm| confirm.pending)
-        {
+        if self.chat_lifecycle.is_fork_confirm_pending() {
             return;
         }
-        if fork_in_progress(&self.forking_sessions, session_id) {
+        if self.chat_lifecycle.is_fork_in_progress(session_id) {
             return;
         }
-        self.fork_confirm = fork_confirmation(self.session_entry(session_id, cx));
+        let entry = self.session_entry(session_id, cx);
+        self.chat_lifecycle.open_fork_confirm(entry);
         cx.notify();
     }
 
@@ -218,7 +381,7 @@ impl NativeRoot {
     pub(crate) fn confirm_fork_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let remote = self.front_page_client(cx).is_remote();
         let (source_session_id, title, size) = if remote {
-            let Some(confirm) = self.fork_confirm.take() else {
+            let Some(confirm) = self.chat_lifecycle.take_fork_confirm() else {
                 return;
             };
             let size = self
@@ -227,11 +390,11 @@ impl NativeRoot {
                 .unwrap_or((INITIAL_COLS, INITIAL_ROWS));
             (confirm.session_id, None, (size.0.max(20), size.1.max(8)))
         } else {
-            let Some(id) = begin_fork_submission(&mut self.fork_confirm) else {
+            let Some(id) = self.chat_lifecycle.begin_fork_submission() else {
                 return;
             };
             let Some(entry) = self.session_entry(&id, cx) else {
-                self.fork_confirm = None;
+                self.chat_lifecycle.clear_fork_confirm();
                 cx.notify();
                 return;
             };
@@ -324,17 +487,17 @@ impl NativeRoot {
                     return;
                 };
                 if launcher.is_none() && this.remote_client.ui.epoch != origin_epoch {
-                    this.forking_sessions.remove(&source_session_id);
+                    this.chat_lifecycle.cancel_fork_source(&source_session_id);
                     cx.notify();
                     return;
                 }
                 if launcher.is_none() {
-                    this.fork_confirm = None;
+                    this.chat_lifecycle.clear_fork_confirm();
                 }
                 match result {
                     Ok(spawned) => {
                         let session_id = spawned;
-                        finish_fork_tracking(&mut this.forking_sessions, &session_id);
+                        this.chat_lifecycle.finish_fork_tracking(&session_id);
                         let should_reveal = launcher.as_ref().map_or(reveal, |launcher| {
                             this.update_launcher_visible(launcher, cx)
                         });
@@ -352,7 +515,7 @@ impl NativeRoot {
                             this.sync_active_project_from_active_tab(cx);
                             this.set_route(AppRoute::Chat, cx);
                             this.ensure_active_tab_attached(window, cx)?;
-                            if !this.chat_transitions.contains_key(&session_id) {
+                            if !this.chat_lifecycle.has_transition(&session_id) {
                                 this.begin_chat_transition(
                                     &session_id,
                                     chat_lifecycle::TransitionKind::Starting,
@@ -371,9 +534,9 @@ impl NativeRoot {
                         }
                     }
                     Err(error) => {
-                        let fork_session_id = this.forking_sessions.remove(&source_session_id);
-                        if let Some(fork_session_id) = fork_session_id {
-                            this.chat_transitions.remove(&fork_session_id);
+                        if let Some(fork_session_id) =
+                            this.chat_lifecycle.fail_fork(&source_session_id)
+                        {
                             this.attached.remove(&fork_session_id);
                         }
                         this.refresh_sessions(cx);
@@ -402,7 +565,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn cancel_fork_chat(&mut self, cx: &mut Context<Self>) {
-        cancel_fork_confirmation(&mut self.fork_confirm);
+        self.chat_lifecycle.cancel_fork_confirm();
         cx.notify();
     }
 
@@ -479,10 +642,8 @@ impl NativeRoot {
                     if is_pane_shell {
                         self.attached.remove(&session_id);
                     }
-                    self.session_exit_codes
-                        .insert(session_id.clone(), exit_code);
-                    self.chat_transitions.remove(&session_id);
-                    let focus_on_completion = self.stopping_sessions.remove(&session_id)
+                    let was_stopping = self.chat_lifecycle.record_exit(&session_id, exit_code);
+                    let focus_on_completion = was_stopping
                         || self.pending_pane_closes.contains_key(&session_id)
                         || self.sidebar.read(cx).session_archiving(&session_id);
                     self.refresh_store(StoreRefreshKind::All, cx);
@@ -511,9 +672,7 @@ impl NativeRoot {
             "session/archived" => {
                 if let Some(session_id) = session_id {
                     self.attached.remove(&session_id);
-                    self.session_exit_codes.remove(&session_id);
-                    self.chat_transitions.remove(&session_id);
-                    self.stopping_sessions.remove(&session_id);
+                    self.chat_lifecycle.clear_session(&session_id);
                     self.refresh_store(StoreRefreshKind::All, cx);
                     self.sync_cached_active_chat_detail(cx);
                 }
@@ -522,7 +681,11 @@ impl NativeRoot {
                 if let Some(session_id) = session_id {
                     let spawned_seq = chat_lifecycle::spawned_output_seq(&event.payload);
                     self.attached.remove(&session_id);
-                    if finish_fork_tracking(&mut self.forking_sessions, &session_id).is_some() {
+                    if self
+                        .chat_lifecycle
+                        .finish_fork_tracking(&session_id)
+                        .is_some()
+                    {
                         self.begin_chat_transition(
                             &session_id,
                             chat_lifecycle::TransitionKind::Starting,
@@ -531,10 +694,9 @@ impl NativeRoot {
                             cx,
                         );
                     }
-                    if let Some(transition) = self.chat_transitions.get_mut(&session_id) {
-                        if let Some(seq) = spawned_seq {
-                            transition.baseline_seq = seq;
-                        }
+                    if let Some(seq) = spawned_seq {
+                        self.chat_lifecycle
+                            .update_transition_baseline(&session_id, seq);
                     }
                     self.refresh_sessions(cx);
                     if let Some(layout) = self.tabs.active().cloned().filter(|layout| {
@@ -555,12 +717,10 @@ impl NativeRoot {
                 if let (Some(source_session_id), Some(session_id)) =
                     (source_session_id, session_id.as_deref())
                 {
-                    if accept_fork_started(
-                        &mut self.fork_confirm,
-                        &mut self.forking_sessions,
-                        source_session_id,
-                        session_id,
-                    ) {
+                    if self
+                        .chat_lifecycle
+                        .accept_fork_started(source_session_id, session_id)
+                    {
                         let placement = (|| -> Result<()> {
                             self.refresh_sessions(cx);
                             self.reload_tabs(cx)?;
@@ -722,23 +882,15 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.next_chat_transition_generation += 1;
-        let generation = self.next_chat_transition_generation;
         let baseline_seq = baseline_seq.unwrap_or_else(|| {
             self.attached
                 .get(session_id)
                 .map(|chat| chat.terminal.output_activity().last_seq)
                 .unwrap_or(0)
         });
-        self.chat_transitions.insert(
-            session_id.to_owned(),
-            ChatTransition {
-                kind,
-                started_at: Instant::now(),
-                baseline_seq,
-                generation,
-            },
-        );
+        let generation = self
+            .chat_lifecycle
+            .start_transition(session_id, kind, baseline_seq);
         if self.route == AppRoute::Chat
             && self.active_focused_session_id().as_deref() == Some(session_id)
         {
@@ -751,7 +903,7 @@ impl NativeRoot {
                 .await;
             let done = weak
                 .update_in(cx, |this, window, cx| {
-                    let Some(transition) = this.chat_transitions.get(&tracked_id).copied() else {
+                    let Some(transition) = this.chat_lifecycle.transition(&tracked_id) else {
                         return true;
                     };
                     if transition.generation != generation {
@@ -770,7 +922,7 @@ impl NativeRoot {
                         now,
                     );
                     if settled {
-                        this.chat_transitions.remove(&tracked_id);
+                        this.chat_lifecycle.clear_transition(&tracked_id);
                         if this.remote_client.is_local() && this.route == AppRoute::Chat {
                             let active_drawer = this
                                 .tabs
@@ -803,16 +955,14 @@ impl NativeRoot {
 #[cfg(test)]
 mod tests {
     use super::{
-        accept_fork_started, archive_chat_pane_target, begin_fork_submission,
-        cancel_fork_confirmation, finish_fork_tracking, fork_confirmation, fork_in_progress,
-        fork_materializing, pane_rename_change, tab_close_behavior, tab_is_terminal,
-        PaneRenameChange, TabCloseBehavior,
+        archive_chat_pane_target, pane_rename_change, tab_close_behavior, tab_is_terminal,
+        ChatLifecycleState, PaneRenameChange, TabCloseBehavior,
     };
+    use crate::surfaces::chat_lifecycle::TransitionKind;
     use crate::{PendingPaneClose, TerminalCloseTarget};
     use runner_app::pane_layout::{PaneLayout, SplitOrientation};
     use runner_core::protocol::model::{Runtime, SessionStatus};
     use runner_core::protocol::session::DirectSessionEntry;
-    use std::collections::HashMap;
 
     #[test]
     fn queued_input_errors_reach_only_the_active_chat_tab() {
@@ -908,16 +1058,18 @@ mod tests {
             root.route = crate::AppRoute::Chat;
             root.stop_focused_session(&crate::StopFocusedSession, window, cx);
             root.resume_focused_session(&crate::ResumeFocusedSession, window, cx);
-            assert!(root.stopping_sessions.is_empty());
-            assert!(root.chat_transitions.is_empty());
+            assert!(root.chat_lifecycle.stopping_sessions.is_empty());
+            assert!(root.chat_lifecycle.transitions.is_empty());
             assert_eq!(
                 root.front_page_session("busy-shell", cx).unwrap().status,
                 SessionStatus::Running
             );
             root
         });
-        host.read_with(&cx, |root, _| assert!(root.stopping_sessions.is_empty()))
-            .unwrap();
+        host.read_with(&cx, |root, _| {
+            assert!(root.chat_lifecycle.stopping_sessions.is_empty())
+        })
+        .unwrap();
     }
 
     #[test]
@@ -977,7 +1129,10 @@ mod tests {
             loop {
                 let mut finished = false;
                 harness.act(|root, _, cx| {
-                    finished = !root.stopping_sessions.contains("exited-shell");
+                    finished = !root
+                        .chat_lifecycle
+                        .stopping_sessions
+                        .contains("exited-shell");
                     if finished {
                         assert!(root.chat_error.is_none(), "{:?}", root.chat_error);
                         root.reload_tabs(cx).unwrap();
@@ -1110,65 +1265,106 @@ mod tests {
     #[test]
     fn fork_confirmation_opens_cancels_and_rejects_ineligible_sessions() {
         let entry = direct_session("codex", true);
-        let mut confirm = fork_confirmation(Some(&entry));
-        assert_eq!(confirm.as_ref().map(|confirm| confirm.pending), Some(false));
-        cancel_fork_confirmation(&mut confirm);
-        assert!(confirm.is_none());
+        let mut state = ChatLifecycleState::default();
+        state.open_fork_confirm(Some(&entry));
+        assert_eq!(
+            state.fork_confirm.as_ref().map(|confirm| confirm.pending),
+            Some(false)
+        );
+        state.cancel_fork_confirm();
+        assert!(state.fork_confirm.is_none());
 
-        assert!(fork_confirmation(Some(&direct_session("codex", false))).is_none());
-        assert!(fork_confirmation(Some(&direct_session("shell", true))).is_none());
-        assert!(fork_confirmation(None).is_none());
+        state.open_fork_confirm(Some(&direct_session("codex", false)));
+        assert!(state.fork_confirm.is_none());
+        state.open_fork_confirm(Some(&direct_session("shell", true)));
+        assert!(state.fork_confirm.is_none());
+        state.open_fork_confirm(None);
+        assert!(state.fork_confirm.is_none());
     }
 
     #[test]
     fn fork_confirmation_allows_only_one_backend_submission() {
-        let mut confirm = fork_confirmation(Some(&direct_session("claude-code", true)));
+        let mut state = ChatLifecycleState::default();
+        state.open_fork_confirm(Some(&direct_session("claude-code", true)));
         let mut calls = 0;
         for _ in 0..2 {
-            if begin_fork_submission(&mut confirm).is_some() {
+            if state.begin_fork_submission().is_some() {
                 calls += 1;
             }
         }
         assert_eq!(calls, 1);
-        assert!(confirm.as_ref().is_some_and(|confirm| confirm.pending));
-        cancel_fork_confirmation(&mut confirm);
-        assert!(confirm.is_some());
+        assert!(state.is_fork_confirm_pending());
+        state.cancel_fork_confirm();
+        assert!(state.is_fork_confirm_open());
     }
 
     #[test]
     fn fork_started_moves_busy_state_from_confirmation_to_both_sessions() {
-        let mut confirm = fork_confirmation(Some(&direct_session("codex", true)));
-        assert_eq!(
-            begin_fork_submission(&mut confirm).as_deref(),
-            Some("chat-1")
-        );
-        let mut forks = HashMap::new();
+        let mut state = ChatLifecycleState::default();
+        state.open_fork_confirm(Some(&direct_session("codex", true)));
+        assert_eq!(state.begin_fork_submission().as_deref(), Some("chat-1"));
+        assert!(state.is_fork_pending("chat-1"));
+        assert!(!state.is_fork_pending("another-chat"));
 
-        assert!(!accept_fork_started(
-            &mut confirm,
-            &mut forks,
-            "another-chat",
-            "fork-1",
-        ));
-        assert!(confirm.as_ref().is_some_and(|confirm| confirm.pending));
-        assert!(accept_fork_started(
-            &mut confirm,
-            &mut forks,
-            "chat-1",
-            "fork-1",
-        ));
-        assert!(confirm.is_none());
-        assert!(fork_in_progress(&forks, "chat-1"));
-        assert!(fork_in_progress(&forks, "fork-1"));
-        assert!(!fork_in_progress(&forks, "another-chat"));
-        assert!(!fork_materializing(&forks, "chat-1"));
-        assert!(fork_materializing(&forks, "fork-1"));
+        assert!(!state.accept_fork_started("another-chat", "fork-1"));
+        assert!(state.is_fork_confirm_pending());
+        assert!(state.accept_fork_started("chat-1", "fork-1"));
+        assert!(!state.is_fork_confirm_open());
+        assert!(state.is_fork_in_progress("chat-1"));
+        assert!(state.is_fork_in_progress("fork-1"));
+        assert!(!state.is_fork_in_progress("another-chat"));
+        assert!(!state.is_fork_materializing("chat-1"));
+        assert!(state.is_fork_materializing("fork-1"));
+        assert!(state.is_fork_pending("chat-1"));
+        assert!(state.is_fork_pending("fork-1"));
 
         assert_eq!(
-            finish_fork_tracking(&mut forks, "fork-1").as_deref(),
+            state.finish_fork_tracking("fork-1").as_deref(),
             Some("chat-1")
         );
-        assert!(forks.is_empty());
+        assert!(state.forking_sessions.is_empty());
+    }
+
+    #[test]
+    fn lifecycle_state_tracks_transitions_stopping_and_exit_codes() {
+        let mut state = ChatLifecycleState::default();
+        let first = state.start_transition("chat-1", TransitionKind::Starting, 10);
+        let second = state.start_transition("chat-1", TransitionKind::Resuming, 20);
+        assert_eq!(first, 1);
+        assert_eq!(second, 2);
+        assert!(state.has_transition("chat-1"));
+        assert_eq!(
+            state.transition_kind("chat-1"),
+            Some(TransitionKind::Resuming)
+        );
+        assert_eq!(state.transition("chat-1").unwrap().baseline_seq, 20);
+        state.update_transition_baseline("chat-1", 42);
+        assert_eq!(state.transition("chat-1").unwrap().baseline_seq, 42);
+
+        assert!(state.begin_stopping("chat-1"));
+        assert!(!state.begin_stopping("chat-1"));
+        assert!(state.is_stopping("chat-1"));
+
+        assert!(state.record_exit("chat-1", Some(17)));
+        assert!(!state.record_exit("chat-1", Some(17)));
+        assert!(!state.has_transition("chat-1"));
+        assert!(!state.is_stopping("chat-1"));
+        assert!(state.has_exit_code("chat-1"));
+        assert_eq!(state.exit_code("chat-1"), Some(17));
+
+        state.record_exit("chat-2", None);
+        assert!(state.has_exit_code("chat-2"));
+        assert_eq!(state.exit_code("chat-2"), None);
+        state.retain_exit_codes(|id| id == "chat-1");
+        assert!(state.has_exit_code("chat-1"));
+        assert!(!state.has_exit_code("chat-2"));
+
+        state.start_transition("chat-1", TransitionKind::Starting, 0);
+        state.begin_stopping("chat-1");
+        state.clear_session("chat-1");
+        assert!(!state.has_exit_code("chat-1"));
+        assert!(!state.has_transition("chat-1"));
+        assert!(!state.is_stopping("chat-1"));
     }
 }
 

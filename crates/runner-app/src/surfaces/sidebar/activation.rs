@@ -79,8 +79,8 @@ impl NativeRoot {
             .collect::<std::collections::HashSet<_>>();
         self.pane_action_menus
             .retain(|id, _| direct_visible.contains(id.as_str()));
-        self.session_exit_codes
-            .retain(|id, _| direct_visible.contains(id.as_str()));
+        self.chat_lifecycle
+            .retain_exit_codes(|id| direct_visible.contains(id));
     }
 
     pub(crate) fn dismiss_sidebar_transients(&mut self, cx: &mut Context<Self>) {

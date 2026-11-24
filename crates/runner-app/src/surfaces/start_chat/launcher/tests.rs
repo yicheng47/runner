@@ -1634,7 +1634,7 @@ fn a_second_close_right_after_a_landing_leaves_the_terminal_it_landed_on() {
             harness.act(|root, _, cx| {
                 root.reload_tabs(cx).unwrap();
                 gone = root.session_entry(session, cx).is_none()
-                    && !root.stopping_sessions.contains(session);
+                    && !root.chat_lifecycle.stopping_sessions.contains(session);
             });
             if gone {
                 return;
@@ -1674,7 +1674,7 @@ fn a_second_close_right_after_a_landing_leaves_the_terminal_it_landed_on() {
     harness.visual.run_until_parked();
     harness.act(|root, _, cx| {
         root.reload_tabs(cx).unwrap();
-        assert!(root.stopping_sessions.is_empty());
+        assert!(root.chat_lifecycle.stopping_sessions.is_empty());
         assert!(root.session_entry("landing-shell", cx).is_some());
         assert_eq!(root.tabs.active_tab_id(), Some(tabs[1].as_str()));
     });

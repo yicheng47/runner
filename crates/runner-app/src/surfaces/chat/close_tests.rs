@@ -199,7 +199,7 @@ fn check_async_close(runtime: &str, archive_all: bool) {
             }
         });
         harness.act(|root, window, cx| {
-            assert!(!root.stopping_sessions.contains("closing"));
+            assert!(!root.chat_lifecycle.stopping_sessions.contains("closing"));
             assert!(root.pending_pane_closes.is_empty());
             if archive_all {
                 assert_eq!(

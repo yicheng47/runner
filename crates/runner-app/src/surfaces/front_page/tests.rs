@@ -984,8 +984,9 @@ impl Transport for EntryTrace {
 
 #[test]
 fn chat_lifecycle_entry_points_dispatch_once_for_local_and_remote_targets() {
+    use crate::surfaces::chat::ForkConfirm;
     use crate::surfaces::remote_client::tests as remote_test;
-    use crate::{AppRoute, ForkConfirm};
+    use crate::AppRoute;
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     for remote in [false, true] {
         let temp = tempfile::tempdir().unwrap();
@@ -1046,7 +1047,7 @@ fn chat_lifecycle_entry_points_dispatch_once_for_local_and_remote_targets() {
                         root.confirm_terminal_close(window, cx);
                     }
                     _ => {
-                        root.fork_confirm = Some(ForkConfirm {
+                        root.chat_lifecycle.fork_confirm = Some(ForkConfirm {
                             session_id: session.into(),
                             pending: false,
                         });

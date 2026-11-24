@@ -94,14 +94,6 @@ pub(crate) struct SidebarVisibilityTransition {
     pub(crate) started_at: Option<Instant>,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct ChatTransition {
-    pub(crate) kind: surfaces::chat_lifecycle::TransitionKind,
-    pub(crate) started_at: Instant,
-    pub(crate) baseline_seq: u64,
-    pub(crate) generation: u64,
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct ChatRestoreFallback {
     pub(crate) pane_id: String,
@@ -210,12 +202,6 @@ pub(crate) struct PendingTabClose {
     pub(crate) tab_id: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ForkConfirm {
-    pub(crate) session_id: String,
-    pub(crate) pending: bool,
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum ArchiveAllSource {
     Chat,
@@ -309,10 +295,7 @@ pub(crate) struct NativeRoot {
     pub(crate) project_modal: Option<ProjectModal>,
     pub(crate) project_delete_confirm: Option<String>,
     pub(crate) project_delete_busy: bool,
-    pub(crate) stopping_sessions: HashSet<String>,
-    pub(crate) chat_transitions: HashMap<String, ChatTransition>,
-    pub(crate) next_chat_transition_generation: u64,
-    pub(crate) session_exit_codes: HashMap<String, Option<i32>>,
+    pub(crate) chat_lifecycle: surfaces::chat::ChatLifecycleState,
     pub(crate) chat_error: Option<crate::i18n::Text>,
     pub(crate) chat_restore_fallback: Option<ChatRestoreFallback>,
     pub(crate) daemon_retrying: bool,
@@ -345,8 +328,6 @@ pub(crate) struct NativeRoot {
     pub(crate) agent_tasks: surfaces::background_tasks::BackgroundTasks,
     pub(crate) agent_update: Option<Entity<surfaces::agent_update::AgentUpdateDialog>>,
     pub(crate) setup: surfaces::start_chat::setup::SetupState,
-    pub(crate) fork_confirm: Option<ForkConfirm>,
-    pub(crate) forking_sessions: HashMap<String, String>,
     pub(crate) last_focused_role_id: Option<String>,
     pub(crate) split_sizes_dirty: bool,
     pub(crate) drawer_resizing: bool,

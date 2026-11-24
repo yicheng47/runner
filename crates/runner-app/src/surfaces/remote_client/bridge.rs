@@ -7,7 +7,7 @@ impl NativeRoot {
         self.start_chat_modal = None;
         self.pane_rename = None;
         self.maximized_panes.clear();
-        self.fork_confirm = None;
+        self.chat_lifecycle.clear_fork_confirm();
         self.terminal_close_confirm = None;
     }
 

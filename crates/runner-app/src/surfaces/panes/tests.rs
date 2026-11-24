@@ -1013,7 +1013,7 @@ fn status_grows_leftward_and_the_lifecycle_slot_never_moves() {
     let mut visual = VisualTestContext::from_window(host.into(), &cx);
     for zoom in [1., 1.3] {
         host.update(&mut visual, |root, window, cx| {
-            root.chat_transitions.remove("direct-agent");
+            root.chat_lifecycle.transitions.remove("direct-agent");
             root.set_zoom(zoom, window, cx)
         })
         .unwrap();
@@ -1055,9 +1055,9 @@ fn status_grows_leftward_and_the_lifecycle_slot_never_moves() {
             );
         }
         host.update(&mut visual, |root, _, cx| {
-            root.chat_transitions.insert(
+            root.chat_lifecycle.transitions.insert(
                 "direct-agent".into(),
-                crate::ChatTransition {
+                crate::surfaces::chat::ChatTransition {
                     kind: crate::surfaces::chat_lifecycle::TransitionKind::Starting,
                     started_at: std::time::Instant::now(),
                     baseline_seq: 0,

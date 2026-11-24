@@ -650,8 +650,8 @@ impl NativeRoot {
         });
         for session_id in &removed {
             self.attached.remove(session_id);
-            self.session_exit_codes.remove(session_id);
-            self.chat_transitions.remove(session_id);
+            self.chat_lifecycle.clear_exit_code(session_id);
+            self.chat_lifecycle.clear_transition(session_id);
         }
         let pane_closes =
             take_pending_pane_closes(&mut self.pending_pane_closes, &attempted, &removed);
