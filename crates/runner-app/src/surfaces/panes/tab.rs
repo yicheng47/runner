@@ -347,7 +347,7 @@ impl NativeRoot {
             .map(|fallback| {
                 let confirm_root = cx.entity();
                 let dismiss_root = cx.entity();
-                let busy = self.chat_transitions.contains_key(&fallback.session_id);
+                let busy = self.chat_lifecycle.has_transition(&fallback.session_id);
                 crate::surfaces::worktree_restore::render_restore_fallback_banner(
                     "chat",
                     &fallback.prompt,

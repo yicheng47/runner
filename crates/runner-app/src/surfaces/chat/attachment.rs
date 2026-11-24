@@ -90,7 +90,7 @@ impl NativeRoot {
         let visible = self.route == AppRoute::Chat
             && layout.drawer_open()
             && !self.chat_secondary_state(session_id, cx).secondary
-            && !self.chat_transitions.contains_key(session_id);
+            && !self.chat_lifecycle.has_transition(session_id);
         let core = self.core(cx);
         if chat_lifecycle::take_visible_drawer_launch_claim(visible, status, || {
             core.session_take_resume_on_launch(session_id)
@@ -118,8 +118,8 @@ impl NativeRoot {
             return Ok(());
         }
         let Some(status) = self.session_entry(session_id, cx).map(|entry| entry.status) else {
-            if self.session_exit_codes.contains_key(session_id)
-                || self.stopping_sessions.contains(session_id)
+            if self.chat_lifecycle.has_exit_code(session_id)
+                || self.chat_lifecycle.is_stopping(session_id)
                 || self.sidebar.read(cx).session_archiving(session_id)
             {
                 self.attached.remove(session_id);
@@ -273,10 +273,10 @@ impl NativeRoot {
             return self.remote_client.session_pending(session_id);
         }
 
-        self.stopping_sessions.contains(session_id)
+        self.chat_lifecycle.is_stopping(session_id)
             || self.sidebar_archiving_session(session_id, cx)
-            || fork_materializing(&self.forking_sessions, session_id)
-            || self.chat_transitions.contains_key(session_id)
+            || self.chat_lifecycle.is_fork_materializing(session_id)
+            || self.chat_lifecycle.has_transition(session_id)
     }
 
     pub(crate) fn session_is_interactive(&self, session_id: &str, cx: &App) -> bool {
@@ -723,7 +723,7 @@ impl NativeRoot {
         if self.chat_secondary_state(session_id, cx).secondary {
             return;
         }
-        if !remote && self.chat_transitions.contains_key(session_id) {
+        if !remote && self.chat_lifecycle.has_transition(session_id) {
             return;
         }
         let layout = self.front_page_layout().cloned();
@@ -764,7 +764,7 @@ impl NativeRoot {
             self.app_store.update(cx, |store, store_cx| {
                 store.remove_session_activity(session_id, store_cx)
             });
-            self.session_exit_codes.remove(session_id);
+            self.chat_lifecycle.clear_exit_code(session_id);
         }
         let Some(operation) =
             WorkspaceAction::prepare(self, format!("session:{session_id}"), &["resume"], cx)
@@ -835,7 +835,7 @@ impl NativeRoot {
                 let result = result.map(drop);
                 let layout = layout.as_ref().unwrap();
                 if this.remote_client.ui.epoch != origin_epoch {
-                    this.chat_transitions.remove(&target);
+                    this.chat_lifecycle.clear_transition(&target);
                     cx.notify();
                     return;
                 }
@@ -850,13 +850,13 @@ impl NativeRoot {
                             });
                         }
                         if let Err(error) = this.ensure_attached(layout, &target, window, cx) {
-                            this.chat_transitions.remove(&target);
+                            this.chat_lifecycle.clear_transition(&target);
                             this.chat_error = Some(error.to_string().into());
                         }
                         this.sync_active_chat_detail(cx);
                     }
                     Err(error) => {
-                        this.chat_transitions.remove(&target);
+                        this.chat_lifecycle.clear_transition(&target);
                         if let Some(prompt) = fallback {
                             this.chat_restore_fallback =
                                 Some(crate::surfaces::root::ChatRestoreFallback {
@@ -901,7 +901,7 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) {
         let remote = self.front_page_client(cx).is_remote();
-        if !remote && self.chat_transitions.contains_key(session_id) {
+        if !remote && self.chat_lifecycle.has_transition(session_id) {
             return;
         }
         let layout = self.front_page_layout().cloned();
@@ -932,7 +932,7 @@ impl NativeRoot {
             );
             self.chat_error = None;
             self.chat_restore_fallback = None;
-            self.session_exit_codes.remove(session_id);
+            self.chat_lifecycle.clear_exit_code(session_id);
         }
         let Some(operation) =
             WorkspaceAction::prepare(self, format!("session:{session_id}"), &["resume"], cx)
@@ -965,7 +965,7 @@ impl NativeRoot {
                 let result = result.map(drop);
                 let layout = layout.as_ref().unwrap();
                 if this.remote_client.ui.epoch != origin_epoch {
-                    this.chat_transitions.remove(&target);
+                    this.chat_lifecycle.clear_transition(&target);
                     cx.notify();
                     return;
                 }
@@ -973,13 +973,13 @@ impl NativeRoot {
                     Ok(()) => {
                         this.refresh_sessions(cx);
                         if let Err(error) = this.ensure_attached(layout, &target, window, cx) {
-                            this.chat_transitions.remove(&target);
+                            this.chat_lifecycle.clear_transition(&target);
                             this.chat_error = Some(error.to_string().into());
                         }
                         this.focus_drawer_terminal(&target, window, cx);
                     }
                     Err(error) => {
-                        this.chat_transitions.remove(&target);
+                        this.chat_lifecycle.clear_transition(&target);
                         this.chat_error = Some(error.into());
                         this.refresh_sessions(cx);
                     }

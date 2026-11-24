@@ -10461,7 +10461,7 @@ fn duplicate_remote_chat_across_windows_arbitrates_ownership_and_transfers_on_fo
             root.stop_chat("s", window, cx);
             root.fork_chat("s", window, cx);
             root.remote_client.mark_remote_sessions_viewed(cx);
-            assert!(root.fork_confirm.is_none());
+            assert!(root.chat_lifecycle.fork_confirm.is_none());
         })
         .unwrap();
     vis_secondary.run_until_parked();

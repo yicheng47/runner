@@ -469,7 +469,11 @@ impl NativeRoot {
     }
 
     pub(crate) fn render_fork_confirm(&self, cx: &mut Context<Self>) -> AnyElement {
-        let confirm = self.fork_confirm.as_ref().expect("fork confirm is open");
+        let confirm = self
+            .chat_lifecycle
+            .fork_confirm
+            .as_ref()
+            .expect("fork confirm is open");
         let label = self
             .front_page_session(&confirm.session_id, cx)
             .map(|entry| entry.label(None))

@@ -139,12 +139,13 @@ impl NativeRoot {
                     .front_page_status(&entry.session_id, cx)
                     .filter(|_| !shell)
                     .map(|mut status| {
-                        if let Some(transition) = self
-                            .chat_transitions
-                            .get(&entry.session_id)
-                            .filter(|_| self.remote_client.is_local())
+                        if let Some(kind) = self
+                            .remote_client
+                            .is_local()
+                            .then(|| self.chat_lifecycle.transition_kind(&entry.session_id))
+                            .flatten()
                         {
-                            status.kind = if transition.kind == TransitionKind::Resuming {
+                            status.kind = if kind == TransitionKind::Resuming {
                                 runner_app::ui::agent_status::StatusKind::Resuming
                             } else {
                                 runner_app::ui::agent_status::StatusKind::Starting
@@ -568,24 +569,22 @@ impl NativeRoot {
             let session_id = entry.session_id.clone();
             let secondary_state = secondary.clone().unwrap_or_default();
             let fork_materializing = self.remote_client.is_local()
-                && super::super::chat::fork_materializing(&self.forking_sessions, &session_id);
+                && self.chat_lifecycle.is_fork_materializing(&session_id);
             let transition = if fork_materializing {
                 Some(TransitionKind::Starting)
+            } else if self.remote_client.is_local() {
+                self.chat_lifecycle.transition_kind(&session_id)
             } else {
-                self.chat_transitions
-                    .get(&session_id)
-                    .filter(|_| self.remote_client.is_local())
-                    .map(|item| item.kind)
+                None
             };
             let overlay = resolve_pane_overlay(
                 self.sidebar_archiving_session(&session_id, cx),
                 transition,
                 entry.status,
                 entry.resumable,
-                self.session_exit_codes
-                    .get(&session_id)
-                    .filter(|_| self.remote_client.is_local())
-                    .copied()
+                self.remote_client
+                    .is_local()
+                    .then(|| self.chat_lifecycle.exit_code(&session_id))
                     .flatten(),
             );
             let interactive = self.cached_session_is_interactive(&session_id, cx);

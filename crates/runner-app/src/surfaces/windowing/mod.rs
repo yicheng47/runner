@@ -239,7 +239,7 @@ impl NativeRoot {
             || self.project_delete_confirm.is_some()
             || self.pane_rename.is_some()
             || self.terminal_close_confirm.is_some()
-            || self.fork_confirm.is_some()
+            || self.chat_lifecycle.is_fork_confirm_open()
             || self.quit_dialog.is_some()
             || self.agent_update.is_some()
             || self.usage.open)

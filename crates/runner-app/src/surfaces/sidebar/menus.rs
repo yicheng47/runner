@@ -187,10 +187,10 @@ impl Sidebar {
         let fork_target = sidebar_fork_menu_target(&layout, &members);
         let fork_pending = fork_target.as_ref().is_some_and(|target| {
             self.shell.upgrade().is_some_and(|shell| {
-                let shell = shell.read(cx);
-                shell.fork_confirm.as_ref().is_some_and(|confirm| {
-                    confirm.pending && confirm.session_id == target.session_id
-                }) || super::chat::fork_in_progress(&shell.forking_sessions, &target.session_id)
+                shell
+                    .read(cx)
+                    .chat_lifecycle
+                    .is_fork_pending(&target.session_id)
             })
         });
         let entries = tab_menu_entries(

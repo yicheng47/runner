@@ -20,7 +20,7 @@ impl NativeRoot {
             return;
         }
         if !remote {
-            if !self.stopping_sessions.insert(session_id.to_owned()) {
+            if !self.chat_lifecycle.begin_stopping(session_id) {
                 return;
             }
             self.chat_error = None;
@@ -55,13 +55,13 @@ impl NativeRoot {
                     return;
                 };
                 if this.remote_client.ui.epoch != origin_epoch {
-                    this.stopping_sessions.remove(&target);
-                    this.chat_transitions.remove(&target);
+                    this.chat_lifecycle.end_stopping(&target);
+                    this.chat_lifecycle.clear_transition(&target);
                     cx.notify();
                     return;
                 }
-                this.stopping_sessions.remove(&target);
-                this.chat_transitions.remove(&target);
+                this.chat_lifecycle.end_stopping(&target);
+                this.chat_lifecycle.clear_transition(&target);
                 this.refresh_sessions(cx);
                 this.sync_active_chat_detail(cx);
                 match result {
@@ -145,7 +145,7 @@ impl NativeRoot {
                 })
                 && !self.session_lifecycle_disabled(&session_id, cx)
                 && (self.remote_client.is_active()
-                    || !self.chat_transitions.contains_key(&session_id));
+                    || !self.chat_lifecycle.has_transition(&session_id));
             if resumable {
                 if let Some(pane_id) = pane_ids.get(&session_id) {
                     self.resume_chat(pane_id, &session_id, window, cx);

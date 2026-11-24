@@ -210,7 +210,7 @@ impl NativeRoot {
         }
         if !remote {
             self.terminal_close_confirm = None;
-            if !self.stopping_sessions.insert(session_id.to_owned()) {
+            if !self.chat_lifecycle.begin_stopping(session_id) {
                 return;
             }
             self.chat_error = None;
@@ -248,16 +248,16 @@ impl NativeRoot {
                 };
                 let result = result.map(drop);
                 if this.remote_client.ui.epoch != origin_epoch {
-                    this.stopping_sessions.remove(&target);
-                    this.chat_transitions.remove(&target);
+                    this.chat_lifecycle.end_stopping(&target);
+                    this.chat_lifecycle.clear_transition(&target);
                     cx.notify();
                     return;
                 }
-                this.stopping_sessions.remove(&target);
+                this.chat_lifecycle.end_stopping(&target);
                 match result {
                     Ok(()) => {
                         this.attached.remove(&target);
-                        this.session_exit_codes.remove(&target);
+                        this.chat_lifecycle.clear_exit_code(&target);
                         this.refresh_sessions(cx);
                         // The daemon has already collapsed the shell's pane.
                         let restore_focus = focus
@@ -482,7 +482,7 @@ impl NativeRoot {
         let remote = self.front_page_client(cx).is_remote();
         if !remote {
             self.terminal_close_confirm = None;
-            if !self.stopping_sessions.insert(session_id.to_owned()) {
+            if !self.chat_lifecycle.begin_stopping(session_id) {
                 return;
             }
             self.prepare_tab_close(&[session_id.to_owned()], cx);
@@ -511,16 +511,16 @@ impl NativeRoot {
                 };
                 let result = result.and_then(|done| done.error.map_or(Ok(()), Err));
                 if this.remote_client.ui.epoch != origin_epoch {
-                    this.stopping_sessions.remove(&target);
-                    this.chat_transitions.remove(&target);
+                    this.chat_lifecycle.end_stopping(&target);
+                    this.chat_lifecycle.clear_transition(&target);
                     cx.notify();
                     return;
                 }
-                this.stopping_sessions.remove(&target);
+                this.chat_lifecycle.end_stopping(&target);
                 match result {
                     Ok(()) => {
                         this.attached.remove(&target);
-                        this.session_exit_codes.remove(&target);
+                        this.chat_lifecycle.clear_exit_code(&target);
                         this.refresh_sessions(cx);
                         let refresh = this.reload_tabs(cx).and_then(|_| {
                             if this.route == AppRoute::Chat {
