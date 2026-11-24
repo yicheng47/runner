@@ -2476,8 +2476,8 @@ fn markdown_opens_rendered_in_both_themes_with_its_blocks_and_local_images() {
     let page = h.read(|view| view.rendered_view()).unwrap();
     let rows = page.read_with(&h.visual, |page, _| page.page().rows.len());
     assert_eq!(
-        rows, 10,
-        "heading, paragraph, image, 2 table rows, 2 items, a code line, HTML, the links"
+        rows, 11,
+        "heading, paragraph, image, 2 table rows, 2 items, code header, a code line, HTML, the links"
     );
 }
 
@@ -2599,7 +2599,7 @@ fn a_long_code_block_list_and_table_draw_only_their_rows_in_view() {
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
     let page = h.read(|view| view.rendered_view()).unwrap();
     let rows = page.read_with(&h.visual, |page, _| page.page().rows.len());
-    assert_eq!(rows, 20_000 + 5_000 + 5_001);
+    assert_eq!(rows, 20_001 + 5_000 + 5_001);
     let counts = crate::render_counts::RenderCounts::default();
     h.visual.update(|_, cx| cx.set_global(counts.clone()));
     for row in [0, 10_000, 22_000, 28_000] {
@@ -2722,13 +2722,20 @@ fn a_drag_selects_rendered_text_across_rows_and_copies_it() {
     h.open("SELECT.md");
     h.wait("the page", |h| h.has("FILE_MARKDOWN"));
     let first = h.visual.debug_bounds("FILE_MD_TEXT 0").unwrap();
-    let middle = h.visual.debug_bounds("FILE_MD_TEXT 1").unwrap();
-    let last = h.visual.debug_bounds("FILE_MD_TEXT 2").unwrap();
+    let header = h.visual.debug_bounds("FILE_MD_CODE_HEADER 1").unwrap();
+    let middle = h.visual.debug_bounds("FILE_MD_TEXT 2").unwrap();
+    let last = h.visual.debug_bounds("FILE_MD_TEXT 3").unwrap();
     let start = gpui::point(first.left() + px(1.), first.center().y);
     let end = gpui::point(last.right() - px(2.), last.center().y);
     h.visual
         .simulate_mouse_down(start, gpui::MouseButton::Left, Modifiers::default());
-    for point in [first.center(), middle.center(), last.center(), end] {
+    for point in [
+        first.center(),
+        header.center(),
+        middle.center(),
+        last.center(),
+        end,
+    ] {
         h.visual
             .simulate_mouse_move(point, Some(gpui::MouseButton::Left), Modifiers::default());
         h.settle();
@@ -2749,14 +2756,42 @@ fn a_drag_selects_rendered_text_across_rows_and_copies_it() {
     page.update(&mut h.visual, |page, cx| {
         use crate::ui::markdown::Position;
         page.select(
-            Position { row: 1, offset: 3 },
-            Position { row: 1, offset: 7 },
+            Position { row: 2, offset: 3 },
+            Position { row: 2, offset: 7 },
             cx,
         )
     });
     assert_eq!(
         page.read_with(&h.visual, |page, _| page.selected_text()),
         Some("main".into())
+    );
+}
+
+#[test]
+fn rendered_code_block_header_scales_with_viewer_font_size() {
+    let mut h = viewer(chat("in-project"));
+    std::fs::write(h.repo.join("SCALE.md"), "```rust\nfn main() {}\n```\n").unwrap();
+    h.open("SCALE.md");
+    h.wait("code header", |h| h.has("FILE_MD_CODE_HEADER 0"));
+    let default_height = h
+        .visual
+        .debug_bounds("FILE_MD_CODE_HEADER 0")
+        .unwrap()
+        .size
+        .height;
+    assert_eq!(default_height, px(28.));
+
+    h.set(|settings| settings.files_font_size = Some(20));
+    h.redraw();
+    let scaled_height = h
+        .visual
+        .debug_bounds("FILE_MD_CODE_HEADER 0")
+        .unwrap()
+        .size
+        .height;
+    assert!(
+        scaled_height > default_height,
+        "header bar should scale with viewer font size: {scaled_height:?} vs {default_height:?}"
     );
 }
 

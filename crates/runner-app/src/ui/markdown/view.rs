@@ -1,18 +1,21 @@
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, App, Bounds, Context, DispatchPhase, FocusHandle, ListAlignment, ListOffset,
-    ListState, MouseExitEvent, MouseMoveEvent, Pixels, SharedString, Window,
+    canvas, div, px, App, Bounds, ClipboardItem, Context, DispatchPhase, FocusHandle,
+    ListAlignment, ListOffset, ListState, MouseButton, MouseExitEvent, MouseMoveEvent, Pixels,
+    SharedString, Window,
 };
 
+use super::code::{CodeBlockId, CodeBlockStates, COPIED_DURATION};
 use super::draw::{ClickGuard, Draw, Look, Surface, MARGIN};
-use super::layout::selected_range;
+use super::layout::{selected_range, RowKind};
 use super::links::LinkTarget;
-use super::Page;
+use super::{CodeBlock, Page};
 
 /// Opens a link's target: a URL in the browser, a file in a new tab.
 pub(crate) type OpenLink = Rc<dyn Fn(LinkTarget, &mut Window, &mut App)>;
@@ -43,6 +46,7 @@ pub(crate) struct MarkdownView {
     selection: Option<(Position, Position)>,
     dragging: bool,
     click_guard: ClickGuard,
+    code_states: CodeBlockStates,
     /// The file was deleted: the page is dimmed and its links do nothing.
     deleted: bool,
 }
@@ -65,6 +69,7 @@ impl MarkdownView {
             selection: None,
             dragging: false,
             click_guard: ClickGuard::default(),
+            code_states: CodeBlockStates::default(),
             deleted: false,
         }
     }
@@ -99,6 +104,7 @@ impl MarkdownView {
         let top = self.list.logical_scroll_top();
         self.page = page;
         self.images = images;
+        self.code_states.prune();
         if !same_text {
             self.selection = None;
         }
@@ -178,6 +184,136 @@ impl MarkdownView {
         }
     }
 
+    fn code_block_row_range(&self, code: &Arc<CodeBlock>) -> Option<Range<usize>> {
+        let mut start = None;
+        let mut end = 0;
+        for (index, row) in self.page.rows.iter().enumerate() {
+            let matches = match &row.kind {
+                RowKind::CodeHeader { code: candidate }
+                | RowKind::Code {
+                    code: candidate, ..
+                } => Arc::ptr_eq(candidate, code),
+                _ => false,
+            };
+            if matches {
+                start.get_or_insert(index);
+                end = index + 1;
+            } else if start.is_some() {
+                break;
+            }
+        }
+        start.map(|start| start..end)
+    }
+
+    pub(super) fn set_code_row_hovered(
+        &mut self,
+        code: &Arc<CodeBlock>,
+        row: usize,
+        hovered: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.code_states.set_row_hovered(code, row, hovered) {
+            cx.notify();
+        }
+    }
+
+    pub(super) fn toggle_code_wrap(&mut self, code: &Arc<CodeBlock>, cx: &mut Context<Self>) {
+        self.code_states.toggle_wrap(code);
+        if let Some(range) = self.code_block_row_range(code) {
+            self.list.remeasure_items(range);
+        }
+        cx.notify();
+    }
+
+    pub(super) fn copy_code_block(&mut self, code: &Arc<CodeBlock>, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(code.copy_text().to_owned()));
+        let code_id = CodeBlockId::of(code);
+        let generation = self.code_states.begin_copied(code);
+        let task = cx.spawn(async move |weak, cx| {
+            cx.background_executor().timer(COPIED_DURATION).await;
+            let _ = weak.update(cx, |view, cx| {
+                if view.code_states.finish_copied(code_id, generation) {
+                    cx.notify();
+                }
+            });
+        });
+        self.code_states.set_copied_timer(code_id, generation, task);
+        cx.notify();
+    }
+
+    pub(super) fn update_code_metrics(
+        &mut self,
+        code: &Arc<CodeBlock>,
+        viewport_width: f32,
+        content_width: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let change = self
+            .code_states
+            .update_metrics(code, viewport_width, content_width);
+        if change.overflow_toggled
+            && let Some(range) = self.code_block_row_range(code)
+        {
+            self.list.remeasure_items(range);
+        }
+        if change.changed {
+            cx.notify();
+        }
+    }
+
+    pub(super) fn scroll_code_x(
+        &mut self,
+        code: &Arc<CodeBlock>,
+        delta_x: f32,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.code_states.scroll_by(code, delta_x) {
+            cx.notify();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn max_code_scroll_x(&self, code: &Arc<CodeBlock>) -> f32 {
+        self.code_states.max_scroll_x(code)
+    }
+
+    pub(super) fn begin_code_scrollbar_drag(
+        &mut self,
+        code: &Arc<CodeBlock>,
+        pointer_x: f32,
+        track_left: f32,
+        track_width: f32,
+        min_thumb: f32,
+        cx: &mut Context<Self>,
+    ) {
+        if self.code_states.begin_scrollbar_drag(
+            code,
+            pointer_x,
+            track_left,
+            track_width,
+            min_thumb,
+        ) {
+            cx.notify();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn code_scroll_x(&self, code: &Arc<CodeBlock>) -> f32 {
+        self.code_states.scroll_x(code)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_code_unwrapped(&self, code: &Arc<CodeBlock>) -> bool {
+        self.code_states.is_unwrapped(code)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_code_copied(&self, code: &Arc<CodeBlock>) -> bool {
+        self.code_states.is_copied(code)
+    }
+
     #[cfg(test)]
     pub(crate) fn scroll_top(&self) -> ListOffset {
         self.list.logical_scroll_top()
@@ -230,6 +366,7 @@ impl Render for MarkdownView {
         let path: SharedString = self.path.clone().into();
         let open_link = self.open_link.clone().filter(|_| !self.deleted);
         let selection = self.selection;
+        let entity = cx.entity();
         let view = cx.weak_entity();
         let count = page.rows.len();
         let bounds_cell = Rc::new(Cell::new(Bounds::<Pixels>::default()));
@@ -244,15 +381,30 @@ impl Render for MarkdownView {
                 let exit_view = exit_view.clone();
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                     if phase == DispatchPhase::Capture {
-                        let _ = move_view.update(cx, |view, _| {
+                        let _ = move_view.update(cx, |view, cx| {
                             view.click_guard
                                 .on_mouse_move(event.position, event.pressed_button);
+                            if event.pressed_button == Some(MouseButton::Left) {
+                                if view
+                                    .code_states
+                                    .update_scrollbar_drag(f32::from(event.position.x))
+                                {
+                                    cx.notify();
+                                }
+                            } else if view.code_states.end_scrollbar_drag() {
+                                cx.notify();
+                            }
                         });
                     }
                 });
                 window.on_mouse_event(move |_: &MouseExitEvent, phase, _, cx| {
                     if phase == DispatchPhase::Capture {
-                        let _ = exit_view.update(cx, |view, _| view.click_guard.on_mouse_exit());
+                        let _ = exit_view.update(cx, |view, cx| {
+                            view.click_guard.on_mouse_exit();
+                            if view.code_states.clear_hover() {
+                                cx.notify();
+                            }
+                        });
                     }
                 });
             },
@@ -275,18 +427,29 @@ impl Render for MarkdownView {
                         .on_mouse_down(event.button, event.position, down_bounds.get());
                 }),
             )
-            .capture_any_mouse_up(cx.listener(|view, event: &gpui::MouseUpEvent, _, _| {
+            .capture_any_mouse_up(cx.listener(|view, event: &gpui::MouseUpEvent, _, cx| {
                 view.click_guard.on_mouse_up(event.button, event.position);
+                if event.button == MouseButton::Left && view.code_states.end_scrollbar_drag() {
+                    cx.notify();
+                }
             }))
             .on_mouse_up(
-                gpui::MouseButton::Left,
-                cx.listener(|view, _, _, _| view.dragging = false),
+                MouseButton::Left,
+                cx.listener(|view, _, _, cx| {
+                    view.dragging = false;
+                    if view.code_states.end_scrollbar_drag() {
+                        cx.notify();
+                    }
+                }),
             )
             .on_mouse_up_out(
-                gpui::MouseButton::Left,
-                cx.listener(|view, _, _, _| {
+                MouseButton::Left,
+                cx.listener(|view, _, _, cx| {
                     view.dragging = false;
                     view.click_guard.reset();
+                    if view.code_states.end_scrollbar_drag() {
+                        cx.notify();
+                    }
                 }),
             )
             .when(self.deleted, |element| element.opacity(0.5))
@@ -294,7 +457,6 @@ impl Render for MarkdownView {
                 gpui::list(self.list.clone(), move |index, _window, cx| {
                     #[cfg(test)]
                     crate::render_counts::count_render("file-markdown-rows", cx);
-                    let _ = cx;
                     let row = &page.rows[index];
                     let selected = match selection {
                         Some((anchor, head)) => {
@@ -309,6 +471,7 @@ impl Render for MarkdownView {
                         None => 0..0,
                     };
                     let top = if index == 0 { 0. } else { row.top };
+                    let code_states = &entity.read(cx).code_states;
                     let draw = Draw {
                         surface: Surface::Document {
                             look: &look,
@@ -316,6 +479,7 @@ impl Render for MarkdownView {
                             from: &path,
                             open_link: open_link.clone(),
                             view: view.clone(),
+                            code_states,
                             top,
                         },
                         index,

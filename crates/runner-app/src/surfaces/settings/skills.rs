@@ -1272,7 +1272,7 @@ impl SkillDetail {
                             )),
                     )
                     .child(markdown::render_compact(
-                        "skill-preview-document",
+                        &format!("skill-preview-{}", skill.entry.path.display()),
                         &doc.body,
                         cx.entity_id(),
                         cx,

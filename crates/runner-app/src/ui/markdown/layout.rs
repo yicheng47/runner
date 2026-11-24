@@ -44,6 +44,10 @@ pub(crate) enum RowKind {
     Heading(u8, Inline),
     Paragraph(Inline),
     Image(ImageRef),
+    /// The header bar above a code block's first line.
+    CodeHeader {
+        code: Arc<CodeBlock>,
+    },
     /// A code line, or a piece of a long one.
     Code {
         code: Arc<CodeBlock>,
@@ -79,7 +83,7 @@ impl Row {
                 .collect::<Vec<_>>()
                 .join("\t"),
             RowKind::Html(line) => line.clone(),
-            RowKind::Image(_) | RowKind::Rule => String::new(),
+            RowKind::CodeHeader { .. } | RowKind::Image(_) | RowKind::Rule => String::new(),
         }
     }
 
@@ -276,19 +280,15 @@ fn flatten_blocks(
             }
             Block::Image(image) => push(rows, RowKind::Image(image.clone()), gap),
             Block::Code(code) => {
+                push(rows, RowKind::CodeHeader { code: code.clone() }, gap);
                 for line in 0..code.document.line_count() {
                     for bytes in fragments(code.document.line(line)) {
-                        let top = if line == 0 && bytes.start == 0 {
-                            gap
-                        } else {
-                            0.
-                        };
                         let kind = RowKind::Code {
                             code: code.clone(),
                             line,
                             bytes,
                         };
-                        push(rows, kind, top);
+                        push(rows, kind, 0.);
                     }
                 }
             }

@@ -11,6 +11,10 @@ struct ParseConfig<'p> {
     /// The Markdown file's path from the workspace root, for local images.
     /// `None` in Compact mode, where images render as alt text without disk access.
     path: Option<&'p str>,
+    /// Whether to run tree-sitter highlighting during parsing. Document mode
+    /// parses off the UI thread and highlights here; Compact mode defers
+    /// highlighting until a code block is drawn so feed projection does zero
+    /// tree-sitter work.
     highlight_code: bool,
     soft_break_as_newline: bool,
 }
@@ -151,8 +155,10 @@ impl<'a> Parser<'a, '_> {
                 Event::Start(Tag::CodeBlock(kind)) => {
                     let language = match kind {
                         CodeBlockKind::Fenced(info) => info
+                            .trim_start()
                             .split(|c: char| c.is_whitespace() || c == ',' || c == '{')
                             .next()
+                            .filter(|word| !word.is_empty())
                             .map(str::to_owned),
                         CodeBlockKind::Indented => None,
                     };
@@ -165,20 +171,27 @@ impl<'a> Parser<'a, '_> {
                             _ => {}
                         }
                     }
-                    let document =
-                        Document::decode(text.strip_suffix('\n').unwrap_or(&text).as_bytes());
+                    let stripped = text
+                        .strip_suffix("\r\n")
+                        .or_else(|| text.strip_suffix('\n'))
+                        .unwrap_or(&text);
+                    let document = Document::decode(stripped.as_bytes());
                     let highlights = if self.config.highlight_code {
                         language
                             .as_deref()
                             .and_then(highlight::grammar_named)
-                            .and_then(|grammar| highlight::highlight(&document, grammar, None))
+                            .and_then(|grammar| {
+                                #[cfg(test)]
+                                super::feed::HIGHLIGHT_COUNT
+                                    .set(super::feed::HIGHLIGHT_COUNT.get() + 1);
+                                highlight::highlight(&document, grammar, None)
+                            })
                     } else {
                         None
                     };
-                    blocks.push(Block::Code(Arc::new(CodeBlock {
-                        document,
-                        highlights,
-                    })));
+                    blocks.push(Block::Code(Arc::new(CodeBlock::new(
+                        language, document, highlights,
+                    ))));
                 }
                 Event::Start(Tag::List(start)) => {
                     let start = *start;

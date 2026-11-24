@@ -9,7 +9,8 @@ use runner_core::protocol::model::{Event, EventKind};
 use super::*;
 use crate::surfaces::mission_workspace::feed_model::{message_target, FeedBlock};
 use crate::ui::markdown::{
-    reset_compact_press, FeedSelection, FeedSelectionHandler, FeedSelectionPhase, Position,
+    reset_compact_press, CompactHeightHandler, FeedSelection, FeedSelectionHandler,
+    FeedSelectionPhase, Position,
 };
 use crate::*;
 
@@ -628,6 +629,34 @@ impl MissionWorkspace {
         self.feed_selecting = false;
     }
 
+    fn remeasure_feed_doc(&self, event_id: &str) {
+        let mut start = None;
+        let mut end = 0;
+        for (index, row) in self.feed_rows.iter().enumerate() {
+            let matches = match *row {
+                FeedRow::Block(group) => match &self.feed_blocks[group] {
+                    FeedBlock::PendingAsk(question) => {
+                        question.markdown_id == event_id || question.id == event_id
+                    }
+                    other => other.id() == event_id,
+                },
+                FeedRow::Message { group, event, .. } => match &self.feed_blocks[group] {
+                    FeedBlock::MessageGroup { events, .. } => events[event].id == event_id,
+                    _ => false,
+                },
+            };
+            if matches {
+                start.get_or_insert(index);
+                end = index + 1;
+            } else if start.is_some() {
+                break;
+            }
+        }
+        if let Some(start) = start {
+            self.feed_list.remeasure_items(start..end);
+        }
+    }
+
     fn update_feed_selection(
         &mut self,
         phase: FeedSelectionPhase,
@@ -676,6 +705,14 @@ impl MissionWorkspace {
             }
             FeedSelectionPhase::Extend => {}
         }
+    }
+
+    fn feed_height_handler(&self, event_id: &str, cx: &Context<Self>) -> CompactHeightHandler {
+        let root = cx.weak_entity();
+        let event_id = event_id.to_owned();
+        Rc::new(move |cx| {
+            let _ = root.update(cx, |this, _| this.remeasure_feed_doc(&event_id));
+        })
     }
 
     fn feed_selection_handler(&self, cx: &mut Context<Self>) -> FeedSelectionHandler {
@@ -960,6 +997,7 @@ impl MissionWorkspace {
                                         self.feed_selection.as_ref(),
                                         selection_color,
                                         &self.feed_selection_handler(cx),
+                                        Some(self.feed_height_handler(&event.id, cx)),
                                         cx,
                                     ))
                                 }

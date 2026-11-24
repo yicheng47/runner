@@ -4,6 +4,7 @@
 //! virtualized [`Row`]s (a code line, list item, or table row each one) so long
 //! documents and blocks draw only what is in view.
 
+mod code;
 mod draw;
 mod feed;
 mod layout;
@@ -14,21 +15,26 @@ mod view;
 #[cfg(test)]
 mod tests;
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock, Weak};
 
+use gpui::{App, EntityId};
 use pulldown_cmark::Alignment;
 use unicode_width::UnicodeWidthChar as _;
 
 use crate::surfaces::files::document::{Document, TAB_WIDTH};
-use crate::surfaces::files::highlight::Highlights;
+use crate::surfaces::files::highlight::{self, Grammar, Highlights};
 
 pub(crate) use draw::reset_compact_press;
 pub(crate) use feed::{
-    render_compact, FeedMarkdown, FeedSelection, FeedSelectionHandler, FeedSelectionPhase,
+    render_compact, render_compact_clamped, CompactHeightHandler, FeedMarkdown, FeedSelection,
+    FeedSelectionHandler, FeedSelectionPhase,
 };
 #[cfg(test)]
-pub(crate) use feed::{LINE_COUNT, PARSE_COUNT, RENDER_COUNT};
+pub(crate) use feed::{HIGHLIGHT_COUNT, LINE_COUNT, PARSE_COUNT, RENDER_COUNT};
 #[cfg(test)]
 pub(crate) use layout::Marker;
 pub(crate) use layout::{Row, RowKind};
@@ -114,19 +120,209 @@ pub(super) fn cell_text(cell: &[Piece]) -> String {
 }
 
 pub(crate) struct CodeBlock {
-    pub(crate) document: Document,
-    pub(crate) highlights: Option<Highlights>,
+    pub(crate) language: Option<String>,
+    pub(crate) document: Arc<Document>,
+    /// Full raw code to copy when this block is rendered from a clamped prefix
+    /// (e.g. a collapsed role or crew prompt); `None` copies `self.document`.
+    copy_text: Option<Arc<str>>,
+    /// Interaction identity token shared across collapsed/expanded presentations
+    /// of the same mounted preview and dropped on teardown.
+    pub(super) state_token: Arc<()>,
+    pub(crate) highlights: Option<Arc<Highlights>>,
+    /// The widest rendered row in monospace columns, accounting for 512-byte
+    /// line splits so unwrapped horizontal scrolling matches drawn rows.
+    pub(super) max_row_columns: usize,
+    /// Filled off the UI thread for large blocks parsed in Compact mode.
+    async_highlights: OnceLock<Option<Arc<Highlights>>>,
+    highlight_started: AtomicBool,
+    cancel: Arc<AtomicUsize>,
+}
+
+impl Drop for CodeBlock {
+    fn drop(&mut self) {
+        self.cancel.store(1, Ordering::Relaxed);
+    }
 }
 
 impl std::fmt::Debug for CodeBlock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("CodeBlock")
-            .field(&self.document.text())
+        f.debug_struct("CodeBlock")
+            .field("language", &self.language)
+            .field("text", &self.document.text())
             .finish()
     }
 }
 
 impl CodeBlock {
+    pub(super) fn new(
+        language: Option<String>,
+        document: Document,
+        highlights: Option<Highlights>,
+    ) -> Self {
+        let max_row_columns = max_row_columns(&document);
+        Self {
+            language,
+            document: Arc::new(document),
+            copy_text: None,
+            state_token: Arc::new(()),
+            highlights: highlights.map(Arc::new),
+            max_row_columns,
+            async_highlights: OnceLock::new(),
+            highlight_started: AtomicBool::new(false),
+            cancel: Arc::default(),
+        }
+    }
+
+    pub(super) fn copy_text(&self) -> &str {
+        self.copy_text
+            .as_deref()
+            .unwrap_or_else(|| self.document.text())
+    }
+
+    pub(crate) fn highlights(&self) -> Option<&Highlights> {
+        self.highlights.as_deref().or_else(|| {
+            self.async_highlights
+                .get()
+                .and_then(|found| found.as_deref())
+        })
+    }
+
+    pub(super) fn pending_grammar(&self) -> Option<&'static Grammar> {
+        if self.highlights.is_some() || self.async_highlights.get().is_some() {
+            return None;
+        }
+        self.language.as_deref().and_then(highlight::grammar_named)
+    }
+
+    /// Queues a Compact code block to highlight off the UI thread on first
+    /// draw, coalescing every block drawn for `view` in the same frame into one
+    /// background batch and a single repaint without re-parsing the message.
+    pub(super) fn start_async_highlight(self: &Arc<Self>, view: EntityId, cx: &App) {
+        let Some(grammar) = self.pending_grammar() else {
+            return;
+        };
+        if self.highlight_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        #[cfg(test)]
+        feed::HIGHLIGHT_COUNT.set(feed::HIGHLIGHT_COUNT.get() + 1);
+
+        struct QueuedHighlight {
+            weak: Weak<CodeBlock>,
+            grammar: &'static Grammar,
+        }
+        struct ResetOnAbort(Weak<CodeBlock>);
+        impl Drop for ResetOnAbort {
+            fn drop(&mut self) {
+                if let Some(code) = self.0.upgrade()
+                    && code.async_highlights.get().is_none()
+                {
+                    code.highlight_started.store(false, Ordering::Release);
+                }
+            }
+        }
+        thread_local! {
+            static PENDING_COMPACT_HIGHLIGHTS: RefCell<HashMap<EntityId, Vec<QueuedHighlight>>> =
+                RefCell::new(HashMap::new());
+        }
+
+        let item = QueuedHighlight {
+            weak: Arc::downgrade(self),
+            grammar,
+        };
+        let should_schedule = PENDING_COMPACT_HIGHLIGHTS.with(|queue| {
+            let mut queue = queue.borrow_mut();
+            let is_new = !queue.contains_key(&view);
+            queue.entry(view).or_default().push(item);
+            is_new
+        });
+        if !should_schedule {
+            return;
+        }
+
+        struct PendingGuard(Option<EntityId>);
+        impl PendingGuard {
+            fn take(&mut self) -> Option<EntityId> {
+                self.0.take()
+            }
+        }
+        impl Drop for PendingGuard {
+            fn drop(&mut self) {
+                if let Some(view) = self.0.take() {
+                    let queued = PENDING_COMPACT_HIGHLIGHTS
+                        .with(|queue| queue.borrow_mut().remove(&view))
+                        .unwrap_or_default();
+                    for item in queued {
+                        if let Some(code) = item.weak.upgrade()
+                            && code.async_highlights.get().is_none()
+                        {
+                            code.highlight_started.store(false, Ordering::Release);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut pending_guard = PendingGuard(Some(view));
+        let async_cx = cx.to_async();
+        let bg_executor = cx.background_executor().clone();
+        cx.foreground_executor()
+            .spawn(async move {
+                let Some(view) = pending_guard.take() else {
+                    return;
+                };
+                let queued = PENDING_COMPACT_HIGHLIGHTS
+                    .with(|queue| queue.borrow_mut().remove(&view))
+                    .unwrap_or_default();
+                let mut jobs = Vec::with_capacity(queued.len());
+                let mut guards = Vec::with_capacity(queued.len());
+                for item in queued {
+                    let Some(code) = item.weak.upgrade() else {
+                        continue;
+                    };
+                    if code.async_highlights.get().is_some() {
+                        continue;
+                    }
+                    guards.push(ResetOnAbort(item.weak.clone()));
+                    jobs.push((
+                        item.weak,
+                        Arc::clone(&code.document),
+                        item.grammar,
+                        Arc::clone(&code.cancel),
+                    ));
+                }
+                if jobs.is_empty() {
+                    return;
+                }
+                let results = bg_executor
+                    .spawn(async move {
+                        jobs.into_iter()
+                            .filter_map(|(weak, document, grammar, cancel)| {
+                                if weak.strong_count() == 0 {
+                                    return None;
+                                }
+                                let found = highlight::highlight(&document, grammar, Some(&cancel))
+                                    .map(Arc::new);
+                                Some((weak, found))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .await;
+                let mut any_updated = false;
+                for (weak, found) in results {
+                    if let Some(code) = weak.upgrade() {
+                        let _ = code.async_highlights.set(found);
+                        any_updated = true;
+                    }
+                }
+                drop(guards);
+                if any_updated {
+                    async_cx.update(|cx| cx.notify(view));
+                }
+            })
+            .detach();
+    }
+
     /// `bytes` of a line as drawn, tabs as spaces to their stops, in runs
     /// of one highlight capture.
     pub(super) fn fragment(
@@ -135,8 +331,7 @@ impl CodeBlock {
         bytes: Range<usize>,
     ) -> (String, Vec<(usize, Option<u16>)>) {
         let spans = self
-            .highlights
-            .as_ref()
+            .highlights()
             .map_or(&[][..], |highlights| highlights.line(line));
         let source = self.document.line(line);
         let mut column = self.document.column_at(line, bytes.start);
@@ -172,6 +367,104 @@ impl CodeBlock {
         }
         (text, runs)
     }
+}
+
+fn has_code_block(blocks: &[Block]) -> bool {
+    blocks.iter().any(|block| match block {
+        Block::Code(_) => true,
+        Block::Quote(inner) => has_code_block(inner),
+        Block::List { items, .. } => items.iter().any(|item| has_code_block(&item.blocks)),
+        _ => false,
+    })
+}
+
+fn collect_code_blocks<'a>(blocks: &'a [Block], out: &mut Vec<&'a CodeBlock>) {
+    for block in blocks {
+        match block {
+            Block::Code(code) => out.push(code),
+            Block::Quote(inner) => collect_code_blocks(inner, out),
+            Block::List { items, .. } => {
+                for item in items {
+                    collect_code_blocks(&item.blocks, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn attach_full_copy_text(blocks: &mut [Block], full_codes: &[&CodeBlock], index: &mut usize) {
+    for block in blocks {
+        match block {
+            Block::Code(code) => {
+                if let Some(full) = full_codes.get(*index)
+                    && full.language == code.language
+                    && full.document.text().len() > code.document.text().len()
+                    && full.document.text().starts_with(code.document.text())
+                    && let Some(code_mut) = Arc::get_mut(code)
+                {
+                    code_mut.copy_text = Some(Arc::from(full.document.text()));
+                }
+                *index += 1;
+            }
+            Block::Quote(inner) => attach_full_copy_text(inner, full_codes, index),
+            Block::List { items, .. } => {
+                for item in items {
+                    attach_full_copy_text(&mut item.blocks, full_codes, index);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn assign_state_tokens(blocks: &mut [Block], tokens: &mut Vec<Arc<()>>, index: &mut usize) {
+    for block in blocks {
+        match block {
+            Block::Code(code) => {
+                let token = if let Some(existing) = tokens.get(*index) {
+                    Arc::clone(existing)
+                } else {
+                    let created = Arc::new(());
+                    tokens.push(Arc::clone(&created));
+                    created
+                };
+                if let Some(code_mut) = Arc::get_mut(code) {
+                    code_mut.state_token = token;
+                }
+                *index += 1;
+            }
+            Block::Quote(inner) => assign_state_tokens(inner, tokens, index),
+            Block::List { items, .. } => {
+                for item in items {
+                    assign_state_tokens(&mut item.blocks, tokens, index);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn max_row_columns(document: &Document) -> usize {
+    let has_split_line =
+        (0..document.line_count()).any(|line| document.line(line).len() > FRAGMENT_BYTES);
+    if !has_split_line {
+        return document.columns();
+    }
+    let mut widest = 0;
+    for line in 0..document.line_count() {
+        let text = document.line(line);
+        if text.len() <= FRAGMENT_BYTES {
+            widest = widest.max(document.column_at(line, text.len()));
+        } else {
+            for bytes in layout::fragments(text) {
+                let width =
+                    document.column_at(line, bytes.end) - document.column_at(line, bytes.start);
+                widest = widest.max(width);
+            }
+        }
+    }
+    widest
 }
 
 #[derive(Debug)]
@@ -247,6 +540,58 @@ impl Page {
         }
     }
 
+    /// Parses `text` for a mounted Compact preview, reusing `code_tokens` by
+    /// code-block order so Wrap, horizontal scroll offset and Copy confirmation
+    /// survive Show all / Show less toggles while resetting on teardown.
+    pub(super) fn parse_compact_with_tokens(text: &str, code_tokens: &mut Vec<Arc<()>>) -> Self {
+        #[cfg(test)]
+        feed::PARSE_COUNT.set(feed::PARSE_COUNT.get() + 1);
+        let mut blocks = parse::parse_compact_blocks(text);
+        let mut index = 0;
+        assign_state_tokens(&mut blocks, code_tokens, &mut index);
+        let mut rows = Vec::new();
+        let bottom = layout::flatten(&blocks, layout::LayoutLook::Compact, &mut rows);
+        Self {
+            #[cfg(test)]
+            blocks,
+            rows,
+            bottom,
+        }
+    }
+
+    /// Parses the first `prefix_len` bytes of `full_text` for a collapsed
+    /// Compact preview so layout matches the prefix exactly (including borders,
+    /// scrollbars and Setext boundaries), while backing any code block
+    /// truncated at the cutoff with its full text for Copy and preserving
+    /// interaction tokens across Show all / Show less.
+    pub(super) fn parse_compact_clamped(
+        full_text: &str,
+        prefix_len: usize,
+        code_tokens: &mut Vec<Arc<()>>,
+    ) -> Self {
+        #[cfg(test)]
+        feed::PARSE_COUNT.set(feed::PARSE_COUNT.get() + 1);
+        let prefix = &full_text[..prefix_len.min(full_text.len())];
+        let mut blocks = parse::parse_compact_blocks(prefix);
+        if has_code_block(&blocks) {
+            let full_blocks = parse::parse_compact_blocks(full_text);
+            let mut full_codes = Vec::new();
+            collect_code_blocks(&full_blocks, &mut full_codes);
+            let mut index = 0;
+            attach_full_copy_text(&mut blocks, &full_codes, &mut index);
+        }
+        let mut token_index = 0;
+        assign_state_tokens(&mut blocks, code_tokens, &mut token_index);
+        let mut rows = Vec::new();
+        let bottom = layout::flatten(&blocks, layout::LayoutLook::Compact, &mut rows);
+        Self {
+            #[cfg(test)]
+            blocks,
+            rows,
+            bottom,
+        }
+    }
+
     /// The selected text, rows joined by line breaks without one before the
     /// continued piece of a long code line; a table row is taken whole, its
     /// cells joined by tabs. Returns `None` only for a collapsed or
@@ -258,14 +603,19 @@ impl Page {
             return None;
         }
         let mut copied = String::new();
+        let mut emitted = false;
         for row in start.row..=end.row.min(self.rows.len().saturating_sub(1)) {
             let line = &self.rows[row];
+            if matches!(line.kind, RowKind::CodeHeader { .. }) {
+                continue;
+            }
             let text = line.text();
             let range = layout::selected_range(line, row, start, end, &text);
-            if row > start.row && !line.continues() {
+            if emitted && !line.continues() {
                 copied.push('\n');
             }
             copied.push_str(&text[range]);
+            emitted = true;
         }
         Some(copied)
     }
@@ -275,7 +625,10 @@ impl Page {
     pub(crate) fn matches_text(&self, other: &Page) -> bool {
         self.rows.len() == other.rows.len()
             && self.rows.iter().zip(&other.rows).all(|(left, right)| {
-                left.continues() == right.continues() && left.text() == right.text()
+                matches!(left.kind, RowKind::CodeHeader { .. })
+                    == matches!(right.kind, RowKind::CodeHeader { .. })
+                    && left.continues() == right.continues()
+                    && left.text() == right.text()
             })
     }
 
@@ -286,6 +639,19 @@ impl Page {
             return false;
         }
         let mut last_code: Option<(*const CodeBlock, *const CodeBlock)> = None;
+        let mut same_code = |a: &Arc<CodeBlock>, b: &Arc<CodeBlock>| {
+            let pair = (Arc::as_ptr(a), Arc::as_ptr(b));
+            if Arc::ptr_eq(a, b) || last_code == Some(pair) {
+                return true;
+            }
+            let same = a.language == b.language
+                && a.document.text() == b.document.text()
+                && a.highlights() == b.highlights();
+            if same {
+                last_code = Some(pair);
+            }
+            same
+        };
         self.rows.iter().zip(&other.rows).all(|(left, right)| {
             if !left.same_layout(right) {
                 return false;
@@ -294,6 +660,9 @@ impl Page {
                 (RowKind::Heading(la, ia), RowKind::Heading(lb, ib)) => la == lb && ia == ib,
                 (RowKind::Paragraph(ia), RowKind::Paragraph(ib)) => ia == ib,
                 (RowKind::Image(ia), RowKind::Image(ib)) => ia == ib,
+                (RowKind::CodeHeader { code: a }, RowKind::CodeHeader { code: b }) => {
+                    same_code(a, b)
+                }
                 (
                     RowKind::Code {
                         code: a,
@@ -305,21 +674,7 @@ impl Page {
                         line: lb,
                         bytes: bb,
                     },
-                ) => {
-                    if la != lb || ba != bb {
-                        return false;
-                    }
-                    let pair = (Arc::as_ptr(a), Arc::as_ptr(b));
-                    if Arc::ptr_eq(a, b) || last_code == Some(pair) {
-                        return true;
-                    }
-                    let same =
-                        a.document.text() == b.document.text() && a.highlights == b.highlights;
-                    if same {
-                        last_code = Some(pair);
-                    }
-                    same
-                }
+                ) => la == lb && ba == bb && same_code(a, b),
                 (
                     RowKind::TableRow {
                         alignments: aa,

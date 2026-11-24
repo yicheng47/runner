@@ -108,6 +108,7 @@ const PLAY: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 
 const CIRCLE_STOP: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><rect x="8" y="8" width="8" height="8" rx="1"/></svg>"#;
 const CIRCLE_PLAY: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m10 8 6 4-6 4Z"/></svg>"#;
 const CODE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></svg>"#;
+const TEXT_WRAP: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 16-2 2 2 2"/><path d="M3 12h15a3 3 0 1 1 0 6h-4"/><path d="M3 18h7"/><path d="M3 6h18"/></svg>"#;
 const CHECKBOX: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>"#;
 const SQUARE_CHECK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="m9 12 2 2 4-4"/></svg>"#;
 const SQUARE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="5" y="5" rx="1"/></svg>"#;
@@ -298,6 +299,7 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("circle-question-mark.svg", CIRCLE_QUESTION_MARK),
     ("square.svg", SQUARE),
     ("code.svg", CODE),
+    ("text-wrap.svg", TEXT_WRAP),
     ("checkbox.svg", CHECKBOX),
     ("square-check.svg", SQUARE_CHECK),
     ("pause.svg", PAUSE),
@@ -640,6 +642,13 @@ mod tests {
             "house.svg",
             "undo-2.svg",
         ] {
+            assert!(Assets.load(icon).unwrap().is_some(), "{icon}");
+        }
+    }
+
+    #[test]
+    fn code_block_header_icons_are_registered() {
+        for icon in ["text-wrap.svg", "copy.svg", "check.svg"] {
             assert!(Assets.load(icon).unwrap().is_some(), "{icon}");
         }
     }

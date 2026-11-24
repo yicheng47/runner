@@ -1,22 +1,29 @@
+use std::cell::Cell as StdCell;
 use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    div, img, px, relative, rems, svg, AnyElement, App, CursorStyle, EntityId, Font, FontStyle,
-    FontWeight, Global, HighlightStyle, Hsla, ImageSource, InteractiveText, MouseButton, Pixels,
-    SharedString, StrikethroughStyle, StyledText, TextLayout, TextRun, UnderlineStyle, Window,
+    canvas, div, img, px, relative, rems, svg, AnyElement, App, Bounds, ClipboardItem, CursorStyle,
+    EntityId, Font, FontStyle, FontWeight, Global, HighlightStyle, Hsla, ImageSource,
+    InteractiveText, MouseButton, Pixels, ScrollWheelEvent, SharedString, StrikethroughStyle,
+    StyledText, TextLayout, TextRun, UnderlineStyle, Window,
 };
 use pulldown_cmark::Alignment;
 
-use super::feed::{FeedSelectionHandler, FeedSelectionPhase};
+use super::code::{
+    CodeBlockId, CodeBlockStates, CompactCodeStates, COPIED_DURATION, MIN_SCROLLBAR_THUMB,
+};
+use super::feed::{CompactHeightHandler, FeedSelectionHandler, FeedSelectionPhase};
 use super::layout::{Marker, Row, RowKind};
 use super::links::{is_web_url, route};
 use super::view::{document_allows_click, MarkdownView, OpenLink, Position};
 use super::{cell_text, Cell, CodeBlock, ImageRef, Inline, Piece};
 use crate::surfaces::files::syntax::SyntaxTheme;
 use crate::theme;
+use crate::ui::Tooltip;
 
 /// The rendered page's side margins and the gap above its first block.
 pub(super) const MARGIN: f32 = 20.;
@@ -249,6 +256,17 @@ pub(super) fn note_compact_move(
             .click_guard
             .on_mouse_move(position, pressed_button);
     }
+    if cx.has_global::<CompactCodeStates>() {
+        let states = cx.global_mut::<CompactCodeStates>();
+        let changed = if pressed_button == Some(MouseButton::Left) {
+            states.update_scrollbar_drags(f32::from(position.x))
+        } else {
+            states.end_scrollbar_drags()
+        };
+        for view in changed {
+            cx.notify(view);
+        }
+    }
 }
 
 pub(super) fn note_compact_exit(cx: &mut App) {
@@ -256,6 +274,12 @@ pub(super) fn note_compact_exit(cx: &mut App) {
         cx.global_mut::<MarkdownLinkHover>()
             .click_guard
             .on_mouse_exit();
+    }
+    if cx.has_global::<CompactCodeStates>() {
+        let changed = cx.global_mut::<CompactCodeStates>().clear_all_hovers();
+        for view in changed {
+            cx.notify(view);
+        }
     }
 }
 
@@ -269,12 +293,24 @@ pub(super) fn note_compact_release(
             .click_guard
             .on_mouse_up(button, position);
     }
+    if button == MouseButton::Left && cx.has_global::<CompactCodeStates>() {
+        let changed = cx.global_mut::<CompactCodeStates>().end_scrollbar_drags();
+        for view in changed {
+            cx.notify(view);
+        }
+    }
 }
 
 /// Clears any in-flight compact press when a drag ends outside the feed.
 pub(crate) fn reset_compact_press(cx: &mut App) {
     if cx.has_global::<MarkdownLinkHover>() {
         cx.global_mut::<MarkdownLinkHover>().click_guard.reset();
+    }
+    if cx.has_global::<CompactCodeStates>() {
+        let changed = cx.global_mut::<CompactCodeStates>().end_scrollbar_drags();
+        for view in changed {
+            cx.notify(view);
+        }
     }
 }
 
@@ -386,6 +422,63 @@ pub(super) fn compact_highlights(
     merged
 }
 
+/// Builds GPUI [`HighlightStyle`] runs for a highlighted Compact code line,
+/// combining syntax colours with the active selection background.
+pub(super) fn compact_code_highlights(
+    spans: &[(usize, Option<u16>)],
+    syntax: Option<&SyntaxTheme>,
+    selected: Range<usize>,
+    selection_color: Hsla,
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    let mut merged: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+    let mut at = 0;
+    for &(len, capture) in spans {
+        let (start, end) = (at, at + len);
+        at = end;
+        let color = capture.and_then(|capture| syntax?.color(capture));
+        let (cuts, cut_len) = if selected.is_empty() {
+            ([start, end, end, end], 2)
+        } else {
+            (
+                [
+                    start,
+                    selected.start.clamp(start, end),
+                    selected.end.clamp(start, end),
+                    end,
+                ],
+                4,
+            )
+        };
+        for pair in cuts[..cut_len].windows(2) {
+            if pair[1] <= pair[0] {
+                continue;
+            }
+            let sub = pair[0]..pair[1];
+            let is_selected =
+                !selected.is_empty() && sub.start >= selected.start && sub.end <= selected.end;
+            let mut hl = HighlightStyle::default();
+            if let Some(color) = color {
+                hl.color = Some(color);
+            }
+            if is_selected {
+                hl.background_color = Some(selection_color);
+            }
+            if hl == HighlightStyle::default() {
+                continue;
+            }
+            if let Some(last) = merged
+                .last_mut()
+                .filter(|(prev, prev_style)| prev.end == sub.start && *prev_style == hl)
+            {
+                last.0.end = sub.end;
+            } else {
+                merged.push((sub, hl));
+            }
+        }
+    }
+    merged
+}
+
 fn text_position(layout: &TextLayout, row: usize, position: gpui::Point<Pixels>) -> Position {
     Position {
         row,
@@ -403,13 +496,16 @@ pub(super) enum Surface<'a> {
         from: &'a str,
         open_link: Option<OpenLink>,
         view: gpui::WeakEntity<MarkdownView>,
+        code_states: &'a CodeBlockStates,
         top: f32,
     },
     Compact {
         doc_id: &'a str,
         view: EntityId,
+        syntax: Option<&'a SyntaxTheme>,
         selection_color: Hsla,
         selection_handler: Option<&'a FeedSelectionHandler>,
+        on_height_change: Option<&'a CompactHeightHandler>,
         cx: &'a App,
     },
 }
@@ -559,6 +655,7 @@ impl Draw<'_> {
             RowKind::Heading(level, text) => self.heading(*level, text),
             RowKind::Paragraph(text) => self.paragraph(text),
             RowKind::Image(image) => self.image(image, format!("md-{}-image", self.index)),
+            RowKind::CodeHeader { code } => self.code_header(code),
             RowKind::Code { code, line, bytes } => self.code_line(code, *line, bytes.clone()),
             RowKind::TableRow {
                 alignments,
@@ -673,20 +770,512 @@ impl Draw<'_> {
         }
     }
 
-    fn code_line(&self, code: &CodeBlock, line: usize, bytes: Range<usize>) -> AnyElement {
+    fn code_states(&self) -> Option<&CodeBlockStates> {
+        match &self.surface {
+            Surface::Document { code_states, .. } => Some(code_states),
+            Surface::Compact { view, cx, .. } => cx
+                .try_global::<CompactCodeStates>()
+                .and_then(|states| states.view(*view)),
+        }
+    }
+
+    fn code_header(&self, code: &Arc<CodeBlock>) -> AnyElement {
+        let states = self.code_states();
+        let hovered = states.is_some_and(|states| states.is_hovered(code));
+        let unwrapped = states.is_some_and(|states| states.is_unwrapped(code));
+        let copied = states.is_some_and(|states| states.is_copied(code));
+        let wrap_on = !unwrapped;
+        let show_wrap = hovered;
+        let show_copy = hovered || copied;
+        let row = self.index;
+        let language = code.language.clone();
+
+        match &self.surface {
+            Surface::Document { look, view, .. } => {
+                let scale = look.base / 13.;
+                let bar_h = px((28. * scale).round());
+                let lang_size = px((11. * scale).round());
+                let icon_size = px((14. * scale).round());
+                let btn_size = px((22. * scale).round());
+                let btn_radius = px((4. * scale).round());
+                let pad_l = px((12. * scale).round());
+                let pad_r = px((4. * scale).round());
+                let gap = px((2. * scale).round());
+                let copy_gap = px((4. * scale).round());
+                let copy_px = px((4. * scale).round());
+
+                let hover_view = view.clone();
+                let hover_code = Arc::clone(code);
+                let wheel_view = view.clone();
+                let wheel_code = Arc::clone(code);
+                let wrap_view = view.clone();
+                let wrap_code = Arc::clone(code);
+                let copy_view = view.clone();
+                let copy_code = Arc::clone(code);
+                let line_height = px((f32::from(look.code_size()) * 1.6).round());
+                let wrap_group: SharedString = format!("file-md-code-wrap-g-{row}").into();
+                let copy_group: SharedString = format!("file-md-code-copy-g-{row}").into();
+
+                let wrap_btn = show_wrap.then(|| {
+                    let button = div()
+                        .id(SharedString::from(format!("file-md-code-wrap-{row}")))
+                        .group(wrap_group.clone())
+                        .when(cfg!(test), move |el| {
+                            el.debug_selector(move || format!("FILE_MD_CODE_WRAP {row}"))
+                        })
+                        .size(btn_size)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(btn_radius)
+                        .cursor_pointer()
+                        .hover(|el| el.bg(theme::raised()))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            let _ = wrap_view
+                                .update(cx, |view, cx| view.toggle_code_wrap(&wrap_code, cx));
+                        })
+                        .child(
+                            svg()
+                                .flex_none()
+                                .path("text-wrap.svg")
+                                .size(icon_size)
+                                .text_color(if wrap_on {
+                                    theme::accent()
+                                } else {
+                                    theme::muted()
+                                })
+                                .when(!wrap_on, |icon| {
+                                    icon.group_hover(wrap_group, |icon| {
+                                        icon.text_color(theme::text())
+                                    })
+                                }),
+                        );
+                    Tooltip::new(
+                        SharedString::from(format!("file-md-code-wrap-tip-{row}")),
+                        crate::i18n::text("ui.wrap_lines"),
+                        button,
+                    )
+                });
+
+                let copy_btn = show_copy.then(|| {
+                    let button = div()
+                        .id(SharedString::from(format!("file-md-code-copy-{row}")))
+                        .group(copy_group.clone())
+                        .when(cfg!(test), move |el| {
+                            el.debug_selector(move || format!("FILE_MD_CODE_COPY {row}"))
+                        })
+                        .h(btn_size)
+                        .when(!copied, |el| el.w(btn_size))
+                        .when(copied, |el| el.px(copy_px).gap(copy_gap))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(btn_radius)
+                        .cursor_pointer()
+                        .hover(|el| el.bg(theme::raised()))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            let _ = copy_view
+                                .update(cx, |view, cx| view.copy_code_block(&copy_code, cx));
+                        })
+                        .child(
+                            svg()
+                                .flex_none()
+                                .path(if copied { "check.svg" } else { "copy.svg" })
+                                .size(icon_size)
+                                .text_color(if copied {
+                                    theme::accent()
+                                } else {
+                                    theme::muted()
+                                })
+                                .when(!copied, |icon| {
+                                    icon.group_hover(copy_group, |icon| {
+                                        icon.text_color(theme::text())
+                                    })
+                                }),
+                        )
+                        .when(copied, |el| {
+                            el.child(
+                                div()
+                                    .when(cfg!(test), move |el| {
+                                        el.debug_selector(move || {
+                                            format!("FILE_MD_CODE_COPIED {row}")
+                                        })
+                                    })
+                                    .font(look.ui.clone())
+                                    .text_size(lang_size)
+                                    .line_height(lang_size)
+                                    .text_color(theme::accent())
+                                    .child(crate::i18n::text("ui.copied")),
+                            )
+                        });
+                    Tooltip::new(
+                        SharedString::from(format!("file-md-code-copy-tip-{row}")),
+                        if copied {
+                            crate::i18n::text("ui.copied")
+                        } else {
+                            crate::i18n::text("ui.copy_code")
+                        },
+                        button,
+                    )
+                });
+
+                div()
+                    .id(SharedString::from(format!("file-md-code-hdr-{row}")))
+                    .when(cfg!(test), move |el| {
+                        el.debug_selector(move || format!("FILE_MD_CODE_HEADER {row}"))
+                    })
+                    .w_full()
+                    .min_w(px(0.))
+                    .h(bar_h)
+                    .pl(pad_l)
+                    .pr(pad_r)
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px((8. * scale).round()))
+                    .bg(theme::panel())
+                    .border_1()
+                    .border_color(theme::border())
+                    .rounded_t(px(6.))
+                    .on_hover(move |hovered, _, cx| {
+                        let _ = hover_view.update(cx, |view, cx| {
+                            view.set_code_row_hovered(&hover_code, row, *hovered, cx)
+                        });
+                    })
+                    .when(unwrapped, |el| {
+                        el.on_scroll_wheel(move |event: &ScrollWheelEvent, _, cx| {
+                            let mut delta = event.delta.pixel_delta(line_height);
+                            if event.modifiers.shift && delta.x == px(0.) {
+                                delta.x = delta.y;
+                                delta.y = px(0.);
+                            }
+                            if delta.x.abs() > px(0.) && delta.x.abs() >= delta.y.abs() {
+                                let _ = wheel_view.update(cx, |view, cx| {
+                                    if view.max_code_scroll_x(&wheel_code) > 0. {
+                                        cx.stop_propagation();
+                                        view.scroll_code_x(&wheel_code, -f32::from(delta.x), cx);
+                                    }
+                                });
+                            }
+                        })
+                    })
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .flex_1()
+                            .truncate()
+                            .font(look.mono.clone())
+                            .text_size(lang_size)
+                            .line_height(lang_size)
+                            .text_color(theme::faint())
+                            .when_some(language, |el, lang| {
+                                el.when(cfg!(test), move |el| {
+                                    el.debug_selector(move || format!("FILE_MD_CODE_LANG {row}"))
+                                })
+                                .child(lang)
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(gap)
+                            .children(wrap_btn)
+                            .children(copy_btn),
+                    )
+                    .into_any_element()
+            }
+            Surface::Compact {
+                doc_id,
+                view,
+                on_height_change,
+                ..
+            } => {
+                let doc = (*doc_id).to_owned();
+                let view = *view;
+                let hover_code = Arc::clone(code);
+                let wheel_code = Arc::clone(code);
+                let wrap_code = Arc::clone(code);
+                let wrap_height_change = on_height_change.cloned();
+                let copy_code = Arc::clone(code);
+                let wrap_group: SharedString = format!("{doc}-{row}-code-wrap-g").into();
+                let copy_group: SharedString = format!("{doc}-{row}-code-copy-g").into();
+
+                let wrap_btn = show_wrap.then(|| {
+                    let debug_doc = doc.clone();
+                    let button = div()
+                        .id(SharedString::from(format!("{doc}-{row}-code-wrap")))
+                        .group(wrap_group.clone())
+                        .when(cfg!(test), move |el| {
+                            let debug_doc = debug_doc.clone();
+                            el.debug_selector(move || {
+                                format!("COMPACT_MD_CODE_WRAP {debug_doc} {row}")
+                            })
+                        })
+                        .size(rems(22. / 16.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(rems(4. / 16.))
+                        .cursor_pointer()
+                        .hover(|el| el.bg(theme::raised()))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            cx.default_global::<CompactCodeStates>()
+                                .view_mut(view)
+                                .toggle_wrap(&wrap_code);
+                            if let Some(on_height_change) = &wrap_height_change {
+                                on_height_change(cx);
+                            }
+                            cx.notify(view);
+                        })
+                        .child(
+                            svg()
+                                .flex_none()
+                                .path("text-wrap.svg")
+                                .size(rems(14. / 16.))
+                                .text_color(if wrap_on {
+                                    theme::accent()
+                                } else {
+                                    theme::muted()
+                                })
+                                .when(!wrap_on, |icon| {
+                                    icon.group_hover(wrap_group, |icon| {
+                                        icon.text_color(theme::text())
+                                    })
+                                }),
+                        );
+                    Tooltip::new(
+                        SharedString::from(format!("{doc}-{row}-code-wrap-tip")),
+                        crate::i18n::text("ui.wrap_lines"),
+                        button,
+                    )
+                });
+
+                let copy_btn = show_copy.then(|| {
+                    let debug_doc = doc.clone();
+                    let copied_doc = doc.clone();
+                    let button = div()
+                        .id(SharedString::from(format!("{doc}-{row}-code-copy")))
+                        .group(copy_group.clone())
+                        .when(cfg!(test), move |el| {
+                            let debug_doc = debug_doc.clone();
+                            el.debug_selector(move || {
+                                format!("COMPACT_MD_CODE_COPY {debug_doc} {row}")
+                            })
+                        })
+                        .h(rems(22. / 16.))
+                        .when(!copied, |el| el.w(rems(22. / 16.)))
+                        .when(copied, |el| el.px(rems(4. / 16.)).gap(rems(4. / 16.)))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(rems(4. / 16.))
+                        .cursor_pointer()
+                        .hover(|el| el.bg(theme::raised()))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                copy_code.copy_text().to_owned(),
+                            ));
+                            let code_id = CodeBlockId::of(&copy_code);
+                            let generation = cx
+                                .default_global::<CompactCodeStates>()
+                                .view_mut(view)
+                                .begin_copied(&copy_code);
+                            let async_cx = cx.to_async();
+                            let task = cx.foreground_executor().spawn(async move {
+                                async_cx.background_executor().timer(COPIED_DURATION).await;
+                                async_cx.update(|cx| {
+                                    let cleared = if cx.has_global::<CompactCodeStates>() {
+                                        let states = cx.global_mut::<CompactCodeStates>();
+                                        let changed = states
+                                            .view_mut(view)
+                                            .finish_copied(code_id, generation);
+                                        states.prune_empty_views();
+                                        changed
+                                    } else {
+                                        false
+                                    };
+                                    if cleared {
+                                        cx.notify(view);
+                                    }
+                                });
+                            });
+                            cx.default_global::<CompactCodeStates>()
+                                .view_mut(view)
+                                .set_copied_timer(code_id, generation, task);
+                            cx.notify(view);
+                        })
+                        .child(
+                            svg()
+                                .flex_none()
+                                .path(if copied { "check.svg" } else { "copy.svg" })
+                                .size(rems(14. / 16.))
+                                .text_color(if copied {
+                                    theme::accent()
+                                } else {
+                                    theme::muted()
+                                })
+                                .when(!copied, |icon| {
+                                    icon.group_hover(copy_group, |icon| {
+                                        icon.text_color(theme::text())
+                                    })
+                                }),
+                        )
+                        .when(copied, |el| {
+                            el.child(
+                                div()
+                                    .when(cfg!(test), move |el| {
+                                        let copied_doc = copied_doc.clone();
+                                        el.debug_selector(move || {
+                                            format!("COMPACT_MD_CODE_COPIED {copied_doc} {row}")
+                                        })
+                                    })
+                                    .text_size(theme::text_meta())
+                                    .line_height(theme::text_meta())
+                                    .text_color(theme::accent())
+                                    .child(crate::i18n::text("ui.copied")),
+                            )
+                        });
+                    Tooltip::new(
+                        SharedString::from(format!("{doc}-{row}-code-copy-tip")),
+                        if copied {
+                            crate::i18n::text("ui.copied")
+                        } else {
+                            crate::i18n::text("ui.copy_code")
+                        },
+                        button,
+                    )
+                });
+
+                let hdr_doc = doc.clone();
+                let lang_doc = doc.clone();
+                div()
+                    .id(SharedString::from(format!("{doc}-{row}-code-hdr")))
+                    .when(cfg!(test), move |el| {
+                        let hdr_doc = hdr_doc.clone();
+                        el.debug_selector(move || format!("COMPACT_MD_CODE_HEADER {hdr_doc} {row}"))
+                    })
+                    .w_full()
+                    .min_w(px(0.))
+                    .h(rems(28. / 16.))
+                    .pl(rems(12. / 16.))
+                    .pr(rems(4. / 16.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(rems(8. / 16.))
+                    .bg(theme::bg())
+                    .border_1()
+                    .border_color(theme::border())
+                    .rounded_t_md()
+                    .on_hover(move |hovered, _, cx| {
+                        let states = cx.default_global::<CompactCodeStates>();
+                        let changed =
+                            states
+                                .view_mut(view)
+                                .set_row_hovered(&hover_code, row, *hovered);
+                        states.prune_empty_views();
+                        if changed {
+                            cx.notify(view);
+                        }
+                    })
+                    .when(unwrapped, |el| {
+                        el.on_scroll_wheel(move |event: &ScrollWheelEvent, window, cx| {
+                            let line_height = rems(19. / 16.).to_pixels(window.rem_size());
+                            let mut delta = event.delta.pixel_delta(line_height);
+                            if event.modifiers.shift && delta.x == px(0.) {
+                                delta.x = delta.y;
+                                delta.y = px(0.);
+                            }
+                            if delta.x.abs() > px(0.) && delta.x.abs() >= delta.y.abs() {
+                                let (can_scroll, moved) = {
+                                    let states =
+                                        cx.default_global::<CompactCodeStates>().view_mut(view);
+                                    if states.max_scroll_x(&wheel_code) > 0. {
+                                        (true, states.scroll_by(&wheel_code, -f32::from(delta.x)))
+                                    } else {
+                                        (false, false)
+                                    }
+                                };
+                                if can_scroll {
+                                    cx.stop_propagation();
+                                    if moved {
+                                        cx.notify(view);
+                                    }
+                                }
+                            }
+                        })
+                    })
+                    .child(
+                        div()
+                            .min_w(px(0.))
+                            .flex_1()
+                            .truncate()
+                            .font_family(theme::UI_MONOSPACE_FONT)
+                            .text_size(theme::text_meta())
+                            .line_height(theme::text_meta())
+                            .text_color(theme::faint())
+                            .when_some(language, |el, lang| {
+                                el.when(cfg!(test), move |el| {
+                                    let lang_doc = lang_doc.clone();
+                                    el.debug_selector(move || {
+                                        format!("COMPACT_MD_CODE_LANG {lang_doc} {row}")
+                                    })
+                                })
+                                .child(lang)
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(rems(2. / 16.))
+                            .children(wrap_btn)
+                            .children(copy_btn),
+                    )
+                    .into_any_element()
+            }
+        }
+    }
+
+    fn code_line(&self, code: &Arc<CodeBlock>, line: usize, bytes: Range<usize>) -> AnyElement {
         let line_len = code.document.line(line).len();
         let (first, last) = (
             line == 0 && bytes.start == 0,
             line + 1 == code.document.line_count() && bytes.end == line_len,
         );
+        let states = self.code_states();
+        let unwrapped = states.is_some_and(|states| states.is_unwrapped(code));
+        let scroll_x = states.map_or(0., |states| states.scroll_x(code));
+        let has_overflow = unwrapped && states.is_some_and(|states| states.has_overflow(code));
+        let dragging_scrollbar =
+            unwrapped && states.is_some_and(|states| states.is_dragging_scrollbar(code));
+        let row = self.index;
+        let max_row_columns = code.max_row_columns;
+
+        if let Surface::Compact { view, cx, .. } = &self.surface {
+            code.start_async_highlight(*view, cx);
+        }
+
         let (text, spans) = code.fragment(line, bytes);
         let strip = div()
             .border_l_1()
             .border_r_1()
             .border_color(theme::border());
         match &self.surface {
-            Surface::Document { look, .. } => {
+            Surface::Document { look, view, .. } => {
                 let size = look.code_size();
+                let line_height = px((f32::from(size) * 1.6).round());
                 #[cfg(test)]
                 super::view::DRAWN_CODE_BYTES.set(super::view::DRAWN_CODE_BYTES.get() + text.len());
                 let runs = spans
@@ -698,34 +1287,424 @@ impl Draw<'_> {
                         Self::run(len, look.mono.clone(), color)
                     })
                     .collect();
-                strip
+                let selectable = self.document_selectable_with_wrap(text, runs, &[], !unwrapped);
+                let hover_view = view.clone();
+                let hover_code = Arc::clone(code);
+                let base = strip
+                    .id(SharedString::from(format!("file-md-code-line-{row}")))
                     .when(cfg!(test) && first, |el| {
                         el.debug_selector(|| "FILE_MD_CODE".into())
                     })
+                    .w_full()
+                    .min_w(px(0.))
                     .bg(theme::panel())
-                    .px(px(12.))
-                    .when(first, |el| el.border_t_1().rounded_t(px(6.)).pt(px(10.)))
-                    .when(last, |el| el.border_b_1().rounded_b(px(6.)).pb(px(10.)))
+                    .when(first, |el| el.pt(px(10.)))
+                    .when(last, |el| {
+                        el.border_b_1()
+                            .rounded_b(px(6.))
+                            .when(!has_overflow, |el| el.pb(px(10.)))
+                    })
                     .text_size(size)
-                    .line_height(px((f32::from(size) * 1.6).round()))
-                    .child(self.document_selectable(text, runs, &[]))
+                    .line_height(line_height)
+                    .on_hover(move |hovered, _, cx| {
+                        let _ = hover_view.update(cx, |view, cx| {
+                            view.set_code_row_hovered(&hover_code, row, *hovered, cx)
+                        });
+                    });
+                if !unwrapped {
+                    return base.px(px(12.)).child(selectable).into_any_element();
+                }
+
+                let wheel_view = view.clone();
+                let wheel_code = Arc::clone(code);
+                let measure_view = view.clone();
+                let measure_code = Arc::clone(code);
+                let (prev_viewport, prev_content) =
+                    states.map_or((0., 0.), |states| states.metrics(code));
+                let mono = look.mono.clone();
+                let measure = canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, cx| {
+                        let viewport_width = f32::from(bounds.size.width);
+                        if viewport_width <= 0. {
+                            return;
+                        }
+                        let font_id = window.text_system().resolve_font(&mono);
+                        let char_width = f32::from(
+                            window
+                                .text_system()
+                                .em_advance(font_id, size)
+                                .unwrap_or(size * 0.6),
+                        );
+                        let content_width = 24. + max_row_columns as f32 * char_width;
+                        if (viewport_width - prev_viewport).abs() <= 0.5
+                            && (content_width - prev_content).abs() <= 0.5
+                        {
+                            return;
+                        }
+                        let defer_view = measure_view.clone();
+                        let defer_code = Arc::clone(&measure_code);
+                        window.defer(cx, move |_, cx| {
+                            let _ = defer_view.update(cx, |view, cx| {
+                                view.update_code_metrics(
+                                    &defer_code,
+                                    viewport_width,
+                                    content_width,
+                                    cx,
+                                )
+                            });
+                        });
+                    },
+                )
+                .absolute()
+                .inset_0();
+
+                let scrollbar = (last && has_overflow).then(|| {
+                    let track_width = (prev_viewport - 24.).max(1.);
+                    let thumb = states
+                        .and_then(|states| {
+                            states.scrollbar_thumb(code, track_width, MIN_SCROLLBAR_THUMB)
+                        })
+                        .map(|(left, width)| (left / track_width, width / track_width));
+                    let track_bounds = Rc::new(StdCell::new(Bounds::<Pixels>::default()));
+                    let paint_track = Rc::clone(&track_bounds);
+                    let down_track = Rc::clone(&track_bounds);
+                    let drag_view = view.clone();
+                    let drag_code = Arc::clone(code);
+                    div().w_full().px(px(12.)).pt(px(4.)).pb(px(4.)).child(
+                        div()
+                            .id(SharedString::from(format!("file-md-code-sb-{row}")))
+                            .when(cfg!(test), move |el| {
+                                el.debug_selector(move || format!("FILE_MD_CODE_SCROLLBAR {row}"))
+                            })
+                            .relative()
+                            .w_full()
+                            .h(px(8.))
+                            .flex()
+                            .items_center()
+                            .cursor(CursorStyle::Arrow)
+                            .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                                cx.stop_propagation();
+                                let track = down_track.get();
+                                let track_width = f32::from(track.size.width);
+                                if track_width > 0. {
+                                    let _ = drag_view.update(cx, |view, cx| {
+                                        view.begin_code_scrollbar_drag(
+                                            &drag_code,
+                                            f32::from(event.position.x),
+                                            f32::from(track.left()),
+                                            track_width,
+                                            MIN_SCROLLBAR_THUMB,
+                                            cx,
+                                        )
+                                    });
+                                }
+                            })
+                            .child(
+                                canvas(
+                                    move |bounds, _, _| paint_track.set(bounds),
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .inset_0(),
+                            )
+                            .children(thumb.map(|(left, width)| {
+                                div()
+                                    .when(cfg!(test), move |el| {
+                                        el.debug_selector(move || {
+                                            format!("FILE_MD_CODE_SCROLLBAR_THUMB {row}")
+                                        })
+                                    })
+                                    .absolute()
+                                    .left(relative(left))
+                                    .w(relative(width))
+                                    .h(px(4.))
+                                    .rounded_full()
+                                    .bg(if dragging_scrollbar {
+                                        theme::with_alpha(theme::muted(), 0.8)
+                                    } else {
+                                        theme::with_alpha(theme::muted(), 0.55)
+                                    })
+                                    .hover(|el| el.bg(theme::with_alpha(theme::muted(), 0.8)))
+                            })),
+                    )
+                });
+
+                base.flex()
+                    .flex_col()
+                    .on_scroll_wheel(move |event: &ScrollWheelEvent, _, cx| {
+                        let mut delta = event.delta.pixel_delta(line_height);
+                        if event.modifiers.shift && delta.x == px(0.) {
+                            delta.x = delta.y;
+                            delta.y = px(0.);
+                        }
+                        if delta.x.abs() > px(0.) && delta.x.abs() >= delta.y.abs() {
+                            let _ = wheel_view.update(cx, |view, cx| {
+                                if view.max_code_scroll_x(&wheel_code) > 0. {
+                                    cx.stop_propagation();
+                                    view.scroll_code_x(&wheel_code, -f32::from(delta.x), cx);
+                                }
+                            });
+                        }
+                    })
+                    .child(
+                        div()
+                            .relative()
+                            .w_full()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .flex()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .min_w_full()
+                                    .whitespace_nowrap()
+                                    .px(px(12.))
+                                    .ml(px(-scroll_x))
+                                    .child(selectable),
+                            )
+                            .child(measure),
+                    )
+                    .children(scrollbar)
                     .into_any_element()
             }
-            Surface::Compact { doc_id, .. } => strip
-                .when(cfg!(test) && first, |el| {
-                    el.debug_selector(|| "COMPACT_MD_CODE".into())
-                })
-                .w_full()
-                .min_w(px(0.))
-                .bg(theme::bg())
-                .px_3()
-                .when(first, |el| el.border_t_1().rounded_t_md().pt_2())
-                .when(last, |el| el.border_b_1().rounded_b_md().pb_2())
-                .font_family(theme::UI_MONOSPACE_FONT)
-                .text_size(theme::text_ui())
-                .line_height(rems(19. / 16.))
-                .child(self.compact_plain_line(format!("{doc_id}-{}-code", self.index), text))
-                .into_any_element(),
+            Surface::Compact {
+                doc_id,
+                view,
+                syntax,
+                selection_color,
+                on_height_change,
+                ..
+            } => {
+                let doc = (*doc_id).to_owned();
+                let view = *view;
+                let highlights = compact_code_highlights(
+                    &spans,
+                    *syntax,
+                    self.selected.clone(),
+                    *selection_color,
+                );
+                let line_el = self.compact_prepared_line_with_wrap(
+                    format!("{doc}-{row}-code"),
+                    text,
+                    highlights,
+                    Vec::new(),
+                    Vec::new(),
+                    !unwrapped,
+                );
+                let hover_code = Arc::clone(code);
+                let base = strip
+                    .id(SharedString::from(format!("{doc}-{row}-code-line")))
+                    .when(cfg!(test) && first, |el| {
+                        el.debug_selector(|| "COMPACT_MD_CODE".into())
+                    })
+                    .w_full()
+                    .min_w(px(0.))
+                    .bg(theme::bg())
+                    .text_color(theme::text())
+                    .when(first, |el| el.pt_2())
+                    .when(last, |el| {
+                        el.border_b_1()
+                            .rounded_b_md()
+                            .when(!has_overflow, |el| el.pb_2())
+                    })
+                    .font_family(theme::UI_MONOSPACE_FONT)
+                    .text_size(theme::text_ui())
+                    .line_height(rems(19. / 16.))
+                    .on_hover(move |hovered, _, cx| {
+                        let states = cx.default_global::<CompactCodeStates>();
+                        let changed =
+                            states
+                                .view_mut(view)
+                                .set_row_hovered(&hover_code, row, *hovered);
+                        states.prune_empty_views();
+                        if changed {
+                            cx.notify(view);
+                        }
+                    });
+                if !unwrapped {
+                    return base.px_3().child(line_el).into_any_element();
+                }
+
+                let wheel_code = Arc::clone(code);
+                let measure_code = Arc::clone(code);
+                let measure_height_change = on_height_change.cloned();
+                let (prev_viewport, prev_content) =
+                    states.map_or((0., 0.), |states| states.metrics(code));
+                let measure = canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, cx| {
+                        let viewport_width = f32::from(bounds.size.width);
+                        if viewport_width <= 0. {
+                            return;
+                        }
+                        let rem = window.rem_size();
+                        let font_size = theme::text_ui().to_pixels(rem);
+                        let pad_x = f32::from(rems(12. / 16.).to_pixels(rem));
+                        let mono = gpui::font(theme::UI_MONOSPACE_FONT);
+                        let font_id = window.text_system().resolve_font(&mono);
+                        let char_width = f32::from(
+                            window
+                                .text_system()
+                                .em_advance(font_id, font_size)
+                                .unwrap_or(font_size * 0.6),
+                        );
+                        let content_width = pad_x * 2. + max_row_columns as f32 * char_width;
+                        if (viewport_width - prev_viewport).abs() <= 0.5
+                            && (content_width - prev_content).abs() <= 0.5
+                        {
+                            return;
+                        }
+                        let defer_code = Arc::clone(&measure_code);
+                        let defer_height_change = measure_height_change.clone();
+                        window.defer(cx, move |_, cx| {
+                            let change = cx
+                                .default_global::<CompactCodeStates>()
+                                .view_mut(view)
+                                .update_metrics(&defer_code, viewport_width, content_width);
+                            if change.overflow_toggled
+                                && let Some(on_height_change) = &defer_height_change
+                            {
+                                on_height_change(cx);
+                            }
+                            if change.changed {
+                                cx.notify(view);
+                            }
+                        });
+                    },
+                )
+                .absolute()
+                .inset_0();
+
+                let scrollbar = (last && has_overflow).then(|| {
+                    let track_width = (prev_viewport - 24.).max(1.);
+                    let thumb = states
+                        .and_then(|states| {
+                            states.scrollbar_thumb(code, track_width, MIN_SCROLLBAR_THUMB)
+                        })
+                        .map(|(left, width)| (left / track_width, width / track_width));
+                    let track_bounds = Rc::new(StdCell::new(Bounds::<Pixels>::default()));
+                    let paint_track = Rc::clone(&track_bounds);
+                    let down_track = Rc::clone(&track_bounds);
+                    let drag_code = Arc::clone(code);
+                    let sb_doc = doc.clone();
+                    let thumb_doc = doc.clone();
+                    div().w_full().px_3().py_1().child(
+                        div()
+                            .id(SharedString::from(format!("{doc}-{row}-code-sb")))
+                            .when(cfg!(test), move |el| {
+                                let sb_doc = sb_doc.clone();
+                                el.debug_selector(move || {
+                                    format!("COMPACT_MD_CODE_SCROLLBAR {sb_doc} {row}")
+                                })
+                            })
+                            .relative()
+                            .w_full()
+                            .h(rems(8. / 16.))
+                            .flex()
+                            .items_center()
+                            .cursor(CursorStyle::Arrow)
+                            .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+                                cx.stop_propagation();
+                                let track = down_track.get();
+                                let track_width = f32::from(track.size.width);
+                                if track_width > 0. {
+                                    if cx
+                                        .default_global::<CompactCodeStates>()
+                                        .view_mut(view)
+                                        .begin_scrollbar_drag(
+                                            &drag_code,
+                                            f32::from(event.position.x),
+                                            f32::from(track.left()),
+                                            track_width,
+                                            MIN_SCROLLBAR_THUMB,
+                                        )
+                                    {
+                                        cx.notify(view);
+                                    }
+                                }
+                            })
+                            .child(
+                                canvas(
+                                    move |bounds, _, _| paint_track.set(bounds),
+                                    |_, _, _, _| {},
+                                )
+                                .absolute()
+                                .inset_0(),
+                            )
+                            .children(thumb.map(|(left, width)| {
+                                div()
+                                    .when(cfg!(test), move |el| {
+                                        let thumb_doc = thumb_doc.clone();
+                                        el.debug_selector(move || {
+                                            format!(
+                                                "COMPACT_MD_CODE_SCROLLBAR_THUMB {thumb_doc} {row}"
+                                            )
+                                        })
+                                    })
+                                    .absolute()
+                                    .left(relative(left))
+                                    .w(relative(width))
+                                    .h(rems(4. / 16.))
+                                    .rounded_full()
+                                    .bg(if dragging_scrollbar {
+                                        theme::with_alpha(theme::muted(), 0.8)
+                                    } else {
+                                        theme::with_alpha(theme::muted(), 0.55)
+                                    })
+                                    .hover(|el| el.bg(theme::with_alpha(theme::muted(), 0.8)))
+                            })),
+                    )
+                });
+
+                base.flex()
+                    .flex_col()
+                    .on_scroll_wheel(move |event: &ScrollWheelEvent, window, cx| {
+                        let line_height = rems(19. / 16.).to_pixels(window.rem_size());
+                        let mut delta = event.delta.pixel_delta(line_height);
+                        if event.modifiers.shift && delta.x == px(0.) {
+                            delta.x = delta.y;
+                            delta.y = px(0.);
+                        }
+                        if delta.x.abs() > px(0.) && delta.x.abs() >= delta.y.abs() {
+                            let (can_scroll, moved) = {
+                                let states =
+                                    cx.default_global::<CompactCodeStates>().view_mut(view);
+                                if states.max_scroll_x(&wheel_code) > 0. {
+                                    (true, states.scroll_by(&wheel_code, -f32::from(delta.x)))
+                                } else {
+                                    (false, false)
+                                }
+                            };
+                            if can_scroll {
+                                cx.stop_propagation();
+                                if moved {
+                                    cx.notify(view);
+                                }
+                            }
+                        }
+                    })
+                    .child(
+                        div()
+                            .relative()
+                            .w_full()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .flex()
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .min_w_full()
+                                    .whitespace_nowrap()
+                                    .px_3()
+                                    .ml(px(-scroll_x))
+                                    .child(line_el),
+                            )
+                            .child(measure),
+                    )
+                    .children(scrollbar)
+                    .into_any_element()
+            }
         }
     }
 
@@ -1155,9 +2134,19 @@ impl Draw<'_> {
 
     fn document_selectable(
         &self,
+        text: String,
+        runs: Vec<TextRun>,
+        links: &[(Range<usize>, Arc<str>)],
+    ) -> AnyElement {
+        self.document_selectable_with_wrap(text, runs, links, true)
+    }
+
+    fn document_selectable_with_wrap(
+        &self,
         mut text: String,
         runs: Vec<TextRun>,
         links: &[(Range<usize>, Arc<str>)],
+        wrap: bool,
     ) -> AnyElement {
         let Surface::Document {
             look,
@@ -1184,6 +2173,7 @@ impl Draw<'_> {
         let (row, down_view, down_layout) = (self.index, view.clone(), layout.clone());
         let (move_view, move_layout) = (view.clone(), layout);
         let element = div()
+            .when(!wrap, |el| el.whitespace_nowrap())
             .when(cfg!(test), move |el| {
                 el.debug_selector(move || format!("FILE_MD_TEXT {row}"))
             })
@@ -1306,10 +2296,22 @@ impl Draw<'_> {
     fn compact_prepared_line(
         &self,
         id: String,
+        text: String,
+        highlights: Vec<(Range<usize>, HighlightStyle)>,
+        link_ranges: Vec<Range<usize>>,
+        urls: Vec<Arc<str>>,
+    ) -> AnyElement {
+        self.compact_prepared_line_with_wrap(id, text, highlights, link_ranges, urls, true)
+    }
+
+    fn compact_prepared_line_with_wrap(
+        &self,
+        id: String,
         mut text: String,
         highlights: Vec<(Range<usize>, HighlightStyle)>,
         link_ranges: Vec<Range<usize>>,
         urls: Vec<Arc<str>>,
+        wrap: bool,
     ) -> AnyElement {
         let Surface::Compact {
             doc_id,
@@ -1338,9 +2340,8 @@ impl Draw<'_> {
 
         let debug_doc = (*doc_id).to_owned();
         let mut line = div()
-            .w_full()
-            .min_w(px(0.))
-            .whitespace_normal()
+            .when(wrap, |el| el.w_full().min_w(px(0.)).whitespace_normal())
+            .when(!wrap, |el| el.whitespace_nowrap())
             .when(cfg!(test), move |el| {
                 let doc_id = debug_doc.clone();
                 el.debug_selector(move || format!("COMPACT_MD_TEXT {doc_id} {row}"))

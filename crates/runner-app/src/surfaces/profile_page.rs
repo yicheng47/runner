@@ -13,7 +13,7 @@ use gpui::{
 use runner_app::ui::{focus_ring, TextField};
 
 use crate::theme;
-use crate::ui::markdown::render_compact;
+use crate::ui::markdown::{render_compact, render_compact_clamped};
 
 /// The profile column's width: the picture, name, setup and short lists.
 pub(crate) const PROFILE_COLUMN_WIDTH: f32 = 272.;
@@ -321,11 +321,7 @@ pub(crate) fn clamped_markdown(
     let key_toggle = Rc::clone(&on_toggle);
     let preview = prompt_preview(text);
     let clamped = !expanded && preview.is_some();
-    let shown = if clamped {
-        preview.unwrap_or(text)
-    } else {
-        text
-    };
+    let preview_len = clamped.then(|| preview.unwrap().len());
     let lines = text.lines().count();
     div()
         .flex()
@@ -340,7 +336,7 @@ pub(crate) fn clamped_markdown(
                 .min_w(px(0.))
                 .text_size(theme::text_body())
                 .text_color(theme::text())
-                .child(render_compact(id, shown, view, cx))
+                .child(render_compact_clamped(id, text, preview_len, view, cx))
                 .when(clamped, |text| {
                     text.child(
                         div()
