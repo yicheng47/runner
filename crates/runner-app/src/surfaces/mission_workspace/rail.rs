@@ -147,16 +147,32 @@ impl MissionWorkspace {
     /// opens: the rail's preview.
     pub(super) fn file_link_route(&self, cx: &Context<Self>) -> FileLinkRoute {
         let mission = self.mission_id.clone();
-        FileLinkRoute::new(cx.weak_entity(), Self::link_files_view, move |this, cx| {
-            if mission == this.mission_id {
-                this.show_link_preview(cx);
-            } else if let Some(id) = mission.as_ref() {
-                let panel = this.rails_by_mission.entry(id.clone()).or_default();
-                panel.selection.select(PanelViewId::Files);
-                panel.open = Some(true);
-                cx.notify();
-            }
-        })
+        FileLinkRoute::new(
+            cx.weak_entity(),
+            Self::link_files_view,
+            Self::existing_link_files_view,
+            move |this, cx| {
+                if mission == this.mission_id {
+                    this.show_link_preview(cx);
+                } else if let Some(id) = mission.as_ref() {
+                    let panel = this.rails_by_mission.entry(id.clone()).or_default();
+                    panel.selection.select(PanelViewId::Files);
+                    panel.open = Some(true);
+                    cx.notify();
+                }
+            },
+        )
+    }
+
+    /// The already-created Files view while its preview can take a link, read
+    /// synchronously without creating a view or fetching its root.
+    fn existing_link_files_view(&self, cx: &App) -> Option<Entity<FilesView>> {
+        let settings = self.settings(cx);
+        if !settings.show_side_panel || !settings.files_view || self.presentation.is_remote() {
+            return None;
+        }
+        let mission = self.mission_view()?;
+        self.rail_files.view(&PanelSubject::Mission(mission.id))
     }
 
     /// The rail's Files view while its preview can take a link: the panel

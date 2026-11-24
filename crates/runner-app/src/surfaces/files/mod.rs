@@ -1513,7 +1513,6 @@ impl FilesPanel {
             .map(|b| b.viewer.clone())
     }
 
-    #[cfg(test)]
     pub(crate) fn view(&self, subject: &PanelSubject) -> Option<Entity<FilesView>> {
         self.subjects
             .borrow()

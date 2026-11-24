@@ -29,6 +29,10 @@ struct Host {
     tree_fits: bool,
     maximized: bool,
     maximize_requests: usize,
+    /// Optional terminal paired with `panel` through `FileLinkRoute`, for
+    /// end-to-end terminal file-link tests.
+    terminal: Option<crate::AttachedChat>,
+    link_panel_shown: usize,
 }
 
 impl Render for Host {
@@ -96,6 +100,53 @@ impl Render for Host {
                     .clone()
                     .map(|focus| div().h(px(4.)).key_context("Terminal").track_focus(&focus)),
             )
+            .children(self.terminal.as_ref().map(|chat| {
+                let style = crate::terminal::element::TerminalStyle {
+                    palette: runner_terminal::palette::RUNNER,
+                    font: crate::app_settings::AppSettings::default()
+                        .terminal_font_family
+                        .font(cx),
+                    font_size: 14.,
+                    app_zoom: 1.,
+                    line_height_factor: crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
+                    copy_on_select: false,
+                };
+                let route = crate::file_links::FileLinkRoute::new(
+                    cx.weak_entity(),
+                    |host: &mut Self, cx| {
+                        host.context
+                            .as_ref()
+                            .map(|context| host.panel.link_view(context, cx))
+                    },
+                    |host: &Self, _cx| {
+                        host.context
+                            .as_ref()
+                            .and_then(|context| host.panel.view(&context.subject))
+                    },
+                    |host: &mut Self, cx| {
+                        host.link_panel_shown += 1;
+                        cx.notify();
+                    },
+                );
+                div()
+                    .debug_selector(|| "FILES_LINK_TERMINAL".into())
+                    .flex_none()
+                    .w(px(340.))
+                    .h(px(120.))
+                    .child(
+                        crate::terminal::element::TerminalElement::new(
+                            chat.terminal.clone(),
+                            chat.terminal_interaction.clone(),
+                            chat.terminal_input.clone(),
+                            chat.terminal_focus.clone(),
+                            true,
+                            true,
+                            style,
+                        )
+                        .file_links(Some(route))
+                        .cached(),
+                    )
+            }))
             .children(body)
     }
 }
@@ -224,6 +275,8 @@ fn harness(context: Option<PanelContext>) -> Harness {
         tree_fits: true,
         maximized: false,
         maximize_requests: 0,
+        terminal: None,
+        link_panel_shown: 0,
     });
     let visual = VisualTestContext::from_window(host.into(), &cx);
     visual.simulate_resize(size(px(340.), px(900.)));
@@ -5400,5 +5453,234 @@ fn held_uncommitted_list_for_v2_while_marking_v1_keeps_v2_unviewed() {
                     && v.active_diff_viewed() == Some((false, true))
             })
         },
+    );
+}
+
+#[test]
+fn a_relative_path_under_a_different_files_root_links_and_opens_in_the_preview() {
+    use crate::terminal::control::tests::{attached, mirror_named};
+    use gpui::MouseButton;
+    use runner_core::protocol::terminal::TerminalController;
+
+    let mut h = viewer(chat("in-project"));
+    let chosen_root = h.repo.join("crates/demo");
+    let unique = chosen_root.join("src/deep_module/unique_file.rs");
+    std::fs::create_dir_all(unique.parent().unwrap()).unwrap();
+    std::fs::write(&unique, "one\ntwo\nthree\nfour\n").unwrap();
+    crate::file_links::LAUNCHED.with(|launched| launched.borrow_mut().clear());
+
+    let view = h.view();
+    view.update(&mut h.visual, |view, cx| {
+        view.set_root(Some(chosen_root.clone()), cx);
+    });
+    h.wait("chosen Files root resolved", |h| {
+        view.read_with(&h.visual, |view, _| {
+            view.root_path().and_then(|p| p.canonicalize().ok()) == chosen_root.canonicalize().ok()
+        })
+    });
+
+    let (_host, terminal, _tx, _ack) =
+        mirror_named("files-extra-root", TerminalController::Desktop);
+    terminal.test_feed(1, b"src/deep_module/unique_file.rs:3");
+    h.host
+        .update(&mut h.visual, |host, _, cx| {
+            host.terminal = Some(attached(terminal, cx, 100, 10));
+            cx.notify();
+        })
+        .unwrap();
+    h.settle();
+
+    let bounds = h.visual.debug_bounds("FILES_LINK_TERMINAL").unwrap();
+    let on_path = bounds.origin + gpui::point(px(30.), px(8.));
+    let control = Modifiers {
+        control: true,
+        ..Default::default()
+    };
+    h.visual.simulate_mouse_move(on_path, None, control);
+    h.visual
+        .simulate_mouse_down(on_path, MouseButton::Left, control);
+    h.visual
+        .simulate_mouse_up(on_path, MouseButton::Left, control);
+
+    h.wait("unique_file.rs opens in preview at line 3", |h| {
+        h.read(|view| view.active_tab()) == Some("src/deep_module/unique_file.rs".into())
+            && h.read(|view| view.code_view()).is_some_and(|code| {
+                code.read_with(&h.visual, |code, _| code.selected_text()) == Some("three".into())
+            })
+    });
+    assert!(launched().is_empty());
+    assert_eq!(
+        h.host
+            .read_with(&h.visual, |host, _| host.link_panel_shown)
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn an_editor_scheme_osc8_link_opens_in_the_preview() {
+    use crate::terminal::control::tests::{attached, mirror_named};
+    use gpui::MouseButton;
+    use runner_core::protocol::terminal::TerminalController;
+
+    let mut h = viewer(chat("in-project"));
+    let target = h.repo.join("lines.txt");
+    std::fs::write(&target, "alpha\nbeta\ngamma\ndelta\n").unwrap();
+    crate::file_links::LAUNCHED.with(|launched| launched.borrow_mut().clear());
+
+    let (_host, terminal, _tx, _ack) =
+        mirror_named("files-editor-osc8", TerminalController::Desktop);
+    let uri_path = target.to_string_lossy().replace('\\', "/");
+    let osc8 = format!(
+        "\x1b]8;;vscode://file/{}:3\x1b\\lines.txt:3\x1b]8;;\x1b\\",
+        uri_path.trim_start_matches('/')
+    );
+    terminal.test_feed(1, osc8.as_bytes());
+    h.host
+        .update(&mut h.visual, |host, _, cx| {
+            host.terminal = Some(attached(terminal, cx, 100, 10));
+            cx.notify();
+        })
+        .unwrap();
+    h.settle();
+
+    let bounds = h.visual.debug_bounds("FILES_LINK_TERMINAL").unwrap();
+    let on_path = bounds.origin + gpui::point(px(20.), px(8.));
+    let control = Modifiers {
+        control: true,
+        ..Default::default()
+    };
+    h.visual.simulate_mouse_move(on_path, None, control);
+    h.visual
+        .simulate_mouse_down(on_path, MouseButton::Left, control);
+    h.visual
+        .simulate_mouse_up(on_path, MouseButton::Left, control);
+
+    h.wait("lines.txt opens in preview at line 3", |h| {
+        h.read(|view| view.active_tab()) == Some("lines.txt".into())
+            && h.read(|view| view.code_view()).is_some_and(|code| {
+                code.read_with(&h.visual, |code, _| code.selected_text()) == Some("gamma".into())
+            })
+    });
+    assert!(launched().is_empty());
+    assert_eq!(
+        h.host
+            .read_with(&h.visual, |host, _| host.link_panel_shown)
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
+fn a_resting_hover_re_resolves_through_cached_viewport_when_files_root_resolves_or_changes() {
+    use crate::terminal::control::tests::{attached, mirror_named};
+    use gpui::MouseButton;
+    use runner_core::protocol::terminal::TerminalController;
+    use runner_terminal::terminal::LinkTarget;
+
+    let mut h = harness(None);
+    let repo_file = h.repo.join("src").join("deep").join("x.rs");
+    let chosen_root = h.repo.join("crates").join("demo");
+    let chosen_file = chosen_root.join("src").join("deep").join("x.rs");
+    std::fs::create_dir_all(chosen_file.parent().unwrap()).unwrap();
+    std::fs::write(&chosen_file, "from chosen\nsecond\n").unwrap();
+    let other_root = h.repo.join("crates").join("other");
+    std::fs::create_dir_all(&other_root).unwrap();
+    crate::file_links::LAUNCHED.with(|launched| launched.borrow_mut().clear());
+
+    let (_host, terminal, _tx, _ack) =
+        mirror_named("files-cached-hover", TerminalController::Desktop);
+    terminal.test_feed(1, b"src/deep/x.rs:1");
+    h.host
+        .update(&mut h.visual, |host, _, cx| {
+            host.terminal = Some(attached(terminal, cx, 100, 10));
+            cx.notify();
+        })
+        .unwrap();
+    h.settle();
+
+    let hovered_target = |h: &mut Harness| {
+        h.host
+            .read_with(&h.visual, |host, cx| {
+                host.terminal
+                    .as_ref()
+                    .and_then(|chat| chat.terminal_interaction.read(cx).hovered_link())
+                    .map(|link| link.target.clone())
+            })
+            .unwrap()
+    };
+
+    let bounds = h.visual.debug_bounds("FILES_LINK_TERMINAL").unwrap();
+    let on_path = bounds.origin + gpui::point(px(30.), px(8.));
+    let control = Modifiers {
+        control: true,
+        ..Default::default()
+    };
+
+    // Resting hover before any Files view exists: relative path does not link.
+    h.visual.simulate_mouse_move(on_path, None, control);
+    h.settle();
+    assert!(hovered_target(&mut h).is_none());
+
+    // Show the Files panel with NO mouse move: once its async root resolves to `h.repo`,
+    // `TerminalViewportElement`'s `.cached()` wrapper invalidates and the resting hover resolves.
+    h.show(Some(chat("in-project")));
+    h.wait(
+        "resting hover resolves once initial Files root resolves",
+        |h| {
+            matches!(
+                hovered_target(h),
+                Some(LinkTarget::File {
+                    path,
+                    line: Some(1),
+                    column: None,
+                }) if runner_core::app_paths::same_checkout_path(&path, &repo_file)
+            )
+        },
+    );
+
+    // Switching the Files root to a folder without `src/deep/x.rs` clears the resting hover
+    // through the cached viewport without a mouse move.
+    let view = h.view();
+    view.update(&mut h.visual, |view, cx| {
+        view.set_root(Some(other_root.clone()), cx);
+    });
+    h.wait("resting hover clears once Files root changes away", |h| {
+        hovered_target(h).is_none()
+    });
+
+    // Switching the Files root to `chosen_root` re-resolves the resting hover to `chosen_file`,
+    // and clicking opens it in the preview at line 1.
+    view.update(&mut h.visual, |view, cx| {
+        view.set_root(Some(chosen_root.clone()), cx);
+    });
+    h.wait("resting hover switches to new Files root target", |h| {
+        matches!(
+            hovered_target(h),
+            Some(LinkTarget::File {
+                path,
+                line: Some(1),
+                column: None,
+            }) if runner_core::app_paths::same_checkout_path(&path, &chosen_file)
+        )
+    });
+
+    h.visual
+        .simulate_mouse_down(on_path, MouseButton::Left, control);
+    h.visual
+        .simulate_mouse_up(on_path, MouseButton::Left, control);
+    h.wait("chosen root file opens in preview at line 1", |h| {
+        h.read(|view| view.active_tab()) == Some("src/deep/x.rs".into())
+            && h.read(|view| view.code_view()).is_some_and(|code| {
+                code.read_with(&h.visual, |code, _| code.selected_text())
+                    == Some("from chosen".into())
+            })
+    });
+    assert!(launched().is_empty());
+    assert_eq!(
+        h.host
+            .read_with(&h.visual, |host, _| host.link_panel_shown)
+            .unwrap(),
+        1
     );
 }
