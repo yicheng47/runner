@@ -31,7 +31,6 @@ use runner_core::protocol::{ClientError, DaemonClient};
 
 use super::code::CodeView;
 use super::document::{self, Document, FileQuery, Found, MATCH_LIMIT};
-use super::markdown::{self, LinkTarget, MarkdownView, Page};
 use super::panel_view::{absolute, letter_color};
 use super::tabs::{FileTab, FileTabs, OpenPreviewOutcome, TabKey};
 use super::tree::PreparedStatus;
@@ -52,6 +51,7 @@ use crate::surfaces::side_panel::{
 };
 use crate::terminal::find::{find_bar_panel, FindBarParts};
 use crate::theme;
+use crate::ui::markdown::{self, LinkTarget, MarkdownView, Page};
 pub(crate) use open_in::{editor_icon, found_editors};
 pub(super) use open_in::{reveal, reveal_label};
 

@@ -7,7 +7,6 @@ pub(crate) mod document;
 mod finder;
 pub(crate) mod highlight;
 mod links;
-mod markdown;
 pub(crate) mod open_file;
 mod panel_view;
 pub(crate) mod picker;

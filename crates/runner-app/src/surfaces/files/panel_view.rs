@@ -632,7 +632,10 @@ impl FilesView {
         self.viewer.read(cx).launched()
     }
 
-    pub(crate) fn rendered_view(&self, cx: &App) -> Option<Entity<super::markdown::MarkdownView>> {
+    pub(crate) fn rendered_view(
+        &self,
+        cx: &App,
+    ) -> Option<Entity<crate::ui::markdown::MarkdownView>> {
         self.viewer.read(cx).rendered_view()
     }
 

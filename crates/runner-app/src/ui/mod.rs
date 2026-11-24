@@ -6,6 +6,7 @@ pub mod duplicate_subject_overlay;
 pub mod field;
 pub mod file_drop;
 pub mod list;
+pub(crate) mod markdown;
 pub mod menu;
 pub mod model_field;
 pub mod overlay;
