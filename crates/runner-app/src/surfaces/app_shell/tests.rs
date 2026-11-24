@@ -101,7 +101,7 @@ fn work_card_insets_every_route_and_contains_chat_and_mission_columns() {
             if path.starts_with("/chats/") {
                 assert!(!root.chat_panel_is_open(cx));
                 root.set_chat_panel_open(true, cx);
-                root.chat_panel_visibility = SidebarVisibilityTransition::new(true);
+                root.side_panel.visibility = SidebarVisibilityTransition::new(true);
             }
             root
         });
@@ -735,7 +735,7 @@ fn capped_banner_stays_in_each_windows_main_content() {
         root.route = AppRoute::Chat;
         root.sync_active_chat_detail(cx);
         root.set_chat_panel_open(true, cx);
-        root.chat_panel_visibility = SidebarVisibilityTransition::new(true);
+        root.side_panel.visibility = SidebarVisibilityTransition::new(true);
         root
     });
     let other = cx.add_window(|window, cx| {
@@ -1083,7 +1083,7 @@ fn sidebar_footer_opens_usage_and_settings_and_hides_usage_in_collapsed_preview(
     host.update(&mut visual, |root, _, cx| {
         root.route = AppRoute::Roles;
         root.sidebar_collapsed = true;
-        root.sidebar_preview_open = true;
+        root.sidebar_preview.open = true;
         cx.notify();
     })
     .unwrap();
@@ -1092,7 +1092,7 @@ fn sidebar_footer_opens_usage_and_settings_and_hides_usage_in_collapsed_preview(
     assert!(visual.debug_bounds("SIDEBAR_SETTINGS").is_some());
     host.update(&mut visual, |root, _, cx| {
         root.sidebar_collapsed = false;
-        root.sidebar_preview_open = false;
+        root.sidebar_preview.open = false;
         root.usage_installed.clear();
         cx.notify();
     })

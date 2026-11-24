@@ -3338,8 +3338,8 @@ fn switch_sidebar_view_expands_persists_and_refreshes_local_number_rows() {
     );
     host.update(&mut cx, |root, _, cx| {
         root.set_sidebar_collapsed(true, true, cx);
-        root.sidebar_preview_open = true;
-        root.sidebar_preview_peeking = true;
+        root.sidebar_preview.open = true;
+        root.sidebar_preview.peeking = true;
         root.front_page_sidebar().update(cx, |sidebar, _| {
             sidebar.dragged_id = Some(rows[0].id.clone())
         });
@@ -3349,7 +3349,7 @@ fn switch_sidebar_view_expands_persists_and_refreshes_local_number_rows() {
         host.update(&mut cx, |root, window, cx| {
             root.switch_sidebar_view(&crate::SwitchSidebarView, window, cx);
             assert!(!root.front_page_sidebar_collapsed());
-            assert!(!root.sidebar_preview_open && !root.sidebar_preview_peeking);
+            assert!(!root.sidebar_preview.open && !root.sidebar_preview.peeking);
             let sidebar = root.front_page_sidebar().read(cx);
             assert_eq!(sidebar.active_only(cx), active);
             assert!(sidebar.dragged_id.is_none());

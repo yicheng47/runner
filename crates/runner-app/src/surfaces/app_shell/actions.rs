@@ -261,9 +261,8 @@ impl NativeRoot {
         }
         let collapsed = !self.front_page_sidebar_collapsed();
         self.set_sidebar_collapsed(collapsed, true, cx);
-        self.sidebar_preview_peeking = false;
+        self.sidebar_preview.on_sidebar_toggled(collapsed);
         if !collapsed {
-            self.sidebar_preview_open = false;
             match self.remote_client.remote_mission_workspace() {
                 Some(workspace) => {
                     workspace.update(cx, |workspace, cx| {
@@ -295,10 +294,7 @@ impl NativeRoot {
         }
         let collapsed = !self.front_page_sidebar_collapsed();
         self.set_sidebar_collapsed(collapsed, true, cx);
-        if !collapsed {
-            self.sidebar_preview_open = false;
-        }
-        self.sidebar_preview_peeking = false;
+        self.sidebar_preview.on_sidebar_toggled(collapsed);
         cx.notify();
     }
 
@@ -313,8 +309,7 @@ impl NativeRoot {
         }
         self.toggle_sidebar_view(cx);
         self.set_sidebar_collapsed(false, true, cx);
-        self.sidebar_preview_open = false;
-        self.sidebar_preview_peeking = false;
+        self.sidebar_preview.dismiss();
         cx.notify();
     }
 

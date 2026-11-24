@@ -208,68 +208,26 @@ impl NativeRoot {
             );
         let panel_open = self.chat_panel_is_open(cx)
             && side_panel_available(self.settings(cx), PanelSurface::Chat);
-        if !panel_open && self.chat_panel_maximized {
-            self.chat_panel_maximized = false;
+        if !panel_open && self.side_panel.maximized {
+            self.side_panel.maximized = false;
         }
-        let panel_maximized = panel_open && self.chat_panel_maximized;
+        let panel_maximized = panel_open && self.side_panel.maximized;
         let panel_layout = self.chat_panel_layout(self.archived_chat_detail.as_ref(), 1, cx);
-        let panel_sheet = panel_open && !panel_maximized && panel_layout.is_sheet();
-        let now = Instant::now();
-        let (panel_visibility, panel_animating) = if panel_maximized || panel_sheet {
-            (1., false)
-        } else if panel_layout.is_sheet() {
-            // Collapsed narrow sheet uses zero docked width rather than animating a docked rail.
-            self.chat_panel_visibility = SidebarVisibilityTransition::new(false);
-            (0., false)
-        } else {
-            self.chat_panel_visibility.animate_to(
-                if panel_open { 1. } else { 0. },
-                now,
-                Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
-            )
-        };
-        let (sheet_progress, sheet_animating) = if panel_sheet {
-            self.chat_sheet_anim.animate_to(
-                1.,
-                now,
-                Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
-            )
-        } else {
-            self.chat_sheet_anim = SidebarVisibilityTransition::new(false);
-            (0., false)
-        };
-        let target_width = panel_layout.width.round();
-        let width_mode = (
-            panel_layout.widened.is_some(),
-            panel_layout.widened.is_some_and(|w| w.tree),
+        let side_panel::PanelAnimationFrame {
+            panel_sheet,
+            panel_visibility,
+            panel_animating,
+            sheet_progress,
+            animated_width,
+            animating,
+        } = self.side_panel.step_animation(
+            panel_open,
+            panel_maximized,
+            panel_layout,
+            Instant::now(),
+            Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
         );
-        let prev_mode = self.chat_panel_width_mode;
-        self.chat_panel_width_mode = Some(width_mode);
-        let mode_changed = prev_mode.is_some_and(|prev| prev != width_mode);
-        let (animated_width, width_animating) = if panel_sheet {
-            // Keep the docked width tracker at the reserved docked width (e.g.
-            // 300 px for a split auto-sheet, 0 px for a narrow sheet) so closing
-            // a sheet back to docked never starts a docked animation from the
-            // full sheet width and squeezes the terminal panes.
-            let docked = panel_layout.reserved_docked_width.round();
-            self.chat_panel_width_anim = SidebarVisibilityTransition::at(docked);
-            (target_width, false)
-        } else if std::mem::take(&mut self.chat_panel_width_snap)
-            || panel_maximized
-            || self.chat_panel_resizing
-            || !panel_open
-            || (!mode_changed && self.chat_panel_width_anim.started_at.is_none())
-        {
-            self.chat_panel_width_anim = SidebarVisibilityTransition::at(target_width);
-            (target_width, false)
-        } else {
-            self.chat_panel_width_anim.animate_to(
-                target_width,
-                now,
-                Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
-            )
-        };
-        if panel_animating || sheet_animating || width_animating {
+        if animating {
             let weak = cx.weak_entity();
             window.on_next_frame(move |_, cx| {
                 let _ = weak.update(cx, |_, cx| cx.notify());
@@ -277,7 +235,7 @@ impl NativeRoot {
             window.request_animation_frame();
         }
         if !panel_open && !panel_animating {
-            self.chat_files.hide(cx);
+            self.side_panel.files.hide(cx);
         }
         let side_panel = self.render_chat_side_panel(
             self.archived_chat_detail.as_ref(),
@@ -327,7 +285,7 @@ impl NativeRoot {
             .min_w(px(0.))
             .h_full()
             .flex()
-            .child(self.chat_files.measure(self.settings(cx).app_zoom))
+            .child(self.side_panel.files.measure(self.settings(cx).app_zoom))
             .when(!panel_maximized, |el| el.child(chat_column))
             .children(docked_panel)
             .children(sheet_overlay)
@@ -550,71 +508,30 @@ impl NativeRoot {
             maximized_leaf(&self.maximized_panes, &layout).is_some(),
         );
         let panel_open = !show_start && panel_available && self.chat_panel_is_open(cx);
-        if local && !panel_open && self.chat_panel_maximized {
-            self.chat_panel_maximized = false;
+        if local && !panel_open && self.side_panel.maximized {
+            self.side_panel.maximized = false;
         }
-        let panel_maximized = local && panel_open && self.chat_panel_maximized;
+        let panel_maximized = local && panel_open && self.side_panel.maximized;
         let panel_layout = self.chat_panel_layout(
             local.then_some(self.active_chat_detail.as_ref()).flatten(),
             split_columns,
             cx,
         );
-        let panel_sheet = panel_open && !panel_maximized && panel_layout.is_sheet();
-        let now = Instant::now();
-        let (panel_visibility, panel_animating) = if panel_maximized || panel_sheet {
-            (1., false)
-        } else if panel_layout.is_sheet() {
-            self.chat_panel_visibility = SidebarVisibilityTransition::new(false);
-            (0., false)
-        } else {
-            self.chat_panel_visibility.animate_to(
-                if panel_open { 1. } else { 0. },
-                now,
-                Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
-            )
-        };
-        let (sheet_progress, sheet_animating) = if panel_sheet {
-            self.chat_sheet_anim.animate_to(
-                1.,
-                now,
-                Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
-            )
-        } else {
-            self.chat_sheet_anim = SidebarVisibilityTransition::new(false);
-            (0., false)
-        };
-        let target_width = panel_layout.width.round();
-        let width_mode = (
-            panel_layout.widened.is_some(),
-            panel_layout.widened.is_some_and(|w| w.tree),
+        let side_panel::PanelAnimationFrame {
+            panel_sheet,
+            panel_visibility,
+            panel_animating,
+            sheet_progress,
+            animated_width,
+            animating,
+        } = self.side_panel.step_animation(
+            panel_open,
+            panel_maximized,
+            panel_layout,
+            Instant::now(),
+            Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
         );
-        let prev_mode = self.chat_panel_width_mode;
-        self.chat_panel_width_mode = Some(width_mode);
-        let mode_changed = prev_mode.is_some_and(|prev| prev != width_mode);
-        let (animated_width, width_animating) = if panel_sheet {
-            // Keep the docked width tracker at the reserved docked width (e.g.
-            // 300 px for a split auto-sheet, 0 px for a narrow sheet) so closing
-            // a sheet back to docked never starts a docked animation from the
-            // full sheet width and squeezes the terminal panes.
-            let docked = panel_layout.reserved_docked_width.round();
-            self.chat_panel_width_anim = SidebarVisibilityTransition::at(docked);
-            (target_width, false)
-        } else if std::mem::take(&mut self.chat_panel_width_snap)
-            || panel_maximized
-            || self.chat_panel_resizing
-            || !panel_open
-            || (!mode_changed && self.chat_panel_width_anim.started_at.is_none())
-        {
-            self.chat_panel_width_anim = SidebarVisibilityTransition::at(target_width);
-            (target_width, false)
-        } else {
-            self.chat_panel_width_anim.animate_to(
-                target_width,
-                now,
-                Duration::from_millis(CHAT_PANEL_TRANSITION_MS),
-            )
-        };
-        if panel_animating || sheet_animating || width_animating {
+        if animating {
             let weak = cx.weak_entity();
             window.on_next_frame(move |_, cx| {
                 let _ = weak.update(cx, |_, cx| cx.notify());
@@ -622,7 +539,7 @@ impl NativeRoot {
             window.request_animation_frame();
         }
         if !panel_open && !panel_animating {
-            self.chat_files.hide(cx);
+            self.side_panel.files.hide(cx);
         }
         let panel_region_style = if panel_maximized {
             gpui::StyleRefinement::default()
@@ -666,7 +583,7 @@ impl NativeRoot {
             resize_strip(
                 "chat-panel-resize",
                 ResizeAxis::Columns,
-                self.chat_panel_resizing,
+                self.side_panel.resizing,
                 runner_app::ui::resize::RESIZE_GRAB,
                 zoom,
                 None,
@@ -739,7 +656,7 @@ impl NativeRoot {
             .min_w(px(0.))
             .h_full()
             .flex()
-            .child(self.chat_files.measure(self.settings(cx).app_zoom))
+            .child(self.side_panel.files.measure(self.settings(cx).app_zoom))
             .when(!panel_maximized, |el| el.child(chat_column))
             .children(docked_open.then(|| {
                 div()
@@ -771,8 +688,7 @@ impl NativeRoot {
                 move |this, event: &DragMoveEvent<ChatPanelResizeDrag>, _, cx| {
                     let width = f32::from(event.bounds.right() - event.event.position.x)
                         / this.settings(cx).app_zoom;
-                    if !this.chat_panel_resizing {
-                        this.chat_panel_resizing = true;
+                    if this.side_panel.begin_resize() {
                         cx.notify();
                     }
                     // With a file or diff open the drag sizes the unified viewer beside the right rail.

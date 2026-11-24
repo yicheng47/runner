@@ -43,7 +43,7 @@ impl NativeRoot {
             self.attached.clear();
         }
         if !matches!(self.route, AppRoute::Chat | AppRoute::ArchivedChat) {
-            self.chat_files.hide(cx);
+            self.side_panel.files.hide(cx);
         }
         self.report_current_subjects(cx);
         self.record_current_runtime_location();

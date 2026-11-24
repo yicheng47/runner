@@ -2,7 +2,7 @@ mod actions;
 mod notices;
 mod sidebar;
 mod usage;
-pub(crate) use sidebar::{sidebar_footer_contents, SidebarFooterControl};
+pub(crate) use sidebar::{sidebar_footer_contents, SidebarFooterControl, SidebarPreviewState};
 
 pub(crate) use usage::*;
 

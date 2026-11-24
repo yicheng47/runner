@@ -2198,13 +2198,22 @@ fn chat_panel_opens_role_clamps_toggles_and_resets_on_another_chat() {
         "S2 system prompt starts collapsed by default"
     );
     page.click("CHAT_PANEL_PROMPT_TOGGLE");
-    assert!(page.read(|root| root.chat_info_prompt_expanded.contains("first-panel-chat")));
+    assert!(page.read(|root| root
+        .side_panel
+        .info_prompt_expanded
+        .contains("first-panel-chat")));
     assert!(page.visual.debug_bounds("CHAT_PANEL_PROMPT").is_some());
     page.click("CHAT_PANEL_PROMPT_TOGGLE");
-    assert!(!page.read(|root| root.chat_info_prompt_expanded.contains("first-panel-chat")));
+    assert!(!page.read(|root| root
+        .side_panel
+        .info_prompt_expanded
+        .contains("first-panel-chat")));
     assert!(page.visual.debug_bounds("CHAT_PANEL_PROMPT").is_none());
     page.click("CHAT_PANEL_PROMPT_TOGGLE");
-    assert!(page.read(|root| root.chat_info_prompt_expanded.contains("first-panel-chat")));
+    assert!(page.read(|root| root
+        .side_panel
+        .info_prompt_expanded
+        .contains("first-panel-chat")));
 
     // Switching to another chat starts collapsed independently.
     page.host
@@ -2222,10 +2231,16 @@ fn chat_panel_opens_role_clamps_toggles_and_resets_on_another_chat() {
         })
         .unwrap();
     page.visual.run_until_parked();
-    assert!(!page.read(|root| root.chat_info_prompt_expanded.contains("second-panel-chat")));
+    assert!(!page.read(|root| root
+        .side_panel
+        .info_prompt_expanded
+        .contains("second-panel-chat")));
     assert!(page.visual.debug_bounds("CHAT_PANEL_PROMPT").is_none());
     page.click("CHAT_PANEL_PROMPT_TOGGLE");
-    assert!(page.read(|root| root.chat_info_prompt_expanded.contains("second-panel-chat")));
+    assert!(page.read(|root| root
+        .side_panel
+        .info_prompt_expanded
+        .contains("second-panel-chat")));
     page.host
         .update(&mut page.visual, |root, window, cx| {
             root.toggle_focused_pane_info_popover(window, cx);
@@ -2250,9 +2265,9 @@ fn chat_panel_opens_role_clamps_toggles_and_resets_on_another_chat() {
             })
             .unwrap();
         page.visual.run_until_parked();
-        assert!(!page.read(|root| root.chat_info_prompt_expanded.contains(id)));
+        assert!(!page.read(|root| root.side_panel.info_prompt_expanded.contains(id)));
         page.click("CHAT_PANEL_PROMPT_TOGGLE");
-        assert!(page.read(|root| root.chat_info_prompt_expanded.contains(id)));
+        assert!(page.read(|root| root.side_panel.info_prompt_expanded.contains(id)));
         assert!(page.visual.debug_bounds("CHAT_PANEL_PROMPT").is_some());
     }
 

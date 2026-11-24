@@ -1,15 +1,19 @@
 //! The right side panel's tools, Orca-style 40 px icon activity bar, and
 //! docked-vs-overlay-sheet geometry (#1403, #1331).
 
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, rems, svg, AnyElement, App, BoxShadow, Div, ElementId, MouseButton, Window,
+    div, prelude::*, px, rems, svg, AnyElement, App, BoxShadow, Div, ElementId, FocusHandle,
+    MouseButton, Window,
 };
 use runner_app::ui::{ButtonVariant, IconButton, Tooltip};
 use runner_core::pane_layout::{PaneLayout, PaneNode, SplitOrientation};
 
 use crate::app_settings::{AppSettings, DiffViewMode};
+use crate::surfaces::root::SidebarVisibilityTransition;
 use crate::theme;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
@@ -489,6 +493,264 @@ impl PanelSurfaces {
     #[cfg(test)]
     pub(crate) fn select(&mut self, id: PanelViewId) {
         self.selection.select(id);
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ChatPanelTarget {
+    Local(String),
+    Archived(String),
+    Remote { computer_id: String, tab_id: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PanelAnimationFrame {
+    pub(crate) panel_sheet: bool,
+    pub(crate) panel_visibility: f32,
+    pub(crate) panel_animating: bool,
+    pub(crate) sheet_progress: f32,
+    pub(crate) animated_width: f32,
+    pub(crate) animating: bool,
+}
+
+/// Chat and archived-chat right side-panel state owned by `NativeRoot`.
+pub(crate) struct SidePanelState {
+    pub(crate) resizing: bool,
+    pub(crate) visibility: SidebarVisibilityTransition,
+    pub(crate) width_anim: SidebarVisibilityTransition,
+    pub(crate) width_mode: Option<(bool, bool)>,
+    pub(crate) sheet_anim: SidebarVisibilityTransition,
+    pub(crate) width_snap: bool,
+    pub(crate) info_prompt_expanded: HashSet<String>,
+    pub(crate) surfaces: PanelSurfaces,
+    pub(crate) tab: Option<String>,
+    pub(crate) visible_target: Option<ChatPanelTarget>,
+    pub(crate) open: Option<bool>,
+    pub(crate) maximized: bool,
+    pub(crate) focus: FocusHandle,
+    pub(crate) panels_by_tab: HashMap<String, SavedPanel>,
+    pub(crate) files: crate::surfaces::files::FilesPanel,
+    pub(crate) chat_by_tab: HashMap<String, String>,
+}
+
+impl SidePanelState {
+    pub(crate) fn new(initial_width: f32, cx: &mut App) -> Self {
+        Self {
+            resizing: false,
+            visibility: SidebarVisibilityTransition::new(false),
+            width_anim: SidebarVisibilityTransition::at(initial_width),
+            width_mode: None,
+            sheet_anim: SidebarVisibilityTransition::new(false),
+            width_snap: true,
+            info_prompt_expanded: HashSet::new(),
+            surfaces: PanelSurfaces::new(Default::default()),
+            tab: None,
+            visible_target: None,
+            open: None,
+            maximized: false,
+            focus: cx.focus_handle(),
+            panels_by_tab: HashMap::new(),
+            files: Default::default(),
+            chat_by_tab: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn retain_tabs(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.panels_by_tab.retain(|id, _| keep(id));
+        self.chat_by_tab.retain(|id, _| keep(id));
+    }
+
+    pub(crate) fn clear_all_maximized(&mut self) {
+        self.maximized = false;
+        for panel in self.panels_by_tab.values_mut() {
+            panel.maximized = false;
+        }
+    }
+
+    pub(crate) fn switch_tab(
+        &mut self,
+        tab: Option<String>,
+        keep_previous: impl FnOnce(&str) -> bool,
+    ) {
+        if self.tab == tab {
+            return;
+        }
+        if let Some(previous) = self.tab.take().filter(|id| keep_previous(id)) {
+            self.panels_by_tab.insert(
+                previous,
+                SavedPanel {
+                    selection: self.surfaces.selection,
+                    open: self.open,
+                    maximized: self.maximized,
+                },
+            );
+        }
+        let saved = tab.as_ref().and_then(|id| self.panels_by_tab.remove(id));
+        if let Some(saved) = saved {
+            self.surfaces.restore(saved.selection);
+            self.open = saved.open;
+            self.maximized = saved.maximized;
+        } else {
+            self.surfaces.reset(Default::default());
+            self.open = None;
+            self.maximized = false;
+        }
+        self.tab = tab;
+    }
+
+    pub(crate) fn snap_to_target(
+        &mut self,
+        target: Option<ChatPanelTarget>,
+        visible: bool,
+        clear_maximized: bool,
+    ) {
+        self.visible_target = target;
+        self.width_snap = true;
+        self.sheet_anim = SidebarVisibilityTransition::new(false);
+        if clear_maximized {
+            self.maximized = false;
+        }
+        self.visibility = SidebarVisibilityTransition::new(visible);
+    }
+
+    pub(crate) fn set_open(&mut self, open: bool) {
+        self.open = Some(open);
+        if !open {
+            self.maximized = false;
+        }
+    }
+
+    pub(crate) fn set_maximized(&mut self, maximized: bool) -> bool {
+        if self.maximized == maximized {
+            return false;
+        }
+        self.maximized = maximized;
+        if maximized {
+            self.visibility = SidebarVisibilityTransition::new(true);
+        }
+        true
+    }
+
+    pub(crate) fn contains_focus(&self, window: &Window, cx: &App) -> bool {
+        self.focus.contains_focused(window, cx)
+    }
+
+    pub(crate) fn focus_shown(
+        &self,
+        subject: Option<&PanelSubject>,
+        shown: Option<PanelViewId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.files
+            .focus_shown(subject, shown, &self.focus, window, cx);
+    }
+
+    pub(crate) fn open_files_in_tab(&mut self, tab: &str) {
+        if self.tab.as_deref() == Some(tab) {
+            self.surfaces.selection.select(PanelViewId::Files);
+            self.open = Some(true);
+        } else {
+            let panel = self.panels_by_tab.entry(tab.into()).or_default();
+            panel.selection.select(PanelViewId::Files);
+            panel.open = Some(true);
+        }
+    }
+
+    pub(crate) fn info_prompt_expanded(&self, session_id: &str) -> bool {
+        self.info_prompt_expanded.contains(session_id)
+    }
+
+    pub(crate) fn toggle_info_prompt_expanded(&mut self, session_id: String) {
+        if !self.info_prompt_expanded.remove(&session_id) {
+            self.info_prompt_expanded.insert(session_id);
+        }
+    }
+
+    pub(crate) fn begin_resize(&mut self) -> bool {
+        if self.resizing {
+            return false;
+        }
+        self.resizing = true;
+        true
+    }
+
+    pub(crate) fn finish_resize(&mut self) -> bool {
+        if !self.resizing {
+            return false;
+        }
+        self.resizing = false;
+        true
+    }
+
+    pub(crate) fn remember_chat(&mut self, tab_id: String, session_id: String) {
+        self.chat_by_tab.insert(tab_id, session_id);
+    }
+
+    pub(crate) fn remembered_chat(&self, tab_id: &str) -> Option<&String> {
+        self.chat_by_tab.get(tab_id)
+    }
+
+    pub(crate) fn step_animation(
+        &mut self,
+        panel_open: bool,
+        panel_maximized: bool,
+        panel_layout: PanelLayout,
+        now: Instant,
+        duration: Duration,
+    ) -> PanelAnimationFrame {
+        let panel_sheet = panel_open && !panel_maximized && panel_layout.is_sheet();
+        let (panel_visibility, panel_animating) = if panel_maximized || panel_sheet {
+            (1., false)
+        } else if panel_layout.is_sheet() {
+            // Collapsed narrow sheet uses zero docked width rather than animating a docked rail.
+            self.visibility = SidebarVisibilityTransition::new(false);
+            (0., false)
+        } else {
+            self.visibility
+                .animate_to(if panel_open { 1. } else { 0. }, now, duration)
+        };
+        let (sheet_progress, sheet_animating) = if panel_sheet {
+            self.sheet_anim.animate_to(1., now, duration)
+        } else {
+            self.sheet_anim = SidebarVisibilityTransition::new(false);
+            (0., false)
+        };
+        let target_width = panel_layout.width.round();
+        let width_mode = (
+            panel_layout.widened.is_some(),
+            panel_layout.widened.is_some_and(|w| w.tree),
+        );
+        let prev_mode = self.width_mode;
+        self.width_mode = Some(width_mode);
+        let mode_changed = prev_mode.is_some_and(|prev| prev != width_mode);
+        let (animated_width, width_animating) = if panel_sheet {
+            // Keep the docked width tracker at the reserved docked width (e.g.
+            // 300 px for a split auto-sheet, 0 px for a narrow sheet) so closing
+            // a sheet back to docked never starts a docked animation from the
+            // full sheet width and squeezes the terminal panes.
+            let docked = panel_layout.reserved_docked_width.round();
+            self.width_anim = SidebarVisibilityTransition::at(docked);
+            (target_width, false)
+        } else if std::mem::take(&mut self.width_snap)
+            || panel_maximized
+            || self.resizing
+            || !panel_open
+            || (!mode_changed && self.width_anim.started_at.is_none())
+        {
+            self.width_anim = SidebarVisibilityTransition::at(target_width);
+            (target_width, false)
+        } else {
+            self.width_anim.animate_to(target_width, now, duration)
+        };
+        PanelAnimationFrame {
+            panel_sheet,
+            panel_visibility,
+            panel_animating,
+            sheet_progress,
+            animated_width,
+            animating: panel_animating || sheet_animating || width_animating,
+        }
     }
 }
 
