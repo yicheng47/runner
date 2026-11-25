@@ -4306,7 +4306,7 @@ fn pair_again_uses_current_directory_identity_and_replaces_pin_entry_when_it_cha
 
 #[cfg(unix)]
 #[test]
-fn remote_windows_do_not_suppress_local_notifications_and_clicks_return_to_local_content() {
+fn remote_windows_do_not_suppress_local_notifications_and_clicks_open_local_windows() {
     use runner_core::protocol::{
         node::{NodeRow, NodeType},
         status::{AgentObservation, AgentStatus, HumanInteraction, Lifecycle, WaitReason},
@@ -4314,7 +4314,7 @@ fn remote_windows_do_not_suppress_local_notifications_and_clicks_return_to_local
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();
     let mut cx = TestAppContext::single();
-    let (store, _, _) = fixture(&mut cx, temp.path());
+    let (store, fake, _) = fixture(&mut cx, temp.path());
     store.update(&mut cx, |store, _| {
         crate::app_store::seed_mixed_working_sessions(store)
     });
@@ -4353,15 +4353,27 @@ fn remote_windows_do_not_suppress_local_notifications_and_clicks_return_to_local
     let mut visual = VisualTestContext::from_window(window.into(), &cx);
     visual.update(|window, _| window.activate_window());
     window
-        .update(&mut cx, |root, window, cx| {
+        .update(&mut visual, |root, window, cx| {
             root.tabs = TabSet::from_rows(&[row]);
             root.route = AppRoute::Chat;
             root.choose_computer(computers()[1].clone(), false, window, cx);
         })
         .unwrap();
-    cx.run_until_parked();
+    wait_until(
+        &mut visual,
+        "remote attached on only window before local notification click",
+        |visual| {
+            window
+                .read_with(visual, |root, _| {
+                    root.remote_client
+                        .workspace()
+                        .is_some_and(|r| r.terminals.contains_key("s"))
+                })
+                .unwrap()
+        },
+    );
     window
-        .update(&mut cx, |root, _, cx| {
+        .update(&mut visual, |root, _, cx| {
             root.remote_client
                 .workspace()
                 .unwrap()
@@ -4369,7 +4381,9 @@ fn remote_windows_do_not_suppress_local_notifications_and_clicks_return_to_local
                 .update(cx, |sidebar, cx| sidebar.toggle_active_only(cx));
         })
         .unwrap();
-    store.update(&mut cx, |store, cx| {
+    visual.run_until_parked();
+    let cancels_before = fake.cancels.load(Ordering::SeqCst);
+    store.update(&mut visual, |store, cx| {
         store.session_statuses.insert(
             "direct-agent".into(),
             AgentStatus {
@@ -4389,8 +4403,11 @@ fn remote_windows_do_not_suppress_local_notifications_and_clicks_return_to_local
         store.revisions.activity += 1;
         cx.notify();
     });
-    cx.run_until_parked();
-    assert_eq!(cx.delivered_system_notifications().len(), 1);
+    wait_until(
+        &mut visual,
+        "local notification delivered while remote",
+        |_| cx.delivered_system_notifications().len() == 1,
+    );
     cx.update(crate::notifications::view_changed);
     cx.run_until_parked();
     assert_eq!(cx.delivered_system_notifications().len(), 1);
@@ -4398,26 +4415,61 @@ fn remote_windows_do_not_suppress_local_notifications_and_clicks_return_to_local
         tag: "direct-agent".into(),
         action_id: None,
     });
-    cx.run_until_parked();
-    window
-        .read_with(&cx, |root, _| {
-            assert!(root.remote_client.is_local());
-            assert_eq!(root.route, AppRoute::Chat);
-            assert_eq!(
-                root.tabs.active().unwrap().focused_session_id(),
-                Some("direct-agent")
-            );
-        })
-        .unwrap();
-    assert!(cx.delivered_system_notifications().is_empty());
-    window
-        .update(&mut cx, |root, window, cx| {
-            root.choose_computer(computers()[1].clone(), false, window, cx)
-        })
-        .unwrap();
-    cx.run_until_parked();
+    wait_app(
+        &mut cx,
+        "new local window opened on clicked chat and cleared notification",
+        |cx| {
+            let local = cx.update(|cx| {
+                cx.windows()
+                    .into_iter()
+                    .filter_map(|handle| handle.downcast::<NativeRoot>())
+                    .find(|handle| handle.window_id() != window.window_id())
+            });
+            local.is_some_and(|local| {
+                local
+                    .read_with(cx, |root, _| {
+                        root.remote_client.is_local()
+                            && root.route == AppRoute::Chat
+                            && root.tabs.active().and_then(|tab| tab.focused_session_id())
+                                == Some("direct-agent")
+                    })
+                    .unwrap()
+            }) && cx.delivered_system_notifications().is_empty()
+        },
+    );
+    let local_window = cx.update(|cx| {
+        let native = cx
+            .windows()
+            .into_iter()
+            .filter_map(|handle| handle.downcast::<NativeRoot>())
+            .collect::<Vec<_>>();
+        assert_eq!(native.len(), 2);
+        native
+            .into_iter()
+            .find(|handle| handle.window_id() != window.window_id())
+            .unwrap()
+    });
+    assert_ne!(
+        local_window
+            .read_with(&cx, |root, _| root.window_label.clone())
+            .unwrap(),
+        window
+            .read_with(&cx, |root, _| root.window_label.clone())
+            .unwrap()
+    );
+    assert_eq!(
+        cx.read(|cx| cx.active_window().unwrap().window_id()),
+        local_window.window_id()
+    );
     window
         .read_with(&cx, |root, cx| {
+            assert!(root.remote_client.is_active());
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
             assert!(root
                 .remote_client
                 .workspace()
@@ -4427,14 +4479,64 @@ fn remote_windows_do_not_suppress_local_notifications_and_clicks_return_to_local
                 .active_only(cx));
         })
         .unwrap();
-    cx.update(|cx| crate::notifications::open("mission-agent", cx));
-    cx.run_until_parked();
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+
+    // Clicking a mission notification while the remote window is active reuses the existing local
+    // window instead of disconnecting the remote window or spawning a third window.
     window
-        .read_with(&cx, |root, _| {
-            assert!(root.remote_client.is_local());
-            assert_eq!(root.route, AppRoute::Mission("test-mission".into()));
+        .update(&mut cx, |_, window, _| window.activate_window())
+        .unwrap();
+    wait_app(&mut cx, "remote main reactivated", |cx| {
+        cx.read(|cx| cx.active_window().map(|w| w.window_id()) == Some(window.window_id()))
+    });
+    cx.simulate_system_notification_response(gpui::SystemNotificationResponse {
+        tag: "mission-agent".into(),
+        action_id: None,
+    });
+    wait_app(
+        &mut cx,
+        "mission notification opened in existing local window",
+        |cx| {
+            local_window
+                .read_with(cx, |root, _| {
+                    root.remote_client.is_local()
+                        && root.route == AppRoute::Mission("test-mission".into())
+                })
+                .unwrap()
+        },
+    );
+    assert_eq!(
+        cx.update(|cx| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|handle| handle.downcast::<NativeRoot>())
+                .count()
+        }),
+        2
+    );
+    assert_eq!(
+        cx.read(|cx| cx.active_window().unwrap().window_id()),
+        local_window.window_id()
+    );
+    window
+        .read_with(&cx, |root, cx| {
+            assert!(root.remote_client.is_active());
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .sidebar
+                .read(cx)
+                .active_only(cx));
         })
         .unwrap();
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
 }
 
 #[test]
@@ -11797,7 +11899,7 @@ fn settings_teardown_on_sign_out_reset_and_forget_lands_local() {
 }
 
 #[test]
-fn settings_archived_and_local_notification_return_to_this_computer() {
+fn settings_archived_returns_to_this_computer_and_local_notification_keeps_remote_window() {
     use gpui::{px, Point, SystemNotificationResponse};
     use runner_app::notifications;
     use runner_app::pane_layout::{PaneLayout, TabSet};
@@ -11917,7 +12019,8 @@ fn settings_archived_and_local_notification_return_to_this_computer() {
     );
     assert!(fake.cancels.load(Ordering::SeqCst) > cancels_a);
 
-    // Part B: clicking a local notification while Settings covers a remote window returns locally.
+    // Part B: clicking a local notification while Settings covers a remote window opens a new
+    // local window instead of disconnecting the remote window.
     window.update(&mut visual, choose_host).unwrap();
     wait_until(
         &mut visual,
@@ -11968,20 +12071,75 @@ fn settings_archived_and_local_notification_return_to_this_computer() {
         tag: "local-notif".into(),
         action_id: None,
     });
+    wait_app(
+        &mut cx,
+        "notification click opened a new local window on local chat",
+        |cx| {
+            let local = cx.update(|cx| {
+                cx.windows()
+                    .into_iter()
+                    .filter_map(|handle| handle.downcast::<NativeRoot>())
+                    .find(|handle| handle.window_id() != window.window_id())
+            });
+            local.is_some_and(|local| {
+                local
+                    .read_with(cx, |root, _| {
+                        root.remote_client.is_local()
+                            && root.route == crate::AppRoute::Chat
+                            && root.tabs.active_tab_id() == Some("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+                            && root.tabs.active().and_then(|tab| tab.focused_session_id())
+                                == Some("local-notif")
+                    })
+                    .unwrap()
+            })
+        },
+    );
+    let local_window = cx.update(|cx| {
+        cx.windows()
+            .into_iter()
+            .filter_map(|handle| handle.downcast::<NativeRoot>())
+            .find(|handle| handle.window_id() != window.window_id())
+            .unwrap()
+    });
+    assert_ne!(
+        local_window
+            .read_with(&cx, |root, _| root.window_label.clone())
+            .unwrap(),
+        window
+            .read_with(&cx, |root, _| root.window_label.clone())
+            .unwrap()
+    );
+    window
+        .read_with(&cx, |root, _| {
+            assert!(root.remote_client.is_active());
+            assert_eq!(root.route, crate::AppRoute::Settings);
+            assert!(root
+                .remote_client
+                .workspace()
+                .is_some_and(|r| r.terminals.contains_key("s")));
+        })
+        .unwrap();
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_b);
+
+    let back = visual.debug_bounds("SETTINGS_BACK").unwrap();
+    visual.simulate_click(back.center(), Default::default());
     wait_until(
         &mut visual,
-        "notification click returned window to local chat",
+        "remote window returns from Settings back to live remote view",
         |visual| {
             window
                 .read_with(visual, |root, _| {
-                    root.remote_client.is_local()
-                        && root.route == crate::AppRoute::Chat
-                        && root.tabs.active_tab_id() == Some("01ARZ3NDEKTSV4RRFFQ69G5FAV")
+                    root.remote_client.is_active()
+                        && root.route != crate::AppRoute::Settings
+                        && root
+                            .remote_client
+                            .workspace()
+                            .is_some_and(|r| r.terminals.contains_key("s"))
                 })
                 .unwrap()
         },
     );
-    assert!(fake.cancels.load(Ordering::SeqCst) > cancels_b);
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_b);
 }
 
 #[test]
@@ -12121,4 +12279,779 @@ fn settings_escape_lets_dialogs_editors_and_recordings_consume_first() {
         fake.input.lock().unwrap().as_slice(),
         &[("remote:host:s".into(), b"k".to_vec())]
     );
+}
+
+fn wait_app(
+    cx: &mut TestAppContext,
+    label: &str,
+    mut pred: impl FnMut(&mut TestAppContext) -> bool,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        cx.run_until_parked();
+        if pred(cx) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {label}"
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[cfg(unix)]
+fn focus_window_and_wait(
+    cx: &mut TestAppContext,
+    store: &Entity<AppStore>,
+    window: gpui::WindowHandle<NativeRoot>,
+    label: &str,
+    after: Option<chrono::DateTime<chrono::Utc>>,
+) -> chrono::DateTime<chrono::Utc> {
+    if let Some(after) = after {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while chrono::Utc::now() <= after {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "clock did not advance past {after}"
+            );
+            std::thread::yield_now();
+        }
+    }
+    window
+        .update(cx, |_, window, _| window.activate_window())
+        .unwrap();
+    let mut focused_at = None;
+    wait_app(
+        cx,
+        &format!("window {label} focused in window_entries"),
+        |cx| {
+            let active =
+                cx.read(|cx| cx.active_window().map(|w| w.window_id())) == Some(window.window_id());
+            if !active {
+                return false;
+            }
+            let recorded = store.read_with(cx, |store, _| {
+                store
+                    .window_entries
+                    .iter()
+                    .find(|entry| entry.label == label && entry.focused)
+                    .map(|entry| entry.focused_at)
+            });
+            if let Some(ts) = recorded.filter(|ts| after.is_none_or(|after| *ts > after)) {
+                focused_at = Some(ts);
+                true
+            } else {
+                false
+            }
+        },
+    );
+    focused_at.unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn local_chat_notification_skips_remote_main_and_picks_most_recently_focused_local_window() {
+    use gpui::SystemNotificationResponse;
+    use runner_core::protocol::node::{NodeRow, NodeType};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    store.update(&mut cx, |store, _| {
+        crate::app_store::seed_mixed_working_sessions(store);
+    });
+    let target_row = NodeRow {
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+        parent_id: None,
+        position: 0,
+        node_type: NodeType::Tab,
+        name: Some("Target tab".into()),
+        ref_id: None,
+        layout: Some(
+            PaneLayout::single(Some("direct-agent"), &[])
+                .serialize()
+                .unwrap(),
+        ),
+        pinned_position: None,
+        last_completed_at: None,
+        last_viewed_at: None,
+        created_at: String::new(),
+    };
+    let other_row = NodeRow {
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FAW".into(),
+        parent_id: None,
+        position: 1,
+        node_type: NodeType::Tab,
+        name: Some("Other tab".into()),
+        ref_id: None,
+        layout: Some(
+            PaneLayout::single(Some("busy-shell"), &[])
+                .serialize()
+                .unwrap(),
+        ),
+        pinned_position: None,
+        last_completed_at: None,
+        last_viewed_at: None,
+        created_at: String::new(),
+    };
+    let client = store.read_with(&cx, |store, _| store.client.clone());
+    for row in [&target_row, &other_row] {
+        client
+            .node_tab_upsert(runner_core::protocol::node::NodeTabUpsertInput {
+                id: row.id.clone(),
+                parent_id: None,
+                name: row.name.clone().unwrap_or_default(),
+                layout: row.layout.clone().unwrap(),
+            })
+            .unwrap();
+    }
+    store.update(&mut cx, |store, _| {
+        store.nodes = vec![target_row.clone(), other_row.clone()];
+    });
+    cx.update(|cx| {
+        cx.set_app_identity("com.wycstudios.runner-dev", "Runner");
+        crate::notifications::install(cx);
+    });
+
+    let remote_main = add_window(&mut cx, &store, temp.path(), "main");
+    let local_older = add_window(&mut cx, &store, temp.path(), "local-older");
+    let local_newer = add_window(&mut cx, &store, temp.path(), "local-newer");
+    for window in [local_older, local_newer] {
+        window
+            .update(&mut cx, |root, _, _| {
+                root.tabs = TabSet::from_rows(&[target_row.clone(), other_row.clone()]);
+                root.tabs.activate(&other_row.id);
+                root.route = AppRoute::Chat;
+            })
+            .unwrap();
+    }
+    remote_main
+        .update(&mut cx, |root, window, cx| {
+            root.tabs = TabSet::from_rows(&[target_row.clone(), other_row.clone()]);
+            root.tabs.activate(&target_row.id);
+            root.route = AppRoute::Chat;
+            choose_host(root, window, cx);
+        })
+        .unwrap();
+    wait_app(
+        &mut cx,
+        "remote main attached before chat notification",
+        |cx| {
+            remote_main
+                .read_with(cx, |root, _| {
+                    root.remote_client
+                        .workspace()
+                        .is_some_and(|r| r.terminals.contains_key("s"))
+                })
+                .unwrap()
+        },
+    );
+    let older_ts = focus_window_and_wait(&mut cx, &store, local_older, "local-older", None);
+    let newer_ts =
+        focus_window_and_wait(&mut cx, &store, local_newer, "local-newer", Some(older_ts));
+    let _remote_ts = focus_window_and_wait(&mut cx, &store, remote_main, "main", Some(newer_ts));
+    let cancels_before = fake.cancels.load(Ordering::SeqCst);
+
+    // 1. Both local windows hold the chat in tabs; remote "main" is active and even had the chat
+    // active locally before going remote. The most recently focused local window must be used.
+    cx.simulate_system_notification_response(SystemNotificationResponse {
+        tag: "direct-agent".into(),
+        action_id: None,
+    });
+    wait_app(&mut cx, "chat notification opened in local-newer", |cx| {
+        local_newer
+            .read_with(cx, |root, _| {
+                root.remote_client.is_local()
+                    && root.route == AppRoute::Chat
+                    && root.tabs.active_tab_id() == Some(target_row.id.as_str())
+                    && root.tabs.active().and_then(|tab| tab.focused_session_id())
+                        == Some("direct-agent")
+            })
+            .unwrap()
+    });
+    assert_eq!(
+        cx.update(|cx| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|handle| handle.downcast::<NativeRoot>())
+                .count()
+        }),
+        3
+    );
+    assert_eq!(
+        cx.read(|cx| cx.active_window().unwrap().window_id()),
+        local_newer.window_id()
+    );
+    local_older
+        .read_with(&cx, |root, _| {
+            assert_eq!(root.tabs.active_tab_id(), Some(other_row.id.as_str()));
+        })
+        .unwrap();
+    remote_main
+        .read_with(&cx, |root, _| {
+            assert!(root.remote_client.is_active());
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
+        })
+        .unwrap();
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+
+    // 2. Neither local window holds the chat yet (reaches the "main"/fallback branch); remote
+    // "main" must still be excluded and local-newer reloads tabs to open the chat.
+    for window in [local_older, local_newer] {
+        window
+            .update(&mut cx, |root, _, _| {
+                root.tabs = TabSet::from_rows(std::slice::from_ref(&other_row));
+                root.tabs.activate(&other_row.id);
+            })
+            .unwrap();
+    }
+    let older_ts = focus_window_and_wait(&mut cx, &store, local_older, "local-older", None);
+    let newer_ts =
+        focus_window_and_wait(&mut cx, &store, local_newer, "local-newer", Some(older_ts));
+    let _remote_ts = focus_window_and_wait(&mut cx, &store, remote_main, "main", Some(newer_ts));
+    cx.simulate_system_notification_response(SystemNotificationResponse {
+        tag: "direct-agent".into(),
+        action_id: None,
+    });
+    wait_app(
+        &mut cx,
+        "fallback chat notification reloaded tabs in local-newer",
+        |cx| {
+            local_newer
+                .read_with(cx, |root, _| {
+                    root.remote_client.is_local()
+                        && root.route == AppRoute::Chat
+                        && root.tabs.active_tab_id() == Some(target_row.id.as_str())
+                        && root.tabs.active().and_then(|tab| tab.focused_session_id())
+                            == Some("direct-agent")
+                })
+                .unwrap()
+        },
+    );
+    assert_eq!(
+        cx.update(|cx| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|handle| handle.downcast::<NativeRoot>())
+                .count()
+        }),
+        3
+    );
+    assert_eq!(
+        cx.read(|cx| cx.active_window().unwrap().window_id()),
+        local_newer.window_id()
+    );
+    remote_main
+        .read_with(&cx, |root, _| {
+            assert!(root.remote_client.is_active());
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
+        })
+        .unwrap();
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+}
+
+#[cfg(unix)]
+#[test]
+fn mission_notifications_skip_active_remote_window_and_use_most_recently_focused_local_window() {
+    use crate::surfaces::mission_workspace::MissionTab;
+    use gpui::SystemNotificationResponse;
+    use runner_core::protocol::{
+        mission::MissionActivityState,
+        model::{Event, EventKind, SignalType},
+    };
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    store.update(&mut cx, |store, _| {
+        crate::app_store::seed_mixed_working_sessions(store);
+        store.settings.notifications.missions = crate::app_settings::MissionNotifications {
+            question: true,
+            input: true,
+            idle: true,
+            failed: true,
+        };
+        store.missions[0].activity = Some(MissionActivityState::Busy);
+    });
+    cx.update(|cx| {
+        cx.set_app_identity("com.wycstudios.runner-dev", "Runner");
+        crate::notifications::install(cx);
+    });
+
+    let remote_active = add_window(&mut cx, &store, temp.path(), "remote-active");
+    let local_older = add_window(&mut cx, &store, temp.path(), "local-older");
+    let local_newer = add_window(&mut cx, &store, temp.path(), "local-newer");
+    for window in [local_older, local_newer] {
+        window
+            .update(&mut cx, |root, _, _| root.route = AppRoute::Roles)
+            .unwrap();
+    }
+    remote_active
+        .update(&mut cx, |root, window, cx| {
+            root.route = AppRoute::Roles;
+            choose_host(root, window, cx);
+        })
+        .unwrap();
+    wait_app(
+        &mut cx,
+        "remote window attached before mission notifications",
+        |cx| {
+            remote_active
+                .read_with(cx, |root, _| {
+                    root.remote_client
+                        .workspace()
+                        .is_some_and(|r| r.terminals.contains_key("s"))
+                })
+                .unwrap()
+        },
+    );
+    let older_ts = focus_window_and_wait(&mut cx, &store, local_older, "local-older", None);
+    let newer_ts =
+        focus_window_and_wait(&mut cx, &store, local_newer, "local-newer", Some(older_ts));
+    let remote_ts = focus_window_and_wait(
+        &mut cx,
+        &store,
+        remote_active,
+        "remote-active",
+        Some(newer_ts),
+    );
+    let cancels_before = fake.cancels.load(Ordering::SeqCst);
+
+    // 1. Slot notification skips active remote window and opens in local-newer.
+    cx.simulate_system_notification_response(SystemNotificationResponse {
+        tag: "mission-agent".into(),
+        action_id: None,
+    });
+    wait_app(&mut cx, "slot notification opened in local-newer", |cx| {
+        local_newer
+            .read_with(cx, |root, cx| {
+                root.remote_client.is_local()
+                    && root.route == AppRoute::Mission("test-mission".into())
+                    && root
+                        .mission_workspace
+                        .read(cx)
+                        .notification_tab("test-mission")
+                        == Some(&MissionTab::Session("mission-agent".into()))
+            })
+            .unwrap()
+    });
+    assert_eq!(
+        cx.update(|cx| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|handle| handle.downcast::<NativeRoot>())
+                .count()
+        }),
+        3
+    );
+    assert_eq!(
+        cx.read(|cx| cx.active_window().unwrap().window_id()),
+        local_newer.window_id()
+    );
+    local_older
+        .read_with(&cx, |root, _| assert_eq!(root.route, AppRoute::Roles))
+        .unwrap();
+    remote_active
+        .read_with(&cx, |root, _| {
+            assert!(root.remote_client.is_active());
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
+        })
+        .unwrap();
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+
+    // 2. Question notification skips active remote window and focuses Feed in local-newer.
+    let remote_ts = focus_window_and_wait(
+        &mut cx,
+        &store,
+        remote_active,
+        "remote-active",
+        Some(remote_ts),
+    );
+    fake.emit(
+        "event/appended",
+        serde_json::json!({
+            "mission_id": "test-mission",
+            "event": Event {
+                id: "q-remote".into(),
+                ts: chrono::Utc::now(),
+                crew_id: Some("test-crew".into()),
+                mission_id: "test-mission".into(),
+                kind: EventKind::Signal,
+                from: "app".into(),
+                to: Default::default(),
+                signal_type: Some(SignalType::new("human_question")),
+                payload: serde_json::json!({"prompt": "Ship?"}),
+            },
+            "next_offset": 1
+        }),
+    );
+    wait_app(&mut cx, "question notification delivered", |cx| {
+        cx.delivered_system_notifications()
+            .iter()
+            .any(|notice| notice.tag == "question:q-remote")
+    });
+    cx.simulate_system_notification_response(SystemNotificationResponse {
+        tag: "question:q-remote".into(),
+        action_id: None,
+    });
+    wait_app(
+        &mut cx,
+        "question notification focused Feed in local-newer",
+        |cx| {
+            local_newer
+                .read_with(cx, |root, cx| {
+                    root.route == AppRoute::Mission("test-mission".into())
+                        && root
+                            .mission_workspace
+                            .read(cx)
+                            .notification_tab("test-mission")
+                            == Some(&MissionTab::Feed)
+                })
+                .unwrap()
+        },
+    );
+    assert_eq!(
+        cx.read(|cx| cx.active_window().unwrap().window_id()),
+        local_newer.window_id()
+    );
+    remote_active
+        .read_with(&cx, |root, _| {
+            assert!(root.remote_client.is_active());
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
+        })
+        .unwrap();
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+
+    // 3. Mission-idle notification skips active remote window and focuses Feed in local-newer.
+    local_newer
+        .update(&mut cx, |root, window, cx| {
+            root.mission_workspace.update(cx, |workspace, cx| {
+                workspace.focus_status_session("test-mission", "mission-agent", window, cx);
+            });
+        })
+        .unwrap();
+    let _remote_ts = focus_window_and_wait(
+        &mut cx,
+        &store,
+        remote_active,
+        "remote-active",
+        Some(remote_ts),
+    );
+    cx.simulate_system_notification_response(SystemNotificationResponse {
+        tag: "mission:test-mission:idle".into(),
+        action_id: None,
+    });
+    wait_app(
+        &mut cx,
+        "idle notification focused Feed in local-newer",
+        |cx| {
+            local_newer
+                .read_with(cx, |root, cx| {
+                    root.route == AppRoute::Mission("test-mission".into())
+                        && root
+                            .mission_workspace
+                            .read(cx)
+                            .notification_tab("test-mission")
+                            == Some(&MissionTab::Feed)
+                })
+                .unwrap()
+        },
+    );
+    assert_eq!(
+        cx.update(|cx| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|handle| handle.downcast::<NativeRoot>())
+                .count()
+        }),
+        3
+    );
+    remote_active
+        .read_with(&cx, |root, _| {
+            assert!(root.remote_client.is_active());
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
+        })
+        .unwrap();
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+}
+
+#[test]
+fn usage_pairing_and_missing_notifications_never_disconnect_a_remote_window() {
+    use crate::surfaces::settings::page::SettingsPane;
+    use gpui::SystemNotificationResponse;
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    cx.update(|cx| {
+        cx.set_app_identity("com.wycstudios.runner-dev", "Runner");
+        crate::notifications::install(cx);
+    });
+
+    let remote = add_window(&mut cx, &store, temp.path(), "main");
+    remote
+        .update(&mut cx, |root, window, cx| {
+            window.activate_window();
+            root.route = AppRoute::Roles;
+            choose_host(root, window, cx);
+        })
+        .unwrap();
+    wait_app(&mut cx, "remote attached before usage check", |cx| {
+        remote
+            .read_with(cx, |root, _| {
+                root.remote_client
+                    .workspace()
+                    .is_some_and(|r| r.terminals.contains_key("s"))
+            })
+            .unwrap()
+    });
+    let cancels_before = fake.cancels.load(Ordering::SeqCst);
+
+    // 1. Stale/missing target notification does nothing harmful and opens no window.
+    cx.simulate_system_notification_response(SystemNotificationResponse {
+        tag: "deleted-session".into(),
+        action_id: None,
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|handle| handle.downcast::<NativeRoot>())
+                .count()
+        }),
+        1
+    );
+    remote
+        .read_with(&cx, |root, _| {
+            assert!(root.remote_client.is_active());
+            assert_eq!(root.route, AppRoute::Roles);
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
+        })
+        .unwrap();
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+
+    // 2. Usage alert while only a remote "main" window is open opens a new local window with a
+    // distinct label on Settings -> Usage.
+    cx.simulate_system_notification_response(SystemNotificationResponse {
+        tag: "usage:codex::Week:0".into(),
+        action_id: None,
+    });
+    wait_app(
+        &mut cx,
+        "usage notification opened Settings -> Usage in a new local window",
+        |cx| {
+            let local = cx.update(|cx| {
+                cx.windows()
+                    .into_iter()
+                    .filter_map(|handle| handle.downcast::<NativeRoot>())
+                    .find(|handle| handle.window_id() != remote.window_id())
+            });
+            local.is_some_and(|local| {
+                local
+                    .read_with(cx, |root, _| {
+                        root.remote_client.is_local()
+                            && root.route == AppRoute::Settings
+                            && root.settings_page.pane == SettingsPane::Usage
+                    })
+                    .unwrap()
+            })
+        },
+    );
+    let local = cx.update(|cx| {
+        cx.windows()
+            .into_iter()
+            .filter_map(|handle| handle.downcast::<NativeRoot>())
+            .find(|handle| handle.window_id() != remote.window_id())
+            .unwrap()
+    });
+    assert_ne!(
+        local
+            .read_with(&cx, |root, _| root.window_label.clone())
+            .unwrap(),
+        remote
+            .read_with(&cx, |root, _| root.window_label.clone())
+            .unwrap()
+    );
+    assert_eq!(
+        cx.read(|cx| cx.active_window().unwrap().window_id()),
+        local.window_id()
+    );
+    remote
+        .read_with(&cx, |root, _| {
+            assert!(root.remote_client.is_active());
+            assert_eq!(root.route, AppRoute::Roles);
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
+        })
+        .unwrap();
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+
+    // 3. Remote-paired notification while the remote window is active reuses the local window
+    // on Settings -> Remote without touching the remote window.
+    remote
+        .update(&mut cx, |_, window, _| window.activate_window())
+        .unwrap();
+    wait_app(
+        &mut cx,
+        "remote reactivated before pairing notification",
+        |cx| cx.read(|cx| cx.active_window().map(|w| w.window_id()) == Some(remote.window_id())),
+    );
+    cx.simulate_system_notification_response(SystemNotificationResponse {
+        tag: "remote-paired:device-fp".into(),
+        action_id: None,
+    });
+    wait_app(
+        &mut cx,
+        "pairing notification opened Settings -> Remote in local window",
+        |cx| {
+            local
+                .read_with(cx, |root, _| {
+                    root.remote_client.is_local()
+                        && root.route == AppRoute::Settings
+                        && root.settings_page.pane == SettingsPane::Remote
+                })
+                .unwrap()
+        },
+    );
+    assert_eq!(
+        cx.update(|cx| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|handle| handle.downcast::<NativeRoot>())
+                .count()
+        }),
+        2
+    );
+    assert_eq!(
+        cx.read(|cx| cx.active_window().unwrap().window_id()),
+        local.window_id()
+    );
+    remote
+        .read_with(&cx, |root, _| {
+            assert!(root.remote_client.is_active());
+            assert_eq!(root.route, AppRoute::Roles);
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
+        })
+        .unwrap();
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+
+    // 4. Remote-paired notification when only a remote "main" window is open opens a new local
+    // window with a distinct label on Settings -> Remote without touching the remote window.
+    local
+        .update(&mut cx, |_, window, _| window.remove_window())
+        .unwrap();
+    wait_app(&mut cx, "local window removed", |cx| {
+        cx.update(|cx| {
+            cx.windows()
+                .into_iter()
+                .filter_map(|handle| handle.downcast::<NativeRoot>())
+                .count()
+                == 1
+        })
+    });
+    remote
+        .update(&mut cx, |_, window, _| window.activate_window())
+        .unwrap();
+    wait_app(
+        &mut cx,
+        "remote reactivated before solo pairing click",
+        |cx| cx.read(|cx| cx.active_window().map(|w| w.window_id()) == Some(remote.window_id())),
+    );
+    cx.simulate_system_notification_response(SystemNotificationResponse {
+        tag: "remote-paired:device-fp-2".into(),
+        action_id: None,
+    });
+    wait_app(
+        &mut cx,
+        "pairing notification opened Settings -> Remote in a new local window",
+        |cx| {
+            let local = cx.update(|cx| {
+                cx.windows()
+                    .into_iter()
+                    .filter_map(|handle| handle.downcast::<NativeRoot>())
+                    .find(|handle| handle.window_id() != remote.window_id())
+            });
+            local.is_some_and(|local| {
+                local
+                    .read_with(cx, |root, _| {
+                        root.remote_client.is_local()
+                            && root.route == AppRoute::Settings
+                            && root.settings_page.pane == SettingsPane::Remote
+                    })
+                    .unwrap()
+            })
+        },
+    );
+    let second_local = cx.update(|cx| {
+        cx.windows()
+            .into_iter()
+            .filter_map(|handle| handle.downcast::<NativeRoot>())
+            .find(|handle| handle.window_id() != remote.window_id())
+            .unwrap()
+    });
+    assert_ne!(
+        second_local
+            .read_with(&cx, |root, _| root.window_label.clone())
+            .unwrap(),
+        remote
+            .read_with(&cx, |root, _| root.window_label.clone())
+            .unwrap()
+    );
+    remote
+        .read_with(&cx, |root, _| {
+            assert!(root.remote_client.is_active());
+            assert_eq!(root.route, AppRoute::Roles);
+            assert!(root
+                .remote_client
+                .workspace()
+                .unwrap()
+                .terminals
+                .contains_key("s"));
+        })
+        .unwrap();
+    assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
 }
