@@ -371,6 +371,95 @@ mod tests {
         );
     }
 
+    fn rect_area(bounds: Bounds<gpui::ScaledPixels>) -> f64 {
+        f64::from(bounds.size.width.0) * f64::from(bounds.size.height.0)
+    }
+
+    fn visible_rect(quad: &gpui::Quad) -> Bounds<gpui::ScaledPixels> {
+        quad.bounds.intersect(&quad.content_mask.bounds)
+    }
+
+    fn assert_disjoint_cover(
+        rects: &[Bounds<gpui::ScaledPixels>],
+        container: Bounds<gpui::ScaledPixels>,
+        expected_area: f64,
+    ) {
+        let mut total = 0.0_f64;
+        for (index, rect) in rects.iter().enumerate() {
+            assert!(
+                !rect.is_empty(),
+                "empty visible mask in split quad: {rect:?}"
+            );
+            assert!(
+                rect.left() >= container.left()
+                    && rect.right() <= container.right()
+                    && rect.top() >= container.top()
+                    && rect.bottom() <= container.bottom(),
+                "mask {rect:?} escaped container {container:?}"
+            );
+            for other in &rects[index + 1..] {
+                assert!(
+                    rect.intersect(other).is_empty(),
+                    "split masks overlap: {rect:?} and {other:?}"
+                );
+            }
+            total += rect_area(*rect);
+        }
+        assert!(
+            (total - expected_area).abs() < 0.5,
+            "split masks area {total} != expected {expected_area}"
+        );
+    }
+
+    fn assert_interior_clears_rounded_corners(
+        interior: Bounds<gpui::ScaledPixels>,
+        outer: Bounds<gpui::ScaledPixels>,
+        radii: Corners<gpui::ScaledPixels>,
+    ) {
+        let clears = |dx: f32, dy: f32, r: f32| {
+            if r <= 0. {
+                return true;
+            }
+            dx >= r || dy >= r || (r - dx).hypot(r - dy) <= r + 0.01
+        };
+        assert!(
+            clears(
+                (interior.left() - outer.left()).0,
+                (interior.top() - outer.top()).0,
+                radii.top_left.0,
+            ),
+            "unrounded interior {interior:?} leaks into top-left radius {:?}",
+            radii.top_left
+        );
+        assert!(
+            clears(
+                (outer.right() - interior.right()).0,
+                (interior.top() - outer.top()).0,
+                radii.top_right.0,
+            ),
+            "unrounded interior {interior:?} leaks into top-right radius {:?}",
+            radii.top_right
+        );
+        assert!(
+            clears(
+                (outer.right() - interior.right()).0,
+                (outer.bottom() - interior.bottom()).0,
+                radii.bottom_right.0,
+            ),
+            "unrounded interior {interior:?} leaks into bottom-right radius {:?}",
+            radii.bottom_right
+        );
+        assert!(
+            clears(
+                (interior.left() - outer.left()).0,
+                (outer.bottom() - interior.bottom()).0,
+                radii.bottom_left.0,
+            ),
+            "unrounded interior {interior:?} leaks into bottom-left radius {:?}",
+            radii.bottom_left
+        );
+    }
+
     fn assert_split_quad_corners(
         quads: &[&gpui::Quad],
         expected: Corners<gpui::ScaledPixels>,
@@ -383,19 +472,17 @@ mod tests {
         if expected == Corners::default() {
             assert_eq!(quads.len(), 1);
             assert_eq!(quads[0].corner_radii, expected);
+            assert_eq!(visible_rect(quads[0]), bounds);
         } else {
             // GPUI splits a rounded quad into one unrounded interior quad and edge strips carrying the corner radii.
-            let mut interiors = 0;
+            let mut interior = None;
             let mut strips = 0;
+            let mut rects = Vec::with_capacity(quads.len());
             for quad in quads {
-                assert!(
-                    quad.content_mask.bounds.left() >= bounds.left()
-                        && quad.content_mask.bounds.right() <= bounds.right()
-                        && quad.content_mask.bounds.top() >= bounds.top()
-                        && quad.content_mask.bounds.bottom() <= bounds.bottom()
-                );
+                let rect = visible_rect(quad);
+                rects.push(rect);
                 if quad.corner_radii == Corners::default() {
-                    interiors += 1;
+                    assert!(interior.replace(rect).is_none(), "multiple interior quads");
                 } else if quad.corner_radii == expected {
                     strips += 1;
                 } else {
@@ -405,8 +492,10 @@ mod tests {
                     );
                 }
             }
-            assert_eq!(interiors, 1);
+            let interior = interior.expect("expected one unrounded interior quad");
             assert!(strips >= 1);
+            assert_disjoint_cover(&rects, bounds, rect_area(bounds));
+            assert_interior_clears_rounded_corners(interior, bounds, expected);
         }
         bounds
     }
@@ -500,21 +589,106 @@ mod tests {
                         .collect::<Vec<_>>();
                     if matches!(decorations, Decorations::Client { .. }) {
                         assert_eq!(borders.len(), 4);
-                        for border in borders {
-                            assert_eq!(border.bounds, expected_bounds);
-                            assert_eq!(border.border_color, crate::theme::border());
-                            if expected_corners == Corners::default() {
-                                // Unrounded opaque borders are lowered into four solid border-colored edge strips.
+                        let thickness = px(1.).scale(scale);
+                        if expected_corners == Corners::default() {
+                            // Unrounded opaque borders are lowered into four solid 1px border-colored edge strips.
+                            let inner = expected_bounds.extend(Edges::all(-thickness));
+                            let mut strip_rects = Vec::with_capacity(4);
+                            for border in &borders {
+                                assert_eq!(border.bounds, expected_bounds);
+                                assert_eq!(border.border_color, crate::theme::border());
                                 assert_eq!(
                                     border.background.as_solid(),
                                     Some(crate::theme::border())
                                 );
                                 assert_eq!(border.border_widths, Edges::default());
                                 assert_eq!(border.corner_radii, Corners::default());
-                            } else {
-                                assert_eq!(border.border_widths, Edges::all(px(1.)).scale(scale));
-                                assert_eq!(border.corner_radii, expected_corners);
+                                let rect = visible_rect(border);
+                                assert!(
+                                    rect.intersect(&inner).is_empty(),
+                                    "square border strip {rect:?} intrudes into 1px interior {inner:?}"
+                                );
+                                strip_rects.push(rect);
                             }
+                            assert_disjoint_cover(
+                                &strip_rects,
+                                expected_bounds,
+                                rect_area(expected_bounds) - rect_area(inner),
+                            );
+                        } else {
+                            let mut strip_rects = Vec::with_capacity(4);
+                            for border in &borders {
+                                assert_eq!(border.bounds, expected_bounds);
+                                assert!(border.background.is_transparent());
+                                assert_eq!(border.border_color, crate::theme::border());
+                                assert_eq!(border.border_widths, Edges::all(thickness));
+                                assert_eq!(border.corner_radii, expected_corners);
+                                strip_rects.push(visible_rect(border));
+                            }
+                            let top_strip = strip_rects
+                                .iter()
+                                .find(|rect| {
+                                    rect.top() == expected_bounds.top()
+                                        && rect.left() == expected_bounds.left()
+                                        && rect.right() == expected_bounds.right()
+                                })
+                                .expect("expected full-width top border strip");
+                            let bottom_strip = strip_rects
+                                .iter()
+                                .find(|rect| {
+                                    rect.bottom() == expected_bounds.bottom()
+                                        && rect.left() == expected_bounds.left()
+                                        && rect.right() == expected_bounds.right()
+                                })
+                                .expect("expected full-width bottom border strip");
+                            let left_strip = strip_rects
+                                .iter()
+                                .find(|rect| {
+                                    rect.left() == expected_bounds.left()
+                                        && rect.top() == top_strip.bottom()
+                                        && rect.bottom() == bottom_strip.top()
+                                })
+                                .expect("expected left border strip between top and bottom");
+                            let right_strip = strip_rects
+                                .iter()
+                                .find(|rect| {
+                                    rect.right() == expected_bounds.right()
+                                        && rect.top() == top_strip.bottom()
+                                        && rect.bottom() == bottom_strip.top()
+                                })
+                                .expect("expected right border strip between top and bottom");
+                            let border_interior = Bounds::from_corners(
+                                point(left_strip.right(), top_strip.bottom()),
+                                point(right_strip.left(), bottom_strip.top()),
+                            );
+                            let inner_edge = expected_bounds.extend(Edges::all(-thickness));
+                            assert!(
+                                border_interior.left() >= inner_edge.left()
+                                    && border_interior.right() <= inner_edge.right()
+                                    && border_interior.top() >= inner_edge.top()
+                                    && border_interior.bottom() <= inner_edge.bottom(),
+                                "border strips leave perimeter uncovered: {border_interior:?} outside {inner_edge:?}"
+                            );
+                            let inner_radii = Corners {
+                                top_left: (expected_corners.top_left - thickness)
+                                    .max(gpui::ScaledPixels(0.)),
+                                top_right: (expected_corners.top_right - thickness)
+                                    .max(gpui::ScaledPixels(0.)),
+                                bottom_right: (expected_corners.bottom_right - thickness)
+                                    .max(gpui::ScaledPixels(0.)),
+                                bottom_left: (expected_corners.bottom_left - thickness)
+                                    .max(gpui::ScaledPixels(0.)),
+                            };
+                            assert_interior_clears_rounded_corners(
+                                border_interior,
+                                inner_edge,
+                                inner_radii,
+                            );
+                            assert_disjoint_cover(
+                                &strip_rects,
+                                expected_bounds,
+                                rect_area(expected_bounds) - rect_area(border_interior),
+                            );
                         }
                     } else {
                         assert!(borders.is_empty());

@@ -2,7 +2,7 @@
 
 Checked against `gpui-pre` 0.3.14 (`zed@f126950`), the crates.io snapshot Runner pins exactly as `gpui`. Core source: `~/.cargo/registry/src/*/gpui-pre-0.3.14/src/`; platform windows: `gpui-pre-macos-0.3.14/src/`, `gpui-pre-windows-0.3.14/src/` (DirectWrite text and DirectX renderer), and `gpui-pre-linux-0.3.14/src/`; Apple Metal renderer and CoreText text system: `gpui-pre-apple-0.3.14/src/`; Linux WGPU renderer and text system: `gpui-pre-wgpu-0.3.14/src/`. This note covers the slice of GPUI the terminal element touches; it is not a general GPUI tutorial.
 
-GPUI is Zed's UI framework. The comparison that helps most from React: state lives in retained entities, but the element tree is not diffed. It is rebuilt from scratch every frame and thrown away. There is no virtual DOM. Layout is taffy, a Rust flexbox implementation. Painting produces a list of GPU primitives, and Metal draws them on macOS.
+GPUI is Zed's UI framework. The comparison that helps most from React: state lives in retained entities, and there is no virtual DOM — views normally rebuild their element tree on each frame unless wrapped in GPUI's view cache (`AnyView::cached`, which Runner uses in `terminal/viewport.rs` so an unchanged terminal can replay its cached prepaint and paint ranges). Layout is taffy, a Rust flexbox implementation. Painting produces a list of GPU primitives, and Metal draws them on macOS.
 
 ## The frame
 
@@ -28,7 +28,7 @@ Every paint-phase API asserts the phase in debug builds (`debug_assert_paint`, `
 
 `scene.rs`. The scene is a struct of `Vec`s, one per primitive kind: `Shadow`, `Quad`, `PaintedPath`, `Underline`, `MonochromeSprite`, `SubpixelSprite`, `PolychromeSprite`, `PaintSurface`, `PaintNativeView`. A quad is a rectangle with a background, border, corner radii, and a content mask. A monochrome sprite is a glyph from the atlas tinted one colour; a subpixel sprite carries an LCD glyph for platforms that use subpixel text rendering. A polychrome sprite is an image or a colour emoji. A path is a set of curve-tiled contours. A surface is a platform video or camera layer, and a native view wraps an embedded platform view.
 
-`insert_primitive` clips the primitive's bounds to its content mask, drops empty primitives, and uses the current layer's order or inserts the bounds into a bounds tree to assign a draw order, so overlapping primitives keep painter's order even though they are stored by kind. `batches` then walks the order and yields maximal runs of the same kind. The Metal renderer in `gpui-pre-apple/src/metal_renderer.rs`, in `draw_primitives_to_texture` (called from `render_frame` under `draw`), does one instanced draw call per batch, including inline `draw_path_tiles` draws for `PrimitiveBatch::Paths`.
+`insert_primitive` clips the primitive's bounds to its content mask, drops empty primitives, and uses the current layer's order or inserts the bounds into a bounds tree to assign a draw order, so overlapping primitives keep painter's order even though they are stored by kind. `batches` then walks the order and yields maximal runs of the same kind. The Metal renderer in `gpui-pre-apple/src/metal_renderer.rs`, in `draw_primitives_to_texture` (called from `render_frame` under `draw`), first runs an opaque-quad depth prepass (`draw_opaque_quads`) and then walks `scene.batches()` with depth testing enabled: one instanced draw call per batch for shadows, quads, inline path tiles (`draw_path_tiles`), underlines, and sprite batches, while `draw_surfaces` loops over each `PaintSurface` individually.
 
 A terminal frame therefore compiles to roughly: one background quad, a batch of merged background quads, selection quads, one large batch of glyph sprites, a path batch for box drawing, and underlines. Runner's quad merging in prepaint is about keeping those batches short.
 
@@ -81,7 +81,7 @@ Runner's `TerminalInput` implements it. Pinyin composition works because the pla
 
 ## Where the two libraries meet
 
-The `Term` is the source of truth. Once per frame, under the fair lock, the element asks for `renderable_content` and walks every visible cell into GPU primitives. Nothing is diffed and alacritty's damage tracking is not used. The work is bounded by columns times rows, shaping is cached, and quads merge, so a full walk is cheaper than tracking what changed.
+The `Term` is the source of truth. On every terminal repaint (when `TerminalViewport` is invalidated rather than replayed from GPUI's cached view), under the fair lock, the element asks for `renderable_content` and walks every visible cell into GPU primitives. Nothing is diffed and alacritty's damage tracking is not used. The work is bounded by columns times rows, shaping is cached, and quads merge, so a full walk is cheaper than tracking what changed.
 
 ## Reading order
 

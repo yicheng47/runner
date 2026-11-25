@@ -310,7 +310,8 @@ fn controller_posts_once_replaces_clears_archives_switches_and_quits() {
         cx.notify();
     });
     change(&mut cx, wait(WaitReason::Unknown, "fifth"));
-    cx.update(dismiss_all);
+    let dismissals = cx.update(dismiss_all);
+    cx.foreground_executor().block_test(dismissals);
     cx.update(|_| ());
     assert!(cx.delivered_system_notifications().is_empty());
     change(&mut cx, wait(WaitReason::Unknown, "sixth"));
@@ -761,7 +762,8 @@ fn controller_handles_slots_and_live_question_events() {
         cx.delivered_system_notifications()[0].title.as_ref(),
         "A crew member asked you · Test"
     );
-    cx.update(dismiss_all);
+    let dismissals = cx.update(dismiss_all);
+    cx.foreground_executor().block_test(dismissals);
     assert!(cx.delivered_system_notifications().is_empty());
     cx.update(|cx| {
         store.update(cx, |store, cx| {
@@ -1950,4 +1952,64 @@ fn usage_alerts_cover_antigravity_pools_hide_five_hours_and_deduplicate_by_reset
             .len(),
         2
     );
+}
+
+#[test]
+fn dismiss_all_waits_for_in_flight_withdrawals_even_after_posted_is_empty() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    cx.update(|cx| {
+        cx.set_global(crate::GlobalAppStore(store));
+        install(cx);
+    });
+    let controller = cx.read(|cx| cx.global::<GlobalNotifications>().0.clone());
+
+    // A normal withdrawal removes itself from pending_dismissals once complete.
+    let (done_tx, done_rx) = futures::channel::oneshot::channel::<()>();
+    controller.update(&mut cx, |this, cx| {
+        let task = cx.foreground_executor().spawn(async move {
+            let _ = done_rx.await;
+        });
+        this.track_dismissal(task, cx);
+        assert_eq!(this.pending_dismissals.len(), 1);
+    });
+    done_tx.send(()).unwrap();
+    cx.run_until_parked();
+    controller.read_with(&cx, |this, _| {
+        assert!(this.pending_dismissals.is_empty());
+    });
+
+    // A withdrawal still in flight at quit keeps dismiss_all pending even with posted empty.
+    let (quit_tx, quit_rx) = futures::channel::oneshot::channel::<()>();
+    controller.update(&mut cx, |this, cx| {
+        assert!(this.posted.is_empty());
+        let task = cx.foreground_executor().spawn(async move {
+            let _ = quit_rx.await;
+        });
+        this.track_dismissal(task, cx);
+    });
+    let finished = Arc::new(AtomicBool::new(false));
+    let finished_flag = Arc::clone(&finished);
+    let dismissals = cx.update(dismiss_all);
+    cx.foreground_executor()
+        .spawn(async move {
+            dismissals.await;
+            finished_flag.store(true, Ordering::SeqCst);
+        })
+        .detach();
+    cx.run_until_parked();
+    assert!(
+        !finished.load(Ordering::SeqCst),
+        "dismiss_all must wait for an in-flight withdrawal before quit completes"
+    );
+    quit_tx.send(()).unwrap();
+    cx.run_until_parked();
+    assert!(finished.load(Ordering::SeqCst));
+    controller.read_with(&cx, |this, _| {
+        assert!(this.pending_dismissals.is_empty());
+    });
 }
