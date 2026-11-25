@@ -22,7 +22,7 @@ runner CLI (a new process per command)
 └── current-thread tokio runtime for a socket call; mission appends write the log directly
 ```
 
-Production and development data each have their own daemon. The app and CLI use owner-only Unix sockets on macOS and named pipes on Windows. The CLI can start the daemon without the app, except from an SSH session or when Windows job breakaway is denied. A daemon keeps running without any client; UI-only usage polling and discovery refresh pause until a client reconnects.
+Production and development data each have their own daemon. The app and CLI use owner-only Unix sockets on macOS and Linux and named pipes on Windows. The CLI can start the daemon without the app, except from an SSH session or when Windows job breakaway is denied. A daemon keeps running without any client; UI-only usage polling and discovery refresh pause until a client reconnects.
 
 ## Executors and shared state
 

@@ -1,6 +1,6 @@
 # Runner process and terminal runtime model
 
-Current three-process implementation for [#645](../features/archive/645-session-host.md), updated on 2026-10-06 from the process map on `origin/fix/647-terminal-black-sidebar`. [Architecture](arch.md) covers domain state and coordination; [Concurrency](concurrency.md) covers executors.
+Current three-process implementation for [#645](../features/archive/645-session-host.md), checked against the code on 2026-11-25. [Architecture](arch.md) covers domain state and coordination; [Concurrency](concurrency.md) covers executors.
 
 ## OS processes and ownership
 
@@ -28,7 +28,7 @@ flowchart TB
     child --> cli
 ```
 
-On Windows, `runnerd.exe` has a hidden console and bundled `conpty.dll` and `OpenConsole.exe` beside it in app data. Agent process trees belong to kill-on-close jobs. The app is not their process owner. A shell → SSH session still owns only the local shell and SSH process tree; stopping it does not guarantee remote jobs terminate. A remote daemon and session protocol are phase 3.
+On Windows, `runnerd.exe` has a hidden console and bundled `conpty.dll` and `OpenConsole.exe` beside it in app data. Agent process trees belong to kill-on-close jobs. The app is not their process owner. A shell → SSH session still owns only the local shell and SSH process tree; stopping it does not guarantee remote jobs terminate. Runner on another computer reaches this daemon's chats and missions through the hosted relay ([Remote access](../guide/guides/remote-access.md), `runner-daemon/src/remote/`); this page maps only the local processes.
 
 | Component | Owns |
 | --- | --- |
@@ -79,7 +79,7 @@ On Windows, a dedicated thread pumps a never-shown top-level window for `WM_QUER
 
 `WM_QUERYENDSESSION` gates new child-exit reconciliation before acknowledging the query. Exits already in progress retain their pre-exit rows in memory; database work never holds the window-state mutex. A cancelled `WM_ENDSESSION` releases the gate and discards captured exits without stopping the daemon or stamping sessions. A confirmed end-session wakes the server's OS shutdown future; teardown quiesces launch resume and new spawns, waits for in-flight exits on its worker, and commits the running-session stamp together with captured exits. Captured rows are guarded by generation and current resume eligibility, with conversation keys restored if the fast-resume-failure heuristic cleared them. Only then are the window handler and queued child exits released. The handler waits at most four seconds for the commit, logging failure or timeout explicitly; it does not wait for the full eight-second PTY teardown or indefinitely block Windows shutdown. PTY cleanup is best-effort after the stamp because Windows may end the process as soon as the handler returns. `runnerd.log` records the window messages and the committed resume stamp. Forced termination, a failed database write or an exhausted shutdown deadline cannot guarantee resume; live restart and sign-out validation remain separate from synthetic message tests.
 
-The socket transport gives only `session_fork` at least 150 seconds, derived from the shared 120-second fork materialization bound plus 30 seconds for the remaining spawn work and response. Every other request, including ordinary non-fast calls such as session lists and sidebar renames, retains the client’s short deadline (10 seconds for the app, 30 seconds for the CLI). Longer model discovery, usage and session-key capture work runs in background workers rather than extending those request deadlines. Terminal attachment and socket writes retain the short budget, and the CLI’s pushed mission feed still bounds snapshot/drain requests separately at 30 seconds.
+The socket transport extends the client's deadline for three kinds of request. `session_fork` gets at least 150 seconds, derived from the shared 120-second fork materialization bound plus 30 seconds for the remaining spawn work and response. Remote-access requests get at least 45 seconds, and a fork relayed to another computer at least 160. Claude Code sign-out gets at least 45 seconds for its two 15-second steps. Every other request, including ordinary non-fast calls such as session lists and sidebar renames, retains the client’s short deadline (10 seconds for the app, 30 seconds for the CLI). Longer model discovery, usage and session-key capture work runs in background workers rather than extending those request deadlines. Terminal attachment and socket writes retain the short budget, and the CLI’s pushed mission feed still bounds snapshot/drain requests separately at 30 seconds.
 
 ## Source map
 

@@ -1,6 +1,6 @@
 // Append-only NDJSON event log, one file per mission.
 //
-// Arch §5.4 (durability) requires:
+// Arch §7.1.1 (concurrent-write correctness) requires:
 //   - A single serialized write per event line.
 //   - An exclusive lock covering both ID assignment and the write, so concurrent
 //     processes (the app, multiple `runner` CLI invocations) interleave at
