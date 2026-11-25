@@ -2,7 +2,7 @@
 
 How Runner on one computer opens another computer's terminals through a hosted relay that cannot read them, for someone reading this code for the first time. The rules are in the [#836 spec](../features/archive/836-web-remote-control.md); this note explains the machinery behind them: who connects to whom, how bytes are wrapped, how a six-digit PIN turns into keys, how the pace of a slow client is kept from hurting anyone else, how a terminal's size is shared, and where the time between a keystroke and its echo goes.
 
-Written against `main` at `0d5ef17a` (2026-11-10), with both ends built: the host's channel and adapter, and Runner as a client (the client's `runnerd` holds the channel, the app draws the remote window). The relay is the private `YeelinksCo/runner_server` repository at `246952b`, under `backend/app/relay/`. Dependencies as pinned in `Cargo.lock`: `snow` 0.9.6, `curve25519-dalek` 4.1.3, `sha2` 0.10.9, `tokio-tungstenite` 0.28.0 and `zed-reqwest` 0.12.15-zed.
+Written against `main` at `0d5ef17a` (2026-11-10), with both ends built: the host's channel and adapter, and Runner as a client (the client's `runnerd` holds the channel, the app draws the remote window). The relay is the private `YeelinksCo/runner-server` repository at `246952b`, under `backend/app/relay/`. Dependencies as pinned in `Cargo.lock`: `snow` 0.9.6, `curve25519-dalek` 4.1.3, `sha2` 0.10.9, `tokio-tungstenite` 0.28.0 and `zed-reqwest` 0.12.15-zed.
 
 **The client is Runner** (Jason, 2026-10-21): the desktop app on another computer, later the iPhone app, and not a browser. The code and the spec still say *browser* for it, as in `BrowserPair`, `Controller::Browser` and `browser_input`; read each as the remote Runner client.
 
@@ -347,7 +347,7 @@ It also ships no code into either end. Both are Runner, installed from Runner's 
 8. `session/manager/terminal.rs` and `output.rs`: the controller.
 9. `remote/client/mod.rs`, then `route.rs` and `terminal.rs`: the client's routes and terminals.
 10. `crates/runner-app/src/surfaces/remote_client/transport.rs` and `crates/runner-terminal/src/terminal.rs`, `BurstHold`: the app's end.
-11. In `runner_server`, `backend/app/relay/host.go`, `client.go` and `channels.go`: the relay's sockets, queues and timings.
+11. In `runner-server`, `backend/app/relay/host.go`, `client.go` and `channels.go`: the relay's sockets, queues and timings.
 
 ## Background reading
 

@@ -16,7 +16,7 @@ Most of the client machinery is already transport-ready: the local Add Role moda
 2. **Additive companion actions with feature gating.** Add `addMissionRole` and `removeMissionRole` to `ActionRequest` and `Welcome.features` without bumping the companion protocol version. Older hosts omit those features and remote windows keep the corresponding controls hidden, matching existing remote actions.
 3. **Host remains authoritative.** The host executes `ops::mission::roles::add_role` and `ops::mission::roles::remove_role`, enforces all roster rules, and broadcasts `mission/changed` and `session/updated`. Remote windows never optimistically mutate the roster; they wait for pushed `Overview` and `FeedAppended` updates.
 4. **Carry `removedHandles` on `companion::Mission`.** Remote mission feeds are paginated, so older `role_removed` signals may not be loaded in memory when the user opens **Add role**. Adding an optional `removedHandles` list to `companion::Mission` in `Overview`—collected during `mission_status`'s existing single event-log scan with zero extra disk reads—lets the remote modal suggest and validate handles identically to the host while staying backward-compatible with older hosts and clients.
-5. **Scope.** This feature covers the companion protocol (`runner-core`), host daemon (`runner-daemon`), desktop remote window (`runner-app`), and documentation. Mobile companions (`runner_ios`, `runner_android`) are out of scope for UI changes here and automatically inherit the new protocol actions when ready. Starting an empty remote mission from the launcher also remains host-only.
+5. **Scope.** This feature covers the companion protocol (`runner-core`), host daemon (`runner-daemon`), desktop remote window (`runner-app`), and documentation. Mobile companions (`runner-ios`, `runner-android`) are out of scope for UI changes here and automatically inherit the new protocol actions when ready. Starting an empty remote mission from the launcher also remains host-only.
 
 ## Scope
 
@@ -103,7 +103,7 @@ Most of the client machinery is already transport-ready: the local Add Role moda
 
 - Starting an empty remote mission from the launcher (remains host-only).
 - Creating, editing, or deleting roles or crews on the host from a remote window.
-- Mobile companion (`runner_ios`, `runner_android`) UI changes.
+- Mobile companion (`runner-ios`, `runner-android`) UI changes.
 
 ## Implementation Phases
 
