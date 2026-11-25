@@ -785,7 +785,7 @@ fn chat_bypass_ignores_synthetic_runtime_override_permissions_on_start_and_resum
             let expected = crate::runtimes::adapter(target)
                 .permissions()
                 .mission_args();
-            for pair in expected.chunks_exact(2) {
+            for pair in expected.as_chunks::<2>().0 {
                 assert!(has_arg_pair(args, &pair[0], &pair[1]), "{target}: {args:?}");
             }
             assert!(!has_arg_pair(args, "--permission-mode", "auto"));
@@ -874,7 +874,8 @@ fn chat_bypass_ignores_synthetic_runtime_override_permissions_on_fork() {
         for pair in crate::runtimes::adapter(target)
             .permissions()
             .mission_args()
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
         {
             assert!(
                 has_arg_pair(&args, &pair[0], &pair[1]),

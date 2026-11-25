@@ -153,7 +153,7 @@ fn halve_rgba(src: &RgbaImage) -> RgbaImage {
 }
 
 fn rgba_to_render_image(mut rgba: RgbaImage) -> Arc<RenderImage> {
-    for pixel in rgba.as_mut().chunks_exact_mut(4) {
+    for pixel in rgba.as_mut().as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     Arc::new(RenderImage::new(SmallVec::from_const([image::Frame::new(
@@ -539,7 +539,7 @@ fn rasterize_svg_tree(tree: &usvg::Tree, target_w: u32, target_h: u32) -> Option
         tiny_skia::Transform::from_scale(w as f32 / svg_size.width(), h as f32 / svg_size.height());
     resvg::render(tree, transform, &mut pixmap.as_mut());
     let mut buffer = RgbaImage::from_raw(pixmap.width(), pixmap.height(), pixmap.take())?;
-    for pixel in buffer.chunks_exact_mut(4) {
+    for pixel in buffer.as_chunks_mut::<4>().0 {
         gpui::swap_rgba_pa_to_bgra(pixel);
     }
     Some(Arc::new(RenderImage::new(SmallVec::from_const([
@@ -692,7 +692,7 @@ fn decode_animated_frames_with_budget(
         let left = frame.left();
         let top = frame.top();
         let mut buf = clamp_frame_to_texture_limit(frame.into_buffer());
-        for pixel in buf.as_mut().chunks_exact_mut(4) {
+        for pixel in buf.as_mut().as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
         bgra_frames.push(image::Frame::from_parts(buf, left, top, delay));
@@ -2949,7 +2949,7 @@ mod tests {
         };
         let bytes = safe.levels()[0].as_bytes(0).unwrap();
         assert!(
-            bytes.chunks_exact(4).all(|px| px[3] == 0),
+            bytes.as_chunks::<4>().0.iter().all(|px| px[3] == 0),
             "local filesystem image must never be loaded into SVG raster"
         );
 
@@ -2972,7 +2972,9 @@ mod tests {
         assert!(bounded.levels()[0]
             .as_bytes(0)
             .unwrap()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|px| px[3] == 0));
 
         // Gzip-compressed SVGZ must be rejected directly and when embedded via data URI
@@ -2999,7 +3001,9 @@ mod tests {
         assert!(no_svgz.levels()[0]
             .as_bytes(0)
             .unwrap()
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .all(|px| px[3] == 0));
     }
 

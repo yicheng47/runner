@@ -350,7 +350,7 @@ jobs:
         run: ./script/linux/install-build-deps
       - name: Install Rust toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.97.1 --profile minimal
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.98.1 --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
