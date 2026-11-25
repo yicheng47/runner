@@ -352,6 +352,14 @@ impl ReadView<'_> {
         self.view.code_view(self.cx)
     }
 
+    fn image_canvas(&self) -> Option<Entity<super::image::ImageCanvas>> {
+        self.view.image_canvas(self.cx)
+    }
+
+    fn active_is_image_tab(&self) -> bool {
+        self.view.active_is_image_tab(self.cx)
+    }
+
     fn showing_diff(&self) -> bool {
         self.view.showing_diff(self.cx)
     }
@@ -5714,5 +5722,585 @@ fn a_resting_hover_re_resolves_through_cached_viewport_when_files_root_resolves_
             .read_with(&h.visual, |host, _| host.link_panel_shown)
             .unwrap(),
         1
+    );
+}
+
+fn encode_test_png(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
+    use ::image::codecs::png::PngEncoder;
+    use ::image::{ExtendedColorType, ImageEncoder};
+    let mut buf = Vec::new();
+    let pixels = vec![rgba[0], rgba[1], rgba[2], rgba[3]]
+        .into_iter()
+        .cycle()
+        .take((w as usize) * (h as usize) * 4)
+        .collect::<Vec<_>>();
+    PngEncoder::new(&mut buf)
+        .write_image(&pixels, w, h, ExtendedColorType::Rgba8)
+        .unwrap();
+    buf
+}
+
+fn encode_test_png_pair_same_size(w: u32, h: u32, a: [u8; 4], b: [u8; 4]) -> (Vec<u8>, Vec<u8>) {
+    let mut pa = encode_test_png(w, h, a);
+    let mut pb = encode_test_png(w, h, b);
+    let pad = |png: &mut Vec<u8>, extra: usize| {
+        if extra == 0 {
+            return;
+        }
+        // Insert an ancillary `tEXt` chunk right before the 12-byte IEND chunk.
+        let iend = png.split_off(png.len() - 12);
+        let data = vec![b'x'; extra];
+        let mut crc_in = Vec::with_capacity(4 + data.len());
+        crc_in.extend_from_slice(b"tEXt");
+        crc_in.extend_from_slice(&data);
+        let mut crc = 0xffff_ffffu32;
+        for &byte in &crc_in {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if (crc & 1) != 0 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        png.extend_from_slice(b"tEXt");
+        png.extend_from_slice(&data);
+        png.extend_from_slice(&(!crc).to_be_bytes());
+        png.extend_from_slice(&iend);
+    };
+    if pa.len() < pb.len() {
+        let diff = pb.len() - pa.len();
+        if diff >= 12 {
+            pad(&mut pa, diff - 12);
+        } else {
+            pad(&mut pa, 20 + diff);
+            pad(&mut pb, 20);
+        }
+    } else if pb.len() < pa.len() {
+        let diff = pa.len() - pb.len();
+        if diff >= 12 {
+            pad(&mut pb, diff - 12);
+        } else {
+            pad(&mut pb, 20 + diff);
+            pad(&mut pa, 20);
+        }
+    }
+    assert_eq!(pa.len(), pb.len());
+    assert_ne!(pa, pb);
+    (pa, pb)
+}
+
+fn encode_test_gif(w: u32, h: u32, frames: usize) -> Vec<u8> {
+    use ::image::codecs::gif::{GifEncoder, Repeat};
+    use ::image::{Delay, Frame, Rgba, RgbaImage};
+    let mut out = Vec::new();
+    {
+        let mut enc = GifEncoder::new(&mut out);
+        enc.set_repeat(Repeat::Infinite).unwrap();
+        let list = (0..frames).map(|i| {
+            let color = if i % 2 == 0 {
+                Rgba([255, 0, 0, 255])
+            } else {
+                Rgba([0, 0, 255, 255])
+            };
+            Frame::from_parts(
+                RgbaImage::from_pixel(w, h, color),
+                0,
+                0,
+                Delay::from_numer_denom_ms(100, 1),
+            )
+        });
+        enc.encode_frames(list).unwrap();
+    }
+    out
+}
+
+fn encode_oversized_png_header(w: u32, h: u32) -> Vec<u8> {
+    let crc = |kind: &[u8; 4], data: &[u8]| -> u32 {
+        let mut crc = 0xffff_ffffu32;
+        for &byte in kind.iter().chain(data.iter()) {
+            crc ^= u32::from(byte);
+            for _ in 0..8 {
+                crc = if (crc & 1) != 0 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    };
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&w.to_be_bytes());
+    ihdr.extend_from_slice(&h.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]);
+    for (kind, data) in [(b"IHDR", ihdr.as_slice()), (b"IDAT", &[0u8][..])] {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        out.extend_from_slice(&crc(kind, data).to_be_bytes());
+    }
+    out
+}
+
+#[test]
+fn image_tab_fit_zoom_pan_pinch_keys_gif_and_per_tab_state() {
+    let mut h = viewer(chat("in-project"));
+    let large_png = encode_test_png(1200, 800, [40, 120, 220, 255]);
+    let expected_large_meta =
+        super::image::format_dimensions_and_size(1200, 800, large_png.len() as u64);
+    std::fs::write(h.repo.join("large.png"), &large_png).unwrap();
+    std::fs::write(
+        h.repo.join("icon.png"),
+        encode_test_png(48, 48, [220, 80, 40, 180]),
+    )
+    .unwrap();
+    std::fs::write(h.repo.join("anim.gif"), encode_test_gif(32, 32, 3)).unwrap();
+
+    // Large image: fits < 100%, clears stepper, shows dimensions and size in subbar.
+    h.open("large.png");
+    h.wait("large.png canvas rendered with measured viewport", |h| {
+        h.has("IMAGE_CANVAS")
+            && h.read(|v| v.image_canvas()).is_some_and(|c| {
+                c.read_with(&h.visual, |c, _| {
+                    c.last_image_bounds().is_some() && c.last_stepper_bounds().is_some()
+                })
+            })
+    });
+    assert!(h.read(|v| v.active_is_image_tab()));
+    assert!(h.has(format!("FILE_IMAGE_META {expected_large_meta}")));
+
+    let large_canvas = h.read(|v| v.image_canvas()).unwrap();
+    let (fit_scale, img_bounds, stepper_bounds) = large_canvas.read_with(&h.visual, |c, _| {
+        assert_eq!(c.image_dimensions(), (1200, 800));
+        assert!(c.is_fit());
+        let scale = c.effective_scale().unwrap();
+        assert!(scale < 1.0 && scale > 0.0);
+        (
+            scale,
+            c.last_image_bounds().unwrap(),
+            c.last_stepper_bounds().unwrap(),
+        )
+    });
+    assert!(
+        img_bounds.bottom() <= stepper_bounds.top() + px(1.),
+        "fitted image ({:?}) must stay clear of stepper ({:?})",
+        img_bounds,
+        stepper_bounds
+    );
+
+    // Stepper + increases zoom; percentage button resets to fit.
+    h.click("IMAGE_ZOOM_IN");
+    let stepped = large_canvas.read_with(&h.visual, |c, _| {
+        assert!(!c.is_fit());
+        c.effective_scale().unwrap()
+    });
+    assert!(stepped > fit_scale);
+    h.click("IMAGE_ZOOM_OUT");
+    large_canvas.read_with(&h.visual, |c, _| assert!(c.is_fit()));
+
+    // Double-click toggles fit -> 100% -> fit.
+    let canvas_bounds = h.visual.debug_bounds("IMAGE_CANVAS").unwrap();
+    let click_pt = canvas_bounds.center();
+    for click_count in [1, 2] {
+        h.visual.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Left,
+            position: click_pt,
+            modifiers: Modifiers::default(),
+            click_count,
+            first_mouse: false,
+        });
+        h.visual.simulate_event(gpui::MouseUpEvent {
+            button: gpui::MouseButton::Left,
+            position: click_pt,
+            modifiers: Modifiers::default(),
+            click_count,
+        });
+    }
+    h.settle();
+    large_canvas.read_with(&h.visual, |c, _| {
+        assert!((c.effective_scale().unwrap() - 1.0).abs() < 0.001);
+    });
+
+    // Scrolling pans when zoomed in and clamps at the edges.
+    let (max_pan_x, max_pan_y) = large_canvas.read_with(&h.visual, |c, _| c.max_pan().unwrap());
+    assert!(max_pan_x > 0. || max_pan_y > 0.);
+    h.visual.simulate_event(gpui::ScrollWheelEvent {
+        position: click_pt,
+        delta: gpui::ScrollDelta::Pixels(gpui::point(px(-50_000.), px(-50_000.))),
+        modifiers: Modifiers::default(),
+        touch_phase: gpui::TouchPhase::Moved,
+    });
+    h.settle();
+    large_canvas.read_with(&h.visual, |c, _| {
+        assert!((c.pan().x + max_pan_x).abs() < 0.5);
+        assert!((c.pan().y + max_pan_y).abs() < 0.5);
+    });
+
+    // Clicking the percentage button returns to fit and resets pan.
+    let fit_pct = format!("{}%", (1.0f32 * 100.).round() as u32);
+    h.click(format!("IMAGE_ZOOM_FIT {fit_pct}"));
+    large_canvas.read_with(&h.visual, |c, _| {
+        assert!(c.is_fit());
+        assert_eq!(c.pan(), gpui::point(0., 0.));
+    });
+
+    // ⌘+ / ⌘− zoom the image tab without changing text font size.
+    let initial_font_size = h
+        .store
+        .read_with(&h.visual, |s, _| s.settings.files_font_size());
+    h.visual.dispatch_action(crate::ZoomFileIn);
+    h.settle();
+    let zoomed_by_key = large_canvas.read_with(&h.visual, |c, _| c.effective_scale().unwrap());
+    assert!(zoomed_by_key > fit_scale);
+    assert_eq!(
+        h.store
+            .read_with(&h.visual, |s, _| s.settings.files_font_size()),
+        initial_font_size
+    );
+
+    // Pinch zooms continuously and anchors the image pixel under the pointer.
+    let anchor = gpui::point(
+        canvas_bounds.origin.x + canvas_bounds.size.width * 0.25,
+        canvas_bounds.origin.y + canvas_bounds.size.height * 0.25,
+    );
+    let before_bounds = large_canvas.read_with(&h.visual, |c, _| c.last_image_bounds().unwrap());
+    let before_scale = large_canvas.read_with(&h.visual, |c, _| c.effective_scale().unwrap());
+    let rel_x_before = f32::from(anchor.x - before_bounds.origin.x) / before_scale;
+    let rel_y_before = f32::from(anchor.y - before_bounds.origin.y) / before_scale;
+    h.visual.simulate_event(gpui::PinchEvent {
+        position: anchor,
+        delta: 0.5,
+        modifiers: Modifiers::default(),
+        phase: gpui::TouchPhase::Moved,
+    });
+    h.settle();
+    let after_bounds = large_canvas.read_with(&h.visual, |c, _| c.last_image_bounds().unwrap());
+    let after_scale = large_canvas.read_with(&h.visual, |c, _| c.effective_scale().unwrap());
+    assert!(after_scale > before_scale);
+    let rel_x_after = f32::from(anchor.x - after_bounds.origin.x) / after_scale;
+    let rel_y_after = f32::from(anchor.y - after_bounds.origin.y) / after_scale;
+    assert!((rel_x_after - rel_x_before).abs() < 3.0);
+    assert!((rel_y_after - rel_y_before).abs() < 3.0);
+
+    // Small icon never scales above 100%; per-tab zoom stays independent across tabs.
+    h.open("icon.png");
+    h.wait("icon.png canvas ready", |h| {
+        h.read(|v| v.active_tab()) == Some("icon.png".into())
+            && h.read(|v| v.image_canvas())
+                .is_some_and(|c| c.read_with(&h.visual, |c, _| c.effective_scale().is_some()))
+    });
+    let icon_canvas = h.read(|v| v.image_canvas()).unwrap();
+    icon_canvas.read_with(&h.visual, |c, _| {
+        assert_eq!(c.effective_scale(), Some(1.0));
+        assert_eq!(c.fit_scale(), Some(1.0));
+    });
+    h.click("FILE_TAB large.png");
+    large_canvas.read_with(&h.visual, |c, _| {
+        assert!((c.effective_scale().unwrap() - after_scale).abs() < 0.001);
+    });
+
+    // Animated GIF decodes with multiple frames.
+    h.open("anim.gif");
+    h.wait("anim.gif ready", |h| {
+        h.read(|v| v.active_tab()) == Some("anim.gif".into())
+            && h.read(|v| v.image_canvas()).is_some()
+    });
+    let gif_canvas = h.read(|v| v.image_canvas()).unwrap();
+    assert_eq!(gif_canvas.read_with(&h.visual, |c, _| c.frame_count()), 3);
+
+    // Text tab keeps ⌘+ / ⌘− stepping text size.
+    h.open("a.txt");
+    h.wait("a.txt code view focused", |h| {
+        h.read(|v| v.code_view()).is_some()
+    });
+    h.visual.dispatch_action(crate::ZoomFileIn);
+    h.settle();
+    assert_eq!(
+        h.store
+            .read_with(&h.visual, |s, _| s.settings.files_font_size()),
+        initial_font_size + 1
+    );
+}
+
+fn wait_for_os_watcher_ready(h: &mut Harness) {
+    use runner_core::protocol::files::{FilesChanged, FILES_CHANGED_EVENT};
+    let events = h
+        .store
+        .read_with(&h.visual, |store, _| store.test_core.events.clone());
+    let mut sent = events.subscribe();
+    let root = h.read(|view| view.root().unwrap().path.clone());
+    let sentinel = h.repo.join(".watch-ready-img");
+    let mut probe = 0u32;
+    let mut last_probe = Instant::now() - Duration::from_secs(2);
+    let mut saw_changed = false;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline && !saw_changed {
+        if last_probe.elapsed() >= Duration::from_secs(1) {
+            probe += 1;
+            std::fs::write(&sentinel, format!("ready-{probe}\n")).unwrap();
+            last_probe = Instant::now();
+        }
+        h.visual.run_until_parked();
+        loop {
+            match sent.try_recv() {
+                Ok(event) if event.name == FILES_CHANGED_EVENT => {
+                    if serde_json::from_value::<FilesChanged>(event.payload).is_ok_and(|c| {
+                        runner_core::app_paths::same_checkout_path(&c.root, &root)
+                            && (c.paths.iter().any(|p| p == ".watch-ready-img")
+                                || (c.paths.is_empty() && c.folders == [""]))
+                    }) {
+                        saw_changed = true;
+                    }
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        if !saw_changed {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    assert!(saw_changed, "OS watcher sentinel readiness");
+    let _ = std::fs::remove_file(&sentinel);
+    h.settle();
+}
+
+#[test]
+fn image_tab_reloads_on_same_size_handles_states_and_releases_atlas_textures() {
+    let mut h = viewer(chat("in-project"));
+    wait_for_os_watcher_ready(&mut h);
+    let (png_v1, png_v2) =
+        encode_test_png_pair_same_size(200, 100, [255, 0, 0, 255], [0, 255, 0, 255]);
+    let png_resized = encode_test_png(100, 200, [0, 0, 255, 255]);
+    std::fs::write(h.repo.join("shot.png"), &png_v1).unwrap();
+    std::fs::write(
+        h.repo.join("giant_dims.png"),
+        encode_oversized_png_header(16_385, 100),
+    )
+    .unwrap();
+    std::fs::write(
+        h.repo.join("pointer.png"),
+        "version https://git-lfs.github.com/spec/v1\noid sha256:abcdef\nsize 12345\n",
+    )
+    .unwrap();
+    let mut over_10mb = b"\x89PNG\r\n\x1a\n\x00".to_vec();
+    over_10mb.resize(
+        (runner_core::protocol::files::MAX_READ_BYTES as usize) + 64,
+        0x42,
+    );
+    std::fs::write(h.repo.join("huge.png"), &over_10mb).unwrap();
+
+    h.open("shot.png");
+    h.wait("shot.png rendered and uploaded to atlas", |h| {
+        h.read(|v| v.image_canvas()).is_some_and(|c| {
+            let imgs = c.read_with(&h.visual, |c, _| c.render_images());
+            c.read_with(&h.visual, |c, _| c.last_image_bounds().is_some())
+                && h.visual
+                    .update(|window, _| imgs.iter().any(|img| window.has_image_atlas_entry(img)))
+        })
+    });
+
+    let canvas = h.read(|v| v.image_canvas()).unwrap();
+    let v1_images = canvas.read_with(&h.visual, |c, _| c.render_images());
+    let v1_id = v1_images[0].id;
+
+    // Zoom in and pan before overwriting with same-size, same-dimension pixels.
+    canvas.update(&mut h.visual, |c, cx| {
+        c.step_zoom(true, cx);
+        c.step_zoom(true, cx);
+        c.step_zoom(true, cx);
+        c.step_zoom(true, cx);
+        c.pan_by(-20., -10., cx);
+    });
+    h.settle();
+    let saved_scale = canvas.read_with(&h.visual, |c, _| c.effective_scale().unwrap());
+    let saved_pan = canvas.read_with(&h.visual, |c, _| c.pan());
+    assert!(saved_scale > 1.0);
+
+    // Overwrite with DIFFERENT pixels at the EXACT same byte length and dimensions.
+    std::fs::write(h.repo.join("shot.png"), &png_v2).unwrap();
+    h.wait(
+        "same-size regeneration reloads and releases old atlas textures",
+        |h| {
+            let new_id = canvas.read_with(&h.visual, |c, _| c.render_images()[0].id);
+            let old_dropped = h.visual.update(|window, _| {
+                v1_images
+                    .iter()
+                    .all(|img| !window.has_image_atlas_entry(img))
+            });
+            new_id != v1_id && old_dropped
+        },
+    );
+    // Zoom and pan survived same-dimension reload.
+    canvas.read_with(&h.visual, |c, _| {
+        assert!((c.effective_scale().unwrap() - saved_scale).abs() < 0.001);
+        assert_eq!(c.pan(), saved_pan);
+    });
+
+    // Overwrite with different dimensions: zoom resets to fit.
+    std::fs::write(h.repo.join("shot.png"), &png_resized).unwrap();
+    h.wait("dimension change resets to fit", |h| {
+        canvas.read_with(&h.visual, |c, _| {
+            c.image_dimensions() == (100, 200) && c.is_fit()
+        })
+    });
+
+    // Truncate -> damaged placeholder; repair -> recovers back to canvas.
+    std::fs::write(h.repo.join("shot.png"), b"\x89PNG\r\n\x1a\n\x00broken").unwrap();
+    h.wait("damaged image shows decode error placeholder", |h| {
+        h.has("FILE_IMAGE_FAILED")
+    });
+    std::fs::write(h.repo.join("shot.png"), &png_v1).unwrap();
+    h.wait("repaired image recovers to canvas", |h| {
+        h.read(|v| v.image_canvas()).is_some()
+    });
+
+    // Delete while open -> dimmed last image under FILE_DELETED banner.
+    let before_close_images = h
+        .read(|v| v.image_canvas())
+        .unwrap()
+        .read_with(&h.visual, |c, _| c.render_images());
+    std::fs::remove_file(h.repo.join("shot.png")).unwrap();
+    h.wait("deleted image stays dimmed under banner", |h| {
+        h.has("FILE_DELETED")
+            && h.read(|v| v.image_canvas())
+                .is_some_and(|c| c.read_with(&h.visual, |c, _| c.is_deleted()))
+    });
+
+    // Closing the tab releases its textures from GPUI's sprite atlas.
+    h.click("FILE_TAB_CLOSE shot.png");
+    h.wait("closing image tab drops atlas textures", |h| {
+        h.visual.update(|window, _| {
+            before_close_images
+                .iter()
+                .all(|img| !window.has_image_atlas_entry(img))
+        })
+    });
+
+    // Over 10 MB -> FILE_TOO_LARGE placeholder.
+    h.open("huge.png");
+    h.wait("over-10-MB image shows FILE_TOO_LARGE", |h| {
+        h.has("FILE_TOO_LARGE")
+    });
+
+    // Too many pixels -> FILE_IMAGE_TOO_LARGE header-only rejection with dimensions.
+    h.open("giant_dims.png");
+    h.wait("oversized header shows FILE_IMAGE_TOO_LARGE", |h| {
+        h.has("FILE_IMAGE_TOO_LARGE")
+    });
+
+    // Text file named `.png` (e.g. Git LFS pointer) keeps CodeView and Code | Diff.
+    h.open("pointer.png");
+    h.wait("text file named .png opens as CodeView", |h| {
+        h.read(|v| v.code_view()).is_some()
+    });
+    assert!(!h.read(|v| v.active_is_image_tab()));
+}
+
+#[test]
+fn svg_tab_renders_zooms_sharply_switches_on_find_and_handles_broken_svg() {
+    let mut h = viewer(chat("in-project"));
+    wait_for_os_watcher_ready(&mut h);
+    // Even if Markdown is configured to open as Source, SVG always opens Rendered.
+    h.store.update(&mut h.visual, |store, cx| {
+        store.update_settings(
+            |s| {
+                s.markdown_open_as = crate::app_settings::MarkdownOpenAs::Source;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    let valid_svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="#38bdf8"/></svg>"##;
+    std::fs::write(h.repo.join("mark.svg"), valid_svg).unwrap();
+    std::fs::write(h.repo.join("broken.svg"), b"<svg><unclosed").unwrap();
+
+    h.open("mark.svg");
+    h.wait("mark.svg opens Rendered with dimensions", |h| {
+        h.has("IMAGE_CANVAS")
+            && h.has("FILE_MARKDOWN_SOURCE")
+            && h.read(|v| v.image_canvas())
+                .is_some_and(|c| c.read_with(&h.visual, |c, _| c.last_image_bounds().is_some()))
+    });
+    assert!(h.read(|v| v.active_is_image_tab()));
+    let expected_svg_meta =
+        super::image::format_dimensions_and_size(120, 60, valid_svg.len() as u64);
+    assert!(h.has(format!("FILE_IMAGE_META {expected_svg_meta}")));
+
+    // Focus the canvas so viewer shortcuts (`⌘+`, `⌘F`) target the active tab.
+    h.click("IMAGE_CANVAS");
+
+    // Zooming an SVG re-rasterizes sharply in the background to match drawn device pixels.
+    let svg_canvas = h.read(|v| v.image_canvas()).unwrap();
+    for _ in 0..5 {
+        h.visual.dispatch_action(crate::ZoomFileIn);
+    }
+    h.wait("SVG re-rasterizes sharply at zoomed size", |h| {
+        svg_canvas.read_with(&h.visual, |c, _| {
+            c.last_level_size().is_some_and(|(w, _)| w > 240)
+        })
+    });
+
+    // ⌘F switches SVG from Rendered to Source and opens the find bar.
+    h.visual.dispatch_action(crate::FindInFile);
+    h.wait("FindInFile switches SVG to Source with find bar", |h| {
+        h.read(|v| v.code_view()).is_some() && h.has("FILE_FIND_BAR")
+    });
+
+    // In SVG Source, ⌘+ steps text font size rather than image zoom.
+    let font_before = h
+        .store
+        .read_with(&h.visual, |s, _| s.settings.files_font_size());
+    h.visual.dispatch_action(crate::ZoomFileIn);
+    h.settle();
+    assert_eq!(
+        h.store
+            .read_with(&h.visual, |s, _| s.settings.files_font_size()),
+        font_before + 1
+    );
+
+    // Broken SVG opens on Source with no Rendered toggle, then flips to Rendered when repaired.
+    h.open("broken.svg");
+    h.wait("broken.svg opens directly on Source", |h| {
+        h.read(|v| v.active_tab()) == Some("broken.svg".into())
+            && h.read(|v| v.code_view()).is_some()
+    });
+    assert!(!h.has("FILE_MARKDOWN_SOURCE"));
+
+    std::fs::write(h.repo.join("broken.svg"), valid_svg).unwrap();
+    h.wait("repaired broken.svg switches to Rendered", |h| {
+        h.read(|v| v.image_canvas()).is_some() && h.has("FILE_MARKDOWN_SOURCE")
+    });
+
+    // Oversized SVG (> 16384 px) shows TooManyPixels placeholder while keeping Source toggle;
+    // deleting it omits the no-op Open in button under the deletion banner.
+    let huge_svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="20000" height="100"><rect width="20000" height="100" fill="#f00"/></svg>"##;
+    std::fs::write(h.repo.join("huge_dims.svg"), huge_svg).unwrap();
+    h.open("huge_dims.svg");
+    h.wait(
+        "oversized SVG shows FILE_IMAGE_TOO_LARGE with Source toggle",
+        |h| {
+            h.has("FILE_IMAGE_TOO_LARGE")
+                && h.has("FILE_MARKDOWN_SOURCE")
+                && h.has("FILE_OPEN_LARGE")
+        },
+    );
+    h.click("FILE_MD_SOURCE");
+    h.wait("oversized SVG toggles cleanly to Source code view", |h| {
+        h.read(|v| v.code_view()).is_some()
+    });
+    h.click("FILE_MD_RENDERED");
+    h.wait("oversized SVG returns to Rendered placeholder", |h| {
+        h.has("FILE_IMAGE_TOO_LARGE")
+    });
+    std::fs::remove_file(h.repo.join("huge_dims.svg")).unwrap();
+    h.wait(
+        "deleted oversized SVG hides Open in button under banner",
+        |h| h.has("FILE_DELETED") && h.has("FILE_IMAGE_TOO_LARGE") && !h.has("FILE_OPEN_LARGE"),
     );
 }

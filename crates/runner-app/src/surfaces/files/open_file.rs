@@ -4545,12 +4545,10 @@ impl UnifiedViewer {
         self.active_view().cloned()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn image_canvas(&self) -> Option<Entity<ImageCanvas>> {
         self.active_image_canvas().cloned()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn active_is_image_tab(&self) -> bool {
         self.active_is_image()
     }

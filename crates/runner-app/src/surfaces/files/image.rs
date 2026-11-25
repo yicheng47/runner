@@ -2502,7 +2502,6 @@ impl Render for ImageCanvas {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 impl ImageCanvas {
     pub(crate) fn image_dimensions(&self) -> (u32, u32) {
         self.content
