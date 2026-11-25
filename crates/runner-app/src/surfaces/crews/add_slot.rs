@@ -616,7 +616,7 @@ impl NativeRoot {
                             .border_1()
                             .border_color(theme::border())
                             .bg(theme::panel())
-                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                            .on_scroll(|_, _, cx| cx.stop_propagation())
                             .child(
                                 div()
                                     .id("add-slot-create-role").when(cfg!(test), |link| link.debug_selector(|| "ADD_SLOT_CREATE_ROLE".into()))

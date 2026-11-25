@@ -8,7 +8,7 @@ use gpui::prelude::*;
 use gpui::{
     canvas, div, img, px, relative, rems, svg, AnyElement, App, Bounds, ClipboardItem, CursorStyle,
     EntityId, Font, FontStyle, FontWeight, Global, HighlightStyle, Hsla, ImageSource,
-    InteractiveText, MouseButton, Pixels, ScrollWheelEvent, SharedString, StrikethroughStyle,
+    InteractiveText, MouseButton, Pixels, ScrollEvent, SharedString, StrikethroughStyle,
     StyledText, TextLayout, TextRun, UnderlineStyle, Window,
 };
 use pulldown_cmark::Alignment;
@@ -947,7 +947,7 @@ impl Draw<'_> {
                         });
                     })
                     .when(unwrapped, |el| {
-                        el.on_scroll_wheel(move |event: &ScrollWheelEvent, _, cx| {
+                        el.on_scroll(move |event: &ScrollEvent, _, cx| {
                             let mut delta = event.delta.pixel_delta(line_height);
                             if event.modifiers.shift && delta.x == px(0.) {
                                 delta.x = delta.y;
@@ -1189,7 +1189,7 @@ impl Draw<'_> {
                         }
                     })
                     .when(unwrapped, |el| {
-                        el.on_scroll_wheel(move |event: &ScrollWheelEvent, window, cx| {
+                        el.on_scroll(move |event: &ScrollEvent, window, cx| {
                             let line_height = rems(19. / 16.).to_pixels(window.rem_size());
                             let mut delta = event.delta.pixel_delta(line_height);
                             if event.modifiers.shift && delta.x == px(0.) {
@@ -1432,7 +1432,7 @@ impl Draw<'_> {
 
                 base.flex()
                     .flex_col()
-                    .on_scroll_wheel(move |event: &ScrollWheelEvent, _, cx| {
+                    .on_scroll(move |event: &ScrollEvent, _, cx| {
                         let mut delta = event.delta.pixel_delta(line_height);
                         if event.modifiers.shift && delta.x == px(0.) {
                             delta.x = delta.y;
@@ -1659,7 +1659,7 @@ impl Draw<'_> {
 
                 base.flex()
                     .flex_col()
-                    .on_scroll_wheel(move |event: &ScrollWheelEvent, window, cx| {
+                    .on_scroll(move |event: &ScrollEvent, window, cx| {
                         let line_height = rems(19. / 16.).to_pixels(window.rem_size());
                         let mut delta = event.delta.pixel_delta(line_height);
                         if event.modifiers.shift && delta.x == px(0.) {

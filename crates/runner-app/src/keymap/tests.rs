@@ -254,7 +254,8 @@ fn conflicts_include_system_owned_shortcuts_and_distinct_close_keys() {
 fn fixed_modal_confirm_wins_user_global_overrides_at_every_control_depth() {
     let cx = gpui::TestAppContext::single();
     cx.update(|cx| {
-        let key = Keystroke::parse(&platform_default("cmd-enter")).unwrap();
+        let key = Keystroke::parse_with_os(&platform_default("cmd-enter"), cx.platform_info().os)
+            .unwrap();
         for (id, global_action) in [
             ("new-terminal", &NewTerminal as &dyn gpui::Action),
             ("new-mission", &NewMission),
@@ -319,10 +320,11 @@ fn create_bindings_are_global_rebindable_and_modal_keys_stay_out_of_settings() {
                 if let Some(combo) = combo {
                     assert!(bindings[0].predicate().is_none());
                     assert_eq!(
-                        bindings[0]
-                            .match_keystrokes(&[
-                                Keystroke::parse(&binding_strings(&combo)[0]).unwrap()
-                            ]),
+                        bindings[0].match_keystrokes(&[Keystroke::parse_with_os(
+                            &binding_strings(&combo)[0],
+                            cx.platform_info().os,
+                        )
+                        .unwrap()]),
                         Some(false)
                     );
                 }
@@ -369,7 +371,11 @@ fn installed_close_keys_match_fixed_defaults_without_a_focus_context() {
             let bindings = keymap.bindings_for_action(action).collect::<Vec<_>>();
             assert_eq!(bindings.len(), 1);
             assert!(bindings[0].predicate().is_none());
-            let key = Keystroke::parse(&binding_strings(&entry(id).unwrap().default)[0]).unwrap();
+            let key = Keystroke::parse_with_os(
+                &binding_strings(&entry(id).unwrap().default)[0],
+                cx.platform_info().os,
+            )
+            .unwrap();
             assert_eq!(bindings[0].match_keystrokes(&[key]), Some(false));
         }
         #[cfg(any(windows, target_os = "linux"))]
@@ -590,7 +596,7 @@ fn registry_defaults_compile_to_gpui_runtime_keystrokes() {
     let recorded_bracket = combo_for("BracketLeft", true);
     assert_eq!(binding_strings(&recorded_bracket), ["cmd-{"]);
     assert_eq!(
-        Keystroke::parse(&binding_strings(&recorded_bracket)[0]).unwrap(),
+        Keystroke::parse_with_os(&binding_strings(&recorded_bracket)[0], host_os()).unwrap(),
         Keystroke {
             modifiers: gpui::Modifiers {
                 platform: true,
@@ -604,7 +610,7 @@ fn registry_defaults_compile_to_gpui_runtime_keystrokes() {
     let recorded_letter = combo_for("KeyK", true);
     assert_eq!(binding_strings(&recorded_letter), ["shift-cmd-k"]);
     assert!(
-        Keystroke::parse(&binding_strings(&recorded_letter)[0])
+        Keystroke::parse_with_os(&binding_strings(&recorded_letter)[0], host_os())
             .unwrap()
             .modifiers
             .shift
@@ -845,7 +851,7 @@ fn windows_defaults_replace_command_with_control() {
     ] {
         let actual = windows_default(macos);
         assert_eq!(actual, windows, "{macos}");
-        let keystroke = Keystroke::parse(&actual).unwrap();
+        let keystroke = Keystroke::parse_with_os(&actual, gpui::OperatingSystem::Windows).unwrap();
         assert!(!keystroke.modifiers.platform);
         assert!(code_from_gpui_key(&keystroke.key).is_some(), "{macos}");
         #[cfg(target_os = "macos")]
@@ -854,7 +860,11 @@ fn windows_defaults_replace_command_with_control() {
     for entry in entries().iter().chain(reserved_entries()) {
         for binding in binding_strings(&entry.default) {
             assert_ne!(windows_default(&binding), "ctrl-w", "{}", entry.id);
-            let windows = Keystroke::parse(&windows_default(&binding)).unwrap();
+            let windows = Keystroke::parse_with_os(
+                &windows_default(&binding),
+                gpui::OperatingSystem::Windows,
+            )
+            .unwrap();
             assert!(!windows.modifiers.platform, "{}", entry.id);
             assert!(code_from_gpui_key(&windows.key).is_some(), "{}", entry.id);
             if windows.key.len() == 1 && windows.key.as_bytes()[0].is_ascii_alphabetic() {
@@ -893,7 +903,8 @@ fn windows_defaults_have_no_unexpected_scope_collisions() {
         })
         .map(|entry| {
             let binding = windows_default(&binding_strings(&entry.default)[0]);
-            let keystroke = Keystroke::parse(&binding).unwrap();
+            let keystroke =
+                Keystroke::parse_with_os(&binding, gpui::OperatingSystem::Windows).unwrap();
             let mut combo = combo_from_keystroke(&keystroke).unwrap();
             combo.shift_optional = entry.default.shift_optional;
             (entry, combo)
@@ -909,7 +920,11 @@ fn windows_defaults_have_no_unexpected_scope_collisions() {
             );
         }
     }
-    let fullscreen = Keystroke::parse(&windows_default("ctrl-cmd-f")).unwrap();
+    let fullscreen = Keystroke::parse_with_os(
+        &windows_default("ctrl-cmd-f"),
+        gpui::OperatingSystem::Windows,
+    )
+    .unwrap();
     assert_eq!(
         code_from_gpui_key(&fullscreen.key),
         Some(("F11".into(), false))
@@ -980,7 +995,12 @@ fn windows_table_has_no_command_modifier_or_quit_binding() {
         ));
         for binding in binding_strings(&entry.default) {
             assert!(!binding.contains("cmd-"), "{}: {binding}", entry.id);
-            assert!(!Keystroke::parse(&binding).unwrap().modifiers.platform);
+            assert!(
+                !Keystroke::parse_with_os(&binding, host_os())
+                    .unwrap()
+                    .modifiers
+                    .platform
+            );
         }
         if entries().iter().any(|candidate| candidate.id == entry.id) {
             assert!(
@@ -1040,7 +1060,10 @@ fn fired(cx: &App, key: &str, stack: &[&str]) -> Option<Box<dyn gpui::Action>> {
     let keymap = cx.key_bindings();
     let keymap = keymap.borrow();
     keymap
-        .bindings_for_input(&[Keystroke::parse(key).unwrap()], &contexts)
+        .bindings_for_input(
+            &[Keystroke::parse_with_os(key, cx.platform_info().os).unwrap()],
+            &contexts,
+        )
         .0
         .first()
         .map(|binding| binding.action().boxed_clone())

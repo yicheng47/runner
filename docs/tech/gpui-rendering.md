@@ -1,8 +1,8 @@
 # GPUI as the terminal renderer uses it
 
-Checked against `gpui-pre` 0.3.7 (`zed@1a28cff`), the crates.io snapshot Runner pins exactly as `gpui`. Core source: `~/.cargo/registry/src/*/gpui-pre-0.3.7/src/`; platform windows and text systems: `gpui-pre-macos-0.3.7/src/` and `gpui-pre-windows-0.3.7/src/`; Metal renderer: `gpui-pre-apple-0.3.7/src/`. This note covers the slice of GPUI the terminal element touches; it is not a general GPUI tutorial.
+Checked against `gpui-pre` 0.3.14 (`zed@f126950`), the crates.io snapshot Runner pins exactly as `gpui`. Core source: `~/.cargo/registry/src/*/gpui-pre-0.3.14/src/`; platform windows: `gpui-pre-macos-0.3.14/src/`, `gpui-pre-windows-0.3.14/src/` (DirectWrite text and DirectX renderer), and `gpui-pre-linux-0.3.14/src/`; Apple Metal renderer and CoreText text system: `gpui-pre-apple-0.3.14/src/`; Linux WGPU renderer and text system: `gpui-pre-wgpu-0.3.14/src/`. This note covers the slice of GPUI the terminal element touches; it is not a general GPUI tutorial.
 
-GPUI is Zed's UI framework. The comparison that helps most from React: state lives in retained entities, but the element tree is not diffed. It is rebuilt from scratch every frame and thrown away. There is no virtual DOM. Layout is taffy, a Rust flexbox implementation. Painting produces a list of GPU primitives, and Metal draws them on macOS.
+GPUI is Zed's UI framework. The comparison that helps most from React: state lives in retained entities, and there is no virtual DOM — views normally rebuild their element tree on each frame unless wrapped in GPUI's view cache (`AnyView::cached`, which Runner uses in `terminal/viewport.rs` so an unchanged terminal can replay its cached prepaint and paint ranges). Layout is taffy, a Rust flexbox implementation. Painting produces a list of GPU primitives, and Metal draws them on macOS.
 
 ## The frame
 
@@ -14,7 +14,7 @@ Read `window.rs`, the `draw` function, then `draw_roots` right below. One frame 
 4. `paint` runs on every element. Elements push primitives into the scene and register mouse listeners and input handlers.
 5. The frame is finished: the text layout cache rolls over, the new frame swaps with the rendered one, focus-change listeners fire, and the window is flagged to present, which hands the scene to the platform window.
 
-Frames are drawn on demand at display-link ticks. Something calls `notify` on an entity, the invalidator marks the window dirty, and the next display-link tick draws. If nothing is dirty and there is no requested refresh, nothing draws. Inactive windows inherit `WindowOptions::inactive_frame_interval = Some(33.333 ms)`, so streaming output in an unfocused window presents at about 30 fps. That is the whole reason Runner's terminal waker exists: the PTY thread cannot call `notify`, so it sends on a channel and a GPUI task does the notify.
+Frames are drawn on demand at display-link ticks. On macOS 14 and later, each window uses a `CAMetalDisplayLink` (`gpui-pre-apple/src/display_link.rs`, `MetalFrameSource`) that pauses when GPUI has nothing to draw, while macOS 12 and 13 keep the shared `CVDisplayLink` registry (`gpui-pre-macos/src/display_link.rs`). Something calls `notify` on an entity, the invalidator marks the window dirty, and the next display-link tick draws. If nothing is dirty and there is no requested refresh, nothing draws. Windows inherit `WindowOptions` pacing defaults of about 30 fps when inactive (`inactive_frame_interval = Some(33.333 ms)`) or in Low Power Mode (`low_power_frame_interval = Some(33.333 ms)`), and about 60 fps under serious or critical thermal pressure (`thermal_frame_interval = Some(16.667 ms)`). That is the whole reason Runner's terminal waker exists: the PTY thread cannot call `notify`, so it sends on a channel and a GPUI task does the notify.
 
 Every paint-phase API asserts the phase in debug builds (`debug_assert_paint`, `debug_assert_prepaint`). Calling `paint_quad` from prepaint or `insert_hitbox` from paint panics in a dev build, which is the fastest way to learn the contract.
 
@@ -22,13 +22,13 @@ Every paint-phase API asserts the phase in debug builds (`debug_assert_paint`, `
 
 `element.rs`. Three methods with typed state threaded forward: `request_layout` returns a `LayoutId` and some state, `prepaint` receives the bounds and returns more state, `paint` receives both. The module docs say most code should use `div` and the built-in elements, and to implement `Element` only when you need manual control, with a code editor as the example. A terminal is the same case: the grid is not flexbox. So Runner's `TerminalElement` asks taffy for one node that fills its parent, and does everything else by hand.
 
-`request_layout` on the window takes a `Style` and child layout ids and registers a taffy 0.13 node. GPUI snaps authored absolute lengths (including padding and gaps) to device pixels before layout, then snaps absolute outer edges after layout. `relative(1.)` for both dimensions is "fill the parent".
+`request_layout` on the window takes a `Style` and child layout ids and registers a taffy 0.15 node. GPUI snaps authored absolute lengths (including padding and gaps) to device pixels before layout, then snaps absolute outer edges after layout. `relative(1.)` for both dimensions is "fill the parent". `element.rs` provides a blanket `impl<T: Element> IntoElement for T`, so custom elements do not implement `IntoElement` manually.
 
 ## The Scene
 
-`scene.rs`. The scene is a struct of `Vec`s, one per primitive kind: `Shadow`, `Quad`, `Path`, `Underline`, `MonochromeSprite`, `SubpixelSprite`, `PolychromeSprite`, `PaintSurface`. A quad is a rectangle with a background, border, corner radii, and a content mask. A monochrome sprite is a glyph from the atlas tinted one colour; a subpixel sprite carries an LCD glyph for platforms that use subpixel text rendering. A polychrome sprite is an image or a colour emoji. A path is a tessellated shape. A surface is a platform video or camera layer.
+`scene.rs`. The scene is a struct of `Vec`s, one per primitive kind: `Shadow`, `Quad`, `PaintedPath`, `Underline`, `MonochromeSprite`, `SubpixelSprite`, `PolychromeSprite`, `PaintSurface`, `PaintNativeView`. A quad is a rectangle with a background, border, corner radii, and a content mask. A monochrome sprite is a glyph from the atlas tinted one colour; a subpixel sprite carries an LCD glyph for platforms that use subpixel text rendering. A polychrome sprite is an image or a colour emoji. A path is a set of curve-tiled contours. A surface is a platform video or camera layer, and a native view wraps an embedded platform view.
 
-`insert_primitive` clips the primitive's bounds to its content mask, drops empty primitives, and uses the current layer's order or inserts the bounds into a bounds tree to assign a draw order, so overlapping primitives keep painter's order even though they are stored by kind. `batches` then walks the order and yields maximal runs of the same kind. The Metal renderer in `gpui-pre-apple/src/metal_renderer.rs`, in `draw_primitives_to_texture` under `draw`, does one instanced draw call per batch. Paths are the exception: they are drawn to an intermediate texture first and then composited, which is the end-encoding dance in that loop.
+`insert_primitive` clips the primitive's bounds to its content mask, drops empty primitives, and uses the current layer's order or inserts the bounds into a bounds tree to assign a draw order, so overlapping primitives keep painter's order even though they are stored by kind. `batches` then walks the order and yields maximal runs of the same kind. The Metal renderer in `gpui-pre-apple/src/metal_renderer.rs`, in `draw_primitives_to_texture` (called from `render_frame` under `draw`), first runs an opaque-quad depth prepass (`draw_opaque_quads`) and then walks `scene.batches()` with depth testing enabled: one instanced draw call per batch for shadows, quads, inline path tiles (`draw_path_tiles`), underlines, and sprite batches, while `draw_surfaces` loops over each `PaintSurface` individually.
 
 A terminal frame therefore compiles to roughly: one background quad, a batch of merged background quads, selection quads, one large batch of glyph sprites, a path batch for box drawing, and underlines. Runner's quad merging in prepaint is about keeping those batches short.
 
@@ -51,7 +51,7 @@ This also explains Runner's alignment rule. `layout_line` positions glyphs by th
 
 ## Paths
 
-`path_builder.rs` wraps lyon. You build a path with SVG-style commands, and `fill` or `stroke` tessellates it on the CPU into triangles. `paint_path` on the window scales it by the device scale factor, attaches the current content mask and opacity, and inserts a `Path` primitive. Runner's `glyphs.rs` uses this for the box-drawing shapes that are not plain rectangles. Plain rectangles go through `paint_quad`, which is cheaper and batches with everything else.
+`path_builder.rs` wraps `lyon_path` for SVG-style path commands and uses `tiny-skia-path` to expand strokes into filled outlines, then splits contours into xy-monotone quadratic curves (`PathCurve`) and tiles (`PathTiles`) rather than CPU-tessellated triangles. `paint_path` on the window attaches the device scale factor, current content mask, and opacity, and inserts a `PaintedPath` primitive. Runner's `glyphs.rs` uses this for the box-drawing shapes that are not plain rectangles. Plain rectangles go through `paint_quad`, which is cheaper and batches with everything else.
 
 ## Content masks
 
@@ -81,7 +81,7 @@ Runner's `TerminalInput` implements it. Pinyin composition works because the pla
 
 ## Where the two libraries meet
 
-The `Term` is the source of truth. Once per frame, under the fair lock, the element asks for `renderable_content` and walks every visible cell into GPU primitives. Nothing is diffed and alacritty's damage tracking is not used. The work is bounded by columns times rows, shaping is cached, and quads merge, so a full walk is cheaper than tracking what changed.
+The `Term` is the source of truth. On every terminal repaint (when `TerminalViewport` is invalidated rather than replayed from GPUI's cached view), under the fair lock, the element asks for `renderable_content` and walks every visible cell into GPU primitives. Nothing is diffed and alacritty's damage tracking is not used. The work is bounded by columns times rows, shaping is cached, and quads merge, so a full walk is cheaper than tracking what changed.
 
 ## Reading order
 

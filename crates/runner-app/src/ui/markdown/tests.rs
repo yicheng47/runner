@@ -1814,7 +1814,7 @@ fn compact_code_block_hover_copy_timer_and_wrap_per_block() {
     let before_left0 = unwrapped_line0.left();
     let before_left1 = unwrapped_line1.left();
     assert_eq!(before_left0, before_left1);
-    visual.simulate_event(gpui::ScrollWheelEvent {
+    visual.simulate_event(gpui::ScrollEvent {
         position: point(header0.center().x, unwrapped_line0.center().y),
         delta: gpui::ScrollDelta::Pixels(point(px(-80.), px(0.))),
         ..Default::default()
@@ -1955,7 +1955,7 @@ fn document_code_block_wrap_toggle_shared_offset_scrollbar_and_block_isolation()
 
     // Wheel scroll over line 1 shifts both lines together.
     let before_left = line0.left();
-    visual.simulate_event(gpui::ScrollWheelEvent {
+    visual.simulate_event(gpui::ScrollEvent {
         position: point(header0.center().x, line1.center().y),
         delta: gpui::ScrollDelta::Pixels(point(px(-90.), px(0.))),
         ..Default::default()

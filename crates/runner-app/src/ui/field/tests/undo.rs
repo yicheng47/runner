@@ -400,7 +400,8 @@ fn undo_and_redo_keys_follow_the_platform() {
                     handle_key_down_for_platform(
                         input,
                         &KeyDownEvent {
-                            keystroke: gpui::Keystroke::parse(key).unwrap(),
+                            keystroke: gpui::Keystroke::parse_with_os(key, cx.platform_info().os)
+                                .unwrap(),
                             is_held: false,
                             prefer_character_input: false,
                         },

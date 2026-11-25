@@ -18,7 +18,8 @@ fn editing_shortcuts_use_command_on_macos_and_control_on_windows() {
                     handle_key_down_for_platform(
                         input,
                         &KeyDownEvent {
-                            keystroke: gpui::Keystroke::parse(key).unwrap(),
+                            keystroke: gpui::Keystroke::parse_with_os(key, cx.platform_info().os)
+                                .unwrap(),
                             is_held: false,
                             prefer_character_input: false,
                         },

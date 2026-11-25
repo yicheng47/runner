@@ -21,10 +21,10 @@ use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use gpui::{
     fill, outline, point, px, relative, size, AnyTooltip, AnyView, App, Bounds, ClipboardItem,
     ContentMask, Context, CursorStyle, DispatchPhase, Element, Entity, FocusHandle, Font,
-    FontFallbacks, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
-    LayoutId, MouseButton as GpuiMouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, ScrollDelta, ScrollWheelEvent, ShapedLine, SharedString, Style, Task, TextAlign,
-    TextRun, UnderlineStyle, Window,
+    FontFallbacks, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, LayoutId,
+    MouseButton as GpuiMouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    ScrollDelta, ScrollEvent, ShapedLine, SharedString, Style, Task, TextAlign, TextRun,
+    UnderlineStyle, Window,
 };
 
 use runner_app::terminal_ime::{TerminalInput, TerminalInputHandler};
@@ -231,7 +231,7 @@ impl TerminalInteraction {
 
     fn scroll_wheel(
         &mut self,
-        event: &ScrollWheelEvent,
+        event: &ScrollEvent,
         geometry: TerminalGeometry,
         interactive: bool,
         window: &Window,
@@ -923,7 +923,7 @@ impl TerminalElement {
             let interactive = self.interactive;
             let scroll_hitbox = hitbox.clone();
             let current_view = window.current_view();
-            window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+            window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
                 if phase != DispatchPhase::Bubble || !scroll_hitbox.should_handle_scroll(window) {
                     return;
                 }
@@ -1860,14 +1860,6 @@ impl Element for TerminalElement {
     }
 }
 
-impl IntoElement for TerminalElement {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -2189,7 +2181,7 @@ mod tests {
 
     #[test]
     fn rendered_wheels_target_one_pane_and_follow_its_current_geometry() {
-        use gpui::{size, ScrollDelta, ScrollWheelEvent};
+        use gpui::{size, ScrollDelta, ScrollEvent};
 
         let temp = tempfile::tempdir().unwrap();
         let runtime = Arc::new(RecordingRuntime::default());
@@ -2271,7 +2263,7 @@ mod tests {
                 + px(1.),
         );
         let header = point(body.x, right_bounds.top() + px(11.));
-        let wheel = |position, delta| ScrollWheelEvent {
+        let wheel = |position, delta| ScrollEvent {
             position,
             delta: ScrollDelta::Lines(point(0., delta)),
             ..Default::default()
@@ -2292,7 +2284,7 @@ mod tests {
         visual.simulate_event(wheel(body, 0.5));
         assert_eq!(runtime.writes.lock().unwrap().len(), 2);
         let half_line = visual.update(|window, _| window.line_height() / 2.);
-        visual.simulate_event(ScrollWheelEvent {
+        visual.simulate_event(ScrollEvent {
             position: body,
             delta: ScrollDelta::Pixels(point(px(0.), half_line)),
             ..Default::default()
@@ -2343,7 +2335,7 @@ mod tests {
             runtime.writes.lock().unwrap().last(),
             Some(&(right_id.clone(), b"\x1b[<64;6;4M".to_vec()))
         );
-        visual.simulate_event(ScrollWheelEvent {
+        visual.simulate_event(ScrollEvent {
             position: changed_body,
             delta: ScrollDelta::Lines(point(0., 1.)),
             modifiers: gpui::Modifiers {

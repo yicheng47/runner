@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use futures::StreamExt;
+use futures::future::Shared;
+use futures::{FutureExt, StreamExt};
 
 use gpui::{App, AppContext, Context, Entity, Global, Subscription, SystemNotification, Task};
 use runner_app::ui::agent_status::{StatusKind, StatusPresentation};
@@ -462,6 +463,8 @@ struct NotificationController {
     previous: Option<BTreeMap<String, AgentStatus>>,
     previous_missions: BTreeMap<String, Option<MissionActivityState>>,
     posted: BTreeMap<String, Posted>,
+    next_dismissal: u64,
+    pending_dismissals: BTreeMap<u64, Shared<Task<()>>>,
     askers: BTreeMap<String, String>,
     ask_order: VecDeque<String>,
     pending_questions: BTreeMap<String, Event>,
@@ -485,6 +488,25 @@ fn pairing_content(pairing: &crate::app_store::RemotePairing) -> SystemNotificat
 }
 
 impl NotificationController {
+    fn track_dismissal(&mut self, task: Task<()>, cx: &mut Context<Self>) {
+        let task = task.shared();
+        let seq = self.next_dismissal;
+        self.next_dismissal = self.next_dismissal.wrapping_add(1);
+        self.pending_dismissals.insert(seq, task.clone());
+        cx.spawn(async move |this, cx| {
+            task.await;
+            let _ = this.update(cx, |this, _| {
+                this.pending_dismissals.remove(&seq);
+            });
+        })
+        .detach();
+    }
+
+    fn dismiss(&mut self, tag: &str, cx: &mut Context<Self>) {
+        let task = cx.dismiss_system_notification(tag);
+        self.track_dismissal(task, cx);
+    }
+
     fn paired(&mut self, pairing: &crate::app_store::RemotePairing, cx: &mut Context<Self>) {
         let notification = pairing_content(pairing);
         #[cfg(target_os = "linux")]
@@ -688,7 +710,7 @@ impl NotificationController {
             |target| target_exists(store, target),
         );
         for tag in stale {
-            cx.dismiss_system_notification(&tag);
+            self.dismiss(&tag, cx);
             self.posted.remove(&tag);
         }
     }
@@ -711,7 +733,7 @@ impl NotificationController {
                     self.pending_questions.remove(id);
                     let tag = format!("question:{id}");
                     if self.posted.remove(&tag).is_some() {
-                        cx.dismiss_system_notification(&tag);
+                        self.dismiss(&tag, cx);
                     }
                 }
             }
@@ -805,6 +827,8 @@ pub(crate) fn install(cx: &mut App) {
             previous: Some(statuses),
             previous_missions: mission_snapshot(snapshot),
             posted: BTreeMap::new(),
+            next_dismissal: 0,
+            pending_dismissals: BTreeMap::new(),
             askers: BTreeMap::new(),
             ask_order: VecDeque::new(),
             pending_questions: BTreeMap::new(),
@@ -880,18 +904,25 @@ pub(crate) fn view_changed(cx: &mut App) {
     });
 }
 
-pub(crate) fn dismiss_all(cx: &mut App) {
-    let Some(controller) = cx
+/// Enqueues dismissal for every posted notification synchronously and returns
+/// a future that resolves once those dismissals and any earlier in-flight
+/// withdrawals have completed.
+pub(crate) fn dismiss_all(cx: &mut App) -> impl std::future::Future<Output = ()> + 'static + use<> {
+    let mut tasks = Vec::new();
+    if let Some(controller) = cx
         .try_global::<GlobalNotifications>()
         .map(|global| global.0.clone())
-    else {
-        return;
-    };
-    controller.update(cx, |this, cx| {
-        for (tag, _) in std::mem::take(&mut this.posted) {
-            cx.dismiss_system_notification(&tag);
-        }
-    });
+    {
+        controller.update(cx, |this, cx| {
+            tasks.extend(std::mem::take(&mut this.pending_dismissals).into_values());
+            for (tag, _) in std::mem::take(&mut this.posted) {
+                tasks.push(cx.dismiss_system_notification(&tag).shared());
+            }
+        });
+    }
+    async move {
+        futures::future::join_all(tasks).await;
+    }
 }
 
 fn target_exists(store: &AppStore, target: &Target) -> bool {

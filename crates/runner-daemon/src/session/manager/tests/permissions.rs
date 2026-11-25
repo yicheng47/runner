@@ -1141,7 +1141,8 @@ fn chat_bypass_switch_applies_to_roles_with_stored_permission_modes() {
                 for pair in crate::runtimes::adapter(runtime)
                     .permissions()
                     .mission_args()
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
                 {
                     assert!(
                         has_arg_pair(args, &pair[0], &pair[1]),

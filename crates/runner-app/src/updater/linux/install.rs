@@ -4,7 +4,7 @@ use std::path::Component;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
-use anyhow::{ensure, Context as _};
+use anyhow::ensure;
 use flate2::read::GzDecoder;
 
 use super::*;

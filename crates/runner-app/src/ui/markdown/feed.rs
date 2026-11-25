@@ -322,14 +322,6 @@ impl Element for CompactPreviewElement {
     }
 }
 
-impl IntoElement for CompactPreviewElement {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
 /// Renders short read-only Markdown in the Compact look (role and crew prompts
 /// and previews, Skills preview, Info popover System prompt).
 pub(crate) fn render_compact(id: &str, text: &str, view: EntityId, _cx: &App) -> AnyElement {

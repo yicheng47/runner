@@ -305,7 +305,11 @@ mod tests {
                 for key in ["a", "c", "x", "z", "y"] {
                     field.key_down(
                         &KeyDownEvent {
-                            keystroke: gpui::Keystroke::parse(&format!("{command}-{key}")).unwrap(),
+                            keystroke: gpui::Keystroke::parse_with_os(
+                                &format!("{command}-{key}"),
+                                cx.platform_info().os,
+                            )
+                            .unwrap(),
                             is_held: false,
                             prefer_character_input: false,
                         },
@@ -326,7 +330,11 @@ mod tests {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string("009876".into()));
                 field.key_down(
                     &KeyDownEvent {
-                        keystroke: gpui::Keystroke::parse(&format!("{command}-v")).unwrap(),
+                        keystroke: gpui::Keystroke::parse_with_os(
+                            &format!("{command}-v"),
+                            cx.platform_info().os,
+                        )
+                        .unwrap(),
                         is_held: false,
                         prefer_character_input: false,
                     },

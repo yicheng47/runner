@@ -291,7 +291,6 @@ mod tests {
     use std::sync::Arc;
 
     use futures::future::{select, Either};
-    use futures::StreamExt as _;
     use windows::Win32::System::Pipes::WaitNamedPipeW;
 
     use super::*;

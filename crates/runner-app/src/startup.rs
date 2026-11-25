@@ -161,7 +161,7 @@ pub(crate) fn run() -> Result<()> {
             }
             #[cfg(windows)]
             quit_relaunches.close();
-            notifications::dismiss_all(cx);
+            let dismissals = notifications::dismiss_all(cx);
             save_window_settings(cx);
             checkpoint_window_layout_on_quit(cx);
             let stop = cx
@@ -174,7 +174,7 @@ pub(crate) fn run() -> Result<()> {
             } else {
                 quit_connection.disconnect();
             }
-            std::future::ready(())
+            dismissals
         })
         .detach();
 

@@ -30,7 +30,6 @@ uuid = { version = "1", features = ["v4"] }
 
 [patch.crates-io]
 alacritty_terminal = { path = "vendor/alacritty_terminal" }
-taffy = { path = "vendor/taffy" }
 
 # Dev builds are the daily-drive builds (`make run`). Unoptimized taffy/gpui made
 # every keystroke relayout the window at ~100ms with a drawer open (profiled
@@ -51,6 +50,12 @@ opt-level = 3
 [profile.dev.package.gpui-pre-apple]
 opt-level = 3
 
+[profile.dev.package.gpui-pre-linux]
+opt-level = 3
+
+[profile.dev.package.gpui-pre-wgpu]
+opt-level = 3
+
 [profile.dev.package.taffy]
 opt-level = 3
 
@@ -63,6 +68,21 @@ debug = "line-tables-only"
 opt-level = 1
 
 [profile.ci.package.gpui-pre]
+opt-level = 1
+
+[profile.ci.package.gpui-pre-macos]
+opt-level = 1
+
+[profile.ci.package.gpui-pre-windows]
+opt-level = 1
+
+[profile.ci.package.gpui-pre-apple]
+opt-level = 1
+
+[profile.ci.package.gpui-pre-linux]
+opt-level = 1
+
+[profile.ci.package.gpui-pre-wgpu]
 opt-level = 1
 
 [profile.ci.package.taffy]

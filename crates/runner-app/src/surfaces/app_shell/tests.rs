@@ -1255,7 +1255,7 @@ impl Render for UsagePopoverProbe {
 #[test]
 fn usage_popover_scrolls_all_provider_rows_in_short_window() {
     use crate::theme_snapshot::ThemeGuard;
-    use gpui::{size, ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext};
+    use gpui::{size, ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext};
 
     let _theme = ThemeGuard::new();
     theme::set_active_variant(theme::ThemeVariant::Carbon);
@@ -1281,7 +1281,7 @@ fn usage_popover_scrolls_all_provider_rows_in_short_window() {
         assert!(header.bottom() <= body.top(), "{zoom}: {header:?} {body:?}");
         assert!(last.bottom() > body.bottom(), "{zoom}: {last:?} {body:?}");
 
-        visual.simulate_event(ScrollWheelEvent {
+        visual.simulate_event(ScrollEvent {
             position: body.center(),
             delta: ScrollDelta::Lines(point(0., -100.)),
             ..Default::default()

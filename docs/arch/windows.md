@@ -133,7 +133,7 @@ The unsigned Windows port shipped in 0.8.0 and signing followed with [#497](http
 
 - Confirm SmartScreen behavior for the signed stable installer on a fresh Windows 11 PC and record the result in the [signing spec](../features/archive/497-windows-code-signing.md).
 - Complete detailed installed-build lifecycle, crash/relaunch, IME, resize, DPI, path, and update/data-retention acceptance. The [remaining validation checklist](../impls/archive/windows-nightly/impl_log.md#todo) preserves the specific cases and prior results. Native TRAE and Antigravity CLI validation is still pending.
-- Investigate the shutdown `window not found` diagnostic. The separate development-only DXGI debug-interface warning is an optional `gpui-pre-windows` debug probe (`check_debug_layer_available` in `src/directx_devices.rs`, under `debug_assertions`) and is skipped in release builds.
+- Investigate the shutdown `window not found` diagnostic. The separate development-only DXGI debug-interface warning is an optional `gpui-pre-windows` 0.3.14 (`zed@f126950`) debug probe (`check_debug_layer_available` in `src/directx_devices.rs`, under `debug_assertions`) and is skipped in release builds.
 - Inject the OSC 7 prompt hook into PowerShell as Runner does for zsh and bash on macOS, through `-NoExit -Command` and a `prompt` wrapper that coexists with oh-my-posh and starship, and consider Windows Terminal's OSC 9;9 ([#575](../guide/guides/chats-and-windows.md#split-and-navigate)); validate the snippet above on native Windows first.
 
 Both `Rust / macOS` and `Rust / Windows` are required branch checks, verified on 2026-10-22. Keep native Windows validation separate from those automated gates.

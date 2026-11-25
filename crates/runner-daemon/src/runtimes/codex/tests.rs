@@ -168,7 +168,12 @@ fn codex_injection_uses_structured_stdio_and_schema_guaranteed_projections() {
             .collect::<Vec<_>>(),
         [hook::ENDPOINT_ENV, hook::SESSION_ENV, hook::GENERATION_ENV]
     );
-    for (pair, event) in args[5..].chunks_exact(2).zip(codex_status::EVENTS) {
+    for (pair, event) in args[5..]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(codex_status::EVENTS)
+    {
         assert_eq!(pair[0], "-c");
         let config = pair[1].parse::<toml_edit::DocumentMut>().unwrap();
         let groups = config["hooks"][event].as_array().unwrap();

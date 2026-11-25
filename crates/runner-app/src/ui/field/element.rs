@@ -1,13 +1,5 @@
 use super::*;
 
-impl IntoElement for TextFieldElement {
-    type Element = Self;
-
-    fn into_element(self) -> Self::Element {
-        self
-    }
-}
-
 impl Element for TextFieldElement {
     type RequestLayoutState = FieldTextKey;
     type PrepaintState = ();

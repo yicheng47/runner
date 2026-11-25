@@ -3999,11 +3999,12 @@ fn image_diff_supports_unified_split_one_sided_undecodable_svg_and_plain_binary(
         )
     });
     let canvas_bounds = h.visual.debug_bounds("IMAGE_CANVAS").unwrap();
-    h.visual.simulate_event(gpui::ScrollWheelEvent {
+    h.visual.simulate_event(gpui::ScrollEvent {
         position: canvas_bounds.center(),
         delta: gpui::ScrollDelta::Pixels(gpui::point(px(-30.), px(-20.))),
         modifiers: Modifiers::default(),
         touch_phase: gpui::TouchPhase::Moved,
+        ..Default::default()
     });
     h.visual.update(|window, _| window.refresh());
     h.settle();

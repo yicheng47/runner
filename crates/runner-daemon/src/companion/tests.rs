@@ -2662,8 +2662,8 @@ async fn delivery_pacing_keeps_a_quiet_stream_responsive_beside_a_slow_link_floo
                             delivered += output.data.0.len();
                         }
                         if output.session == "quiet" {
-                            for id in output.data.0.chunks_exact(8) {
-                                let id = u64::from_be_bytes(id.try_into().unwrap());
+                            for &id in output.data.0.as_chunks::<8>().0 {
+                                let id = u64::from_be_bytes(id);
                                 assert_eq!(id, next_quiet, "quiet output was reordered");
                                 next_quiet += 20;
                                 echoes.push(now - sent.remove(&id).unwrap());
