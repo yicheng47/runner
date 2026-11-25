@@ -1048,6 +1048,14 @@ impl Sample for files::FileIndex {
         }
     }
 }
+impl Sample for files::FileStamp {
+    fn sample() -> Self {
+        Self {
+            size: 3,
+            modified: Some(Sample::sample()),
+        }
+    }
+}
 impl Sample for files::FileContent {
     fn sample() -> Self {
         Self::Text {

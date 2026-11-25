@@ -24,12 +24,14 @@ base64 = "0.22"
 chrono = { workspace = true }
 flate2 = "1"
 futures = "0.3"
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 regex = "1"
 runner-core = { path = "../runner-core" }
 runner-terminal = { path = "../runner-terminal" }
 serde.workspace = true
 serde_json.workspace = true
+smallvec = "1"
 sys-locale = "0.3.2"
 toml = "0.8.23"
 # The bundled grammars: keep this list, `highlight::GRAMMARS` and

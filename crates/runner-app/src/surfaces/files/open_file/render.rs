@@ -310,8 +310,19 @@ impl UnifiedViewer {
         }
         let showing_diff = self.active_showing_diff();
         let deleted = self.active_deleted();
+        let is_image = self.active_is_image();
         let code_active = !showing_diff && !deleted;
         let diff_active = showing_diff;
+        let code_label_key = if is_image {
+            "viewer.image"
+        } else {
+            "viewer.code"
+        };
+        let deleted_tip_key = if is_image {
+            "viewer.file_deleted_image_unavailable"
+        } else {
+            "viewer.file_deleted_code_unavailable"
+        };
 
         let code_btn = div()
             .id("viewer-mode-code")
@@ -333,15 +344,12 @@ impl UnifiedViewer {
             .items_center()
             .text_size(theme::text_meta())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .when(deleted, |el| {
+            .when(deleted, move |el| {
                 el.opacity(0.4)
                     .text_color(theme::faint())
                     .cursor_default()
-                    .tooltip(|_, cx| {
-                        runner_app::ui::tooltip::tooltip_view(
-                            crate::i18n::t("viewer.file_deleted_code_unavailable"),
-                            cx,
-                        )
+                    .tooltip(move |_, cx| {
+                        runner_app::ui::tooltip::tooltip_view(crate::i18n::t(deleted_tip_key), cx)
                     })
             })
             .when(!deleted && code_active, |el| {
@@ -358,7 +366,7 @@ impl UnifiedViewer {
                         this.set_active_mode(DocMode::Code, window, cx);
                     }))
             })
-            .child(crate::i18n::text("viewer.code"));
+            .child(crate::i18n::text(code_label_key));
 
         let diff_btn = div()
             .id("viewer-mode-diff")
@@ -605,7 +613,26 @@ impl UnifiedViewer {
     ) -> AnyElement {
         let deleted = doc.is_working_tree_deleted(&tab.key);
         let name = tab.name().to_owned();
-        let folder = abbreviate_folder(tab.path());
+        let image_meta = match &doc.content {
+            Content::Image {
+                width,
+                height,
+                size,
+                ..
+            }
+            | Content::Deleted(Some(DeletedContent::Image {
+                width,
+                height,
+                size,
+                ..
+            })) => Some(image::format_dimensions_and_size(*width, *height, *size)),
+            _ => None,
+        };
+        let folder = if image_meta.is_some() || self.active_is_image() {
+            None
+        } else {
+            abbreviate_folder(tab.path())
+        };
         let hunks = self.active_hunk_lines();
         let hunk_count = hunks.len();
         let markdown_source = self.active_markdown();
@@ -649,6 +676,24 @@ impl UnifiedViewer {
                             .text_color(theme::text())
                             .child(name),
                     )
+                    .children(image_meta.map(|meta| {
+                        div()
+                            .when(cfg!(test), |el| {
+                                el.debug_selector(|| "FILE_IMAGE_META".into())
+                            })
+                            .min_w(px(0.))
+                            .flex_shrink(2.)
+                            .truncate()
+                            .text_size(theme::text_meta())
+                            .text_color(theme::muted())
+                            .map(|element| {
+                                #[cfg(test)]
+                                let element =
+                                    crate::theme_snapshot::record_text("FILE_IMAGE_META", element);
+                                element
+                            })
+                            .child(meta)
+                    }))
                     .children(folder.map(|f| {
                         div()
                             .min_w(px(0.))
@@ -930,11 +975,61 @@ impl UnifiedViewer {
                     .into_any_element(),
                 )
             }
+            Content::Image { canvas, .. } => canvas.clone().into_any_element(),
+            Content::ImageTooLarge {
+                width,
+                height,
+                size,
+            } => {
+                let (_, effective) = found_editors(cx);
+                self.render_placeholder(
+                    "FILE_IMAGE_TOO_LARGE",
+                    "triangle-alert.svg",
+                    format!(
+                        "{name} · {}",
+                        image::format_dimensions_and_size(*width, *height, *size)
+                    ),
+                    crate::i18n::text("viewer.image_too_many_pixels").to_owned(),
+                    Button::new(
+                        "file-open-large",
+                        crate::i18n::tf(
+                            "format.open_in_editor",
+                            &[("editor", effective.label().to_owned())],
+                        ),
+                    )
+                    .variant(ButtonVariant::Secondary)
+                    .debug_selector("FILE_OPEN_LARGE")
+                    .on_press(move |_, cx| {
+                        let _ = root.update(cx, |this, cx| this.open_in(None, cx));
+                    })
+                    .into_any_element(),
+                )
+            }
+            Content::ImageFailed => self.render_placeholder(
+                "FILE_IMAGE_FAILED",
+                "image-off.svg",
+                crate::i18n::text("viewer.image_decode_failed_title").to_owned(),
+                crate::i18n::tf("viewer.image_decode_failed_body", &[("name", name)]),
+                Button::new(
+                    "file-open-default",
+                    crate::i18n::text("ui.open_in_default_app"),
+                )
+                .variant(ButtonVariant::Secondary)
+                .debug_selector("FILE_OPEN_DEFAULT")
+                .on_press(move |_, cx| {
+                    let _ = root.update(cx, |this, cx| {
+                        if let Some(path) = this.active_path() {
+                            this.launch(Some(FileLinkEditor::DefaultApp), path, None, cx);
+                        }
+                    });
+                })
+                .into_any_element(),
+            ),
             Content::Text(_) if self.shows_rendered(doc) => {
                 self.render_rendered(doc.rendered.clone(), None)
             }
             Content::Text(view) => self.render_code(view.clone(), None, window, cx),
-            Content::Deleted(view) => {
+            Content::Deleted(kept) => {
                 let close_root = cx.weak_entity();
                 let banner = div()
                     .when(cfg!(test), |element| {
@@ -998,11 +1093,21 @@ impl UnifiedViewer {
                             .child(crate::i18n::text("ui.close_file_tab")),
                     )
                     .into_any_element();
-                match view {
-                    Some(_) if self.shows_rendered(doc) => {
+                match kept {
+                    Some(DeletedContent::Text(_)) if self.shows_rendered(doc) => {
                         self.render_rendered(doc.rendered.clone(), Some(banner))
                     }
-                    Some(view) => self.render_code(view.clone(), Some(banner), window, cx),
+                    Some(DeletedContent::Text(view)) => {
+                        self.render_code(view.clone(), Some(banner), window, cx)
+                    }
+                    Some(DeletedContent::Image { canvas, .. }) => div()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .flex()
+                        .flex_col()
+                        .child(banner)
+                        .child(canvas.clone())
+                        .into_any_element(),
                     None => div()
                         .flex_1()
                         .flex()
@@ -1387,6 +1492,8 @@ impl Render for UnifiedViewer {
                 page.read(cx).focus_handle().clone().focus(window, cx);
             } else if let Some(code) = self.active_view() {
                 code.read(cx).focus_handle().clone().focus(window, cx);
+            } else if let Some(canvas) = self.active_image_canvas() {
+                canvas.read(cx).focus_handle().clone().focus(window, cx);
             }
         }
         let strip = self.render_strip(cx);

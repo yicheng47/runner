@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use runner_core::protocol::files::{
-    DirEntry, FileContent, FileIndex, FilesRootOutcome, FilesSubject, GitStatus, IndexBudget,
-    WorktreeEntry,
+    DirEntry, FileContent, FileIndex, FileStamp, FilesRootOutcome, FilesSubject, GitStatus,
+    IndexBudget, WorktreeEntry,
 };
 use rusqlite::Connection;
 
@@ -482,6 +482,15 @@ pub fn recent_folders(core: &crate::AppCore) -> Result<Vec<PathBuf>> {
 /// back too.
 pub fn read(root: &Path, path: &str, want_bytes: bool) -> Result<FileContent> {
     fs::read(root, path, want_bytes)
+}
+
+pub fn read_if_changed(
+    root: &Path,
+    path: &str,
+    want_bytes: bool,
+    if_unchanged: Option<FileStamp>,
+) -> Result<FileContent> {
+    fs::read_if_changed(root, path, want_bytes, if_unchanged)
 }
 
 pub use changes::{
