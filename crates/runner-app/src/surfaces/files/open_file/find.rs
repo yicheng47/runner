@@ -6,7 +6,7 @@ impl UnifiedViewer {
     /// ⌘F: find over the active file; a rendered page switches to its
     /// source, which find searches.
     pub(crate) fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_rendered().is_some() {
+        if self.active_rendered().is_some() || self.active_svg_rendered().is_some() {
             self.toggle_source(window, cx);
         }
         if self.active_view().is_none() {

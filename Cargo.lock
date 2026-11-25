@@ -5550,6 +5550,7 @@ dependencies = [
  "pulldown-cmark",
  "raw-window-handle",
  "regex",
+ "resvg",
  "runner-core",
  "runner-daemon",
  "runner-terminal",

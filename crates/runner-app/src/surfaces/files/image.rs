@@ -6,13 +6,14 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Cursor;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use gpui::prelude::*;
 use gpui::{
     canvas, div, hsla, img, point, px, size, svg, AnyElement, App, Bounds, BoxShadow, Context,
     Corners, FocusHandle, FontWeight, Global, ImageSource, MouseButton, MouseDownEvent,
-    MouseMoveEvent, PinchEvent, Pixels, Point, RenderImage, ScrollWheelEvent, SharedString, Window,
+    MouseMoveEvent, PinchEvent, Pixels, Point, RenderImage, ScrollWheelEvent, SharedString, Task,
+    Window,
 };
 use image::codecs::gif::GifDecoder;
 use image::codecs::webp::WebPDecoder;
@@ -20,6 +21,7 @@ use image::metadata::Orientation;
 use image::{
     AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat as ImgFmt, Limits, Rgba, RgbaImage,
 };
+use resvg::{tiny_skia, usvg};
 use smallvec::SmallVec;
 
 use crate::theme;
@@ -37,6 +39,8 @@ const MAX_DECODE_ALLOC_BYTES: u64 = 512 * 1024 * 1024;
 /// Upper bound on codec working memory for animated GIF/WebP compositing up to 64 MP
 /// (two logical-screen RGBA buffers plus one active subframe buffer and codec overhead).
 const MAX_ANIMATED_DECODE_ALLOC_BYTES: u64 = MAX_IMAGE_PIXELS * 16 + MAX_HEADER_ALLOC_BYTES;
+/// Maximum encoded size for a single data-URI image embedded inside an SVG.
+const MAX_EMBEDDED_IMAGE_BYTES: u64 = runner_core::protocol::files::MAX_READ_BYTES;
 
 /// Margin around a fitted image inside the canvas.
 pub(crate) const CANVAS_MARGIN: f32 = 16.;
@@ -183,48 +187,114 @@ fn build_mip_chain(mut current: RgbaImage) -> Vec<Arc<RenderImage>> {
     levels
 }
 
+enum DecodedImageKind {
+    /// Largest to smallest mip levels, each `<= MAX_TEXTURE_SIDE` on a side.
+    /// An animated image stores a single multi-frame `RenderImage`.
+    Raster(Vec<Arc<RenderImage>>),
+    /// Parsed SVG document plus its latest rasterized texture and target device size.
+    Svg {
+        tree: Arc<usvg::Tree>,
+        raster: Arc<RenderImage>,
+        raster_size: (u32, u32),
+    },
+}
+
 /// Decoded image ready to render on [`ImageCanvas`].
 pub(crate) struct DecodedImage {
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) size: u64,
-    /// Largest to smallest mip levels, each `<= MAX_TEXTURE_SIDE` on a side.
-    /// An animated image stores a single multi-frame `RenderImage`.
-    levels: Vec<Arc<RenderImage>>,
+    kind: DecodedImageKind,
 }
 
 impl DecodedImage {
     pub(crate) fn is_animated(&self) -> bool {
-        self.levels.first().is_some_and(|img| img.frame_count() > 1)
+        matches!(
+            &self.kind,
+            DecodedImageKind::Raster(levels)
+                if levels.first().is_some_and(|img| img.frame_count() > 1)
+        )
     }
 
     pub(crate) fn best_level(&self, target_dev_w: f32, target_dev_h: f32) -> Arc<RenderImage> {
-        if self.levels.len() <= 1 || self.is_animated() {
-            return self.levels[0].clone();
-        }
-        // `levels` is ordered largest -> smallest; walk from smallest upward
-        // and pick the smallest level at least the drawn size in device pixels.
-        for level in self.levels.iter().rev() {
-            let sz = level.size(0);
-            if (sz.width.0 as f32) >= target_dev_w && (sz.height.0 as f32) >= target_dev_h {
-                return level.clone();
+        match &self.kind {
+            DecodedImageKind::Raster(levels) => {
+                if levels.len() <= 1 || self.is_animated() {
+                    return levels[0].clone();
+                }
+                // `levels` is ordered largest -> smallest; walk from smallest upward
+                // and pick the smallest level at least the drawn size in device pixels.
+                for level in levels.iter().rev() {
+                    let sz = level.size(0);
+                    if (sz.width.0 as f32) >= target_dev_w && (sz.height.0 as f32) >= target_dev_h {
+                        return level.clone();
+                    }
+                }
+                levels[0].clone()
             }
+            DecodedImageKind::Svg { raster, .. } => raster.clone(),
         }
-        self.levels[0].clone()
+    }
+
+    pub(crate) fn svg_reraster_request(
+        &self,
+        target_dev_w: f32,
+        target_dev_h: f32,
+    ) -> Option<(Arc<usvg::Tree>, (u32, u32))> {
+        let DecodedImageKind::Svg {
+            tree, raster_size, ..
+        } = &self.kind
+        else {
+            return None;
+        };
+        let desired = svg_target_device_size(self.width, self.height, target_dev_w, target_dev_h);
+        (desired != *raster_size).then(|| (tree.clone(), desired))
+    }
+
+    pub(crate) fn replace_svg_raster(
+        &mut self,
+        next: Arc<RenderImage>,
+        raster_size: (u32, u32),
+    ) -> Option<Arc<RenderImage>> {
+        if let DecodedImageKind::Svg {
+            raster,
+            raster_size: current_size,
+            ..
+        } = &mut self.kind
+        {
+            let old = std::mem::replace(raster, next);
+            *current_size = raster_size;
+            Some(old)
+        } else {
+            None
+        }
     }
 
     pub(crate) fn drop_atlas_textures(&self, window: Option<&mut Window>, cx: &mut App) {
-        release_render_images(self.levels.iter().cloned(), window, cx);
+        match &self.kind {
+            DecodedImageKind::Raster(levels) => {
+                release_render_images(levels.iter().cloned(), window, cx);
+            }
+            DecodedImageKind::Svg { raster, .. } => {
+                release_render_images([raster.clone()], window, cx);
+            }
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn levels(&self) -> &[Arc<RenderImage>] {
-        &self.levels
+        match &self.kind {
+            DecodedImageKind::Raster(levels) => levels,
+            DecodedImageKind::Svg { raster, .. } => std::slice::from_ref(raster),
+        }
     }
 
     #[cfg(test)]
     pub(crate) fn frame_count(&self) -> usize {
-        self.levels.first().map_or(0, |img| img.frame_count())
+        match &self.kind {
+            DecodedImageKind::Raster(levels) => levels.first().map_or(0, |img| img.frame_count()),
+            DecodedImageKind::Svg { raster, .. } => raster.frame_count(),
+        }
     }
 }
 
@@ -262,6 +332,276 @@ fn animated_decode_limits(width: u32, height: u32) -> Limits {
         .min(MAX_ANIMATED_DECODE_ALLOC_BYTES);
     limits.max_alloc = Some(pixel_budget);
     limits
+}
+
+fn png_has_ancillary_chunk(data: &[u8], target: &[u8; 4]) -> bool {
+    if data.len() < 8 || &data[..8] != b"\x89PNG\r\n\x1a\n" {
+        return false;
+    }
+    let mut offset = 8usize;
+    while offset + 12 <= data.len() {
+        let len = u32::from_be_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
+        let kind = &data[offset + 4..offset + 8];
+        if kind == target {
+            return true;
+        }
+        if kind == b"IDAT" || kind == b"IEND" {
+            break;
+        }
+        let Some(next) = offset.checked_add(12).and_then(|n| n.checked_add(len)) else {
+            break;
+        };
+        offset = next;
+    }
+    false
+}
+
+fn embedded_raster_within_limits(format: ImgFmt, data: &[u8]) -> bool {
+    if data.len() as u64 > MAX_EMBEDDED_IMAGE_BYTES {
+        return false;
+    }
+    match format {
+        ImgFmt::Gif => {
+            let Ok(mut decoder) = GifDecoder::new(Cursor::new(data)) else {
+                return false;
+            };
+            let (w, h) = decoder.dimensions();
+            if w == 0 || h == 0 || exceeds_pixel_limits(w, h) {
+                return false;
+            }
+            decoder.set_limits(decode_limits(w, h)).is_ok()
+        }
+        ImgFmt::WebP => {
+            let Ok(mut decoder) = WebPDecoder::new(Cursor::new(data)) else {
+                return false;
+            };
+            let (raw_w, raw_h) = decoder.dimensions();
+            if raw_w == 0 || raw_h == 0 {
+                return false;
+            }
+            let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+            let (w, h) = oriented_dimensions(raw_w, raw_h, orientation);
+            if exceeds_pixel_limits(w, h) {
+                return false;
+            }
+            decoder.set_limits(decode_limits(raw_w, raw_h)).is_ok()
+        }
+        ImgFmt::Png | ImgFmt::Jpeg => {
+            let mut probe = image::ImageReader::with_format(Cursor::new(data), format);
+            probe.limits(header_limits());
+            let Ok(mut decoder) = probe.into_decoder() else {
+                return false;
+            };
+            let (raw_w, raw_h) = decoder.dimensions();
+            if raw_w == 0 || raw_h == 0 {
+                return false;
+            }
+            let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+            let (w, h) = oriented_dimensions(raw_w, raw_h, orientation);
+            if exceeds_pixel_limits(w, h) {
+                return false;
+            }
+            // Reject embedded PNGs whose iCCP chunk exceeded MAX_HEADER_ALLOC_BYTES
+            // (png 0.18 drops the chunk silently, whereas resvg's tiny-skia decoder
+            // uses a larger default budget).
+            if format == ImgFmt::Png
+                && png_has_ancillary_chunk(data, b"iCCP")
+                && decoder.icc_profile().ok().flatten().is_none()
+            {
+                return false;
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn svg_resolved_dimensions(tree: &usvg::Tree) -> Result<(u32, u32), Option<(u32, u32)>> {
+    let sz = tree.size();
+    let raw_w = sz.width();
+    let raw_h = sz.height();
+    if !raw_w.is_finite() || !raw_h.is_finite() || raw_w <= 0. || raw_h <= 0. {
+        return Err(None);
+    }
+    let w_f = raw_w.ceil();
+    let h_f = raw_h.ceil();
+    if w_f > MAX_IMAGE_SIDE as f32
+        || h_f > MAX_IMAGE_SIDE as f32
+        || (w_f as f64) * (h_f as f64) > MAX_IMAGE_PIXELS as f64
+    {
+        return Err(Some((
+            w_f.clamp(1.0, u32::MAX as f32) as u32,
+            h_f.clamp(1.0, u32::MAX as f32) as u32,
+        )));
+    }
+    let width = (w_f as u32).max(1);
+    let height = (h_f as u32).max(1);
+    if exceeds_pixel_limits(width, height) {
+        return Err(Some((width, height)));
+    }
+    Ok((width, height))
+}
+
+fn resolve_safe_svg_data(
+    mime: &str,
+    data: Arc<Vec<u8>>,
+    opts: &usvg::Options,
+) -> Option<usvg::ImageKind> {
+    if data.len() as u64 > MAX_EMBEDDED_IMAGE_BYTES {
+        return None;
+    }
+    let load_sub_svg = |bytes: &[u8]| -> Option<usvg::ImageKind> {
+        let text = std::str::from_utf8(bytes).ok()?;
+        let sub = usvg::Tree::from_str(text, opts).ok()?;
+        svg_resolved_dimensions(&sub).ok()?;
+        Some(usvg::ImageKind::SVG(sub))
+    };
+    let check_and_wrap = |format: ImgFmt, raw: Arc<Vec<u8>>| -> Option<usvg::ImageKind> {
+        if !embedded_raster_within_limits(format, &raw) {
+            return None;
+        }
+        match format {
+            ImgFmt::Jpeg => Some(usvg::ImageKind::JPEG(raw)),
+            ImgFmt::Png => Some(usvg::ImageKind::PNG(raw)),
+            ImgFmt::Gif => Some(usvg::ImageKind::GIF(raw)),
+            ImgFmt::WebP => Some(usvg::ImageKind::WEBP(raw)),
+            _ => None,
+        }
+    };
+    match mime {
+        "image/jpg" | "image/jpeg" => check_and_wrap(ImgFmt::Jpeg, data),
+        "image/png" => check_and_wrap(ImgFmt::Png, data),
+        "image/gif" => check_and_wrap(ImgFmt::Gif, data),
+        "image/webp" => check_and_wrap(ImgFmt::WebP, data),
+        "image/svg+xml" => load_sub_svg(&data),
+        "text/plain" => match detect_raster_magic(&data).and_then(to_image_crate_format) {
+            Some(fmt @ (ImgFmt::Jpeg | ImgFmt::Png | ImgFmt::Gif | ImgFmt::WebP)) => {
+                check_and_wrap(fmt, data)
+            }
+            _ => load_sub_svg(&data),
+        },
+        _ => None,
+    }
+}
+
+fn safe_svg_options() -> &'static usvg::Options<'static> {
+    static SYSTEM_FONT_DB: LazyLock<Arc<usvg::fontdb::Database>> = LazyLock::new(|| {
+        let mut db = usvg::fontdb::Database::new();
+        db.load_system_fonts();
+        Arc::new(db)
+    });
+    static OPTIONS: OnceLock<usvg::Options<'static>> = OnceLock::new();
+    OPTIONS.get_or_init(|| {
+        let default_font_resolver = usvg::FontResolver::default_font_selector();
+        let select_font = Box::new(
+            move |font: &usvg::Font, db: &mut Arc<usvg::fontdb::Database>| {
+                if db.is_empty() {
+                    *db = SYSTEM_FONT_DB.clone();
+                }
+                if let Some(id) = default_font_resolver(font, db) {
+                    return Some(id);
+                }
+                let sans_query = usvg::fontdb::Query {
+                    families: &[usvg::fontdb::Family::SansSerif],
+                    ..Default::default()
+                };
+                db.query(&sans_query)
+                    .or_else(|| db.faces().next().map(|face| face.id))
+            },
+        );
+        usvg::Options {
+            font_resolver: usvg::FontResolver {
+                select_font,
+                select_fallback: usvg::FontResolver::default_fallback_selector(),
+            },
+            image_href_resolver: usvg::ImageHrefResolver {
+                resolve_data: Box::new(resolve_safe_svg_data),
+                resolve_string: Box::new(|_, _| None),
+            },
+            ..Default::default()
+        }
+    })
+}
+
+fn rasterize_svg_tree(tree: &usvg::Tree, target_w: u32, target_h: u32) -> Option<Arc<RenderImage>> {
+    let svg_size = tree.size();
+    let w = target_w.clamp(1, MAX_TEXTURE_SIDE);
+    let h = target_h.clamp(1, MAX_TEXTURE_SIDE);
+    let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
+    let transform =
+        tiny_skia::Transform::from_scale(w as f32 / svg_size.width(), h as f32 / svg_size.height());
+    resvg::render(tree, transform, &mut pixmap.as_mut());
+    let mut buffer = RgbaImage::from_raw(pixmap.width(), pixmap.height(), pixmap.take())?;
+    for pixel in buffer.chunks_exact_mut(4) {
+        gpui::swap_rgba_pa_to_bgra(pixel);
+    }
+    Some(Arc::new(RenderImage::new(SmallVec::from_const([
+        image::Frame::new(buffer),
+    ]))))
+}
+
+/// Computes the rasterization target in device pixels for an SVG, preserving
+/// aspect ratio and staying within [`MAX_TEXTURE_SIDE`].
+pub(crate) fn svg_target_device_size(
+    intrinsic_w: u32,
+    intrinsic_h: u32,
+    target_dev_w: f32,
+    target_dev_h: f32,
+) -> (u32, u32) {
+    let iw = intrinsic_w.max(1) as f32;
+    let ih = intrinsic_h.max(1) as f32;
+    let mut scale = (target_dev_w / iw)
+        .max(target_dev_h / ih)
+        .max(1.0 / iw.max(ih));
+    let max_side = MAX_TEXTURE_SIDE as f32;
+    if iw * scale > max_side || ih * scale > max_side {
+        scale = (max_side / iw).min(max_side / ih);
+    }
+    let w = (iw * scale).round().clamp(1.0, max_side) as u32;
+    let h = (ih * scale).round().clamp(1.0, max_side) as u32;
+    (w, h)
+}
+
+/// Parses an SVG off the UI thread with host filesystem references disabled,
+/// checks resolved intrinsic dimensions before allocating any pixels, and
+/// produces an initial bounded raster texture.
+pub(crate) fn decode_svg_image(bytes: &[u8], file_size: u64) -> DecodeOutcome {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return DecodeOutcome::Failed;
+    };
+    let Ok(tree) = usvg::Tree::from_str(text, safe_svg_options()) else {
+        return DecodeOutcome::Failed;
+    };
+    let (width, height) = match svg_resolved_dimensions(&tree) {
+        Ok(dims) => dims,
+        Err(Some((width, height))) => {
+            return DecodeOutcome::TooManyPixels {
+                width,
+                height,
+                size: file_size,
+            };
+        }
+        Err(None) => return DecodeOutcome::Failed,
+    };
+    let (tex_w, tex_h) = svg_target_device_size(width, height, width as f32, height as f32);
+    let Some(raster) = rasterize_svg_tree(&tree, tex_w, tex_h) else {
+        return DecodeOutcome::Failed;
+    };
+    DecodeOutcome::Ready(DecodedImage {
+        width,
+        height,
+        size: file_size,
+        kind: DecodedImageKind::Svg {
+            tree: Arc::new(tree),
+            raster,
+            raster_size: (tex_w, tex_h),
+        },
+    })
 }
 
 pub(crate) enum DecodeOutcome {
@@ -340,7 +680,7 @@ fn decode_animated_frames_with_budget(
             width,
             height,
             size: file_size,
-            levels,
+            kind: DecodedImageKind::Raster(levels),
         });
     }
 
@@ -359,7 +699,7 @@ fn decode_animated_frames_with_budget(
         width,
         height,
         size: file_size,
-        levels: vec![Arc::new(RenderImage::new(bgra_frames))],
+        kind: DecodedImageKind::Raster(vec![Arc::new(RenderImage::new(bgra_frames))]),
     })
 }
 
@@ -440,7 +780,7 @@ pub(crate) fn decode_raster_image(
             width: w,
             height: h,
             size: file_size,
-            levels,
+            kind: DecodedImageKind::Raster(levels),
         });
     }
 
@@ -484,7 +824,7 @@ pub(crate) fn decode_raster_image(
         width: w,
         height: h,
         size: file_size,
-        levels,
+        kind: DecodedImageKind::Raster(levels),
     })
 }
 
@@ -663,6 +1003,8 @@ pub(crate) struct ImageCanvas {
     viewport: Rc<Cell<Bounds<Pixels>>>,
     deleted: bool,
     drag: Option<(Point<Pixels>, Point<f32>, bool)>,
+    svg_generation: u64,
+    svg_raster_task: Option<((u32, u32), Task<()>)>,
     #[cfg(test)]
     last_image_bounds: Cell<Option<Bounds<Pixels>>>,
     #[cfg(test)]
@@ -685,6 +1027,8 @@ impl ImageCanvas {
             viewport: Rc::default(),
             deleted: false,
             drag: None,
+            svg_generation: 0,
+            svg_raster_task: None,
             #[cfg(test)]
             last_image_bounds: Cell::new(None),
             #[cfg(test)]
@@ -710,6 +1054,8 @@ impl ImageCanvas {
     /// textures.
     pub(crate) fn set_single_image(&mut self, next: DecodedImage, cx: &mut Context<Self>) {
         let same_dimensions = self.image.width == next.width && self.image.height == next.height;
+        self.svg_generation = self.svg_generation.wrapping_add(1);
+        self.svg_raster_task = None;
         let old = std::mem::replace(&mut self.image, next);
         old.drop_atlas_textures(None, cx);
         if !same_dimensions {
@@ -719,6 +1065,40 @@ impl ImageCanvas {
             self.pan = geom.clamp_pan(self.pan);
         }
         cx.notify();
+    }
+
+    fn schedule_svg_reraster(
+        &mut self,
+        tree: Arc<usvg::Tree>,
+        desired: (u32, u32),
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .svg_raster_task
+            .as_ref()
+            .is_some_and(|(in_flight, _)| *in_flight == desired)
+        {
+            return;
+        }
+        let generation = self.svg_generation;
+        let task =
+            cx.background_spawn(async move { rasterize_svg_tree(&tree, desired.0, desired.1) });
+        let handle = cx.spawn(async move |this, cx| {
+            let rendered = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.svg_generation != generation {
+                    return;
+                }
+                this.svg_raster_task = None;
+                if let Some(next_raster) = rendered
+                    && let Some(old_raster) = this.image.replace_svg_raster(next_raster, desired)
+                {
+                    release_render_images([old_raster], None, cx);
+                    cx.notify();
+                }
+            });
+        });
+        self.svg_raster_task = Some((desired, handle));
     }
 
     pub(crate) fn drop_atlas_textures(&self, window: Option<&mut Window>, cx: &mut App) {
@@ -1177,6 +1557,14 @@ impl Render for ImageCanvas {
         .absolute()
         .inset_0();
 
+        if let Some(g) = geom
+            && let Some((parsed, desired)) = self
+                .image
+                .svg_reraster_request(g.drawn_w * scale_factor, g.drawn_h * scale_factor)
+        {
+            self.schedule_svg_reraster(parsed, desired, cx);
+        }
+
         let image_layer = geom.map(|g| {
             let origin = g.image_origin(self.pan);
             let target_dev_w = g.drawn_w * scale_factor;
@@ -1545,5 +1933,36 @@ mod tests {
         assert_eq!(small.scale, 1.0);
         assert_eq!(small.drawn_w, 64.);
         assert_eq!(small.drawn_h, 64.);
+    }
+
+    #[test]
+    fn svg_target_device_size_scales_sharply_and_respects_texture_limit() {
+        assert_eq!(svg_target_device_size(240, 120, 960., 480.), (960, 480));
+        assert_eq!(svg_target_device_size(240, 120, 1920., 960.), (1920, 960));
+        // Oversized target preserves aspect ratio while clamping to MAX_TEXTURE_SIDE.
+        assert_eq!(
+            svg_target_device_size(4000, 2000, 16_000., 8_000.),
+            (MAX_TEXTURE_SIDE, MAX_TEXTURE_SIDE / 2)
+        );
+    }
+
+    #[test]
+    fn svg_decode_parses_valid_and_rejects_broken() {
+        let valid = br##"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120"><rect width="240" height="120" fill="#ff0000"/></svg>"##;
+        let DecodeOutcome::Ready(decoded) = decode_svg_image(valid, valid.len() as u64) else {
+            panic!("valid SVG should decode");
+        };
+        assert_eq!((decoded.width, decoded.height), (240, 120));
+        assert_eq!(decoded.size, valid.len() as u64);
+        assert!(decoded.svg_reraster_request(240., 120.).is_none());
+        let (_, desired) = decoded
+            .svg_reraster_request(960., 480.)
+            .expect("400% zoom requests sharper raster");
+        assert_eq!(desired, (960, 480));
+
+        assert!(matches!(
+            decode_svg_image(b"<svg><unclosed", 14),
+            DecodeOutcome::Failed
+        ));
     }
 }

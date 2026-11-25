@@ -626,17 +626,23 @@ impl UnifiedViewer {
                 size,
                 ..
             })) => Some(image::format_dimensions_and_size(*width, *height, *size)),
+            Content::Text(_) | Content::Deleted(Some(DeletedContent::Text(_))) => doc
+                .svg_meta
+                .map(|(w, h, s)| image::format_dimensions_and_size(w, h, s)),
             _ => None,
         };
-        let folder = if image_meta.is_some() || self.active_is_image() {
+        let folder = if image_meta.is_some() || (self.active_is_image() && !doc.svg_invalid) {
             None
         } else {
             abbreviate_folder(tab.path())
         };
         let hunks = self.active_hunk_lines();
         let hunk_count = hunks.len();
+        let show_hunk_badge = hunk_count > 0 && !deleted && self.active_image_canvas().is_none();
         let markdown_source = self.active_markdown();
-        let can_find = self.active_view().is_some() || self.active_rendered().is_some();
+        let can_find = self.active_view().is_some()
+            || self.active_rendered().is_some()
+            || self.active_svg_rendered().is_some();
         let find_shortcut = if cfg!(target_os = "macos") {
             "⌘F"
         } else {
@@ -703,7 +709,7 @@ impl UnifiedViewer {
                             .text_color(theme::faint())
                             .child(f)
                     }))
-                    .when(hunk_count > 0 && !deleted, |el| {
+                    .when(show_hunk_badge, |el| {
                         el.child(
                             div()
                                 .id("file-hunks-badge")
@@ -1025,8 +1031,37 @@ impl UnifiedViewer {
                 })
                 .into_any_element(),
             ),
-            Content::Text(_) if self.shows_rendered(doc) => {
+            Content::Text(_) if self.shows_markdown_rendered(doc) => {
                 self.render_rendered(doc.rendered.clone(), None)
+            }
+            Content::Text(_) if self.shows_svg_rendered(doc) => {
+                if let Some((width, height, size)) = doc.svg_too_large {
+                    let (_, effective) = found_editors(cx);
+                    self.render_placeholder(
+                        "FILE_IMAGE_TOO_LARGE",
+                        "triangle-alert.svg",
+                        format!(
+                            "{name} · {}",
+                            image::format_dimensions_and_size(width, height, size)
+                        ),
+                        crate::i18n::text("viewer.image_too_many_pixels").to_owned(),
+                        Button::new(
+                            "file-open-large",
+                            crate::i18n::tf(
+                                "format.open_in_editor",
+                                &[("editor", effective.label().to_owned())],
+                            ),
+                        )
+                        .variant(ButtonVariant::Secondary)
+                        .debug_selector("FILE_OPEN_LARGE")
+                        .on_press(move |_, cx| {
+                            let _ = root.update(cx, |this, cx| this.open_in(None, cx));
+                        })
+                        .into_any_element(),
+                    )
+                } else {
+                    self.render_svg_rendered(doc.svg_canvas.clone(), None)
+                }
             }
             Content::Text(view) => self.render_code(view.clone(), None, window, cx),
             Content::Deleted(kept) => {
@@ -1094,20 +1129,39 @@ impl UnifiedViewer {
                     )
                     .into_any_element();
                 match kept {
-                    Some(DeletedContent::Text(_)) if self.shows_rendered(doc) => {
+                    Some(DeletedContent::Text(_)) if self.shows_markdown_rendered(doc) => {
                         self.render_rendered(doc.rendered.clone(), Some(banner))
+                    }
+                    Some(DeletedContent::Text(_)) if self.shows_svg_rendered(doc) => {
+                        if let Some((width, height, size)) = doc.svg_too_large {
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .min_h(px(0.))
+                                .flex()
+                                .flex_col()
+                                .child(banner)
+                                .child(self.render_placeholder(
+                                    "FILE_IMAGE_TOO_LARGE",
+                                    "triangle-alert.svg",
+                                    format!(
+                                        "{name} · {}",
+                                        image::format_dimensions_and_size(width, height, size)
+                                    ),
+                                    crate::i18n::text("viewer.image_too_many_pixels").to_owned(),
+                                    div().into_any_element(),
+                                ))
+                                .into_any_element()
+                        } else {
+                            self.render_svg_rendered(doc.svg_canvas.clone(), Some(banner))
+                        }
                     }
                     Some(DeletedContent::Text(view)) => {
                         self.render_code(view.clone(), Some(banner), window, cx)
                     }
-                    Some(DeletedContent::Image { canvas, .. }) => div()
-                        .flex_1()
-                        .min_h(px(0.))
-                        .flex()
-                        .flex_col()
-                        .child(banner)
-                        .child(canvas.clone())
-                        .into_any_element(),
+                    Some(DeletedContent::Image { canvas, .. }) => {
+                        self.render_svg_rendered(Some(canvas.clone()), Some(banner))
+                    }
                     None => div()
                         .flex_1()
                         .flex()
@@ -1308,6 +1362,21 @@ impl UnifiedViewer {
             .flex_col()
             .children(banner)
             .child(div().flex_1().min_h(px(0.)).children(page))
+            .into_any_element()
+    }
+
+    fn render_svg_rendered(
+        &self,
+        canvas: Option<Entity<ImageCanvas>>,
+        banner: Option<AnyElement>,
+    ) -> AnyElement {
+        div()
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .children(banner)
+            .children(canvas)
             .into_any_element()
     }
 

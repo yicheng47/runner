@@ -198,6 +198,10 @@ pub(super) struct OpenDocument {
     image_hash: Option<u64>,
     ignored: bool,
     rendered: Option<Entity<MarkdownView>>,
+    svg_canvas: Option<Entity<ImageCanvas>>,
+    pub(super) svg_too_large: Option<(u32, u32, u64)>,
+    pub(super) svg_meta: Option<(u32, u32, u64)>,
+    pub(super) svg_invalid: bool,
     source: bool,
     /// Line cited by a ⌘-clicked terminal link (selects line & switches MD to source).
     line: Option<u32>,
@@ -253,6 +257,10 @@ impl OpenDocument {
             image_hash: None,
             ignored: false,
             rendered: None,
+            svg_canvas: None,
+            svg_too_large: None,
+            svg_meta: None,
+            svg_invalid: false,
             source,
             line: None,
             pending_code_line: None,
@@ -291,6 +299,10 @@ impl OpenDocument {
             image_hash: None,
             ignored: false,
             rendered: None,
+            svg_canvas: None,
+            svg_too_large: None,
+            svg_meta: None,
+            svg_invalid: false,
             source,
             line: None,
             pending_code_line: None,
@@ -370,13 +382,18 @@ impl OpenDocument {
         }
     }
 
-    fn drop_image_textures(&self, window: Option<&mut Window>, cx: &mut App) {
+    fn drop_image_textures(&self, mut window: Option<&mut Window>, cx: &mut App) {
         match &self.content {
             Content::Image { canvas, .. }
             | Content::Deleted(Some(DeletedContent::Image { canvas, .. })) => {
-                canvas.update(cx, |canvas, cx| canvas.drop_atlas_textures(window, cx));
+                canvas.update(cx, |canvas, cx| {
+                    canvas.drop_atlas_textures(window.as_deref_mut(), cx)
+                });
             }
             _ => {}
+        }
+        if let Some(canvas) = &self.svg_canvas {
+            canvas.update(cx, |canvas, cx| canvas.drop_atlas_textures(window, cx));
         }
     }
 
@@ -514,7 +531,13 @@ type Rendered = (Arc<Page>, HashMap<String, Arc<gpui::Image>>);
 type Stamp = (u64, Option<chrono::DateTime<chrono::Utc>>);
 
 enum Read {
-    Text(Arc<Document>, Option<Rendered>, Stamp),
+    Text(
+        Arc<Document>,
+        Option<Rendered>,
+        Option<DecodeOutcome>,
+        Stamp,
+        Option<u64>,
+    ),
     Image(DecodedImage, Stamp, u64),
     ImageTooLarge {
         width: u32,
@@ -556,6 +579,10 @@ fn subject_protocol(context: &PanelContext) -> FilesSubject {
 
 fn is_markdown(path: &str) -> bool {
     super::highlight::grammar_for_path(path).is_some_and(|grammar| grammar.name == "markdown")
+}
+
+fn is_svg(path: &str) -> bool {
+    markdown::image_format(path) == Some(gpui::ImageFormat::Svg)
 }
 
 fn raster_image_format(path: &str) -> Option<gpui::ImageFormat> {
@@ -661,7 +688,7 @@ fn read_raster_file(
                     }
                     DecodeOutcome::Failed => {
                         let document = Arc::new(Document::decode(&bytes.0));
-                        Read::Text(document, None, stamp)
+                        Read::Text(document, None, None, stamp, None)
                     }
                 }
             } else if std::str::from_utf8(&bytes.0).is_err() {
@@ -671,12 +698,62 @@ fn read_raster_file(
                 Read::ImageFailed { stamp, hash }
             } else {
                 let document = Arc::new(Document::decode(&bytes.0));
-                Read::Text(document, None, stamp)
+                Read::Text(document, None, None, stamp, None)
             }
         }
         FileContent::TooLarge { size } => Read::TooLarge(size),
         FileContent::Missing => Read::Missing,
     })
+}
+
+fn read_text_or_svg_file(
+    client: &DaemonClient,
+    root: &Path,
+    relative: &str,
+    markdown: bool,
+    svg: bool,
+    since: Option<Stamp>,
+    prev_hash: Option<u64>,
+) -> Result<Read, ClientError> {
+    Ok(
+        match client.files_read(root, relative, false, stamp_filter(since))? {
+            FileContent::Unchanged => Read::Unchanged(None),
+            FileContent::Text { size, modified, .. }
+                if since == Some((size, modified)) && (!svg || modified.is_some()) =>
+            {
+                Read::Unchanged(None)
+            }
+            FileContent::Text {
+                bytes,
+                size,
+                modified,
+            } => {
+                let stamp = (size, modified);
+                let svg_hash = svg.then(|| image::bytes_hash(&bytes.0));
+                if svg && prev_hash.is_some() && prev_hash == svg_hash {
+                    return Ok(Read::Unchanged(Some(stamp)));
+                }
+                let document = Arc::new(Document::decode(&bytes.0));
+                let rendered = markdown.then(|| {
+                    let page = Page::parse(document.text(), relative);
+                    let images = page
+                        .images()
+                        .into_iter()
+                        .filter_map(|image| {
+                            let decoded = read_image(client, root, &image)?;
+                            Some((image, decoded))
+                        })
+                        .collect();
+                    (Arc::new(page), images)
+                });
+                let svg_decoded = svg.then(|| image::decode_svg_image(&bytes.0, size));
+                Read::Text(document, rendered, svg_decoded, stamp, svg_hash)
+            }
+            FileContent::Binary { size, .. } => Read::Binary(size),
+            FileContent::TooLarge { size } => Read::TooLarge(size),
+            FileContent::Missing => Read::Missing,
+        },
+    )
 }
 
 fn read_image(client: &DaemonClient, root: &Path, path: &str) -> Option<Arc<gpui::Image>> {
@@ -1358,6 +1435,9 @@ impl UnifiedViewer {
             if let Some(rendered) = &doc.rendered {
                 rendered.update(cx, |_, cx| cx.notify());
             }
+            if let Some(canvas) = &doc.svg_canvas {
+                canvas.update(cx, |_, cx| cx.notify());
+            }
             if let FileTabDiff::Loaded(loaded) = &doc.diff
                 && let LoadedDiffKind::Unified(diff) = &loaded.kind
             {
@@ -1484,8 +1564,9 @@ impl UnifiedViewer {
         let outcome = self.tabs.open_pinned(&path);
         let key = outcome.key().clone();
         self.ensure_uncommitted_paths(cx);
-        let source = super::settings(cx)
-            .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
+        let source = !is_svg(&key.path)
+            && super::settings(cx)
+                .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
         let has_head = self.root_has_head();
         let need_read = if outcome.is_new() || !self.docs.contains_key(&key) {
             self.docs
@@ -1502,7 +1583,7 @@ impl UnifiedViewer {
         {
             doc.line = Some(line);
             doc.mode = DocMode::Code;
-            if is_markdown(&key.path) {
+            if is_markdown(&key.path) || is_svg(&key.path) {
                 doc.source = true;
             }
         }
@@ -1542,8 +1623,9 @@ impl UnifiedViewer {
         if pin && let Some(active_idx) = self.tabs.active_index() {
             self.tabs.pin(active_idx);
         }
-        let source = super::settings(cx)
-            .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
+        let source = !is_svg(&req.path)
+            && super::settings(cx)
+                .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
         let key = outcome.key().clone();
         if req.target == SelectedTarget::Uncommitted
             && let Some(files) = &mut self.uncommitted_files
@@ -2528,6 +2610,7 @@ impl UnifiedViewer {
         }
         let relative = key.path.clone();
         let markdown = is_markdown(&key.path);
+        let svg = is_svg(&key.path);
         let raster_format = raster_image_format(&key.path);
         self.request(
             cx,
@@ -2535,39 +2618,7 @@ impl UnifiedViewer {
                 if let Some(format) = raster_format {
                     return read_raster_file(client, &root, &relative, format, since, prev_hash);
                 }
-                Ok(
-                    match client.files_read(&root, &relative, false, stamp_filter(since))? {
-                        FileContent::Unchanged => Read::Unchanged(None),
-                        FileContent::Text { size, modified, .. }
-                            if since == Some((size, modified)) =>
-                        {
-                            Read::Unchanged(None)
-                        }
-                        FileContent::Text {
-                            bytes,
-                            size,
-                            modified,
-                        } => {
-                            let document = Arc::new(Document::decode(&bytes.0));
-                            let rendered = markdown.then(|| {
-                                let page = Page::parse(document.text(), &relative);
-                                let images = page
-                                    .images()
-                                    .into_iter()
-                                    .filter_map(|image| {
-                                        let decoded = read_image(client, &root, &image)?;
-                                        Some((image, decoded))
-                                    })
-                                    .collect();
-                                (Arc::new(page), images)
-                            });
-                            Read::Text(document, rendered, (size, modified))
-                        }
-                        FileContent::Binary { size, .. } => Read::Binary(size),
-                        FileContent::TooLarge { size } => Read::TooLarge(size),
-                        FileContent::Missing => Read::Missing,
-                    },
-                )
+                read_text_or_svg_file(client, &root, &relative, markdown, svg, since, prev_hash)
             },
             move |this, result, cx| this.apply_read(key, read, result, cx),
         );
@@ -2606,13 +2657,14 @@ impl UnifiedViewer {
             return;
         }
         doc.stamp = match &result {
-            Ok(Read::Text(_, _, stamp))
+            Ok(Read::Text(_, _, _, stamp, _))
             | Ok(Read::Image(_, stamp, _))
             | Ok(Read::ImageTooLarge { stamp, .. })
             | Ok(Read::ImageFailed { stamp, .. }) => Some(*stamp),
             _ => None,
         };
         doc.image_hash = match &result {
+            Ok(Read::Text(_, _, _, _, svg_hash)) => *svg_hash,
             Ok(Read::Image(_, _, hash))
             | Ok(Read::ImageTooLarge { hash, .. })
             | Ok(Read::ImageFailed { hash, .. }) => Some(*hash),
@@ -2637,7 +2689,7 @@ impl UnifiedViewer {
             })) => (None, Some((canvas, width, height, size))),
             _ => (None, None),
         };
-        if let Ok(Read::Text(_, Some((page, images)), _)) = &result {
+        if let Ok(Read::Text(_, Some((page, images)), _, _, _)) = &result {
             let (page, images) = (page.clone(), images.clone());
             match &doc.rendered {
                 Some(view) => view.update(cx, |view, cx| {
@@ -2657,6 +2709,9 @@ impl UnifiedViewer {
         if let (Ok(Read::Missing), Some(view)) = (&result, &doc.rendered) {
             view.update(cx, |view, cx| view.set_deleted(true, cx));
         }
+        if let (Ok(Read::Missing), Some(canvas)) = (&result, &doc.svg_canvas) {
+            canvas.update(cx, |canvas, cx| canvas.set_deleted(true, cx));
+        }
         doc.working_tree_missing = match &result {
             Ok(
                 Read::Text(..)
@@ -2674,9 +2729,56 @@ impl UnifiedViewer {
                 canvas.update(cx, |canvas, cx| canvas.drop_atlas_textures(None, cx));
             }
         };
+        let clear_svg_canvas = |doc: &mut OpenDocument, cx: &mut App| {
+            if let Some(canvas) = doc.svg_canvas.take() {
+                canvas.update(cx, |canvas, cx| canvas.drop_atlas_textures(None, cx));
+            }
+            doc.svg_too_large = None;
+            doc.svg_meta = None;
+        };
         doc.content = match result {
-            Ok(Read::Text(document, ..)) => {
+            Ok(Read::Text(document, _, svg_decoded, _, _)) => {
                 drop_kept_image(kept_image, cx);
+                match svg_decoded {
+                    Some(DecodeOutcome::Ready(decoded)) => {
+                        doc.svg_too_large = None;
+                        doc.svg_meta = Some((decoded.width, decoded.height, decoded.size));
+                        match &doc.svg_canvas {
+                            Some(canvas) => canvas.update(cx, |canvas, cx| {
+                                canvas.set_single_image(decoded, cx);
+                                canvas.set_deleted(false, cx);
+                            }),
+                            None => {
+                                doc.svg_canvas =
+                                    Some(cx.new(|cx| ImageCanvas::new_single(decoded, cx)));
+                            }
+                        }
+                        if std::mem::take(&mut doc.svg_invalid) {
+                            doc.source = false;
+                        }
+                    }
+                    Some(DecodeOutcome::TooManyPixels {
+                        width,
+                        height,
+                        size,
+                    }) => {
+                        clear_svg_canvas(doc, cx);
+                        doc.svg_too_large = Some((width, height, size));
+                        doc.svg_meta = Some((width, height, size));
+                        if std::mem::take(&mut doc.svg_invalid) {
+                            doc.source = false;
+                        }
+                    }
+                    Some(DecodeOutcome::Failed) => {
+                        clear_svg_canvas(doc, cx);
+                        doc.svg_invalid = true;
+                        doc.source = true;
+                    }
+                    None => {
+                        clear_svg_canvas(doc, cx);
+                        doc.svg_invalid = false;
+                    }
+                }
                 match kept_text {
                     Some(view) => {
                         view.update(cx, |view, cx| {
@@ -2697,6 +2799,7 @@ impl UnifiedViewer {
                 }
             }
             Ok(Read::Image(decoded, ..)) => {
+                clear_svg_canvas(doc, cx);
                 let (width, height, size) = (decoded.width, decoded.height, decoded.size);
                 let canvas = match kept_image {
                     Some((canvas, ..)) => {
@@ -2722,6 +2825,7 @@ impl UnifiedViewer {
                 ..
             }) => {
                 drop_kept_image(kept_image, cx);
+                clear_svg_canvas(doc, cx);
                 Content::ImageTooLarge {
                     width,
                     height,
@@ -2730,15 +2834,18 @@ impl UnifiedViewer {
             }
             Ok(Read::ImageFailed { .. }) => {
                 drop_kept_image(kept_image, cx);
+                clear_svg_canvas(doc, cx);
                 Content::ImageFailed
             }
             Ok(Read::Unchanged(_)) => unreachable!(),
             Ok(Read::Binary(size)) => {
                 drop_kept_image(kept_image, cx);
+                clear_svg_canvas(doc, cx);
                 Content::Binary { size }
             }
             Ok(Read::TooLarge(size)) => {
                 drop_kept_image(kept_image, cx);
+                clear_svg_canvas(doc, cx);
                 Content::TooLarge { size }
             }
             Ok(Read::Missing) => {
@@ -2768,6 +2875,7 @@ impl UnifiedViewer {
             }
             Err(error) => {
                 drop_kept_image(kept_image, cx);
+                clear_svg_canvas(doc, cx);
                 Content::Failed(error.to_string().into())
             }
         };
@@ -4009,7 +4117,7 @@ impl UnifiedViewer {
             return false;
         };
         if format == gpui::ImageFormat::Svg {
-            return false;
+            return true;
         }
         !matches!(
             doc.content,
@@ -4025,6 +4133,9 @@ impl UnifiedViewer {
         let doc = self.docs.get(&tab.key)?;
         if doc.mode == DocMode::Diff {
             return None;
+        }
+        if self.shows_svg_rendered(doc) {
+            return doc.svg_canvas.as_ref();
         }
         match &doc.content {
             Content::Image { canvas, .. }
@@ -4045,7 +4156,7 @@ impl UnifiedViewer {
         }
     }
 
-    fn shows_rendered(&self, doc: &OpenDocument) -> bool {
+    pub(super) fn shows_markdown_rendered(&self, doc: &OpenDocument) -> bool {
         doc.mode == DocMode::Code
             && doc.rendered.is_some()
             && !doc.source
@@ -4055,18 +4166,39 @@ impl UnifiedViewer {
             )
     }
 
+    pub(super) fn shows_svg_rendered(&self, doc: &OpenDocument) -> bool {
+        doc.mode == DocMode::Code
+            && (doc.svg_canvas.is_some() || doc.svg_too_large.is_some())
+            && !doc.source
+            && matches!(
+                doc.content,
+                Content::Text(_) | Content::Deleted(Some(DeletedContent::Text(_)))
+            )
+    }
+
+    fn shows_rendered(&self, doc: &OpenDocument) -> bool {
+        self.shows_markdown_rendered(doc) || self.shows_svg_rendered(doc)
+    }
+
     pub(super) fn active_rendered(&self) -> Option<&Entity<MarkdownView>> {
         let tab = self.tabs.active()?;
         let doc = self.docs.get(&tab.key)?;
-        self.shows_rendered(doc)
+        self.shows_markdown_rendered(doc)
             .then_some(doc.rendered.as_ref())
             .flatten()
+    }
+
+    pub(super) fn active_svg_rendered(&self) -> Option<bool> {
+        let tab = self.tabs.active()?;
+        let doc = self.docs.get(&tab.key)?;
+        self.shows_svg_rendered(doc).then_some(true)
     }
 
     fn active_markdown(&self) -> Option<bool> {
         let tab = self.tabs.active()?;
         let doc = self.docs.get(&tab.key)?;
-        doc.rendered.as_ref().map(|_| doc.source)
+        (doc.rendered.is_some() || doc.svg_canvas.is_some() || doc.svg_too_large.is_some())
+            .then_some(doc.source)
     }
 
     pub(super) fn toggle_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -4171,10 +4303,11 @@ impl UnifiedViewer {
             return;
         }
         self.tree_hidden = saved.tree_hidden;
-        let source = super::settings(cx)
+        let markdown_source = super::settings(cx)
             .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
         let has_head = self.root_has_head();
         for item in saved.tabs {
+            let source = !is_svg(&item.key.path) && markdown_source;
             self.tabs.push_restored(item.key.clone(), item.preview);
             let mut doc = OpenDocument::new_code(source, has_head);
             doc.mode = item.mode;
@@ -4259,7 +4392,13 @@ impl UnifiedViewer {
         self.apply_read(
             key,
             read,
-            Ok(Read::Text(document, None, (text.len() as u64, None))),
+            Ok(Read::Text(
+                document,
+                None,
+                None,
+                (text.len() as u64, None),
+                None,
+            )),
             cx,
         );
     }
