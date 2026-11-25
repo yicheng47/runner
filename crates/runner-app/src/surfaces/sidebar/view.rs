@@ -75,7 +75,8 @@ impl Sidebar {
         if !shell.launcher_page_visible() {
             return None;
         }
-        let scope = ProjectScope::or_root(shell.launcher_page_project(cx));
+        let target = shell.front_page_client(cx).target;
+        let scope = ProjectScope::or_root(shell.launchers.page_project(&target, cx));
         let settings = self.settings(cx);
         let drawn = !settings.sidebar_active_only
             && match &scope {

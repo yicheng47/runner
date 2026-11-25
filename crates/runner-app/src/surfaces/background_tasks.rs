@@ -166,7 +166,7 @@ impl NativeRoot {
                                 .remote_tasks
                                 .remove(&(target.clone(), runtime));
                             root.refresh_remote_agent_versions(client.clone(), cx);
-                            root.notify_update_launchers(cx);
+                            root.launchers.notify_all(cx);
                             cx.notify();
                         });
                         break;
@@ -177,7 +177,7 @@ impl NativeRoot {
                                 .remote_tasks
                                 .remove(&(target.clone(), runtime));
                             root.chat_error = Some(error.message.into());
-                            root.notify_update_launchers(cx);
+                            root.launchers.notify_all(cx);
                             cx.notify();
                         });
                         break;
@@ -205,10 +205,11 @@ impl NativeRoot {
                         }
                         if succeeded {
                             root.refresh_remote_agent_versions(client.clone(), cx);
-                            root.retry_gated_launches(runtime, &target, window, cx);
+                            root.launchers.mark_update_ready(runtime, &target, cx);
+                            root.drain_ready_launches(window, cx);
                             root.retry_remote_gated_sessions(runtime, &target, window, cx);
                         }
-                        root.notify_update_launchers(cx);
+                        root.launchers.notify_all(cx);
                         cx.notify();
                     })
                     .is_err()
@@ -321,16 +322,16 @@ impl NativeRoot {
         }
         self.refresh_agents_tasks(&self.agent_tasks.tasks, cx);
         if self.setup_visible(cx) {
-            self.refresh_setup_data(cx);
+            self.setup.refresh(&self.app_store, cx);
         }
-        self.notify_update_launchers(cx);
+        self.launchers.notify_all(cx);
         for runtime in completed {
-            self.retry_gated_launches(
+            self.launchers.mark_update_ready(
                 runtime,
                 &super::front_page::FrontPageTarget::Local,
-                window,
                 cx,
             );
+            self.drain_ready_launches(window, cx);
             self.retry_gated_sessions(runtime, window, cx);
         }
         cx.notify();

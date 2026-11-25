@@ -477,7 +477,7 @@ impl NativeRoot {
                                 );
                             } else if succeeded {
                                 if let Some(launcher) = &launcher {
-                                    root.launchers.retain(|_, cached| cached != launcher);
+                                    root.launchers.remove(launcher);
                                 }
                             }
                         }
@@ -502,7 +502,7 @@ impl NativeRoot {
                             this.update_launcher_visible(launcher, cx)
                         });
                         if let Some(launcher) = &launcher {
-                            this.launchers.retain(|_, cached| cached != launcher);
+                            this.launchers.remove(launcher);
                         }
                         let placement = (|| -> Result<()> {
                             this.refresh_sessions(cx);

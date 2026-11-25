@@ -1124,7 +1124,11 @@ mod tests {
             root.open_sidebar_chat_modal(ProjectScope::Project(project.clone()), window, cx);
         });
         let palette = harness.read_root(|root, cx| {
-            assert_eq!(root.launcher_page_project(cx), Some(project.clone()));
+            let target = root.front_page_client(cx).target;
+            assert_eq!(
+                root.launchers.page_project(&target, cx),
+                Some(project.clone())
+            );
             root.command_palette.clone()
         });
         harness.visual.update(|window, cx| {
@@ -1141,7 +1145,8 @@ mod tests {
         harness.visual.run_until_parked();
         harness.act(|root, _, cx| {
             assert_eq!(root.route, crate::surfaces::AppRoute::Launcher);
-            assert_eq!(root.launcher_page_project(cx), None);
+            let target = root.front_page_client(cx).target;
+            assert_eq!(root.launchers.page_project(&target, cx), None);
             assert_eq!(root.active_project_id(cx), None);
         });
     }
@@ -1620,7 +1625,7 @@ mod remote_isolation_tests {
                 );
                 palette.select(0, window, cx);
             });
-            assert!(shell.read(cx).mission_launcher_open(cx));
+            assert!(shell.read(cx).launchers.any_mission_open(cx));
         });
         visual.run_until_parked();
         assert!(!palette.read_with(&visual, |palette, _| palette.open));

@@ -134,14 +134,28 @@ fn required_updates_mark_only_agents_and_defer_agent_and_role_launch_intents() {
         let launcher = page.unwrap();
         harness.act(|root, window, cx| {
                 launcher.update(cx, |view, _| view.pending = Some(Choice::Chat(key.clone())));
-                root.launch_from_launcher(launcher.clone(), Some(key.clone()), None, ProjectScope::Root, None, None, false, window, cx);
-                assert!(!root.launcher_start_pending(cx));
+                root.launch_from_launcher(
+                    launcher.clone(),
+                    LaunchRequest {
+                        key: Some(key.clone()),
+                        pane: None,
+                        scope: ProjectScope::Root,
+                        cwd: None,
+                        worktree: None,
+                        initial_prompt: None,
+                    },
+                    false,
+                    window,
+                    cx,
+                );
+                let target = root.front_page_client(cx).target;
+                assert!(!root.launchers.start_pending(&target, root.front_page_layout(), cx));
                 assert!(launcher.read(cx).pane.is_some());
                 assert!(root.agent_update.is_none());
                 let retry = launcher.read(cx).update_retry.as_ref().unwrap();
                 assert_eq!(retry.runtime, Runtime::Codex);
                 assert!(retry.requested);
-                assert!(matches!(&retry.action, UpdateAction::Chat { key: Some(saved), .. } if saved == &key));
+                assert!(matches!(&retry.action, UpdateAction::Chat(LaunchRequest { key: Some(saved), .. }) if saved == &key));
                 assert_eq!(retry.gate.as_ref().unwrap().min_version, "0.149.0");
                 assert!(root.core(cx).session_list_recent_direct().unwrap().is_empty());
             });
@@ -192,11 +206,14 @@ fn non_updatable_gated_launch_offers_open_settings_and_never_starts_target_updat
         launcher.update(cx, |view, _| view.pending = Some(Choice::Chat(key.clone())));
         root.launch_from_launcher(
             launcher.clone(),
-            Some(key),
-            None,
-            ProjectScope::Root,
-            None,
-            None,
+            LaunchRequest {
+                key: Some(key),
+                pane: None,
+                scope: ProjectScope::Root,
+                cwd: None,
+                worktree: None,
+                initial_prompt: None,
+            },
             false,
             window,
             cx,
@@ -280,11 +297,14 @@ fn antigravity_grok_and_opencode_v2_below_minimum_show_update_needed_and_start_u
             launcher.update(cx, |view, _| view.pending = Some(Choice::Chat(key.clone())));
             root.launch_from_launcher(
                 launcher.clone(),
-                Some(key.clone()),
-                None,
-                ProjectScope::Root,
-                None,
-                None,
+                LaunchRequest {
+                    key: Some(key.clone()),
+                    pane: None,
+                    scope: ProjectScope::Root,
+                    cwd: None,
+                    worktree: None,
+                    initial_prompt: None,
+                },
                 false,
                 window,
                 cx,
@@ -317,7 +337,8 @@ fn a_gated_pane_launches_after_success_without_replacing_new_work_or_focus() {
                     starts: Default::default(),
                 }));
         });
-        root.reset_launcher_page(cx);
+        let target = root.front_page_client(cx).target;
+        root.launchers.reset_page(&target, cx);
         let launcher = root.render_launcher(None, true, window, cx);
         launcher.update(cx, |view, _| {
             let mut runtime = agent();
@@ -327,17 +348,23 @@ fn a_gated_pane_launches_after_success_without_replacing_new_work_or_focus() {
         });
         root.launch_from_launcher(
             launcher.clone(),
-            Some(EntryKey::Agent("codex".into())),
-            None,
-            ProjectScope::Root,
-            None,
-            None,
+            LaunchRequest {
+                key: Some(EntryKey::Agent("codex".into())),
+                pane: None,
+                scope: ProjectScope::Root,
+                cwd: None,
+                worktree: None,
+                initial_prompt: None,
+            },
             false,
             window,
             cx,
         );
         waiting = launcher.read(cx).pane.as_ref().unwrap().tab_id.clone();
-        assert!(!root.launcher_start_pending(cx));
+        let target = root.front_page_client(cx).target;
+        assert!(!root
+            .launchers
+            .start_pending(&target, root.front_page_layout(), cx));
         root.open_new_tab_modal(&NewTab, window, cx);
         assert!(launcher.read(cx).update_retry.is_some());
     });
@@ -392,7 +419,8 @@ fn shared_update_queues_both_panes_behind_the_tabs_active_start() {
                     starts: Default::default(),
                 }))
         });
-        root.reset_launcher_page(cx);
+        let target = root.front_page_client(cx).target;
+        root.launchers.reset_page(&target, cx);
         root.test_open_empty_tab(window, cx);
         let mut layout = root.tabs.active().unwrap().clone();
         layout.split("p1", SplitOrientation::Row).unwrap();
@@ -412,11 +440,14 @@ fn shared_update_queues_both_panes_behind_the_tabs_active_start() {
             });
             root.launch_from_launcher(
                 launcher,
-                Some(EntryKey::Agent("codex".into())),
-                Some(pane),
-                ProjectScope::Root,
-                None,
-                None,
+                LaunchRequest {
+                    key: Some(EntryKey::Agent("codex".into())),
+                    pane: Some(pane),
+                    scope: ProjectScope::Root,
+                    cwd: None,
+                    worktree: None,
+                    initial_prompt: None,
+                },
                 false,
                 window,
                 cx,
@@ -611,7 +642,8 @@ fn deferred_mission_and_fork_keep_the_saved_host_and_later_work_focused() {
             if !switch_host {
                 let (visible, waiting, old_query, old_goal) = window
                     .read_with(&visual, |root, cx| {
-                        let visible = root.page_launcher(cx).unwrap().clone();
+                        let target = root.front_page_client(cx).target;
+                        let visible = root.launchers.page(&target).unwrap().clone();
                         let waiting = root
                             .launchers
                             .iter()
@@ -638,7 +670,8 @@ fn deferred_mission_and_fork_keep_the_saved_host_and_later_work_focused() {
                 visual.run_until_parked();
                 window
                     .update(&mut visual, |root, window, cx| {
-                        assert_eq!(root.page_launcher(cx), Some(&visible));
+                        let target = root.front_page_client(cx).target;
+                        assert_eq!(root.launchers.page(&target), Some(&visible));
                         assert!(visible
                             .read(cx)
                             .query
@@ -1739,7 +1772,8 @@ fn sidebar_plus_keeps_reused_page_project_picker_and_start_scope_in_sync() {
                 launcher.project.select().read(cx).is_disabled(),
                 project.is_some()
             );
-            assert_eq!(root.launcher_page_project(cx), project);
+            let target = root.front_page_client(cx).target;
+            assert_eq!(root.launchers.page_project(&target, cx), project);
             if let Some(project) = &project {
                 assert_eq!(
                     launcher.cwd.read(cx).text(),
@@ -2720,11 +2754,14 @@ fn failed_and_version_gated_starts_preserve_sample_prompt_until_spawn_succeeds()
             page = Some(launcher.clone());
             root.launch_from_launcher(
                 launcher,
-                Some(EntryKey::Agent("codex".into())),
-                None,
-                ProjectScope::Root,
-                Some("/tmp/demo-app".into()),
-                None,
+                LaunchRequest {
+                    key: Some(EntryKey::Agent("codex".into())),
+                    pane: None,
+                    scope: ProjectScope::Root,
+                    cwd: Some("/tmp/demo-app".into()),
+                    worktree: None,
+                    initial_prompt: None,
+                },
                 false,
                 window,
                 cx,
@@ -2742,11 +2779,14 @@ fn failed_and_version_gated_starts_preserve_sample_prompt_until_spawn_succeeds()
         harness.act(|root, window, cx| {
             root.launch_from_launcher(
                 launcher.clone(),
-                Some(EntryKey::Agent("codex".into())),
-                None,
-                ProjectScope::Root,
-                Some("/tmp/demo-app".into()),
-                None,
+                LaunchRequest {
+                    key: Some(EntryKey::Agent("codex".into())),
+                    pane: None,
+                    scope: ProjectScope::Root,
+                    cwd: Some("/tmp/demo-app".into()),
+                    worktree: None,
+                    initial_prompt: None,
+                },
                 false,
                 window,
                 cx,
@@ -2806,11 +2846,14 @@ fn failed_and_version_gated_starts_preserve_sample_prompt_until_spawn_succeeds()
             page = Some(launcher.clone());
             root.launch_from_launcher(
                 launcher,
-                Some(EntryKey::Agent("codex".into())),
-                None,
-                ProjectScope::Root,
-                Some("/tmp/demo-app".into()),
-                None,
+                LaunchRequest {
+                    key: Some(EntryKey::Agent("codex".into())),
+                    pane: None,
+                    scope: ProjectScope::Root,
+                    cwd: Some("/tmp/demo-app".into()),
+                    worktree: None,
+                    initial_prompt: None,
+                },
                 false,
                 window,
                 cx,
@@ -2831,10 +2874,10 @@ fn failed_and_version_gated_starts_preserve_sample_prompt_until_spawn_succeeds()
             assert!(retry.requested);
             assert!(matches!(
                 &retry.action,
-                UpdateAction::Chat {
+                UpdateAction::Chat(LaunchRequest {
                     initial_prompt: Some(saved),
                     ..
-                } if saved == edited_prompt
+                }) if saved == edited_prompt
             ));
             assert_eq!(
                 launcher.read(cx).sample_prompt_text_for_test(cx).as_deref(),

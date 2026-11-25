@@ -785,7 +785,8 @@ fn setup_starter_crew_skip_reopen_sample_prompt_and_zero_crew_launcher() {
 
     let launcher = handle_start
         .read_with(&visual_start, |root, cx| {
-            root.page_launcher(cx).cloned().unwrap()
+            let target = root.front_page_client(cx).target;
+            root.launchers.page(&target).cloned().unwrap()
         })
         .unwrap();
     // Folder change keeps updating unedited sample prompt; manual edit disables auto-sync.
@@ -879,12 +880,12 @@ fn setup_start_chat_requires_resolved_detection_and_eligible_enabled_agent() {
 
     // 1. No eligible agents keeps Start your first chat disabled and ignores complete calls.
     assert!(!handle
-        .read_with(&visual, |root, cx| root.setup_can_start(cx))
+        .read_with(&visual, |root, cx| root.setup.can_start(root.settings(cx)))
         .unwrap());
     click_selector(&mut visual, "SETUP_START_CHAT");
     handle
         .update(&mut visual, |root, window, cx| {
-            root.complete_setup_and_open_launcher(window, cx);
+            root.finish_setup(true, window, cx);
         })
         .unwrap();
     visual.run_until_parked();
@@ -921,7 +922,7 @@ fn setup_start_chat_requires_resolved_detection_and_eligible_enabled_agent() {
         })
         .unwrap();
     assert!(!handle
-        .read_with(&visual, |root, cx| root.setup_can_start(cx))
+        .read_with(&visual, |root, cx| root.setup.can_start(root.settings(cx)))
         .unwrap());
 
     // 3. Re-enabling Codex enables Start, while unresolved probe states block it again.
@@ -931,24 +932,24 @@ fn setup_start_chat_requires_resolved_detection_and_eligible_enabled_agent() {
                 store.settings.disabled_agents.clear();
                 cx.notify();
             });
-            assert!(root.setup_can_start(cx));
+            assert!(root.setup.can_start(root.settings(cx)));
 
             root.setup.loading = true;
-            assert!(!root.setup_can_start(cx));
+            assert!(!root.setup.can_start(root.settings(cx)));
             root.setup.loading = false;
 
             root.setup.rechecking = true;
-            assert!(!root.setup_can_start(cx));
+            assert!(!root.setup.can_start(root.settings(cx)));
             root.setup.rechecking = false;
 
             root.setup.status.as_mut().unwrap().shell.checking = true;
-            assert!(!root.setup_can_start(cx));
+            assert!(!root.setup.can_start(root.settings(cx)));
             root.setup.status.as_mut().unwrap().shell.checking = false;
 
             let saved_proposal = root.setup.proposal.take();
-            assert!(!root.setup_can_start(cx));
+            assert!(!root.setup.can_start(root.settings(cx)));
             root.setup.proposal = saved_proposal;
-            assert!(root.setup_can_start(cx));
+            assert!(root.setup.can_start(root.settings(cx)));
         })
         .unwrap();
 
@@ -960,7 +961,7 @@ fn setup_start_chat_requires_resolved_detection_and_eligible_enabled_agent() {
                 name: "Pair coding".into(),
                 slots: Vec::new(),
             });
-            assert!(!root.setup_can_start(cx));
+            assert!(!root.setup.can_start(root.settings(cx)));
             cx.notify();
         })
         .unwrap();
@@ -1543,4 +1544,82 @@ fn setup_starter_crew_long_names_never_overlap_status_across_widths_and_states(
             narrow_1.origin.y >= narrow_0.bottom(),
             "expected second long slot pill to wrap cleanly at narrow width (slot_0={narrow_0:?}, slot_1={narrow_1:?})"
         );
+}
+
+#[test]
+fn setup_state_handles_visibility_generation_guards_and_finish_resets() {
+    let mut state = SetupState::default();
+    assert!(state.is_visible(false, false));
+    assert!(!state.is_visible(false, true));
+    assert!(!state.is_visible(true, false));
+
+    state.open_reset();
+    assert!(state.is_visible(false, true));
+    assert!(!state.is_visible(true, true));
+
+    state.expand_more_agents();
+    assert!(state.more_agents);
+    state.collapse_more_agents();
+    assert!(!state.more_agents);
+
+    assert_eq!(state.create_starter_crew, None);
+    state.toggle_starter_crew();
+    assert_eq!(state.create_starter_crew, Some(false));
+    state.toggle_starter_crew();
+    assert_eq!(state.create_starter_crew, Some(true));
+
+    state.generation = 2;
+    state.loading = true;
+    assert!(!state.apply_refresh_result(
+        1,
+        Some(runtime_status(true, Vec::new())),
+        test_catalog(),
+        Some(two_slot_proposal()),
+    ));
+    assert!(state.loading);
+    assert!(state.status.is_none());
+
+    assert!(state.apply_refresh_result(
+        2,
+        Some(runtime_status(true, Vec::new())),
+        test_catalog(),
+        Some(two_slot_proposal()),
+    ));
+    assert!(!state.loading);
+    assert!(state.status.is_some());
+    assert!(!state.catalog.is_empty());
+
+    state.generation = 3;
+    state.rechecking = true;
+    assert!(!state.apply_recheck_result(
+        2,
+        Some(runtime_status(false, Vec::new())),
+        Vec::new(),
+        None
+    ));
+    assert!(!state.rechecking);
+    assert!(state.status.as_ref().unwrap().npm_available);
+
+    state.rechecking = true;
+    assert!(state.apply_recheck_result(
+        3,
+        Some(runtime_status(false, Vec::new())),
+        Vec::new(),
+        None
+    ));
+    assert!(!state.rechecking);
+    assert!(!state.status.as_ref().unwrap().npm_available);
+
+    state.finishing = true;
+    state.fail_finish();
+    assert!(!state.finishing);
+    assert!(state.open);
+
+    state.finishing = true;
+    state.more_agents = true;
+    state.complete_finish();
+    assert!(!state.finishing);
+    assert!(!state.open);
+    assert!(!state.more_agents);
+    assert_eq!(state.create_starter_crew, None);
 }

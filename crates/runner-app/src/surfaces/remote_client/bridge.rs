@@ -102,7 +102,8 @@ impl NativeRoot {
         }
         self.prune_remote_add_role_modal(cx);
         if !was_empty && self.launcher_is_empty_state() {
-            self.reset_launcher_page(cx);
+            let target = self.front_page_client(cx).target;
+            self.launchers.reset_page(&target, cx);
         }
         if self.remote_client.connection_marker() != connection {
             self.panes.clear_maximized();

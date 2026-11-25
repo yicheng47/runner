@@ -173,7 +173,7 @@ impl NativeRoot {
             || revisions.crews != previous.crews)
             && self.setup_visible(cx)
         {
-            self.refresh_setup_data(cx);
+            self.setup.refresh(&self.app_store, cx);
         }
 
         if reactions.notify_shell() || (reactions.terminal_wake && self.route.terminal_visible()) {

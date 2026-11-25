@@ -7,9 +7,12 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let target = self.front_page_client(cx).target;
         if self.route == crate::surfaces::AppRoute::Settings
             || self.create_modal_open()
-            || self.launcher_start_pending(cx)
+            || self
+                .launchers
+                .start_pending(&target, self.front_page_layout(), cx)
         {
             return;
         }
@@ -191,7 +194,7 @@ impl NativeRoot {
         if self.remote_client.is_active() {
             return;
         }
-        self.refresh_launchers(cx);
+        self.launchers.refresh_local(&self.app_store, cx);
         let (runtimes, _, _) = load_selectable_runtimes(self.core(cx), self.settings(cx));
         if let Some(modal) = self.start_chat_modal.as_mut() {
             modal.runtimes = runtimes.into_iter().map(Into::into).collect();
@@ -202,7 +205,7 @@ impl NativeRoot {
     }
 
     pub(crate) fn sync_start_chat_default_runtime(&mut self, cx: &mut Context<Self>) {
-        self.refresh_launchers(cx);
+        self.launchers.refresh_local(&self.app_store, cx);
     }
 
     pub(crate) fn remember_active_role(&mut self, cx: &App) {

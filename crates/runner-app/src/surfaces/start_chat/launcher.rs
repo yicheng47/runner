@@ -14,8 +14,11 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 mod mission;
+mod state;
 mod worktree;
 pub(crate) use mission::LauncherOrigin;
+pub(crate) use state::LauncherState;
+pub(super) use state::TerminalStart;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Choice {
@@ -57,15 +60,18 @@ struct Row {
 }
 
 #[derive(Clone)]
+pub(super) struct LaunchRequest {
+    pub(super) key: Option<EntryKey>,
+    pub(super) pane: Option<PaneKey>,
+    pub(super) scope: ProjectScope,
+    pub(super) cwd: Option<String>,
+    pub(super) worktree: Option<WorktreeSpec>,
+    pub(super) initial_prompt: Option<String>,
+}
+
+#[derive(Clone)]
 enum UpdateAction {
-    Chat {
-        key: Option<EntryKey>,
-        pane: Option<PaneKey>,
-        scope: ProjectScope,
-        cwd: Option<String>,
-        worktree: Option<WorktreeSpec>,
-        initial_prompt: Option<String>,
-    },
+    Chat(LaunchRequest),
     Mission(mission::MissionRequest),
     Fork(super::super::chat::ForkRequest),
 }
@@ -591,14 +597,14 @@ impl ChatLauncher {
         self.update_retry = Some(UpdateRetry {
             runtime,
             gate: None,
-            action: UpdateAction::Chat {
+            action: UpdateAction::Chat(LaunchRequest {
                 key: None,
                 pane: None,
                 scope: ProjectScope::Root,
                 cwd: None,
                 worktree: None,
                 initial_prompt: None,
-            },
+            }),
             requested: false,
             ready: false,
         });
@@ -949,11 +955,17 @@ impl ChatLauncher {
                 } else {
                     path
                 };
+                let request = LaunchRequest {
+                    key: None,
+                    pane,
+                    scope,
+                    cwd,
+                    worktree,
+                    initial_prompt: None,
+                };
                 window.defer(cx, move |window, cx| {
                     root.update(cx, |root, cx| {
-                        root.launch_from_launcher(
-                            launcher, None, pane, scope, cwd, worktree, false, window, cx,
-                        )
+                        root.launch_from_launcher(launcher, request, false, window, cx)
                     })
                 });
             }
@@ -967,19 +979,17 @@ impl ChatLauncher {
                 } else {
                     launcher_directory(role, path, self.changed_directory)
                 };
+                let request = LaunchRequest {
+                    key: Some(key),
+                    pane,
+                    scope,
+                    cwd,
+                    worktree,
+                    initial_prompt: None,
+                };
                 window.defer(cx, move |window, cx| {
                     root.update(cx, |root, cx| {
-                        root.launch_from_launcher(
-                            launcher,
-                            Some(key),
-                            pane,
-                            scope,
-                            cwd,
-                            worktree,
-                            false,
-                            window,
-                            cx,
-                        )
+                        root.launch_from_launcher(launcher, request, false, window, cx)
                     })
                 });
             }
@@ -1970,6 +1980,463 @@ impl ChatLauncher {
     }
 }
 
+struct LocalCatalogSnapshot {
+    roles: Vec<RoleChoice>,
+    projects: Vec<ProjectChoice>,
+    crews: Vec<CrewEntry>,
+    revisions: (u64, u64, u64),
+}
+
+impl ChatLauncher {
+    fn version_gate_for(
+        &self,
+        runtime: Runtime,
+    ) -> Option<runner_core::protocol::RuntimeVersionGate> {
+        self.runtimes
+            .iter()
+            .find(|entry| entry.name == runtime)
+            .and_then(|entry| {
+                Some(runner_core::protocol::RuntimeVersionGate {
+                    runtime,
+                    installed_version: entry.installed_version.clone()?,
+                    min_version: entry.min_version.clone()?,
+                })
+            })
+    }
+
+    fn set_fork_update_retry(
+        &mut self,
+        gate: runner_core::protocol::RuntimeVersionGate,
+        request: super::super::chat::ForkRequest,
+        cx: &mut Context<Self>,
+    ) {
+        self.update_retry = Some(UpdateRetry {
+            runtime: gate.runtime,
+            gate: Some(gate),
+            action: UpdateAction::Fork(request),
+            requested: false,
+            ready: false,
+        });
+        self.pending = None;
+        cx.notify();
+    }
+
+    fn set_chat_update_retry(
+        &mut self,
+        runtime: Runtime,
+        gate: Option<runner_core::protocol::RuntimeVersionGate>,
+        request: LaunchRequest,
+        requested: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending = None;
+        self.update_retry = Some(UpdateRetry {
+            runtime,
+            gate,
+            action: UpdateAction::Chat(request),
+            requested,
+            ready: false,
+        });
+        cx.notify();
+    }
+
+    fn apply_remote_runtimes(
+        &mut self,
+        runtimes: &[runner_core::companion::CatalogRuntime],
+        cx: &mut Context<Self>,
+    ) {
+        self.runtimes = runtimes.iter().filter_map(RuntimeChoice::remote).collect();
+        cx.notify();
+    }
+
+    fn apply_local_refresh(
+        &mut self,
+        runtimes: &[RuntimeChoice],
+        roles: &[RoleChoice],
+        default_runtime: &str,
+        keymap_overrides: &keymap::KeymapOverrides,
+        error: Option<&String>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.client.is_remote() {
+            self.runtimes = runtimes.to_vec();
+            self.roles = roles.to_vec();
+            self.default_runtime = default_runtime.to_owned();
+            self.keymap_overrides = keymap_overrides.clone();
+            self.error = error.cloned();
+            cx.notify();
+        }
+    }
+
+    fn mark_update_ready(&mut self, runtime: Runtime, target: &FrontPageTarget) {
+        if &self.client.target == target {
+            if let Some(retry) = &mut self.update_retry {
+                if retry.runtime == runtime && retry.requested {
+                    retry.ready = true;
+                }
+            }
+        }
+    }
+
+    fn carry_over_draft(
+        &mut self,
+        query: String,
+        directory: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.query.update(cx, |field, cx| field.reset(query, cx));
+        if let Some(directory) = directory {
+            self.project.picked(&directory, cx);
+            self.cwd.update(cx, |field, cx| field.reset(directory, cx));
+            self.changed_directory = true;
+            self.refresh_checkout_state(cx);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reconcile(
+        &mut self,
+        recent_revision: u64,
+        catalogs: Option<LocalCatalogSnapshot>,
+        project_deleted: bool,
+        overrides: keymap::KeymapOverrides,
+        computer: Option<runner_core::remote::Computer>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.recent_revision != recent_revision {
+            self.reload_recents(cx);
+        }
+        if let Some(catalogs) = catalogs {
+            if self.roles != catalogs.roles {
+                self.roles = catalogs.roles;
+                self.selected = 0;
+                cx.notify();
+            }
+            if self.crews != catalogs.crews {
+                self.crews = catalogs.crews;
+                cx.notify();
+            }
+            self.project.set_choices(catalogs.projects, cx);
+            self.catalog_revisions = catalogs.revisions;
+        }
+        if project_deleted {
+            self.retarget_page(None, false, cx);
+        }
+        if self.keymap_overrides != overrides {
+            self.keymap_overrides = overrides;
+            cx.notify();
+        }
+        if self.client.is_remote() && !self.catalog_requested && self.client.supports(&["catalog"])
+        {
+            self.load_host(computer, window, cx);
+        }
+    }
+
+    fn open_on_page(
+        &mut self,
+        origin: Option<LauncherOrigin>,
+        project: Option<&str>,
+        locked: bool,
+        step: Step,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(origin) = origin {
+            self.origin = Some(origin);
+        }
+        self.retarget_page(project, locked, cx);
+        self.open_step(step, window, cx);
+    }
+
+    fn begin_terminal_start(&mut self, cx: &mut Context<Self>) -> Option<LaunchRequest> {
+        if !self.client.supports(&["startShell", "layout"])
+            || self.pending.is_some()
+            || !self.new_worktree_allows_start()
+        {
+            return None;
+        }
+        self.pending = Some(Choice::Terminal);
+        cx.notify();
+        let worktree = self.worktree_spec();
+        let cwd = if worktree.is_some() {
+            self.worktree_repo_cwd()
+                .or_else(|| normalized_value(self.cwd.read(cx).text()))
+        } else {
+            normalized_value(self.cwd.read(cx).text())
+        };
+        Some(LaunchRequest {
+            key: None,
+            pane: self.pane.clone(),
+            scope: self.scope(),
+            cwd,
+            worktree,
+            initial_prompt: None,
+        })
+    }
+
+    fn resolve_initial_prompt(&self, initial_prompt: Option<String>, cx: &App) -> Option<String> {
+        initial_prompt.or_else(|| {
+            self.sample_prompt
+                .as_ref()
+                .and_then(|field| normalized_value(field.read(cx).text()))
+        })
+    }
+
+    fn gated_runtime(&self, key: &EntryKey) -> Option<(Runtime, Option<String>)> {
+        let runtime_key = match key {
+            EntryKey::Agent(runtime) => Some(runtime.as_str()),
+            EntryKey::Role(id) => self
+                .roles
+                .iter()
+                .find(|role| role.id == *id)
+                .map(|role| role.runtime.as_str()),
+        }?;
+        self.runtimes
+            .iter()
+            .find(|runtime| runtime.name.key() == runtime_key && runtime.below_minimum)
+            .map(|runtime| (runtime.name, runtime.installed_version.clone()))
+    }
+
+    fn clear_pending(&mut self, cx: &mut Context<Self>) {
+        self.pending = None;
+        cx.notify();
+    }
+
+    fn set_error(&mut self, error: String, cx: &mut Context<Self>) {
+        self.error = Some(error);
+        cx.notify();
+    }
+
+    fn fail_missing_target_tab(&mut self, cx: &mut Context<Self>) {
+        self.pending = None;
+        self.error = Some(crate::i18n::text("ui.the_target_tab_is_no_longer_active").into());
+        cx.notify();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_chat_launch(
+        &self,
+        key: &EntryKey,
+        scope: &ProjectScope,
+        cwd: Option<String>,
+        worktree: Option<WorktreeSpec>,
+        placement: Option<(PaneLayout, String)>,
+        size: (u16, u16),
+        initial_prompt: Option<String>,
+    ) -> ChatLaunch {
+        ChatLaunch {
+            input: launcher_input(
+                key,
+                scope.project_id().map(str::to_owned),
+                cwd,
+                worktree,
+                size,
+                initial_prompt,
+            ),
+            placement,
+            started: self
+                .started
+                .as_ref()
+                .filter(|(entry, _)| entry == key)
+                .map(|(_, session)| session.clone()),
+        }
+    }
+
+    fn finish_shell_launch(
+        &mut self,
+        remote: bool,
+        result: &Result<crate::surfaces::front_page::actions::Completion, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if !remote || result.is_err() {
+            self.pending = None;
+        }
+        self.error = result.as_ref().err().cloned();
+        if let Ok(done) = result {
+            self.launched_session = done.session.clone();
+        }
+        cx.notify();
+    }
+
+    fn finish_remote_chat_launch(
+        &mut self,
+        key: &EntryKey,
+        started: Option<String>,
+        result: &runner_core::protocol::ClientResult<
+            crate::surfaces::front_page::client::ChatLaunched,
+        >,
+        cx: &mut Context<Self>,
+    ) {
+        if result.is_ok() {
+            self.sample_prompt = None;
+            self.sample_prompt_auto = None;
+        } else {
+            self.pending = None;
+        }
+        self.launched_session = result.as_ref().ok().map(|output| output.session.clone());
+        self.started = started.map(|session| (key.clone(), session));
+        self.error = result.as_ref().err().map(ToString::to_string);
+        cx.notify();
+    }
+
+    fn finish_local_chat_launch(
+        &mut self,
+        key: &EntryKey,
+        started: Option<String>,
+        result: &runner_core::protocol::ClientResult<
+            crate::surfaces::front_page::client::ChatLaunched,
+        >,
+        cx: &mut Context<Self>,
+    ) {
+        if result.is_ok() {
+            self.sample_prompt = None;
+            self.sample_prompt_auto = None;
+        }
+        self.pending = None;
+        self.started = started.map(|session| (key.clone(), session));
+        self.error = result.as_ref().err().map(ToString::to_string);
+        cx.notify();
+    }
+}
+
+fn resolve_pane_placement(
+    pane: Option<PaneKey>,
+    remote: bool,
+    tabs: &TabSet,
+    remote_client: &crate::surfaces::remote_client::RemoteClient,
+) -> Option<(PaneLayout, String)> {
+    pane.and_then(|pane| {
+        let layout = if remote {
+            remote_client.tab_layout(&pane.tab_id)
+        } else {
+            tabs.tabs().iter().find(|layout| layout.id == pane.tab_id)
+        };
+        layout
+            .filter(|layout| {
+                layout.id == pane.tab_id
+                    && layout
+                        .root
+                        .leaves()
+                        .iter()
+                        .any(|leaf| leaf.id == pane.pane_id && leaf.session_id.is_none())
+            })
+            .map(|layout| (layout.clone(), pane.pane_id))
+    })
+}
+
+fn prepare_shell_start(
+    placement: Option<(PaneLayout, String)>,
+    scope: &ProjectScope,
+    cwd: Option<String>,
+    worktree: Option<WorktreeSpec>,
+    size: (u16, u16),
+) -> (
+    crate::surfaces::front_page::actions::ShellStart,
+    (PaneLayout, String),
+) {
+    let mut draft = placement
+        .as_ref()
+        .map(|(layout, _)| layout.clone())
+        .unwrap_or_else(|| PaneLayout::single(None, &[]));
+    if draft.id.is_empty() {
+        draft.id = runner_core::event_log::UlidGen::new()
+            .next()
+            .expect("new tab ULID");
+    }
+    draft.parent_id = scope.project_id().map(str::to_owned);
+    let pane = placement
+        .map(|(_, pane)| pane)
+        .unwrap_or_else(|| draft.focused_pane_id.clone());
+    let local_placement = (draft.clone(), pane.clone());
+    let input = crate::surfaces::front_page::actions::ShellStart {
+        draft,
+        pane: Some(pane),
+        project: scope.project_id().map(str::to_owned),
+        cwd,
+        worktree,
+        size,
+    };
+    (input, local_placement)
+}
+
+fn spawn_shell_launch_task(
+    remote: bool,
+    operation: impl FnOnce() -> Result<crate::surfaces::front_page::actions::Completion, String>
+        + Send
+        + 'static,
+    local_placement: (PaneLayout, String),
+    placement_client: FrontPageClient,
+    placement_project: Option<String>,
+    mut tab_guard: Option<TabStart>,
+    cx: &App,
+) -> gpui::Task<(
+    Option<TabStart>,
+    Result<crate::surfaces::front_page::actions::Completion, String>,
+)> {
+    cx.background_spawn(async move {
+        let result = (|| {
+            let mut done = operation()?;
+            if !remote {
+                let (mut layout, pane) = local_placement;
+                layout
+                    .assign_session(&pane, done.session.as_ref().unwrap())
+                    .map_err(|error| error.to_string())?;
+                if let Err(error) = placement_client.launcher_layout(&layout, placement_project) {
+                    let _ = placement_client.close(done.session.as_ref().unwrap());
+                    return Err(error.to_string());
+                }
+                done.layout = Some(layout);
+            }
+            Ok(done)
+        })();
+        if remote {
+            if let (Some(guard), Ok(_)) = (tab_guard.as_mut(), &result) {
+                guard.await_host();
+            }
+        }
+        (tab_guard, result)
+    })
+}
+
+fn spawn_chat_launch_task(
+    client: FrontPageClient,
+    mut launch: ChatLaunch,
+    directory: PathBuf,
+    recent_key: EntryKey,
+    use_role_directory: bool,
+    mut tab_guard: Option<TabStart>,
+    cx: &App,
+) -> gpui::Task<(
+    Option<TabStart>,
+    ChatLaunch,
+    runner_core::protocol::ClientResult<crate::surfaces::front_page::client::ChatLaunched>,
+)> {
+    let target = client.target.clone();
+    let remote_target = client.is_remote();
+    cx.background_spawn(async move {
+        let result = (|| {
+            if use_role_directory && launch.started.is_none() {
+                if let Some(role) = &launch.input.role {
+                    if let Some(directory) = client.role_working_dir(role.clone())? {
+                        launch.input.cwd = Some(directory);
+                    }
+                }
+            }
+            client.launch_chat(&mut launch)
+        })();
+        if launch.started.is_some() {
+            record_launcher_use(&directory, &target, recent_key);
+        }
+        if remote_target {
+            if let (Some(guard), Ok(_)) = (tab_guard.as_mut(), &result) {
+                guard.await_host();
+            }
+        }
+        (tab_guard, launch, result)
+    })
+}
+
 impl NativeRoot {
     pub(crate) fn refresh_remote_agent_versions(
         &self,
@@ -1988,18 +2455,8 @@ impl NativeRoot {
                     .filter_map(|runtime| Runtime::parse(&runtime.name))
                     .collect::<Vec<_>>();
                 root.clear_unblocked_gates(&target, &supported);
-                for launcher in root.launchers.values() {
-                    if launcher.read(cx).client.target == target {
-                        launcher.update(cx, |launcher, cx| {
-                            launcher.runtimes = catalog
-                                .runtimes
-                                .iter()
-                                .filter_map(RuntimeChoice::remote)
-                                .collect();
-                            cx.notify();
-                        });
-                    }
-                }
+                root.launchers
+                    .apply_remote_runtimes(&target, &catalog.runtimes, cx);
             });
         })
         .detach();
@@ -2023,15 +2480,7 @@ impl NativeRoot {
             self.render_launcher(None, true, window, cx)
         };
         launcher.update(cx, |launcher, cx| {
-            launcher.update_retry = Some(UpdateRetry {
-                runtime: gate.runtime,
-                gate: Some(gate),
-                action: UpdateAction::Fork(request),
-                requested: false,
-                ready: false,
-            });
-            launcher.pending = None;
-            cx.notify();
+            launcher.set_fork_update_retry(gate, request, cx);
         });
     }
 
@@ -2040,99 +2489,33 @@ impl NativeRoot {
         launcher: &Entity<ChatLauncher>,
         cx: &App,
     ) -> bool {
-        let view = launcher.read(cx);
-        if view.client.target != self.front_page_client(cx).target {
-            return false;
-        }
-        if let Some(pane) = &view.pane {
-            self.front_page_is_chat()
-                && self.front_page_layout().is_some_and(|layout| {
-                    layout.id == pane.tab_id && layout.focused_pane_id == pane.pane_id
-                })
-        } else {
-            self.launcher_page_visible() && self.page_launcher(cx) == Some(launcher)
-        }
-    }
-
-    pub(crate) fn notify_update_launchers(&self, cx: &mut Context<Self>) {
-        for launcher in self.launchers.values() {
-            launcher.update(cx, |_, cx| cx.notify());
-        }
-    }
-    pub(crate) fn retry_gated_launches(
-        &mut self,
-        runtime: Runtime,
-        target: &FrontPageTarget,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        for launcher in self.launchers.values() {
-            launcher.update(cx, |view, _| {
-                if &view.client.target == target {
-                    if let Some(retry) = &mut view.update_retry {
-                        if retry.runtime == runtime && retry.requested {
-                            retry.ready = true;
-                        }
-                    }
-                }
-            });
-        }
-        self.drain_ready_launches(window, cx);
+        let target = self.front_page_client(cx).target;
+        self.launchers.is_visible(
+            launcher,
+            &target,
+            self.front_page_is_chat(),
+            self.launcher_page_visible(),
+            self.front_page_layout(),
+            cx,
+        )
     }
 
     pub(crate) fn drain_ready_launches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let current = self.front_page_client(cx).target;
-        let launchers = self.launchers.values().cloned().collect::<Vec<_>>();
-        for launcher in launchers {
-            let view = launcher.read(cx);
-            let Some(retry) = view.update_retry.as_ref().filter(|retry| retry.ready) else {
+        for launcher in self.launchers.snapshot() {
+            let Some(retry) = LauncherState::take_ready_launch(
+                &launcher,
+                &current,
+                &self.app_store,
+                &self.remote_client,
+                cx,
+            ) else {
                 continue;
             };
-            if !view.client.valid() || (view.client.is_remote() && view.client.target != current) {
-                continue;
-            }
-            if let UpdateAction::Chat {
-                pane: Some(pane), ..
-            } = &retry.action
-            {
-                let key = format!("{}:{}", computer_key(&view.client.target), pane.tab_id);
-                let blocked = if view.client.is_remote() {
-                    self.launcher_tab_pending(&pane.tab_id, cx)
-                } else {
-                    self.app_store
-                        .read(cx)
-                        .launcher_tabs_pending
-                        .lock()
-                        .unwrap()
-                        .contains_key(&key)
-                };
-                if blocked {
-                    continue;
-                }
-            }
-            let retry = launcher
-                .update(cx, |view, _| view.update_retry.take())
-                .unwrap();
             match retry.action {
-                UpdateAction::Chat {
-                    key,
-                    pane,
-                    scope,
-                    cwd,
-                    worktree,
-                    initial_prompt,
-                } => self.launch_from_launcher_with_prompt(
-                    launcher,
-                    key,
-                    pane,
-                    scope,
-                    cwd,
-                    worktree,
-                    true,
-                    initial_prompt,
-                    window,
-                    cx,
-                ),
+                UpdateAction::Chat(request) => {
+                    self.launch_from_launcher(launcher, request, true, window, cx)
+                }
                 UpdateAction::Mission(request) => {
                     self.launch_mission_from_launcher(launcher, request, true, window, cx)
                 }
@@ -2140,218 +2523,36 @@ impl NativeRoot {
             }
         }
     }
-}
-
-impl NativeRoot {
-    pub(crate) fn refresh_launchers(&mut self, cx: &mut Context<Self>) {
-        let (runtimes, _, error) = load_selectable_runtimes(self.core(cx), self.settings(cx));
-        let runtimes = runtimes
-            .into_iter()
-            .map(Into::into)
-            .collect::<Vec<RuntimeChoice>>();
-        let roles = self
-            .app_store
-            .read(cx)
-            .roles
-            .clone()
-            .into_iter()
-            .map(Into::into)
-            .collect::<Vec<RoleChoice>>();
-        let default = self.settings(cx).default_runtime.clone();
-        let overrides = self.settings(cx).keymap_overrides.clone();
-        for launcher in self.launchers.values() {
-            launcher.update(cx, |launcher, cx| {
-                if !launcher.client.is_remote() {
-                    launcher.runtimes = runtimes.clone();
-                    launcher.roles = roles.clone();
-                    launcher.default_runtime = default.clone();
-                    launcher.keymap_overrides = overrides.clone();
-                    launcher.error = error.clone();
-                    cx.notify();
-                }
-            });
-        }
-    }
-
-    pub(crate) fn prune_launchers(&mut self, cx: &App) {
-        let target = self.front_page_client(cx).target;
-        let tabs = &self.tabs;
-        let remote = &self.remote_client;
-        let active_layout = self.front_page_layout().cloned();
-        self.launchers.retain(|_, entity| {
-            let launcher = entity.read(cx);
-            if launcher.update_retry.is_some() && launcher.client.valid() {
-                return true;
-            }
-            if launcher.client.target != target {
-                // A reconnect's new launcher takes the page over when it is built.
-                return launcher.pane.is_none()
-                    && computer_key(&launcher.client.target) == computer_key(&target);
-            }
-            if launcher.launched_session.as_ref().is_some_and(|session| {
-                active_layout
-                    .as_ref()
-                    .is_some_and(|layout| layout.contains_session(session))
-            }) {
-                return false;
-            }
-            let Some(pane) = &launcher.pane else {
-                return true;
-            };
-            let layout = if launcher.client.is_remote() {
-                remote.tab_layout(&pane.tab_id)
-            } else {
-                tabs.tabs().iter().find(|layout| layout.id == pane.tab_id)
-            };
-            layout.is_none_or(|layout| {
-                layout
-                    .root
-                    .leaves()
-                    .iter()
-                    .find(|leaf| leaf.id == pane.pane_id)
-                    .is_none_or(|leaf| leaf.session_id.is_none())
-            })
-        });
-    }
 
     pub(crate) fn focus_visible_launcher(&self, window: &mut Window, cx: &mut App) -> bool {
-        if !self.front_page_is_chat() || self.create_modal_open() {
-            return false;
-        }
         let target = self.front_page_client(cx).target;
-        let pane = self
-            .front_page_layout()
-            .map(|layout| PaneKey::new(&layout.id, &layout.focused_pane_id));
-        if self
-            .front_page_layout()
-            .is_some_and(|layout| layout.focused_session_id().is_some())
-        {
-            return false;
-        }
-        if let Some(launcher) = self
-            .launchers
-            .get(&format!("{target:?}:{pane:?}"))
-            .filter(|launcher| self.update_launcher_visible(launcher, cx))
-            .cloned()
-        {
-            if launcher.read(cx).update_retry.is_some() {
-                self.root_focus.focus(window, cx);
-            } else {
-                launcher.update(cx, |launcher, cx| launcher.focus(window, cx));
-            }
-            return true;
-        }
-        false
+        self.launchers.focus_visible(
+            &target,
+            self.front_page_is_chat(),
+            self.create_modal_open(),
+            self.launcher_page_visible(),
+            self.front_page_layout(),
+            &self.root_focus,
+            window,
+            cx,
+        )
     }
 
     pub(crate) fn launcher_session_pending(&self, session: &str, cx: &App) -> bool {
-        let layout = if self.remote_client.is_active() {
-            self.remote_client.session_tab_layout(session)
-        } else {
-            self.tabs
-                .tabs()
-                .iter()
-                .find(|layout| layout.contains_session(session))
-        };
-        layout.is_some_and(|layout| self.launcher_tab_pending(&layout.id, cx))
+        let target = self.front_page_client(cx).target;
+        LauncherState::session_pending(
+            &target,
+            session,
+            &self.tabs,
+            &self.app_store,
+            &self.remote_client,
+            cx,
+        )
     }
 
     pub(crate) fn launcher_tab_pending(&self, tab: &str, cx: &App) -> bool {
-        let key = format!("{}:{tab}", computer_key(&self.front_page_client(cx).target));
-        let pending = self.app_store.read(cx).launcher_tabs_pending.clone();
-        let mut pending = pending.lock().unwrap();
-        if let (FrontPageTarget::Remote { computer, .. }, Some(Some(before))) =
-            (&self.front_page_client(cx).target, pending.get(&key))
-        {
-            let clients = self.app_store.read(cx).remote_clients.read(cx);
-            if clients.overviews.get(computer).is_some_and(|overview| {
-                overview
-                    .tabs
-                    .iter()
-                    .find(|candidate| candidate.id == tab)
-                    .is_none_or(|tab| {
-                        !crate::surfaces::front_page::model::matches_layout(before, tab)
-                    })
-            }) {
-                pending.remove(&key);
-            }
-        }
-        pending.contains_key(&key) || self.remote_client.layout_pending(tab)
-    }
-
-    pub(crate) fn launcher_start_pending(&self, cx: &App) -> bool {
         let target = self.front_page_client(cx).target;
-        self.launchers.values().any(|launcher| {
-            let launcher = launcher.read(cx);
-            launcher.client.target == target
-                && launcher.pending.is_some()
-                && launcher.pane.as_ref().is_none_or(|pane| {
-                    self.front_page_layout().is_some_and(|layout| {
-                        layout.id == pane.tab_id
-                            && layout
-                                .root
-                                .leaves()
-                                .iter()
-                                .any(|leaf| leaf.id == pane.pane_id && leaf.session_id.is_none())
-                    })
-                })
-        })
-    }
-
-    pub(crate) fn start_launcher_terminal(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if !self.front_page_is_chat() {
-            return false;
-        }
-        let pane = self
-            .front_page_layout()
-            .map(|layout| PaneKey::new(&layout.id, &layout.focused_pane_id));
-        if self
-            .front_page_layout()
-            .is_some_and(|layout| layout.focused_session_id().is_some())
-        {
-            return false;
-        }
-        let target = self.front_page_client(cx).target;
-        let launcher = self
-            .launchers
-            .values()
-            .find(|launcher| {
-                let launcher = launcher.read(cx);
-                launcher.client.target == target && launcher.pane == pane
-            })
-            .cloned();
-        if let Some(launcher) = launcher {
-            let input = launcher.update(cx, |launcher, cx| {
-                if !launcher.client.supports(&["startShell", "layout"])
-                    || launcher.pending.is_some()
-                    || !launcher.new_worktree_allows_start()
-                {
-                    return None;
-                }
-                launcher.pending = Some(Choice::Terminal);
-                cx.notify();
-                let worktree = launcher.worktree_spec();
-                let cwd = if worktree.is_some() {
-                    launcher
-                        .worktree_repo_cwd()
-                        .or_else(|| normalized_value(launcher.cwd.read(cx).text()))
-                } else {
-                    normalized_value(launcher.cwd.read(cx).text())
-                };
-                Some((launcher.pane.clone(), launcher.scope(), cwd, worktree))
-            });
-            if let Some((pane, scope, cwd, worktree)) = input {
-                self.launch_from_launcher(
-                    launcher, None, pane, scope, cwd, worktree, false, window, cx,
-                );
-            }
-            return true;
-        }
-        false
+        LauncherState::tab_pending(&target, tab, &self.app_store, &self.remote_client, cx)
     }
 
     pub(crate) fn render_launcher(
@@ -2361,161 +2562,52 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<ChatLauncher> {
-        self.cached_launcher(pane, default_page, window, cx)
-    }
-
-    fn cached_launcher(
-        &mut self,
-        pane: Option<PaneKey>,
-        default_page: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Entity<ChatLauncher> {
-        let default_page = pane
-            .as_ref()
-            .and_then(|pane| {
-                self.front_page_layout()
-                    .filter(|layout| layout.id == pane.tab_id)
-            })
-            .map_or(default_page, |layout| {
-                let leaves = layout.root.leaves();
-                leaves.len() == 1 && leaves[0].session_id.is_none()
-            });
+        let default_page = LauncherState::effective_default_page(
+            pane.as_ref(),
+            default_page,
+            self.front_page_layout(),
+        );
         let target = self.front_page_client(cx).target;
-        let key = format!("{target:?}:{pane:?}");
-        if let Some(launcher) = self.launchers.get(&key).cloned() {
-            let context_changed = launcher.read(cx).default_page != default_page
-                || (pane.is_some()
-                    && !default_page
-                    && launcher.read(cx).initial_project != self.active_tab_project_id(cx));
-            if context_changed {
-                let (query, directory) = {
-                    let previous = launcher.read(cx);
-                    (
-                        previous.query.read(cx).text().to_owned(),
-                        previous
-                            .changed_directory
-                            .then(|| previous.cwd.read(cx).text().to_owned()),
-                    )
-                };
+        if let Some(launcher) = self.launchers.get(&target, pane.as_ref()).cloned() {
+            if LauncherState::context_changed(
+                &launcher,
+                pane.as_ref(),
+                default_page,
+                || self.active_tab_project_id(cx),
+                cx,
+            ) {
                 let root = cx.weak_entity();
-                let next =
-                    cx.new(|cx| ChatLauncher::new(self, pane, default_page, window, cx, root));
-                next.update(cx, |launcher, cx| {
-                    launcher
-                        .query
-                        .update(cx, |field, cx| field.reset(query, cx));
-                    if let Some(directory) = directory {
-                        launcher.project.picked(&directory, cx);
-                        launcher
-                            .cwd
-                            .update(cx, |field, cx| field.reset(directory, cx));
-                        launcher.changed_directory = true;
-                        launcher.refresh_checkout_state(cx);
-                    }
+                let next = cx.new(|cx| {
+                    ChatLauncher::new(self, pane.clone(), default_page, window, cx, root)
                 });
-                self.launchers.insert(key, next.clone());
-                return next;
-            }
-            if launcher
-                .read(cx)
-                .update_retry
-                .as_ref()
-                .is_some_and(|retry| retry.ready)
-            {
-                cx.defer_in(window, |root, window, cx| {
-                    root.drain_ready_launches(window, cx)
-                });
+                return self.launchers.replace_with_carry_over(
+                    &target,
+                    pane.as_ref(),
+                    &launcher,
+                    next,
+                    cx,
+                );
             }
             let computer = self.remote_client.computer().cloned();
-            let overrides = self.settings(cx).keymap_overrides.clone();
-            let revisions = self.app_store.read(cx).revisions;
-            let catalog_revisions = (revisions.roles, revisions.projects, revisions.crews);
-            let catalogs = (!launcher.read(cx).client.is_remote()
-                && launcher.read(cx).catalog_revisions != catalog_revisions)
-                .then(|| {
-                    let store = self.app_store.read(cx);
-                    (
-                        store
-                            .roles
-                            .clone()
-                            .into_iter()
-                            .map(Into::into)
-                            .collect::<Vec<RoleChoice>>(),
-                        ProjectChoice::local(&store.projects),
-                        mission::local_crews(&store.crews),
-                    )
-                });
-            let recent_revision = RECENT_REVISION.load(std::sync::atomic::Ordering::Acquire);
-            let project_deleted = launcher
-                .read(cx)
-                .page_project
-                .as_deref()
-                .is_some_and(|project| self.front_page_project_deleted(project, cx));
-            launcher.update(cx, |launcher, cx| {
-                if launcher.recent_revision != recent_revision {
-                    launcher.reload_recents(cx);
-                }
-                if let Some((roles, projects, crews)) = catalogs {
-                    if launcher.roles != roles {
-                        launcher.roles = roles;
-                        launcher.selected = 0;
-                        cx.notify();
-                    }
-                    if launcher.crews != crews {
-                        launcher.crews = crews;
-                        cx.notify();
-                    }
-                    launcher.project.set_choices(projects, cx);
-                    launcher.catalog_revisions = catalog_revisions;
-                }
-                if project_deleted {
-                    launcher.retarget_page(None, false, cx);
-                }
-                if launcher.keymap_overrides != overrides {
-                    launcher.keymap_overrides = overrides;
-                    cx.notify();
-                }
-                if launcher.client.is_remote()
-                    && !launcher.catalog_requested
-                    && launcher.client.supports(&["catalog"])
-                {
-                    launcher.load_host(computer, window, cx);
-                }
-            });
+            let store = self.app_store.clone();
+            LauncherState::reconcile_cached(&launcher, &target, &store, computer, window, cx);
             return launcher;
         }
         let locked_project = pane
             .is_none()
-            .then(|| self.take_replaced_page_project(cx))
+            .then(|| self.launchers.take_replaced_page_project(&target, cx))
             .flatten();
         let root = cx.weak_entity();
-        let launcher = cx.new(|cx| ChatLauncher::new(self, pane, default_page, window, cx, root));
+        let launcher =
+            cx.new(|cx| ChatLauncher::new(self, pane.clone(), default_page, window, cx, root));
         if locked_project.is_some() {
             launcher.update(cx, |launcher, cx| {
                 launcher.retarget_page(locked_project.as_deref(), true, cx);
             });
         }
-        self.launchers.insert(key, launcher.clone());
+        self.launchers
+            .insert(&target, pane.as_ref(), launcher.clone());
         launcher
-    }
-
-    /// Removes the page launcher a reconnect left behind, whose client is no
-    /// longer valid, and returns the project it was locked to.
-    fn take_replaced_page_project(&mut self, cx: &App) -> Option<String> {
-        let target = self.front_page_client(cx).target;
-        let mut project = None;
-        self.launchers.retain(|_, launcher| {
-            let launcher = launcher.read(cx);
-            let replaced = launcher.pane.is_none()
-                && launcher.client.target != target
-                && computer_key(&launcher.client.target) == computer_key(&target);
-            if replaced {
-                project = launcher.page_project.clone();
-            }
-            !replaced
-        });
-        project
     }
 
     pub(super) fn new_tab_project_id(&self, cx: &App) -> Option<String> {
@@ -2523,10 +2615,8 @@ impl NativeRoot {
         if !visible && self.remote_client.is_local() {
             return self.active_tab_project_id(cx);
         }
-        let origin = self
-            .page_launcher(cx)
-            .filter(|_| visible)
-            .and_then(|page| page.read(cx).origin.clone());
+        let target = self.front_page_client(cx).target;
+        let origin = self.launchers.page_origin(&target, visible, cx);
         if self.remote_client.is_active() {
             let tab = match origin {
                 Some(LauncherOrigin::Remote(Some(
@@ -2561,13 +2651,16 @@ impl NativeRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.create_modal_open() || self.launcher_start_pending(cx) {
+        let target = self.front_page_client(cx).target;
+        if self.create_modal_open()
+            || self
+                .launchers
+                .start_pending(&target, self.front_page_layout(), cx)
+        {
             return;
         }
-        let visible = self.launcher_page_visible()
-            && self
-                .page_launcher(cx)
-                .is_none_or(|launcher| launcher.read(cx).update_retry.is_none());
+        let visible =
+            self.launcher_page_visible() && !self.launchers.page_has_update_retry(&target, cx);
         let origin = if self.remote_client.is_active() {
             LauncherOrigin::Remote(self.remote_client.active_item().cloned())
         } else {
@@ -2583,107 +2676,47 @@ impl NativeRoot {
             self.set_route(AppRoute::Launcher, cx);
         }
         if !visible {
-            self.reset_launcher_page(cx);
+            let target = self.front_page_client(cx).target;
+            self.launchers.reset_page(&target, cx);
         }
         self.front_page_sidebar().update(cx, |sidebar, cx| {
             sidebar.set_active_project(scope.project_id().map(str::to_owned), cx)
         });
         let launcher = self.render_launcher(None, true, window, cx);
         launcher.update(cx, |launcher, cx| {
-            if !visible {
-                launcher.origin = Some(origin);
-            }
-            launcher.retarget_page(scope.project_id(), locked, cx);
-            launcher.open_step(step, window, cx);
+            launcher.open_on_page(
+                (!visible).then_some(origin),
+                scope.project_id(),
+                locked,
+                step,
+                window,
+                cx,
+            );
         });
         cx.notify();
     }
 
-    /// The project the launcher page's row sits under, Recents when `None`.
-    /// Until a reconnect's new launcher is built, the one it replaces still
-    /// says, so the row does not move in between.
-    pub(crate) fn launcher_page_project(&self, cx: &App) -> Option<String> {
-        let computer = computer_key(&self.front_page_client(cx).target);
-        let launcher = self.page_launcher(cx).or_else(|| {
-            self.launchers.values().find(|launcher| {
-                let launcher = launcher.read(cx);
-                launcher.pane.is_none() && computer_key(&launcher.client.target) == computer
-            })
-        })?;
-        launcher.read(cx).page_project.clone()
-    }
-
-    pub(crate) fn page_launcher(&self, cx: &App) -> Option<&Entity<ChatLauncher>> {
-        let target = self.front_page_client(cx).target;
-        self.launchers
-            .get(&format!("{target:?}:{:?}", None::<PaneKey>))
-    }
-
-    /// Forgets the page launcher, which is cached between visits and could hold
-    /// an older project, lock and origin. The next page starts fresh.
-    pub(crate) fn reset_launcher_page(&mut self, cx: &App) {
-        let computer = computer_key(&self.front_page_client(cx).target);
-        let mut waiting = Vec::new();
-        self.launchers.retain(|_, entity| {
-            let launcher = entity.read(cx);
-            if launcher.pane.is_some() || computer_key(&launcher.client.target) != computer {
-                return true;
-            }
-            if launcher.update_retry.is_some() {
-                waiting.push((
-                    format!("update-wait:{:?}", entity.entity_id()),
-                    entity.clone(),
-                ));
-            }
-            false
-        });
-        self.launchers.extend(waiting);
-    }
-
-    fn front_page_project_deleted(&self, project: &str, cx: &App) -> bool {
-        match &self.front_page_client(cx).target {
-            FrontPageTarget::Local => !self
-                .app_store
-                .read(cx)
-                .projects
-                .iter()
-                .any(|row| row.id == project),
-            FrontPageTarget::Remote { computer, .. } => self
-                .app_store
-                .read(cx)
-                .remote_clients
-                .read(cx)
-                .overviews
-                .get(computer)
-                .is_some_and(|overview| !overview.projects.iter().any(|row| row.id == project)),
-        }
-    }
-
-    /// With no tab or page behind it the launcher is the window's empty state,
-    /// and there is nothing to close it back to. A page with no recorded origin
-    /// is that state after a tab arrived from another window, and closes to it.
     pub(crate) fn launcher_page_closable(&self, cx: &App) -> bool {
-        self.launcher_page_visible()
-            && self
-                .page_launcher(cx)
-                .is_some_and(|launcher| match &launcher.read(cx).origin {
-                    Some(mission::LauncherOrigin::Local {
-                        route: AppRoute::Chat,
-                        ..
-                    }) => !self.tabs.tabs().is_empty(),
-                    None => !self.remote_client.is_active() && !self.tabs.tabs().is_empty(),
-                    Some(mission::LauncherOrigin::Remote(None)) => false,
-                    Some(_) => true,
-                })
+        let target = self.front_page_client(cx).target;
+        self.launchers.page_closable(
+            &target,
+            self.launcher_page_visible(),
+            self.remote_client.is_active(),
+            !self.tabs.tabs().is_empty(),
+            cx,
+        )
     }
 
     pub(crate) fn close_launcher_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.launcher_page_closable(cx) {
-            return;
-        }
-        if let Some(launcher) = self.page_launcher(cx).cloned() {
-            launcher.update(cx, |launcher, cx| launcher.leave_page(window, cx));
-        }
+        let target = self.front_page_client(cx).target;
+        self.launchers.close_page(
+            &target,
+            self.launcher_page_visible(),
+            self.remote_client.is_active(),
+            !self.tabs.tabs().is_empty(),
+            window,
+            cx,
+        );
     }
 
     pub(crate) fn launcher_page_visible(&self) -> bool {
@@ -2729,57 +2762,23 @@ impl NativeRoot {
             .client
             .launcher_layout(&layout, layout.parent_id.clone())
         {
-            launcher.update(cx, |view, cx| {
-                view.error = Some(error.to_string());
-                cx.notify();
-            });
+            launcher.update(cx, |view, cx| view.set_error(error.to_string(), cx));
             return None;
         }
         let _ = self.reload_tabs(cx);
         self.tabs.activate(&layout.id);
         self.set_route(AppRoute::Chat, cx);
         let pane = PaneKey::new(&layout.id, &layout.focused_pane_id);
-        self.launchers.retain(|_, cached| cached != launcher);
-        launcher.update(cx, |view, _| {
-            view.pane = Some(pane.clone());
-            view.initial_project = scope.project_id().map(str::to_owned);
-        });
-        self.launchers.insert(
-            format!("{:?}:{:?}", launcher.read(cx).client.target, Some(&pane)),
-            launcher.clone(),
-        );
+        self.launchers
+            .bind_reserved_pane(launcher, pane.clone(), scope, cx);
         Some(pane)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn launch_from_launcher(
+    pub(super) fn launch_from_launcher(
         &mut self,
         launcher: Entity<ChatLauncher>,
-        key: Option<EntryKey>,
-        pane: Option<PaneKey>,
-        scope: ProjectScope,
-        cwd: Option<String>,
-        worktree: Option<WorktreeSpec>,
+        request: LaunchRequest,
         background: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.launch_from_launcher_with_prompt(
-            launcher, key, pane, scope, cwd, worktree, background, None, window, cx,
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn launch_from_launcher_with_prompt(
-        &mut self,
-        launcher: Entity<ChatLauncher>,
-        key: Option<EntryKey>,
-        pane: Option<PaneKey>,
-        scope: ProjectScope,
-        cwd: Option<String>,
-        worktree: Option<WorktreeSpec>,
-        background: bool,
-        initial_prompt: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2790,131 +2789,68 @@ impl NativeRoot {
         {
             return;
         }
-        let initial_prompt = key.as_ref().and_then(|_| {
-            initial_prompt.or_else(|| {
-                let view = launcher.read(cx);
-                view.sample_prompt
-                    .as_ref()
-                    .and_then(|field| normalized_value(field.read(cx).text()))
-            })
+        let initial_prompt = request.key.as_ref().and_then(|_| {
+            launcher
+                .read(cx)
+                .resolve_initial_prompt(request.initial_prompt.clone(), cx)
         });
-        let gated = key.as_ref().and_then(|key| {
-            let view = launcher.read(cx);
-            let runtime_key = match key {
-                EntryKey::Agent(runtime) => Some(runtime.as_str()),
-                EntryKey::Role(id) => view
-                    .roles
-                    .iter()
-                    .find(|role| role.id == *id)
-                    .map(|role| role.runtime.as_str()),
-            }?;
-            view.runtimes
-                .iter()
-                .find(|runtime| runtime.name.key() == runtime_key && runtime.below_minimum)
-                .map(|runtime| runtime.name)
-        });
-        if let Some(runtime) = gated.filter(|runtime| {
+        let gated = request
+            .key
+            .as_ref()
+            .and_then(|key| launcher.read(cx).gated_runtime(key));
+        if let Some((runtime, installed)) = gated.filter(|(runtime, _)| {
             !self
                 .target_task(&client.target, *runtime)
                 .is_some_and(|task| {
                     task.state == runner_core::protocol::RuntimeUpdateState::Succeeded
                 })
         }) {
-            let installed = launcher
-                .read(cx)
-                .runtimes
-                .iter()
-                .find(|entry| entry.name == runtime)
-                .and_then(|entry| entry.installed_version.clone());
             let updatable = crate::surfaces::agent_recovery::runtime_updatable_for_version(
                 runtime,
                 installed.as_deref(),
             );
-            let pane = self.reserve_update_pane(&launcher, pane, &scope, cx);
+            let pane = self.reserve_update_pane(&launcher, request.pane, &request.scope, cx);
+            let retry_request = LaunchRequest {
+                pane,
+                initial_prompt,
+                ..request
+            };
             launcher.update(cx, |view, cx| {
-                view.pending = None;
-                view.update_retry = Some(UpdateRetry {
-                    runtime,
-                    gate: view
-                        .runtimes
-                        .iter()
-                        .find(|entry| entry.name == runtime)
-                        .and_then(|entry| {
-                            Some(runner_core::protocol::RuntimeVersionGate {
-                                runtime,
-                                installed_version: entry.installed_version.clone()?,
-                                min_version: entry.min_version.clone()?,
-                            })
-                        }),
-                    action: UpdateAction::Chat {
-                        key,
-                        pane,
-                        scope,
-                        cwd,
-                        worktree: worktree.clone(),
-                        initial_prompt,
-                    },
-                    requested: updatable,
-                    ready: false,
-                });
-                cx.notify();
+                let gate = view.version_gate_for(runtime);
+                view.set_chat_update_retry(runtime, gate, retry_request, updatable, cx);
             });
             if updatable {
                 self.start_target_update(client, runtime, window, cx);
             }
             return;
         }
-        let has_pane = pane.is_some();
-        let mut placement = pane.and_then(|pane| {
-            let layout = if client.is_remote() {
-                self.remote_client.tab_layout(&pane.tab_id)
-            } else {
-                self.tabs
-                    .tabs()
-                    .iter()
-                    .find(|layout| layout.id == pane.tab_id)
-            };
-            layout
-                .filter(|layout| {
-                    layout.id == pane.tab_id
-                        && layout
-                            .root
-                            .leaves()
-                            .iter()
-                            .any(|leaf| leaf.id == pane.pane_id && leaf.session_id.is_none())
-                })
-                .map(|layout| (layout.clone(), pane.pane_id))
-        });
+        let has_pane = request.pane.is_some();
+        let mut placement = resolve_pane_placement(
+            request.pane,
+            client.is_remote(),
+            &self.tabs,
+            &self.remote_client,
+        );
         if has_pane && placement.is_none() {
-            launcher.update(cx, |launcher, cx| {
-                launcher.pending = None;
-                launcher.error =
-                    Some(crate::i18n::text("ui.the_target_tab_is_no_longer_active").into());
-                cx.notify();
-            });
+            launcher.update(cx, |launcher, cx| launcher.fail_missing_target_tab(cx));
             return;
         }
         if launcher.read(cx).default_page {
             if let Some((layout, _)) = placement.as_mut() {
-                layout.parent_id = scope.project_id().map(str::to_owned);
+                layout.parent_id = request.scope.project_id().map(str::to_owned);
             }
         }
-        let mut tab_guard = if let Some((layout, _)) = &placement {
-            let guard = if self.launcher_tab_pending(&layout.id, cx) {
-                None
-            } else {
-                let key = format!("{}:{}", computer_key(&client.target), layout.id);
-                TabStart::begin(
-                    self.app_store.read(cx).launcher_tabs_pending.clone(),
-                    key,
-                    layout.clone(),
-                )
-            };
-            let Some(guard) = guard else {
-                launcher.update(cx, |launcher, cx| {
-                    launcher.pending = None;
-                    cx.notify();
-                });
+        let tab_guard = if let Some((layout, _)) = &placement {
+            let displayed_target = self.front_page_client(cx).target;
+            let Some(guard) = LauncherState::begin_tab_start(
+                &displayed_target,
+                &client.target,
+                layout,
+                &self.app_store,
+                &self.remote_client,
+                cx,
+            ) else {
+                launcher.update(cx, |launcher, cx| launcher.clear_pending(cx));
                 return;
             };
             Some(guard)
@@ -2925,65 +2861,30 @@ impl NativeRoot {
             .as_ref()
             .map(|(layout, pane)| self.estimated_terminal_size(layout, pane, window, cx))
             .unwrap_or((INITIAL_COLS, INITIAL_ROWS));
-        if key.is_none() {
-            let mut draft = placement
-                .as_ref()
-                .map(|(layout, _)| layout.clone())
-                .unwrap_or_else(|| PaneLayout::single(None, &[]));
-            if draft.id.is_empty() {
-                draft.id = runner_core::event_log::UlidGen::new()
-                    .next()
-                    .expect("new tab ULID");
-            }
-            draft.parent_id = scope.project_id().map(str::to_owned);
-            let pane = placement
-                .map(|(_, pane)| pane)
-                .unwrap_or_else(|| draft.focused_pane_id.clone());
-            let local_placement = (draft.clone(), pane.clone());
-            let placement_client = client.clone();
-            let placement_project = scope.project_id().map(str::to_owned);
-            let input = crate::surfaces::front_page::actions::ShellStart {
-                draft,
-                pane: Some(pane),
-                project: scope.project_id().map(str::to_owned),
-                cwd,
-                worktree,
+        let Some(key) = request.key else {
+            let (input, local_placement) = prepare_shell_start(
+                placement,
+                &request.scope,
+                request.cwd,
+                request.worktree,
                 size,
-            };
+            );
             use crate::surfaces::front_page::actions::WorkspaceAction;
             let Some((action, operation)) = WorkspaceAction::shell(self, input, cx) else {
-                launcher.update(cx, |launcher, cx| {
-                    launcher.pending = None;
-                    cx.notify();
-                });
+                launcher.update(cx, |launcher, cx| launcher.clear_pending(cx));
                 return;
             };
             let remote = action.client.is_remote();
-            let task = cx.background_spawn(async move {
-                let result = (|| {
-                    let mut done = operation()?;
-                    if !remote {
-                        let (mut layout, pane) = local_placement;
-                        layout
-                            .assign_session(&pane, done.session.as_ref().unwrap())
-                            .map_err(|error| error.to_string())?;
-                        if let Err(error) =
-                            placement_client.launcher_layout(&layout, placement_project)
-                        {
-                            let _ = placement_client.close(done.session.as_ref().unwrap());
-                            return Err(error.to_string());
-                        }
-                        done.layout = Some(layout);
-                    }
-                    Ok(done)
-                })();
-                if remote {
-                    if let (Some(guard), Ok(_)) = (tab_guard.as_mut(), &result) {
-                        guard.await_host();
-                    }
-                }
-                (tab_guard, result)
-            });
+            let scope = request.scope;
+            let task = spawn_shell_launch_task(
+                remote,
+                operation,
+                local_placement,
+                client,
+                scope.project_id().map(str::to_owned),
+                tab_guard,
+                cx,
+            );
             cx.spawn_in(window, async move |weak, cx| {
                 let (tab_guard, result) = task.await;
                 drop(tab_guard);
@@ -2992,14 +2893,7 @@ impl NativeRoot {
                         root.drain_ready_launches(window, cx)
                     });
                     launcher.update(cx, |launcher, cx| {
-                        if !remote || result.is_err() {
-                            launcher.pending = None;
-                        }
-                        launcher.error = result.as_ref().err().cloned();
-                        if let Ok(done) = &result {
-                            launcher.launched_session = done.session.clone();
-                        }
-                        cx.notify();
+                        launcher.finish_shell_launch(remote, &result, cx);
                     });
                     let reveal_remote = remote
                         && result.is_ok()
@@ -3021,14 +2915,13 @@ impl NativeRoot {
                                 });
                                 if let Err(error) = result {
                                     launcher.update(cx, |launcher, cx| {
-                                        launcher.error = Some(error.to_string());
-                                        cx.notify();
+                                        launcher.set_error(error.to_string(), cx);
                                     });
                                 } else {
                                     if root.remote_client.is_local() {
                                         root.reveal_started_scope(&scope, cx);
                                     }
-                                    root.launchers.retain(|_, cached| cached != &launcher);
+                                    root.launchers.remove(&launcher);
                                     root.mark_active_tab_viewed(window, cx);
                                     root.sync_active_chat_detail(cx);
                                     root.begin_chat_transition(
@@ -3047,25 +2940,18 @@ impl NativeRoot {
             })
             .detach();
             return;
-        }
-        let key = key.unwrap();
-        let mut launch = ChatLaunch {
-            input: launcher_input(
-                &key,
-                scope.project_id().map(str::to_owned),
-                cwd,
-                worktree.clone(),
-                size,
-                initial_prompt,
-            ),
-            placement,
-            started: launcher
-                .read(cx)
-                .started
-                .as_ref()
-                .filter(|(entry, _)| entry == &key)
-                .map(|(_, session)| session.clone()),
         };
+        let scope = request.scope;
+        let worktree = request.worktree;
+        let launch = launcher.read(cx).build_chat_launch(
+            &key,
+            &scope,
+            request.cwd,
+            worktree.clone(),
+            placement,
+            size,
+            initial_prompt,
+        );
         let remote = client
             .is_remote()
             .then(|| {
@@ -3074,41 +2960,23 @@ impl NativeRoot {
             })
             .flatten();
         if client.is_remote() && remote.is_none() {
-            launcher.update(cx, |launcher, cx| {
-                launcher.pending = None;
-                cx.notify();
-            });
+            launcher.update(cx, |launcher, cx| launcher.clear_pending(cx));
             return;
         }
         let directory = self.app_store.read(cx).app_data_dir.clone();
-        let target = client.target.clone();
         let use_role_directory = client.is_remote()
             && !launcher.read(cx).changed_directory
             && client.supports(&["role"]);
-        let recent_key = key.clone();
         let completion_target = client.target.clone();
-        let remote_target = client.is_remote();
-        let task = cx.background_spawn(async move {
-            let result = (|| {
-                if use_role_directory && launch.started.is_none() {
-                    if let Some(role) = &launch.input.role {
-                        if let Some(directory) = client.role_working_dir(role.clone())? {
-                            launch.input.cwd = Some(directory);
-                        }
-                    }
-                }
-                client.launch_chat(&mut launch)
-            })();
-            if launch.started.is_some() {
-                record_launcher_use(&directory, &target, recent_key);
-            }
-            if remote_target {
-                if let (Some(guard), Ok(_)) = (tab_guard.as_mut(), &result) {
-                    guard.await_host();
-                }
-            }
-            (tab_guard, launch, result)
-        });
+        let task = spawn_chat_launch_task(
+            client,
+            launch,
+            directory,
+            key.clone(),
+            use_role_directory,
+            tab_guard,
+            cx,
+        );
         cx.spawn_in(window, async move |weak, cx| {
             let (tab_guard, launch, result) = task.await;
             drop(tab_guard);
@@ -3130,24 +2998,22 @@ impl NativeRoot {
                         &scope,
                         cx,
                     );
-                    let retry = UpdateRetry {
-                        runtime: gate.runtime,
-                        gate: Some(gate),
-                        action: UpdateAction::Chat {
-                            key: Some(key.clone()),
-                            pane,
-                            scope: scope.clone(),
-                            cwd: launch.input.cwd.clone(),
-                            worktree: worktree.clone(),
-                            initial_prompt: launch.input.initial_prompt.clone(),
-                        },
-                        requested: false,
-                        ready: false,
+                    let retry_request = LaunchRequest {
+                        key: Some(key.clone()),
+                        pane,
+                        scope: scope.clone(),
+                        cwd: launch.input.cwd.clone(),
+                        worktree: worktree.clone(),
+                        initial_prompt: launch.input.initial_prompt.clone(),
                     };
                     launcher.update(cx, |view, cx| {
-                        view.update_retry = Some(retry);
-                        view.pending = None;
-                        cx.notify();
+                        view.set_chat_update_retry(
+                            gate.runtime,
+                            Some(gate),
+                            retry_request,
+                            false,
+                            cx,
+                        );
                     });
                 }
                 if let Some(action) = remote {
@@ -3155,17 +3021,7 @@ impl NativeRoot {
                         return;
                     }
                     launcher.update(cx, |launcher, cx| {
-                        if result.is_ok() {
-                            launcher.sample_prompt = None;
-                            launcher.sample_prompt_auto = None;
-                        } else {
-                            launcher.pending = None;
-                        }
-                        launcher.launched_session =
-                            result.as_ref().ok().map(|output| output.session.clone());
-                        launcher.started = launch.started.map(|session| (key.clone(), session));
-                        launcher.error = result.as_ref().err().map(ToString::to_string);
-                        cx.notify();
+                        launcher.finish_remote_chat_launch(&key, launch.started, &result, cx);
                     });
                     if let Ok(output) = result {
                         root.remote_client.complete_chat_launch(
@@ -3179,15 +3035,12 @@ impl NativeRoot {
                     }
                 } else {
                     launcher.update(cx, |launcher, cx| {
-                        if result.is_ok() {
-                            launcher.sample_prompt = None;
-                            launcher.sample_prompt_auto = None;
-                        }
-                        launcher.pending = None;
-                        launcher.started =
-                            launch.started.clone().map(|session| (key.clone(), session));
-                        launcher.error = result.as_ref().err().map(ToString::to_string);
-                        cx.notify();
+                        launcher.finish_local_chat_launch(
+                            &key,
+                            launch.started.clone(),
+                            &result,
+                            cx,
+                        );
                     });
                     if root.front_page_client(cx).target != completion_target {
                         root.refresh_sessions(cx);
@@ -3205,7 +3058,7 @@ impl NativeRoot {
                                     })
                                 },
                             );
-                        root.launchers.retain(|_, cached| cached != &launcher);
+                        root.launchers.remove(&launcher);
                         if background && !visible {
                             root.refresh_sessions(cx);
                             let _ = root.reload_tabs(cx);
@@ -3240,24 +3093,6 @@ impl NativeRoot {
         );
     }
 
-    /// Whether a mission entry point reached the crew or goal step.
-    pub(crate) fn mission_launcher_open(&self, cx: &App) -> bool {
-        self.launchers
-            .values()
-            .any(|launcher| launcher.read(cx).step != Step::Start)
-    }
-
-    pub(crate) fn launcher_search_focused(&self, window: &Window, cx: &App) -> bool {
-        self.launchers.values().any(|launcher| {
-            launcher
-                .read(cx)
-                .field()
-                .read(cx)
-                .focus_handle()
-                .is_focused(window)
-        })
-    }
-
     pub(crate) fn open_pane_chat_modal(
         &mut self,
         pane_id: &str,
@@ -3269,6 +3104,7 @@ impl NativeRoot {
         let pane = PaneKey::new(&layout.id, pane_id);
         self.render_launcher(Some(pane), false, window, cx);
     }
+
     pub(crate) fn test_start_launcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let layout = self.front_page_layout().unwrap();
         let pane = PaneKey::new(&layout.id, &layout.focused_pane_id);
@@ -3290,11 +3126,14 @@ impl NativeRoot {
         let pane = launcher.read(cx).pane.clone();
         self.launch_from_launcher(
             launcher,
-            Some(key),
-            pane,
-            scope,
-            cwd,
-            None,
+            LaunchRequest {
+                key: Some(key),
+                pane,
+                scope,
+                cwd,
+                worktree: None,
+                initial_prompt: None,
+            },
             false,
             window,
             cx,

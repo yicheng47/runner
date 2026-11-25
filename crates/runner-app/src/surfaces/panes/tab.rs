@@ -298,7 +298,15 @@ impl NativeRoot {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.sync_chat_panel(cx);
-        self.prune_launchers(cx);
+        let target = self.front_page_client(cx).target;
+        let active_layout = self.front_page_layout().cloned();
+        self.launchers.prune(
+            &target,
+            active_layout.as_ref(),
+            &self.tabs,
+            &self.remote_client,
+            cx,
+        );
         self.ensure_active_chat_detail(cx);
         let error_banner = self
             .chat_error
@@ -368,7 +376,14 @@ impl NativeRoot {
         let Some(layout) = layout_opt else {
             let setup_visible = self.setup_visible(cx);
             let content = if setup_visible {
-                self.render_setup(window, cx)
+                let task_pill_visible =
+                    !self.agent_tasks.hidden && !self.agent_tasks.tasks.is_empty();
+                self.setup.render(
+                    &self.app_store,
+                    &self.agent_tasks.tasks,
+                    task_pill_visible,
+                    cx,
+                )
             } else {
                 self.render_launcher(None, true, window, cx)
                     .into_any_element()
