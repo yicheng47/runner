@@ -412,8 +412,8 @@ impl MissionWorkspace {
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| this.end_feed_scrollbar_drag(cx)),
                             )
-                            .on_scroll_wheel(cx.listener(
-                                |this, event: &gpui::ScrollWheelEvent, _, cx| {
+                            .on_scroll(cx.listener(
+                                |this, event: &gpui::ScrollEvent, _, cx| {
                                     this.prepare_feed_scrollbar(cx);
                                     let position =
                                         -f32::from(

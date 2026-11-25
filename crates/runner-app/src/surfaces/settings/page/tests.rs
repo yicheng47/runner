@@ -2287,7 +2287,7 @@ fn launch_dims_prefer_direct_layouts_and_fall_back_to_mission_geometry() {
 fn appearance_keyboard_tabs_between_theme_cards_and_applies_selection() {
     use crate::theme::{DarkTheme, ThemeVariant};
     use crate::theme_snapshot::ThemeGuard;
-    use gpui::{size, Modifiers, ScrollWheelEvent, TestAppContext, VisualTestContext};
+    use gpui::{size, Modifiers, ScrollEvent, TestAppContext, VisualTestContext};
 
     let _theme = ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();
@@ -2323,7 +2323,7 @@ fn appearance_keyboard_tabs_between_theme_cards_and_applies_selection() {
             .debug_bounds("SETTINGS_LIGHT_THEME_GALLERY")
             .unwrap()
             .center();
-        visual.simulate_event(ScrollWheelEvent {
+        visual.simulate_event(ScrollEvent {
             position: scroll_target,
             delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.), px(-320.))),
             ..Default::default()

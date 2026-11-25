@@ -1516,8 +1516,9 @@ mod tests {
 
     fn press_key(visual: &mut VisualTestContext, key: &str) {
         visual.simulate_keystrokes(key);
+        let os = visual.read(|cx| cx.platform_info().os);
         visual.simulate_event(KeyUpEvent {
-            keystroke: Keystroke::parse(key).unwrap(),
+            keystroke: Keystroke::parse_with_os(key, os).unwrap(),
         });
         visual.run_until_parked();
     }

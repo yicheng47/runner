@@ -1143,7 +1143,7 @@ fn clamped_role_prompt_copy_before_show_all_copies_entire_code_block() {
     );
     let header_before = page.visual.debug_bounds(header_selector).unwrap();
     let before_shift = header_before.left() - unwrapped_line1.left();
-    page.visual.simulate_event(gpui::ScrollWheelEvent {
+    page.visual.simulate_event(gpui::ScrollEvent {
         position: gpui::point(header_before.center().x, unwrapped_line1.center().y),
         delta: gpui::ScrollDelta::Pixels(gpui::point(px(-80.), px(0.))),
         ..Default::default()
@@ -1828,14 +1828,6 @@ fn edit_details_opens_the_role_page_in_edit_mode() {
 
 /// Records the width layout offers a text leaf, in the order offered.
 struct MeasureProbe(std::rc::Rc<std::cell::RefCell<Vec<gpui::AvailableSpace>>>);
-
-impl gpui::IntoElement for MeasureProbe {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
 
 impl gpui::Element for MeasureProbe {
     type RequestLayoutState = ();

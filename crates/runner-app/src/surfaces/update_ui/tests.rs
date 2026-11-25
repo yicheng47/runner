@@ -295,7 +295,8 @@ mod in_a_window {
     fn press(visual: &mut VisualTestContext, key: &str) {
         visual.simulate_keystrokes(key);
         visual.run_until_parked();
-        let keystroke = gpui::Keystroke::parse(key).unwrap();
+        let os = visual.read(|cx| cx.platform_info().os);
+        let keystroke = gpui::Keystroke::parse_with_os(key, os).unwrap();
         visual.update(|window, cx| {
             window.dispatch_event(gpui::KeyUpEvent { keystroke }.to_platform_input(), cx);
         });

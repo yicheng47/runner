@@ -703,7 +703,7 @@ impl NotificationController {
             },
         );
         for tag in stale {
-            cx.dismiss_system_notification(&tag);
+            cx.dismiss_system_notification(&tag).detach();
             self.posted.remove(&tag);
         }
     }
@@ -726,7 +726,7 @@ impl NotificationController {
                     self.pending_questions.remove(id);
                     let tag = format!("question:{id}");
                     if self.posted.remove(&tag).is_some() {
-                        cx.dismiss_system_notification(&tag);
+                        cx.dismiss_system_notification(&tag).detach();
                     }
                 }
             }
@@ -904,7 +904,7 @@ pub(crate) fn dismiss_all(cx: &mut App) {
     };
     controller.update(cx, |this, cx| {
         for (tag, _) in std::mem::take(&mut this.posted) {
-            cx.dismiss_system_notification(&tag);
+            cx.dismiss_system_notification(&tag).detach();
         }
     });
 }

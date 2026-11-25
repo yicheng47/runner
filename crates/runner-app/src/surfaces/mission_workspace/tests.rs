@@ -1445,7 +1445,7 @@ struct MissionRailLayoutTest {
 #[test]
 fn mission_rail_scrolls_long_roster_and_goal_above_corner_padding() {
     use crate::theme_snapshot::ThemeGuard;
-    use gpui::{ScrollDelta, ScrollWheelEvent, TestAppContext, VisualTestContext};
+    use gpui::{ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext};
     let _theme = ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();
     let mut cx = TestAppContext::single();
@@ -1521,7 +1521,7 @@ fn mission_rail_scrolls_long_roster_and_goal_above_corner_padding() {
         last.bottom() > viewport.bottom(),
         "{view:?}: {last:?} {viewport:?}"
     );
-    visual.simulate_event(ScrollWheelEvent {
+    visual.simulate_event(ScrollEvent {
         position: viewport.center(),
         delta: ScrollDelta::Lines(point(0., -1000.)),
         ..Default::default()
@@ -3211,7 +3211,7 @@ fn long_feed_builds_visible_blocks_caches_markdown_and_preserves_scroll_and_sele
     visual.run_until_parked();
     let viewport = workspace.read_with(&visual, |this, _| this.feed_list.viewport_bounds());
     for _ in 0..8 {
-        visual.simulate_event(gpui::ScrollWheelEvent {
+        visual.simulate_event(gpui::ScrollEvent {
             position: viewport.center(),
             delta: gpui::ScrollDelta::Lines(point(0., -100000.)),
             ..Default::default()
@@ -3431,7 +3431,7 @@ fn feed_wheel_reaches_unmeasured_history_and_preserves_horizontal_padding() {
     assert_eq!(group.left(), viewport.left());
     assert_eq!(group.size.width, viewport.size.width);
     for _ in 0..60 {
-        visual.simulate_event(gpui::ScrollWheelEvent {
+        visual.simulate_event(gpui::ScrollEvent {
             position: viewport.center(),
             delta: gpui::ScrollDelta::Pixels(point(px(0.), px(100.))),
             ..Default::default()
@@ -4299,7 +4299,7 @@ fn feed_scrollbar_track_drag_and_wheel_reach_unmeasured_history() {
         assert!(!this.feed_list.is_scrollbar_dragging());
         top
     });
-    visual.simulate_event(gpui::ScrollWheelEvent {
+    visual.simulate_event(gpui::ScrollEvent {
         position: gutter.center(),
         delta: gpui::ScrollDelta::Pixels(point(px(0.), px(100.))),
         ..Default::default()

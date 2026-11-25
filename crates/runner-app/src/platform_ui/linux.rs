@@ -371,6 +371,46 @@ mod tests {
         );
     }
 
+    fn assert_split_quad_corners(
+        quads: &[&gpui::Quad],
+        expected: Corners<gpui::ScaledPixels>,
+    ) -> Bounds<gpui::ScaledPixels> {
+        assert!(!quads.is_empty());
+        let bounds = quads[0].bounds;
+        for quad in quads {
+            assert_eq!(quad.bounds, bounds);
+        }
+        if expected == Corners::default() {
+            assert_eq!(quads.len(), 1);
+            assert_eq!(quads[0].corner_radii, expected);
+        } else {
+            // GPUI splits a rounded quad into one unrounded interior quad and edge strips carrying the corner radii.
+            let mut interiors = 0;
+            let mut strips = 0;
+            for quad in quads {
+                assert!(
+                    quad.content_mask.bounds.left() >= bounds.left()
+                        && quad.content_mask.bounds.right() <= bounds.right()
+                        && quad.content_mask.bounds.top() >= bounds.top()
+                        && quad.content_mask.bounds.bottom() <= bounds.bottom()
+                );
+                if quad.corner_radii == Corners::default() {
+                    interiors += 1;
+                } else if quad.corner_radii == expected {
+                    strips += 1;
+                } else {
+                    panic!(
+                        "unexpected corner_radii {:?}, expected {:?}",
+                        quad.corner_radii, expected
+                    );
+                }
+            }
+            assert_eq!(interiors, 1);
+            assert!(strips >= 1);
+        }
+        bounds
+    }
+
     #[test]
     fn frame_paints_opaque_rounded_content_without_filling_the_resize_margin() {
         struct FrameView {
@@ -437,29 +477,44 @@ mod tests {
                 );
                 visual.update(|window, _| {
                     let scale = window.scale_factor();
+                    let expected_bounds = content.scale(scale);
+                    let expected_corners =
+                        frame_corners(decorations, maximized, fullscreen).scale(scale);
                     let quads = window.painted_quads();
                     let fills = quads
                         .iter()
-                        .filter(|quad| !quad.background.is_transparent())
+                        .filter(|quad| {
+                            !quad.background.is_transparent() && quad.border_color.a == 0.
+                        })
                         .collect::<Vec<_>>();
-                    assert_eq!(fills.len(), 1);
-                    let fill = fills[0];
-                    assert_eq!(fill.bounds, content.scale(scale));
-                    assert_eq!(fill.background.as_solid(), Some(crate::theme::sidebar()));
-                    assert_eq!(fill.background.as_solid().unwrap().a, 1.);
-                    assert_eq!(
-                        fill.corner_radii,
-                        frame_corners(decorations, maximized, fullscreen).scale(scale)
-                    );
+                    for fill in &fills {
+                        assert_eq!(fill.background.as_solid(), Some(crate::theme::sidebar()));
+                        assert_eq!(fill.background.as_solid().unwrap().a, 1.);
+                    }
+                    let bounds = assert_split_quad_corners(&fills, expected_corners);
+                    assert_eq!(bounds, expected_bounds);
+
                     let borders = quads
                         .iter()
                         .filter(|quad| quad.border_color.a > 0.)
                         .collect::<Vec<_>>();
                     if matches!(decorations, Decorations::Client { .. }) {
-                        assert!(!borders.is_empty());
+                        assert_eq!(borders.len(), 4);
                         for border in borders {
+                            assert_eq!(border.bounds, expected_bounds);
                             assert_eq!(border.border_color, crate::theme::border());
-                            assert_eq!(border.border_widths, Edges::all(px(1.)).scale(scale));
+                            if expected_corners == Corners::default() {
+                                // Unrounded opaque borders are lowered into four solid border-colored edge strips.
+                                assert_eq!(
+                                    border.background.as_solid(),
+                                    Some(crate::theme::border())
+                                );
+                                assert_eq!(border.border_widths, Edges::default());
+                                assert_eq!(border.corner_radii, Corners::default());
+                            } else {
+                                assert_eq!(border.border_widths, Edges::all(px(1.)).scale(scale));
+                                assert_eq!(border.corner_radii, expected_corners);
+                            }
                         }
                     } else {
                         assert!(borders.is_empty());
@@ -560,53 +615,55 @@ mod tests {
                     })
                     .unwrap();
                 visual.update(|window, _| {
+                    let scale = window.scale_factor();
+                    let expected_corners =
+                        frame_corners(decorations, maximized, fullscreen).scale(scale);
                     let quads = window.painted_quads();
                     let scrims = quads
                         .iter()
                         .filter(|quad| {
-                            quad.background.as_solid() == Some(gpui::rgba(0x00000099).into())
+                            quad.border_color.a == 0.
+                                && quad.background.as_solid() == Some(gpui::rgba(0x00000099).into())
                         })
                         .collect::<Vec<_>>();
-                    assert_eq!(scrims.len(), 1);
-                    let scrim = scrims[0];
-                    assert_eq!(
-                        scrim.corner_radii,
-                        frame_corners(decorations, maximized, fullscreen)
-                            .scale(window.scale_factor())
-                    );
-                    let bounds = content.scale(window.scale_factor());
+                    let scrim_bounds = assert_split_quad_corners(&scrims, expected_corners);
+                    let bounds = content.scale(scale);
                     assert!(
-                        scrim.bounds.left() >= bounds.left()
-                            && scrim.bounds.right() <= bounds.right()
+                        scrim_bounds.left() >= bounds.left()
+                            && scrim_bounds.right() <= bounds.right()
                     );
                     assert!(
-                        scrim.bounds.top() >= bounds.top()
-                            && scrim.bounds.bottom() <= bounds.bottom()
+                        scrim_bounds.top() >= bounds.top()
+                            && scrim_bounds.bottom() <= bounds.bottom()
                     );
                     if drawer {
-                        let panel = quads
+                        let panel_quads = quads
                             .iter()
-                            .find(|quad| {
-                                quad.bounds == panel.scale(window.scale_factor())
+                            .filter(|quad| {
+                                quad.border_color.a == 0.
+                                    && quad.bounds == panel.scale(scale)
                                     && quad.background.as_solid() == Some(crate::theme::panel())
                             })
-                            .unwrap();
-                        assert_eq!(panel.corner_radii.top_right, scrim.corner_radii.top_right);
-                        assert_eq!(
-                            panel.corner_radii.bottom_right,
-                            scrim.corner_radii.bottom_right
-                        );
-                        let footer = quads
+                            .collect::<Vec<_>>();
+                        let expected_panel_corners = Corners {
+                            top_right: expected_corners.top_right,
+                            bottom_right: expected_corners.bottom_right,
+                            ..Corners::default()
+                        };
+                        assert_split_quad_corners(&panel_quads, expected_panel_corners);
+                        let footer_quads = quads
                             .iter()
-                            .find(|quad| {
-                                quad.background.as_solid()
-                                    == Some(crate::theme::with_alpha(crate::theme::bg(), 0.4))
+                            .filter(|quad| {
+                                quad.border_color.a == 0.
+                                    && quad.background.as_solid()
+                                        == Some(crate::theme::with_alpha(crate::theme::bg(), 0.4))
                             })
-                            .unwrap();
-                        assert_eq!(
-                            footer.corner_radii.bottom_right,
-                            scrim.corner_radii.bottom_right
-                        );
+                            .collect::<Vec<_>>();
+                        let expected_footer_corners = Corners {
+                            bottom_right: expected_corners.bottom_right,
+                            ..Corners::default()
+                        };
+                        assert_split_quad_corners(&footer_quads, expected_footer_corners);
                     }
                 });
             }

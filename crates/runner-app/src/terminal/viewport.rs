@@ -150,11 +150,3 @@ impl Element for TerminalViewportElement {
         child.paint(window, cx);
     }
 }
-
-impl IntoElement for TerminalViewportElement {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}

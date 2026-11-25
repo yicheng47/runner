@@ -12,7 +12,7 @@ use gpui::{
     div, fill, point, px, relative, size, svg, App, Bounds, ClipboardItem, ContentMask, Context,
     CursorStyle, DispatchPhase, Element, Entity, FocusHandle, Font, GlobalElementId, Hitbox,
     HitboxBehavior, Hsla, InspectorElementId, KeyDownEvent, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, ShapedLine, SharedString, Style,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollEvent, ShapedLine, SharedString, Style,
     TextAlign, TextRun, Window,
 };
 use runner_app::ui::{
@@ -1485,14 +1485,6 @@ struct DiffPrepaint {
     selections: Vec<Bounds<Pixels>>,
 }
 
-impl IntoElement for UnifiedDiffElement {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
 impl Element for UnifiedDiffElement {
     type RequestLayoutState = ();
     type PrepaintState = DiffPrepaint;
@@ -2323,7 +2315,7 @@ fn register_mouse(
     window: &mut Window,
 ) {
     let scroll_view = view.clone();
-    window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
+    window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
         if phase != DispatchPhase::Bubble || !scroll_hitbox.should_handle_scroll(window) {
             return;
         }

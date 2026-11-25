@@ -12,7 +12,7 @@ use gpui::prelude::*;
 use gpui::{
     canvas, div, hsla, img, point, px, size, svg, AnyElement, App, Bounds, BoxShadow, Context,
     Corners, FocusHandle, FontWeight, Global, ImageSource, MouseButton, MouseDownEvent,
-    MouseMoveEvent, PinchEvent, Pixels, Point, RenderImage, ScrollWheelEvent, SharedString, Task,
+    MouseMoveEvent, PinchEvent, Pixels, Point, RenderImage, ScrollEvent, SharedString, Task,
     Window,
 };
 use image::codecs::gif::GifDecoder;
@@ -1958,7 +1958,7 @@ impl ImageCanvas {
             .items_center()
             .overflow_hidden()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+            .on_scroll(|_, _, cx| cx.stop_propagation())
             .on_pinch(|_, _, cx| cx.stop_propagation())
             .when(cfg!(test), move |el| {
                 #[cfg(test)]
@@ -2481,7 +2481,7 @@ impl Render for ImageCanvas {
                     }
                 }),
             )
-            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+            .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
                 let mut delta = event.delta.pixel_delta(px(24.));
                 if event.modifiers.shift && delta.x == px(0.) {
                     delta.x = delta.y;

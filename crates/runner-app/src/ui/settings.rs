@@ -642,8 +642,9 @@ mod tests {
                 .size_full()
                 .p_4()
                 .bg(theme::panel())
-                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, _| {
-                    this.bubbled_keys.push(event.keystroke.unparse());
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                    this.bubbled_keys
+                        .push(event.keystroke.unparse(cx.platform_info().os));
                 }))
                 .child(SegmentedControl::new(options).debug_selector("SEG_TRACK"))
         }

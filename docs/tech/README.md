@@ -13,7 +13,7 @@ Dependency notes name the crate version they were written against; internal code
 - [`terminal-rendering.md`](./terminal-rendering.md) — the path from a PTY read to painted pixels: daemon-owned models, app-side mirrors, viewport wakes, the GPUI element and the four design decisions that shape it.
 - [`alacritty-terminal.md`](./alacritty-terminal.md) — `alacritty_terminal` 0.26 as an emulator without a window: the vte parser, the Handler vocabulary, the Term and its ring-buffer grid, cells, colors, modes, reflow, and the event channel back to the PTY.
 - [`markdown-rendering.md`](./markdown-rendering.md) — how Markdown becomes text on screen: the block model and the rows cut from it, CommonMark and GFM, `pulldown-cmark` 0.13.6's event stream and source spans, Runner's two renderers and where they disagree, why rows keep drawing cheap, how Zed's shared renderer and Mermaid work, and the two-phase plan (#1342, #1443), with a glossary and a reading path; Runner `main` `c8cd3b70`, Zed `main` `4aa53044`.
-- [`gpui-rendering.md`](./gpui-rendering.md) — `gpui-pre` 0.3.7 (`zed@1a28cff`) as Runner uses it for the terminal: the frame lifecycle, the Element trait, the scene and its GPU batches, text shaping and the layout cache, paths, masks, hitboxes, IME input, and entities.
+- [`gpui-rendering.md`](./gpui-rendering.md) — `gpui-pre` 0.3.14 (`zed@f126950`) as Runner uses it for the terminal: the frame lifecycle, the Element trait, the scene and its GPU batches, text shaping and the layout cache, paths, masks, hitboxes, IME input, and entities.
 
 ## Background reading
 
@@ -34,13 +34,15 @@ Cargo keeps every pinned crate's source on disk. On macOS:
 ```sh
 ls ~/.cargo/registry/src/*/alacritty_terminal-0.26.0/src
 ls ~/.cargo/registry/src/*/vte-0.15.0/src
-ls ~/.cargo/registry/src/*/gpui-pre-0.3.7/src
-ls ~/.cargo/registry/src/*/gpui-pre-macos-0.3.7/src
-ls ~/.cargo/registry/src/*/gpui-pre-windows-0.3.7/src
-ls ~/.cargo/registry/src/*/gpui-pre-apple-0.3.7/src
+ls ~/.cargo/registry/src/*/gpui-pre-0.3.14/src
+ls ~/.cargo/registry/src/*/gpui-pre-macos-0.3.14/src
+ls ~/.cargo/registry/src/*/gpui-pre-windows-0.3.14/src
+ls ~/.cargo/registry/src/*/gpui-pre-apple-0.3.14/src
+ls ~/.cargo/registry/src/*/gpui-pre-linux-0.3.14/src
+ls ~/.cargo/registry/src/*/gpui-pre-wgpu-0.3.14/src
 ls ~/.cargo/registry/src/*/pulldown-cmark-0.13.6/src
 ```
 
-For GPUI, 0.3.7 is the snapshot of `zed@1a28cff`. Core code is in `gpui-pre`; platform text and window code is in `gpui-pre-macos` and `gpui-pre-windows`, and the Metal renderer is in `gpui-pre-apple`.
+For GPUI, 0.3.14 is the snapshot of `zed@f126950`. Core code is in `gpui-pre`; macOS and Windows window code is in `gpui-pre-macos` and `gpui-pre-windows`, the Apple Metal renderer and CoreText text system are in `gpui-pre-apple`, and Linux windowing and WGPU rendering live in `gpui-pre-linux` and `gpui-pre-wgpu`.
 
 For alacritty, a clone of `github.com/alacritty/alacritty` at tag `alacritty_terminal_v0.26.0` is byte-identical to the registry copy and comes with history and blame.

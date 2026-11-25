@@ -1276,10 +1276,11 @@ impl Harness {
 fn configure_viewer(h: &mut Harness) {
     h.visual.simulate_resize(size(px(900.), px(700.)));
     h.visual.update(|_, cx| {
-        cx.bind_keys([gpui::KeyBinding::new(
+        cx.bind_keys([crate::keymap::load_binding(
             &crate::keymap::platform_default("cmd-w"),
             crate::CloseTab,
             None,
+            cx,
         )]);
         crate::keymap::install_file_viewer_bindings(cx);
     });
@@ -3862,9 +3863,9 @@ fn zoom_with_focus_in_the_viewer_steps_only_the_files_font_size() {
             let combo = crate::keymap::effective_binding(id, &overrides).unwrap();
             for keys in crate::keymap::binding_strings(&combo) {
                 cx.bind_keys([match binding {
-                    "in" => gpui::KeyBinding::new(&keys, crate::ZoomIn, None),
-                    "out" => gpui::KeyBinding::new(&keys, crate::ZoomOut, None),
-                    _ => gpui::KeyBinding::new(&keys, crate::ZoomReset, None),
+                    "in" => crate::keymap::load_binding(&keys, crate::ZoomIn, None, cx),
+                    "out" => crate::keymap::load_binding(&keys, crate::ZoomOut, None, cx),
+                    _ => crate::keymap::load_binding(&keys, crate::ZoomReset, None, cx),
                 }]);
             }
         }
@@ -5928,11 +5929,12 @@ fn image_tab_fit_zoom_pan_pinch_keys_gif_and_per_tab_state() {
     // Scrolling pans when zoomed in and clamps at the edges.
     let (max_pan_x, max_pan_y) = large_canvas.read_with(&h.visual, |c, _| c.max_pan().unwrap());
     assert!(max_pan_x > 0. || max_pan_y > 0.);
-    h.visual.simulate_event(gpui::ScrollWheelEvent {
+    h.visual.simulate_event(gpui::ScrollEvent {
         position: click_pt,
         delta: gpui::ScrollDelta::Pixels(gpui::point(px(-50_000.), px(-50_000.))),
         modifiers: Modifiers::default(),
         touch_phase: gpui::TouchPhase::Moved,
+        ..Default::default()
     });
     h.settle();
     large_canvas.read_with(&h.visual, |c, _| {

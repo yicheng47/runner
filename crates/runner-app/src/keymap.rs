@@ -150,8 +150,50 @@ fn windows_default(macos: &str) -> String {
     }
 }
 
+pub(crate) const fn host_os() -> gpui::OperatingSystem {
+    #[cfg(target_os = "macos")]
+    {
+        gpui::OperatingSystem::Mac
+    }
+    #[cfg(windows)]
+    {
+        gpui::OperatingSystem::Windows
+    }
+    #[cfg(target_os = "linux")]
+    {
+        gpui::OperatingSystem::Linux
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+    {
+        gpui::OperatingSystem::Unknown
+    }
+}
+
+pub(crate) fn load_binding<A: gpui::Action>(
+    keystrokes: &str,
+    action: A,
+    context: Option<&str>,
+    cx: &App,
+) -> KeyBinding {
+    let context_predicate = context.map(|context| {
+        gpui::KeyBindingContextPredicate::parse(context)
+            .unwrap()
+            .into()
+    });
+    KeyBinding::load(
+        keystrokes,
+        Box::new(action),
+        context_predicate,
+        false,
+        None,
+        cx,
+    )
+    .expect("valid keybinding")
+}
+
 fn default_combo(macos: &str, label: Option<&str>, shift_optional: bool) -> KeyCombo {
-    let keystroke = Keystroke::parse(&platform_default(macos)).expect("valid default binding");
+    let keystroke = Keystroke::parse_with_os(&platform_default(macos), host_os())
+        .expect("valid default binding");
     let (code, implied_shift) = code_from_gpui_key(&keystroke.key).expect("valid default key");
     key_combo(
         &code,
@@ -1094,11 +1136,12 @@ fn binding_context(entry: &KeymapEntry, combo: &KeyCombo) -> Option<&'static str
 pub(crate) fn install_file_viewer_bindings(cx: &mut App) {
     let context = Some("FileViewer");
     cx.bind_keys([
-        KeyBinding::new(&platform_default("cmd-w"), CloseFileTab, context),
-        KeyBinding::new(
+        load_binding(&platform_default("cmd-w"), CloseFileTab, context, cx),
+        load_binding(
             &platform_default("cmd-w"),
             CloseFileTab,
             Some("FileViewer > TextInput"),
+            cx,
         ),
         KeyBinding::new("ctrl-tab", NextFileTab, context),
         KeyBinding::new("ctrl-shift-tab", PreviousFileTab, context),
@@ -1131,10 +1174,10 @@ pub(crate) fn install_file_zoom_bindings(cx: &mut App, overrides: &KeymapOverrid
     // The find field is a text input inside the viewer.
     for context in [Some("FileViewer"), Some("FileViewer > TextInput")] {
         for binding in combos("zoom-in") {
-            cx.bind_keys([KeyBinding::new(&binding, crate::ZoomFileIn, context)]);
+            cx.bind_keys([load_binding(&binding, crate::ZoomFileIn, context, cx)]);
         }
         for binding in combos("zoom-out") {
-            cx.bind_keys([KeyBinding::new(&binding, crate::ZoomFileOut, context)]);
+            cx.bind_keys([load_binding(&binding, crate::ZoomFileOut, context, cx)]);
         }
     }
 }
@@ -1147,12 +1190,12 @@ pub(crate) fn install_bindings(
 ) {
     cx.clear_key_bindings();
     cx.bind_keys([
-        KeyBinding::new(&platform_default("cmd-c"), Copy, Some("Terminal")),
+        load_binding(&platform_default("cmd-c"), Copy, Some("Terminal"), cx),
         #[cfg(target_os = "macos")]
-        KeyBinding::new(&platform_default("cmd-c"), Copy, Some("MissionFeed")),
+        load_binding(&platform_default("cmd-c"), Copy, Some("MissionFeed"), cx),
         #[cfg(any(windows, target_os = "linux"))]
         KeyBinding::new("ctrl-c", Copy, Some("MissionFeed")),
-        KeyBinding::new(&platform_default("cmd-v"), Paste, Some("Terminal")),
+        load_binding(&platform_default("cmd-v"), Paste, Some("Terminal"), cx),
     ]);
     if shortcuts_suspended {
         install_modal_bindings(cx);
@@ -1160,33 +1203,34 @@ pub(crate) fn install_bindings(
     }
     cx.bind_keys([
         #[cfg(target_os = "macos")]
-        KeyBinding::new(&platform_default("cmd-q"), Quit, None),
+        load_binding(&platform_default("cmd-q"), Quit, None, cx),
         #[cfg(target_os = "macos")]
         KeyBinding::new("alt-cmd-q", QuitAndStopSessions, None),
         #[cfg(target_os = "macos")]
-        KeyBinding::new(&platform_default("cmd-h"), Hide, None),
+        load_binding(&platform_default("cmd-h"), Hide, None, cx),
         #[cfg(target_os = "macos")]
-        KeyBinding::new(&platform_default("cmd-alt-h"), HideOthers, None),
+        load_binding(&platform_default("cmd-alt-h"), HideOthers, None, cx),
         #[cfg(target_os = "macos")]
         KeyBinding::new("cmd-m", Minimize, None),
-        KeyBinding::new(&platform_default("ctrl-cmd-f"), ToggleFullscreen, None),
+        load_binding(&platform_default("ctrl-cmd-f"), ToggleFullscreen, None, cx),
     ]);
     if let Some(combo) = effective_binding("close-pane", overrides) {
         for binding in binding_strings(&combo) {
-            cx.bind_keys([KeyBinding::new(&binding, CloseTab, None)]);
+            cx.bind_keys([load_binding(&binding, CloseTab, None, cx)]);
         }
     }
     install_file_viewer_bindings(cx);
     if let Some(combo) = effective_binding("system-close-window", overrides) {
         for binding in binding_strings(&combo) {
-            cx.bind_keys([KeyBinding::new(&binding, CloseWindow, None)]);
+            cx.bind_keys([load_binding(&binding, CloseWindow, None, cx)]);
         }
     }
     if effective_binding("new-window", overrides).is_some() {
-        cx.bind_keys([KeyBinding::new(
+        cx.bind_keys([load_binding(
             &platform_default("shift-cmd-n"),
             NewWindow,
             None,
+            cx,
         )]);
     }
     for entry in entries()
@@ -1200,42 +1244,42 @@ pub(crate) fn install_bindings(
         let context = context.as_deref();
         for binding in binding_strings(&combo) {
             let key_binding = match entry.id {
-                "new-chat" => KeyBinding::new(&binding, NewTab, context),
-                "new-terminal" => KeyBinding::new(&binding, NewTerminal, context),
-                "new-mission" => KeyBinding::new(&binding, NewMission, context),
-                "command-palette" => KeyBinding::new(&binding, CommandPalette, context),
-                "search-files" => KeyBinding::new(&binding, SearchFiles, context),
-                "toggle-session-info" => KeyBinding::new(&binding, ToggleSessionInfo, context),
-                "toggle-sidebar" => KeyBinding::new(&binding, ToggleSidebar, context),
-                "switch-sidebar-view" => KeyBinding::new(&binding, SwitchSidebarView, context),
+                "new-chat" => load_binding(&binding, NewTab, context, cx),
+                "new-terminal" => load_binding(&binding, NewTerminal, context, cx),
+                "new-mission" => load_binding(&binding, NewMission, context, cx),
+                "command-palette" => load_binding(&binding, CommandPalette, context, cx),
+                "search-files" => load_binding(&binding, SearchFiles, context, cx),
+                "toggle-session-info" => load_binding(&binding, ToggleSessionInfo, context, cx),
+                "toggle-sidebar" => load_binding(&binding, ToggleSidebar, context, cx),
+                "switch-sidebar-view" => load_binding(&binding, SwitchSidebarView, context, cx),
                 "toggle-terminal-drawer" => {
-                    KeyBinding::new(&binding, ToggleTerminalDrawer, context)
+                    load_binding(&binding, ToggleTerminalDrawer, context, cx)
                 }
-                "find-in-terminal" => KeyBinding::new(&binding, FindInTerminal, context),
-                "open-settings" => KeyBinding::new(&binding, OpenSettings, context),
-                "page-previous" => KeyBinding::new(&binding, NavigatePreviousPage, context),
-                "page-next" => KeyBinding::new(&binding, NavigateNextPage, context),
-                "zoom-in" => KeyBinding::new(&binding, ZoomIn, context),
-                "zoom-out" => KeyBinding::new(&binding, ZoomOut, context),
-                "zoom-reset" => KeyBinding::new(&binding, ZoomReset, context),
-                "select-tab-1" => KeyBinding::new(&binding, SelectTab1, context),
-                "select-tab-2" => KeyBinding::new(&binding, SelectTab2, context),
-                "select-tab-3" => KeyBinding::new(&binding, SelectTab3, context),
-                "select-tab-4" => KeyBinding::new(&binding, SelectTab4, context),
-                "select-tab-5" => KeyBinding::new(&binding, SelectTab5, context),
-                "select-tab-6" => KeyBinding::new(&binding, SelectTab6, context),
-                "select-tab-7" => KeyBinding::new(&binding, SelectTab7, context),
-                "select-tab-8" => KeyBinding::new(&binding, SelectTab8, context),
-                "select-tab-9" => KeyBinding::new(&binding, SelectTab9, context),
-                "pane-previous" => KeyBinding::new(&binding, FocusPreviousPane, context),
-                "pane-next" => KeyBinding::new(&binding, FocusNextPane, context),
-                "split-pane-right" => KeyBinding::new(&binding, SplitPaneRight, context),
-                "split-pane-down" => KeyBinding::new(&binding, SplitPaneDown, context),
-                "toggle-maximize-pane" => KeyBinding::new(&binding, ToggleMaximizePane, context),
-                "stop-session" => KeyBinding::new(&binding, StopFocusedSession, context),
-                "resume-session" => KeyBinding::new(&binding, ResumeFocusedSession, context),
-                "mission-tab-previous" => KeyBinding::new(&binding, MissionTabPrevious, context),
-                "mission-tab-next" => KeyBinding::new(&binding, MissionTabNext, context),
+                "find-in-terminal" => load_binding(&binding, FindInTerminal, context, cx),
+                "open-settings" => load_binding(&binding, OpenSettings, context, cx),
+                "page-previous" => load_binding(&binding, NavigatePreviousPage, context, cx),
+                "page-next" => load_binding(&binding, NavigateNextPage, context, cx),
+                "zoom-in" => load_binding(&binding, ZoomIn, context, cx),
+                "zoom-out" => load_binding(&binding, ZoomOut, context, cx),
+                "zoom-reset" => load_binding(&binding, ZoomReset, context, cx),
+                "select-tab-1" => load_binding(&binding, SelectTab1, context, cx),
+                "select-tab-2" => load_binding(&binding, SelectTab2, context, cx),
+                "select-tab-3" => load_binding(&binding, SelectTab3, context, cx),
+                "select-tab-4" => load_binding(&binding, SelectTab4, context, cx),
+                "select-tab-5" => load_binding(&binding, SelectTab5, context, cx),
+                "select-tab-6" => load_binding(&binding, SelectTab6, context, cx),
+                "select-tab-7" => load_binding(&binding, SelectTab7, context, cx),
+                "select-tab-8" => load_binding(&binding, SelectTab8, context, cx),
+                "select-tab-9" => load_binding(&binding, SelectTab9, context, cx),
+                "pane-previous" => load_binding(&binding, FocusPreviousPane, context, cx),
+                "pane-next" => load_binding(&binding, FocusNextPane, context, cx),
+                "split-pane-right" => load_binding(&binding, SplitPaneRight, context, cx),
+                "split-pane-down" => load_binding(&binding, SplitPaneDown, context, cx),
+                "toggle-maximize-pane" => load_binding(&binding, ToggleMaximizePane, context, cx),
+                "stop-session" => load_binding(&binding, StopFocusedSession, context, cx),
+                "resume-session" => load_binding(&binding, ResumeFocusedSession, context, cx),
+                "mission-tab-previous" => load_binding(&binding, MissionTabPrevious, context, cx),
+                "mission-tab-next" => load_binding(&binding, MissionTabNext, context, cx),
                 _ => continue,
             };
             cx.bind_keys([key_binding]);
@@ -1248,10 +1292,11 @@ pub(crate) fn install_bindings(
 
 fn install_modal_bindings(cx: &mut App) {
     // Double negation checks the whole context stack at the focused control's depth; loading last wins ties with user bindings.
-    cx.bind_keys([KeyBinding::new(
+    cx.bind_keys([load_binding(
         &platform_default("cmd-enter"),
         ConfirmStartChat,
         Some("!(!StartChat)"),
+        cx,
     )]);
 }
 
