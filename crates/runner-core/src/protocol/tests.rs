@@ -1232,7 +1232,39 @@ fn changes_variants_cross_json() {
     round_trip(changes::DiffBody::Binary {
         old_size: Some(12),
         new_size: None,
+        old: None,
+        new: None,
     });
+    round_trip(changes::DiffBody::Binary {
+        old_size: Some(4),
+        new_size: Some(5),
+        old: Some(crate::companion::TerminalBytes(vec![1, 2, 3, 4])),
+        new: Some(crate::companion::TerminalBytes(vec![5, 6, 7, 8, 9])),
+    });
+    let binary_without_bytes = serde_json::to_value(changes::DiffBody::Binary {
+        old_size: Some(12),
+        new_size: Some(24),
+        old: None,
+        new: None,
+    })
+    .unwrap();
+    assert!(binary_without_bytes.get("old").is_none());
+    assert!(binary_without_bytes.get("new").is_none());
+    let legacy_binary: changes::DiffBody = serde_json::from_value(serde_json::json!({
+        "kind": "binary",
+        "old_size": 12,
+        "new_size": 24
+    }))
+    .unwrap();
+    assert_eq!(
+        legacy_binary,
+        changes::DiffBody::Binary {
+            old_size: Some(12),
+            new_size: Some(24),
+            old: None,
+            new: None,
+        }
+    );
     round_trip(changes::DiffBody::TooLarge {
         old_size: Some(11_000_000),
         new_size: Some(20),
@@ -1270,7 +1302,11 @@ fn changes_variants_cross_json() {
     .unwrap();
     assert!(matches!(
         legacy_diff_req,
-        Request::changes_diff { base: None, .. }
+        Request::changes_diff {
+            base: None,
+            want_bytes: None,
+            ..
+        }
     ));
 
     let legacy_commits: changes::ChangesCommits = serde_json::from_value(serde_json::json!({

@@ -24,6 +24,8 @@ use image::{
 use resvg::{tiny_skia, usvg};
 use smallvec::SmallVec;
 
+use crate::app_settings::DiffViewMode;
+use crate::surfaces::side_panel::PanelCallback;
 use crate::theme;
 
 /// Maximum width or height accepted for decoding in the viewer.
@@ -191,7 +193,7 @@ enum DecodedImageKind {
     /// Largest to smallest mip levels, each `<= MAX_TEXTURE_SIDE` on a side.
     /// An animated image stores a single multi-frame `RenderImage`.
     Raster(Vec<Arc<RenderImage>>),
-    /// Parsed SVG document plus its latest rasterized texture and target device size.
+    /// Parsed SVG tree plus its latest rasterized texture and target device size.
     Svg {
         tree: Arc<usvg::Tree>,
         raster: Arc<RenderImage>,
@@ -927,6 +929,200 @@ fn checkerboard_tile(
 
 // ── Shared Zoom/Pan Image Canvas ───────────────────────────────────────────
 
+/// Height of each side's caption bar in image Diff mode (`− Before ...` / `+ After ...`).
+const CAPTION_HEIGHT: f32 = 28.;
+/// Vertical margin around stacked panes in Unified image Diff mode.
+const UNIFIED_IMAGE_GAP_MARGIN: f32 = 8.;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DiffCaptionKind {
+    Before,
+    After,
+    Added,
+    Deleted,
+}
+
+impl DiffCaptionKind {
+    fn sign(self) -> (&'static str, gpui::Hsla) {
+        match self {
+            Self::Before | Self::Deleted => ("−", theme::danger()),
+            Self::After | Self::Added => ("+", theme::accent()),
+        }
+    }
+
+    fn label_key(self) -> &'static str {
+        match self {
+            Self::Before => "viewer.diff_before",
+            Self::After => "viewer.diff_after",
+            Self::Added => "viewer.diff_added",
+            Self::Deleted => "viewer.diff_deleted",
+        }
+    }
+
+    #[cfg(test)]
+    fn selector(self) -> &'static str {
+        match self {
+            Self::Before => "IMAGE_DIFF_CAPTION_BEFORE",
+            Self::After => "IMAGE_DIFF_CAPTION_AFTER",
+            Self::Added => "IMAGE_DIFF_CAPTION_ADDED",
+            Self::Deleted => "IMAGE_DIFF_CAPTION_DELETED",
+        }
+    }
+}
+
+pub(crate) enum DiffSideState {
+    Ready(DecodedImage),
+    TooManyPixels { width: u32, height: u32, size: u64 },
+    Failed,
+}
+
+impl DiffSideState {
+    fn image(&self) -> Option<&DecodedImage> {
+        match self {
+            Self::Ready(img) => Some(img),
+            _ => None,
+        }
+    }
+
+    fn image_mut(&mut self) -> Option<&mut DecodedImage> {
+        match self {
+            Self::Ready(img) => Some(img),
+            _ => None,
+        }
+    }
+
+    fn dimensions(&self) -> Option<(u32, u32)> {
+        self.image().map(|img| (img.width, img.height))
+    }
+
+    fn meta_text(&self) -> Option<String> {
+        match self {
+            Self::Ready(img) => Some(format_dimensions_and_size(img.width, img.height, img.size)),
+            Self::TooManyPixels {
+                width,
+                height,
+                size,
+            } => Some(format_dimensions_and_size(*width, *height, *size)),
+            Self::Failed => None,
+        }
+    }
+
+    fn drop_atlas_textures(&self, window: Option<&mut Window>, cx: &mut App) {
+        if let Self::Ready(img) = self {
+            img.drop_atlas_textures(window, cx);
+        }
+    }
+}
+
+pub(crate) struct DiffSide {
+    pub(crate) caption: DiffCaptionKind,
+    pub(crate) file_name: String,
+    pub(crate) state: DiffSideState,
+}
+
+pub(crate) enum DiffSides {
+    One(Box<DiffSide>),
+    Two {
+        before: Box<DiffSide>,
+        after: Box<DiffSide>,
+    },
+}
+
+impl DiffSides {
+    pub(crate) fn is_one_sided(&self) -> bool {
+        matches!(self, Self::One(_))
+    }
+
+    pub(crate) fn has_drawable(&self) -> bool {
+        match self {
+            Self::One(side) => side.state.image().is_some(),
+            Self::Two { before, after } => {
+                before.state.image().is_some() || after.state.image().is_some()
+            }
+        }
+    }
+
+    pub(crate) fn has_too_many_pixels(&self) -> bool {
+        match self {
+            Self::One(side) => matches!(side.state, DiffSideState::TooManyPixels { .. }),
+            Self::Two { before, after } => {
+                matches!(before.state, DiffSideState::TooManyPixels { .. })
+                    || matches!(after.state, DiffSideState::TooManyPixels { .. })
+            }
+        }
+    }
+
+    fn slot(&self, idx: usize) -> Option<&DiffSide> {
+        match (self, idx) {
+            (Self::One(side), 0) => Some(side),
+            (Self::Two { before, .. }, 0) => Some(before),
+            (Self::Two { after, .. }, 1) => Some(after),
+            _ => None,
+        }
+    }
+
+    fn slot_mut(&mut self, idx: usize) -> Option<&mut DiffSide> {
+        match (self, idx) {
+            (Self::One(side), 0) => Some(side),
+            (Self::Two { before, .. }, 0) => Some(before),
+            (Self::Two { after, .. }, 1) => Some(after),
+            _ => None,
+        }
+    }
+
+    fn dimension_signature(&self) -> [Option<(u32, u32)>; 2] {
+        [
+            self.slot(0).and_then(|s| s.state.dimensions()),
+            self.slot(1).and_then(|s| s.state.dimensions()),
+        ]
+    }
+
+    fn drop_atlas_textures(&self, mut window: Option<&mut Window>, cx: &mut App) {
+        match self {
+            Self::One(side) => side.state.drop_atlas_textures(window, cx),
+            Self::Two { before, after } => {
+                before.state.drop_atlas_textures(window.as_deref_mut(), cx);
+                after.state.drop_atlas_textures(window, cx);
+            }
+        }
+    }
+}
+
+enum CanvasContent {
+    Single(DecodedImage),
+    Diff {
+        layout: DiffViewMode,
+        sides: DiffSides,
+    },
+}
+
+impl CanvasContent {
+    fn image_at(&self, slot: usize) -> Option<&DecodedImage> {
+        match (self, slot) {
+            (Self::Single(img), 0) => Some(img),
+            (Self::Diff { sides, .. }, slot) => sides.slot(slot).and_then(|s| s.state.image()),
+            _ => None,
+        }
+    }
+
+    fn image_at_mut(&mut self, slot: usize) -> Option<&mut DecodedImage> {
+        match (self, slot) {
+            (Self::Single(img), 0) => Some(img),
+            (Self::Diff { sides, .. }, slot) => {
+                sides.slot_mut(slot).and_then(|s| s.state.image_mut())
+            }
+            _ => None,
+        }
+    }
+
+    fn drop_atlas_textures(&self, window: Option<&mut Window>, cx: &mut App) {
+        match self {
+            Self::Single(img) => img.drop_atlas_textures(window, cx),
+            Self::Diff { sides, .. } => sides.drop_atlas_textures(window, cx),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) enum ZoomMode {
     #[default]
@@ -935,50 +1131,21 @@ pub(crate) enum ZoomMode {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct SingleGeometry {
-    fit_scale: f32,
-    scale: f32,
+struct PaneGeometry {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
     drawn_w: f32,
     drawn_h: f32,
-    max_pan_x: f32,
-    max_pan_y: f32,
     base_center_x: f32,
     base_center_y: f32,
+    max_pan_x: f32,
+    max_pan_y: f32,
+    has_image: bool,
 }
 
-impl SingleGeometry {
-    fn compute(vp_w: f32, vp_h: f32, img_w: u32, img_h: u32, zoom: ZoomMode) -> Self {
-        let safe_w = (vp_w - CANVAS_MARGIN * 2.).max(1.);
-        let safe_h = (vp_h - CANVAS_MARGIN - STEPPER_CLEARANCE).max(1.);
-        let iw = img_w.max(1) as f32;
-        let ih = img_h.max(1) as f32;
-        let fit_scale = (safe_w / iw).min(safe_h / ih).min(1.0);
-        let scale = match zoom {
-            ZoomMode::Fit => fit_scale,
-            ZoomMode::Custom(s) => s.clamp(fit_scale, MAX_ZOOM),
-        };
-        let drawn_w = iw * scale;
-        let drawn_h = ih * scale;
-        let max_pan_x = ((drawn_w - vp_w) * 0.5).max(0.);
-        let max_pan_y = ((drawn_h - vp_h) * 0.5).max(0.);
-        let base_center_x = vp_w * 0.5;
-        let base_center_y = if drawn_h <= safe_h + 0.5 && drawn_w <= safe_w + 0.5 {
-            CANVAS_MARGIN + safe_h * 0.5
-        } else {
-            vp_h * 0.5
-        };
-        Self {
-            fit_scale,
-            scale,
-            drawn_w,
-            drawn_h,
-            max_pan_x,
-            max_pan_y,
-            base_center_x,
-            base_center_y,
-        }
-    }
-
+impl PaneGeometry {
     fn clamp_pan(&self, pan: Point<f32>) -> Point<f32> {
         point(
             pan.x.clamp(-self.max_pan_x, self.max_pan_x),
@@ -995,18 +1162,358 @@ impl SingleGeometry {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CanvasGeometry {
+    fit_scale: f32,
+    scale: f32,
+    max_pan_x: f32,
+    max_pan_y: f32,
+    has_image: bool,
+    panes: [Option<PaneGeometry>; 2],
+    divider_x: Option<f32>,
+    captions: [Option<(f32, f32, f32)>; 2],
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PaneRect {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+impl CanvasGeometry {
+    fn build_pane(
+        rect: PaneRect,
+        safe_w: f32,
+        safe_h: f32,
+        safe_top: f32,
+        dims: Option<(u32, u32)>,
+        scale: f32,
+    ) -> PaneGeometry {
+        let PaneRect { x, y, w, h } = rect;
+        let Some((img_w, img_h)) = dims else {
+            return PaneGeometry {
+                x,
+                y,
+                w,
+                h,
+                drawn_w: 0.,
+                drawn_h: 0.,
+                base_center_x: w * 0.5,
+                base_center_y: h * 0.5,
+                max_pan_x: 0.,
+                max_pan_y: 0.,
+                has_image: false,
+            };
+        };
+        let drawn_w = img_w.max(1) as f32 * scale;
+        let drawn_h = img_h.max(1) as f32 * scale;
+        let max_pan_x = ((drawn_w - w) * 0.5).max(0.);
+        let max_pan_y = ((drawn_h - h) * 0.5).max(0.);
+        let base_center_x = w * 0.5;
+        let base_center_y = if drawn_h <= safe_h + 0.5 && drawn_w <= safe_w + 0.5 {
+            safe_top + safe_h * 0.5
+        } else {
+            h * 0.5
+        };
+        PaneGeometry {
+            x,
+            y,
+            w,
+            h,
+            drawn_w,
+            drawn_h,
+            base_center_x,
+            base_center_y,
+            max_pan_x,
+            max_pan_y,
+            has_image: true,
+        }
+    }
+
+    fn compute_single(vp_w: f32, vp_h: f32, img_w: u32, img_h: u32, zoom: ZoomMode) -> Self {
+        let safe_w = (vp_w - CANVAS_MARGIN * 2.).max(1.);
+        let safe_h = (vp_h - CANVAS_MARGIN - STEPPER_CLEARANCE).max(1.);
+        let fit_scale = (safe_w / img_w.max(1) as f32)
+            .min(safe_h / img_h.max(1) as f32)
+            .min(1.0);
+        let scale = match zoom {
+            ZoomMode::Fit => fit_scale,
+            ZoomMode::Custom(s) => s.clamp(fit_scale, MAX_ZOOM),
+        };
+        let pane = Self::build_pane(
+            PaneRect {
+                x: 0.,
+                y: 0.,
+                w: vp_w,
+                h: vp_h,
+            },
+            safe_w,
+            safe_h,
+            CANVAS_MARGIN,
+            Some((img_w, img_h)),
+            scale,
+        );
+        Self {
+            fit_scale,
+            scale,
+            max_pan_x: pane.max_pan_x,
+            max_pan_y: pane.max_pan_y,
+            has_image: true,
+            panes: [Some(pane), None],
+            divider_x: None,
+            captions: [None, None],
+        }
+    }
+
+    fn compute_diff(
+        vp_w: f32,
+        vp_h: f32,
+        layout: DiffViewMode,
+        sides: &DiffSides,
+        zoom: ZoomMode,
+    ) -> Self {
+        match sides {
+            DiffSides::One(side) => {
+                let pane_h = (vp_h - CAPTION_HEIGHT).max(1.);
+                let safe_w = (vp_w - CANVAS_MARGIN * 2.).max(1.);
+                let safe_h = (pane_h - CANVAS_MARGIN - STEPPER_CLEARANCE).max(1.);
+                let dims = side.state.dimensions();
+                let fit_scale = dims.map_or(1.0, |(w, h)| {
+                    (safe_w / w.max(1) as f32)
+                        .min(safe_h / h.max(1) as f32)
+                        .min(1.0)
+                });
+                let scale = match zoom {
+                    ZoomMode::Fit => fit_scale,
+                    ZoomMode::Custom(s) => s.clamp(fit_scale, MAX_ZOOM),
+                };
+                let pane = Self::build_pane(
+                    PaneRect {
+                        x: 0.,
+                        y: CAPTION_HEIGHT,
+                        w: vp_w,
+                        h: pane_h,
+                    },
+                    safe_w,
+                    safe_h,
+                    CANVAS_MARGIN,
+                    dims,
+                    scale,
+                );
+                Self {
+                    fit_scale,
+                    scale,
+                    max_pan_x: pane.max_pan_x,
+                    max_pan_y: pane.max_pan_y,
+                    has_image: pane.has_image,
+                    panes: [Some(pane), None],
+                    divider_x: None,
+                    captions: [Some((0., 0., vp_w)), None],
+                }
+            }
+            DiffSides::Two { before, after } => {
+                let d0 = before.state.dimensions();
+                let d1 = after.state.dimensions();
+                match layout {
+                    DiffViewMode::Split => {
+                        let left_w = ((vp_w - 1.0) * 0.5).floor().max(1.);
+                        let right_x = left_w + 1.0;
+                        let right_w = (vp_w - right_x).max(1.);
+                        let pane_h = (vp_h - CAPTION_HEIGHT).max(1.);
+                        let safe_w0 = (left_w - CANVAS_MARGIN * 2.).max(1.);
+                        let safe_w1 = (right_w - CANVAS_MARGIN * 2.).max(1.);
+                        let safe_h = (pane_h - CANVAS_MARGIN - STEPPER_CLEARANCE).max(1.);
+                        let fit0 = d0.map(|(w, h)| {
+                            (safe_w0 / w.max(1) as f32)
+                                .min(safe_h / h.max(1) as f32)
+                                .min(1.0)
+                        });
+                        let fit1 = d1.map(|(w, h)| {
+                            (safe_w1 / w.max(1) as f32)
+                                .min(safe_h / h.max(1) as f32)
+                                .min(1.0)
+                        });
+                        let fit_scale = match (fit0, fit1) {
+                            (Some(a), Some(b)) => a.min(b),
+                            (Some(a), None) => a,
+                            (None, Some(b)) => b,
+                            (None, None) => 1.0,
+                        };
+                        let scale = match zoom {
+                            ZoomMode::Fit => fit_scale,
+                            ZoomMode::Custom(s) => s.clamp(fit_scale, MAX_ZOOM),
+                        };
+                        let p0 = Self::build_pane(
+                            PaneRect {
+                                x: 0.,
+                                y: CAPTION_HEIGHT,
+                                w: left_w,
+                                h: pane_h,
+                            },
+                            safe_w0,
+                            safe_h,
+                            CANVAS_MARGIN,
+                            d0,
+                            scale,
+                        );
+                        let p1 = Self::build_pane(
+                            PaneRect {
+                                x: right_x,
+                                y: CAPTION_HEIGHT,
+                                w: right_w,
+                                h: pane_h,
+                            },
+                            safe_w1,
+                            safe_h,
+                            CANVAS_MARGIN,
+                            d1,
+                            scale,
+                        );
+                        Self {
+                            fit_scale,
+                            scale,
+                            max_pan_x: p0.max_pan_x.max(p1.max_pan_x),
+                            max_pan_y: p0.max_pan_y.max(p1.max_pan_y),
+                            has_image: p0.has_image || p1.has_image,
+                            panes: [Some(p0), Some(p1)],
+                            divider_x: Some(left_w),
+                            captions: [Some((0., 0., left_w)), Some((right_x, 0., right_w))],
+                        }
+                    }
+                    DiffViewMode::Unified => {
+                        let avail_h = (vp_h - 2.0 * CAPTION_HEIGHT).max(2.0);
+                        let margin_top = UNIFIED_IMAGE_GAP_MARGIN * 2.0;
+                        let margin_bot = UNIFIED_IMAGE_GAP_MARGIN + STEPPER_CLEARANCE;
+                        let total_safe_h = (avail_h - margin_top - margin_bot).max(2.0);
+                        let safe_w = (vp_w - CANVAS_MARGIN * 2.).max(1.);
+                        let (pane_h0, pane_h1, safe_h0, safe_h1, fit_scale) = match (d0, d1) {
+                            (Some((w0, h0)), Some((w1, h1))) => {
+                                let wf0 = w0.max(1) as f32;
+                                let hf0 = h0.max(1) as f32;
+                                let wf1 = w1.max(1) as f32;
+                                let hf1 = h1.max(1) as f32;
+                                let fit = (safe_w / wf0.max(wf1))
+                                    .min(total_safe_h / (hf0 + hf1))
+                                    .min(1.0);
+                                let sh0 = (total_safe_h * hf0 / (hf0 + hf1)).max(1.0);
+                                let ph0 = (sh0 + margin_top).min(avail_h - 1.0).max(1.0);
+                                let ph1 = (avail_h - ph0).max(1.0);
+                                let sh1 = (ph1 - margin_bot).max(1.0);
+                                (ph0, ph1, sh0, sh1, fit)
+                            }
+                            (Some((w0, h0)), None) => {
+                                let ph0 = (avail_h * 0.5).floor().max(1.0);
+                                let ph1 = (avail_h - ph0).max(1.0);
+                                let sh0 = (ph0 - margin_top).max(1.0);
+                                let sh1 = (ph1 - margin_bot).max(1.0);
+                                let fit = (safe_w / w0.max(1) as f32)
+                                    .min(sh0 / h0.max(1) as f32)
+                                    .min(1.0);
+                                (ph0, ph1, sh0, sh1, fit)
+                            }
+                            (None, Some((w1, h1))) => {
+                                let ph0 = (avail_h * 0.5).floor().max(1.0);
+                                let ph1 = (avail_h - ph0).max(1.0);
+                                let sh0 = (ph0 - margin_top).max(1.0);
+                                let sh1 = (ph1 - margin_bot).max(1.0);
+                                let fit = (safe_w / w1.max(1) as f32)
+                                    .min(sh1 / h1.max(1) as f32)
+                                    .min(1.0);
+                                (ph0, ph1, sh0, sh1, fit)
+                            }
+                            (None, None) => {
+                                let ph0 = (avail_h * 0.5).floor().max(1.0);
+                                let ph1 = (avail_h - ph0).max(1.0);
+                                (ph0, ph1, 1.0, 1.0, 1.0)
+                            }
+                        };
+                        let scale = match zoom {
+                            ZoomMode::Fit => fit_scale,
+                            ZoomMode::Custom(s) => s.clamp(fit_scale, MAX_ZOOM),
+                        };
+                        let p0 = Self::build_pane(
+                            PaneRect {
+                                x: 0.,
+                                y: CAPTION_HEIGHT,
+                                w: vp_w,
+                                h: pane_h0,
+                            },
+                            safe_w,
+                            safe_h0,
+                            UNIFIED_IMAGE_GAP_MARGIN,
+                            d0,
+                            scale,
+                        );
+                        let cap1_y = CAPTION_HEIGHT + pane_h0;
+                        let p1 = Self::build_pane(
+                            PaneRect {
+                                x: 0.,
+                                y: cap1_y + CAPTION_HEIGHT,
+                                w: vp_w,
+                                h: pane_h1,
+                            },
+                            safe_w,
+                            safe_h1,
+                            UNIFIED_IMAGE_GAP_MARGIN,
+                            d1,
+                            scale,
+                        );
+                        Self {
+                            fit_scale,
+                            scale,
+                            max_pan_x: p0.max_pan_x.max(p1.max_pan_x),
+                            max_pan_y: p0.max_pan_y.max(p1.max_pan_y),
+                            has_image: p0.has_image || p1.has_image,
+                            panes: [Some(p0), Some(p1)],
+                            divider_x: None,
+                            captions: [Some((0., 0., vp_w)), Some((0., cap1_y, vp_w))],
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn clamp_pan(&self, pan: Point<f32>) -> Point<f32> {
+        point(
+            pan.x.clamp(-self.max_pan_x, self.max_pan_x),
+            pan.y.clamp(-self.max_pan_y, self.max_pan_y),
+        )
+    }
+
+    fn pane_for_point(&self, pt: Point<f32>) -> Option<(usize, PaneGeometry)> {
+        for (idx, pane) in self.panes.into_iter().enumerate() {
+            if let Some(p) = pane
+                && p.has_image
+                && pt.x >= p.x
+                && pt.x <= p.x + p.w
+                && pt.y >= p.y
+                && pt.y <= p.y + p.h
+            {
+                return Some((idx, p));
+            }
+        }
+        None
+    }
+}
+
+type SvgRasterTask = Option<((u32, u32), Task<()>)>;
+
 pub(crate) struct ImageCanvas {
     focus: FocusHandle,
-    image: DecodedImage,
+    content: CanvasContent,
     zoom: ZoomMode,
     pan: Point<f32>,
     viewport: Rc<Cell<Bounds<Pixels>>>,
     deleted: bool,
     drag: Option<(Point<Pixels>, Point<f32>, bool)>,
     svg_generation: u64,
-    svg_raster_task: Option<((u32, u32), Task<()>)>,
+    svg_raster_tasks: [SvgRasterTask; 2],
+    on_focus_in: Option<PanelCallback>,
     #[cfg(test)]
-    last_image_bounds: Cell<Option<Bounds<Pixels>>>,
+    last_image_bounds: [Cell<Option<Bounds<Pixels>>>; 2],
     #[cfg(test)]
     last_stepper_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     #[cfg(test)]
@@ -1014,28 +1521,41 @@ pub(crate) struct ImageCanvas {
 }
 
 impl ImageCanvas {
-    pub(crate) fn new_single(image: DecodedImage, cx: &mut Context<Self>) -> Self {
+    fn new_with_content(content: CanvasContent, cx: &mut Context<Self>) -> Self {
         cx.on_release(|this: &mut Self, cx| {
-            this.image.drop_atlas_textures(None, cx);
+            this.content.drop_atlas_textures(None, cx);
         })
         .detach();
         Self {
             focus: cx.focus_handle(),
-            image,
+            content,
             zoom: ZoomMode::Fit,
             pan: point(0., 0.),
             viewport: Rc::default(),
             deleted: false,
             drag: None,
             svg_generation: 0,
-            svg_raster_task: None,
+            svg_raster_tasks: [None, None],
+            on_focus_in: None,
             #[cfg(test)]
-            last_image_bounds: Cell::new(None),
+            last_image_bounds: [Cell::new(None), Cell::new(None)],
             #[cfg(test)]
             last_stepper_bounds: Rc::default(),
             #[cfg(test)]
             last_level_size: Cell::new(None),
         }
+    }
+
+    pub(crate) fn new_single(image: DecodedImage, cx: &mut Context<Self>) -> Self {
+        Self::new_with_content(CanvasContent::Single(image), cx)
+    }
+
+    pub(crate) fn new_diff(layout: DiffViewMode, sides: DiffSides, cx: &mut Context<Self>) -> Self {
+        Self::new_with_content(CanvasContent::Diff { layout, sides }, cx)
+    }
+
+    pub(crate) fn set_on_focus_in(&mut self, handler: Option<PanelCallback>) {
+        self.on_focus_in = handler;
     }
 
     pub(crate) fn focus_handle(&self) -> &FocusHandle {
@@ -1049,14 +1569,69 @@ impl ImageCanvas {
         }
     }
 
+    pub(crate) fn set_diff_mode(&mut self, layout: DiffViewMode, cx: &mut Context<Self>) {
+        if let CanvasContent::Diff {
+            layout: current, ..
+        } = &mut self.content
+            && *current != layout
+        {
+            *current = layout;
+            if let Some(geom) = self.current_geometry() {
+                if let ZoomMode::Custom(s) = self.zoom
+                    && s <= geom.fit_scale + 0.001
+                {
+                    self.zoom = ZoomMode::Fit;
+                    self.pan = point(0., 0.);
+                } else {
+                    self.pan = geom.clamp_pan(self.pan);
+                }
+            }
+            cx.notify();
+        }
+    }
+
     /// Replaces the single image. Keeps zoom and pan when dimensions are
     /// unchanged; resets to fit otherwise. Releases the replaced image's atlas
     /// textures.
     pub(crate) fn set_single_image(&mut self, next: DecodedImage, cx: &mut Context<Self>) {
-        let same_dimensions = self.image.width == next.width && self.image.height == next.height;
+        let same_dimensions = matches!(
+            &self.content,
+            CanvasContent::Single(cur) if cur.width == next.width && cur.height == next.height
+        );
         self.svg_generation = self.svg_generation.wrapping_add(1);
-        self.svg_raster_task = None;
-        let old = std::mem::replace(&mut self.image, next);
+        self.svg_raster_tasks = [None, None];
+        let old = std::mem::replace(&mut self.content, CanvasContent::Single(next));
+        old.drop_atlas_textures(None, cx);
+        if !same_dimensions {
+            self.zoom = ZoomMode::Fit;
+            self.pan = point(0., 0.);
+        } else if let Some(geom) = self.current_geometry() {
+            self.pan = geom.clamp_pan(self.pan);
+        }
+        cx.notify();
+    }
+
+    /// Replaces Diff sides. Keeps zoom and pan when every side's dimensions are
+    /// unchanged; resets to fit otherwise. Releases the replaced textures.
+    pub(crate) fn set_diff_sides(
+        &mut self,
+        layout: DiffViewMode,
+        next: DiffSides,
+        cx: &mut Context<Self>,
+    ) {
+        let same_dimensions = matches!(
+            &self.content,
+            CanvasContent::Diff { sides, .. } if sides.dimension_signature() == next.dimension_signature()
+        );
+        self.svg_generation = self.svg_generation.wrapping_add(1);
+        self.svg_raster_tasks = [None, None];
+        let old = std::mem::replace(
+            &mut self.content,
+            CanvasContent::Diff {
+                layout,
+                sides: next,
+            },
+        );
         old.drop_atlas_textures(None, cx);
         if !same_dimensions {
             self.zoom = ZoomMode::Fit;
@@ -1069,12 +1644,12 @@ impl ImageCanvas {
 
     fn schedule_svg_reraster(
         &mut self,
+        slot: usize,
         tree: Arc<usvg::Tree>,
         desired: (u32, u32),
         cx: &mut Context<Self>,
     ) {
-        if self
-            .svg_raster_task
+        if self.svg_raster_tasks[slot]
             .as_ref()
             .is_some_and(|(in_flight, _)| *in_flight == desired)
         {
@@ -1089,36 +1664,42 @@ impl ImageCanvas {
                 if this.svg_generation != generation {
                     return;
                 }
-                this.svg_raster_task = None;
+                this.svg_raster_tasks[slot] = None;
                 if let Some(next_raster) = rendered
-                    && let Some(old_raster) = this.image.replace_svg_raster(next_raster, desired)
+                    && let Some(img) = this.content.image_at_mut(slot)
+                    && let Some(old_raster) = img.replace_svg_raster(next_raster, desired)
                 {
                     release_render_images([old_raster], None, cx);
                     cx.notify();
                 }
             });
         });
-        self.svg_raster_task = Some((desired, handle));
+        self.svg_raster_tasks[slot] = Some((desired, handle));
     }
 
     pub(crate) fn drop_atlas_textures(&self, window: Option<&mut Window>, cx: &mut App) {
-        self.image.drop_atlas_textures(window, cx);
+        self.content.drop_atlas_textures(window, cx);
     }
 
-    fn current_geometry(&self) -> Option<SingleGeometry> {
+    fn compute_geometry(&self, vp_w: f32, vp_h: f32, zoom: ZoomMode) -> CanvasGeometry {
+        match &self.content {
+            CanvasContent::Single(img) => {
+                CanvasGeometry::compute_single(vp_w, vp_h, img.width, img.height, zoom)
+            }
+            CanvasContent::Diff { layout, sides } => {
+                CanvasGeometry::compute_diff(vp_w, vp_h, *layout, sides, zoom)
+            }
+        }
+    }
+
+    fn current_geometry(&self) -> Option<CanvasGeometry> {
         let bounds = self.viewport.get();
         let vp_w = f32::from(bounds.size.width);
         let vp_h = f32::from(bounds.size.height);
         if vp_w <= 0. || vp_h <= 0. {
             return None;
         }
-        Some(SingleGeometry::compute(
-            vp_w,
-            vp_h,
-            self.image.width,
-            self.image.height,
-            self.zoom,
-        ))
+        Some(self.compute_geometry(vp_w, vp_h, self.zoom))
     }
 
     fn on_viewport_resized(&mut self, bounds: Bounds<Pixels>, cx: &mut Context<Self>) {
@@ -1136,8 +1717,9 @@ impl ImageCanvas {
         cx.notify();
     }
 
-    /// Zooms around the canvas image area's center, keeping centered images
-    /// centered and accounting for the stepper clearance at the bottom.
+    /// Zooms around each pane's visual center, preserving shared pan per axis
+    /// on any overflowing pane and compensating for vertical `base_center_y`
+    /// shifts when crossing the reserved stepper clearance.
     fn zoom_to_center(&mut self, target: ZoomMode, cx: &mut Context<Self>) {
         let Some(old) = self.current_geometry() else {
             self.zoom = target;
@@ -1147,10 +1729,36 @@ impl ImageCanvas {
             cx.notify();
             return;
         };
+        if !old.has_image {
+            return;
+        }
+        // Pick the drawable pane with the widest pan range on each axis so
+        // unequal Diff sides (where one fits and the other overflows) never
+        // zero out the shared pan offset on zoom.
+        let pick_axis = |key: fn(&PaneGeometry) -> f32| {
+            old.panes
+                .into_iter()
+                .enumerate()
+                .filter_map(|(idx, p)| p.filter(|p| p.has_image).map(|p| (idx, p)))
+                .max_by(|(_, a), (_, b)| key(a).total_cmp(&key(b)))
+        };
+        let Some((pane_x_idx, old_pane_x)) = pick_axis(|p| p.max_pan_x) else {
+            return;
+        };
+        let Some((pane_y_idx, old_pane_y)) = pick_axis(|p| p.max_pan_y) else {
+            return;
+        };
+        let old_pan_x = old_pane_x.clamp_pan(self.pan).x;
+        let old_pan_y = old_pane_y.clamp_pan(self.pan).y;
+        let img_pt_x = (old_pane_x.w * 0.5 - (old_pane_x.base_center_x + old_pan_x)) / old.scale;
+        let img_pt_y = (old_pane_y.h * 0.5 - (old_pane_y.base_center_y + old_pan_y)) / old.scale;
+
         let bounds = self.viewport.get();
-        let vp_w = f32::from(bounds.size.width);
-        let vp_h = f32::from(bounds.size.height);
-        let next = SingleGeometry::compute(vp_w, vp_h, self.image.width, self.image.height, target);
+        let next = self.compute_geometry(
+            f32::from(bounds.size.width),
+            f32::from(bounds.size.height),
+            target,
+        );
         self.zoom = match target {
             ZoomMode::Fit => ZoomMode::Fit,
             ZoomMode::Custom(_) if (next.scale - next.fit_scale).abs() < 0.0005 => ZoomMode::Fit,
@@ -1159,13 +1767,13 @@ impl ImageCanvas {
         if matches!(self.zoom, ZoomMode::Fit) {
             self.pan = point(0., 0.);
         } else {
-            let ratio = if old.scale > 0. {
-                next.scale / old.scale
-            } else {
-                1.0
-            };
-            let old_pan = old.clamp_pan(self.pan);
-            self.pan = next.clamp_pan(point(old_pan.x * ratio, old_pan.y * ratio));
+            let next_pan_x = next.panes[pane_x_idx].map_or(0., |next_pane| {
+                (next_pane.w * 0.5 - img_pt_x * next.scale) - next_pane.base_center_x
+            });
+            let next_pan_y = next.panes[pane_y_idx].map_or(0., |next_pane| {
+                (next_pane.h * 0.5 - img_pt_y * next.scale) - next_pane.base_center_y
+            });
+            self.pan = next.clamp_pan(point(next_pan_x, next_pan_y));
         }
         cx.notify();
     }
@@ -1182,16 +1790,27 @@ impl ImageCanvas {
             self.zoom_to_center(target, cx);
             return;
         };
-        let old_pan = old.clamp_pan(self.pan);
-        let old_center_x = old.base_center_x + old_pan.x;
-        let old_center_y = old.base_center_y + old_pan.y;
-        let img_pt_x = (anchor_in_viewport.x - old_center_x) / old.scale;
-        let img_pt_y = (anchor_in_viewport.y - old_center_y) / old.scale;
+        if !old.has_image {
+            return;
+        }
+        let Some((pane_idx, old_pane)) = old.pane_for_point(anchor_in_viewport) else {
+            self.zoom_to_center(target, cx);
+            return;
+        };
+        let local_anchor = point(
+            anchor_in_viewport.x - old_pane.x,
+            anchor_in_viewport.y - old_pane.y,
+        );
+        let old_pan = old_pane.clamp_pan(self.pan);
+        let old_center_x = old_pane.base_center_x + old_pan.x;
+        let old_center_y = old_pane.base_center_y + old_pan.y;
+        let img_pt_x = (local_anchor.x - old_center_x) / old.scale;
+        let img_pt_y = (local_anchor.y - old_center_y) / old.scale;
 
         let bounds = self.viewport.get();
         let vp_w = f32::from(bounds.size.width);
         let vp_h = f32::from(bounds.size.height);
-        let next = SingleGeometry::compute(vp_w, vp_h, self.image.width, self.image.height, target);
+        let next = self.compute_geometry(vp_w, vp_h, target);
         self.zoom = match target {
             ZoomMode::Fit => ZoomMode::Fit,
             ZoomMode::Custom(_) if (next.scale - next.fit_scale).abs() < 0.0005 => ZoomMode::Fit,
@@ -1199,12 +1818,12 @@ impl ImageCanvas {
         };
         if matches!(self.zoom, ZoomMode::Fit) {
             self.pan = point(0., 0.);
-        } else {
-            let desired_center_x = anchor_in_viewport.x - img_pt_x * next.scale;
-            let desired_center_y = anchor_in_viewport.y - img_pt_y * next.scale;
+        } else if let Some(next_pane) = next.panes[pane_idx] {
+            let desired_center_x = local_anchor.x - img_pt_x * next.scale;
+            let desired_center_y = local_anchor.y - img_pt_y * next.scale;
             self.pan = next.clamp_pan(point(
-                desired_center_x - next.base_center_x,
-                desired_center_y - next.base_center_y,
+                desired_center_x - next_pane.base_center_x,
+                desired_center_y - next_pane.base_center_y,
             ));
         }
         cx.notify();
@@ -1301,7 +1920,7 @@ impl ImageCanvas {
         true
     }
 
-    fn render_stepper(&self, geom: Option<SingleGeometry>, cx: &mut Context<Self>) -> AnyElement {
+    fn render_stepper(&self, geom: Option<CanvasGeometry>, cx: &mut Context<Self>) -> AnyElement {
         let (scale, at_min, at_max) = match geom {
             Some(g) => (
                 g.scale,
@@ -1470,13 +2089,12 @@ impl ImageCanvas {
     }
 }
 
-fn render_checkerboard(viewport: Rc<Cell<Bounds<Pixels>>>, is_light: bool) -> AnyElement {
+fn render_checkerboard(clip_bounds: Bounds<Pixels>, is_light: bool) -> AnyElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {
-            let vp = viewport.get();
-            let visible = if vp.size.width > px(0.) && vp.size.height > px(0.) {
-                bounds.intersect(&vp)
+            let visible = if clip_bounds.size.width > px(0.) && clip_bounds.size.height > px(0.) {
+                bounds.intersect(&clip_bounds)
             } else {
                 bounds
             };
@@ -1523,6 +2141,119 @@ fn render_checkerboard(viewport: Rc<Cell<Bounds<Pixels>>>, is_light: bool) -> An
     .into_any_element()
 }
 
+fn render_diff_caption(side: &DiffSide, x: f32, y: f32, w: f32) -> AnyElement {
+    let (sign, sign_color) = side.caption.sign();
+    let label = crate::i18n::text(side.caption.label_key());
+    let meta = side.state.meta_text();
+    #[cfg(test)]
+    let selector = side.caption.selector();
+    div()
+        .when(cfg!(test), move |el| {
+            #[cfg(test)]
+            {
+                el.debug_selector(move || selector.into())
+            }
+            #[cfg(not(test))]
+            {
+                el
+            }
+        })
+        .absolute()
+        .left(px(x))
+        .top(px(y))
+        .w(px(w))
+        .h(px(CAPTION_HEIGHT))
+        .px(px(12.))
+        .pt(px(6.))
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .overflow_hidden()
+        .child(
+            div()
+                .flex_none()
+                .font_family(theme::UI_MONOSPACE_FONT)
+                .text_size(theme::text_meta())
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(sign_color)
+                .child(sign),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_size(theme::text_meta())
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::text())
+                .child(label),
+        )
+        .children(meta.map(|m| {
+            div()
+                .min_w(px(0.))
+                .truncate()
+                .text_size(theme::text_meta())
+                .text_color(theme::muted())
+                .child(m)
+        }))
+        .into_any_element()
+}
+
+fn render_diff_side_placeholder(side: &DiffSide) -> AnyElement {
+    let (selector, icon, title, body) = match &side.state {
+        DiffSideState::TooManyPixels {
+            width,
+            height,
+            size,
+        } => (
+            "IMAGE_DIFF_SIDE_TOO_LARGE",
+            "triangle-alert.svg",
+            format!(
+                "{} · {}",
+                side.file_name,
+                format_dimensions_and_size(*width, *height, *size)
+            ),
+            crate::i18n::text("viewer.image_too_many_pixels").to_owned(),
+        ),
+        DiffSideState::Failed => (
+            "IMAGE_DIFF_SIDE_FAILED",
+            "image-off.svg",
+            crate::i18n::text("viewer.image_decode_failed_title").to_owned(),
+            crate::i18n::tf(
+                "viewer.image_decode_failed_body",
+                &[("name", side.file_name.clone())],
+            ),
+        ),
+        DiffSideState::Ready(_) => return div().into_any_element(),
+    };
+    div()
+        .when(cfg!(test), move |el| {
+            el.debug_selector(move || selector.into())
+        })
+        .size_full()
+        .px(px(16.))
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(4.))
+        .text_center()
+        .child(svg().size(px(22.)).path(icon).text_color(theme::faint()))
+        .child(
+            div()
+                .pt(px(4.))
+                .text_size(theme::text_ui())
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::text())
+                .child(title),
+        )
+        .child(
+            div()
+                .text_size(theme::text_meta())
+                .text_color(theme::muted())
+                .child(body),
+        )
+        .into_any_element()
+}
+
 impl Render for ImageCanvas {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let geom = self.current_geometry();
@@ -1557,52 +2288,129 @@ impl Render for ImageCanvas {
         .absolute()
         .inset_0();
 
-        if let Some(g) = geom
-            && let Some((parsed, desired)) = self
-                .image
-                .svg_reraster_request(g.drawn_w * scale_factor, g.drawn_h * scale_factor)
-        {
-            self.schedule_svg_reraster(parsed, desired, cx);
+        if let Some(g) = geom {
+            for (slot, pane) in g.panes.into_iter().enumerate() {
+                if let Some(p) = pane
+                    && p.has_image
+                    && let Some((parsed, desired)) = self.content.image_at(slot).and_then(|img| {
+                        img.svg_reraster_request(p.drawn_w * scale_factor, p.drawn_h * scale_factor)
+                    })
+                {
+                    self.schedule_svg_reraster(slot, parsed, desired, cx);
+                }
+            }
         }
 
-        let image_layer = geom.map(|g| {
-            let origin = g.image_origin(self.pan);
-            let target_dev_w = g.drawn_w * scale_factor;
-            let target_dev_h = g.drawn_h * scale_factor;
-            let level = self.image.best_level(target_dev_w, target_dev_h);
-            #[cfg(test)]
-            {
-                let vp = self.viewport.get();
-                self.last_image_bounds.set(Some(Bounds::new(
-                    point(vp.origin.x + px(origin.x), vp.origin.y + px(origin.y)),
-                    size(px(g.drawn_w), px(g.drawn_h)),
-                )));
-                let lsz = level.size(0);
-                self.last_level_size
-                    .set(Some((lsz.width.0 as u32, lsz.height.0 as u32)));
+        let mut layers: Vec<AnyElement> = Vec::new();
+        if let Some(g) = geom {
+            let vp = self.viewport.get();
+            if let CanvasContent::Diff { sides, .. } = &self.content {
+                for (slot, cap) in g.captions.into_iter().enumerate() {
+                    if let (Some((cx_x, cx_y, cx_w)), Some(side)) = (cap, sides.slot(slot)) {
+                        layers.push(render_diff_caption(side, cx_x, cx_y, cx_w));
+                    }
+                }
             }
-            let img_id = SharedString::from(format!("image-canvas-render-{}", level.id.0));
-            div()
-                .when(cfg!(test), |el| {
-                    el.debug_selector(|| "IMAGE_VIEW_IMG".into())
-                })
-                .absolute()
-                .left(px(origin.x))
-                .top(px(origin.y))
-                .w(px(g.drawn_w))
-                .h(px(g.drawn_h))
-                .overflow_hidden()
-                .when(self.deleted, |el| el.opacity(0.5))
-                .child(render_checkerboard(self.viewport.clone(), is_light))
-                .child(
-                    img(ImageSource::Render(level))
-                        .id(img_id)
-                        .size_full()
-                        .object_fit(gpui::ObjectFit::Fill),
-                )
-        });
+            for (slot, pane) in g.panes.into_iter().enumerate() {
+                let Some(p) = pane else {
+                    #[cfg(test)]
+                    self.last_image_bounds[slot].set(None);
+                    continue;
+                };
+                let pane_clip = Bounds::new(
+                    point(vp.origin.x + px(p.x), vp.origin.y + px(p.y)),
+                    size(px(p.w), px(p.h)),
+                );
+                let pane_inner = if p.has_image
+                    && let Some(decoded) = self.content.image_at(slot)
+                {
+                    let origin = p.image_origin(self.pan);
+                    let level =
+                        decoded.best_level(p.drawn_w * scale_factor, p.drawn_h * scale_factor);
+                    #[cfg(test)]
+                    {
+                        self.last_image_bounds[slot].set(Some(Bounds::new(
+                            point(
+                                pane_clip.origin.x + px(origin.x),
+                                pane_clip.origin.y + px(origin.y),
+                            ),
+                            size(px(p.drawn_w), px(p.drawn_h)),
+                        )));
+                        if slot == 0 {
+                            let lsz = level.size(0);
+                            self.last_level_size
+                                .set(Some((lsz.width.0 as u32, lsz.height.0 as u32)));
+                        }
+                    }
+                    let img_id =
+                        SharedString::from(format!("image-canvas-render-{slot}-{}", level.id.0));
+                    div()
+                        .when(cfg!(test), move |el| {
+                            el.debug_selector(move || {
+                                if slot == 0 {
+                                    "IMAGE_VIEW_IMG".into()
+                                } else {
+                                    "IMAGE_VIEW_IMG_AFTER".into()
+                                }
+                            })
+                        })
+                        .absolute()
+                        .left(px(origin.x))
+                        .top(px(origin.y))
+                        .w(px(p.drawn_w))
+                        .h(px(p.drawn_h))
+                        .overflow_hidden()
+                        .when(self.deleted, |el| el.opacity(0.5))
+                        .child(render_checkerboard(pane_clip, is_light))
+                        .child(
+                            img(ImageSource::Render(level))
+                                .id(img_id)
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Fill),
+                        )
+                        .into_any_element()
+                } else {
+                    #[cfg(test)]
+                    self.last_image_bounds[slot].set(None);
+                    match &self.content {
+                        CanvasContent::Diff { sides, .. } => sides
+                            .slot(slot)
+                            .map(render_diff_side_placeholder)
+                            .unwrap_or_else(|| div().into_any_element()),
+                        CanvasContent::Single(_) => div().into_any_element(),
+                    }
+                };
+                layers.push(
+                    div()
+                        .absolute()
+                        .left(px(p.x))
+                        .top(px(p.y))
+                        .w(px(p.w))
+                        .h(px(p.h))
+                        .overflow_hidden()
+                        .child(pane_inner)
+                        .into_any_element(),
+                );
+            }
+            if let Some(div_x) = g.divider_x {
+                layers.push(
+                    div()
+                        .when(cfg!(test), |el| {
+                            el.debug_selector(|| "IMAGE_DIFF_SPLIT_DIVIDER".into())
+                        })
+                        .absolute()
+                        .left(px(div_x))
+                        .top_0()
+                        .bottom_0()
+                        .w(px(1.))
+                        .bg(theme::border())
+                        .into_any_element(),
+                );
+            }
+        }
 
-        let stepper = self.render_stepper(geom, cx);
+        let show_stepper = geom.is_none_or(|g| g.has_image);
+        let stepper = show_stepper.then(|| self.render_stepper(geom, cx));
         let pannable = geom.is_some_and(|g| g.max_pan_x > 0. || g.max_pan_y > 0.);
         let dragging = self.drag.is_some_and(|(_, _, moved)| moved);
 
@@ -1624,6 +2432,9 @@ impl Render for ImageCanvas {
                 cx.listener(|this, event: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
                     this.focus.focus(window, cx);
+                    if let Some(on_in) = this.on_focus_in.clone() {
+                        on_in(window, cx);
+                    }
                     if event.click_count >= 2 {
                         this.drag = None;
                         this.toggle_fit_100(cx);
@@ -1685,8 +2496,8 @@ impl Render for ImageCanvas {
                 this.apply_pinch(event.delta, event.position, cx);
             }))
             .child(measure)
-            .children(image_layer)
-            .child(stepper)
+            .children(layers)
+            .children(stepper)
     }
 }
 
@@ -1694,7 +2505,16 @@ impl Render for ImageCanvas {
 #[allow(dead_code)]
 impl ImageCanvas {
     pub(crate) fn image_dimensions(&self) -> (u32, u32) {
-        (self.image.width, self.image.height)
+        self.content
+            .image_at(0)
+            .map_or((0, 0), |img| (img.width, img.height))
+    }
+
+    pub(crate) fn diff_layout(&self) -> Option<DiffViewMode> {
+        match &self.content {
+            CanvasContent::Diff { layout, .. } => Some(*layout),
+            CanvasContent::Single(_) => None,
+        }
     }
 
     pub(crate) fn effective_scale(&self) -> Option<f32> {
@@ -1722,7 +2542,11 @@ impl ImageCanvas {
     }
 
     pub(crate) fn last_image_bounds(&self) -> Option<Bounds<Pixels>> {
-        self.last_image_bounds.get()
+        self.last_image_bounds[0].get()
+    }
+
+    pub(crate) fn last_after_image_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.last_image_bounds[1].get()
     }
 
     pub(crate) fn last_stepper_bounds(&self) -> Option<Bounds<Pixels>> {
@@ -1734,11 +2558,19 @@ impl ImageCanvas {
     }
 
     pub(crate) fn render_images(&self) -> Vec<Arc<RenderImage>> {
-        self.image.levels().to_vec()
+        let mut out = Vec::new();
+        for slot in 0..2 {
+            if let Some(img) = self.content.image_at(slot) {
+                out.extend(img.levels().iter().cloned());
+            }
+        }
+        out
     }
 
     pub(crate) fn frame_count(&self) -> usize {
-        self.image.frame_count()
+        self.content
+            .image_at(0)
+            .map_or(0, DecodedImage::frame_count)
     }
 }
 
@@ -1922,17 +2754,19 @@ mod tests {
 
     #[test]
     fn single_geometry_fits_never_above_100_percent_and_clears_stepper() {
-        let large = SingleGeometry::compute(440., 346., 3368, 2196, ZoomMode::Fit);
+        let large = CanvasGeometry::compute_single(440., 346., 3368, 2196, ZoomMode::Fit);
         assert!(large.scale < 1.0);
-        let origin = large.image_origin(point(0., 0.));
+        let pane = large.panes[0].unwrap();
+        let origin = pane.image_origin(point(0., 0.));
         assert!(origin.x >= CANVAS_MARGIN - 1.);
         assert!(origin.y >= CANVAS_MARGIN - 1.);
-        assert!(origin.y + large.drawn_h <= 346. - STEPPER_CLEARANCE + 1.);
+        assert!(origin.y + pane.drawn_h <= 346. - STEPPER_CLEARANCE + 1.);
 
-        let small = SingleGeometry::compute(440., 186., 64, 64, ZoomMode::Fit);
+        let small = CanvasGeometry::compute_single(440., 186., 64, 64, ZoomMode::Fit);
         assert_eq!(small.scale, 1.0);
-        assert_eq!(small.drawn_w, 64.);
-        assert_eq!(small.drawn_h, 64.);
+        let small_pane = small.panes[0].unwrap();
+        assert_eq!(small_pane.drawn_w, 64.);
+        assert_eq!(small_pane.drawn_h, 64.);
     }
 
     #[test]
@@ -1946,8 +2780,113 @@ mod tests {
         );
     }
 
+    fn make_png_with_iccp(w: u32, h: u32, iccp_uncompressed_len: usize) -> Vec<u8> {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let mut png = make_png(w, h, [10, 20, 30, 255]);
+        // Insert a zlib-compressed iCCP chunk right after the 8-byte signature + 25-byte IHDR.
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::best());
+        enc.write_all(&vec![0u8; iccp_uncompressed_len]).unwrap();
+        let compressed = enc.finish().unwrap();
+        let mut chunk_data = b"bomb\0\0".to_vec();
+        chunk_data.extend_from_slice(&compressed);
+
+        let mut crc_in = Vec::with_capacity(4 + chunk_data.len());
+        crc_in.extend_from_slice(b"iCCP");
+        crc_in.extend_from_slice(&chunk_data);
+        let mut chunk = Vec::with_capacity(12 + chunk_data.len());
+        chunk.extend_from_slice(&(chunk_data.len() as u32).to_be_bytes());
+        chunk.extend_from_slice(b"iCCP");
+        chunk.extend_from_slice(&chunk_data);
+        chunk.extend_from_slice(&crc32(&crc_in).to_be_bytes());
+
+        let tail = png.split_off(8 + 25);
+        png.extend_from_slice(&chunk);
+        png.extend_from_slice(&tail);
+        png
+    }
+
     #[test]
-    fn svg_decode_parses_valid_and_rejects_broken() {
+    fn png_header_bounds_iccp_decompression_budget() {
+        let small = make_png_with_iccp(16, 16, 1024);
+        let mut small_probe = image::ImageReader::with_format(Cursor::new(&small), ImgFmt::Png);
+        small_probe.limits(header_limits());
+        let mut small_dec = small_probe.into_decoder().unwrap();
+        assert_eq!(
+            small_dec.icc_profile().unwrap().map(|v| v.len()),
+            Some(1024)
+        );
+
+        // An iCCP chunk expanding past MAX_HEADER_ALLOC_BYTES is stopped by the finite
+        // header budget (`png` skips the oversized ancillary profile rather than allocating it).
+        let bomb = make_png_with_iccp(16, 16, (MAX_HEADER_ALLOC_BYTES as usize) + 2 * 1024 * 1024);
+        assert!(
+            bomb.len() < 256 * 1024,
+            "compressed bomb fixture should stay tiny on disk"
+        );
+        let mut bomb_probe = image::ImageReader::with_format(Cursor::new(&bomb), ImgFmt::Png);
+        bomb_probe.limits(header_limits());
+        let mut bomb_dec = bomb_probe.into_decoder().unwrap();
+        assert!(
+            bomb_dec.icc_profile().unwrap().is_none(),
+            "oversized iCCP profile must not decompress past MAX_HEADER_ALLOC_BYTES"
+        );
+        // The image itself still decodes safely within the finite budget.
+        assert!(matches!(
+            decode_raster_image(gpui::ImageFormat::Png, &bomb, bomb.len() as u64),
+            DecodeOutcome::Ready(_)
+        ));
+    }
+
+    #[test]
+    fn truncated_gif_fails_cleanly_without_looping() {
+        let mut two_frame_gif = Vec::new();
+        {
+            let mut enc = GifEncoder::new(&mut two_frame_gif);
+            enc.set_repeat(Repeat::Infinite).unwrap();
+            let f1 = image::Frame::from_parts(
+                RgbaImage::from_pixel(16, 16, Rgba([255, 0, 0, 255])),
+                0,
+                0,
+                Delay::from_numer_denom_ms(100, 1),
+            );
+            let f2 = image::Frame::from_parts(
+                RgbaImage::from_pixel(16, 16, Rgba([0, 255, 0, 255])),
+                0,
+                0,
+                Delay::from_numer_denom_ms(100, 1),
+            );
+            enc.encode_frames([f1, f2]).unwrap();
+        }
+        // Truncate mid-way through frame 2 so frame 1 decodes and frame 2 errors.
+        let truncated_mid_second = &two_frame_gif[..two_frame_gif.len() - 6];
+        assert!(matches!(
+            decode_raster_image(
+                gpui::ImageFormat::Gif,
+                truncated_mid_second,
+                truncated_mid_second.len() as u64
+            ),
+            DecodeOutcome::Failed
+        ));
+
+        // Truncate inside the first frame as well.
+        let truncated_first = &two_frame_gif[..24.min(two_frame_gif.len())];
+        assert!(matches!(
+            decode_raster_image(
+                gpui::ImageFormat::Gif,
+                truncated_first,
+                truncated_first.len() as u64
+            ),
+            DecodeOutcome::Failed
+        ));
+    }
+
+    #[test]
+    fn svg_decode_enforces_limits_keeps_logical_size_and_blocks_local_files() {
+        use base64::Engine;
+
         let valid = br##"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120"><rect width="240" height="120" fill="#ff0000"/></svg>"##;
         let DecodeOutcome::Ready(decoded) = decode_svg_image(valid, valid.len() as u64) else {
             panic!("valid SVG should decode");
@@ -1964,5 +2903,400 @@ mod tests {
             decode_svg_image(b"<svg><unclosed", 14),
             DecodeOutcome::Failed
         ));
+
+        // Legal SVG over MAX_TEXTURE_SIDE (10000 x 100 = 1 MP <= 64 MP): preserves logical
+        // dimensions while keeping the rasterized texture <= 8192 px.
+        let wide_svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10000" height="100"><rect width="10000" height="100" fill="#38bdf8"/></svg>"##;
+        let DecodeOutcome::Ready(wide) = decode_svg_image(wide_svg, wide_svg.len() as u64) else {
+            panic!("10000x100 SVG should be accepted");
+        };
+        assert_eq!((wide.width, wide.height), (10_000, 100));
+        let tex_sz = wide.levels()[0].size(0);
+        assert!(tex_sz.width.0 as u32 <= MAX_TEXTURE_SIDE);
+        assert!(tex_sz.height.0 as u32 <= MAX_TEXTURE_SIDE);
+
+        // Over-16384 and over-64MP SVGs are rejected before pixel allocation.
+        let over_side = br##"<svg xmlns="http://www.w3.org/2000/svg" width="20000" height="100"><rect width="20000" height="100" fill="#f00"/></svg>"##;
+        assert!(matches!(
+            decode_svg_image(over_side, over_side.len() as u64),
+            DecodeOutcome::TooManyPixels {
+                width: 20_000,
+                height: 100,
+                ..
+            }
+        ));
+        let over_mp = br##"<svg xmlns="http://www.w3.org/2000/svg" width="9000" height="9000"><rect width="9000" height="9000" fill="#f00"/></svg>"##;
+        assert!(matches!(
+            decode_svg_image(over_mp, over_mp.len() as u64),
+            DecodeOutcome::TooManyPixels {
+                width: 9_000,
+                height: 9_000,
+                ..
+            }
+        ));
+
+        // Local filesystem `<image href="...">` must never be read.
+        let temp = tempfile::tempdir().unwrap();
+        let secret_path = temp.path().join("secret.png");
+        std::fs::write(&secret_path, make_png(32, 32, [255, 0, 0, 255])).unwrap();
+        let file_ref_svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><image href="{}" width="32" height="32"/></svg>"#,
+            secret_path.display()
+        );
+        let DecodeOutcome::Ready(safe) =
+            decode_svg_image(file_ref_svg.as_bytes(), file_ref_svg.len() as u64)
+        else {
+            panic!("SVG with blocked local href should still parse safely");
+        };
+        let bytes = safe.levels()[0].as_bytes(0).unwrap();
+        assert!(
+            bytes.chunks_exact(4).all(|px| px[3] == 0),
+            "local filesystem image must never be loaded into SVG raster"
+        );
+
+        // Embedded oversized/bomb data-URI PNG inside SVG is dropped by the bounded data resolver.
+        let oversized_b64 =
+            base64::engine::general_purpose::STANDARD.encode(fake_png_header(16_385, 100));
+        let iccp_bomb_b64 = base64::engine::general_purpose::STANDARD.encode(make_png_with_iccp(
+            16,
+            16,
+            (MAX_HEADER_ALLOC_BYTES as usize) + 2 * 1024 * 1024,
+        ));
+        let embedded_svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><image href="data:image/png;base64,{oversized_b64}" width="32" height="32"/><image href="data:image/png;base64,{iccp_bomb_b64}" width="32" height="32"/></svg>"#
+        );
+        let DecodeOutcome::Ready(bounded) =
+            decode_svg_image(embedded_svg.as_bytes(), embedded_svg.len() as u64)
+        else {
+            panic!("SVG with rejected embedded data-URI rasters should stay bounded");
+        };
+        assert!(bounded.levels()[0]
+            .as_bytes(0)
+            .unwrap()
+            .chunks_exact(4)
+            .all(|px| px[3] == 0));
+
+        // Gzip-compressed SVGZ must be rejected directly and when embedded via data URI
+        // so usvg never performs unbounded gzip expansion.
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+        let mut gz = GzEncoder::new(Vec::new(), Compression::best());
+        gz.write_all(valid).unwrap();
+        let svgz = gz.finish().unwrap();
+        assert!(matches!(
+            decode_svg_image(&svgz, svgz.len() as u64),
+            DecodeOutcome::Failed
+        ));
+        let svgz_b64 = base64::engine::general_purpose::STANDARD.encode(&svgz);
+        let embedded_svgz = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><image href="data:image/svg+xml;base64,{svgz_b64}" width="32" height="32"/></svg>"#
+        );
+        let DecodeOutcome::Ready(no_svgz) =
+            decode_svg_image(embedded_svgz.as_bytes(), embedded_svgz.len() as u64)
+        else {
+            panic!("outer SVG should ignore embedded SVGZ without decompressing it");
+        };
+        assert!(no_svgz.levels()[0]
+            .as_bytes(0)
+            .unwrap()
+            .chunks_exact(4)
+            .all(|px| px[3] == 0));
+    }
+
+    #[test]
+    fn optimized_large_gif_with_partial_subframe_decodes_within_finite_budget() {
+        // 3000x2000 logical screen + 2900x1900 partial subframe (total 12 MP <= 64 MP).
+        // Needs two screen RGBA buffers plus the partial subframe (~70 MB > 8 B/px budget).
+        let mut gif_bytes = Vec::new();
+        {
+            let mut enc = GifEncoder::new(&mut gif_bytes);
+            enc.set_repeat(Repeat::Infinite).unwrap();
+            let f1 = image::Frame::from_parts(
+                RgbaImage::from_pixel(3000, 2000, Rgba([20, 40, 80, 255])),
+                0,
+                0,
+                Delay::from_numer_denom_ms(100, 1),
+            );
+            let f2 = image::Frame::from_parts(
+                RgbaImage::from_pixel(2900, 1900, Rgba([200, 60, 40, 255])),
+                50,
+                50,
+                Delay::from_numer_denom_ms(100, 1),
+            );
+            enc.encode_frames([f1, f2]).unwrap();
+        }
+        let DecodeOutcome::Ready(decoded) =
+            decode_raster_image(gpui::ImageFormat::Gif, &gif_bytes, gif_bytes.len() as u64)
+        else {
+            panic!("valid 3000x2000 optimized GIF with partial subframe should decode");
+        };
+        assert!(decoded.is_animated());
+        assert_eq!(decoded.frame_count(), 2);
+        assert_eq!((decoded.width, decoded.height), (3000, 2000));
+    }
+
+    #[test]
+    fn animated_gif_budget_covers_64mp_partial_frame_and_stops_after_first_frame_over_half() {
+        // Budget arithmetic near 64 MP: 8000x7500 (60 MP) with a 6000x6000 partial subframe
+        // requires 2 logical screens (480 MB) + partial subframe (144 MB) = 624 MB.
+        let near_cap = animated_decode_limits(8000, 7500).max_alloc.unwrap();
+        let required_near_cap = 2 * (8000u64 * 7500 * 4) + (6000u64 * 6000 * 4);
+        assert!(
+            near_cap > required_near_cap && near_cap <= MAX_ANIMATED_DECODE_ALLOC_BYTES,
+            "near-64MP budget {near_cap} must cover {required_near_cap} and stay bounded"
+        );
+        let at_cap = animated_decode_limits(8000, 8000).max_alloc.unwrap();
+        assert!(at_cap >= 3 * (8000u64 * 8000 * 4));
+        assert_eq!(at_cap, MAX_ANIMATED_DECODE_ALLOC_BYTES);
+
+        // Parameterized iterator check: a 16x16 (256 px) 2-frame GIF whose second frame is
+        // truncated stops right after frame 1 when max_total_pixels = 300 (256 > 150),
+        // proving frame 2 is never pulled; at budget = 600 it pulls frame 2 and fails.
+        let mut two_frame_gif = Vec::new();
+        {
+            let mut enc = GifEncoder::new(&mut two_frame_gif);
+            enc.set_repeat(Repeat::Infinite).unwrap();
+            let f1 = image::Frame::from_parts(
+                RgbaImage::from_pixel(16, 16, Rgba([255, 0, 0, 255])),
+                0,
+                0,
+                Delay::from_numer_denom_ms(100, 1),
+            );
+            let f2 = image::Frame::from_parts(
+                RgbaImage::from_pixel(16, 16, Rgba([0, 255, 0, 255])),
+                0,
+                0,
+                Delay::from_numer_denom_ms(100, 1),
+            );
+            enc.encode_frames([f1, f2]).unwrap();
+        }
+        let truncated_f2 = &two_frame_gif[..two_frame_gif.len() - 6];
+
+        let dec_stop = GifDecoder::new(Cursor::new(truncated_f2)).unwrap();
+        let DecodeOutcome::Ready(still) = decode_animated_frames_with_budget(
+            dec_stop.into_frames(),
+            16,
+            16,
+            truncated_f2.len() as u64,
+            300,
+        ) else {
+            panic!("logical screen > half budget should stop after valid frame 1");
+        };
+        assert!(!still.is_animated());
+        assert_eq!(still.frame_count(), 1);
+
+        let dec_pull = GifDecoder::new(Cursor::new(truncated_f2)).unwrap();
+        assert!(matches!(
+            decode_animated_frames_with_budget(
+                dec_pull.into_frames(),
+                16,
+                16,
+                truncated_f2.len() as u64,
+                600,
+            ),
+            DecodeOutcome::Failed
+        ));
+    }
+
+    #[gpui::test]
+    fn center_zoom_preserves_pan_on_overflowing_side_of_unequal_split_diff(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let small_png = make_png(100, 100, [255, 0, 0, 255]);
+        let large_png = make_png(800, 400, [0, 255, 0, 255]);
+        let DecodeOutcome::Ready(before_img) =
+            decode_raster_image(gpui::ImageFormat::Png, &small_png, small_png.len() as u64)
+        else {
+            panic!("before_img");
+        };
+        let DecodeOutcome::Ready(after_img) =
+            decode_raster_image(gpui::ImageFormat::Png, &large_png, large_png.len() as u64)
+        else {
+            panic!("after_img");
+        };
+        let sides = DiffSides::Two {
+            before: Box::new(DiffSide {
+                caption: DiffCaptionKind::Before,
+                file_name: "shot.png".into(),
+                state: DiffSideState::Ready(before_img),
+            }),
+            after: Box::new(DiffSide {
+                caption: DiffCaptionKind::After,
+                file_name: "shot.png".into(),
+                state: DiffSideState::Ready(after_img),
+            }),
+        };
+        let canvas = cx.new(|cx| ImageCanvas::new_diff(DiffViewMode::Split, sides, cx));
+        canvas.update(cx, |c, cx| {
+            c.on_viewport_resized(
+                Bounds::new(point(px(0.), px(0.)), size(px(800.), px(600.))),
+                cx,
+            );
+            // Zoom to 100%: Before (100x100) still fits in its ~400 px pane (max_pan_x == 0),
+            // while After (800x400) overflows horizontally (max_pan_x ~= 200).
+            c.zoom_to_center(ZoomMode::Custom(1.0), cx);
+            assert!(c.pan_by(-80., 0., cx));
+        });
+
+        let old_after_img_x = canvas.read_with(cx, |c, _| {
+            let geom = c.current_geometry().unwrap();
+            let p0 = geom.panes[0].unwrap();
+            let p1 = geom.panes[1].unwrap();
+            assert_eq!(p0.max_pan_x, 0., "Before side fits horizontally");
+            assert!(p1.max_pan_x > 100., "After side overflows horizontally");
+            let pan1 = p1.clamp_pan(c.pan);
+            assert!((pan1.x + 80.).abs() < 0.5);
+            (p1.w * 0.5 - (p1.base_center_x + pan1.x)) / geom.scale
+        });
+
+        canvas.update(cx, |c, cx| {
+            c.step_zoom(true, cx);
+        });
+        let (new_after_img_x, new_pan_x) = canvas.read_with(cx, |c, _| {
+            let geom = c.current_geometry().unwrap();
+            let p1 = geom.panes[1].unwrap();
+            let pan1 = p1.clamp_pan(c.pan);
+            (
+                (p1.w * 0.5 - (p1.base_center_x + pan1.x)) / geom.scale,
+                pan1.x,
+            )
+        });
+        assert!(
+            new_pan_x < -80.,
+            "After pan must grow with zoom rather than resetting to 0 (got {new_pan_x})"
+        );
+        assert!(
+            (new_after_img_x - old_after_img_x).abs() < 0.5,
+            "After center shifted from image x={old_after_img_x} to x={new_after_img_x}"
+        );
+    }
+
+    #[gpui::test]
+    fn center_zoom_preserves_image_point_across_stepper_clearance_shift(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let png = make_png(1000, 1000, [40, 120, 220, 255]);
+        let DecodeOutcome::Ready(decoded) =
+            decode_raster_image(gpui::ImageFormat::Png, &png, png.len() as u64)
+        else {
+            panic!("expected decoded image");
+        };
+        let canvas = cx.new(|cx| ImageCanvas::new_single(decoded, cx));
+        canvas.update(cx, |c, cx| {
+            c.on_viewport_resized(
+                Bounds::new(point(px(0.), px(0.)), size(px(500.), px(500.))),
+                cx,
+            );
+        });
+
+        // At Fit in a 500x500 viewport, base_center_y is shifted up to clear the stepper (234 != 250).
+        let (old_img_x, old_img_y) = canvas.read_with(cx, |c, _| {
+            let geom = c.current_geometry().unwrap();
+            let pane = geom.panes[0].unwrap();
+            assert!(
+                (pane.base_center_y - pane.h * 0.5).abs() > 1.0,
+                "fitted square should sit above raw viewport center to clear stepper"
+            );
+            let old_pan = pane.clamp_pan(c.pan);
+            (
+                (pane.w * 0.5 - (pane.base_center_x + old_pan.x)) / geom.scale,
+                (pane.h * 0.5 - (pane.base_center_y + old_pan.y)) / geom.scale,
+            )
+        });
+
+        // Step directly to 75% (750x750 > 500x500 viewport, where base_center_y becomes 250
+        // and max_pan_y = 125 can fully compensate without clamping).
+        canvas.update(cx, |c, cx| {
+            c.zoom_to_center(ZoomMode::Custom(0.75), cx);
+        });
+        let (new_img_x, new_img_y, pan_y, max_pan_y) = canvas.read_with(cx, |c, _| {
+            let geom = c.current_geometry().unwrap();
+            let pane = geom.panes[0].unwrap();
+            assert!((pane.base_center_y - pane.h * 0.5).abs() < 0.1);
+            let new_pan = pane.clamp_pan(c.pan);
+            (
+                (pane.w * 0.5 - (pane.base_center_x + new_pan.x)) / geom.scale,
+                (pane.h * 0.5 - (pane.base_center_y + new_pan.y)) / geom.scale,
+                new_pan.y,
+                pane.max_pan_y,
+            )
+        });
+        assert!(
+            pan_y.abs() < max_pan_y - 1.0,
+            "zoom stayed within pan bounds"
+        );
+        assert!((new_img_x - old_img_x).abs() < 0.5);
+        assert!(
+            (new_img_y - old_img_y).abs() < 0.5,
+            "pane center shifted from image y={old_img_y} to y={new_img_y}"
+        );
+    }
+
+    #[test]
+    fn diff_geometry_uses_one_shared_scale_for_unified_split_and_one_sided() {
+        let png_a = make_png(400, 200, [255, 0, 0, 255]);
+        let png_b = make_png(800, 600, [0, 255, 0, 255]);
+        let DecodeOutcome::Ready(img_a) =
+            decode_raster_image(gpui::ImageFormat::Png, &png_a, png_a.len() as u64)
+        else {
+            panic!("img_a");
+        };
+        let DecodeOutcome::Ready(img_b) =
+            decode_raster_image(gpui::ImageFormat::Png, &png_b, png_b.len() as u64)
+        else {
+            panic!("img_b");
+        };
+        let sides = DiffSides::Two {
+            before: Box::new(DiffSide {
+                caption: DiffCaptionKind::Before,
+                file_name: "shot.png".into(),
+                state: DiffSideState::Ready(img_a),
+            }),
+            after: Box::new(DiffSide {
+                caption: DiffCaptionKind::After,
+                file_name: "shot.png".into(),
+                state: DiffSideState::Ready(img_b),
+            }),
+        };
+
+        let unified =
+            CanvasGeometry::compute_diff(460., 600., DiffViewMode::Unified, &sides, ZoomMode::Fit);
+        assert!(unified.divider_x.is_none());
+        let p0 = unified.panes[0].unwrap();
+        let p1 = unified.panes[1].unwrap();
+        assert!((p0.drawn_w / 400. - unified.scale).abs() < 0.001);
+        assert!((p1.drawn_w / 800. - unified.scale).abs() < 0.001);
+        assert!(p0.y + p0.h < p1.y);
+
+        let split =
+            CanvasGeometry::compute_diff(900., 600., DiffViewMode::Split, &sides, ZoomMode::Fit);
+        assert!(split.divider_x.is_some());
+        let sp0 = split.panes[0].unwrap();
+        let sp1 = split.panes[1].unwrap();
+        assert!((sp0.drawn_w / 400. - split.scale).abs() < 0.001);
+        assert!((sp1.drawn_w / 800. - split.scale).abs() < 0.001);
+        assert!(sp0.x + sp0.w < sp1.x);
+
+        let DecodeOutcome::Ready(img_one) =
+            decode_raster_image(gpui::ImageFormat::Png, &png_a, png_a.len() as u64)
+        else {
+            panic!("img_one");
+        };
+        let one_sided = DiffSides::One(Box::new(DiffSide {
+            caption: DiffCaptionKind::Added,
+            file_name: "added.png".into(),
+            state: DiffSideState::Ready(img_one),
+        }));
+        let one_geom = CanvasGeometry::compute_diff(
+            460.,
+            600.,
+            DiffViewMode::Split,
+            &one_sided,
+            ZoomMode::Fit,
+        );
+        assert!(one_geom.divider_x.is_none());
+        assert!(one_geom.panes[0].is_some());
+        assert!(one_geom.panes[1].is_none());
     }
 }

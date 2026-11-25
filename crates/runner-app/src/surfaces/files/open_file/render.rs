@@ -6,8 +6,8 @@
 use super::*;
 use crate::file_icons::{self, IconSet};
 use crate::surfaces::changes::{
-    render_shared_diff_header, render_shared_diff_placeholder, DiffHeaderProps, DiffModeCallback,
-    PlaceholderViewedFooter,
+    render_diff_viewed_footer, render_shared_diff_header, render_shared_diff_placeholder,
+    DiffHeaderProps, DiffModeCallback, PlaceholderViewedFooter,
 };
 
 const LIST_WIDTH: f32 = 300.;
@@ -642,7 +642,7 @@ impl UnifiedViewer {
         let markdown_source = self.active_markdown();
         let can_find = self.active_view().is_some()
             || self.active_rendered().is_some()
-            || self.active_svg_rendered().is_some();
+            || self.shows_svg_rendered(doc);
         let find_shortcut = if cfg!(target_os = "macos") {
             "⌘F"
         } else {
@@ -683,21 +683,17 @@ impl UnifiedViewer {
                             .child(name),
                     )
                     .children(image_meta.map(|meta| {
+                        let meta_for_selector = meta.clone();
                         div()
-                            .when(cfg!(test), |el| {
-                                el.debug_selector(|| "FILE_IMAGE_META".into())
+                            .when(cfg!(test), move |el| {
+                                let meta = meta_for_selector.clone();
+                                el.debug_selector(move || format!("FILE_IMAGE_META {meta}"))
                             })
                             .min_w(px(0.))
                             .flex_shrink(2.)
                             .truncate()
                             .text_size(theme::text_meta())
                             .text_color(theme::muted())
-                            .map(|element| {
-                                #[cfg(test)]
-                                let element =
-                                    crate::theme_snapshot::record_text("FILE_IMAGE_META", element);
-                                element
-                            })
                             .child(meta)
                     }))
                     .children(folder.map(|f| {
@@ -1189,7 +1185,7 @@ impl UnifiedViewer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let effective_mode = self.effective_diff_mode(cx);
-        let (status_opt, counts_opt, mode_change, conflicted, viewed_tuple) = match &doc.diff {
+        let (status_opt, mut counts_opt, mode_change, conflicted, viewed_tuple) = match &doc.diff {
             FileTabDiff::Loaded(loaded) => (
                 Some(&loaded.status),
                 Some(loaded.counts),
@@ -1206,6 +1202,114 @@ impl UnifiedViewer {
                 doc.hint_viewed,
             ),
         };
+        let hide_bin_count = match &doc.diff {
+            FileTabDiff::Loaded(loaded) => matches!(loaded.kind, LoadedDiffKind::Image { .. }),
+            FileTabDiff::Idle | FileTabDiff::Loading => raster_image_format(&key.path).is_some(),
+            _ => false,
+        };
+        if hide_bin_count && matches!(counts_opt, Some(DiffCounts::Binary)) {
+            counts_opt = None;
+        }
+        let one_sided_image_diff = match &doc.diff {
+            FileTabDiff::Loaded(loaded) => match &loaded.kind {
+                LoadedDiffKind::Image { one_sided, .. } => *one_sided,
+                LoadedDiffKind::Svg {
+                    source: false,
+                    one_sided,
+                    ..
+                } => *one_sided,
+                _ => false,
+            },
+            FileTabDiff::Idle | FileTabDiff::Loading => {
+                markdown::image_format(&key.path).is_some()
+                    && matches!(
+                        status_opt,
+                        Some(FileStatus::Added | FileStatus::Untracked | FileStatus::Deleted)
+                    )
+            }
+            _ => false,
+        };
+        let svg_diff_source = match &doc.diff {
+            FileTabDiff::Loaded(loaded) => match &loaded.kind {
+                LoadedDiffKind::Svg { source, .. } => Some(*source),
+                _ => None,
+            },
+            _ => None,
+        };
+        let extra_control = svg_diff_source.map(|source| {
+            let toggle_key = key.clone();
+            let pill = |id: &'static str,
+                        selector: &'static str,
+                        label_key: &'static str,
+                        active: bool,
+                        target_source: bool| {
+                let toggle_key = toggle_key.clone();
+                div()
+                    .id(id)
+                    .when(cfg!(test), move |el| {
+                        el.debug_selector(move || {
+                            if active {
+                                format!("{selector} active")
+                            } else {
+                                selector.into()
+                            }
+                        })
+                    })
+                    .h(px(22.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .text_size(theme::text_meta())
+                    .when(active, |el| {
+                        el.bg(theme::raised())
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::text())
+                    })
+                    .when(!active, |el| {
+                        el.text_color(theme::muted())
+                            .hover(|h| h.text_color(theme::text()))
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .when(!active, |el| {
+                        el.on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.set_svg_diff_source(&toggle_key, target_source, window, cx);
+                        }))
+                    })
+                    .child(crate::i18n::text(label_key))
+            };
+            div()
+                .id("diff-svg-source")
+                .when(cfg!(test), |el| {
+                    el.debug_selector(|| "DIFF_SVG_SOURCE".into())
+                })
+                .flex_none()
+                .p(px(2.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::panel())
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .child(pill(
+                    "diff-svg-rendered",
+                    "DIFF_SVG_RENDERED",
+                    "side_panel.rendered",
+                    !source,
+                    false,
+                ))
+                .child(pill(
+                    "diff-svg-source-btn",
+                    "DIFF_SVG_SOURCE_BTN",
+                    "side_panel.source",
+                    source,
+                    true,
+                ))
+                .into_any_element()
+        });
         let deleted = doc.is_working_tree_deleted(key);
         let weak = cx.weak_entity();
         let mode_handler: DiffModeCallback = Rc::new(move |mode, window, cx| {
@@ -1231,7 +1335,8 @@ impl UnifiedViewer {
             mode_change,
             conflicted,
             compare_label,
-            mode_switch: Some((effective_mode, mode_handler)),
+            extra_control,
+            mode_switch: (!one_sided_image_diff).then_some((effective_mode, mode_handler)),
             viewed,
             open_external: None,
             open_in_control,
@@ -1301,6 +1406,68 @@ impl UnifiedViewer {
                 LoadedDiffKind::Unified(entity) => {
                     entity.update(cx, |v, cx| v.set_mode(effective_mode, cx));
                     entity.clone().into_any_element()
+                }
+                LoadedDiffKind::Image { canvas, .. } => {
+                    canvas.update(cx, |c, cx| c.set_diff_mode(effective_mode, cx));
+                    let toggle_entity = cx.entity();
+                    let toggle_key = key.clone();
+                    let footer = render_diff_viewed_footer(
+                        &loaded.path,
+                        PlaceholderViewedFooter {
+                            viewed: loaded.viewed,
+                            changed_since_viewed: loaded.changed_since_viewed,
+                            on_toggle: Rc::new(move |_, cx| {
+                                let toggle_key = toggle_key.clone();
+                                toggle_entity.update(cx, |this, cx| {
+                                    this.toggle_viewed_for_tab(&toggle_key, cx);
+                                });
+                            }),
+                        },
+                    );
+                    div()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .flex()
+                        .flex_col()
+                        .child(canvas.clone())
+                        .child(footer)
+                        .into_any_element()
+                }
+                LoadedDiffKind::Svg {
+                    canvas,
+                    unified,
+                    source,
+                    ..
+                } => {
+                    if *source {
+                        unified.update(cx, |v, cx| v.set_mode(effective_mode, cx));
+                        unified.clone().into_any_element()
+                    } else {
+                        canvas.update(cx, |c, cx| c.set_diff_mode(effective_mode, cx));
+                        let toggle_entity = cx.entity();
+                        let toggle_key = key.clone();
+                        let footer = render_diff_viewed_footer(
+                            &loaded.path,
+                            PlaceholderViewedFooter {
+                                viewed: loaded.viewed,
+                                changed_since_viewed: loaded.changed_since_viewed,
+                                on_toggle: Rc::new(move |_, cx| {
+                                    let toggle_key = toggle_key.clone();
+                                    toggle_entity.update(cx, |this, cx| {
+                                        this.toggle_viewed_for_tab(&toggle_key, cx);
+                                    });
+                                }),
+                            },
+                        );
+                        div()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .flex()
+                            .flex_col()
+                            .child(canvas.clone())
+                            .child(footer)
+                            .into_any_element()
+                    }
                 }
                 _ => {
                     let Some(root_path) = self.root_path() else {
@@ -1556,6 +1723,8 @@ impl Render for UnifiedViewer {
             if self.active_showing_diff() {
                 if let Some(diff) = self.active_diff_view() {
                     diff.read(cx).focus_handle().clone().focus(window, cx);
+                } else if let Some(canvas) = self.active_image_canvas() {
+                    canvas.read(cx).focus_handle().clone().focus(window, cx);
                 }
             } else if let Some(page) = self.active_rendered() {
                 page.read(cx).focus_handle().clone().focus(window, cx);

@@ -28,7 +28,7 @@ fn changes_diff(
     target: &ChangesTarget,
     path: &str,
 ) -> Result<ChangesDiff> {
-    super::changes_diff(core, root, target, path, None)
+    super::changes_diff(core, root, target, path, None, false)
 }
 
 fn hash_object(dir: &Path, path: &Path) -> String {
@@ -555,7 +555,9 @@ fn file_kinds_and_edge_cases_match_git() {
         bin_diff.body,
         DiffBody::Binary {
             old_size: Some(4),
-            new_size: Some(5)
+            new_size: Some(5),
+            old: None,
+            new: None,
         }
     );
 
@@ -819,6 +821,7 @@ fn protocol_dispatch_serves_all_four_changes_requests() {
             target: ChangesTarget::Uncommitted,
             path: "a.txt".into(),
             base: None,
+            want_bytes: None,
         },
     ) else {
         panic!("expected changes_diff Ok");
@@ -2299,6 +2302,7 @@ fn all_changes_against_chosen_base_in_umbrella_worktree_matches_git_diff_numstat
         &ChangesTarget::Branch,
         "a.txt",
         Some("feat/umbrella"),
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -2318,4 +2322,187 @@ fn all_changes_against_chosen_base_in_umbrella_worktree_matches_git_diff_numstat
     assert!(dispatched_branches
         .local
         .contains(&"feat/umbrella".to_owned()));
+}
+
+#[test]
+fn image_diff_bytes_travel_only_when_asked_for_images_within_limit_across_targets() {
+    let fixture = repo();
+    let root = fixture.path();
+    let core = test_core();
+
+    let old_png = b"\x89PNG\r\n\x1a\n\x00old-png-bytes";
+    let new_png = b"\x89PNG\r\n\x1a\n\x00new-png-bytes-v2";
+    let deleted_png = b"\x89PNG\r\n\x1a\n\x00deleted-png";
+    let mut renamed_png = b"\x89PNG\r\n\x1a\n\x00".to_vec();
+    renamed_png.extend((0u8..240).cycle().take(240));
+    let mut renamed_png_v2 = renamed_png.clone();
+    renamed_png_v2.extend_from_slice(b"tail");
+    let added_png = b"\x89PNG\r\n\x1a\n\x00added-png";
+    let untracked_png = b"\x89PNG\r\n\x1a\n\x00untracked-png";
+    let bin_old = b"\x00bin-old";
+    let bin_new = b"\x00bin-new-v2";
+
+    std::fs::write(root.join("shot.png"), old_png).unwrap();
+    std::fs::write(root.join("gone.png"), deleted_png).unwrap();
+    std::fs::write(root.join("before.png"), &renamed_png).unwrap();
+    std::fs::write(root.join("data.bin"), bin_old).unwrap();
+    commit_all(root, "add initial binaries");
+
+    // Branch commit: modify shot.png, delete gone.png, rename before.png -> after.png, add added.png.
+    git(root, &["checkout", "-q", "-b", "feat/images"]);
+    std::fs::write(root.join("shot.png"), new_png).unwrap();
+    std::fs::remove_file(root.join("gone.png")).unwrap();
+    git(root, &["mv", "before.png", "after.png"]);
+    std::fs::write(root.join("after.png"), &renamed_png_v2).unwrap();
+    std::fs::write(root.join("added.png"), added_png).unwrap();
+    std::fs::write(root.join("data.bin"), bin_new).unwrap();
+    let commit_sha = commit_all(root, "update images");
+
+    // Branch & Commit targets: bytes returned ONLY when want_bytes=true and ONLY for image extensions.
+    for target in [ChangesTarget::Branch, ChangesTarget::Commit(commit_sha)] {
+        let without =
+            super::changes_diff(&core, root, &target, "shot.png", Some("main"), false).unwrap();
+        assert_eq!(
+            without.body,
+            DiffBody::Binary {
+                old_size: Some(old_png.len() as u64),
+                new_size: Some(new_png.len() as u64),
+                old: None,
+                new: None,
+            }
+        );
+
+        let with =
+            super::changes_diff(&core, root, &target, "shot.png", Some("main"), true).unwrap();
+        assert_eq!(
+            with.body,
+            DiffBody::Binary {
+                old_size: Some(old_png.len() as u64),
+                new_size: Some(new_png.len() as u64),
+                old: Some(TerminalBytes(old_png.to_vec())),
+                new: Some(TerminalBytes(new_png.to_vec())),
+            }
+        );
+
+        // Non-image binary never returns bytes even when want_bytes=true.
+        let non_image =
+            super::changes_diff(&core, root, &target, "data.bin", Some("main"), true).unwrap();
+        assert_eq!(
+            non_image.body,
+            DiffBody::Binary {
+                old_size: Some(bin_old.len() as u64),
+                new_size: Some(bin_new.len() as u64),
+                old: None,
+                new: None,
+            }
+        );
+
+        // Added image: only `new` populated.
+        let added =
+            super::changes_diff(&core, root, &target, "added.png", Some("main"), true).unwrap();
+        assert_eq!(
+            added.body,
+            DiffBody::Binary {
+                old_size: None,
+                new_size: Some(added_png.len() as u64),
+                old: None,
+                new: Some(TerminalBytes(added_png.to_vec())),
+            }
+        );
+
+        // Deleted image: only `old` populated.
+        let deleted =
+            super::changes_diff(&core, root, &target, "gone.png", Some("main"), true).unwrap();
+        assert_eq!(
+            deleted.body,
+            DiffBody::Binary {
+                old_size: Some(deleted_png.len() as u64),
+                new_size: None,
+                old: Some(TerminalBytes(deleted_png.to_vec())),
+                new: None,
+            }
+        );
+
+        // Renamed image: both sides populated.
+        let renamed =
+            super::changes_diff(&core, root, &target, "after.png", Some("main"), true).unwrap();
+        assert_eq!(
+            renamed.status,
+            FileStatus::Renamed {
+                from: "before.png".into()
+            }
+        );
+        assert_eq!(
+            renamed.body,
+            DiffBody::Binary {
+                old_size: Some(renamed_png.len() as u64),
+                new_size: Some(renamed_png_v2.len() as u64),
+                old: Some(TerminalBytes(renamed_png.to_vec())),
+                new: Some(TerminalBytes(renamed_png_v2.to_vec())),
+            }
+        );
+    }
+
+    // Uncommitted: modified, untracked, and over-10-MB image.
+    let v3_png = b"\x89PNG\r\n\x1a\n\x00working-tree-v3";
+    std::fs::write(root.join("shot.png"), v3_png).unwrap();
+    std::fs::write(root.join("untracked.png"), untracked_png).unwrap();
+    let mut huge_png = b"\x89PNG\r\n\x1a\n\x00".to_vec();
+    huge_png.resize((MAX_READ_BYTES as usize) + 64, 0x55);
+    std::fs::write(root.join("huge.png"), &huge_png).unwrap();
+
+    let mod_uncommitted = super::changes_diff(
+        &core,
+        root,
+        &ChangesTarget::Uncommitted,
+        "shot.png",
+        None,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        mod_uncommitted.body,
+        DiffBody::Binary {
+            old_size: Some(new_png.len() as u64),
+            new_size: Some(v3_png.len() as u64),
+            old: Some(TerminalBytes(new_png.to_vec())),
+            new: Some(TerminalBytes(v3_png.to_vec())),
+        }
+    );
+
+    let untracked = super::changes_diff(
+        &core,
+        root,
+        &ChangesTarget::Uncommitted,
+        "untracked.png",
+        None,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        untracked.body,
+        DiffBody::Binary {
+            old_size: None,
+            new_size: Some(untracked_png.len() as u64),
+            old: None,
+            new: Some(TerminalBytes(untracked_png.to_vec())),
+        }
+    );
+
+    let over_limit = super::changes_diff(
+        &core,
+        root,
+        &ChangesTarget::Uncommitted,
+        "huge.png",
+        None,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        over_limit.body,
+        DiffBody::TooLarge {
+            old_size: None,
+            new_size: Some(huge_png.len() as u64),
+        }
+    );
 }

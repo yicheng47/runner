@@ -392,6 +392,7 @@ pub fn changes_diff(
     target: &ChangesTarget,
     path: &str,
     base: Option<&str>,
+    want_bytes: bool,
 ) -> Result<ChangesDiff> {
     let (git, repo) = resolve_checkout(core, root)?;
     let (norm_rel, abs_path) = validate_relative_path(root, path)?;
@@ -460,6 +461,27 @@ pub fn changes_diff(
         Vec::new()
     };
 
+    if old_bytes.len() as u64 > MAX_READ_BYTES || new_bytes.len() as u64 > MAX_READ_BYTES {
+        return Ok(ChangesDiff {
+            path: entry.root_rel_path,
+            status: entry.status,
+            counts: entry.counts,
+            old_blob_id: entry.old_blob_id,
+            new_blob_id: entry.new_blob_id,
+            mode_change,
+            conflicted: entry.conflicted,
+            body: DiffBody::TooLarge {
+                old_size: old_size
+                    .or_else(|| (!old_bytes.is_empty()).then_some(old_bytes.len() as u64)),
+                new_size: if new_bytes.len() as u64 > MAX_READ_BYTES {
+                    Some(new_bytes.len() as u64)
+                } else {
+                    new_size
+                },
+            },
+        });
+    }
+
     if let Some(mc) = mode_change.as_ref() {
         if entry.old_blob_id.is_some()
             && entry.old_blob_id == entry.new_blob_id
@@ -493,6 +515,12 @@ pub fn changes_diff(
         || is_binary_bytes(&old_bytes)
         || is_binary_bytes(&new_bytes)
     {
+        let include_bytes =
+            want_bytes && runner_core::protocol::files::is_image_path(&entry.root_rel_path);
+        let old =
+            (include_bytes && entry.old_blob_id.is_some()).then_some(TerminalBytes(old_bytes));
+        let new =
+            (include_bytes && entry.new_blob_id.is_some()).then_some(TerminalBytes(new_bytes));
         return Ok(ChangesDiff {
             path: entry.root_rel_path,
             status: entry.status,
@@ -501,7 +529,12 @@ pub fn changes_diff(
             new_blob_id: entry.new_blob_id,
             mode_change,
             conflicted: entry.conflicted,
-            body: DiffBody::Binary { old_size, new_size },
+            body: DiffBody::Binary {
+                old_size,
+                new_size,
+                old,
+                new,
+            },
         });
     }
 
