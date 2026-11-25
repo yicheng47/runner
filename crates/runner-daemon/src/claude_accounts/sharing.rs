@@ -1529,6 +1529,7 @@ mod tests {
             }
             let mut core = crate::test_support::test_core_in(temp.path().join("core"));
             core.usage = std::sync::Arc::new(crate::usage::UsageService::without_fetch());
+            crate::test_support::isolate_runtime_path(&core, None);
             let cli = temp.path().join("fake-query");
             fs::write(&cli, "#!/bin/sh\nexit 1\n").unwrap();
             fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();

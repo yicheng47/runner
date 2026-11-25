@@ -1619,6 +1619,7 @@ async fn usage_is_forwarded_with_the_negotiated_features() {
 async fn remote_launch_refusal_keeps_the_typed_runtime_version_gate() {
     use std::os::unix::fs::PermissionsExt;
     let host = Host::new().await;
+    crate::test_support::isolate_runtime_path(&host.core, None);
     let executable = host._root.path().join("codex-fixture");
     std::fs::write(&executable, "#!/bin/sh\necho 'codex-cli 0.147.0'\n").unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();

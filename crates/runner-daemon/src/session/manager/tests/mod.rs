@@ -115,9 +115,10 @@ fn inert_runtime() -> Arc<dyn SessionRuntime> {
 }
 
 fn manager_with_runtime(
-    shell_env: crate::shell_path::LoginShellEnv,
+    mut shell_env: crate::shell_path::LoginShellEnv,
     runtime: Arc<dyn SessionRuntime>,
 ) -> Arc<SessionManager> {
+    crate::test_support::isolate_shell_env(&mut shell_env);
     SessionManager::new(
         Arc::new(std::sync::RwLock::new(shell_env)),
         Arc::new(std::sync::RwLock::new(

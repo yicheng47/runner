@@ -428,6 +428,18 @@ use runner_core::protocol::runtime_paths::validation_error;
 #[cfg(test)]
 pub(crate) const TEST_ISOLATE_PATH_ENV: &str = "__RUNNER_TEST_ISOLATE_PATH";
 
+#[cfg(test)]
+pub(crate) const TEST_FALLBACK_PATH_ENV: &str = "__RUNNER_TEST_FALLBACK_PATH";
+
+#[cfg(test)]
+pub(crate) fn is_path_isolated(shell_env: &SharedShellEnv) -> bool {
+    shell_env.read().is_ok_and(|env| {
+        env.vars
+            .get(TEST_ISOLATE_PATH_ENV)
+            .is_some_and(|value| value == "1")
+    })
+}
+
 pub fn direct_chat_path(shell_env: &LoginShellEnv) -> String {
     #[cfg(test)]
     if shell_env
@@ -436,6 +448,19 @@ pub fn direct_chat_path(shell_env: &LoginShellEnv) -> String {
         .is_some_and(|value| value == "1")
     {
         return shell_env.path.clone().unwrap_or_default();
+    }
+
+    #[cfg(test)]
+    if let Some(fallback_path) = shell_env.vars.get(TEST_FALLBACK_PATH_ENV) {
+        return match shell_env.path.as_deref() {
+            Some(path) if !path.is_empty() => std::env::join_paths(
+                std::env::split_paths(path).chain(std::env::split_paths(fallback_path)),
+            )
+            .expect("test PATH entries must not contain the platform separator")
+            .to_string_lossy()
+            .into_owned(),
+            _ => fallback_path.clone(),
+        };
     }
 
     let process_path = std::env::var("PATH").ok();
@@ -508,6 +533,10 @@ pub fn start_background_discovery(
     force_models: bool,
     model_runtimes: Vec<Runtime>,
 ) {
+    #[cfg(test)]
+    if is_path_isolated(&shell_env) {
+        return;
+    }
     std::thread::spawn(move || {
         run_background_discovery_with(
             events,
@@ -565,6 +594,10 @@ pub fn refresh_background_discovery(
     discovery: SharedDiscoveryState,
     model_runtimes: Vec<Runtime>,
 ) -> Result<bool> {
+    #[cfg(test)]
+    if is_path_isolated(&shell_env) {
+        return Ok(false);
+    }
     refresh_background_discovery_with(
         events,
         pool,
@@ -672,7 +705,7 @@ mod tests {
     #[test]
     fn status_list_includes_all_catalog_runtimes() {
         let pool = crate::db::open_in_memory().unwrap();
-        let shell_env = Arc::new(RwLock::new(LoginShellEnv::default()));
+        let shell_env = Arc::new(RwLock::new(crate::test_support::isolated_shell_env(None)));
         let status = status_list(&pool, &shell_env, &completed_discovery()).unwrap();
         assert_eq!(
             status
@@ -701,7 +734,7 @@ mod tests {
     #[test]
     fn no_shell_classification_reports_failed_discovery() {
         let pool = crate::db::open_in_memory().unwrap();
-        let shell_env = Arc::new(RwLock::new(LoginShellEnv::default()));
+        let shell_env = Arc::new(RwLock::new(crate::test_support::isolated_shell_env(None)));
         let discovery = completed_discovery();
         discovery.write().unwrap().last_known_good_captured_at = Some("saved".into());
         let success = status_list(&pool, &shell_env, &discovery).unwrap();
@@ -720,7 +753,7 @@ mod tests {
     #[test]
     fn windows_registry_classification_is_successful() {
         let pool = crate::db::open_in_memory().unwrap();
-        let shell_env = Arc::new(RwLock::new(LoginShellEnv::default()));
+        let shell_env = Arc::new(RwLock::new(crate::test_support::isolated_shell_env(None)));
         let discovery = completed_discovery();
         discovery.write().unwrap().result.as_mut().unwrap().outcome =
             DiscoveryOutcome::WindowsRegistry;
@@ -872,10 +905,9 @@ mod tests {
         let override_dir = tempfile::tempdir().unwrap();
         let detected = executable(detected_dir.path(), "codex");
         let override_path = executable(override_dir.path(), "codex-custom");
-        let shell_env = Arc::new(RwLock::new(LoginShellEnv {
-            path: Some(detected_dir.path().display().to_string()),
-            vars: Default::default(),
-        }));
+        let shell_env = Arc::new(RwLock::new(crate::test_support::isolated_shell_env(Some(
+            detected_dir.path(),
+        ))));
         let discovery = completed_discovery();
 
         db::set_runtime_override(
@@ -1085,7 +1117,7 @@ mod tests {
         );
 
         db::set_runtime_override(&pool, "opencode", Some(v1.to_str().unwrap())).unwrap();
-        let shell_env = Arc::new(RwLock::new(LoginShellEnv::default()));
+        let shell_env = Arc::new(RwLock::new(crate::test_support::isolated_shell_env(None)));
         let discovery = completed_discovery();
         let status = status_list(&pool, &shell_env, &discovery).unwrap();
         let row = status
@@ -1117,7 +1149,7 @@ mod tests {
         let bin = executable(dir.path(), "opencode");
         let command = bin.to_str().unwrap();
         let pool = Arc::new(crate::db::open_fixture_pool(&dir.path().join("runner.db")).unwrap());
-        let shell_env = Arc::new(RwLock::new(LoginShellEnv::default()));
+        let shell_env = Arc::new(RwLock::new(crate::test_support::isolated_shell_env(None)));
         let discovery = completed_discovery();
         discovery.write().unwrap().versions.record_override_probe(
             Runtime::OpenCode,

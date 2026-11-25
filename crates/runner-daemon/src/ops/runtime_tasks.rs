@@ -453,6 +453,7 @@ mod tests {
         std::fs::write(&executable, script).unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut core = crate::test_support::test_core_in(dir.path().into());
+        crate::test_support::isolate_runtime_path(&core, None);
         core.sessions = crate::session::SessionManager::new(
             core.runtime_shell_env.clone(),
             core.runtime_discovery.clone(),
@@ -525,7 +526,7 @@ mod tests {
     #[test]
     fn stopping_reprobes_and_retains_only_a_broken_executable() {
         for broken in [false, true] {
-            let (dir, core) = fixture("#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'codex-cli 0.166.0'; exit; fi\nprintf 'Installing…'\nsleep 60\n");
+            let (dir, core) = fixture("#!/bin/sh\nPATH=\"/usr/bin:/bin${PATH:+:$PATH}\"\nif [ \"$1\" = --version ]; then echo 'codex-cli 0.166.0'; exit; fi\nprintf 'Installing…'\nsleep 60\n");
             let task = start(&core, Runtime::Codex).unwrap();
             if broken {
                 std::fs::write(dir.path().join("codex"), "#!/bin/sh\nexit 1\n").unwrap();
@@ -649,8 +650,7 @@ mod tests {
             core.runtime_discovery.clone(),
             Arc::new(crate::session::pty_runtime::PtyRuntime::new()),
         );
-        core.runtime_shell_env.write().unwrap().path = Some(dir.path().display().to_string());
-        core.runtime_discovery.write().unwrap().checking = false;
+        crate::test_support::isolate_runtime_path(&core, Some(dir.path()));
         (dir, core)
     }
 
@@ -676,8 +676,7 @@ mod tests {
             core.runtime_discovery.clone(),
             Arc::new(crate::session::pty_runtime::PtyRuntime::new()),
         );
-        core.runtime_shell_env.write().unwrap().path = Some(bin_dir);
-        core.runtime_discovery.write().unwrap().checking = false;
+        crate::test_support::isolate_runtime_path(&core, Some(dir.path()));
 
         let mut events = core.events.subscribe();
         let started = start_install(&core, Runtime::Pi).unwrap();
@@ -748,15 +747,7 @@ mod tests {
     fn install_task_rejects_missing_npm_or_non_npm_runtime() {
         let empty_dir = tempfile::tempdir().unwrap();
         let core = crate::test_support::test_core();
-        {
-            let mut env = core.runtime_shell_env.write().unwrap();
-            env.path = Some(empty_dir.path().display().to_string());
-            env.vars.insert(
-                crate::runtime_status::TEST_ISOLATE_PATH_ENV.into(),
-                "1".into(),
-            );
-        }
-        core.runtime_discovery.write().unwrap().checking = false;
+        crate::test_support::isolate_runtime_path(&core, Some(empty_dir.path()));
 
         assert!(start_install(&core, Runtime::Antigravity).is_err());
         let missing_npm = start_install(&core, Runtime::ClaudeCode).unwrap_err();
@@ -786,7 +777,7 @@ mod tests {
         std::fs::write(
             &agy,
             format!(
-                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  cat \"{}\"\n  exit 0\nfi\nif [ \"$1\" = \"update\" ]; then\n  if [ -n \"$AGY_CLI_DISABLE_AUTO_UPDATE\" ]; then\n    echo 'AGY_CLI_DISABLE_AUTO_UPDATE must not be set' >&2\n    exit 9\n  fi\n  printf '1.5.17\\n' > \"{}\"\n  echo 'Updated to 1.5.17'\n  exit 0\nfi\nexit 2\n",
+                "#!/bin/sh\nPATH=\"/usr/bin:/bin${{PATH:+:$PATH}}\"\nif [ \"$1\" = \"--version\" ]; then\n  cat \"{}\"\n  exit 0\nfi\nif [ \"$1\" = \"update\" ]; then\n  if [ -n \"$AGY_CLI_DISABLE_AUTO_UPDATE\" ]; then\n    echo 'AGY_CLI_DISABLE_AUTO_UPDATE must not be set' >&2\n    exit 9\n  fi\n  printf '1.5.17\\n' > \"{}\"\n  echo 'Updated to 1.5.17'\n  exit 0\nfi\nexit 2\n",
                 version_file.display(),
                 version_file.display(),
             ),
@@ -795,6 +786,7 @@ mod tests {
         std::fs::set_permissions(&agy, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let mut core = crate::test_support::test_core_in(dir.path().into());
+        crate::test_support::isolate_runtime_path(&core, None);
         core.runtime_shell_env
             .write()
             .unwrap()
@@ -805,7 +797,6 @@ mod tests {
             core.runtime_discovery.clone(),
             Arc::new(crate::session::pty_runtime::PtyRuntime::new()),
         );
-        core.runtime_discovery.write().unwrap().checking = false;
         crate::db::set_runtime_override(&core.db, "antigravity", Some(agy.to_str().unwrap()))
             .unwrap();
         assert_eq!(

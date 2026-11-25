@@ -38,6 +38,10 @@ pub struct AccountService {
     statuses: Mutex<BTreeMap<String, ClaudeAuthStatus>>,
     jobs: Mutex<LoginJobs>,
     refreshing: Mutex<bool>,
+    #[cfg(all(test, unix))]
+    workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    #[cfg(all(test, unix))]
+    spawn_count: std::sync::atomic::AtomicUsize,
 }
 
 #[derive(Default)]
@@ -104,6 +108,20 @@ impl LoginJob {
             let _ = child.wait();
         }
     }
+
+    #[cfg(test)]
+    fn stop_for_test(&self) {
+        let mut process = self
+            .process
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        process.cancelled = true;
+        if let Some((child, tree)) = &mut process.child {
+            let _ = tree.terminate();
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 impl Default for AccountService {
@@ -114,6 +132,10 @@ impl Default for AccountService {
             statuses: Default::default(),
             jobs: Default::default(),
             refreshing: Default::default(),
+            #[cfg(all(test, unix))]
+            workers: Default::default(),
+            #[cfg(all(test, unix))]
+            spawn_count: Default::default(),
         }
     }
 }
@@ -139,6 +161,67 @@ impl AccountService {
         for child in jobs.into_values() {
             child.stop();
         }
+    }
+
+    fn spawn_worker(&self, work: impl FnOnce() + Send + 'static) {
+        let handle = std::thread::spawn(work);
+        #[cfg(all(test, unix))]
+        self.workers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(handle);
+        #[cfg(not(all(test, unix)))]
+        let _ = handle;
+    }
+
+    #[cfg(all(test, unix))]
+    fn record_spawn(&self) {
+        self.spawn_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(all(test, unix))]
+    fn spawn_count(&self) -> usize {
+        self.spawn_count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn join_test_workers(&self) {
+        loop {
+            let handles = std::mem::take(
+                &mut *self
+                    .workers
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner()),
+            );
+            if handles.is_empty() {
+                break;
+            }
+            for handle in handles {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn stop_and_join_test_workers(&self) {
+        let jobs = {
+            let mut state = self.jobs.lock().unwrap_or_else(|error| error.into_inner());
+            state.closed = true;
+            let jobs = std::mem::take(&mut state.entries);
+            let mut statuses = self
+                .statuses
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            for id in jobs.keys() {
+                statuses.remove(id);
+            }
+            jobs
+        };
+        for child in jobs.into_values() {
+            child.stop_for_test();
+        }
+        self.join_test_workers();
     }
 
     #[cfg(all(test, unix))]
@@ -447,6 +530,8 @@ fn sign_out(core: &AppCore, account: &ClaudeAccount, timeout: Duration) -> Resul
     let mut command = command(core, account)?;
     command.args(["auth", "logout"]).stdout(Stdio::null());
     let job = LoginJob::default();
+    #[cfg(all(test, unix))]
+    core.claude_accounts.record_spawn();
     job.spawn(command)?;
     let deadline = Instant::now() + timeout;
     loop {
@@ -567,12 +652,33 @@ fn auth_status_for_job(
     let result = (|| -> Result<Vec<u8>> {
         let mut command = command(core, account)?;
         command.args(["auth", "status"]);
+        #[cfg(all(test, unix))]
+        core.claude_accounts.record_spawn();
         let mut outputs = job.spawn(command)?;
         let mut stdout = outputs.remove(0);
+        #[cfg(test)]
+        struct JoinReaderOnDrop<'a> {
+            job: &'a LoginJob,
+            handle: Option<std::thread::JoinHandle<std::io::Result<Vec<u8>>>>,
+        }
+        #[cfg(test)]
+        impl Drop for JoinReaderOnDrop<'_> {
+            fn drop(&mut self) {
+                if let Some(handle) = self.handle.take() {
+                    self.job.stop_for_test();
+                    let _ = handle.join();
+                }
+            }
+        }
         let reader = std::thread::spawn(move || {
             let mut bytes = Vec::new();
             stdout.read_to_end(&mut bytes).map(|_| bytes)
         });
+        #[cfg(test)]
+        let mut reader = JoinReaderOnDrop {
+            job,
+            handle: Some(reader),
+        };
         let deadline = Instant::now() + Duration::from_secs(15);
         while !job.finished()? {
             if Instant::now() >= deadline {
@@ -581,6 +687,8 @@ fn auth_status_for_job(
             }
             std::thread::sleep(Duration::from_millis(50));
         }
+        #[cfg(test)]
+        let reader = reader.handle.take().unwrap();
         Ok(reader
             .join()
             .map_err(|_| Error::msg("auth status unavailable"))??)
@@ -602,8 +710,9 @@ pub(crate) fn refresh(core: &AppCore) {
         return;
     }
     *refreshing = true;
+    let accounts = Arc::clone(&core.claude_accounts);
     let core = core.clone();
-    std::thread::spawn(move || {
+    accounts.spawn_worker(move || {
         refresh_statuses_inner(&core);
         *core.claude_accounts.refreshing.lock().unwrap() = false;
         if load(&core.db).is_ok_and(|state| state.accounts.len() > 1) {
@@ -746,8 +855,9 @@ fn login(core: &AppCore, account: ClaudeAccount) -> Result<()> {
     );
     drop(jobs);
     core.events.emit("claude_accounts/changed", &());
+    let accounts = Arc::clone(&core.claude_accounts);
     let core = core.clone();
-    std::thread::spawn(move || {
+    accounts.spawn_worker(move || {
         let status = auth_status_for_job(&core, &account, &job);
         if status.logged_in {
             finish_login(&core, &account, &job, status);
@@ -769,6 +879,8 @@ fn login(core: &AppCore, account: ClaudeAccount) -> Result<()> {
                 }
                 let mut command = command(&core, &account)?;
                 command.args(["auth", "login"]).stderr(Stdio::piped());
+                #[cfg(all(test, unix))]
+                core.claude_accounts.record_spawn();
                 job.spawn(command)?
             };
             login_outputs(&core, &account.id, &job, outputs);
@@ -851,7 +963,7 @@ fn login_outputs(
         let stream_core = core.clone();
         let stream_child = child.clone();
         let stream_id = id.to_owned();
-        std::thread::spawn(move || {
+        core.claude_accounts.spawn_worker(move || {
             for line in BufReader::new(output)
                 .lines()
                 .map_while(std::result::Result::ok)
@@ -1054,62 +1166,81 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
-    fn slow_login_core(temp: &Path) -> AppCore {
+    fn write_executable(path: &Path, body: &str) {
         use std::os::unix::fs::PermissionsExt;
-        let script = temp.join("slow-claude");
-        std::fs::write(
-            &script,
-            r#"#!/bin/sh
+        std::fs::write(path, body).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[cfg(unix)]
+    struct AuthFixture {
+        core: AppCore,
+        script: PathBuf,
+        temp: tempfile::TempDir,
+    }
+
+    #[cfg(unix)]
+    impl AuthFixture {
+        fn in_temp(temp: tempfile::TempDir, script_name: &str, body: &str) -> Self {
+            let bin = temp.path().join("bin");
+            std::fs::create_dir(&bin).unwrap();
+            let script = temp.path().join(script_name);
+            write_executable(&script, body);
+            let mut core = crate::test_support::test_core_in(temp.path().to_owned());
+            core.claude_accounts = Default::default();
+            core.usage = Arc::new(crate::usage::UsageService::without_fetch());
+            crate::test_support::isolate_runtime_path(&core, Some(&bin));
+            db::set_runtime_override(&core.db, "claude-code", script.to_str()).unwrap();
+            db::app_state_set(
+                &core.db.get().unwrap(),
+                KEY,
+                &serde_json::to_string(&initial(temp.path())).unwrap(),
+            )
+            .unwrap();
+            Self { core, script, temp }
+        }
+
+        fn new(script_name: &str, body: &str) -> Self {
+            Self::in_temp(tempfile::tempdir().unwrap(), script_name, body)
+        }
+
+        fn slow_login() -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let body = format!(
+                r#"#!/bin/sh
+PATH="/usr/bin:/bin${{PATH:+:$PATH}}"
+root='{}'
 if [ "$2" = status ]; then
     if [ -n "$CLAUDE_CONFIG_DIR" ]; then
         printf '%s' "$$" > "$CLAUDE_CONFIG_DIR/status-started"
-        while [ ! -f "$CLAUDE_CONFIG_DIR/release-status" ]; do sleep 0.01; done
+        while [ ! -f "$CLAUDE_CONFIG_DIR/release-status" ] && [ ! -f "$root/stop" ]; do sleep 0.01; done
     fi
-    printf '%s\n' '{"loggedIn":false}'
+    printf '%s\n' '{{"loggedIn":false}}'
     exit 1
 fi
 printf '%s' "$CLAUDE_CONFIG_DIR" > "$CLAUDE_CONFIG_DIR/login-started"
 printf '%s\n' 'https://claude.ai/oauth/authorize?fixture=1'
 exec sleep 60
 "#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut core = crate::test_support::test_core_in(temp.to_owned());
-        core.claude_accounts = Default::default();
-        core.usage = Arc::new(crate::usage::UsageService::without_fetch());
-        db::set_runtime_override(&core.db, "claude-code", script.to_str()).unwrap();
-        db::app_state_set(
-            &core.db.get().unwrap(),
-            KEY,
-            &serde_json::to_string(&initial(temp)).unwrap(),
-        )
-        .unwrap();
-        core
-    }
-
-    #[cfg(unix)]
-    fn wait_for(description: &str, predicate: impl Fn() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while !predicate() {
-            assert!(Instant::now() < deadline, "timed out: {description}");
-            std::thread::sleep(Duration::from_millis(10));
+                temp.path().display()
+            );
+            Self::in_temp(temp, "slow-claude", &body)
         }
-    }
 
-    #[cfg(unix)]
-    fn sign_out_core(temp: &Path) -> AppCore {
-        let core = slow_login_core(temp);
-        *core.claude_accounts.refreshing.lock().unwrap() = true;
-        std::fs::create_dir(temp.join(".claude")).unwrap();
-        std::fs::write(temp.join("slow-claude"), format!(r#"#!/bin/sh
+        fn sign_out() -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            std::fs::create_dir(temp.path().join(".claude")).unwrap();
+            let body = format!(
+                r#"#!/bin/sh
+inherited_path="$PATH"
+PATH="/usr/bin:/bin${{PATH:+:$PATH}}"
 root='{}'
 folder=${{CLAUDE_CONFIG_DIR-"$root/.claude"}}
 case "$2" in
 status)
     if [ -f "$folder/hold-status" ] && mkdir "$folder/probe-once" 2>/dev/null; then
         touch "$folder/stale-started"
-        while [ ! -f "$folder/release-status" ]; do sleep 0.01; done
+        while [ ! -f "$folder/release-status" ] && [ ! -f "$root/stop" ]; do sleep 0.01; done
         printf '%s\n' '{{"loggedIn":true}}'
         exit 0
     fi
@@ -1123,31 +1254,174 @@ login)
     printf '%s' "$$" > "$folder/login-started"
     exec sleep 60 ;;
 logout)
-    printf '%s\n' "${{CLAUDE_CONFIG_DIR-unset}}" "$*" "$PATH" > "$root/logout-call"
+    printf '%s\n' "${{CLAUDE_CONFIG_DIR-unset}}" "$*" "$inherited_path" > "$root/logout-call"
     if [ -f "$folder/login-started" ] && kill -0 "$(cat "$folder/login-started")" 2>/dev/null; then exit 9; fi
     if [ -f "$folder/fail" ]; then exit 7; fi
     if [ -f "$folder/hang" ]; then exec sleep 60; fi
     rm -f "$folder/signed-in" ;;
 *) exit 8 ;;
 esac
-"#, temp.display())).unwrap();
-        core
+"#,
+                temp.path().display()
+            );
+            let fixture = Self::in_temp(temp, "slow-claude", &body);
+            *fixture.core.claude_accounts.refreshing.lock().unwrap() = true;
+            fixture
+        }
+
+        fn path(&self) -> &Path {
+            self.temp.path()
+        }
+
+        fn stop_and_join(&self) {
+            let _ = std::fs::write(self.temp.path().join("stop"), "");
+            self.core.claude_accounts.stop_and_join_test_workers();
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for AuthFixture {
+        fn drop(&mut self) {
+            self.stop_and_join();
+        }
+    }
+
+    #[cfg(unix)]
+    struct JoinOnDrop<T> {
+        stop_file: Option<PathBuf>,
+        handle: Option<std::thread::JoinHandle<T>>,
+    }
+
+    #[cfg(unix)]
+    impl<T> JoinOnDrop<T> {
+        fn new(handle: std::thread::JoinHandle<T>, stop_file: Option<PathBuf>) -> Self {
+            Self {
+                stop_file,
+                handle: Some(handle),
+            }
+        }
+
+        fn join(mut self) -> std::thread::Result<T> {
+            self.handle.take().unwrap().join()
+        }
+    }
+
+    #[cfg(unix)]
+    impl<T> Drop for JoinOnDrop<T> {
+        fn drop(&mut self) {
+            if let Some(stop_file) = &self.stop_file {
+                let _ = std::fs::write(stop_file, "");
+            }
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn wait_for(description: &str, predicate: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !predicate() {
+            assert!(Instant::now() < deadline, "timed out: {description}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deleted_override_fails_as_not_installed_without_falling_back_to_path_claude() {
+        let fixture = AuthFixture::new(
+            "fake-claude",
+            "#!/bin/sh\nprintf '%s\\n' '{\"loggedIn\":false}'\nexit 1\n",
+        );
+        let decoy_dir = tempfile::tempdir().unwrap();
+        let decoy_ran = decoy_dir.path().join("decoy-ran");
+        write_executable(
+            &decoy_dir.path().join("claude"),
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$2\" = status ]; then printf '%s\\n' '{{\"loggedIn\":false}}'; exit 1; fi\nexit 0\n",
+                decoy_ran.display()
+            ),
+        );
+        fixture.core.runtime_shell_env.write().unwrap().vars.insert(
+            crate::runtime_status::TEST_FALLBACK_PATH_ENV.into(),
+            decoy_dir.path().display().to_string(),
+        );
+
+        let folder = fixture.path().join("work");
+        std::fs::create_dir(&folder).unwrap();
+        let added = action(
+            &fixture.core,
+            ClaudeAccountAction::Add {
+                name: "Work".into(),
+                folder: Some(folder.to_string_lossy().into_owned()),
+                use_main_settings: false,
+            },
+        )
+        .unwrap();
+        let account = added.accounts.last().unwrap().clone();
+        fixture.core.claude_accounts.join_test_workers();
+
+        let before = command(&fixture.core, &account).unwrap();
+        assert_eq!(before.get_program(), fixture.script.as_os_str());
+
+        std::fs::remove_file(&fixture.script).unwrap();
+        let spawns_before = fixture.core.claude_accounts.spawn_count();
+
+        let error = command(&fixture.core, &account).expect_err(
+            "deleted override must fail as not installed instead of resolving another claude",
+        );
+        assert_eq!(error.to_string(), "Claude Code is not installed");
+
+        let sign_out_error = action(
+            &fixture.core,
+            ClaudeAccountAction::SignOut {
+                id: account.id.clone(),
+            },
+        )
+        .expect_err("sign-out must fail as not installed after fake override is deleted");
+        assert_eq!(sign_out_error.to_string(), "Claude Code is not installed");
+
+        action(
+            &fixture.core,
+            ClaudeAccountAction::Login {
+                id: account.id.clone(),
+            },
+        )
+        .unwrap();
+        fixture.core.claude_accounts.join_test_workers();
+        let after = snapshot(&fixture.core).unwrap();
+        let status = &after.statuses[&account.id];
+        assert!(status.error);
+        assert!(!status.logged_in);
+        assert!(!status.signing_in);
+        assert!(status.sign_in_url.is_none());
+        assert_eq!(fixture.core.claude_accounts.spawn_count(), spawns_before);
+        assert!(!decoy_ran.exists());
+        assert!(fixture
+            .core
+            .claude_accounts
+            .jobs
+            .lock()
+            .unwrap()
+            .entries
+            .is_empty());
     }
 
     #[cfg(unix)]
     #[test]
     fn sign_out_uses_account_environment_refreshes_status_and_preserves_configuration() {
         for native in [false, true] {
-            let temp = tempfile::tempdir().unwrap();
-            let core = sign_out_core(temp.path());
-            let mut state = initial(temp.path());
+            let fixture = AuthFixture::sign_out();
+            let core = &fixture.core;
+            let mut state = initial(fixture.path());
             let account = if native {
                 state.accounts[0].clone()
             } else {
                 ClaudeAccount {
                     id: "work".into(),
                     name: "Work".into(),
-                    folder: temp
+                    folder: fixture
                         .path()
                         .join("work folder")
                         .to_string_lossy()
@@ -1181,7 +1455,7 @@ esac
             );
             let mut events = core.events.subscribe();
             let response = action(
-                &core,
+                core,
                 ClaudeAccountAction::SignOut {
                     id: account.id.clone(),
                 },
@@ -1196,7 +1470,7 @@ esac
                 saved
             );
             assert_eq!(events.try_recv().unwrap().name, "claude_accounts/changed");
-            let call = std::fs::read_to_string(temp.path().join("logout-call")).unwrap();
+            let call = std::fs::read_to_string(fixture.path().join("logout-call")).unwrap();
             let lines = call.lines().collect::<Vec<_>>();
             assert_eq!(lines[0], if native { "unset" } else { &account.folder });
             assert_eq!(lines[1], "auth logout");
@@ -1216,12 +1490,12 @@ esac
     #[cfg(unix)]
     #[test]
     fn sign_out_stops_pending_login_before_logging_out() {
-        let temp = tempfile::tempdir().unwrap();
-        let core = sign_out_core(temp.path());
-        let folder = temp.path().join("work");
+        let fixture = AuthFixture::sign_out();
+        let core = &fixture.core;
+        let folder = fixture.path().join("work");
         std::fs::create_dir(&folder).unwrap();
         let added = action(
-            &core,
+            core,
             ClaudeAccountAction::Add {
                 name: "Work".into(),
                 folder: Some(folder.to_string_lossy().into_owned()),
@@ -1230,10 +1504,18 @@ esac
         )
         .unwrap();
         let id = added.accounts.last().unwrap().id.clone();
-        action(&core, ClaudeAccountAction::Login { id: id.clone() }).unwrap();
-        let job = core.claude_accounts.jobs.lock().unwrap().entries[&id].clone();
+        action(core, ClaudeAccountAction::Login { id: id.clone() }).unwrap();
+        let job = core
+            .claude_accounts
+            .jobs
+            .lock()
+            .unwrap()
+            .entries
+            .get(&id)
+            .cloned();
+        let job = job.expect("login job registered");
         wait_for("login starts", || folder.join("login-started").is_file());
-        let response = action(&core, ClaudeAccountAction::SignOut { id: id.clone() }).unwrap();
+        let response = action(core, ClaudeAccountAction::SignOut { id: id.clone() }).unwrap();
         assert!(!response.statuses[&id].signing_in);
         assert!(!response.statuses[&id].logged_in);
         assert!(!core
@@ -1243,19 +1525,20 @@ esac
             .unwrap()
             .entries
             .contains_key(&id));
-        assert!(job.process.lock().unwrap().cancelled);
+        let cancelled = job.process.lock().unwrap().cancelled;
+        assert!(cancelled);
         wait_for("cancelled login worker exits", || {
             Arc::strong_count(&job) == 1
         });
-        assert!(!snapshot(&core).unwrap().statuses[&id].logged_in);
+        assert!(!snapshot(core).unwrap().statuses[&id].logged_in);
     }
 
     #[cfg(unix)]
     #[test]
     fn sign_out_is_not_overwritten_by_an_in_flight_status_refresh() {
-        let temp = tempfile::tempdir().unwrap();
-        let core = sign_out_core(temp.path());
-        let folder = temp.path().join(".claude");
+        let fixture = AuthFixture::sign_out();
+        let core = &fixture.core;
+        let folder = fixture.path().join(".claude");
         std::fs::write(folder.join("signed-in"), "").unwrap();
         std::fs::write(folder.join("hold-status"), "").unwrap();
         core.claude_accounts.statuses.lock().unwrap().insert(
@@ -1266,12 +1549,15 @@ esac
             },
         );
         let refresh_core = core.clone();
-        let refresh = std::thread::spawn(move || refresh_statuses_inner(&refresh_core));
+        let refresh = JoinOnDrop::new(
+            std::thread::spawn(move || refresh_statuses_inner(&refresh_core)),
+            Some(fixture.path().join("stop")),
+        );
         wait_for("old status probe starts", || {
             folder.join("stale-started").exists()
         });
         action(
-            &core,
+            core,
             ClaudeAccountAction::SignOut {
                 id: "native".into(),
             },
@@ -1279,34 +1565,34 @@ esac
         .unwrap();
         std::fs::write(folder.join("release-status"), "").unwrap();
         refresh.join().unwrap();
-        assert!(!snapshot(&core).unwrap().statuses["native"].logged_in);
+        assert!(!snapshot(core).unwrap().statuses["native"].logged_in);
     }
 
     #[cfg(unix)]
     #[test]
     fn failed_sign_out_still_refreshes_and_emits_and_timeout_is_bounded() {
-        let temp = tempfile::tempdir().unwrap();
-        let core = sign_out_core(temp.path());
-        let account = snapshot(&core).unwrap().accounts[0].clone();
+        let fixture = AuthFixture::sign_out();
+        let core = &fixture.core;
+        let account = snapshot(core).unwrap().accounts[0].clone();
         let folder = Path::new(&account.folder);
         std::fs::write(folder.join("signed-in"), "").unwrap();
         std::fs::write(folder.join("fail"), "").unwrap();
         let mut events = core.events.subscribe();
         let error = action(
-            &core,
+            core,
             ClaudeAccountAction::SignOut {
                 id: account.id.clone(),
             },
         )
         .unwrap_err();
         assert_eq!(error.to_string(), "Claude Code sign-out failed");
-        assert!(snapshot(&core).unwrap().statuses[&account.id].logged_in);
+        assert!(snapshot(core).unwrap().statuses[&account.id].logged_in);
         assert_eq!(events.try_recv().unwrap().name, "claude_accounts/changed");
         std::fs::remove_file(folder.join("fail")).unwrap();
         std::fs::write(folder.join("hang"), "").unwrap();
         let start = Instant::now();
         assert_eq!(
-            sign_out(&core, &account, Duration::from_millis(100))
+            sign_out(core, &account, Duration::from_millis(100))
                 .unwrap_err()
                 .to_string(),
             "Claude Code sign-out timed out"
@@ -1403,18 +1689,18 @@ esac
     #[cfg(unix)]
     #[test]
     fn add_and_login_keeps_each_request_bound_to_its_created_account() {
-        let temp = tempfile::tempdir().unwrap();
-        let core = slow_login_core(temp.path());
-        let before_a = snapshot(&core).unwrap();
-        let before_b = snapshot(&core).unwrap();
+        let fixture = AuthFixture::slow_login();
+        let core = &fixture.core;
+        let before_a = snapshot(core).unwrap();
+        let before_b = snapshot(core).unwrap();
         assert_eq!(before_a.accounts, before_b.accounts);
         let mut added = Vec::new();
         // B wins admission while A still has the same stale initial snapshot.
         for name in ["B", "A"] {
-            let folder = temp.path().join(name);
+            let folder = fixture.path().join(name);
             std::fs::create_dir(&folder).unwrap();
             let response = action(
-                &core,
+                core,
                 ClaudeAccountAction::AddAndLogin {
                     name: name.into(),
                     folder: Some(folder.to_string_lossy().into_owned()),
@@ -1435,7 +1721,7 @@ esac
             });
             added.push((id, folder));
         }
-        assert_eq!(snapshot(&core).unwrap().accounts.len(), 3);
+        assert_eq!(snapshot(core).unwrap().accounts.len(), 3);
         for (id, folder) in &added {
             std::fs::write(folder.join("release-status"), "").unwrap();
             // The shell redirect creates the file before printf fills it.
@@ -1447,22 +1733,19 @@ esac
                 std::fs::read_to_string(folder.join("login-started")).unwrap(),
                 folder.to_string_lossy()
             );
-            assert!(snapshot(&core).unwrap().statuses[id].signing_in);
+            assert!(snapshot(core).unwrap().statuses[id].signing_in);
         }
-        core.claude_accounts.stop_logins();
+        fixture.stop_and_join();
     }
 
     #[cfg(unix)]
     #[test]
     fn signed_in_add_and_completed_login_preseed_only_the_onboarding_flag() {
-        use std::os::unix::fs::PermissionsExt;
         for already_signed_in in [false, true] {
-            let temp = tempfile::tempdir().unwrap();
-            let core = slow_login_core(temp.path());
-            let script = temp.path().join("signed-in-claude");
-            std::fs::write(
-                &script,
+            let fixture = AuthFixture::new(
+                "signed-in-claude",
                 r#"#!/bin/sh
+PATH="/usr/bin:/bin${PATH:+:$PATH}"
 if [ "$2" = status ]; then
     if [ -f "$CLAUDE_CONFIG_DIR/signed-in" ]; then
         printf '%s\n' '{"loggedIn":true}'
@@ -1473,11 +1756,9 @@ else
     touch "$CLAUDE_CONFIG_DIR/signed-in" "$CLAUDE_CONFIG_DIR/login-started"
 fi
 "#,
-            )
-            .unwrap();
-            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-            db::set_runtime_override(&core.db, "claude-code", script.to_str()).unwrap();
-            let folder = temp.path().join("work");
+            );
+            let core = &fixture.core;
+            let folder = fixture.path().join("work");
             std::fs::create_dir(&folder).unwrap();
             if already_signed_in {
                 std::fs::write(folder.join("signed-in"), "").unwrap();
@@ -1485,7 +1766,7 @@ fi
             let original = "{\"untouched\":1e+02,\"escaped\":\"\\u0041\"}";
             std::fs::write(folder.join(".claude.json"), original).unwrap();
             let response = action(
-                &core,
+                core,
                 ClaudeAccountAction::AddAndLogin {
                     name: "Work".into(),
                     folder: Some(folder.to_string_lossy().into_owned()),
@@ -1495,7 +1776,7 @@ fi
             .unwrap();
             let id = response.accounts.last().unwrap().id.clone();
             wait_for("signed-in account becomes ready", || {
-                snapshot(&core)
+                snapshot(core)
                     .unwrap()
                     .statuses
                     .get(&id)
@@ -1508,7 +1789,7 @@ fi
                 "{\"untouched\":1e+02,\"escaped\":\"\\u0041\",\"hasCompletedOnboarding\":true}"
             );
             assert!(!raw.contains("lastOnboardingVersion"));
-            core.claude_accounts.stop_logins();
+            fixture.stop_and_join();
         }
     }
 
@@ -1516,10 +1797,10 @@ fi
     #[test]
     fn shutdown_rejects_login_requests_delayed_before_registration() {
         for add in [false, true] {
-            let temp = tempfile::tempdir().unwrap();
-            let core = slow_login_core(temp.path());
+            let fixture = AuthFixture::slow_login();
+            let core = &fixture.core;
             *core.claude_accounts.refreshing.lock().unwrap() = true;
-            let folder = temp.path().join("work");
+            let folder = fixture.path().join("work");
             std::fs::create_dir(&folder).unwrap();
             let request = if add {
                 ClaudeAccountAction::AddAndLogin {
@@ -1529,7 +1810,7 @@ fi
                 }
             } else {
                 let added = action(
-                    &core,
+                    core,
                     ClaudeAccountAction::Add {
                         name: "Work".into(),
                         folder: Some(folder.to_string_lossy().into_owned()),
@@ -1541,18 +1822,23 @@ fi
                     id: added.accounts.last().unwrap().id.clone(),
                 }
             };
-            let admission = core.claude_accounts.mutations.lock().unwrap();
-            let (dispatched, ready) = std::sync::mpsc::channel();
-            let request_core = core.clone();
-            let pending = std::thread::spawn(move || {
-                dispatched.send(()).unwrap();
-                action(&request_core, request)
-            });
-            ready.recv_timeout(Duration::from_secs(5)).unwrap();
-            core.claude_accounts.stop_logins();
-            drop(admission);
+            let pending;
+            {
+                let _admission = core.claude_accounts.mutations.lock().unwrap();
+                let (dispatched, ready) = std::sync::mpsc::channel();
+                let request_core = core.clone();
+                pending = JoinOnDrop::new(
+                    std::thread::spawn(move || {
+                        dispatched.send(()).unwrap();
+                        action(&request_core, request)
+                    }),
+                    Some(fixture.path().join("stop")),
+                );
+                ready.recv_timeout(Duration::from_secs(5)).unwrap();
+                core.claude_accounts.stop_logins();
+            }
             let response = pending.join().unwrap();
-            core.claude_accounts.stop_logins();
+            fixture.stop_and_join();
             assert_eq!(
                 response
                     .expect_err("shutdown accepted delayed request")
@@ -1563,7 +1849,7 @@ fi
             assert!(!folder.join("status-started").exists());
             assert!(!folder.join("login-started").exists());
             assert!(core.claude_accounts.jobs.lock().unwrap().entries.is_empty());
-            assert!(snapshot(&core).unwrap().statuses.is_empty());
+            assert!(snapshot(core).unwrap().statuses.is_empty());
         }
     }
 
@@ -1571,14 +1857,14 @@ fi
     #[test]
     fn remove_and_cancel_stop_pending_login_before_it_can_start_authentication() {
         for remove in [false, true] {
-            let temp = tempfile::tempdir().unwrap();
-            let core = slow_login_core(temp.path());
+            let fixture = AuthFixture::slow_login();
+            let core = &fixture.core;
             // Suppress unrelated automatic refresh so the only status subprocess is this request's preflight.
             *core.claude_accounts.refreshing.lock().unwrap() = true;
-            let folder = temp.path().join("work");
+            let folder = fixture.path().join("work");
             std::fs::create_dir(&folder).unwrap();
             let added = action(
-                &core,
+                core,
                 ClaudeAccountAction::Add {
                     name: "Work".into(),
                     folder: Some(folder.to_string_lossy().into_owned()),
@@ -1587,14 +1873,22 @@ fi
             )
             .unwrap();
             let id = added.accounts.last().unwrap().id.clone();
-            action(&core, ClaudeAccountAction::Login { id: id.clone() }).unwrap();
-            let job = core.claude_accounts.jobs.lock().unwrap().entries[&id].clone();
+            action(core, ClaudeAccountAction::Login { id: id.clone() }).unwrap();
+            let job = core
+                .claude_accounts
+                .jobs
+                .lock()
+                .unwrap()
+                .entries
+                .get(&id)
+                .cloned();
+            let job = job.expect("login job registered");
             wait_for("slow preflight starts", || {
                 folder.join("status-started").is_file()
             });
-            assert!(snapshot(&core).unwrap().statuses[&id].signing_in);
+            assert!(snapshot(core).unwrap().statuses[&id].signing_in);
             let response = action(
-                &core,
+                core,
                 if remove {
                     ClaudeAccountAction::Remove { id: id.clone() }
                 } else {
@@ -1613,7 +1907,7 @@ fi
                 .unwrap()
                 .entries
                 .contains_key(&id));
-            assert!(!snapshot(&core).unwrap().statuses.contains_key(&id));
+            assert!(!snapshot(core).unwrap().statuses.contains_key(&id));
             assert_eq!(
                 load(&core.db)
                     .unwrap()
@@ -1622,37 +1916,37 @@ fi
                     .any(|account| account.id == id),
                 !remove
             );
-            let mut process = job.process.lock().unwrap();
-            assert!(process.cancelled);
-            assert!(process
-                .child
-                .as_mut()
-                .unwrap()
-                .0
-                .try_wait()
-                .unwrap()
-                .is_some());
+            let (cancelled, exited) = {
+                let mut process = job.process.lock().unwrap();
+                let exited = process
+                    .child
+                    .as_mut()
+                    .and_then(|(child, _)| child.try_wait().ok())
+                    .flatten()
+                    .is_some();
+                (process.cancelled, exited)
+            };
+            assert!(cancelled);
+            assert!(exited);
         }
     }
 
     #[cfg(unix)]
     #[test]
     fn login_uses_the_selected_folder_and_cancel_stops_only_its_process() {
-        use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
-        let script = temp.path().join("fake-claude");
         let recorded = temp.path().join("login-folder");
-        std::fs::write(&script,format!("#!/bin/sh\nif [ \"$2\" = status ]; then printf '%s\\n' '{{\"loggedIn\":false}}'; exit 1; fi\nprintf '%s' \"${{CLAUDE_CONFIG_DIR-unset}}\" > '{}'\nprintf '%s\\n' 'https://claude.ai/oauth/authorize?fixture=1'\nexec sleep 60\n",recorded.display())).unwrap();
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut core = crate::test_support::test_core_in(temp.path().to_owned());
-        core.claude_accounts = Default::default();
-        core.usage = Arc::new(crate::usage::UsageService::without_fetch());
-        db::set_runtime_override(&core.db, "claude-code", script.to_str()).unwrap();
-        let mut state = initial(temp.path());
+        let body = format!(
+            "#!/bin/sh\nPATH=\"/usr/bin:/bin${{PATH:+:$PATH}}\"\nif [ \"$2\" = status ]; then printf '%s\\n' '{{\"loggedIn\":false}}'; exit 1; fi\nprintf '%s' \"${{CLAUDE_CONFIG_DIR-unset}}\" > '{}'\nprintf '%s\\n' 'https://claude.ai/oauth/authorize?fixture=1'\nexec sleep 60\n",
+            recorded.display()
+        );
+        let fixture = AuthFixture::in_temp(temp, "fake-claude", &body);
+        let core = &fixture.core;
+        let mut state = initial(fixture.path());
         state.accounts.push(ClaudeAccount {
             id: "work".into(),
             name: "Work".into(),
-            folder: temp
+            folder: fixture
                 .path()
                 .join("work folder")
                 .to_string_lossy()
@@ -1665,8 +1959,16 @@ fi
             &serde_json::to_string(&state).unwrap(),
         )
         .unwrap();
-        action(&core, ClaudeAccountAction::Login { id: "work".into() }).unwrap();
-        let child = core.claude_accounts.jobs.lock().unwrap().entries["work"].clone();
+        action(core, ClaudeAccountAction::Login { id: "work".into() }).unwrap();
+        let child = core
+            .claude_accounts
+            .jobs
+            .lock()
+            .unwrap()
+            .entries
+            .get("work")
+            .cloned();
+        let child = child.expect("login job registered");
         let deadline = Instant::now() + Duration::from_secs(3);
         while !core
             .claude_accounts
@@ -1686,8 +1988,8 @@ fi
             std::fs::read_to_string(&recorded).unwrap(),
             state.accounts[1].folder
         );
-        assert!(snapshot(&core).unwrap().statuses["work"].signing_in);
-        action(&core, ClaudeAccountAction::Cancel { id: "work".into() }).unwrap();
+        assert!(snapshot(core).unwrap().statuses["work"].signing_in);
+        action(core, ClaudeAccountAction::Cancel { id: "work".into() }).unwrap();
         assert!(!core
             .claude_accounts
             .jobs
@@ -1695,9 +1997,19 @@ fi
             .unwrap()
             .entries
             .contains_key("work"));
-        let mut process = child.process.lock().unwrap();
-        assert!(process.cancelled);
-        assert!(process.child.as_mut().unwrap().0.wait().unwrap().code() != Some(0));
+        let (cancelled, status) = {
+            let mut process = child.process.lock().unwrap();
+            let status = process
+                .child
+                .as_mut()
+                .and_then(|(child, _)| child.wait().ok());
+            (process.cancelled, status)
+        };
+        assert!(cancelled);
+        assert!(status.expect("child process waited").code() != Some(0));
+        wait_for("cancelled login worker exits", || {
+            Arc::strong_count(&child) == 1
+        });
     }
 
     #[test]

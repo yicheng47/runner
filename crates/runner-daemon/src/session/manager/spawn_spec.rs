@@ -58,6 +58,11 @@ pub(super) fn agent_env(
     runtime_key: &str,
 ) -> BTreeMap<String, String> {
     let mut env = shell_vars;
+    #[cfg(test)]
+    {
+        env.remove(crate::runtime_status::TEST_ISOLATE_PATH_ENV);
+        env.remove(crate::runtime_status::TEST_FALLBACK_PATH_ENV);
+    }
     for (k, v) in role_env {
         env.insert(k.clone(), v.clone());
     }

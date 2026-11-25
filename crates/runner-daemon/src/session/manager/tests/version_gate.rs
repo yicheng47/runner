@@ -142,6 +142,7 @@ fn gate_remains_typed_after_daemon_dispatch_and_wire_roundtrip() {
 #[test]
 fn public_start_api_preserves_the_gate_through_operation_context() {
     let core = crate::test_support::test_core();
+    crate::test_support::isolate_runtime_path(&core, None);
     let dir = tempfile::tempdir().unwrap();
     let executable = dir.path().join("codex-fixture.exe");
     std::fs::write(&executable, "fixture").unwrap();
@@ -189,7 +190,9 @@ fn unprobed_opencode_v1_is_probed_synchronously_and_refused_on_start_and_resume(
 
     let fake = fake_runtime();
     let manager = mgr_with_fake(None, fake.clone());
-    manager.shell_env.write().unwrap().path = Some(bin_dir.path().display().to_string());
+    *manager.shell_env.write().unwrap() =
+        crate::test_support::isolated_shell_env(Some(bin_dir.path()));
+    manager.discovery_state.write().unwrap().checking = false;
 
     let mut role = role("opencode", &[]);
     role.runtime = "opencode".into();
@@ -374,8 +377,7 @@ fn grok_and_opencode_v2_below_minimum_build_update_specs_while_opencode_v1_stays
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let core = crate::test_support::test_core();
-        core.runtime_shell_env.write().unwrap().path = Some(dir.path().display().to_string());
-        core.runtime_discovery.write().unwrap().checking = false;
+        crate::test_support::isolate_runtime_path(&core, Some(dir.path()));
         crate::runtime_status::versions::probe_now(
             runtime,
             &core.db,
@@ -435,8 +437,7 @@ fn grok_and_opencode_v2_below_minimum_build_update_specs_while_opencode_v1_stays
         std::fs::write(&bin, format!("#!/bin/sh\necho '{withheld}'\n")).unwrap();
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let core = crate::test_support::test_core();
-        core.runtime_shell_env.write().unwrap().path = Some(dir.path().display().to_string());
-        core.runtime_discovery.write().unwrap().checking = false;
+        crate::test_support::isolate_runtime_path(&core, Some(dir.path()));
         crate::runtime_status::versions::probe_now(
             Runtime::OpenCode,
             &core.db,
@@ -476,7 +477,9 @@ fn unprobed_antigravity_below_minimum_is_probed_synchronously_and_refused_on_sta
 
     let fake = fake_runtime();
     let manager = mgr_with_fake(None, fake.clone());
-    manager.shell_env.write().unwrap().path = Some(bin_dir.path().display().to_string());
+    *manager.shell_env.write().unwrap() =
+        crate::test_support::isolated_shell_env(Some(bin_dir.path()));
+    manager.discovery_state.write().unwrap().checking = false;
 
     let mut role = role("agy", &[]);
     role.runtime = "antigravity".into();
