@@ -2,7 +2,7 @@
 
 ## 2026-11-24, 12:00–12:17 China Standard Time
 
-**Passed.** All three macOS live checks in the [feature spec](../../features/1342-unified-markdown-renderer.md) passed, including MIS-FEED-03, WS-FILES-06 and SET-SKILL-01. This was the focused native run authorized for draft PR #1449.
+**Passed.** All three macOS live checks in the [feature spec](../../features/archive/1342-unified-markdown-renderer.md) passed, including MIS-FEED-03, WS-FILES-06 and SET-SKILL-01. This was the focused native run authorized for draft PR #1449.
 
 ### Candidate and environment
 

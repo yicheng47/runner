@@ -1,9 +1,9 @@
 # 1342 — Unified Markdown Renderer
 
-> Tracking issue: [#1342](https://github.com/yicheng47/runner/issues/1342), a cleanup sub-issue of [#1248](https://github.com/yicheng47/runner/issues/1248) and phase 1 of the Markdown renderer umbrella [#1443](https://github.com/yicheng47/runner/issues/1443). Scheduling and priority live on the issues and in the [roadmap](../roadmap.md). Platforms: macOS, Windows and Linux.
+> Tracking issue: [#1342](https://github.com/yicheng47/runner/issues/1342), a cleanup sub-issue of [#1248](https://github.com/yicheng47/runner/issues/1248) and phase 1 of the Markdown renderer umbrella [#1443](https://github.com/yicheng47/runner/issues/1443). Scheduling and priority live on the issues and in the [roadmap](../../roadmap.md). Platforms: macOS, Windows and Linux.
 > Status: draft spec. #1342 adds no controls or screens, so it has no Pencil frames; the follow-up controls are drawn with [#1444](https://github.com/yicheng47/runner/issues/1444).
-> Background: [Markdown rendering in Runner](../tech/markdown-rendering.md) explains blocks, rows, the two current renderers and how Zed renders Markdown.
-> Builds on: [#634](archive/634-file-preview.md) (the Files Markdown preview), [#962](../tests/archive/962-virtualize-mission-feed.md) (the virtualized mission feed) and [#46](https://github.com/yicheng47/runner/issues/46) (single newlines kept in feed messages).
+> Background: [Markdown rendering in Runner](../../tech/markdown-rendering.md) explains blocks, rows, the two current renderers and how Zed renders Markdown.
+> Builds on: [#634](634-file-preview.md) (the Files Markdown preview), [#962](../../tests/archive/962-virtualize-mission-feed.md) (the virtualized mission feed) and [#46](https://github.com/yicheng47/runner/issues/46) (single newlines kept in feed messages).
 
 ## Motivation
 

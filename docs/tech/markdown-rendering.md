@@ -193,7 +193,7 @@ Selection in a feed message moves to rows, as in Files: a code block selects lin
 
 What stays: the feed's line breaks, spacing, link hover underline, drag selection, `⌘C` and `Esc`, and smooth scrolling and typing; Files' look, selection, links, images, font scaling, `Rendered | Source` toggle and live reload. Feed code blocks stay unhighlighted until #1444.
 
-The full list, the tests and the live checks are in the [#1342 spec](../features/1342-unified-markdown-renderer.md).
+The full list, the tests and the live checks are in the [#1342 spec](../features/archive/1342-unified-markdown-renderer.md).
 
 ## Phase 2: built-in block renderers (#1443)
 
@@ -238,4 +238,4 @@ a mermaid fence ─▶ background: Mermaid library ─▶ SVG ─▶ GPUI img ro
 3. `crates/runner-app/src/surfaces/mission_markdown.rs`: `parse_blocks`, `append_inline_segment`, `FeedMarkdown::new` and `selected_plain_text`.
 4. `crates/runner-app/src/surfaces/mission_workspace/feed.rs`: `cached_feed_markdown`, `render_mission_message_row` and `copy_feed_selection`.
 5. In a Zed checkout, `crates/markdown/src/parser.rs` for `PARSE_OPTIONS` and the event list; `crates/markdown/src/markdown.rs` for `MarkdownOptions`, `MarkdownStyle::themed` and `MarkdownElement`'s `request_layout`; and `crates/mermaid_render/src/mermaid_render.rs` for the Mermaid pipeline.
-6. The phase 1 spec, [`1342-unified-markdown-renderer.md`](../features/1342-unified-markdown-renderer.md).
+6. The phase 1 spec, [`1342-unified-markdown-renderer.md`](../features/archive/1342-unified-markdown-renderer.md).

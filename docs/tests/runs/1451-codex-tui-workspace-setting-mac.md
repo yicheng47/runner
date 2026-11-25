@@ -6,7 +6,7 @@ CTW-01, CTW-02 and CTW-03 passed on macOS against reviewed candidate `fff005aba4
 
 ### Candidate and method
 
-Repository `yicheng47/runner`, branch `feat/1451-codex-tui-workspace-setting`, base `4a95822886d610d290e5e45d6b047e8e76a49417`. The worktree was clean at build time, with empty tracked diff SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. Coder handoff `01M85RXXMYH2BEBT9AYX7HQ1AW` authorized the [feature checks](../../features/1451-codex-tui-workspace-setting.md#live-checks-macos-development-app) in the development app under the shared QA lock.
+Repository `yicheng47/runner`, branch `feat/1451-codex-tui-workspace-setting`, base `4a95822886d610d290e5e45d6b047e8e76a49417`. The worktree was clean at build time, with empty tracked diff SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`. Coder handoff `01M85RXXMYH2BEBT9AYX7HQ1AW` authorized the [feature checks](https://github.com/yicheng47/runner/blob/v0.20.4/docs/features/1451-codex-tui-workspace-setting.md#live-checks-macos-development-app) in the development app under the shared QA lock.
 
 Environment was macOS 26.6.2 (25G83) arm64, Rust and Cargo 1.97.1, Runner 0.20.3 (dev), development CLI 0.20.3 and Codex 0.171.0. The fresh Codex chat used the existing sign-in, GPT-6-Luna, low effort, standard speed and the existing chat permission mode. Native macOS computer use controlled Settings and submitted the bounded Markdown-link prompt. Opening and dismissing New tab verified native control first.
 

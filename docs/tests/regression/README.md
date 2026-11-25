@@ -8,16 +8,16 @@ Use [Full smoke test procedure](../full-smoke-test.md) for authorization, candid
 
 | Area | File | Cases | Smoke | Additional full |
 | --- | --- | ---: | ---: | ---: |
-| Runtime lifecycle, conversation identity, status and hooks | [runtimes.md](runtimes.md) | 61 | 10 | 51 |
-| Native terminal rendering, input, resize, history, find, clipboard and settings | [terminal.md](terminal.md) | 50 | 5 | 45 |
-| Windows, tabs, panes, sidebar and its Active view, cwd, drawers, worktrees and side panel files and changes | [workspace.md](workspace.md) | 73 | 6 | 67 |
-| Crews, missions, membership, delivery, asks, feed, linked chats and reports | [missions.md](missions.md) | 54 | 5 | 49 |
+| Runtime lifecycle, conversation identity, status and hooks | [runtimes.md](runtimes.md) | 62 | 10 | 52 |
+| Native terminal rendering, input, resize, history, find, clipboard and settings | [terminal.md](terminal.md) | 53 | 5 | 48 |
+| Windows, tabs, panes, sidebar and its Active view, cwd, drawers, worktrees and side panel files and changes | [workspace.md](workspace.md) | 76 | 6 | 70 |
+| Crews, missions, membership, delivery, asks, feed, linked chats and reports | [missions.md](missions.md) | 55 | 5 | 50 |
 | Quit, daemon lifetime, reconnect and recovery | [daemon.md](daemon.md) | 22 | 4 | 18 |
-| Agents, first-run setup, Claude accounts, settings, themes, list preferences, language, notifications, skills, MCP, side panel, launch flags, installation and updates | [settings.md](settings.md) | 81 | 4 | 77 |
+| Agents, first-run setup, Claude accounts, settings, themes, list preferences, language, notifications, skills, MCP, side panel, launch flags, installation and updates | [settings.md](settings.md) | 84 | 4 | 80 |
 | Candidate CLI commands, output, feeds and connection | [cli.md](cli.md) | 16 | 4 | 12 |
-| Remote access: account, pairing, remote windows, terminals and missions | [remote.md](remote.md) | 55 | 6 | 49 |
+| Remote access: account, pairing, remote windows, terminals and missions | [remote.md](remote.md) | 56 | 6 | 50 |
 | Linux desktop, input, packages, updates, service and hosted remote acceptance | [linux.md](linux.md) | 8 | 0 | 8 |
-| **Total** | | **420** | **44** | **376** |
+| **Total** | | **432** | **44** | **388** |
 
 `regression/` holds this README and one table file per area, with feature sections. Historical feature records remain in `../archive/` and are never edited to turn their old result into a current result. New run results live separately under `docs/tests/runs/`: feature/bug QA runs use `<issue>-<slug>-<platform>.md`, and full smoke or release runs use `YYYY-MM-DD-<platform>.md`, where platform is `mac`, `win`, `linux` or `both`. Repeated runs on the same issue or smoke date append a separately identified candidate/attempt block to that file. Existing dated filenames remain stable. No run record is needed merely to edit this suite.
 
@@ -67,6 +67,8 @@ Follow the results table with findings (expected/actual, minimal repro, severity
 When a feature's test record is archived in a [release's docs sweep](../../../AGENTS.md#docs-sweep-at-release), add its lasting live checks here, or have the record state why none apply. Trace every promoted case to its record/spec/issue/code, reconcile its expectation with current code, set platform/needs/tier and retain the evidence requirements. Results, temporary investigation recipes and automated-only assertions stay with the run/archive or owning test. Change navigation/counts when adding or retiring rows, check all relative links with a script and review at least two cases per area against origin and current code.
 
 ## Not carried over
+
+The 0.20.4 sweep added 14 full-tier cases and retired 2 superseded ones (net +12): `REMOTE-MIS-07` from #1235 (also updating `REMOTE-FEED-01`'s link to the archived spec and run), `WS-FILES-09` from #1440, `WS-FILES-10`, `MIS-FEED-05` and `SET-SKILL-04` from #1342 and #1444, `WS-FILES-11` from #1475, `TERM-LINK-03` from #1452, `TERM-RENDER-06` from #1470 (reconciled with commit `3edbffa4`'s final `#61AFEF` One Dark blue), `TERM-LOCALE-01` from #1433, `RT-TITLE-03` and `RT-TITLE-04` replacing retired `RT-TITLE-02` for #1442 and #1472, `SET-USAGE-09` replacing retired `SET-USAGE-04` for #1453, `SET-LAUNCH-05` from #1451, and `SET-PACKAGE-02` from #1426. Pull request #1438 had already updated `WS-CARD-03` and `WS-CARD-04` to 4 px gutters and 6 px outer insets (which now cite its run). #1464's missing `ui.choose_another_folder` localization fix is copy-only and covered by catalog key-parity tests; #1434, #1435, #1450, #1457, #1462, #1467 and #1468 are behavior-preserving refactors and test fixes with no new live cases. This promotion establishes no new pass: native Windows and Linux checks for #1426, #1433, #1438, #1342, #1444, #1475, #1452 and #1235, #1444's horizontal trackpad/wheel gesture delivery, and #1475's individual zoom/light-theme/reload checks remain unverified in their run records and PRs.
 
 The 0.20.3 sweep (covering 0.20.2 and 0.20.3) added 17 full-tier cases and retired 7 superseded ones (net +10): `WS-WT-01–04` and `CLI-WT-01` from #1213 (folding #1415's single-line worktree tooltip into `WS-WT-02`), `WS-CREATE-20` replacing retired `WS-CREATE-13` for #1392, `WS-DRAWER-03` from #1398, `WS-PANE-09`, `WS-FILES-07–08`, `WS-CHANGES-13` and `SET-PANEL-03` replacing retired `WS-PANE-06`, `WS-FILES-05`, `WS-CHANGES-01`, `WS-CHANGES-07`, `WS-CHANGES-12` and `SET-PANEL-01` for #1403 (#1331/#1360), #1420 and #1421, `MIS-ROSTER-04` from #1332, `CLI-IDENT-02` from #1372, `REMOTE-TERM-10` from #1377, `WS-LINUX-02` from #1387, and `RT-START-10` from #1422. Pull requests #1410 (#1374), #1412 (#1409), #1405 and #1408 (#1051 phases 2 and 4) and #1389 (#1385) had already updated `SET-THEME-01–02`, `MIS-LINK-08` (retiring `MIS-LINK-03`), `RT-STATUS-*`/`RT-HOOK-*` and `REMOTE-WIN-01`, which now cite their runs; `REMOTE-WS-02` now cites #1397 (#1395). #1396's pi subprocess title filtering is covered by in-process tests and named no live checks. This promotion establishes no new pass: native Windows and Linux checks for #1213, #1377, #1405, #1408, #1420, #1421 and #1422, plus #1420's remote-tab collapse live check, remain unverified in their run records and PRs.
 

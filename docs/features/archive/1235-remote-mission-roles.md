@@ -1,8 +1,8 @@
 # 1235 — Remote mission roles
 
-> Tracking issue: [#1235](https://github.com/yicheng47/runner/issues/1235). Scheduling and priority live on the issue and in the [roadmap](../roadmap.md). Platforms: macOS, Windows and Linux.
+> Tracking issue: [#1235](https://github.com/yicheng47/runner/issues/1235). Scheduling and priority live on the issue and in the [roadmap](../../roadmap.md). Platforms: macOS, Windows and Linux.
 > Status: signed-off design spec. Reuses the existing local Add Role modal and Remove confirmation dialog with no new Pencil frames.
-> Builds on: [#836](archive/836-web-remote-control.md) (companion protocol and remote mission workspace), [#1106](https://github.com/yicheng47/runner/issues/1106) (remote member tabs and live roster sync, shipped in 0.19.9) and [#1306](https://github.com/yicheng47/runner/issues/1306) (zero-role remote feed loading stability).
+> Builds on: [#836](836-web-remote-control.md) (companion protocol and remote mission workspace), [#1106](https://github.com/yicheng47/runner/issues/1106) (remote member tabs and live roster sync, shipped in 0.19.9) and [#1306](https://github.com/yicheng47/runner/issues/1306) (zero-role remote feed loading stability).
 
 ## Motivation
 
@@ -128,7 +128,7 @@ Most of the client machinery is already transport-ready: the local Add Role moda
 
 ### Live checks (macOS development app)
 
-Selected because this change unlocks interactive remote mission-roster controls, opens the Add Role modal over a live remote catalog, and mutates live host sessions over the relay. Runs on the [same-Mac two-host relay fixture](../tests/full-smoke-test.md#same-mac-two-host-relay-fixture-macos) with `qa` holding `script/qa-lock`:
+Selected because this change unlocks interactive remote mission-roster controls, opens the Add Role modal over a live remote catalog, and mutates live host sessions over the relay. Runs on the [same-Mac two-host relay fixture](../../tests/full-smoke-test.md#same-mac-two-host-relay-fixture-macos) with `qa` holding `script/qa-lock`:
 
 1. **RMR-01 — Add role remotely with overrides and task (anchors: `REMOTE-MIS-06`, `MIS-ADD-01`):** From the remote window of a running bounded mission in `/tmp`, click **Add role** in the sessions rail. Verify the modal loads the host's roles and runtimes, pre-fills an unused `@handle`, and supports runtime/model/effort override plus an optional task. Submit and confirm the new worker joins on both host and remote (rail card, member tab auto-opened remotely, composer roster updated, `role_joined` divider, system intro and directed task in the feed, live terminal attachable). Reason: exercises the end-to-end `catalog` + `addMissionRole` + `Overview`/`FeedAppended` path.
 2. **RMR-02 — Remove role remotely and handle reuse guard (anchors: `REMOTE-MIS-06`, `MIS-REM-01`):** From the remote window, click the remove icon on an active member while its tab is active, cancel once (no change), then confirm **Remove**. Verify the host stops the session, both host and remote remove the member card, the remote active tab falls back to Feed, the `role_removed` divider and leave notice appear in the feed, and reopening **Add role** remotely refuses the removed `@handle` and suggests a fresh handle. Reason: verifies `removeMissionRole`, confirmation dialog, tab fallback, and `removedHandles` validation.
