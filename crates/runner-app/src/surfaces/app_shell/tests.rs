@@ -1307,6 +1307,11 @@ fn update_dot_counts_only_enabled_agents() {
         &[Runtime::Codex, Runtime::ClaudeCode],
         &settings
     ));
+    assert!(update_dot_visible(&[Runtime::Antigravity], &settings));
+    settings
+        .disabled_agents
+        .insert(Runtime::Antigravity.key().into());
+    assert!(!update_dot_visible(&[Runtime::Antigravity], &settings));
     let copilot_default =
         runner_core::protocol::runtime_metadata::runtime_default_enabled(Runtime::Copilot);
     assert_eq!(

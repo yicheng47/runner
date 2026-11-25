@@ -43,7 +43,8 @@ impl UsageState {
     }
 }
 
-/// Agents whose npm `latest` is newer than the installed version.
+/// Agents whose remote latest version (npm or release manifest) is newer than
+/// the installed version.
 pub(crate) fn agents_with_updates(core: &DaemonClient) -> Vec<Runtime> {
     core.runtime_status_list()
         .ok()

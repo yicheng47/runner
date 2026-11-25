@@ -265,9 +265,10 @@ fn unprobed_opencode_v1_is_probed_synchronously_and_refused_on_start_and_resume(
 }
 
 #[test]
-fn claude_code_pi_grok_and_opencode_enforce_osc7501_minimum_versions() {
+fn claude_code_antigravity_pi_grok_and_opencode_enforce_osc7501_minimum_versions() {
     for (runtime, below, at_min, min_version) in [
         (Runtime::ClaudeCode, "2.1.294", "2.1.295", "2.1.295"),
+        (Runtime::Antigravity, "1.4.7", "1.5.8", "1.5.8"),
         (Runtime::Pi, "1.0.9", "1.1.0", "1.1.0"),
         (Runtime::Grok, "1.0.88", "1.0.89", "1.0.89"),
         (Runtime::OpenCode, "2.0.29", "2.1.0", "2.1.0"),
@@ -351,6 +352,13 @@ fn grok_and_opencode_v2_below_minimum_build_update_specs_while_opencode_v1_stays
     use std::os::unix::fs::PermissionsExt;
 
     for (runtime, bin_name, version, min_version, expected_args) in [
+        (
+            Runtime::Antigravity,
+            "agy",
+            "1.4.7",
+            "1.5.8",
+            vec!["update"],
+        ),
         (Runtime::Grok, "grok", "1.0.88", "1.0.89", vec!["update"]),
         (
             Runtime::OpenCode,
@@ -395,6 +403,10 @@ fn grok_and_opencode_v2_below_minimum_build_update_specs_while_opencode_v1_stays
             .expect("below-minimum self-updatable runtime must build update spec");
         assert_eq!(spec.command, bin.display().to_string());
         assert_eq!(spec.args, expected_args);
+        assert!(!spec
+            .env
+            .keys()
+            .any(|key| key.eq_ignore_ascii_case("AGY_CLI_DISABLE_AUTO_UPDATE")));
 
         let err = crate::ops::session::session_start_direct(
             &core,
@@ -449,4 +461,100 @@ fn grok_and_opencode_v2_below_minimum_build_update_specs_while_opencode_v1_stays
             Err(Error::RuntimeVersionGate(gate)) if gate.installed_version == withheld
         ));
     }
+}
+
+#[test]
+#[cfg(unix)]
+fn unprobed_antigravity_below_minimum_is_probed_synchronously_and_refused_on_start_and_resume() {
+    use std::os::unix::fs::PermissionsExt;
+    let pool = pool_with_schema();
+    let data = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let bin = bin_dir.path().join("agy");
+    std::fs::write(&bin, "#!/bin/sh\necho '1.5.8'\n").unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let fake = fake_runtime();
+    let manager = mgr_with_fake(None, fake.clone());
+    manager.shell_env.write().unwrap().path = Some(bin_dir.path().display().to_string());
+
+    let mut role = role("agy", &[]);
+    role.runtime = "antigravity".into();
+    let started = manager
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+                runtime_direct: true,
+                ..Default::default()
+            },
+            data.path(),
+            pool.clone(),
+            capture(),
+        )
+        .unwrap();
+    manager.kill(&started.id).unwrap();
+    pool.get()
+        .unwrap()
+        .execute(
+            "UPDATE sessions SET agent_session_key='019fa1b9-a133-7841-b4dd-730d376ab1d1' WHERE id=?1",
+            [&started.id],
+        )
+        .unwrap();
+
+    // Downgrade agy on PATH to 1.4.7 and clear cached version probes.
+    std::fs::write(&bin, "#!/bin/sh\necho '1.4.7'\n").unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    manager.discovery_state.write().unwrap().versions = Default::default();
+    let spawns_before = fake.spawns.lock().unwrap().len();
+
+    let Err(Error::RuntimeVersionGate(gate)) = manager.spawn_direct(
+        &role,
+        DirectLaunch {
+            cwd: Some(fixture_tmp_dir().to_str().unwrap().into()),
+            runtime_direct: true,
+            ..Default::default()
+        },
+        data.path(),
+        pool.clone(),
+        capture(),
+    ) else {
+        panic!("expected RuntimeVersionGate on unprobed Antigravity 1.4.7 launch");
+    };
+    assert_eq!(gate.runtime, Runtime::Antigravity);
+    assert_eq!(gate.installed_version, "1.4.7");
+    assert_eq!(gate.min_version, "1.5.8");
+
+    manager.discovery_state.write().unwrap().versions = Default::default();
+    let Err(Error::RuntimeVersionGate(resume_gate)) = manager.resume(
+        &started.id,
+        None,
+        None,
+        data.path(),
+        pool.clone(),
+        capture(),
+    ) else {
+        panic!("expected RuntimeVersionGate on unprobed Antigravity 1.4.7 resume");
+    };
+    assert_eq!(resume_gate.runtime, Runtime::Antigravity);
+    assert_eq!(resume_gate.installed_version, "1.4.7");
+    assert_eq!(resume_gate.min_version, "1.5.8");
+
+    manager.discovery_state.write().unwrap().versions = Default::default();
+    let Err(Error::RuntimeVersionGate(relaunch_gate)) = manager.resume_on_launch(
+        &started.id,
+        None,
+        None,
+        data.path(),
+        pool.clone(),
+        capture(),
+    ) else {
+        panic!("expected RuntimeVersionGate on unprobed Antigravity 1.4.7 resume_on_launch");
+    };
+    assert_eq!(relaunch_gate, resume_gate);
+    assert_eq!(
+        fake.spawns.lock().unwrap().len(),
+        spawns_before,
+        "must refuse agy < 1.5.8 before spawning"
+    );
 }

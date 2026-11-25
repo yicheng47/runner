@@ -284,9 +284,11 @@ fn update_button_shows_only_with_a_newer_version_and_allows_running_sessions() {
         })
     );
 
-    // Non-npm self-updatable runtimes below minimum (Grok 1.0.88, OpenCode 2.0.29) still offer
-    // Update in Settings -> Agents, while withheld OpenCode v1 (1.19.5) does not.
+    // Non-npm self-updatable runtimes below minimum (Antigravity 1.4.7, Grok 1.0.88,
+    // OpenCode 2.0.29) still offer Update in Settings -> Agents, while withheld
+    // OpenCode v1 (1.19.5) does not.
     for (runtime, display_name, installed) in [
+        (Runtime::Antigravity, "Antigravity CLI", "1.4.7"),
         (Runtime::Grok, "Grok", "1.0.88"),
         (Runtime::OpenCode, "OpenCode v2", "2.0.29"),
     ] {
@@ -296,6 +298,19 @@ fn update_button_shows_only_with_a_newer_version_and_allows_running_sessions() {
         old.below_minimum = true;
         assert_eq!(update_action(&old, 0), Some(UpdateAction { caption: None }));
     }
+    let mut agy_optional = versioned(RuntimeRowState::Detected, Some("1.5.8"), Some("1.5.17"));
+    agy_optional.name = Runtime::Antigravity;
+    agy_optional.display_name = "Antigravity CLI".into();
+    agy_optional.min_version = Some("1.5.8".into());
+    agy_optional.below_minimum = false;
+    assert_eq!(
+        update_action(&agy_optional, 0),
+        Some(UpdateAction { caption: None })
+    );
+    assert_eq!(
+        version_caption(&agy_optional).as_deref(),
+        Some("1.5.8 → 1.5.17")
+    );
     for withheld in ["1.19.5", "2.0.0-rc.1"] {
         let mut opencode_v1 = versioned(RuntimeRowState::Detected, Some(withheld), None);
         opencode_v1.name = Runtime::OpenCode;
@@ -335,6 +350,27 @@ fn update_button_sits_before_the_toggle_only_while_an_update_exists() {
     let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
     assert!(window.debug_bounds("AGENT_TOGGLE_codex").is_some());
     assert!(window.debug_bounds("AGENT_UPDATE_codex").is_none());
+
+    // Antigravity shows Update both when below 1.5.8 (even without available_version)
+    // and when a newer manifest version is available.
+    for (installed, available, below_minimum) in
+        [("1.4.7", None, true), ("1.5.8", Some("1.5.17"), false)]
+    {
+        let mut cx = gpui::TestAppContext::single();
+        let mut agy = versioned(RuntimeRowState::Detected, Some(installed), available);
+        agy.name = Runtime::Antigravity;
+        agy.display_name = "Antigravity CLI".into();
+        agy.command = "agy".into();
+        agy.min_version = Some("1.5.8".into());
+        agy.below_minimum = below_minimum;
+        agy.effective_source = Some(RuntimeCommandSource::Detected);
+        let (_temp, pane) = test_pane(vec![agy], false, &mut cx);
+        let mut window = gpui::VisualTestContext::from_window(pane.into(), &cx);
+        assert!(
+            window.debug_bounds("AGENT_UPDATE_antigravity").is_some(),
+            "installed={installed} available={available:?} below_minimum={below_minimum}"
+        );
+    }
 }
 
 #[test]
@@ -2150,6 +2186,11 @@ fn settings_agents_renders_open_setup_and_not_installed_install_states() {
     use runner_core::protocol::{RuntimeTaskKind, RuntimeUpdateState, RuntimeUpdateTask};
 
     let codex_missing = runtime(RuntimeRowState::NotFound);
+    let mut agy_missing = runtime(RuntimeRowState::NotFound);
+    agy_missing.name = Runtime::Antigravity;
+    agy_missing.display_name = "Antigravity CLI".into();
+    agy_missing.command = "agy".into();
+    agy_missing.min_version = Some("1.5.8".into());
     let mut trae_missing = runtime(RuntimeRowState::NotFound);
     trae_missing.name = Runtime::Trae;
     trae_missing.display_name = "Trae".into();
@@ -2157,7 +2198,11 @@ fn settings_agents_renders_open_setup_and_not_installed_install_states() {
 
     let mut cx = gpui::TestAppContext::single();
     let (_temp, pane) = test_pane(
-        vec![codex_missing.clone(), trae_missing.clone()],
+        vec![
+            codex_missing.clone(),
+            agy_missing.clone(),
+            trae_missing.clone(),
+        ],
         false,
         &mut cx,
     );
@@ -2165,6 +2210,12 @@ fn settings_agents_renders_open_setup_and_not_installed_install_states() {
     assert!(window.debug_bounds("AGENTS_OPEN_SETUP").is_some());
     assert!(window.debug_bounds("AGENT_INSTALL_ROW_codex").is_some());
     assert!(window.debug_bounds("AGENT_ROW_INSTALL_codex").is_some());
+    assert!(window
+        .debug_bounds("AGENT_INSTALL_ROW_antigravity")
+        .is_none());
+    assert!(window
+        .debug_bounds("AGENT_ROW_INSTALL_antigravity")
+        .is_none());
     assert!(window.debug_bounds("AGENT_INSTALL_ROW_trae").is_none());
     assert!(window.debug_bounds("AGENT_ROW_INSTALL_trae").is_none());
 

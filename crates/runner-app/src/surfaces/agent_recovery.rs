@@ -747,8 +747,15 @@ mod tests {
     }
 
     #[test]
-    fn grok_and_opencode_v2_below_minimum_offer_update_recovery_action() {
+    fn antigravity_grok_and_opencode_v2_below_minimum_offer_update_recovery_action() {
         for (runtime, session_id, installed, min_version, expected_cause) in [
+            (
+                Runtime::Antigravity,
+                "antigravity-old",
+                "1.4.7",
+                "1.5.8",
+                "AGENT_RECOVERY_CAUSE:Runner needs 1.5.8 or newer. Antigravity CLI 1.4.7 is installed.",
+            ),
             (
                 Runtime::Grok,
                 "grok-old",

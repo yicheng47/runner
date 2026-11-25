@@ -425,10 +425,11 @@ pub fn runtime_probe_version(state: &AppCore, runtime: Runtime) -> Option<String
     )
 }
 
-/// Asks npm whether a newer version of each installed, updatable runtime
-/// exists, off the calling thread. Answers are cached for six hours per app
-/// run; `force` skips the cache. Failures leave the rows showing versions
-/// only. Installed versions are refreshed even when registry answers are cached.
+/// Checks each installed, updatable runtime's latest-version source (npm
+/// registry or HTTPS release manifest) off the calling thread. Answers are
+/// cached for six hours per app run; `force` skips the cache. Failures leave
+/// the rows showing versions only. Installed versions are refreshed even when
+/// remote answers are cached.
 pub fn runtime_check_updates(state: &AppCore, force: bool) {
     crate::runtime_status::versions::request_latest(
         &state.db,

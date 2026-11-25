@@ -203,6 +203,30 @@ mod tests {
                 Some("1.0.88")
             )
         );
+        let agy = crate::protocol::runtime_metadata::antigravity::catalog().unwrap();
+        assert_eq!(agy.min_version, Some("1.5.8"));
+        assert_eq!(agy.update_args, &["update"]);
+        assert_eq!(agy.npm_package, None);
+        assert_eq!(
+            crate::protocol::runtime_metadata::withhold_below_version(Runtime::Antigravity),
+            None
+        );
+        assert!(
+            crate::protocol::runtime_metadata::runtime_updatable_for_version(
+                Runtime::Antigravity,
+                Some("1.4.7")
+            )
+        );
+        assert!(
+            crate::protocol::runtime_metadata::runtime_updatable_for_version(
+                Runtime::Antigravity,
+                Some("1.5.8")
+            )
+        );
+        assert_eq!(
+            crate::protocol::runtime::npm_install_command(Runtime::Antigravity),
+            None
+        );
         let client = crate::protocol::McpClientId::OpenCode;
         assert_eq!(client.key(), "opencode");
         assert_eq!(client.label(), "OpenCode v2");

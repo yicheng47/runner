@@ -70,10 +70,12 @@ fn runtime_update_spec_allows_live_sessions_without_stopping_or_restarting_them(
     }
     let command = executable.to_str().unwrap();
 
+    let mut saw_antigravity = false;
     for definition in crate::runtimes::catalogs()
         .iter()
         .filter(|definition| !definition.update_args.is_empty())
     {
+        saw_antigravity |= definition.name == Runtime::Antigravity;
         let mut state = crate::test_support::test_core();
         let fake = fake_runtime();
         state.sessions = SessionManager::new(
@@ -109,11 +111,16 @@ fn runtime_update_spec_allows_live_sessions_without_stopping_or_restarting_them(
             assert_eq!(spec.args, definition.update_args);
             assert_eq!(spec.cwd, runner_core::app_paths::home_dir());
             assert_eq!(spec.initial_size, Some((90, 28)));
+            assert!(!spec
+                .env
+                .keys()
+                .any(|key| key.eq_ignore_ascii_case("AGY_CLI_DISABLE_AUTO_UPDATE")));
             assert_eq!(state.sessions.live_session_ids(), live);
             assert!(fake.stops.lock().unwrap().is_empty());
             assert_eq!(fake.spawn_count(), 0);
         }
     }
+    assert!(saw_antigravity);
 }
 
 #[test]

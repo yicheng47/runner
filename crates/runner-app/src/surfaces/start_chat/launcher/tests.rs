@@ -225,8 +225,9 @@ fn non_updatable_gated_launch_offers_open_settings_and_never_starts_target_updat
 }
 
 #[test]
-fn grok_and_opencode_v2_below_minimum_show_update_needed_and_start_update_on_launch() {
+fn antigravity_grok_and_opencode_v2_below_minimum_show_update_needed_and_start_update_on_launch() {
     for (runtime, display_name, installed, min_version) in [
+        (Runtime::Antigravity, "Antigravity CLI", "1.4.7", "1.5.8"),
         (Runtime::Grok, "Grok", "1.0.88", "1.0.89"),
         (Runtime::OpenCode, "OpenCode v2", "2.0.29", "2.1.0"),
     ] {
@@ -716,34 +717,52 @@ fn deferred_mission_and_fork_keep_the_saved_host_and_later_work_focused() {
 
 #[test]
 fn optional_updates_only_tag_the_agent_row_and_keep_the_launcher_available() {
-    let mut catalog = RuntimeCatalogEntry::for_runtime(Runtime::Codex).unwrap();
-    catalog.available = true;
-    let mut harness = modal_harness(1200., 900., Vec::new(), vec![catalog], ChatMode::Runtime);
-    harness.act(|root, window, cx| {
-        root.start_chat_modal = None;
-        root.open_launcher_page(ProjectScope::Root, Step::Start, false, window, cx);
-        let launcher = root.render_launcher(None, true, window, cx);
-        launcher.update(cx, |view, cx| {
-            let mut runtime = agent();
-            runtime.installed_version = Some("0.166.0".into());
-            runtime.available_version = Some("0.167.0".into());
-            view.runtimes = vec![runtime];
-            view.roles = vec![role()];
-            assert!(view.update_retry.is_none());
-            let (rows, _) = view.rows(cx);
-            assert!(rows
-                .iter()
-                .filter(|row| matches!(row.choice, Choice::Chat(_)))
-                .all(|row| !row.unavailable));
-            cx.notify();
+    for (runtime, display_name, command, installed, available) in [
+        (Runtime::Codex, "Codex", "codex", "0.166.0", "0.167.0"),
+        (
+            Runtime::Antigravity,
+            "Antigravity CLI",
+            "agy",
+            "1.5.8",
+            "1.5.17",
+        ),
+    ] {
+        let mut catalog = RuntimeCatalogEntry::for_runtime(runtime).unwrap();
+        catalog.available = true;
+        let mut harness = modal_harness(1200., 900., Vec::new(), vec![catalog], ChatMode::Runtime);
+        harness.act(|root, window, cx| {
+            root.start_chat_modal = None;
+            root.open_launcher_page(ProjectScope::Root, Step::Start, false, window, cx);
+            let launcher = root.render_launcher(None, true, window, cx);
+            launcher.update(cx, |view, cx| {
+                let mut choice = agent();
+                choice.name = runtime;
+                choice.display_name = display_name.into();
+                choice.command = Some(command.into());
+                choice.installed_version = Some(installed.into());
+                choice.available_version = Some(available.into());
+                let mut agent_role = role();
+                agent_role.runtime = runtime.key().into();
+                view.runtimes = vec![choice];
+                view.roles = vec![agent_role];
+                assert!(view.update_retry.is_none());
+                let (rows, _) = view.rows(cx);
+                assert!(rows
+                    .iter()
+                    .filter(|row| matches!(row.choice, Choice::Chat(_)))
+                    .all(|row| !row.unavailable));
+                cx.notify();
+            });
         });
-    });
-    assert!(harness.bounds("LAUNCHER_OPTIONAL_UPDATE:codex").is_some());
-    assert!(harness
-        .bounds("LAUNCHER_UPDATE_NEEDED:Bounded role")
-        .is_none());
-    assert!(harness.bounds("LAUNCHER_VERSION_NOTICE").is_none());
-    harness.read_root(|root, _| assert!(root.agent_update.is_none()));
+        assert!(harness
+            .bounds(&format!("LAUNCHER_OPTIONAL_UPDATE:{runtime}"))
+            .is_some());
+        assert!(harness
+            .bounds("LAUNCHER_UPDATE_NEEDED:Bounded role")
+            .is_none());
+        assert!(harness.bounds("LAUNCHER_VERSION_NOTICE").is_none());
+        harness.read_root(|root, _| assert!(root.agent_update.is_none()));
+    }
 }
 
 #[test]

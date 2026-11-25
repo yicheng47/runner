@@ -339,9 +339,9 @@ pub(super) fn version_caption(runtime: &RuntimeExecutableStatus) -> Option<Strin
     })
 }
 
-/// Update is offered while npm has a newer version, or while an updatable
-/// runtime is installed below Runner's minimum version (even without an npm
-/// package). Never offered for a runtime without an update command or a
+/// Update is offered while a newer version is available (npm or release
+/// manifest), or while an updatable runtime is installed below Runner's
+/// minimum version. Never offered for a runtime without an update command or a
 /// withheld major version. Running sessions only earn a caption.
 pub(super) fn update_action(
     runtime: &RuntimeExecutableStatus,

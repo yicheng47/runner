@@ -9,6 +9,48 @@ pub use runner_core::protocol::runtime_metadata::ANTIGRAVITY_MODELS;
 
 const LEGACY_HOOKS_DIR: &str = "antigravity-hooks";
 
+macro_rules! manifest_url {
+    ($platform:literal) => {
+        concat!(
+            "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/",
+            $platform,
+            ".json"
+        )
+    };
+}
+
+/// Official Antigravity CLI release manifest URL for `(os, arch, target_env)`,
+/// matching `https://antigravity.google/cli/install.sh` and `install.ps1`.
+pub(crate) fn manifest_url_for_target(
+    os: &str,
+    arch: &str,
+    target_env: &str,
+) -> Option<&'static str> {
+    match (os, arch, target_env) {
+        ("macos", "aarch64", _) => Some(manifest_url!("darwin_arm64")),
+        ("macos", "x86_64", _) => Some(manifest_url!("darwin_amd64")),
+        ("windows", "x86_64", _) => Some(manifest_url!("windows_amd64")),
+        ("windows", "aarch64", _) => Some(manifest_url!("windows_arm64")),
+        ("linux", "x86_64", "musl") => Some(manifest_url!("linux_amd64_musl")),
+        ("linux", "aarch64", "musl") => Some(manifest_url!("linux_arm64_musl")),
+        ("linux", "x86_64", _) => Some(manifest_url!("linux_amd64")),
+        ("linux", "aarch64", _) => Some(manifest_url!("linux_arm64")),
+        _ => None,
+    }
+}
+
+pub(crate) fn current_manifest_url() -> Option<&'static str> {
+    manifest_url_for_target(
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        if cfg!(target_env = "musl") {
+            "musl"
+        } else {
+            ""
+        },
+    )
+}
+
 /// Removes the status hook files Runner wrote before #1295 but keeps the folder, recreating
 /// it if an earlier cleanup deleted it: a conversation started with `--add-dir
 /// antigravity-hooks` keeps it as its command directory when resumed, and agy cannot run
@@ -172,6 +214,9 @@ impl RuntimeAdapter for Antigravity {
 
     fn model_discovery(&self) -> Option<&'static ModelDiscoverySource> {
         Some(&DISCOVERY)
+    }
+    fn latest_manifest_url(&self) -> Option<&'static str> {
+        current_manifest_url()
     }
     fn usage(&self) -> Option<&'static UsageSource> {
         Some(&USAGE)

@@ -30,7 +30,7 @@ Bypass 让聊天无需权限确认即可运行；Codex 还会跳过沙盒。仅�
 
 保持 **TUI 工作区** 关闭时，Codex 会显示本地 Markdown 文件路径而非打开内置 TUI 侧栏预览，便于在 Runner 的文件侧面板中打开点击的文件链接。Runner 仅为交互式 Codex 启动（聊天、恢复和任务）添加 `-c features.tui_workspace=false`，不修改 Codex 配置文件，也不影响无界面 `codex exec fork`。开启后可使用 Codex 内置的文件预览和侧边窗格。
 
-关闭 **状态钩子** 后，Copilot CLI 会改用终端活动判断状态，不再提供详细等待和结果报告，但仍保留 `SessionStart` 会话标识钩子，确保恢复时打开同一段对话。Codex（0.164.0+）、Claude Code（2.1.295+）、pi（1.1.0+）、Grok（1.0.89+）、OpenCode v2（2.1.0+）与 Antigravity CLI 在聊天和任务中均原生使用 OSC 7501 终端状态而不挂载状态钩子（Codex、Claude Code 和 Grok 仅保留 `SessionStart` 和 `UserPromptSubmit` 会话标识钩子以及对话记录中的中断/错误信号；OpenCode v2 仅保留对话路由标识 TUI 插件以及 `opencode.db` 中的轮次结果读取；pi 保留 `session_start`、`input`、编辑器草稿与窄 UI 提示等待叠加扩展处理以及对话记录中的中断/错误信号；Antigravity 的会话标题回调独立运行），Cursor 只有会话标识钩子，TRAE 没有钩子，因此这八个运行时均无此开关。
+关闭 **状态钩子** 后，Copilot CLI 会改用终端活动判断状态，不再提供详细等待和结果报告，但仍保留 `SessionStart` 会话标识钩子，确保恢复时打开同一段对话。Codex（0.164.0+）、Claude Code（2.1.295+）、pi（1.1.0+）、Grok（1.0.89+）、OpenCode v2（2.1.0+）与 Antigravity CLI（1.5.8+）在聊天和任务中均原生使用 OSC 7501 终端状态而不挂载状态钩子（Codex、Claude Code 和 Grok 仅保留 `SessionStart` 和 `UserPromptSubmit` 会话标识钩子以及对话记录中的中断/错误信号；OpenCode v2 仅保留对话路由标识 TUI 插件以及 `opencode.db` 中的轮次结果读取；pi 保留 `session_start`、`input`、编辑器草稿与窄 UI 提示等待叠加扩展处理以及对话记录中的中断/错误信号；Antigravity 的会话标题回调独立运行），Cursor 只有会话标识钩子，TRAE 没有钩子，因此这八个运行时均无此开关。
 
 **自定义参数** 会添加到该智能体从下次启动开始的每一次会话中，包括普通聊天、角色聊天、任务、恢复和分叉。Runner 自身的辅助命令（如版本和帮助探测、模型发现、用量读取和无头分叉步骤）不会带上这些参数。按 Enter 或离开输入框保存，按 Escape 恢复已保存的值，清空输入框则移除所有自定义参数。
 
@@ -44,7 +44,7 @@ Runner 在全平台都按 shell 词法拆分 **自定义参数**，且不展开 
 | --- | --- | --- |
 | Codex | `codex` | [Codex CLI 设置](https://developers.openai.com/codex/cli)；通过 Codex 登录 |
 | Claude Code | `claude-code` | [Claude Code 设置](https://code.claude.com/docs/en/setup)；通过 Claude Code 登录 |
-| Antigravity CLI | `antigravity` | [Antigravity CLI 参考](https://antigravity.google/docs/cli/reference)；Google 账号；在 macOS 和 Linux 上启动时自动更新（Windows 上 Runner 会禁用其后台自动更新以避免终端窗口闪烁，需在普通终端运行 `agy` 更新） |
+| Antigravity CLI | `antigravity` | [Antigravity CLI 参考](https://antigravity.google/docs/cli/reference)；Google 账号；在全平台通过官方发布清单检查新版本并支持在 Runner 中更新（`agy update`）（Windows 上 Runner 仍会在会话与探测期间禁用其后台自动更新以避免终端窗口闪烁，可使用 Runner 的更新操作或运行 `agy update`） |
 | pi | `pi` | [pi 设置](https://github.com/earendil-works/pi)；配置模型提供商 |
 | GitHub Copilot CLI | `copilot` | [Copilot CLI 设置](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)；需要 Copilot 订阅 |
 | Cursor Agent CLI | `cursor` | [Cursor CLI 设置](https://cursor.com/docs/cli/installation)；需独立于编辑器安装 CLI |
@@ -68,7 +68,7 @@ Runner 在全平台都按 shell 词法拆分 **自定义参数**，且不展开 
 | OSC 7501 程序状态 | 0.164.0+ | 2.1.295+ | 1.5.8+ | 1.1.0+ | 未声称支持 | 未声称支持 | 1.0.89+ |
 | 需要输入报告 | 通过 OSC 7501 报告审批、问题与认证（0.164.0+） | 通过 OSC 7501 报告审批、问题与认证（2.1.295+） | 通过 OSC 7501 报告审批、问题与认证（1.5.8+） | 通过 OSC 7501 报告审批、问题与认证（1.1.0+），另含自定义对话框等待叠加 | 审批与问题 | 否 | 通过 OSC 7501 报告审批、问题与认证（1.0.89+） |
 | 从 CLI 发现模型 | 是 | 是 | 是 | 是 | 否 | 是 | 是 |
-| 通过设置 → 智能体更新 | 是 | 是 | 否 | 是 | 是 | 否 | 低于最低版本时 |
+| 通过设置 → 智能体更新 | 是 | 是 | 是 | 是 | 是 | 否 | 低于最低版本时 |
 | 用量指示器 | 是 | 是 | 1.5.8+（macOS 已检查） | 否 | 否 | 否 | 否 |
 | 技能 | 目录与开关 | 目录与开关 | 目录 | 目录 | 目录与开关 | 目录 | 目录 |
 | 安装 Runner 技能 | 是 | 是 | 是 | 是 | 是 | 是 | 是 |
@@ -99,12 +99,12 @@ Runner 在全平台都按 shell 词法拆分 **自定义参数**，且不展开 
 
 ## 最低版本与智能体更新
 
-Codex 需要 **0.164.0 或更新版本**、Claude Code 需要 **2.1.295 或更新版本**、pi 需要 **1.1.0 或更新版本**、Grok 需要 **1.0.89 或更新版本**、OpenCode v2 需要 **2.1.0 或更新版本**以提供原生 OSC 7501 程序状态并配合 Runner 的会话标识钩子。启动器只在过旧智能体的智能体行标记 **需要更新（Update needed）**；角色行不显示更新标签或操作。提示说明启动该智能体或使用它的角色时，会先更新对应 CLI（`codex update`、`claude update`、`pi update`、`grok update`，或针对 OpenCode 2.0.x 的 `opencode upgrade`），窗格显示等待卡片；更新成功后聊天自动启动。恢复或分叉被拒绝时也提供同样的恢复方式。无法确定版本时，Runner 仍允许尝试启动。
+Codex 需要 **0.164.0 或更新版本**、Claude Code 需要 **2.1.295 或更新版本**、Antigravity CLI 需要 **1.5.8 或更新版本**、pi 需要 **1.1.0 或更新版本**、Grok 需要 **1.0.89 或更新版本**、OpenCode v2 需要 **2.1.0 或更新版本**以提供原生 OSC 7501 程序状态（及 Antigravity CLI 的 Unix 用量探测）并配合 Runner 的会话标识钩子。启动器只在过旧智能体的智能体行标记 **需要更新（Update needed）**；角色行不显示更新标签或操作。提示说明启动该智能体或使用它的角色时，会先更新对应 CLI（`codex update`、`claude update`、`agy update`、`pi update`、`grok update`，或针对 OpenCode 2.0.x 的 `opencode upgrade`），窗格显示等待卡片；更新成功后聊天自动启动。恢复或分叉被拒绝时也提供同样的恢复方式。无法确定版本时，Runner 仍允许尝试启动。
 
 当 `PATH` 中仅检测到 OpenCode v1（`0.15.x` 或 `1.x`，缺少 `--standalone`）时，Runner 仍会在 **设置 → 智能体** 中将 **OpenCode v2** 保留在 **未安装（Not installed）** 列表，说明检测到的版本并从启动器的已安装智能体中隐藏。低于 2.0.0 的显式 OpenCode 可执行文件覆盖会被拒绝；因为从 v1 升级到 v2 需要安装 OpenCode v2，被拒绝的 v1 启动或恢复会提供 **打开设置（Open Settings）** 而非更新任务。
 
-在 macOS 和 Linux 上，Antigravity CLI 用量检查需要 **1.5.8 或更新版本**，以确保 Runner 在读取 `/usage` 前可通过非交互方式检查登录状态，避免触发浏览器登录；旧版或无法识别版本的 Antigravity CLI 仍可正常用于聊天与任务，但用量会跳过检查并保持不可用。在 Windows 上，Runner 会直接读取 Antigravity 已保存的登录凭据并通过 HTTPS 查询配额接口，不会启动 `agy`。
+在 macOS 和 Linux 上，Antigravity CLI 用量检查同样需要已识别的 **1.5.8 或更新版本**，以确保 Runner 在读取 `/usage` 前可通过非交互方式检查登录状态，避免触发浏览器登录；无法识别版本的构建仍允许尝试启动聊天与任务，但用量会跳过检查并保持不可用。在 Windows 上，Runner 会直接读取 Antigravity 已保存的登录凭据并通过 HTTPS 查询配额接口，不会启动 `agy`。
 
-受支持的智能体有新版本时，只有智能体行显示已安装版本、可用版本与 **更新（Update）**，角色行保持原样。你仍可使用受支持的已安装版本启动聊天。侧边栏设置齿轮上的圆点打开 **设置 → 智能体**，覆盖所有已启用且提供更新命令的智能体，包括没有用量仪表的智能体。
+受支持的智能体有新版本时（npm 打包的 CLI 来自 npm，Antigravity CLI 来自官方发布清单），只有智能体行显示已安装版本、可用版本与 **更新（Update）**，角色行保持原样。你仍可使用受支持的已安装版本启动聊天。侧边栏设置齿轮上的圆点打开 **设置 → 智能体**，覆盖所有已启用且提供更新命令的智能体，包括没有用量仪表的智能体。在 Windows 上，即使 Runner 在会话和探测期间禁用了 `agy` 的后台自动更新，**更新（Update）** 仍会显式运行 `agy update`。
 
 手动安装和更新作为[后台任务](../guides/chats-and-windows.md#后台任务)运行。当 `PATH` 中存在 `npm` 时，Claude Code、Codex、GitHub Copilot CLI 与 pi 可在引导页面或 **设置 → 智能体** 中通过 `npm install -g` 安装；未提供 npm 包的运行时保留手动复制命令与指南链接。再次启动同一任务会加入现有任务。运行中的聊天继续使用原版本，直到重新启动。这些控件用于安装或更新智能体 CLI；Runner 自身的更新仍位于 **设置 → 更新**。智能体自动更新属于另一项功能。
