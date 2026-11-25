@@ -1059,7 +1059,7 @@ fn usage(core: &AppCore) -> Result<runner_core::companion::Usage> {
         .iter()
         .any(|agent| agent.name == "claude-code")
         .then(|| {
-            let accounts = crate::claude_accounts::load(&core.db).ok()?;
+            let accounts = crate::runtimes::claude_code::accounts::load(&core.db).ok()?;
             if accounts.accounts.len() <= 1 {
                 return None;
             }
@@ -1162,7 +1162,7 @@ fn catalog(core: &AppCore) -> Result<Catalog> {
             },
         })
         .collect();
-    let accounts = crate::claude_accounts::load(&core.db).map_err(failed)?;
+    let accounts = crate::runtimes::claude_code::accounts::load(&core.db).map_err(failed)?;
     let crews = {
         let conn = core.db.get().map_err(failed)?;
         ops::crew::list(&conn).map_err(failed)?

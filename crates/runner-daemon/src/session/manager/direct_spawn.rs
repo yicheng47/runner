@@ -125,22 +125,9 @@ impl SessionManager {
             .permissions()
             .strip(&role.args);
 
-        launch_definition.claude_account = crate::claude_accounts::launch_account(
-            &pool,
-            &mut role,
-            &self.shell_env.read().unwrap().vars,
-            None,
-            true,
-        )?;
-        if let Some(account) = &mut launch_definition.claude_account {
-            let options = crate::db::runtime_launch_options(&pool)?
-                .get(&role.runtime)
-                .cloned()
-                .unwrap_or_default();
-            let effective = crate::runtimes::apply_launch_options(&role, false, &options);
-            account.permission_mode = crate::runtimes::for_key(&role.runtime)
-                .native_permission_mode(&effective.args)
-                .expect("account runtime has a native permission mode");
+        if let Some(accounts) = crate::runtimes::for_key(&role.runtime).accounts() {
+            let shell_env = self.shell_env.read().unwrap().vars.clone();
+            accounts.prepare_spawn(&pool, &mut role, &shell_env, &mut launch_definition, false)?;
         }
 
         // Agent-native session resume: `spawn_direct` always opens a *new*
@@ -216,12 +203,9 @@ impl SessionManager {
             None,
             Some(&pool),
         );
-        crate::claude_accounts::sharing::launch(
-            &pool,
-            launch_definition.claude_account.as_ref(),
-            &role,
-            &mut spec,
-        )?;
+        if let Some(accounts) = crate::runtimes::for_key(&role.runtime).accounts() {
+            accounts.apply_spawn_spec(&pool, &launch_definition, &role, &mut spec)?;
+        }
 
         // Insert the row first so a fast-failing spawn doesn't leave
         // a half-row. Every chat carries its spawned engine on the row

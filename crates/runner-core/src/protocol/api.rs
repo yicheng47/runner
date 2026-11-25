@@ -167,10 +167,10 @@ macro_rules! daemon_api {
         window_snapshot() -> Vec<WindowEntry> [true] => |core: &crate::AppCore| { Ok(core.windows.snapshot()) };
         window_register(label: &str => String = { label.to_owned() }) -> () [false] => |core: &crate::AppCore, label: String| { core.windows.register(&label); core.broadcast_focus_map(); Ok(()) };
         usage_snapshot() -> UsageSnapshot [true] => |core: &crate::AppCore| { Ok(core.usage.snapshot()) };
-        claude_account_usage() -> BTreeMap<String, RuntimeUsage> [true] => |core: &crate::AppCore| { Ok(core.usage.claude_account_usage()) };
-        claude_accounts() -> ClaudeAccounts [true] => |core: &crate::AppCore| { crate::claude_accounts::snapshot(core) };
-        claude_account_running_sessions(id: &str => String = { id.to_owned() }) -> usize [false] => |core: &crate::AppCore, id: String| { crate::claude_accounts::running_sessions(core, &id) };
-        claude_account_action(action: ClaudeAccountAction => ClaudeAccountAction = { action }) -> ClaudeAccounts [false] => |core: &crate::AppCore, action: ClaudeAccountAction| { crate::claude_accounts::action(core, action) };
+        claude_account_usage() -> BTreeMap<String, RuntimeUsage> [true] => |core: &crate::AppCore| { Ok(core.usage.account_usage(crate::model::Runtime::ClaudeCode)) };
+        claude_accounts() -> ClaudeAccounts [true] => |core: &crate::AppCore| { crate::runtimes::claude_code::accounts::snapshot(core) };
+        claude_account_running_sessions(id: &str => String = { id.to_owned() }) -> usize [false] => |core: &crate::AppCore, id: String| { crate::runtimes::claude_code::accounts::running_sessions(core, &id) };
+        claude_account_action(action: ClaudeAccountAction => ClaudeAccountAction = { action }) -> ClaudeAccounts [false] => |core: &crate::AppCore, action: ClaudeAccountAction| { crate::runtimes::claude_code::accounts::action(core, action) };
         usage_set_enabled(runtimes: Vec<Runtime> => Vec<Runtime> = { runtimes }) -> bool [false] => |core: &crate::AppCore, runtimes: Vec<Runtime>| { let changed = core.usage.set_enabled(runtimes); if changed && !core.usage.enabled().is_empty() { core.usage.request_refresh(core.clone(), RefreshReason::Launch); } Ok(changed) };
         usage_set_checked(runtimes: Vec<Runtime> => Vec<Runtime> = { runtimes }) -> () [false] => |core: &crate::AppCore, runtimes: Vec<Runtime>| { core.usage.set_checked(runtimes); Ok(()) };
         usage_interval() -> u64 [false] => |core: &crate::AppCore| { Ok(core.usage.interval()) };

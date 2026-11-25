@@ -33,7 +33,7 @@ Seed list checks through supported development UI/CLI operations with bounded, u
 
 ## Claude Code accounts
 
-Use expressly authorized test accounts and configuration folders for multi-account cases; sharing and failure fixtures must be test-owned. Keep account labels, conversation IDs and transcript locations as evidence without copying credentials. Native Windows instances include a folder with spaces and the junction/memory-import route. Missing accounts, browser approval or safe failure fixtures block the affected variant; these templates do not claim a live pass. Current authority is the [account guide](../../guide/guides/claude-accounts.md), [account actions](../../../crates/runner-daemon/src/claude_accounts.rs) and the [retained decisions](../../features/archive/955-claude-accounts.md).
+Use expressly authorized test accounts and configuration folders for multi-account cases; sharing and failure fixtures must be test-owned. Keep account labels, conversation IDs and transcript locations as evidence without copying credentials. Native Windows instances include a folder with spaces and the junction/memory-import route. Missing accounts, browser approval or safe failure fixtures block the affected variant; these templates do not claim a live pass. Current authority is the [account guide](../../guide/guides/claude-accounts.md), [account actions](../../../crates/runner-daemon/src/runtimes/claude_code/accounts/mod.rs) and the [retained decisions](../../features/archive/955-claude-accounts.md).
 
 | ID | Case | Expected | Platform | Needs | Tier | Origin |
 | --- | --- | --- | --- | --- | --- | --- |

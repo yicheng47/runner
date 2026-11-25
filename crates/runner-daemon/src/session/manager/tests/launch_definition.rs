@@ -359,7 +359,7 @@ fn claude_accounts_follow_active_selection_and_resume_and_fork_from_origin() {
         crate::db::app_state_set(
             &pool.get().unwrap(),
             "claude_accounts",
-            &serde_json::to_string(&crate::claude_accounts::AccountsState {
+            &serde_json::to_string(&crate::runtimes::claude_code::accounts::AccountsState {
                 accounts: accounts.to_vec(),
                 main_id: native.id.clone(),
                 main_change: None,
@@ -394,7 +394,9 @@ fn claude_accounts_follow_active_selection_and_resume_and_fork_from_origin() {
         .unwrap()
         .unwrap();
     let key = source_row.agent_session_key.clone().unwrap();
-    let transcript = crate::claude_accounts::transcript(&native.folder, Some(cwd), &key).unwrap();
+    let transcript =
+        crate::runtimes::claude_code::accounts::transcript(&native.folder, Some(cwd), &key)
+            .unwrap();
     std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
     std::fs::write(&transcript, "{\"permissionMode\":\"acceptEdits\"}\n").unwrap();
     mgr.kill(&source.id).unwrap();
@@ -582,7 +584,8 @@ fn claude_rekey_after_account_switch_resumes_and_forks_the_new_conversation() {
         };
         let old_key = row().agent_session_key.unwrap();
         let original =
-            crate::claude_accounts::transcript(&native.folder, Some(cwd), &old_key).unwrap();
+            crate::runtimes::claude_code::accounts::transcript(&native.folder, Some(cwd), &old_key)
+                .unwrap();
         std::fs::create_dir_all(original.parent().unwrap()).unwrap();
         std::fs::write(&original, "{\"permissionMode\":\"acceptEdits\"}\n").unwrap();
         mgr.kill(&source.id).unwrap();
@@ -616,7 +619,8 @@ fn claude_rekey_after_account_switch_resumes_and_forks_the_new_conversation() {
         select(&native.id);
         let new_key = uuid::Uuid::new_v4().to_string();
         let new_transcript =
-            crate::claude_accounts::transcript(&work.folder, Some(cwd), &new_key).unwrap();
+            crate::runtimes::claude_code::accounts::transcript(&work.folder, Some(cwd), &new_key)
+                .unwrap();
         std::fs::create_dir_all(new_transcript.parent().unwrap()).unwrap();
         let contents = "{\"permissionMode\":\"default\",\"marker\":\"NEW_WORK\"}\n";
         if transcript_before_report {
@@ -732,12 +736,13 @@ fn claude_legacy_shell_pin_keeps_its_origin_when_a_second_account_is_added() {
     );
     let key = row.agent_session_key.unwrap();
     let transcript =
-        crate::claude_accounts::transcript(&folder, temp.path().to_str(), &key).unwrap();
+        crate::runtimes::claude_code::accounts::transcript(&folder, temp.path().to_str(), &key)
+            .unwrap();
     std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
     std::fs::write(&transcript, "{\"permissionMode\":\"acceptEdits\"}\n").unwrap();
     mgr.kill(&source.id).unwrap();
     let core = crate::test_support::test_core_in(temp.path().join("core"));
-    crate::claude_accounts::action(
+    crate::runtimes::claude_code::accounts::action(
         &crate::AppCore {
             db: pool.clone(),
             ..core
@@ -785,7 +790,7 @@ fn claude_single_account_and_explicit_pins_keep_their_launch_inputs() {
     configured.runtime = "claude-code".into();
     let before = configured.clone();
     assert_eq!(
-        crate::claude_accounts::launch_account(
+        crate::runtimes::claude_code::accounts::launch_account(
             &pool,
             &mut configured,
             &BTreeMap::new(),
@@ -812,7 +817,7 @@ fn claude_single_account_and_explicit_pins_keep_their_launch_inputs() {
     configured
         .env
         .insert("CLAUDE_CONFIG_DIR".into(), home.clone());
-    let account = crate::claude_accounts::launch_account(
+    let account = crate::runtimes::claude_code::accounts::launch_account(
         &pool,
         &mut configured,
         &BTreeMap::new(),
@@ -826,10 +831,15 @@ fn claude_single_account_and_explicit_pins_keep_their_launch_inputs() {
     assert_eq!(configured.env["CLAUDE_CONFIG_DIR"], home);
     configured.env.clear();
     let shell = BTreeMap::from([("CLAUDE_CONFIG_DIR".into(), "/tmp/explicit".into())]);
-    let account =
-        crate::claude_accounts::launch_account(&pool, &mut configured, &shell, None, true)
-            .unwrap()
-            .unwrap();
+    let account = crate::runtimes::claude_code::accounts::launch_account(
+        &pool,
+        &mut configured,
+        &shell,
+        None,
+        true,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(account.folder, "/tmp/explicit");
     assert_eq!(account.account_id, None);
     let mut accounts = accounts;
@@ -840,7 +850,7 @@ fn claude_single_account_and_explicit_pins_keep_their_launch_inputs() {
         &accounts.to_string(),
     )
     .unwrap();
-    let account = crate::claude_accounts::launch_account(
+    let account = crate::runtimes::claude_code::accounts::launch_account(
         &pool,
         &mut configured,
         &BTreeMap::new(),

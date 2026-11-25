@@ -608,7 +608,7 @@ fn claude_config_pin_folds_config_dir_name_case_like_windows() {
         configured.env = named_env(role_env);
         let shell = named_env(shell);
         crate::golden::with_config_env(base_env(base_value), || {
-            crate::claude_accounts::config_pin(&configured, &shell)
+            crate::runtimes::claude_code::accounts::config_pin(&configured, &shell)
         })
     };
     let (upper, mixed, lower) = (
@@ -635,7 +635,7 @@ fn claude_config_pin_follows_the_environment_the_agent_launches_with() {
         configured.env.extend(config_var(role_value));
         let shell = config_var(shell_value).into_iter().collect();
         crate::golden::with_config_env(base_env(base_value), || {
-            crate::claude_accounts::config_pin(&configured, &shell)
+            crate::runtimes::claude_code::accounts::config_pin(&configured, &shell)
         })
     };
     assert_eq!(

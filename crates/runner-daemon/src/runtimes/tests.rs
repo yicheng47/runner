@@ -347,3 +347,16 @@ fn first_turn_argv_empty_for_blank_or_unsupported_runtime() {
     assert!(first_turn_argv(Runtime::Shell.key(), Some("body")).is_empty());
     assert!(first_turn_argv("unknown", Some("body")).is_empty());
 }
+
+#[test]
+fn accounts_hook_defaults_to_none_for_other_runtimes() {
+    for runtime in Runtime::ALL {
+        let supported = adapter(runtime).accounts().is_some();
+        assert_eq!(
+            supported,
+            runtime == Runtime::ClaudeCode,
+            "unexpected accounts hook for {runtime}"
+        );
+    }
+    assert!(for_key("unknown").accounts().is_none());
+}

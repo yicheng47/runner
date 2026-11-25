@@ -711,7 +711,7 @@ fn account_skill_toggle_uses_selected_catalog_and_preserves_ordinary_home() {
     )
     .unwrap();
     let env = std::collections::BTreeMap::from([(
-        crate::claude_accounts::sharing::MAIN_FOLDER.into(),
+        super::accounts::sharing::MAIN_FOLDER.into(),
         account.path().to_string_lossy().into_owned(),
     )]);
     for (enabled, expected) in [

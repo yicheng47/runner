@@ -755,7 +755,8 @@ fn latest_source(runtime: Runtime, pool: &DbPool) -> Option<LatestSource> {
     }
     if let Some(package) = definition.npm_package {
         let tag = if runtime == Runtime::ClaudeCode {
-            crate::claude_accounts::sharing::main_channel(pool).unwrap_or_else(|| dist_tag(runtime))
+            crate::runtimes::claude_code::accounts::sharing::main_channel(pool)
+                .unwrap_or_else(|| dist_tag(runtime))
         } else {
             dist_tag(runtime)
         };

@@ -313,10 +313,10 @@ fn current_source_and_env(
     let mut env = shell_env.read().ok()?.clone();
     let mut source = source_with_env(runtime, &command.command, &env);
     if runtime == Runtime::ClaudeCode {
-        if let Some(main) = crate::claude_accounts::sharing::main_account(pool) {
+        if let Some(main) = crate::runtimes::claude_code::accounts::sharing::main_account(pool) {
             source.config_home = Some(main.folder.clone().into());
             env.vars.insert(
-                crate::claude_accounts::sharing::MAIN_NATIVE.into(),
+                crate::runtimes::claude_code::accounts::sharing::MAIN_NATIVE.into(),
                 main.native.to_string(),
             );
             if main.native {
@@ -337,7 +337,9 @@ pub(crate) fn source_with_main(
 ) -> ModelSource {
     let mut source = source_with_env(runtime, command, env);
     if runtime == Runtime::ClaudeCode {
-        if let Some(main) = pool.and_then(crate::claude_accounts::sharing::main_account) {
+        if let Some(main) =
+            pool.and_then(crate::runtimes::claude_code::accounts::sharing::main_account)
+        {
             source.config_home = Some(main.folder.into());
         }
     }
@@ -476,7 +478,7 @@ fn run_process(query: Query<'_>, merge_stderr: bool) -> std::io::Result<Vec<u8>>
     if query
         .env
         .vars
-        .get(crate::claude_accounts::sharing::MAIN_NATIVE)
+        .get(crate::runtimes::claude_code::accounts::sharing::MAIN_NATIVE)
         .is_some_and(|value| value == "true")
     {
         command.env_remove("CLAUDE_CONFIG_DIR");

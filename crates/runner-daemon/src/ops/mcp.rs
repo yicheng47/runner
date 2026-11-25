@@ -294,16 +294,17 @@ pub(crate) fn account_mcp_env(
         .map_err(|_| Error::msg("runtime shell environment lock poisoned"))?
         .vars
         .clone();
-    let mut env = crate::claude_accounts::sharing::account_config_env(&core.db, env, id)?;
+    let mut env =
+        crate::runtimes::claude_code::accounts::sharing::account_config_env(&core.db, env, id)?;
     if let Some(id) = id {
-        let state = crate::claude_accounts::load(&core.db)?;
+        let state = crate::runtimes::claude_code::accounts::load(&core.db)?;
         if let Some(account) = state
             .accounts
             .iter()
             .find(|a| a.id == id)
             .filter(|_| state.sharing.contains_key(id))
         {
-            let own = crate::claude_accounts::sharing::mcp_path(account);
+            let own = crate::runtimes::claude_code::accounts::sharing::mcp_path(account);
             if name.is_none()
                 || name.is_some_and(|name| {
                     read_entries_at(&own, McpClientId::ClaudeCode)
@@ -311,7 +312,7 @@ pub(crate) fn account_mcp_env(
                 })
             {
                 env.insert(
-                    crate::claude_accounts::sharing::MAIN_MCP.into(),
+                    crate::runtimes::claude_code::accounts::sharing::MAIN_MCP.into(),
                     own.to_string_lossy().into_owned(),
                 );
             }
@@ -326,8 +327,11 @@ pub(crate) fn account_mcp_catalog(
     id: Option<&str>,
 ) -> Result<McpCatalog> {
     let own_env = account_mcp_env(core, id, None)?;
-    let shared_env =
-        crate::claude_accounts::sharing::account_config_env(&core.db, own_env.clone(), id)?;
+    let shared_env = crate::runtimes::claude_code::accounts::sharing::account_config_env(
+        &core.db,
+        own_env.clone(),
+        id,
+    )?;
     let mut catalog = mcp_catalog_with_env(home, &shared_env)?;
     if own_env == shared_env {
         return Ok(catalog);

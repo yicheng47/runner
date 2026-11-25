@@ -1,3 +1,4 @@
+pub mod accounts;
 pub(crate) mod launch;
 pub(crate) mod models;
 pub(crate) mod onboarding;
@@ -209,7 +210,7 @@ impl RuntimeAdapter for ClaudeCode {
         _codex_home: Option<&Path>,
         env: &std::collections::BTreeMap<String, String>,
     ) -> Option<Vec<PathBuf>> {
-        env.get(crate::claude_accounts::sharing::MAIN_FOLDER)
+        env.get(accounts::sharing::MAIN_FOLDER)
             .map(|folder| vec![Path::new(folder).join("skills")])
     }
     fn skill_state_with_env(
@@ -218,7 +219,7 @@ impl RuntimeAdapter for ClaudeCode {
         codex_home: Option<&Path>,
         env: &std::collections::BTreeMap<String, String>,
     ) -> SkillState {
-        match env.get(crate::claude_accounts::sharing::MAIN_FOLDER) {
+        match env.get(accounts::sharing::MAIN_FOLDER) {
             Some(folder) => skills::load_folder(Path::new(folder)),
             None => skills::load(home, codex_home),
         }
@@ -230,7 +231,7 @@ impl RuntimeAdapter for ClaudeCode {
         enabled: bool,
         env: &std::collections::BTreeMap<String, String>,
     ) -> Option<crate::error::Result<crate::skills::SkillCatalog>> {
-        let folder = env.get(crate::claude_accounts::sharing::MAIN_FOLDER)?;
+        let folder = env.get(accounts::sharing::MAIN_FOLDER)?;
         Some((|| {
             let catalog =
                 crate::skills::skill_catalog_with_env(Runtime::ClaudeCode, home, None, env)
@@ -264,7 +265,7 @@ impl RuntimeAdapter for ClaudeCode {
         env: &std::collections::BTreeMap<String, String>,
     ) -> Option<std::path::PathBuf> {
         Some(
-            env.get(crate::claude_accounts::sharing::MAIN_MCP)
+            env.get(accounts::sharing::MAIN_MCP)
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| home.join(".claude.json")),
         )
@@ -274,7 +275,7 @@ impl RuntimeAdapter for ClaudeCode {
         home: &Path,
         env: &std::collections::BTreeMap<String, String>,
     ) -> crate::runtime_defaults::RuntimeDefaults {
-        match env.get(crate::claude_accounts::sharing::MAIN_FOLDER) {
+        match env.get(accounts::sharing::MAIN_FOLDER) {
             Some(folder) => crate::runtime_defaults::json_defaults(
                 &Path::new(folder).join("settings.json"),
                 false,
@@ -284,6 +285,9 @@ impl RuntimeAdapter for ClaudeCode {
     }
     fn usage(&self) -> Option<&'static UsageSource> {
         Some(&USAGE)
+    }
+    fn accounts(&self) -> Option<&'static dyn RuntimeAccounts> {
+        Some(&accounts::Accounts)
     }
 
     fn skills(&self) -> SkillSupport {
