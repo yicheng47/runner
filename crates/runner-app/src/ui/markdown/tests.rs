@@ -2209,3 +2209,283 @@ fn compact_syntax_theme_skips_prose_and_reuses_palette_for_code_chunks() {
         "redrawing highlighted code reuses the cached SyntaxTheme"
     );
 }
+
+#[test]
+fn document_page_scrollbar_keeps_its_width_in_the_margin_and_drags_to_the_end() {
+    let source = "A paragraph of the page.\n\n".repeat(400);
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(move |_, cx| {
+        let parsed = Arc::new(Page::parse(&source, "docs/LONG.md"));
+        MarkdownView::new(parsed, "docs/LONG.md".into(), Default::default(), cx)
+    });
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.simulate_resize(gpui::size(px(320.), px(300.)));
+    // The pointer starts over the page, which shows the bar.
+    visual.simulate_mouse_move(gpui::point(px(-10.), px(-10.)), None, Modifiers::default());
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("SCROLLBAR_THUMB").is_none());
+
+    let page = visual.debug_bounds("FILE_MARKDOWN").unwrap();
+    visual.simulate_mouse_move(page.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    let thumb = visual.debug_bounds("SCROLLBAR_THUMB").unwrap();
+    assert!(
+        thumb.size.height < px(40.),
+        "rows not yet drawn count toward the page's height: {thumb:?}"
+    );
+    let text = visual.debug_bounds("FILE_MD_TEXT 0").unwrap();
+    assert!(text.right() <= thumb.left(), "{text:?} {thumb:?}");
+
+    visual.simulate_mouse_move(thumb.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    let hovered = visual.debug_bounds("SCROLLBAR_THUMB").unwrap();
+    assert_eq!(
+        (hovered.left(), hovered.right()),
+        (thumb.left(), thumb.right())
+    );
+    assert_eq!(hovered.size.width, px(4.));
+
+    let end = gpui::point(thumb.center().x, page.bottom() + px(50.));
+    visual.simulate_mouse_down(thumb.center(), MouseButton::Left, Modifiers::default());
+    // The first move starts the drag; the next one moves it.
+    for _ in 0..2 {
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    }
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let last = visual.debug_bounds("FILE_MD_ROW 399").unwrap();
+    assert!(last.top() < page.bottom(), "the last row shows: {last:?}");
+    assert!(
+        window
+            .read_with(&visual, |view, _| view.scroll_top().item_ix)
+            .unwrap()
+            > 380
+    );
+}
+
+#[test]
+fn a_document_page_that_fits_shows_no_scrollbar_until_it_grows() {
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(move |_, cx| {
+        let parsed = Arc::new(Page::parse("Short.\n", "docs/SHORT.md"));
+        MarkdownView::new(parsed, "docs/SHORT.md".into(), Default::default(), cx)
+    });
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.simulate_resize(gpui::size(px(320.), px(300.)));
+    visual.run_until_parked();
+    let page = visual.debug_bounds("FILE_MARKDOWN").unwrap();
+    visual.simulate_mouse_move(page.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("SCROLLBAR_THUMB").is_none());
+
+    let grown = "A paragraph of the page.\n\n".repeat(400);
+    window
+        .update(&mut visual, |view, _, cx| {
+            let parsed = Arc::new(Page::parse(&grown, "docs/SHORT.md"));
+            view.set_page(parsed, Default::default(), cx);
+        })
+        .unwrap();
+    visual.run_until_parked();
+    let thumb = visual.debug_bounds("SCROLLBAR_THUMB").unwrap();
+    assert!(thumb.size.height < px(40.), "{thumb:?}");
+}
+
+struct TabbedMarkdownHost {
+    page: gpui::Entity<MarkdownView>,
+    active: bool,
+}
+
+impl Render for TabbedMarkdownHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .when(self.active, |root| root.child(self.page.clone()))
+    }
+}
+
+#[test]
+fn markdown_scrollbar_lost_release_across_tabs_and_resize_unfreezes_list() {
+    let source = "A paragraph of the page.\n\n".repeat(400);
+    let mut cx = TestAppContext::single();
+    let window = cx.add_window(move |_, cx| {
+        let parsed = Arc::new(Page::parse(&source, "docs/LONG.md"));
+        let page =
+            cx.new(|cx| MarkdownView::new(parsed, "docs/LONG.md".into(), Default::default(), cx));
+        TabbedMarkdownHost { page, active: true }
+    });
+    let page_view = window.read_with(&cx, |host, _| host.page.clone()).unwrap();
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.simulate_resize(gpui::size(px(320.), px(300.)));
+    visual.run_until_parked();
+
+    let bounds = visual.debug_bounds("FILE_MARKDOWN").unwrap();
+    visual.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    let thumb = visual.debug_bounds("SCROLLBAR_THUMB").unwrap();
+    visual.simulate_mouse_down(thumb.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        gpui::point(px(-10.), px(-10.)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual
+        .executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    visual.run_until_parked();
+    assert!(page_view.read_with(&visual, |view, _| view.is_scrollbar_dragging()));
+
+    // Switch to another tab while holding the thumb, release over it, then
+    // switch back and move without a button held.
+    window
+        .update(&mut visual, |host, _, cx| {
+            host.active = false;
+            cx.notify();
+        })
+        .unwrap();
+    visual.run_until_parked();
+    visual.simulate_mouse_up(
+        gpui::point(px(-10.), px(-10.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    window
+        .update(&mut visual, |host, _, cx| {
+            host.active = true;
+            cx.notify();
+        })
+        .unwrap();
+    visual.run_until_parked();
+    visual.simulate_mouse_move(gpui::point(px(-9.), px(-9.)), None, Modifiers::default());
+    visual.run_until_parked();
+    assert!(!page_view.read_with(&visual, |view, _| view.is_scrollbar_dragging()));
+    assert!(visual.debug_bounds("SCROLLBAR_THUMB").is_none());
+
+    // Start dragging again on a shorter page, then resize the window taller so
+    // the page fits and no thumb renders during the press; releasing still
+    // unfreezes the list.
+    let medium = "A paragraph of the page.\n\n".repeat(25);
+    page_view.update(&mut visual, |view, cx| {
+        let parsed = Arc::new(Page::parse(&medium, "docs/LONG.md"));
+        view.set_page(parsed, Default::default(), cx);
+    });
+    visual.run_until_parked();
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    visual.simulate_mouse_move(bounds.center(), None, Modifiers::default());
+    visual.run_until_parked();
+    let thumb = visual.debug_bounds("SCROLLBAR_THUMB").unwrap();
+    visual.simulate_mouse_down(thumb.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(page_view.read_with(&visual, |view, _| view.is_scrollbar_dragging()));
+
+    visual.simulate_resize(gpui::size(px(320.), px(2000.)));
+    visual.run_until_parked();
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("SCROLLBAR_THUMB").is_none());
+
+    visual.simulate_mouse_up(thumb.center(), MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(!page_view.read_with(&visual, |view, _| view.is_scrollbar_dragging()));
+}
+
+#[test]
+fn markdown_font_size_change_at_fixed_width_rehints_unseen_rows_and_keeps_scroll_top() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    store.update(&mut cx, |store, _| {
+        store.settings.files_font_size = Some(8);
+    });
+    let source = "A paragraph of the page.\n\n".repeat(80);
+    let window = cx.add_window(move |_, cx| {
+        let parsed = Arc::new(Page::parse(&source, "docs/LONG.md"));
+        MarkdownView::new(parsed, "docs/LONG.md".into(), Default::default(), cx)
+    });
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.simulate_resize(gpui::size(px(320.), px(300.)));
+    visual.run_until_parked();
+    window
+        .update(&mut visual, |view, _, cx| {
+            view.scroll_to_row(25);
+            cx.notify();
+        })
+        .unwrap();
+    visual.run_until_parked();
+    let page = visual.debug_bounds("FILE_MARKDOWN").unwrap();
+    visual.simulate_mouse_move(page.center(), None, Modifiers::default());
+    visual.run_until_parked();
+
+    let max_8 = window
+        .read_with(&visual, |view, _| view.scrollbar_max_offset())
+        .unwrap();
+    let thumb_8 = visual.debug_bounds("SCROLLBAR_THUMB").unwrap();
+    assert_eq!(
+        window
+            .read_with(&visual, |view, _| view.scroll_top().item_ix)
+            .unwrap(),
+        25
+    );
+
+    // Increase Files text size from 8 to 32 px at the exact same panel width.
+    store.update(&mut visual, |store, cx| {
+        store.settings.files_font_size = Some(32);
+        cx.notify();
+    });
+    window.update(&mut visual, |_, _, cx| cx.notify()).unwrap();
+    visual.run_until_parked();
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+
+    let max_32 = window
+        .read_with(&visual, |view, _| view.scrollbar_max_offset())
+        .unwrap();
+    let thumb_32 = visual.debug_bounds("SCROLLBAR_THUMB").unwrap();
+    assert_eq!(
+        window
+            .read_with(&visual, |view, _| view.scroll_top().item_ix)
+            .unwrap(),
+        25,
+        "logical scroll top stays at the same row"
+    );
+    assert!(
+        max_32 > max_8 * 2.5,
+        "unseen rows re-hinted for 32 px text: max_8={max_8:?} max_32={max_32:?}"
+    );
+    assert!(
+        thumb_32.size.height < thumb_8.size.height,
+        "thumb shrinks with larger text: thumb_8={thumb_8:?} thumb_32={thumb_32:?}"
+    );
+
+    // Shrink back to 8 px at the same fixed width: range and thumb recover.
+    store.update(&mut visual, |store, cx| {
+        store.settings.files_font_size = Some(8);
+        cx.notify();
+    });
+    window.update(&mut visual, |_, _, cx| cx.notify()).unwrap();
+    visual.run_until_parked();
+    visual.update(|window, _| window.refresh());
+    visual.run_until_parked();
+
+    let max_back = window
+        .read_with(&visual, |view, _| view.scrollbar_max_offset())
+        .unwrap();
+    let thumb_back = visual.debug_bounds("SCROLLBAR_THUMB").unwrap();
+    assert_eq!(
+        window
+            .read_with(&visual, |view, _| view.scroll_top().item_ix)
+            .unwrap(),
+        25
+    );
+    assert!(
+        max_back < max_32 * 0.5,
+        "unseen rows re-hinted back for 8 px text: max_32={max_32:?} max_back={max_back:?}"
+    );
+    assert!(
+        thumb_back.size.height > thumb_32.size.height,
+        "thumb grows back with smaller text: thumb_32={thumb_32:?} thumb_back={thumb_back:?}"
+    );
+}

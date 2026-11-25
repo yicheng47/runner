@@ -5,8 +5,8 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{
     canvas, div, px, rems, App, Bounds, Context, CursorStyle, DispatchPhase, DragMoveEvent,
-    EntityId, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rems,
-    Render, ScrollHandle, Window,
+    EntityId, Hsla, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, Rems, Render, ScrollHandle, Window,
 };
 
 use crate::theme;
@@ -118,6 +118,7 @@ impl ScrollbarMetrics {
 
 type MetricsReader = Rc<dyn Fn() -> ScrollbarMetrics>;
 type ScrollWriter = Rc<dyn Fn(f32, &mut App)>;
+type DragListener = Rc<dyn Fn(bool)>;
 
 #[derive(Clone)]
 struct ScrollbarDrag;
@@ -141,6 +142,7 @@ pub struct Scrollbar {
     drag_grab: Option<Pixels>,
     min_thumb: f32,
     widens: bool,
+    on_drag: Option<DragListener>,
     scrolling: bool,
     list_hovered: bool,
     strip_hovered: bool,
@@ -169,6 +171,44 @@ impl Scrollbar {
                 cx.notify(owner);
             }),
         )
+    }
+
+    /// An app scrollbar over a list that measures its rows as they are drawn.
+    pub fn list(list: ListState, owner: EntityId) -> Self {
+        let read_list = list.clone();
+        let drag_list = list.clone();
+        let mut bar = Self::new(
+            ScrollbarKind::App,
+            Rc::new(move || {
+                let viewport = f32::from(read_list.viewport_bounds().size.height);
+                let maximum = f32::from(read_list.max_offset_for_scrollbar().y);
+                let position = -f32::from(read_list.scroll_px_offset_for_scrollbar().y);
+                ScrollbarMetrics {
+                    viewport,
+                    content: viewport + maximum,
+                    position: position.clamp(0., maximum),
+                }
+            }),
+            Rc::new(move |position, cx| {
+                // Rows not yet drawn have an estimated height, so the end of the
+                // track is the end of the list, not an offset.
+                if px(position) >= list.max_offset_for_scrollbar().y - px(1.) {
+                    list.scroll_to_end();
+                } else {
+                    list.set_offset_from_scrollbar(Point::new(px(0.), px(-position)));
+                }
+                cx.notify(owner);
+            }),
+        );
+        // Rows measured during a drag must not move the thumb from the pointer.
+        bar.on_drag = Some(Rc::new(move |dragging| {
+            if dragging {
+                drag_list.scrollbar_drag_started();
+            } else {
+                drag_list.scrollbar_drag_ended();
+            }
+        }));
+        bar
     }
 
     pub fn external(kind: ScrollbarKind, metrics: MetricsReader, scroll_to: ScrollWriter) -> Self {
@@ -206,6 +246,7 @@ impl Scrollbar {
             drag_grab: None,
             min_thumb: 20.,
             widens: true,
+            on_drag: None,
             scrolling: false,
             list_hovered: false,
             strip_hovered: false,
@@ -226,8 +267,21 @@ impl Scrollbar {
         self
     }
 
+    fn set_drag(&mut self, grab: Option<Pixels>) -> bool {
+        let was_dragging = self.drag_grab.is_some();
+        let is_dragging = grab.is_some();
+        self.drag_grab = grab;
+        if was_dragging != is_dragging {
+            if let Some(on_drag) = &self.on_drag {
+                on_drag(is_dragging);
+            }
+            return true;
+        }
+        false
+    }
+
     fn end_drag(&mut self) -> bool {
-        self.drag_grab.take().is_some()
+        self.set_drag(None)
     }
 
     fn track_length(&self) -> f32 {
@@ -284,13 +338,13 @@ impl Scrollbar {
             return;
         };
         let local = self.along_track(event.position);
-        self.drag_grab = Some(
+        self.set_drag(Some(
             if local >= thumb_start && local <= thumb_start + thumb_length {
                 px(local - thumb_start)
             } else {
                 px(thumb_length / 2.)
             },
-        );
+        ));
         self.scroll_for_pointer(event.position, cx);
         cx.stop_propagation();
         cx.notify();
@@ -320,6 +374,12 @@ impl Scrollbar {
         let available = (track_length - thumb_length).max(1.);
         let ratio = (start / available).clamp(0., 1.);
         (self.scroll_to)(ratio * (metrics.content - metrics.viewport).max(0.), cx);
+    }
+}
+
+impl Drop for Scrollbar {
+    fn drop(&mut self) {
+        self.end_drag();
     }
 }
 

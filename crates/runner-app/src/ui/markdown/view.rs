@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, App, Bounds, ClipboardItem, Context, DispatchPhase, FocusHandle,
+    canvas, div, px, App, Bounds, ClipboardItem, Context, DispatchPhase, Entity, FocusHandle,
     ListAlignment, ListOffset, ListState, MouseButton, MouseExitEvent, MouseMoveEvent, Pixels,
     SharedString, Window,
 };
@@ -16,6 +16,7 @@ use super::draw::{ClickGuard, Draw, Look, Surface, MARGIN};
 use super::layout::{selected_range, RowKind};
 use super::links::LinkTarget;
 use super::{CodeBlock, Page};
+use crate::ui::Scrollbar;
 
 /// Opens a link's target: a URL in the browser, a file in a new tab.
 pub(crate) type OpenLink = Rc<dyn Fn(LinkTarget, &mut Window, &mut App)>;
@@ -40,6 +41,9 @@ pub(crate) struct MarkdownView {
     /// Decoded local images, by their path from the root.
     images: HashMap<String, Arc<gpui::Image>>,
     list: ListState,
+    scrollbar: Entity<Scrollbar>,
+    /// The width and line height the rows not yet drawn were last given a height for.
+    hinted_layout: Option<(Pixels, Pixels)>,
     focus: FocusHandle,
     open_link: Option<OpenLink>,
     /// The anchor and the head, which moves.
@@ -59,11 +63,15 @@ impl MarkdownView {
         cx: &mut Context<Self>,
     ) -> Self {
         let list = ListState::new(page.rows.len(), ListAlignment::Top, px(400.));
+        let owner = cx.entity_id();
+        let scrollbar = cx.new(|_| Scrollbar::list(list.clone(), owner).fixed_width());
         Self {
             page,
             path,
             images,
             list,
+            scrollbar,
+            hinted_layout: None,
             focus: cx.focus_handle(),
             open_link: None,
             selection: None,
@@ -110,11 +118,40 @@ impl MarkdownView {
         }
         let count = self.page.rows.len();
         self.list.splice(0..old, count);
+        self.hinted_layout = None;
         if count > 0 {
             self.list.scroll_to(ListOffset {
                 item_ix: top.item_ix.min(count - 1),
                 offset_in_item: top.offset_in_item,
             });
+        }
+        cx.notify();
+    }
+
+    /// Gives the rows not yet drawn a height, so the scrollbar covers the whole
+    /// page. The list drops it when its width changes and for new rows, but
+    /// keeps old hints across a font-size change at the same width unless the
+    /// items are spliced first.
+    fn hint_row_heights(&mut self, height: Pixels, cx: &mut Context<Self>) {
+        let width = self.list.viewport_bounds().size.width;
+        let next = (width, height);
+        if self.hinted_layout == Some(next) {
+            return;
+        }
+        let height_changed = self
+            .hinted_layout
+            .is_some_and(|(_, previous)| previous != height);
+        self.hinted_layout = Some(next);
+        if height_changed {
+            let count = self.page.rows.len();
+            let top = self.list.logical_scroll_top();
+            self.list.splice(0..count, count);
+            self.list.clone().with_uniform_item_height(height);
+            if count > 0 {
+                self.list.scroll_to(top);
+            }
+        } else {
+            self.list.clone().with_uniform_item_height(height);
         }
         cx.notify();
     }
@@ -320,6 +357,16 @@ impl MarkdownView {
     }
 
     #[cfg(test)]
+    pub(crate) fn scrollbar_max_offset(&self) -> Pixels {
+        self.list.max_offset_for_scrollbar().y
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_scrollbar_dragging(&self) -> bool {
+        self.list.is_scrollbar_dragging()
+    }
+
+    #[cfg(test)]
     pub(crate) fn scroll_to_row(&mut self, row: usize) {
         self.list.scroll_to(ListOffset {
             item_ix: row,
@@ -374,6 +421,8 @@ impl Render for MarkdownView {
         let paint_bounds = Rc::clone(&bounds_cell);
         let move_view = view.clone();
         let exit_view = view.clone();
+        let hint_view = view.clone();
+        let row_height = look.line_height();
         let tracker = canvas(
             move |bounds, _, _| paint_bounds.set(bounds),
             move |_, _, window, _| {
@@ -498,5 +547,21 @@ impl Render for MarkdownView {
                 .size_full(),
             )
             .child(tracker)
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |_, _, window, cx| {
+                        let view = hint_view.clone();
+                        window.defer(cx, move |_, cx| {
+                            let _ = view.update(cx, |view, cx| {
+                                view.hint_row_heights(row_height, cx);
+                            });
+                        });
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .child(self.scrollbar.clone())
     }
 }
