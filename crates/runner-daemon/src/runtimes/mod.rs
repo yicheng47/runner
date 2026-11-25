@@ -383,6 +383,9 @@ pub trait RuntimeAdapter: Send + Sync {
     fn npm_dist_tag(&self) -> &'static str {
         "latest"
     }
+    fn latest_manifest_url(&self) -> Option<&'static str> {
+        None
+    }
     fn usage(&self) -> Option<&'static UsageSource> {
         None
     }

@@ -131,6 +131,7 @@ fn catalog_matches_supported_runtime_order_and_defaults() {
 
     let agy = &catalog[2];
     assert_eq!(agy.command, "agy");
+    assert_eq!(agy.min_version.as_deref(), Some("1.5.8"));
     assert!(!agy.native_fork);
     assert!(agy.default_enabled);
     assert_eq!(
@@ -215,20 +216,41 @@ fn selectable_catalog_requires_availability_and_honors_agent_settings() {
 fn update_spec_runs_the_effective_executable_with_its_update_argument() {
     use std::os::unix::fs::PermissionsExt;
     let bin = tempfile::tempdir().unwrap();
-    for command in ["codex", "traecli"] {
+    for command in ["codex", "agy", "npm", "traecli"] {
         let path = bin.path().join(command);
         std::fs::write(&path, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let state = crate::test_support::test_core();
-    state.runtime_shell_env.write().unwrap().path = Some(bin.path().display().to_string());
+    {
+        let mut env = state.runtime_shell_env.write().unwrap();
+        env.path = Some(bin.path().display().to_string());
+        env.vars
+            .insert("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "true".into());
+    }
 
     let spec = runtime_update_spawn_spec(&state, Runtime::Codex, (90, 28)).unwrap();
     assert_eq!(spec.command, bin.path().join("codex").display().to_string());
     assert_eq!(spec.args, ["update"]);
     assert_eq!(spec.cwd, runner_core::app_paths::home_dir());
     assert_eq!(spec.initial_size, Some((90, 28)));
+    assert!(spec.env_remove.is_empty());
 
+    let agy_spec = runtime_update_spawn_spec(&state, Runtime::Antigravity, (90, 28)).unwrap();
+    assert_eq!(
+        agy_spec.command,
+        bin.path().join("agy").display().to_string()
+    );
+    assert_eq!(agy_spec.args, ["update"]);
+    assert_eq!(agy_spec.cwd, runner_core::app_paths::home_dir());
+    assert_eq!(agy_spec.initial_size, Some((90, 28)));
+    assert!(!agy_spec
+        .env
+        .keys()
+        .any(|key| key.eq_ignore_ascii_case("AGY_CLI_DISABLE_AUTO_UPDATE")));
+    assert_eq!(agy_spec.env_remove, ["AGY_CLI_DISABLE_AUTO_UPDATE"]);
+
+    assert!(runtime_install_spawn_spec(&state, Runtime::Antigravity, (90, 28)).is_err());
     assert!(runtime_update_spawn_spec(&state, Runtime::Trae, (90, 28)).is_err());
 }
 #[test]

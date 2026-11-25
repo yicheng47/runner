@@ -220,6 +220,34 @@ fn antigravity_launch_env_disables_auto_update_only_on_windows() {
 }
 
 #[test]
+fn antigravity_manifest_url_maps_every_supported_target() {
+    let base = "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests";
+    for (os, arch, env, expected) in [
+        ("macos", "aarch64", "", Some("darwin_arm64")),
+        ("macos", "x86_64", "", Some("darwin_amd64")),
+        ("windows", "x86_64", "msvc", Some("windows_amd64")),
+        ("windows", "aarch64", "msvc", Some("windows_arm64")),
+        ("linux", "x86_64", "gnu", Some("linux_amd64")),
+        ("linux", "aarch64", "gnu", Some("linux_arm64")),
+        ("linux", "x86_64", "musl", Some("linux_amd64_musl")),
+        ("linux", "aarch64", "musl", Some("linux_arm64_musl")),
+        ("freebsd", "x86_64", "", None),
+        ("windows", "x86", "msvc", None),
+        ("linux", "riscv64", "gnu", None),
+    ] {
+        assert_eq!(
+            manifest_url_for_target(os, arch, env),
+            expected
+                .map(|platform| format!("{base}/{platform}.json"))
+                .as_deref(),
+            "{os}/{arch}/{env}"
+        );
+    }
+    assert_eq!(Antigravity.latest_manifest_url(), current_manifest_url());
+    assert!(current_manifest_url().is_some());
+}
+
+#[test]
 fn antigravity_uses_program_status_without_status_hooks() {
     let adapter = Antigravity;
     assert!(adapter.status_hooks().is_none());

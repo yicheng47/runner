@@ -417,7 +417,7 @@ pub mod antigravity {
     pub fn catalog() -> Option<RuntimeCatalog> {
         Some(RuntimeCatalog {
             name: Runtime::Antigravity,
-            min_version: None,
+            min_version: Some("1.5.8"),
             display_name: Runtime::Antigravity.display_name(),
             command: Runtime::Antigravity.command().unwrap(),
             capabilities: capabilities(),
@@ -445,7 +445,7 @@ pub mod antigravity {
                 )
                 .collect(),
             skills_dirs: SKILL_DIRS,
-            update_args: &[],
+            update_args: &["update"],
             npm_package: None,
         })
     }

@@ -425,10 +425,11 @@ pub fn runtime_probe_version(state: &AppCore, runtime: Runtime) -> Option<String
     )
 }
 
-/// Asks npm whether a newer version of each installed, updatable runtime
-/// exists, off the calling thread. Answers are cached for six hours per app
-/// run; `force` skips the cache. Failures leave the rows showing versions
-/// only. Installed versions are refreshed even when registry answers are cached.
+/// Checks each installed, updatable runtime's latest-version source (npm
+/// registry or HTTPS release manifest) off the calling thread. Answers are
+/// cached for six hours per app run; `force` skips the cache. Failures leave
+/// the rows showing versions only. Installed versions are refreshed even when
+/// remote answers are cached.
 pub fn runtime_check_updates(state: &AppCore, force: bool) {
     crate::runtime_status::versions::request_latest(
         &state.db,
@@ -486,7 +487,7 @@ pub fn runtime_update_spawn_spec(
     if command.source == RuntimeCommandSource::Catalog {
         return Err(crate::runtime_status::runtime_not_found_error(runtime));
     }
-    Ok(state.sessions.update_spawn_spec(
+    let mut spec = state.sessions.update_spawn_spec(
         command.command,
         definition
             .update_args
@@ -495,7 +496,13 @@ pub fn runtime_update_spawn_spec(
             .collect(),
         runner_core::app_paths::home_dir(),
         size,
-    ))
+    );
+    if runtime == Runtime::Antigravity {
+        // Explicit `agy update` must not inherit AGY_CLI_DISABLE_AUTO_UPDATE
+        // from runnerd's process/registry environment or login-shell capture.
+        spec.remove_env("AGY_CLI_DISABLE_AUTO_UPDATE", cfg!(windows));
+    }
+    Ok(spec)
 }
 
 /// Starts the update PTY `runtime_update_spawn_spec` described. It is not a

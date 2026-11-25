@@ -128,20 +128,60 @@ struct SessionHandle {
 
 const EXIT_UNSET: i32 = i32::MIN;
 
-impl SessionRuntime for PtyRuntime {
-    fn admit_hook(
-        &self,
-        report: runner_core::protocol::HookReport,
-    ) -> crate::error::Result<super::hook_queue::Admission> {
-        self.hooks.admit(report)
-    }
-    fn drain_workers(&self) {
-        let workers = std::mem::take(&mut *self.readers.lock().unwrap());
-        for worker in workers {
-            let _ = worker.join();
+fn apply_command_env(
+    cmd: &mut CommandBuilder,
+    spec: &SpawnSpec,
+    composed_path: &str,
+    cols: u16,
+    rows: u16,
+    fold_case: bool,
+) -> RuntimeResult<()> {
+    // Reserved env names (PATH) come from the composed result, not
+    // from spec.env.
+    for (k, v) in &spec.env {
+        if launch::is_reserved_env_name(k) {
+            continue;
         }
+        if !launch::is_valid_env_name(k) {
+            return Err(RuntimeError::Msg(format!(
+                "invalid env var name {k:?}: must match [A-Za-z_][A-Za-z0-9_]*"
+            )));
+        }
+        cmd.env(k, v);
     }
-    fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
+    for name in &spec.env_remove {
+        if fold_case {
+            let matching: Vec<String> = cmd
+                .iter_full_env_as_str()
+                .filter(|(k, _)| k.eq_ignore_ascii_case(name))
+                .map(|(k, _)| k.to_owned())
+                .collect();
+            for key in matching {
+                cmd.env_remove(&key);
+            }
+        }
+        cmd.env_remove(name);
+    }
+    cmd.env("PATH", composed_path);
+    // Shells keep a symlinked cwd's own path only when PWD names it;
+    // otherwise they print the resolved path.
+    #[cfg(unix)]
+    if let Some(cwd) = &spec.cwd {
+        cmd.env("PWD", cwd);
+    }
+    // COLUMNS/LINES so Node-based TUIs pick up the initial grid
+    // before SIGWINCH lands.
+    cmd.env("COLUMNS", cols.to_string());
+    cmd.env("LINES", rows.to_string());
+    Ok(())
+}
+
+impl PtyRuntime {
+    fn spawn_with_base_command(
+        &self,
+        spec: SpawnSpec,
+        mut cmd: CommandBuilder,
+    ) -> RuntimeResult<(RuntimeSession, OutputStream)> {
         // `launch::compose_path` is the canonical place for shim_dir /
         // bundled_bin_dir / shell_path / HOME / inherited PATH
         // precedence rules.
@@ -184,39 +224,16 @@ impl SessionRuntime for PtyRuntime {
             })
             .map_err(|e| RuntimeError::Msg(format!("openpty: {e}")))?;
 
-        // `CommandBuilder::new` starts from portable-pty's base environment:
-        // this process's variables and, on Windows, the system and user
-        // variables in the registry. `spec.env` then overrides it by name.
-        let mut cmd = CommandBuilder::new(&spec.command);
+        // `cmd` starts from portable-pty's base environment: this process's
+        // variables and, on Windows, the system and user variables in the
+        // registry. `spec.env` overrides by name and `spec.env_remove` unsets
+        // variables that must not be inherited.
         cmd.args(&spec.args);
         if let Some(cwd) = &spec.cwd {
             cmd.cwd(cwd);
         }
 
-        // Reserved env names (PATH) come from the composed result, not
-        // from spec.env.
-        for (k, v) in &spec.env {
-            if launch::is_reserved_env_name(k) {
-                continue;
-            }
-            if !launch::is_valid_env_name(k) {
-                return Err(RuntimeError::Msg(format!(
-                    "invalid env var name {k:?}: must match [A-Za-z_][A-Za-z0-9_]*"
-                )));
-            }
-            cmd.env(k, v);
-        }
-        cmd.env("PATH", &composed_path);
-        // Shells keep a symlinked cwd's own path only when PWD names it;
-        // otherwise they print the resolved path.
-        #[cfg(unix)]
-        if let Some(cwd) = &spec.cwd {
-            cmd.env("PWD", cwd);
-        }
-        // COLUMNS/LINES so Node-based TUIs pick up the initial grid
-        // before SIGWINCH lands.
-        cmd.env("COLUMNS", cols.to_string());
-        cmd.env("LINES", rows.to_string());
+        apply_command_env(&mut cmd, &spec, &composed_path, cols, rows, cfg!(windows))?;
 
         #[cfg(windows)]
         launch::adapt_windows_batch_command(&mut cmd)
@@ -377,6 +394,25 @@ impl SessionRuntime for PtyRuntime {
         };
         let stream = OutputStream::new(rx, stop).holding(entry);
         Ok((rt_session, stream))
+    }
+}
+
+impl SessionRuntime for PtyRuntime {
+    fn admit_hook(
+        &self,
+        report: runner_core::protocol::HookReport,
+    ) -> crate::error::Result<super::hook_queue::Admission> {
+        self.hooks.admit(report)
+    }
+    fn drain_workers(&self) {
+        let workers = std::mem::take(&mut *self.readers.lock().unwrap());
+        for worker in workers {
+            let _ = worker.join();
+        }
+    }
+    fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
+        let cmd = CommandBuilder::new(&spec.command);
+        self.spawn_with_base_command(spec, cmd)
     }
 
     #[cfg(unix)]

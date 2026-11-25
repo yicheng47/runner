@@ -1,10 +1,10 @@
 //! Installed agent CLI versions and whether a newer one exists (#533).
 //!
 //! The installed version is the first semver token `<command> --version`
-//! prints. "Newer" comes from the npm registry's `latest` dist-tag, which
-//! every supported CLI publishes at the version it ships natively, so one
-//! endpoint covers native, npm and Homebrew installs. Every failure degrades
-//! to showing the version alone.
+//! prints. "Newer" comes from either the npm registry's dist-tag (`latest` or
+//! Claude Code's configured channel) or a runtime's HTTPS JSON release
+//! manifest (Antigravity CLI). Every failure degrades to showing the version
+//! alone.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -37,8 +37,9 @@ pub(crate) struct VersionDiscovery {
     pending_async_notify: HashMap<Runtime, u64>,
     next_probe: u64,
     latest: HashMap<Runtime, Latest>,
-    /// The newest npm check started per runtime: its tag and generation.
-    /// A check for another tag supersedes it, like an override does a probe.
+    /// The newest remote check started per runtime: its source key (npm tag or
+    /// manifest URL) and generation. A check for another source supersedes it,
+    /// like an override does a probe.
     checking: HashMap<Runtime, (&'static str, u64)>,
     next_check: u64,
     /// A check asked for while discovery was still resolving executables;
@@ -110,10 +111,35 @@ struct ActiveProbe {
 
 #[derive(Debug, Clone)]
 struct Latest {
-    /// The npm dist-tag this answer came from.
+    /// The upstream source key (npm dist-tag or manifest URL) this answer came from.
     tag: &'static str,
     version: String,
     fetched_at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LatestSource {
+    Npm {
+        package: &'static str,
+        tag: &'static str,
+    },
+    ManifestUrl(&'static str),
+}
+
+impl LatestSource {
+    fn url(self) -> String {
+        match self {
+            Self::Npm { package, tag } => format!("https://registry.npmjs.org/{package}/{tag}"),
+            Self::ManifestUrl(url) => url.to_owned(),
+        }
+    }
+
+    fn cache_key(self) -> &'static str {
+        match self {
+            Self::Npm { tag, .. } => tag,
+            Self::ManifestUrl(url) => url,
+        }
+    }
 }
 
 impl VersionDiscovery {
@@ -672,12 +698,13 @@ fn run_probe(
     version
 }
 
-/// Checks npm for a newer version of every installed runtime that has an
-/// updater, on background threads. Answers are cached for six hours per app
-/// run; `force` (Refresh) skips the cache. While discovery is still
-/// resolving executables the check waits for it, so a CLI that discovery is
-/// about to find is checked too. Installed versions are re-probed on every
-/// request, even while registry answers are cached.
+/// Checks the remote version source (npm registry or HTTPS release manifest)
+/// for a newer version of every installed runtime that supports update checks,
+/// on background threads. Answers are cached for six hours per app run; `force`
+/// (Refresh) skips the cache. While discovery is still resolving executables
+/// the check waits for it, so a CLI that discovery is about to find is checked
+/// too. Installed versions are re-probed on every request, even while remote
+/// answers are cached.
 pub(crate) fn request_latest(
     pool: &Arc<DbPool>,
     shell_env: &SharedShellEnv,
@@ -698,13 +725,15 @@ pub(crate) fn run_deferred_latest(
     run_deferred_latest_with(pool, shell_env, discovery, events, fetch_latest);
 }
 
-fn run_deferred_latest_with(
+fn run_deferred_latest_with<F>(
     pool: &Arc<DbPool>,
     shell_env: &SharedShellEnv,
     discovery: &SharedDiscoveryState,
     events: &EventChannel,
-    fetch: fn(&LoginShellEnv, &str, &str) -> Option<String>,
-) {
+    fetch: F,
+) where
+    F: Fn(&LoginShellEnv, LatestSource) -> Option<String> + Clone + Send + 'static,
+{
     let deferred = discovery
         .write()
         .ok()
@@ -714,14 +743,33 @@ fn run_deferred_latest_with(
     }
 }
 
-fn request_latest_with(
+fn latest_source(runtime: Runtime, pool: &DbPool) -> Option<LatestSource> {
+    let adapter = crate::runtimes::adapter(runtime);
+    let definition = adapter.catalog()?;
+    if definition.update_args.is_empty() {
+        return None;
+    }
+    if let Some(package) = definition.npm_package {
+        let tag = if runtime == Runtime::ClaudeCode {
+            crate::claude_accounts::sharing::main_channel(pool).unwrap_or_else(|| dist_tag(runtime))
+        } else {
+            dist_tag(runtime)
+        };
+        return Some(LatestSource::Npm { package, tag });
+    }
+    adapter.latest_manifest_url().map(LatestSource::ManifestUrl)
+}
+
+fn request_latest_with<F>(
     pool: &Arc<DbPool>,
     shell_env: &SharedShellEnv,
     discovery: &SharedDiscoveryState,
     events: &EventChannel,
     force: bool,
-    fetch: fn(&LoginShellEnv, &str, &str) -> Option<String>,
-) {
+    fetch: F,
+) where
+    F: Fn(&LoginShellEnv, LatestSource) -> Option<String> + Clone + Send + 'static,
+{
     let deferred = discovery.write().is_ok_and(|mut state| {
         if !state.checking {
             return false;
@@ -734,44 +782,38 @@ fn request_latest_with(
         return;
     }
     for definition in crate::runtimes::catalogs() {
-        let Some(package) = definition.npm_package else {
-            continue;
-        };
-        if definition.update_args.is_empty()
-            || installed_command(definition.name, pool, shell_env, discovery).is_none()
-        {
+        let runtime = definition.name;
+        if !updatable(runtime) || installed_command(runtime, pool, shell_env, discovery).is_none() {
             continue;
         }
-        let runtime = definition.name;
-        request_probes(pool, shell_env, discovery, events, &[runtime], true);
-        let tag = if runtime == Runtime::ClaudeCode {
-            crate::claude_accounts::sharing::main_channel(pool).unwrap_or_else(|| dist_tag(runtime))
-        } else {
-            dist_tag(runtime)
+        let Some(source) = latest_source(runtime, pool) else {
+            continue;
         };
+        request_probes(pool, shell_env, discovery, events, &[runtime], true);
         let shell_env = Arc::clone(shell_env);
         let discovery = Arc::clone(discovery);
         let events = events.clone();
+        let fetch = fetch.clone();
         std::thread::spawn(move || {
             let env = shell_env.read().map(|env| env.clone()).unwrap_or_default();
             check_latest(
                 &discovery,
                 &events,
                 runtime,
-                tag,
+                source.cache_key(),
                 force,
                 Instant::now(),
-                || fetch(&env, package, tag),
+                || fetch(&env, source),
             );
         });
     }
 }
 
-/// One cached npm check with the fetch passed in, so tests stub the network.
-/// Emits `runtime/changed` whenever the shown answer changes: at once when an
-/// answer from another tag is dropped, before any network I/O, and again when
-/// the new answer lands. Returns whether anything changed. A check superseded
-/// by a newer one, for another tag or forced, is discarded.
+/// One cached latest-version check with the fetch passed in, so tests stub the
+/// network. Emits `runtime/changed` whenever the shown answer changes: at once
+/// when an answer from another source/tag is dropped, before any network I/O,
+/// and again when the new answer lands. Returns whether anything changed. A
+/// check superseded by a newer one, for another source or forced, is discarded.
 fn check_latest(
     discovery: &SharedDiscoveryState,
     events: &EventChannel,
@@ -795,7 +837,7 @@ fn check_latest(
     };
     let version = fetch();
     if version.is_none() {
-        log::debug!("runtime latest check failed: runtime={runtime} tag={tag}");
+        log::debug!("runtime latest check failed: runtime={runtime} source={tag}");
     }
     let finished = discovery.write().is_ok_and(|mut state| {
         state
@@ -819,12 +861,12 @@ fn dist_tag(runtime: Runtime) -> &'static str {
 #[cfg(test)]
 use crate::runtimes::claude_code::claude_channel;
 
-fn fetch_latest(env: &LoginShellEnv, package: &str, tag: &str) -> Option<String> {
-    let response = crate::usage::http_client(env)
-        .ok()?
-        .get(format!("https://registry.npmjs.org/{package}/{tag}"))
-        .send()
-        .ok()?;
+fn fetch_latest(env: &LoginShellEnv, source: LatestSource) -> Option<String> {
+    fetch_latest_from_url(env, &source.url())
+}
+
+fn fetch_latest_from_url(env: &LoginShellEnv, url: &str) -> Option<String> {
+    let response = crate::usage::http_client(env).ok()?.get(url).send().ok()?;
     if !response.status().is_success() {
         return None;
     }
@@ -836,13 +878,14 @@ fn parse_latest(body: &serde_json::Value) -> Option<String> {
     parse_semver(version).map(|_| version.to_owned())
 }
 
-/// Whether the runtime has an update subcommand Runner can run.
+/// Whether the runtime has an update subcommand and a latest-version source
+/// Runner can check (an npm package or an HTTPS release manifest).
 pub(crate) fn updatable(runtime: Runtime) -> bool {
-    crate::runtimes::adapter(runtime)
-        .catalog()
-        .is_some_and(|definition| {
-            !definition.update_args.is_empty() && definition.npm_package.is_some()
-        })
+    let adapter = crate::runtimes::adapter(runtime);
+    adapter.catalog().is_some_and(|definition| {
+        !definition.update_args.is_empty()
+            && (definition.npm_package.is_some() || adapter.latest_manifest_url().is_some())
+    })
 }
 
 #[cfg(test)]
@@ -1386,18 +1429,10 @@ mod tests {
     }
 
     #[cfg(unix)]
-    static STUB_FETCHES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-    #[cfg(unix)]
-    fn stub_fetch(_: &LoginShellEnv, package: &str, _: &str) -> Option<String> {
-        STUB_FETCHES.lock().unwrap().push(package.to_owned());
-        Some("99.0.0".into())
-    }
-
-    #[cfg(unix)]
     #[test]
     fn a_check_requested_during_discovery_runs_once_it_completes() {
         use std::os::unix::fs::PermissionsExt;
+        use std::sync::Mutex;
         let bin = tempfile::tempdir().unwrap();
         let codex = bin.path().join("codex");
         std::fs::write(&codex, "#!/bin/sh\n").unwrap();
@@ -1405,18 +1440,43 @@ mod tests {
         let pool = Arc::new(crate::db::open_in_memory().unwrap());
         let shell_env = Arc::new(RwLock::new(LoginShellEnv {
             path: Some(bin.path().display().to_string()),
-            vars: Default::default(),
+            vars: std::collections::BTreeMap::from([(
+                super::super::TEST_ISOLATE_PATH_ENV.into(),
+                "1".into(),
+            )]),
         }));
         let discovery = discovery();
         let events = EventChannel::new();
+        let fetches = Arc::new(Mutex::new(Vec::new()));
+        let stub_fetch = {
+            let fetches = Arc::clone(&fetches);
+            move |_: &LoginShellEnv, source: LatestSource| {
+                fetches.lock().unwrap().push(source);
+                Some("99.0.0".into())
+            }
+        };
 
-        request_latest_with(&pool, &shell_env, &discovery, &events, false, stub_fetch);
-        request_latest_with(&pool, &shell_env, &discovery, &events, true, stub_fetch);
+        request_latest_with(
+            &pool,
+            &shell_env,
+            &discovery,
+            &events,
+            false,
+            stub_fetch.clone(),
+        );
+        request_latest_with(
+            &pool,
+            &shell_env,
+            &discovery,
+            &events,
+            true,
+            stub_fetch.clone(),
+        );
         assert_eq!(
             discovery.read().unwrap().versions.deferred_latest,
             Some(true)
         );
-        assert!(STUB_FETCHES.lock().unwrap().is_empty());
+        assert!(fetches.lock().unwrap().is_empty());
 
         discovery.write().unwrap().checking = false;
         run_deferred_latest_with(&pool, &shell_env, &discovery, &events, stub_fetch);
@@ -1426,10 +1486,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert_eq!(available(&discovery, "0.153.4").as_deref(), Some("99.0.0"));
-        assert!(STUB_FETCHES
-            .lock()
-            .unwrap()
-            .contains(&"@openai/codex".to_owned()));
+        assert!(fetches.lock().unwrap().contains(&LatestSource::Npm {
+            package: "@openai/codex",
+            tag: "latest",
+        }));
         assert_eq!(discovery.read().unwrap().versions.deferred_latest, None);
     }
 
@@ -1484,9 +1544,7 @@ mod tests {
         assert_eq!(available(&discovery, "0.153.4").as_deref(), Some("0.155.0"));
 
         let mut changes = events.subscribe();
-        request_latest_with(&pool, &shell_env, &discovery, &events, false, |_, _, _| {
-            None
-        });
+        request_latest_with(&pool, &shell_env, &discovery, &events, false, |_, _| None);
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             if changes.try_recv().is_ok()
@@ -1746,13 +1804,291 @@ mod tests {
     }
 
     #[test]
-    fn only_runtimes_with_an_updater_and_a_package_can_update() {
+    fn only_runtimes_with_an_updater_and_a_latest_source_can_update() {
         assert!(updatable(Runtime::Codex));
         assert!(updatable(Runtime::ClaudeCode));
+        assert!(updatable(Runtime::Antigravity));
         assert!(updatable(Runtime::Copilot));
         assert!(updatable(Runtime::Pi));
+        assert!(!updatable(Runtime::Grok));
+        assert!(!updatable(Runtime::OpenCode));
         assert!(!updatable(Runtime::Trae));
-        assert!(!updatable(Runtime::Antigravity));
+        assert!(!updatable(Runtime::Cursor));
+        assert!(!updatable(Runtime::Shell));
+    }
+
+    #[test]
+    fn antigravity_manifest_http_fetch_parses_version_and_degrades_on_errors() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        assert_eq!(
+            LatestSource::Npm {
+                package: "@openai/codex",
+                tag: "latest",
+            }
+            .url(),
+            "https://registry.npmjs.org/@openai/codex/latest"
+        );
+        let manifest_url = crate::runtimes::antigravity::current_manifest_url().unwrap();
+        assert_eq!(LatestSource::ManifestUrl(manifest_url).url(), manifest_url);
+
+        let responses: Vec<(&'static str, &'static str)> = vec![
+            (
+                "200 OK",
+                r#"{"version":"1.5.17","url":"https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.17/cli.tar.gz","sha512":"abc123"}"#,
+            ),
+            ("404 Not Found", r#"{"version":"1.5.17"}"#),
+            ("500 Internal Server Error", "oops"),
+            ("200 OK", "not valid json"),
+            ("200 OK", r#"{"url":"https://example.com/cli.tar.gz"}"#),
+            ("200 OK", r#"{"version":"nightly"}"#),
+        ];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_responses = responses.clone();
+        let server = std::thread::spawn(move || {
+            for (status, body) in server_responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                let mut buf = [0u8; 4096];
+                let mut total = 0;
+                while total < buf.len() {
+                    let Ok(n) = stream.read(&mut buf[total..]) else {
+                        break;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    total += n;
+                    if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(reply.as_bytes()).unwrap();
+            }
+        });
+
+        let env = LoginShellEnv::default();
+        let url = format!("http://{addr}/manifests/darwin_arm64.json");
+        assert_eq!(fetch_latest_from_url(&env, &url).as_deref(), Some("1.5.17"));
+        for _ in 1..responses.len() {
+            assert_eq!(fetch_latest_from_url(&env, &url), None);
+        }
+        server.join().unwrap();
+
+        // Listener has dropped, so a subsequent fetch fails cleanly with None.
+        assert_eq!(fetch_latest_from_url(&env, &url), None);
+    }
+
+    #[test]
+    fn antigravity_manifest_check_caches_refreshes_supersedes_and_degrades_silently() {
+        let discovery = discovery();
+        let start = Instant::now();
+        let source = crate::runtimes::antigravity::current_manifest_url().unwrap();
+        let available = |installed: &str| {
+            discovery
+                .read()
+                .unwrap()
+                .versions
+                .available(Runtime::Antigravity, Some(installed))
+                .map(str::to_owned)
+        };
+        {
+            let versions = &mut discovery.write().unwrap().versions;
+            let generation = versions
+                .begin_probe(Runtime::Antigravity, "/a/agy", false)
+                .unwrap();
+            versions.finish_probe(
+                Runtime::Antigravity,
+                generation,
+                "/a/agy".into(),
+                Some("1.5.8".into()),
+            );
+        }
+
+        let fetches = std::cell::Cell::new(0);
+        assert!(check_latest(
+            &discovery,
+            &EventChannel::new(),
+            Runtime::Antigravity,
+            source,
+            false,
+            start,
+            || {
+                fetches.set(fetches.get() + 1);
+                Some("1.5.17".into())
+            }
+        ));
+        assert_eq!(available("1.5.8").as_deref(), Some("1.5.17"));
+        assert_eq!(available("1.5.17"), None);
+
+        // Cached within 6 hours without force.
+        let later = start + Duration::from_secs(5 * 60 * 60);
+        assert!(!check_latest(
+            &discovery,
+            &EventChannel::new(),
+            Runtime::Antigravity,
+            source,
+            false,
+            later,
+            || {
+                fetches.set(fetches.get() + 1);
+                Some("1.5.18".into())
+            }
+        ));
+        assert_eq!(fetches.get(), 1);
+
+        // Forced Refresh bypasses the cache.
+        assert!(check_latest(
+            &discovery,
+            &EventChannel::new(),
+            Runtime::Antigravity,
+            source,
+            true,
+            later,
+            || {
+                fetches.set(fetches.get() + 1);
+                Some("1.5.18".into())
+            }
+        ));
+        assert_eq!(fetches.get(), 2);
+        assert_eq!(available("1.5.8").as_deref(), Some("1.5.18"));
+
+        // Failure degrades silently: clears available_version and keeps installed_version.
+        assert!(check_latest(
+            &discovery,
+            &EventChannel::new(),
+            Runtime::Antigravity,
+            source,
+            true,
+            later,
+            || None
+        ));
+        assert_eq!(available("1.5.8"), None);
+        assert_eq!(
+            discovery
+                .read()
+                .unwrap()
+                .versions
+                .installed(Runtime::Antigravity, "/a/agy"),
+            Some("1.5.8")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn request_latest_fetches_antigravity_manifest_alongside_npm_runtimes() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::Mutex;
+
+        let bin = tempfile::tempdir().unwrap();
+        for (name, version) in [
+            ("codex", "codex-cli 0.164.0"),
+            ("agy", "1.5.8"),
+            ("grok", "1.0.89"),
+            ("opencode", "2.1.0"),
+        ] {
+            let path = bin.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\necho '{version}'\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let pool = Arc::new(crate::db::open_in_memory().unwrap());
+        let shell_env = Arc::new(RwLock::new(LoginShellEnv {
+            path: Some(bin.path().display().to_string()),
+            vars: std::collections::BTreeMap::from([(
+                super::super::TEST_ISOLATE_PATH_ENV.into(),
+                "1".into(),
+            )]),
+        }));
+        let discovery = discovery();
+        discovery.write().unwrap().checking = false;
+        let events = EventChannel::new();
+
+        let expected_manifest = crate::runtimes::antigravity::current_manifest_url().unwrap();
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let fetch = {
+            let recorded = Arc::clone(&recorded);
+            move |_: &LoginShellEnv, source: LatestSource| {
+                recorded.lock().unwrap().push(source);
+                match source {
+                    LatestSource::Npm {
+                        package: "@openai/codex",
+                        ..
+                    } => Some("0.165.0".into()),
+                    LatestSource::ManifestUrl(url) if url == expected_manifest => {
+                        Some("1.5.17".into())
+                    }
+                    _ => None,
+                }
+            }
+        };
+
+        request_latest_with(&pool, &shell_env, &discovery, &events, false, fetch);
+
+        let codex_path = bin.path().join("codex").display().to_string();
+        let agy_path = bin.path().join("agy").display().to_string();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let ready = {
+                let state = discovery.read().unwrap();
+                state.versions.installed(Runtime::Codex, &codex_path) == Some("0.164.0")
+                    && state.versions.installed(Runtime::Antigravity, &agy_path) == Some("1.5.8")
+                    && state.versions.available(Runtime::Codex, Some("0.164.0")) == Some("0.165.0")
+                    && state
+                        .versions
+                        .available(Runtime::Antigravity, Some("1.5.8"))
+                        == Some("1.5.17")
+            };
+            if ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for Codex and Antigravity latest checks"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let fetched = recorded.lock().unwrap().clone();
+        assert_eq!(fetched.len(), 2, "unexpected sources fetched: {fetched:?}");
+        assert!(fetched.contains(&LatestSource::Npm {
+            package: "@openai/codex",
+            tag: "latest",
+        }));
+        assert!(fetched.contains(&LatestSource::ManifestUrl(expected_manifest)));
+
+        let status = super::super::status_list(&pool, &shell_env, &discovery).unwrap();
+        let agy = status
+            .runtimes
+            .iter()
+            .find(|row| row.name == Runtime::Antigravity)
+            .unwrap();
+        assert_eq!(agy.installed_version.as_deref(), Some("1.5.8"));
+        assert_eq!(agy.available_version.as_deref(), Some("1.5.17"));
+        assert_eq!(agy.min_version.as_deref(), Some("1.5.8"));
+        assert!(!agy.below_minimum);
+
+        let codex = status
+            .runtimes
+            .iter()
+            .find(|row| row.name == Runtime::Codex)
+            .unwrap();
+        assert_eq!(codex.installed_version.as_deref(), Some("0.164.0"));
+        assert_eq!(codex.available_version.as_deref(), Some("0.165.0"));
+
+        for runtime in [Runtime::Grok, Runtime::OpenCode] {
+            let row = status
+                .runtimes
+                .iter()
+                .find(|row| row.name == runtime)
+                .unwrap();
+            assert_eq!(row.available_version, None, "{runtime:?}");
+        }
     }
 }
 
@@ -1772,7 +2108,19 @@ fn versions_catalog_golden() {
                 .unwrap();
             }
             for runtime in Runtime::ALL {
-                rows.push(serde_json::json!({"runtime":runtime,"channel":channel,"package":crate::runtimes::adapter(runtime).catalog().and_then(|catalog| catalog.npm_package),"dist_tag":dist_tag(runtime)}));
+                let adapter = crate::runtimes::adapter(runtime);
+                let manifest = adapter.latest_manifest_url().map(|url| {
+                    let (prefix, _) = url.rsplit_once('/').unwrap();
+                    format!("{prefix}/<platform>.json")
+                });
+                rows.push(serde_json::json!({
+                    "runtime": runtime,
+                    "channel": channel,
+                    "package": adapter.catalog().and_then(|catalog| catalog.npm_package),
+                    "dist_tag": dist_tag(runtime),
+                    "manifest": manifest,
+                    "updatable": updatable(runtime),
+                }));
             }
         }
     });

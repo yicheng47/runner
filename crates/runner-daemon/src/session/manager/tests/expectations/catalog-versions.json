@@ -3,240 +3,320 @@
     "runtime": "codex",
     "channel": null,
     "package": "@openai/codex",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "claude-code",
     "channel": null,
     "package": "@anthropic-ai/claude-code",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "antigravity",
     "channel": null,
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/<platform>.json",
+    "updatable": true
   },
   {
     "runtime": "pi",
     "channel": null,
     "package": "@earendil-works/pi-coding-agent",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "copilot",
     "channel": null,
     "package": "@github/copilot",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "trae",
     "channel": null,
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "cursor",
     "channel": null,
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "grok",
     "channel": null,
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "opencode",
     "channel": null,
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "shell",
     "channel": null,
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "codex",
     "channel": "latest",
     "package": "@openai/codex",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "claude-code",
     "channel": "latest",
     "package": "@anthropic-ai/claude-code",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "antigravity",
     "channel": "latest",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/<platform>.json",
+    "updatable": true
   },
   {
     "runtime": "pi",
     "channel": "latest",
     "package": "@earendil-works/pi-coding-agent",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "copilot",
     "channel": "latest",
     "package": "@github/copilot",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "trae",
     "channel": "latest",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "cursor",
     "channel": "latest",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "grok",
     "channel": "latest",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "opencode",
     "channel": "latest",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "shell",
     "channel": "latest",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "codex",
     "channel": "stable",
     "package": "@openai/codex",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "claude-code",
     "channel": "stable",
     "package": "@anthropic-ai/claude-code",
-    "dist_tag": "stable"
+    "dist_tag": "stable",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "antigravity",
     "channel": "stable",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/<platform>.json",
+    "updatable": true
   },
   {
     "runtime": "pi",
     "channel": "stable",
     "package": "@earendil-works/pi-coding-agent",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "copilot",
     "channel": "stable",
     "package": "@github/copilot",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "trae",
     "channel": "stable",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "cursor",
     "channel": "stable",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "grok",
     "channel": "stable",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "opencode",
     "channel": "stable",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "shell",
     "channel": "stable",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "codex",
     "channel": "unknown",
     "package": "@openai/codex",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "claude-code",
     "channel": "unknown",
     "package": "@anthropic-ai/claude-code",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "antigravity",
     "channel": "unknown",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/<platform>.json",
+    "updatable": true
   },
   {
     "runtime": "pi",
     "channel": "unknown",
     "package": "@earendil-works/pi-coding-agent",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "copilot",
     "channel": "unknown",
     "package": "@github/copilot",
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": true
   },
   {
     "runtime": "trae",
     "channel": "unknown",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "cursor",
     "channel": "unknown",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "grok",
     "channel": "unknown",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "opencode",
     "channel": "unknown",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   },
   {
     "runtime": "shell",
     "channel": "unknown",
     "package": null,
-    "dist_tag": "latest"
+    "dist_tag": "latest",
+    "manifest": null,
+    "updatable": false
   }
 ]

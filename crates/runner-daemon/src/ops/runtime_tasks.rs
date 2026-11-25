@@ -761,5 +761,80 @@ mod tests {
         assert!(start_install(&core, Runtime::Antigravity).is_err());
         let missing_npm = start_install(&core, Runtime::ClaudeCode).unwrap_err();
         assert!(missing_npm.to_string().contains("npm"), "{missing_npm}");
+
+        // Even when npm is on PATH, Antigravity still rejects npm install -g.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let npm = empty_dir.path().join("npm");
+            std::fs::write(&npm, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&npm, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let err = start_install(&core, Runtime::Antigravity).unwrap_err();
+            assert!(err.to_string().contains("npm"), "{err}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn antigravity_update_task_runs_agy_update_without_disable_auto_update_and_reprobes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let version_file = dir.path().join("agy-version");
+        std::fs::write(&version_file, "1.4.7\n").unwrap();
+        let agy = dir.path().join("agy");
+        std::fs::write(
+            &agy,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  cat \"{}\"\n  exit 0\nfi\nif [ \"$1\" = \"update\" ]; then\n  if [ -n \"$AGY_CLI_DISABLE_AUTO_UPDATE\" ]; then\n    echo 'AGY_CLI_DISABLE_AUTO_UPDATE must not be set' >&2\n    exit 9\n  fi\n  printf '1.5.17\\n' > \"{}\"\n  echo 'Updated to 1.5.17'\n  exit 0\nfi\nexit 2\n",
+                version_file.display(),
+                version_file.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&agy, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut core = crate::test_support::test_core_in(dir.path().into());
+        core.runtime_shell_env
+            .write()
+            .unwrap()
+            .vars
+            .insert("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "true".into());
+        core.sessions = crate::session::SessionManager::new(
+            core.runtime_shell_env.clone(),
+            core.runtime_discovery.clone(),
+            Arc::new(crate::session::pty_runtime::PtyRuntime::new()),
+        );
+        core.runtime_discovery.write().unwrap().checking = false;
+        crate::db::set_runtime_override(&core.db, "antigravity", Some(agy.to_str().unwrap()))
+            .unwrap();
+        assert_eq!(
+            crate::ops::runtime::runtime_probe_version(&core, Runtime::Antigravity).as_deref(),
+            Some("1.4.7")
+        );
+        let before = crate::ops::runtime::runtime_status_list(&core)
+            .unwrap()
+            .runtimes
+            .into_iter()
+            .find(|r| r.name == Runtime::Antigravity)
+            .unwrap();
+        assert!(before.below_minimum);
+
+        let started = start(&core, Runtime::Antigravity).unwrap();
+        assert_eq!(started.kind, RuntimeTaskKind::Update);
+        assert_eq!(started.from_version.as_deref(), Some("1.4.7"));
+
+        let finished = await_task(&core, RuntimeUpdateState::Succeeded);
+        assert_eq!(finished.installed_version.as_deref(), Some("1.5.17"));
+
+        let after = crate::ops::runtime::runtime_status_list(&core)
+            .unwrap()
+            .runtimes
+            .into_iter()
+            .find(|r| r.name == Runtime::Antigravity)
+            .unwrap();
+        assert_eq!(after.installed_version.as_deref(), Some("1.5.17"));
+        assert!(!after.below_minimum);
+        core.sessions.drain_terminal_workers();
     }
 }

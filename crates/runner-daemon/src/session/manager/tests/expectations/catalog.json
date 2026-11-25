@@ -169,6 +169,7 @@
     ]
   },
   {
+    "min_version": "1.5.8",
     "name": "antigravity",
     "display_name": "Antigravity CLI",
     "command": "agy",
