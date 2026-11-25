@@ -54,7 +54,8 @@ pub use menu::{
 pub use model_field::ModelField;
 pub use overlay::{ConfirmDialog, ConfirmDialogState, Drawer, Modal, OverlayWidth};
 pub use scrollbar::{
-    app_scrollbar_gutter, terminal_scrollbar_gutter, Scrollbar, ScrollbarKind, ScrollbarMetrics,
+    app_scrollbar_gutter, terminal_scrollbar_gutter, Scrollbar, ScrollbarKind, ScrollbarLanes,
+    ScrollbarMetrics,
 };
 pub use select::{
     runtime_select_options, RuntimeSelect, SelectHandler, SelectLeading, SelectOption, SelectState,

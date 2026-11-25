@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, rems, App, Bounds, Context, CursorStyle, DragMoveEvent, EntityId, Hsla,
-    MouseButton, MouseDownEvent, Pixels, Point, Rems, Render, ScrollHandle, Window,
+    canvas, div, px, rems, App, Bounds, Context, CursorStyle, DispatchPhase, DragMoveEvent,
+    EntityId, Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rems,
+    Render, ScrollHandle, Window,
 };
 
 use crate::theme;
@@ -48,10 +49,46 @@ pub fn terminal_scrollbar_gutter() -> Rems {
     rems(ScrollbarKind::Terminal.gutter() / 16.)
 }
 
-/// Width an app list reserves at its right edge so its rows sit beside the
-/// scrollbar, not under it.
+/// Width an app list or code view reserves along a scrollbar so its content
+/// sits beside the bar, not under it.
 pub fn app_scrollbar_gutter() -> Rems {
     rems(ScrollbarKind::App.gutter() / 16.)
+}
+
+/// What a code view reserves at its right and bottom edges for its scrollbars.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ScrollbarLanes {
+    pub right: Pixels,
+    pub bottom: Pixels,
+}
+
+impl ScrollbarLanes {
+    /// A lane of `lane` on each axis that scrolls: text `content` tall in a
+    /// view `height` tall, reaching `overflow_x(right)` past its width beside
+    /// a right lane. Each lane narrows the other axis.
+    pub fn measure(
+        content: Pixels,
+        height: Pixels,
+        lane: Pixels,
+        overflow_x: impl Fn(Pixels) -> Pixels,
+    ) -> Self {
+        let reserve = |needed: bool| if needed { lane } else { px(0.) };
+        let mut right = scrolls(content - height);
+        let bottom = scrolls(overflow_x(reserve(right)));
+        if bottom && !right {
+            right = scrolls(content - (height - lane));
+        }
+        Self {
+            right: reserve(right),
+            bottom: reserve(bottom),
+        }
+    }
+}
+
+/// Fractional rems leave containers a sub-pixel short of their padded
+/// content; that is rounding, not something to scroll.
+fn scrolls(overflow: Pixels) -> bool {
+    overflow >= px(1.)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -63,9 +100,7 @@ pub struct ScrollbarMetrics {
 
 impl ScrollbarMetrics {
     fn thumb(self, track_height: f32, min_height: f32) -> Option<(f32, f32)> {
-        // Fractional rems leave containers a sub-pixel short of their padded
-        // content; that is rounding, not something to scroll.
-        if self.viewport <= 0. || self.content - self.viewport < 1. {
+        if self.viewport <= 0. || !scrolls(px(self.content - self.viewport)) {
             return None;
         }
         let height = (track_height * self.viewport / self.content)
@@ -105,6 +140,7 @@ pub struct Scrollbar {
     last_metrics: ScrollbarMetrics,
     drag_grab: Option<Pixels>,
     min_thumb: f32,
+    widens: bool,
     scrolling: bool,
     list_hovered: bool,
     strip_hovered: bool,
@@ -169,6 +205,7 @@ impl Scrollbar {
             last_metrics: ScrollbarMetrics::default(),
             drag_grab: None,
             min_thumb: 20.,
+            widens: true,
             scrolling: false,
             list_hovered: false,
             strip_hovered: false,
@@ -181,6 +218,16 @@ impl Scrollbar {
     pub fn horizontal(mut self) -> Self {
         self.horizontal = true;
         self
+    }
+
+    /// Keeps its thumb's width under the pointer.
+    pub fn fixed_width(mut self) -> Self {
+        self.widens = false;
+        self
+    }
+
+    fn end_drag(&mut self) -> bool {
+        self.drag_grab.take().is_some()
     }
 
     fn track_length(&self) -> f32 {
@@ -290,14 +337,19 @@ impl Render for Scrollbar {
             ("SCROLLBAR_TRACK", "SCROLLBAR_THUMB")
         };
         let (inner, outer) = match self.kind {
-            ScrollbarKind::App if self.strip_hovered || self.drag_grab.is_some() => (1., 3.),
+            ScrollbarKind::App
+                if self.widens && (self.strip_hovered || self.drag_grab.is_some()) =>
+            {
+                (1., 3.)
+            }
             ScrollbarKind::App => (3., 3.),
             ScrollbarKind::Terminal => (1., 1.),
         };
+        let dragging = self.drag_grab.is_some();
         let visible = self.is_visible() && thumb.is_some();
         let entity = cx.entity();
         let (rest_color, active_color) = self.kind.thumb_colors();
-        let thumb_color = if self.scrolling || self.drag_grab.is_some() {
+        let thumb_color = if self.scrolling || dragging {
             active_color
         } else {
             rest_color
@@ -319,15 +371,17 @@ impl Render for Scrollbar {
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
-                            this.drag_grab = None;
-                            cx.notify();
+                            if this.end_drag() {
+                                cx.notify();
+                            }
                         }),
                     )
                     .on_mouse_up_out(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
-                            this.drag_grab = None;
-                            cx.notify();
+                            if this.end_drag() {
+                                cx.notify();
+                            }
                         }),
                     )
             })
@@ -344,7 +398,7 @@ impl Render for Scrollbar {
             .child(
                 canvas(
                     |_, _, _| {},
-                    move |bounds, _, _, cx| {
+                    move |bounds, _, window, cx| {
                         entity.update(cx, |scrollbar, cx| {
                             let metrics = (scrollbar.metrics)();
                             if scrollbar.track_bounds != bounds || scrollbar.last_metrics != metrics
@@ -357,6 +411,32 @@ impl Render for Scrollbar {
                                 cx.notify();
                             }
                         });
+                        if dragging {
+                            let move_entity = entity.clone();
+                            window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Capture
+                                    && event.pressed_button != Some(MouseButton::Left)
+                                {
+                                    move_entity.update(cx, |scrollbar, cx| {
+                                        if scrollbar.end_drag() {
+                                            cx.notify();
+                                        }
+                                    });
+                                }
+                            });
+                            let up_entity = entity.clone();
+                            window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                                if phase == DispatchPhase::Capture
+                                    && event.button == MouseButton::Left
+                                {
+                                    up_entity.update(cx, |scrollbar, cx| {
+                                        if scrollbar.end_drag() {
+                                            cx.notify();
+                                        }
+                                    });
+                                }
+                            });
+                        }
                     },
                 )
                 .absolute()
@@ -454,43 +534,67 @@ mod tests {
         .is_some());
     }
 
+    #[test]
+    fn a_lane_is_reserved_on_each_axis_that_scrolls() {
+        let lanes = |width: f32, height: f32| {
+            let lanes = ScrollbarLanes::measure(px(height), px(100.), px(10.), |right| {
+                px(width) - (px(200.) - right)
+            });
+            (f32::from(lanes.right), f32::from(lanes.bottom))
+        };
+        assert_eq!(lanes(200., 100.), (0., 0.));
+        assert_eq!(lanes(190., 101.), (10., 0.));
+        assert_eq!(lanes(201., 90.), (0., 10.));
+        assert_eq!(lanes(201., 101.), (10., 10.));
+        // Each lane can be what makes the other axis scroll.
+        assert_eq!(lanes(195., 101.), (10., 10.));
+        assert_eq!(lanes(201., 95.), (10., 10.));
+        // A sub-pixel overflow shows no bar, so it reserves no lane.
+        assert_eq!(lanes(200.4, 100.4), (0., 0.));
+    }
+
     struct ScrollbarHost {
         scroll: ScrollHandle,
         bar: gpui::Entity<Scrollbar>,
         presses: Rc<std::cell::Cell<usize>>,
         zoom: f32,
+        mounted: bool,
+        content_height: f32,
     }
 
     impl Render for ScrollbarHost {
         fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             window.set_rem_size(px(16. * self.zoom));
             let presses = self.presses.clone();
-            div().size_full().p(px(20.)).child(
-                div()
-                    .debug_selector(|| "SCROLLBAR_LIST".into())
-                    .relative()
-                    .w(rems(300. / 16.))
-                    .h(rems(200. / 16.))
-                    .on_mouse_down(MouseButton::Left, move |_, _, _| {
-                        presses.set(presses.get() + 1)
-                    })
-                    .child(
-                        div()
-                            .id("scroll-content")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll)
-                            .child(div().h(rems(600. / 16.))),
-                    )
-                    .child(self.bar.clone()),
-            )
+            div().size_full().p(px(20.)).when(self.mounted, |root| {
+                root.child(
+                    div()
+                        .debug_selector(|| "SCROLLBAR_LIST".into())
+                        .relative()
+                        .w(rems(300. / 16.))
+                        .h(rems(200. / 16.))
+                        .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                            presses.set(presses.get() + 1)
+                        })
+                        .child(
+                            div()
+                                .id("scroll-content")
+                                .size_full()
+                                .overflow_y_scroll()
+                                .track_scroll(&self.scroll)
+                                .child(div().h(rems(self.content_height / 16.))),
+                        )
+                        .child(self.bar.clone()),
+                )
+            })
         }
     }
 
-    fn open(
+    fn open_host(
         kind: ScrollbarKind,
         zoom: f32,
     ) -> (
+        gpui::WindowHandle<ScrollbarHost>,
         gpui::VisualTestContext,
         gpui::Entity<Scrollbar>,
         Rc<std::cell::Cell<usize>>,
@@ -517,11 +621,25 @@ mod tests {
                 bar,
                 presses: presses.clone(),
                 zoom,
+                mounted: true,
+                content_height: 600.,
             }
         });
         let bar = host.read_with(&cx, |host, _| host.bar.clone()).unwrap();
         let visual = gpui::VisualTestContext::from_window(host.into(), &cx);
         visual.run_until_parked();
+        (host, visual, bar, presses)
+    }
+
+    fn open(
+        kind: ScrollbarKind,
+        zoom: f32,
+    ) -> (
+        gpui::VisualTestContext,
+        gpui::Entity<Scrollbar>,
+        Rc<std::cell::Cell<usize>>,
+    ) {
+        let (_, visual, bar, presses) = open_host(kind, zoom);
         (visual, bar, presses)
     }
 
@@ -537,6 +655,27 @@ mod tests {
         assert!((thumb.size.width - px(width * zoom)).abs() < px(0.5));
         assert!((track.right() - thumb.right() - px(right * zoom)).abs() < px(0.5));
         crate::theme_snapshot::assert_fill_color(visual, "SCROLLBAR_THUMB", Some(color));
+    }
+
+    #[test]
+    fn a_fixed_width_thumb_does_not_widen_under_the_pointer_or_while_dragged() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        for zoom in [1., 1.3] {
+            let (mut visual, bar, _) = open(ScrollbarKind::App, zoom);
+            bar.update(&mut visual, |bar, cx| {
+                bar.widens = false;
+                cx.notify();
+            });
+            let color = theme::with_alpha(theme::muted(), 0.6);
+            let track = visual.debug_bounds("SCROLLBAR_TRACK").unwrap();
+            visual.simulate_mouse_move(track.center(), None, Default::default());
+            visual.run_until_parked();
+            assert_thumb(&mut visual, 4., 3., zoom, color);
+            let thumb = visual.debug_bounds("SCROLLBAR_THUMB").unwrap();
+            visual.simulate_mouse_down(thumb.center(), MouseButton::Left, Default::default());
+            visual.run_until_parked();
+            assert_thumb(&mut visual, 4., 3., zoom, color);
+        }
     }
 
     #[test]
@@ -669,6 +808,98 @@ mod tests {
             MouseButton::Left,
             Default::default(),
         );
+        assert!(bar.read_with(&visual, |bar, _| bar.drag_grab.is_none()));
+    }
+
+    #[test]
+    fn lost_release_while_unmounted_or_without_thumb_ends_drag() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let (host, mut visual, bar, _) = open_host(ScrollbarKind::App, 1.);
+        let list = visual.debug_bounds("SCROLLBAR_LIST").unwrap();
+        visual.simulate_mouse_move(list.center(), None, Default::default());
+        let thumb = visual.debug_bounds("SCROLLBAR_THUMB").unwrap();
+        visual.simulate_mouse_down(thumb.center(), MouseButton::Left, Default::default());
+        visual.simulate_mouse_move(
+            gpui::point(px(0.), px(0.)),
+            Some(MouseButton::Left),
+            Default::default(),
+        );
+        visual.executor().advance_clock(Duration::from_secs(1));
+        visual.run_until_parked();
+        assert!(bar.read_with(&visual, |bar, _| bar.drag_grab.is_some()));
+
+        // Unmount the scrollbar (as when switching tabs), release while hidden,
+        // remount, and move with no button held: the drag clears and hides.
+        host.update(&mut visual, |host, _, cx| {
+            host.mounted = false;
+            cx.notify();
+        })
+        .unwrap();
+        visual.run_until_parked();
+        visual.simulate_mouse_up(
+            gpui::point(px(0.), px(0.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        host.update(&mut visual, |host, _, cx| {
+            host.mounted = true;
+            cx.notify();
+        })
+        .unwrap();
+        visual.run_until_parked();
+        visual.simulate_mouse_move(gpui::point(px(1.), px(1.)), None, Default::default());
+        visual.run_until_parked();
+        assert!(bar.read_with(&visual, |bar, _| bar.drag_grab.is_none()));
+        assert!(visual.debug_bounds("SCROLLBAR_THUMB").is_none());
+
+        // Start a second drag and shrink content so no thumb renders during the
+        // press: both mouse-up and a buttonless move still end the drag.
+        visual.simulate_mouse_move(list.center(), None, Default::default());
+        visual.run_until_parked();
+        let thumb = visual.debug_bounds("SCROLLBAR_THUMB").unwrap();
+        visual.simulate_mouse_down(thumb.center(), MouseButton::Left, Default::default());
+        visual.run_until_parked();
+        assert!(bar.read_with(&visual, |bar, _| bar.drag_grab.is_some()));
+        host.update(&mut visual, |host, _, cx| {
+            host.content_height = 100.;
+            cx.notify();
+        })
+        .unwrap();
+        visual.run_until_parked();
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("SCROLLBAR_THUMB").is_none());
+        visual.simulate_mouse_up(thumb.center(), MouseButton::Left, Default::default());
+        visual.run_until_parked();
+        assert!(bar.read_with(&visual, |bar, _| bar.drag_grab.is_none()));
+
+        // Same no-thumb state, but release happens outside the window so only a
+        // subsequent buttonless pointer move arrives.
+        host.update(&mut visual, |host, _, cx| {
+            host.content_height = 600.;
+            cx.notify();
+        })
+        .unwrap();
+        visual.run_until_parked();
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        visual.simulate_mouse_move(list.center(), None, Default::default());
+        visual.run_until_parked();
+        let thumb = visual.debug_bounds("SCROLLBAR_THUMB").unwrap();
+        visual.simulate_mouse_down(thumb.center(), MouseButton::Left, Default::default());
+        visual.run_until_parked();
+        assert!(bar.read_with(&visual, |bar, _| bar.drag_grab.is_some()));
+        host.update(&mut visual, |host, _, cx| {
+            host.content_height = 100.;
+            cx.notify();
+        })
+        .unwrap();
+        visual.run_until_parked();
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("SCROLLBAR_THUMB").is_none());
+        visual.simulate_mouse_move(list.center(), None, Default::default());
+        visual.run_until_parked();
         assert!(bar.read_with(&visual, |bar, _| bar.drag_grab.is_none()));
     }
 

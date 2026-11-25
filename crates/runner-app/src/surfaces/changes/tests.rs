@@ -1718,7 +1718,7 @@ fn split_diff_pairs_changed_blocks_strips_crlf_and_copies_active_side_only() {
             DiffOp::Added { count: 2 },
         ],
     }];
-    let (rows, hunk_rows, _) = build_split_rows(&old_doc, &new_doc, &hunks);
+    let (rows, hunk_rows) = build_split_rows(&old_doc, &new_doc, &hunks);
     assert_eq!(hunk_rows, vec![0]);
     assert_eq!(
         rows,

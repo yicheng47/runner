@@ -15,7 +15,9 @@ use gpui::{
     MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, ShapedLine, SharedString, Style,
     TextAlign, TextRun, Window,
 };
-use runner_app::ui::{app_scrollbar_gutter, Scrollbar, ScrollbarKind, ScrollbarMetrics};
+use runner_app::ui::{
+    app_scrollbar_gutter, Scrollbar, ScrollbarKind, ScrollbarLanes, ScrollbarMetrics,
+};
 use runner_core::protocol::changes::{DiffHunk, DiffOp};
 
 use crate::app_settings::DiffViewMode;
@@ -88,27 +90,39 @@ struct Metrics {
     right_num_right: Pixels,
     right_sign_left: Pixels,
     right_text_left: Pixels,
+    lanes: ScrollbarLanes,
 }
 
 impl Metrics {
+    /// What the scrollbars' lanes leave of the view.
+    fn viewport(&self) -> Bounds<Pixels> {
+        Bounds::new(
+            self.bounds.origin,
+            size(
+                (self.bounds.size.width - self.lanes.right).max(px(0.)),
+                (self.bounds.size.height - self.lanes.bottom).max(px(0.)),
+            ),
+        )
+    }
+
     fn left_text_width(&self) -> Pixels {
         (self.left_col_width - self.text_left).max(px(0.))
     }
 
     fn right_text_width(&self) -> Pixels {
-        (self.right_col_width - self.right_text_left).max(px(0.))
+        (self.right_col_width - self.lanes.right - self.right_text_left).max(px(0.))
     }
 
     fn scroll_viewport_width(&self) -> Pixels {
         match self.mode {
-            DiffViewMode::Unified => (self.bounds.size.width - self.text_left).max(px(0.)),
+            DiffViewMode::Unified => (self.viewport().size.width - self.text_left).max(px(0.)),
             DiffViewMode::Split => self.left_text_width().min(self.right_text_width()),
         }
     }
 
     fn shape_viewport_width(&self) -> Pixels {
         match self.mode {
-            DiffViewMode::Unified => (self.bounds.size.width - self.text_left).max(px(0.)),
+            DiffViewMode::Unified => (self.viewport().size.width - self.text_left).max(px(0.)),
             DiffViewMode::Split => self.left_text_width().max(self.right_text_width()),
         }
     }
@@ -135,7 +149,7 @@ impl Metrics {
     fn side_right_abs(&self, side: DiffSide) -> Pixels {
         match (self.mode, side) {
             (DiffViewMode::Split, DiffSide::Left) => self.bounds.left() + self.left_col_width,
-            _ => self.bounds.right(),
+            _ => self.viewport().right(),
         }
     }
 }
@@ -150,7 +164,6 @@ pub(crate) struct UnifiedDiffView {
     split_rows: Arc<Vec<SplitRow>>,
     split_hunk_rows: Vec<usize>,
     unified_max_columns: usize,
-    split_max_columns: usize,
     old_digits: usize,
     new_digits: usize,
     grammar: Option<&'static Grammar>,
@@ -253,7 +266,7 @@ pub(crate) fn build_split_rows(
     old_doc: &Document,
     new_doc: &Document,
     hunks: &[DiffHunk],
-) -> (Vec<SplitRow>, Vec<usize>, usize) {
+) -> (Vec<SplitRow>, Vec<usize>) {
     let mut rows = Vec::new();
     let mut hunk_rows = Vec::with_capacity(hunks.len());
     let old_count = old_doc.line_count();
@@ -321,8 +334,7 @@ pub(crate) fn build_split_rows(
         flush_run(&mut rows, &mut removed_run, &mut added_run);
     }
 
-    let max_columns = old_doc.columns().max(new_doc.columns());
-    (rows, hunk_rows, max_columns)
+    (rows, hunk_rows)
 }
 
 impl UnifiedDiffView {
@@ -339,8 +351,7 @@ impl UnifiedDiffView {
     ) -> Self {
         let (rows, hunk_rows, unified_max_columns, old_digits, new_digits) =
             build_rows(&old_doc, &new_doc, hunks);
-        let (split_rows, split_hunk_rows, split_max_columns) =
-            build_split_rows(&old_doc, &new_doc, hunks);
+        let (split_rows, split_hunk_rows) = build_split_rows(&old_doc, &new_doc, hunks);
         let initial_cursor = hunk_rows
             .first()
             .map(|&h| (h + 1).min(rows.len().saturating_sub(1)))
@@ -358,7 +369,6 @@ impl UnifiedDiffView {
             split_rows: Arc::new(split_rows),
             split_hunk_rows,
             unified_max_columns,
-            split_max_columns,
             old_digits,
             new_digits,
             grammar,
@@ -546,8 +556,7 @@ impl UnifiedDiffView {
     ) {
         let (rows, hunk_rows, unified_max_columns, old_digits, new_digits) =
             build_rows(&old_doc, &new_doc, hunks);
-        let (split_rows, split_hunk_rows, split_max_columns) =
-            build_split_rows(&old_doc, &new_doc, hunks);
+        let (split_rows, split_hunk_rows) = build_split_rows(&old_doc, &new_doc, hunks);
         self.old_doc = old_doc;
         self.new_doc = new_doc;
         self.rows = Arc::new(rows);
@@ -555,7 +564,6 @@ impl UnifiedDiffView {
         self.split_rows = Arc::new(split_rows);
         self.split_hunk_rows = split_hunk_rows;
         self.unified_max_columns = unified_max_columns;
-        self.split_max_columns = split_max_columns;
         self.old_digits = old_digits;
         self.new_digits = new_digits;
         self.grammar = grammar;
@@ -584,13 +592,6 @@ impl UnifiedDiffView {
         match self.mode {
             DiffViewMode::Unified => &self.hunk_rows,
             DiffViewMode::Split => &self.split_hunk_rows,
-        }
-    }
-
-    fn active_max_columns(&self) -> usize {
-        match self.mode {
-            DiffViewMode::Unified => self.unified_max_columns,
-            DiffViewMode::Split => self.split_max_columns,
         }
     }
 
@@ -772,7 +773,8 @@ impl UnifiedDiffView {
         let anchor = if let Some(metrics) = self.metrics.get() {
             let line_h = f32::from(metrics.line_height).max(1.);
             let top = ((f32::from(self.scroll.y) - TOP_PAD).max(0.) / line_h) as usize;
-            let visible = ((f32::from(metrics.bounds.size.height) / line_h).ceil() as usize).max(1);
+            let visible =
+                ((f32::from(metrics.viewport().size.height) / line_h).ceil() as usize).max(1);
             if self.cursor_row >= top && self.cursor_row < top.saturating_add(visible) {
                 self.cursor_row
             } else {
@@ -916,33 +918,57 @@ impl UnifiedDiffView {
         }
     }
 
-    fn content_size(&self, metrics: &Metrics) -> (Pixels, Pixels) {
-        let width = metrics.char_width * self.active_max_columns() as f32 + px(TEXT_PAD_RIGHT);
-        let height = metrics.line_height * self.active_row_count() as f32
-            + px(TOP_PAD + self.bottom_extra());
-        (width, height)
+    fn content_height(&self, metrics: &Metrics) -> Pixels {
+        metrics.line_height * self.active_row_count() as f32 + px(TOP_PAD + self.bottom_extra())
+    }
+
+    /// The text width and overflow past it for the horizontal scrollbar and
+    /// clamp. Split's two sides have their own text and width and scroll
+    /// together, so whichever overflows further governs.
+    fn horizontal_extent(&self, metrics: &Metrics) -> (Pixels, Pixels) {
+        let width = |columns: usize| metrics.char_width * columns as f32 + px(TEXT_PAD_RIGHT);
+        match metrics.mode {
+            DiffViewMode::Unified => {
+                let viewport = metrics.scroll_viewport_width();
+                (viewport, width(self.unified_max_columns) - viewport)
+            }
+            DiffViewMode::Split => {
+                let left_vp = metrics.left_text_width();
+                let left_overflow = width(self.old_doc.columns()) - left_vp;
+                let right_vp = metrics.right_text_width();
+                let right_overflow = width(self.new_doc.columns()) - right_vp;
+                if left_overflow > right_overflow {
+                    (left_vp, left_overflow)
+                } else {
+                    (right_vp, right_overflow)
+                }
+            }
+        }
+    }
+
+    fn overflow_x(&self, metrics: &Metrics) -> Pixels {
+        self.horizontal_extent(metrics).1
     }
 
     fn measure_scrollbars(&self, metrics: &Metrics) {
-        let (width, height) = self.content_size(metrics);
+        let (viewport_width, overflow_x) = self.horizontal_extent(metrics);
         self.bar_metrics.set((
             ScrollbarMetrics {
-                viewport: f32::from(metrics.bounds.size.height),
-                content: f32::from(height),
+                viewport: f32::from(metrics.viewport().size.height),
+                content: f32::from(self.content_height(metrics)),
                 position: f32::from(self.scroll.y),
             },
             ScrollbarMetrics {
-                viewport: f32::from(metrics.scroll_viewport_width()),
-                content: f32::from(width),
+                viewport: f32::from(viewport_width),
+                content: f32::from(viewport_width + overflow_x),
                 position: f32::from(self.scroll.x),
             },
         ));
     }
 
     fn clamp_scroll(&mut self, metrics: &Metrics) {
-        let (width, height) = self.content_size(metrics);
-        let max_x = (width - metrics.scroll_viewport_width()).max(px(0.));
-        let max_y = (height - metrics.bounds.size.height).max(px(0.));
+        let max_x = self.overflow_x(metrics).max(px(0.));
+        let max_y = (self.content_height(metrics) - metrics.viewport().size.height).max(px(0.));
         self.scroll.x = self.scroll.x.clamp(px(0.), max_x);
         self.scroll.y = self.scroll.y.clamp(px(0.), max_y);
     }
@@ -952,7 +978,7 @@ impl UnifiedDiffView {
             return;
         };
         let top = metrics.line_height * row as f32 + px(TOP_PAD);
-        let height = metrics.bounds.size.height;
+        let height = metrics.viewport().size.height;
         if top < self.scroll.y {
             self.scroll.y = (top - px(TOP_PAD)).max(px(0.));
         } else if top + metrics.line_height * 2. > self.scroll.y + height {
@@ -1017,14 +1043,14 @@ impl UnifiedDiffView {
             "pageup" => {
                 if let Some(metrics) = self.metrics.get() {
                     cx.stop_propagation();
-                    let page = metrics.bounds.size.height - metrics.line_height;
+                    let page = metrics.viewport().size.height - metrics.line_height;
                     self.scroll_by(point(px(0.), page), cx);
                 }
             }
             "pagedown" => {
                 if let Some(metrics) = self.metrics.get() {
                     cx.stop_propagation();
-                    let page = metrics.bounds.size.height - metrics.line_height;
+                    let page = metrics.viewport().size.height - metrics.line_height;
                     self.scroll_by(point(px(0.), -page), cx);
                 }
             }
@@ -1067,7 +1093,8 @@ fn diff_scrollbar(
                     cx.notify();
                 });
             }),
-        );
+        )
+        .fixed_width();
         if horizontal {
             bar.horizontal()
         } else {
@@ -1115,10 +1142,15 @@ impl Render for UnifiedDiffView {
                 .map_or(px(0.), |metrics| metrics.text_left),
             DiffViewMode::Split => px(0.),
         };
+        let lanes = self
+            .metrics
+            .get()
+            .map_or_else(Default::default, |metrics| metrics.lanes);
         let footer_top = px(TOP_PAD) + line_height * self.active_row_count() as f32 - self.scroll.y;
         let show_footer = self.show_viewed_footer
             && self.metrics.get().is_none_or(|metrics| {
-                footer_top < metrics.bounds.size.height && footer_top + px(FOOTER_HEIGHT) > px(0.)
+                footer_top < metrics.viewport().size.height
+                    && footer_top + px(FOOTER_HEIGHT) > px(0.)
             });
         let toggle_cb = self.on_toggle_viewed.clone();
         let viewed = self.viewed;
@@ -1151,35 +1183,46 @@ impl Render for UnifiedDiffView {
             .when(show_footer, |el| {
                 el.child(
                     div()
-                        .id("changes-diff-mark-viewed")
-                        .when(cfg!(test), |element| {
-                            element.debug_selector(|| "CHANGES_DIFF_VIEWED".into())
-                        })
                         .absolute()
+                        .top_0()
                         .left_0()
-                        .right(app_scrollbar_gutter())
-                        .top(footer_top)
-                        .h(px(FOOTER_HEIGHT))
-                        .px(px(12.))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .border_t_1()
-                        .border_color(theme::border())
-                        .cursor_pointer()
-                        .hover(|row| row.bg(theme::with_alpha(theme::sidebar_selected(), 0.35)))
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(move |_, window, cx| {
-                            if let Some(cb) = &toggle_cb {
-                                cb(window, cx);
-                            }
-                        })
-                        .child(render_viewed_checkbox(viewed, changed))
+                        .right(lanes.right)
+                        .bottom(lanes.bottom)
+                        .overflow_hidden()
                         .child(
                             div()
-                                .text_size(theme::text_ui())
-                                .text_color(theme::muted())
-                                .child(label),
+                                .id("changes-diff-mark-viewed")
+                                .when(cfg!(test), |element| {
+                                    element.debug_selector(|| "CHANGES_DIFF_VIEWED".into())
+                                })
+                                .absolute()
+                                .left_0()
+                                .right_0()
+                                .top(footer_top)
+                                .h(px(FOOTER_HEIGHT))
+                                .px(px(12.))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .border_t_1()
+                                .border_color(theme::border())
+                                .cursor_pointer()
+                                .hover(|row| {
+                                    row.bg(theme::with_alpha(theme::sidebar_selected(), 0.35))
+                                })
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(move |_, window, cx| {
+                                    if let Some(cb) = &toggle_cb {
+                                        cb(window, cx);
+                                    }
+                                })
+                                .child(render_viewed_checkbox(viewed, changed))
+                                .child(
+                                    div()
+                                        .text_size(theme::text_ui())
+                                        .text_color(theme::muted())
+                                        .child(label),
+                                ),
                         ),
                 )
             })
@@ -1190,7 +1233,7 @@ impl Render for UnifiedDiffView {
                     .top_0()
                     .bottom_0()
                     .left(horizontal_left)
-                    .right(app_scrollbar_gutter())
+                    .right(lanes.right)
                     .child(self.horizontal_bar.clone()),
             )
     }
@@ -1431,7 +1474,9 @@ struct UnifiedDiffElement {
 }
 
 struct DiffPrepaint {
-    hitbox: Hitbox,
+    /// Where text is selected; the wheel also scrolls over the lanes.
+    text_hitbox: Hitbox,
+    scroll_hitbox: Hitbox,
     metrics: Metrics,
     scroll: Point<Pixels>,
     focused: bool,
@@ -1526,7 +1571,7 @@ impl Element for UnifiedDiffElement {
         let right_sign_left = right_num_right + px(COL_GAP);
         let right_text_left = right_sign_left + px(SIGN_WIDTH + TEXT_GAP);
 
-        let metrics = Metrics {
+        let mut metrics = Metrics {
             mode,
             bounds,
             line_height,
@@ -1541,11 +1586,31 @@ impl Element for UnifiedDiffElement {
             right_num_right,
             right_sign_left,
             right_text_left,
+            lanes: ScrollbarLanes::default(),
         };
-        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        let view = self.view.read(cx);
+        metrics.lanes = ScrollbarLanes::measure(
+            view.content_height(&metrics),
+            bounds.size.height,
+            app_scrollbar_gutter().to_pixels(window.rem_size()),
+            |right| {
+                let lanes = ScrollbarLanes {
+                    right,
+                    bottom: px(0.),
+                };
+                view.overflow_x(&Metrics { lanes, ..metrics })
+            },
+        );
+        let viewport = metrics.viewport();
+        let scroll_hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        let text_hitbox = window.insert_hitbox(viewport, HitboxBehavior::Normal);
 
-        self.view.update(cx, |view, _| {
-            view.metrics.set(Some(metrics));
+        self.view.update(cx, |view, cx| {
+            let previous = view.metrics.replace(Some(metrics));
+            // The bars and the footer are laid out from the last frame's lanes.
+            if previous.map(|metrics| metrics.lanes) != Some(metrics.lanes) {
+                cx.notify();
+            }
             view.apply_reveal(&metrics);
             view.clamp_scroll(&metrics);
             view.measure_scrollbars(&metrics);
@@ -1558,7 +1623,7 @@ impl Element for UnifiedDiffElement {
             .floor()
             .max(0.) as usize;
         let shown_lines =
-            (f32::from(bounds.size.height) / f32::from(line_height)).ceil() as usize + 1;
+            (f32::from(viewport.size.height) / f32::from(line_height)).ceil() as usize + 1;
         let last = (first + shown_lines).min(view.active_row_count());
 
         let visible = metrics.shape_viewport_width();
@@ -1848,7 +1913,8 @@ impl Element for UnifiedDiffElement {
         }
 
         DiffPrepaint {
-            hitbox,
+            text_hitbox,
+            scroll_hitbox,
             metrics,
             scroll,
             focused,
@@ -1869,7 +1935,10 @@ impl Element for UnifiedDiffElement {
         cx: &mut App,
     ) {
         let metrics = prepaint.metrics;
-        window.set_cursor_style(CursorStyle::IBeam, &prepaint.hitbox);
+        let viewport = metrics.viewport();
+        // Row colours run under the right lane to the edge.
+        let row_area = Bounds::new(bounds.origin, size(bounds.size.width, viewport.size.height));
+        window.set_cursor_style(CursorStyle::IBeam, &prepaint.text_hitbox);
         let top = bounds.top() + px(TOP_PAD) - prepaint.scroll.y;
         let cursor_tint =
             theme::with_alpha(theme::info(), if prepaint.focused { 0.14 } else { 0.06 });
@@ -1877,7 +1946,7 @@ impl Element for UnifiedDiffElement {
 
         match &prepaint.rows {
             ShapedRows::Unified(rows) => {
-                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                window.with_content_mask(Some(ContentMask { bounds: row_area }), |window| {
                     for row in rows {
                         let y = top + metrics.line_height * row.row_index as f32;
                         let row_bounds = Bounds::new(
@@ -1904,7 +1973,7 @@ impl Element for UnifiedDiffElement {
 
                 let text_bounds = Bounds::new(
                     point(bounds.left() + metrics.text_left, bounds.top()),
-                    size(metrics.scroll_viewport_width(), bounds.size.height),
+                    size(metrics.scroll_viewport_width(), viewport.size.height),
                 );
                 window.with_content_mask(
                     Some(ContentMask {
@@ -1932,7 +2001,7 @@ impl Element for UnifiedDiffElement {
                     },
                 );
 
-                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                window.with_content_mask(Some(ContentMask { bounds: viewport }), |window| {
                     for row in rows {
                         let y = top + metrics.line_height * row.row_index as f32;
                         if let Some(hunk) = &row.hunk_line {
@@ -1987,7 +2056,7 @@ impl Element for UnifiedDiffElement {
                 let border_color = theme::border();
 
                 // 1. Backgrounds, center divider on code rows, cursor tint, and hunk text.
-                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                window.with_content_mask(Some(ContentMask { bounds: row_area }), |window| {
                     for row in rows {
                         let y = top + metrics.line_height * row.row_index as f32;
                         let row_bounds = Bounds::new(
@@ -2009,16 +2078,22 @@ impl Element for UnifiedDiffElement {
                                         ));
                                     }
                                 }
-                                let _ = hunk.paint(
-                                    point(
-                                        bounds.left() + px(10.) - prepaint.scroll.x.min(px(0.)),
-                                        y,
-                                    ),
-                                    metrics.line_height,
-                                    TextAlign::Left,
-                                    None,
-                                    window,
-                                    cx,
+                                window.with_content_mask(
+                                    Some(ContentMask { bounds: viewport }),
+                                    |window| {
+                                        let _ = hunk.paint(
+                                            point(
+                                                bounds.left() + px(10.)
+                                                    - prepaint.scroll.x.min(px(0.)),
+                                                y,
+                                            ),
+                                            metrics.line_height,
+                                            TextAlign::Left,
+                                            None,
+                                            window,
+                                            cx,
+                                        );
+                                    },
                                 );
                             }
                             ShapedSplitRowKind::Pair { left, right } => {
@@ -2067,7 +2142,7 @@ impl Element for UnifiedDiffElement {
                 // 2. Left column text & selection (clipped to left text area).
                 let left_text_bounds = Bounds::new(
                     point(bounds.left() + metrics.text_left, bounds.top()),
-                    size(metrics.left_text_width(), bounds.size.height),
+                    size(metrics.left_text_width(), viewport.size.height),
                 );
                 window.with_content_mask(
                     Some(ContentMask {
@@ -2106,7 +2181,7 @@ impl Element for UnifiedDiffElement {
                         bounds.left() + metrics.right_col_left + metrics.right_text_left,
                         bounds.top(),
                     ),
-                    size(metrics.right_text_width(), bounds.size.height),
+                    size(metrics.right_text_width(), viewport.size.height),
                 );
                 window.with_content_mask(
                     Some(ContentMask {
@@ -2144,7 +2219,7 @@ impl Element for UnifiedDiffElement {
                 );
 
                 // 4. Left & right gutters (line numbers and −/+ signs).
-                window.with_content_mask(Some(ContentMask { bounds }), |window| {
+                window.with_content_mask(Some(ContentMask { bounds: viewport }), |window| {
                     for row in rows {
                         if let ShapedSplitRowKind::Pair { left, right } = &row.kind {
                             let y = top + metrics.line_height * row.row_index as f32;
@@ -2203,7 +2278,13 @@ impl Element for UnifiedDiffElement {
             }
         }
 
-        register_mouse(self.view.clone(), prepaint.hitbox.clone(), metrics, window);
+        register_mouse(
+            self.view.clone(),
+            prepaint.text_hitbox.clone(),
+            prepaint.scroll_hitbox.clone(),
+            metrics,
+            window,
+        );
     }
 }
 
@@ -2236,12 +2317,12 @@ fn position_at(
 
 fn register_mouse(
     view: Entity<UnifiedDiffView>,
-    hitbox: Hitbox,
+    text_hitbox: Hitbox,
+    scroll_hitbox: Hitbox,
     metrics: Metrics,
     window: &mut Window,
 ) {
     let scroll_view = view.clone();
-    let scroll_hitbox = hitbox.clone();
     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
         if phase != DispatchPhase::Bubble || !scroll_hitbox.should_handle_scroll(window) {
             return;
@@ -2255,11 +2336,10 @@ fn register_mouse(
     });
 
     let down_view = view.clone();
-    let down_hitbox = hitbox.clone();
     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
         if phase != DispatchPhase::Bubble
             || event.button != MouseButton::Left
-            || !down_hitbox.is_hovered(window)
+            || !text_hitbox.is_hovered(window)
         {
             return;
         }
@@ -2329,7 +2409,7 @@ fn register_mouse(
             return;
         }
         move_view.update(cx, |view, cx| {
-            let bounds = metrics.bounds;
+            let bounds = metrics.viewport();
             let side = view.selection_side;
             let mut delta = Point::default();
             if event.position.y < bounds.top() {
@@ -2363,4 +2443,197 @@ fn register_mouse(
         }
         up_view.update(cx, |view, _| view.dragging = false);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{Modifiers, TestAppContext, VisualTestContext, WindowHandle};
+    use runner_core::protocol::changes::DiffOp;
+
+    use super::*;
+
+    const WIDTH: f32 = 500.;
+    const HEIGHT: f32 = 300.;
+
+    fn open(
+        mode: DiffViewMode,
+        lines: u32,
+        columns: usize,
+    ) -> (WindowHandle<UnifiedDiffView>, VisualTestContext) {
+        let text = format!("{}\n", "x".repeat(columns)).repeat(lines as usize);
+        open_sides(
+            mode,
+            lines,
+            &text,
+            &text,
+            vec![DiffOp::Context { count: lines }],
+        )
+    }
+
+    fn open_sides(
+        mode: DiffViewMode,
+        lines: u32,
+        old: &str,
+        new: &str,
+        ops: Vec<DiffOp>,
+    ) -> (WindowHandle<UnifiedDiffView>, VisualTestContext) {
+        let old = Arc::new(Document::decode(old.as_bytes()));
+        let new = Arc::new(Document::decode(new.as_bytes()));
+        let hunk = DiffHunk {
+            header: "@@".into(),
+            old_start: 1,
+            old_lines: lines,
+            new_start: 1,
+            new_lines: lines,
+            ops,
+        };
+        let cx = &mut TestAppContext::single();
+        let window = cx.add_window(|_, cx| {
+            let mut view =
+                UnifiedDiffView::new(old, new, &[hunk], None, "file.rs".into(), false, false, cx);
+            view.set_mode(mode, cx);
+            view.set_show_viewed_footer(true);
+            view
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_resize(size(px(WIDTH), px(HEIGHT)));
+        // The pointer starts over the view, which shows the bars.
+        visual.simulate_mouse_move(point(px(-10.), px(-10.)), None, Modifiers::default());
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        visual.run_until_parked();
+        (window, visual)
+    }
+
+    fn metrics(window: &WindowHandle<UnifiedDiffView>, visual: &VisualTestContext) -> Metrics {
+        window
+            .read_with(visual, |view, _| view.metrics.get().unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn the_scrollbars_take_a_lane_beside_the_diff_on_the_axes_that_scroll() {
+        for mode in [DiffViewMode::Unified, DiffViewMode::Split] {
+            for (lines, columns, right, bottom) in [
+                (3, 5, 0., 0.),
+                (200, 5, 10., 0.),
+                (3, 500, 0., 10.),
+                (200, 500, 10., 10.),
+            ] {
+                let (window, mut visual) = open(mode, lines, columns);
+                let hidden = metrics(&window, &visual);
+                let viewport = hidden.viewport();
+                assert!(visual.debug_bounds("SCROLLBAR_THUMB").is_none());
+                assert!(visual.debug_bounds("SCROLLBAR_THUMB_X").is_none());
+                assert_eq!(viewport.right(), px(WIDTH - right), "{lines}x{columns}");
+                assert_eq!(viewport.bottom(), px(HEIGHT - bottom), "{lines}x{columns}");
+                let divider = ((px(WIDTH) - px(1.)) * 0.5).floor();
+                assert_eq!(hidden.left_col_width, divider, "the divider stays centred");
+                let text_right = hidden.side_text_left_abs(DiffSide::Right)
+                    + match mode {
+                        DiffViewMode::Unified => hidden.scroll_viewport_width(),
+                        DiffViewMode::Split => hidden.right_text_width(),
+                    };
+                assert_eq!(text_right, viewport.right());
+                assert_eq!(hidden.side_right_abs(DiffSide::Right), viewport.right());
+
+                visual.simulate_mouse_move(viewport.center(), None, Modifiers::default());
+                visual.run_until_parked();
+                assert_eq!(metrics(&window, &visual).lanes, hidden.lanes);
+                let vertical = visual.debug_bounds("SCROLLBAR_THUMB");
+                let horizontal = visual.debug_bounds("SCROLLBAR_THUMB_X");
+                assert_eq!(vertical.is_some(), right > 0., "{lines}x{columns}");
+                assert_eq!(horizontal.is_some(), bottom > 0., "{lines}x{columns}");
+                assert!(vertical.is_none_or(|thumb| thumb.left() >= viewport.right()));
+                assert!(horizontal.is_none_or(|thumb| thumb.top() >= viewport.bottom()));
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_that_fits_only_the_left_of_a_split_takes_no_bottom_lane() {
+        let short = "x\n".repeat(200);
+        let context = vec![DiffOp::Context { count: 200 }];
+        let (window, visual) = open_sides(DiffViewMode::Split, 200, &short, &short, context);
+        let empty = metrics(&window, &visual);
+        assert_eq!(empty.lanes.right, px(10.));
+        let columns =
+            ((empty.left_text_width() - px(TEXT_PAD_RIGHT)) / empty.char_width).floor() as usize;
+        let width = empty.char_width * columns as f32 + px(TEXT_PAD_RIGHT);
+        assert!(
+            width > empty.right_text_width(),
+            "the line fits only the left"
+        );
+        let diff_ops = || {
+            vec![
+                DiffOp::Removed { count: 1 },
+                DiffOp::Added { count: 1 },
+                DiffOp::Context { count: 199 },
+            ]
+        };
+        let old = format!("{}\n{}", "x".repeat(columns), "x\n".repeat(199));
+        let (window, mut visual) = open_sides(DiffViewMode::Split, 200, &old, &short, diff_ops());
+        let lanes = metrics(&window, &visual).lanes;
+        assert_eq!((lanes.right, lanes.bottom), (px(10.), px(0.)));
+        visual.simulate_mouse_move(point(px(100.), px(100.)), None, Modifiers::default());
+        window
+            .update(&mut visual, |view, _, cx| {
+                view.scroll_by(point(px(-1e6), px(0.)), cx)
+            })
+            .unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("SCROLLBAR_THUMB_X").is_none());
+        let scroll = window.read_with(&visual, |view, _| view.scroll).unwrap();
+        assert_eq!(scroll.x, px(0.));
+
+        // A removed line that does overflow the left side scrolls only by its
+        // own column's overflow, not the narrower right column's.
+        let overflow_cols = columns + 10;
+        let old_wide = format!("{}\n{}", "x".repeat(overflow_cols), "x\n".repeat(199));
+        let (window, mut visual) =
+            open_sides(DiffViewMode::Split, 200, &old_wide, &short, diff_ops());
+        let wide_metrics = metrics(&window, &visual);
+        assert_eq!(
+            (wide_metrics.lanes.right, wide_metrics.lanes.bottom),
+            (px(10.), px(10.))
+        );
+        visual.simulate_mouse_move(point(px(100.), px(100.)), None, Modifiers::default());
+        window
+            .update(&mut visual, |view, _, cx| {
+                view.scroll_by(point(px(-1e6), px(0.)), cx)
+            })
+            .unwrap();
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("SCROLLBAR_THUMB_X").is_some());
+        let expected_max = wide_metrics.char_width * overflow_cols as f32 + px(TEXT_PAD_RIGHT)
+            - wide_metrics.left_text_width();
+        let scroll = window.read_with(&visual, |view, _| view.scroll).unwrap();
+        assert!((scroll.x - expected_max).abs() < px(0.5));
+    }
+
+    #[test]
+    fn the_end_of_the_diff_and_its_footer_scroll_clear_of_the_lanes() {
+        for mode in [DiffViewMode::Unified, DiffViewMode::Split] {
+            let (window, mut visual) = open(mode, 200, 500);
+            window
+                .update(&mut visual, |view, _, cx| {
+                    view.scroll_by(point(px(-1e6), px(-1e6)), cx)
+                })
+                .unwrap();
+            visual.run_until_parked();
+            let metrics = metrics(&window, &visual);
+            let viewport = metrics.viewport();
+            let (scroll, columns) = window
+                .read_with(&visual, |view, _| (view.scroll, view.new_doc.columns()))
+                .unwrap();
+            let end = metrics.side_text_left_abs(DiffSide::Right)
+                + metrics.char_width * columns as f32
+                - scroll.x;
+            assert!(end <= viewport.right());
+            let footer = visual.debug_bounds("CHANGES_DIFF_VIEWED").unwrap();
+            assert!(footer.bottom() <= viewport.bottom());
+            assert_eq!(footer.right(), viewport.right());
+        }
+    }
 }
