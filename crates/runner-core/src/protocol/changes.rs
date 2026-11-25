@@ -168,6 +168,12 @@ pub enum DiffBody {
     Binary {
         old_size: Option<u64>,
         new_size: Option<u64>,
+        /// Raw bytes before the change; filled only when requested for image paths.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        old: Option<TerminalBytes>,
+        /// Raw bytes after the change; filled only when requested for image paths.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        new: Option<TerminalBytes>,
     },
     /// Either side exceeded [`super::files::MAX_READ_BYTES`].
     TooLarge {

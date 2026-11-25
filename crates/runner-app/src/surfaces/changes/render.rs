@@ -1587,6 +1587,7 @@ pub(crate) struct DiffHeaderProps<'a> {
     pub(crate) mode_change: Option<&'a ModeChange>,
     pub(crate) conflicted: bool,
     pub(crate) compare_label: Option<String>,
+    pub(crate) extra_control: Option<AnyElement>,
     pub(crate) mode_switch: Option<(DiffViewMode, DiffModeCallback)>,
     pub(crate) viewed: Option<(bool, bool, super::diff::DiffCallback)>,
     pub(crate) open_external: Option<crate::surfaces::side_panel::PanelCallback>,
@@ -1823,6 +1824,7 @@ pub(crate) fn render_shared_diff_header(props: DiffHeaderProps<'_>) -> AnyElemen
         .border_b_1()
         .border_color(theme::border())
         .child(left_group)
+        .children(props.extra_control)
         .children(mode_switch)
         .children(props.viewed.map(|(viewed, changed_since, on_toggle)| {
             div()
@@ -1951,7 +1953,9 @@ pub(crate) fn render_shared_diff_placeholder(
     };
 
     let center = match kind {
-        LoadedDiffKind::Unified(_) => div().into_any_element(),
+        LoadedDiffKind::Unified(_) | LoadedDiffKind::Image { .. } | LoadedDiffKind::Svg { .. } => {
+            div().into_any_element()
+        }
         LoadedDiffKind::CrlfOnly => render_centered_message(
             "CHANGES_PLACEHOLDER_CRLF",
             "file-text.svg",
@@ -2072,39 +2076,7 @@ pub(crate) fn render_shared_diff_placeholder(
         }
     };
 
-    let footer = viewed_footer.map(|footer| {
-        let mark_label = crate::i18n::tf(
-            "changes.mark_file_viewed",
-            &[("name", file_name(rel_path).to_owned())],
-        );
-        let on_toggle = footer.on_toggle;
-        div()
-            .id("changes-placeholder-mark-viewed")
-            .when(cfg!(test), |el| {
-                el.debug_selector(|| "CHANGES_DIFF_VIEWED".into())
-            })
-            .flex_none()
-            .h(px(40.))
-            .px(px(12.))
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .border_t_1()
-            .border_color(theme::border())
-            .cursor_pointer()
-            .hover(|row| row.bg(theme::with_alpha(theme::sidebar_selected(), 0.35)))
-            .on_click(move |_, window, cx| on_toggle(window, cx))
-            .child(render_viewed_checkbox(
-                footer.viewed,
-                footer.changed_since_viewed,
-            ))
-            .child(
-                div()
-                    .text_size(theme::text_ui())
-                    .text_color(theme::muted())
-                    .child(mark_label),
-            )
-    });
+    let footer = viewed_footer.map(|footer| render_diff_viewed_footer(rel_path, footer));
 
     div()
         .flex_1()
@@ -2113,6 +2085,44 @@ pub(crate) fn render_shared_diff_placeholder(
         .flex_col()
         .child(center)
         .children(footer)
+        .into_any_element()
+}
+
+pub(crate) fn render_diff_viewed_footer(
+    rel_path: &str,
+    footer: PlaceholderViewedFooter,
+) -> AnyElement {
+    let mark_label = crate::i18n::tf(
+        "changes.mark_file_viewed",
+        &[("name", file_name(rel_path).to_owned())],
+    );
+    let on_toggle = footer.on_toggle;
+    div()
+        .id("changes-placeholder-mark-viewed")
+        .when(cfg!(test), |el| {
+            el.debug_selector(|| "CHANGES_DIFF_VIEWED".into())
+        })
+        .flex_none()
+        .h(px(40.))
+        .px(px(12.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .border_t_1()
+        .border_color(theme::border())
+        .cursor_pointer()
+        .hover(|row| row.bg(theme::with_alpha(theme::sidebar_selected(), 0.35)))
+        .on_click(move |_, window, cx| on_toggle(window, cx))
+        .child(render_viewed_checkbox(
+            footer.viewed,
+            footer.changed_since_viewed,
+        ))
+        .child(
+            div()
+                .text_size(theme::text_ui())
+                .text_color(theme::muted())
+                .child(mark_label),
+        )
         .into_any_element()
 }
 

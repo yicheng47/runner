@@ -25,12 +25,13 @@ use runner_core::protocol::changes::{
     ChangedFile, ChangesDiff, ChangesTarget, ChangesViewed, DiffCounts, DiffHunk, ModeChange,
 };
 use runner_core::protocol::files::{
-    FileContent, FileStatus, FilesChanged, FilesRoot, FilesRootOutcome, FilesSubject,
+    FileContent, FileStamp, FileStatus, FilesChanged, FilesRoot, FilesRootOutcome, FilesSubject,
 };
 use runner_core::protocol::{ClientError, DaemonClient};
 
 use super::code::CodeView;
 use super::document::{self, Document, FileQuery, Found, MATCH_LIMIT};
+use super::image::{self, DecodeOutcome, DecodedImage, ImageCanvas};
 use super::panel_view::{absolute, letter_color};
 use super::tabs::{FileTab, FileTabs, OpenPreviewOutcome, TabKey};
 use super::tree::PreparedStatus;
@@ -101,12 +102,35 @@ pub(crate) struct ViewerChrome {
     pub(crate) on_viewed_error: Option<ViewedErrorCallback>,
 }
 
+/// Preserved body kept dimmed beneath the banner when a file is deleted while open.
+pub(super) enum DeletedContent {
+    Text(Entity<CodeView>),
+    Image {
+        canvas: Entity<ImageCanvas>,
+        width: u32,
+        height: u32,
+        size: u64,
+    },
+}
+
 /// What a tab's working-tree file body holds.
 pub(super) enum Content {
     /// Working-tree file has not been read yet (e.g., opened straight into Diff mode).
     Idle,
     Loading,
     Text(Entity<CodeView>),
+    Image {
+        canvas: Entity<ImageCanvas>,
+        width: u32,
+        height: u32,
+        size: u64,
+    },
+    ImageTooLarge {
+        width: u32,
+        height: u32,
+        size: u64,
+    },
+    ImageFailed,
     Binary {
         size: u64,
     },
@@ -114,7 +138,7 @@ pub(super) enum Content {
         size: u64,
     },
     /// Deleted while open: the last version read, if any, dimmed.
-    Deleted(Option<Entity<CodeView>>),
+    Deleted(Option<DeletedContent>),
     Failed(SharedString),
 }
 
@@ -144,10 +168,16 @@ impl LoadedFileDiff {
     ) {
         self.viewed = viewed;
         self.changed_since_viewed = changed_since_viewed;
-        if let LoadedDiffKind::Unified(entity) = &self.kind {
-            entity.update(cx, |v, cx| {
-                v.set_viewed_state(viewed, changed_since_viewed, cx);
-            });
+        match &self.kind {
+            LoadedDiffKind::Unified(entity)
+            | LoadedDiffKind::Svg {
+                unified: entity, ..
+            } => {
+                entity.update(cx, |v, cx| {
+                    v.set_viewed_state(viewed, changed_since_viewed, cx);
+                });
+            }
+            _ => {}
         }
     }
 
@@ -166,13 +196,31 @@ pub(super) enum FileTabDiff {
     Failed(SharedString),
 }
 
+impl FileTabDiff {
+    fn drop_image_textures(&self, window: Option<&mut Window>, cx: &mut App) {
+        if let Self::Loaded(loaded) = self {
+            match &loaded.kind {
+                LoadedDiffKind::Image { canvas, .. } | LoadedDiffKind::Svg { canvas, .. } => {
+                    canvas.update(cx, |canvas, cx| canvas.drop_atlas_textures(window, cx));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 pub(super) struct OpenDocument {
     pub(super) content: Content,
     read: u64,
     reading: bool,
     stamp: Option<Stamp>,
+    image_hash: Option<u64>,
     ignored: bool,
     rendered: Option<Entity<MarkdownView>>,
+    svg_canvas: Option<Entity<ImageCanvas>>,
+    pub(super) svg_too_large: Option<(u32, u32, u64)>,
+    pub(super) svg_meta: Option<(u32, u32, u64)>,
+    pub(super) svg_invalid: bool,
     source: bool,
     /// Line cited by a ⌘-clicked terminal link (selects line & switches MD to source).
     line: Option<u32>,
@@ -225,8 +273,13 @@ impl OpenDocument {
             read: 0,
             reading: false,
             stamp: None,
+            image_hash: None,
             ignored: false,
             rendered: None,
+            svg_canvas: None,
+            svg_too_large: None,
+            svg_meta: None,
+            svg_invalid: false,
             source,
             line: None,
             pending_code_line: None,
@@ -262,8 +315,13 @@ impl OpenDocument {
             read: 0,
             reading: false,
             stamp: None,
+            image_hash: None,
             ignored: false,
             rendered: None,
+            svg_canvas: None,
+            svg_too_large: None,
+            svg_meta: None,
+            svg_invalid: false,
             source,
             line: None,
             pending_code_line: None,
@@ -321,7 +379,12 @@ impl OpenDocument {
         }
         if matches!(
             self.content,
-            Content::Text(_) | Content::Binary { .. } | Content::TooLarge { .. }
+            Content::Text(_)
+                | Content::Image { .. }
+                | Content::ImageTooLarge { .. }
+                | Content::ImageFailed
+                | Content::Binary { .. }
+                | Content::TooLarge { .. }
         ) {
             return false;
         }
@@ -336,6 +399,24 @@ impl OpenDocument {
         } else {
             false
         }
+    }
+
+    fn drop_image_textures(&self, mut window: Option<&mut Window>, cx: &mut App) {
+        match &self.content {
+            Content::Image { canvas, .. }
+            | Content::Deleted(Some(DeletedContent::Image { canvas, .. })) => {
+                canvas.update(cx, |canvas, cx| {
+                    canvas.drop_atlas_textures(window.as_deref_mut(), cx)
+                });
+            }
+            _ => {}
+        }
+        if let Some(canvas) = &self.svg_canvas {
+            canvas.update(cx, |canvas, cx| {
+                canvas.drop_atlas_textures(window.as_deref_mut(), cx)
+            });
+        }
+        self.diff.drop_image_textures(window, cx);
     }
 
     fn expected_base(&self, key: &TabKey) -> Option<&str> {
@@ -472,8 +553,26 @@ type Rendered = (Arc<Page>, HashMap<String, Arc<gpui::Image>>);
 type Stamp = (u64, Option<chrono::DateTime<chrono::Utc>>);
 
 enum Read {
-    Text(Arc<Document>, Option<Rendered>, Stamp),
-    Unchanged,
+    Text(
+        Arc<Document>,
+        Option<Rendered>,
+        Option<DecodeOutcome>,
+        Stamp,
+        Option<u64>,
+    ),
+    Image(DecodedImage, Stamp, u64),
+    ImageTooLarge {
+        width: u32,
+        height: u32,
+        size: u64,
+        stamp: Stamp,
+        hash: u64,
+    },
+    ImageFailed {
+        stamp: Stamp,
+        hash: u64,
+    },
+    Unchanged(Option<Stamp>),
     Binary(u64),
     TooLarge(u64),
     Missing,
@@ -504,9 +603,184 @@ fn is_markdown(path: &str) -> bool {
     super::highlight::grammar_for_path(path).is_some_and(|grammar| grammar.name == "markdown")
 }
 
+fn is_svg(path: &str) -> bool {
+    markdown::image_format(path) == Some(gpui::ImageFormat::Svg)
+}
+
+fn raster_image_format(path: &str) -> Option<gpui::ImageFormat> {
+    markdown::image_format(path).filter(|&fmt| fmt != gpui::ImageFormat::Svg)
+}
+
+fn stamp_filter(since: Option<Stamp>) -> Option<FileStamp> {
+    since.and_then(|(size, modified)| {
+        modified.map(|modified| FileStamp {
+            size,
+            modified: Some(modified),
+        })
+    })
+}
+
+fn read_raster_file(
+    client: &DaemonClient,
+    root: &Path,
+    relative: &str,
+    format: gpui::ImageFormat,
+    since: Option<Stamp>,
+    prev_hash: Option<u64>,
+) -> Result<Read, ClientError> {
+    let content = if let Some((prev_size, prev_modified)) = since {
+        match client.files_read(root, relative, false, stamp_filter(since))? {
+            FileContent::Unchanged => return Ok(Read::Unchanged(None)),
+            FileContent::Binary {
+                size,
+                modified: Some(modified),
+                ..
+            } if prev_size == size && prev_modified == Some(modified) => {
+                return Ok(Read::Unchanged(None));
+            }
+            FileContent::Binary { .. } => client.files_read(root, relative, true, None)?,
+            FileContent::Text {
+                size,
+                modified: Some(modified),
+                ..
+            } if prev_size == size && prev_modified == Some(modified) => {
+                return Ok(Read::Unchanged(None));
+            }
+            other => other,
+        }
+    } else {
+        client.files_read(root, relative, true, None)?
+    };
+
+    Ok(match content {
+        FileContent::Unchanged => Read::Unchanged(None),
+        FileContent::Binary {
+            size,
+            bytes: Some(bytes),
+            modified,
+        } => {
+            let hash = image::bytes_hash(&bytes.0);
+            let stamp = (size, modified);
+            if prev_hash == Some(hash) {
+                return Ok(Read::Unchanged(Some(stamp)));
+            }
+            match image::decode_raster_image(format, &bytes.0, size) {
+                DecodeOutcome::Ready(decoded) => Read::Image(decoded, stamp, hash),
+                DecodeOutcome::TooManyPixels {
+                    width,
+                    height,
+                    size,
+                } => Read::ImageTooLarge {
+                    width,
+                    height,
+                    size,
+                    stamp,
+                    hash,
+                },
+                DecodeOutcome::Failed => Read::ImageFailed { stamp, hash },
+            }
+        }
+        FileContent::Binary { size, .. } => Read::Binary(size),
+        FileContent::Text {
+            bytes,
+            size,
+            modified,
+        } => {
+            let hash = image::bytes_hash(&bytes.0);
+            let stamp = (size, modified);
+            if let Some(detected) = image::detect_raster_magic(&bytes.0) {
+                if prev_hash == Some(hash) {
+                    return Ok(Read::Unchanged(Some(stamp)));
+                }
+                match image::decode_raster_image(detected, &bytes.0, size) {
+                    DecodeOutcome::Ready(decoded) => Read::Image(decoded, stamp, hash),
+                    DecodeOutcome::TooManyPixels {
+                        width,
+                        height,
+                        size,
+                    } => Read::ImageTooLarge {
+                        width,
+                        height,
+                        size,
+                        stamp,
+                        hash,
+                    },
+                    DecodeOutcome::Failed if std::str::from_utf8(&bytes.0).is_err() => {
+                        Read::ImageFailed { stamp, hash }
+                    }
+                    DecodeOutcome::Failed => {
+                        let document = Arc::new(Document::decode(&bytes.0));
+                        Read::Text(document, None, None, stamp, None)
+                    }
+                }
+            } else if std::str::from_utf8(&bytes.0).is_err() {
+                if prev_hash == Some(hash) {
+                    return Ok(Read::Unchanged(Some(stamp)));
+                }
+                Read::ImageFailed { stamp, hash }
+            } else {
+                let document = Arc::new(Document::decode(&bytes.0));
+                Read::Text(document, None, None, stamp, None)
+            }
+        }
+        FileContent::TooLarge { size } => Read::TooLarge(size),
+        FileContent::Missing => Read::Missing,
+    })
+}
+
+fn read_text_or_svg_file(
+    client: &DaemonClient,
+    root: &Path,
+    relative: &str,
+    markdown: bool,
+    svg: bool,
+    since: Option<Stamp>,
+    prev_hash: Option<u64>,
+) -> Result<Read, ClientError> {
+    Ok(
+        match client.files_read(root, relative, false, stamp_filter(since))? {
+            FileContent::Unchanged => Read::Unchanged(None),
+            FileContent::Text { size, modified, .. }
+                if since == Some((size, modified)) && (!svg || modified.is_some()) =>
+            {
+                Read::Unchanged(None)
+            }
+            FileContent::Text {
+                bytes,
+                size,
+                modified,
+            } => {
+                let stamp = (size, modified);
+                let svg_hash = svg.then(|| image::bytes_hash(&bytes.0));
+                if svg && prev_hash.is_some() && prev_hash == svg_hash {
+                    return Ok(Read::Unchanged(Some(stamp)));
+                }
+                let document = Arc::new(Document::decode(&bytes.0));
+                let rendered = markdown.then(|| {
+                    let page = Page::parse(document.text(), relative);
+                    let images = page
+                        .images()
+                        .into_iter()
+                        .filter_map(|image| {
+                            let decoded = read_image(client, root, &image)?;
+                            Some((image, decoded))
+                        })
+                        .collect();
+                    (Arc::new(page), images)
+                });
+                let svg_decoded = svg.then(|| image::decode_svg_image(&bytes.0, size));
+                Read::Text(document, rendered, svg_decoded, stamp, svg_hash)
+            }
+            FileContent::Binary { size, .. } => Read::Binary(size),
+            FileContent::TooLarge { size } => Read::TooLarge(size),
+            FileContent::Missing => Read::Missing,
+        },
+    )
+}
+
 fn read_image(client: &DaemonClient, root: &Path, path: &str) -> Option<Arc<gpui::Image>> {
     let format = markdown::image_format(path)?;
-    let bytes = match client.files_read(root, path, true).ok()? {
+    let bytes = match client.files_read(root, path, true, None).ok()? {
         FileContent::Text { bytes, .. } => bytes.0,
         FileContent::Binary {
             bytes: Some(bytes), ..
@@ -684,6 +958,9 @@ impl UnifiedViewer {
         };
         viewer.resolve(cx);
         cx.on_release(|this: &mut Self, cx| {
+            for doc in this.docs.values() {
+                doc.drop_image_textures(None, cx);
+            }
             let previous = this.watch_chain.take();
             let root = this.watched.take();
             let client = this.client.clone();
@@ -835,7 +1112,7 @@ impl UnifiedViewer {
         self.generation += 1;
         if self.context.remote {
             self.root = None;
-            self.reset_tabs();
+            self.reset_tabs(None, cx);
             self.sync_watch(cx);
             cx.notify();
             return;
@@ -889,7 +1166,7 @@ impl UnifiedViewer {
                     self.read_again_after_resolve(cx);
                     self.refresh_uncommitted_paths(true, cx);
                 } else {
-                    self.reset_tabs();
+                    self.reset_tabs(None, cx);
                     self.status = None;
                     self.status_stale = true;
                     self.uncommitted_files = None;
@@ -905,7 +1182,7 @@ impl UnifiedViewer {
                 self.root = None;
                 self.status = None;
                 self.uncommitted_files = None;
-                self.reset_tabs();
+                self.reset_tabs(None, cx);
                 self.notify_owner(cx);
             }
         }
@@ -949,6 +1226,9 @@ impl UnifiedViewer {
             self.open_in_open = false;
             self.status_stale = true;
             self.ignored_refresh = None;
+            for doc in self.docs.values() {
+                doc.drop_image_textures(None, cx);
+            }
         } else {
             if self.ignored_refresh.is_none() && self.has_tabs() {
                 self.ignored_refresh = Some(self.refresh_ignored_tabs(cx));
@@ -1164,16 +1444,34 @@ impl UnifiedViewer {
         }
         self.look = look;
         for doc in self.docs.values() {
-            if let Content::Text(view) | Content::Deleted(Some(view)) = &doc.content {
-                view.update(cx, |_, cx| cx.notify());
+            match &doc.content {
+                Content::Text(view) | Content::Deleted(Some(DeletedContent::Text(view))) => {
+                    view.update(cx, |_, cx| cx.notify());
+                }
+                Content::Image { canvas, .. }
+                | Content::Deleted(Some(DeletedContent::Image { canvas, .. })) => {
+                    canvas.update(cx, |_, cx| cx.notify());
+                }
+                _ => {}
             }
             if let Some(rendered) = &doc.rendered {
                 rendered.update(cx, |_, cx| cx.notify());
             }
-            if let FileTabDiff::Loaded(loaded) = &doc.diff
-                && let LoadedDiffKind::Unified(diff) = &loaded.kind
-            {
-                diff.update(cx, |_, cx| cx.notify());
+            if let Some(canvas) = &doc.svg_canvas {
+                canvas.update(cx, |_, cx| cx.notify());
+            }
+            if let FileTabDiff::Loaded(loaded) = &doc.diff {
+                match &loaded.kind {
+                    LoadedDiffKind::Unified(diff) => diff.update(cx, |_, cx| cx.notify()),
+                    LoadedDiffKind::Image { canvas, .. } => canvas.update(cx, |_, cx| cx.notify()),
+                    LoadedDiffKind::Svg {
+                        canvas, unified, ..
+                    } => {
+                        canvas.update(cx, |_, cx| cx.notify());
+                        unified.update(cx, |_, cx| cx.notify());
+                    }
+                    _ => {}
+                }
             }
         }
         cx.notify();
@@ -1192,10 +1490,20 @@ impl UnifiedViewer {
     fn sync_effective_diff_mode(&self, cx: &mut Context<Self>) {
         let mode = self.effective_diff_mode(cx);
         for doc in self.docs.values() {
-            if let FileTabDiff::Loaded(loaded) = &doc.diff
-                && let LoadedDiffKind::Unified(diff) = &loaded.kind
-            {
-                diff.update(cx, |v, cx| v.set_mode(mode, cx));
+            if let FileTabDiff::Loaded(loaded) = &doc.diff {
+                match &loaded.kind {
+                    LoadedDiffKind::Unified(diff) => diff.update(cx, |v, cx| v.set_mode(mode, cx)),
+                    LoadedDiffKind::Image { canvas, .. } => {
+                        canvas.update(cx, |c, cx| c.set_diff_mode(mode, cx));
+                    }
+                    LoadedDiffKind::Svg {
+                        canvas, unified, ..
+                    } => {
+                        canvas.update(cx, |c, cx| c.set_diff_mode(mode, cx));
+                        unified.update(cx, |v, cx| v.set_mode(mode, cx));
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -1296,8 +1604,9 @@ impl UnifiedViewer {
         let outcome = self.tabs.open_pinned(&path);
         let key = outcome.key().clone();
         self.ensure_uncommitted_paths(cx);
-        let source = super::settings(cx)
-            .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
+        let source = !is_svg(&key.path)
+            && super::settings(cx)
+                .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
         let has_head = self.root_has_head();
         let need_read = if outcome.is_new() || !self.docs.contains_key(&key) {
             self.docs
@@ -1314,7 +1623,7 @@ impl UnifiedViewer {
         {
             doc.line = Some(line);
             doc.mode = DocMode::Code;
-            if is_markdown(&key.path) {
+            if is_markdown(&key.path) || is_svg(&key.path) {
                 doc.source = true;
             }
         }
@@ -1354,8 +1663,9 @@ impl UnifiedViewer {
         if pin && let Some(active_idx) = self.tabs.active_index() {
             self.tabs.pin(active_idx);
         }
-        let source = super::settings(cx)
-            .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
+        let source = !is_svg(&req.path)
+            && super::settings(cx)
+                .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
         let key = outcome.key().clone();
         if req.target == SelectedTarget::Uncommitted
             && let Some(files) = &mut self.uncommitted_files
@@ -1367,8 +1677,10 @@ impl UnifiedViewer {
         }
         let need_diff = match outcome {
             OpenPreviewOutcome::ReplacedPreview { replaced, .. } => {
-                if self.tabs.position_key(&replaced).is_none() {
-                    self.docs.remove(&replaced);
+                if self.tabs.position_key(&replaced).is_none()
+                    && let Some(old_doc) = self.docs.remove(&replaced)
+                {
+                    old_doc.drop_image_textures(None, cx);
                 }
                 self.docs
                     .insert(key.clone(), OpenDocument::new_diff(&req, source));
@@ -1584,8 +1896,10 @@ impl UnifiedViewer {
                 let preview_was_active = self.tabs.active_index() == Some(preview_idx);
                 if !preview_was_active {
                     // Never yank focus away from another tab the user is actively reading.
-                    if let Some(closed) = self.tabs.close(preview_idx) {
-                        self.docs.remove(&closed);
+                    if let Some(closed) = self.tabs.close(preview_idx)
+                        && let Some(old_doc) = self.docs.remove(&closed)
+                    {
+                        old_doc.drop_image_textures(None, cx);
                     }
                 } else {
                     let replacement = reconcile_file_selection(
@@ -1603,8 +1917,9 @@ impl UnifiedViewer {
                         // so `open_changes_file` focuses the pinned tab cleanly with no orphan left.
                         if self.tabs.position_key(&next_key).is_some()
                             && let Some(closed) = self.tabs.close(preview_idx)
+                            && let Some(old_doc) = self.docs.remove(&closed)
                         {
-                            self.docs.remove(&closed);
+                            old_doc.drop_image_textures(None, cx);
                         }
                         let req = OpenChangesRequest {
                             root: root_obj,
@@ -1847,12 +2162,14 @@ impl UnifiedViewer {
     }
 
     pub(crate) fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(key) = self.tabs.close(index) {
-            self.docs.remove(&key);
+        if let Some(key) = self.tabs.close(index)
+            && let Some(old_doc) = self.docs.remove(&key)
+        {
+            old_doc.drop_image_textures(Some(window), cx);
         }
         if self.tabs.is_empty() {
             let was_maximized = self.maximized;
-            self.reset_tabs();
+            self.reset_tabs(Some(window), cx);
             if was_maximized {
                 self.maximized = false;
                 if let Some(request) = self.on_request_maximize.clone() {
@@ -1912,7 +2229,10 @@ impl UnifiedViewer {
         cx.notify();
     }
 
-    fn reset_tabs(&mut self) {
+    fn reset_tabs(&mut self, mut window: Option<&mut Window>, cx: &mut App) {
+        for doc in self.docs.values() {
+            doc.drop_image_textures(window.as_deref_mut(), cx);
+        }
         self.tabs = FileTabs::default();
         self.docs.clear();
         self.find = None;
@@ -1943,7 +2263,11 @@ impl UnifiedViewer {
                 on_in(window, cx);
             }
         } else if self.active_showing_diff() {
-            self.viewer_focus.focus(window, cx);
+            if let Some(canvas) = self.active_image_canvas() {
+                canvas.read(cx).focus_handle().clone().focus(window, cx);
+            } else {
+                self.viewer_focus.focus(window, cx);
+            }
             if let Some(on_in) = self.chrome.on_diff_focus_in.clone() {
                 on_in(window, cx);
             }
@@ -1951,6 +2275,8 @@ impl UnifiedViewer {
             view.read(cx).focus_handle().clone().focus(window, cx);
         } else if let Some(page) = self.active_rendered() {
             page.read(cx).focus_handle().clone().focus(window, cx);
+        } else if let Some(canvas) = self.active_image_canvas() {
+            canvas.read(cx).focus_handle().clone().focus(window, cx);
         } else {
             self.viewer_focus.focus(window, cx);
         }
@@ -2017,7 +2343,11 @@ impl UnifiedViewer {
         if self.viewer_focus.contains_focused(window, cx)
             || self.root_focus.contains_focused(window, cx)
         {
-            self.zoom_text(step, cx);
+            if let Some(canvas) = self.active_image_canvas().cloned() {
+                canvas.update(cx, |canvas, cx| canvas.step_zoom(step > 0, cx));
+            } else {
+                self.zoom_text(step, cx);
+            }
         } else {
             window.dispatch_action(app, cx);
         }
@@ -2094,6 +2424,11 @@ impl UnifiedViewer {
         match &doc.diff {
             FileTabDiff::Loaded(loaded) => match &loaded.kind {
                 LoadedDiffKind::Unified(entity) => Some(entity),
+                LoadedDiffKind::Svg {
+                    unified,
+                    source: true,
+                    ..
+                } => Some(unified),
                 _ => None,
             },
             _ => None,
@@ -2186,6 +2521,11 @@ impl UnifiedViewer {
                             match &doc.diff {
                                 FileTabDiff::Loaded(loaded) => match &loaded.kind {
                                     LoadedDiffKind::Unified(e) => Some(e.clone()),
+                                    LoadedDiffKind::Svg {
+                                        unified,
+                                        source: true,
+                                        ..
+                                    } => Some(unified.clone()),
                                     _ => None,
                                 },
                                 _ => None,
@@ -2247,7 +2587,10 @@ impl UnifiedViewer {
         };
         if doc.ignored && !doc.reading && !matches!(doc.content, Content::Idle) {
             let stamp = doc.stamp;
-            self.read_file_since(key, stamp, cx);
+            let prev_hash = (!matches!(doc.content, Content::Deleted(_)))
+                .then_some(doc.image_hash)
+                .flatten();
+            self.read_file_since(key, stamp, prev_hash, cx);
         }
     }
 
@@ -2292,10 +2635,21 @@ impl UnifiedViewer {
     }
 
     fn read_file(&mut self, key: TabKey, cx: &mut Context<Self>) {
-        self.read_file_since(key, None, cx);
+        let prev_hash = self.docs.get(&key).and_then(|doc| {
+            (!matches!(doc.content, Content::Deleted(_)))
+                .then_some(doc.image_hash)
+                .flatten()
+        });
+        self.read_file_since(key, None, prev_hash, cx);
     }
 
-    fn read_file_since(&mut self, key: TabKey, since: Option<Stamp>, cx: &mut Context<Self>) {
+    fn read_file_since(
+        &mut self,
+        key: TabKey,
+        since: Option<Stamp>,
+        prev_hash: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(root) = self.root_path().map(PathBuf::from) else {
             return;
         };
@@ -2310,37 +2664,15 @@ impl UnifiedViewer {
         }
         let relative = key.path.clone();
         let markdown = is_markdown(&key.path);
+        let svg = is_svg(&key.path);
+        let raster_format = raster_image_format(&key.path);
         self.request(
             cx,
             move |client| {
-                Ok(match client.files_read(&root, &relative, false)? {
-                    FileContent::Text { size, modified, .. } if since == Some((size, modified)) => {
-                        Read::Unchanged
-                    }
-                    FileContent::Text {
-                        bytes,
-                        size,
-                        modified,
-                    } => {
-                        let document = Arc::new(Document::decode(&bytes.0));
-                        let rendered = markdown.then(|| {
-                            let page = Page::parse(document.text(), &relative);
-                            let images = page
-                                .images()
-                                .into_iter()
-                                .filter_map(|image| {
-                                    let decoded = read_image(client, &root, &image)?;
-                                    Some((image, decoded))
-                                })
-                                .collect();
-                            (Arc::new(page), images)
-                        });
-                        Read::Text(document, rendered, (size, modified))
-                    }
-                    FileContent::Binary { size, .. } => Read::Binary(size),
-                    FileContent::TooLarge { size } => Read::TooLarge(size),
-                    FileContent::Missing => Read::Missing,
-                })
+                if let Some(format) = raster_format {
+                    return read_raster_file(client, &root, &relative, format, since, prev_hash);
+                }
+                read_text_or_svg_file(client, &root, &relative, markdown, svg, since, prev_hash)
             },
             move |this, result, cx| this.apply_read(key, read, result, cx),
         );
@@ -2363,8 +2695,14 @@ impl UnifiedViewer {
             return;
         }
         doc.reading = false;
+        if let Ok(Read::Unchanged(new_stamp)) = &result {
+            if let Some(stamp) = new_stamp {
+                doc.stamp = Some(*stamp);
+            }
+            return;
+        }
         let same = match (&result, &doc.content) {
-            (Ok(Read::Unchanged), _) | (Ok(Read::Missing), Content::Deleted(_)) => true,
+            (Ok(Read::Missing), Content::Deleted(_)) => true,
             (Ok(Read::Binary(new)), Content::Binary { size })
             | (Ok(Read::TooLarge(new)), Content::TooLarge { size }) => new == size,
             _ => false,
@@ -2373,15 +2711,39 @@ impl UnifiedViewer {
             return;
         }
         doc.stamp = match &result {
-            Ok(Read::Text(_, _, stamp)) => Some(*stamp),
+            Ok(Read::Text(_, _, _, stamp, _))
+            | Ok(Read::Image(_, stamp, _))
+            | Ok(Read::ImageTooLarge { stamp, .. })
+            | Ok(Read::ImageFailed { stamp, .. }) => Some(*stamp),
+            _ => None,
+        };
+        doc.image_hash = match &result {
+            Ok(Read::Text(_, _, _, _, svg_hash)) => *svg_hash,
+            Ok(Read::Image(_, _, hash))
+            | Ok(Read::ImageTooLarge { hash, .. })
+            | Ok(Read::ImageFailed { hash, .. }) => Some(*hash),
             _ => None,
         };
         let previous = std::mem::replace(&mut doc.content, Content::Loading);
-        let kept = match previous {
-            Content::Text(view) | Content::Deleted(Some(view)) => Some(view),
-            _ => None,
+        let (kept_text, kept_image) = match previous {
+            Content::Text(view) | Content::Deleted(Some(DeletedContent::Text(view))) => {
+                (Some(view), None)
+            }
+            Content::Image {
+                canvas,
+                width,
+                height,
+                size,
+            }
+            | Content::Deleted(Some(DeletedContent::Image {
+                canvas,
+                width,
+                height,
+                size,
+            })) => (None, Some((canvas, width, height, size))),
+            _ => (None, None),
         };
-        if let Ok(Read::Text(_, Some((page, images)), _)) = &result {
+        if let Ok(Read::Text(_, Some((page, images)), _, _, _)) = &result {
             let (page, images) = (page.clone(), images.clone());
             match &doc.rendered {
                 Some(view) => view.update(cx, |view, cx| {
@@ -2401,34 +2763,160 @@ impl UnifiedViewer {
         if let (Ok(Read::Missing), Some(view)) = (&result, &doc.rendered) {
             view.update(cx, |view, cx| view.set_deleted(true, cx));
         }
+        if let (Ok(Read::Missing), Some(canvas)) = (&result, &doc.svg_canvas) {
+            canvas.update(cx, |canvas, cx| canvas.set_deleted(true, cx));
+        }
         doc.working_tree_missing = match &result {
-            Ok(Read::Text(..) | Read::Binary(_) | Read::TooLarge(_)) => Some(false),
+            Ok(
+                Read::Text(..)
+                | Read::Image(..)
+                | Read::ImageTooLarge { .. }
+                | Read::ImageFailed { .. }
+                | Read::Binary(_)
+                | Read::TooLarge(_),
+            ) => Some(false),
             Ok(Read::Missing) => Some(true),
             _ => doc.working_tree_missing,
         };
+        let drop_kept_image = |kept: Option<(Entity<ImageCanvas>, u32, u32, u64)>, cx: &mut App| {
+            if let Some((canvas, ..)) = kept {
+                canvas.update(cx, |canvas, cx| canvas.drop_atlas_textures(None, cx));
+            }
+        };
+        let clear_svg_canvas = |doc: &mut OpenDocument, cx: &mut App| {
+            if let Some(canvas) = doc.svg_canvas.take() {
+                canvas.update(cx, |canvas, cx| canvas.drop_atlas_textures(None, cx));
+            }
+            doc.svg_too_large = None;
+            doc.svg_meta = None;
+        };
         doc.content = match result {
-            Ok(Read::Text(document, ..)) => match kept {
-                Some(view) => {
-                    view.update(cx, |view, cx| {
-                        view.set_document(document, cx);
-                        view.set_deleted(false, cx);
-                    });
-                    Content::Text(view)
+            Ok(Read::Text(document, _, svg_decoded, _, _)) => {
+                drop_kept_image(kept_image, cx);
+                match svg_decoded {
+                    Some(DecodeOutcome::Ready(decoded)) => {
+                        doc.svg_too_large = None;
+                        doc.svg_meta = Some((decoded.width, decoded.height, decoded.size));
+                        match &doc.svg_canvas {
+                            Some(canvas) => canvas.update(cx, |canvas, cx| {
+                                canvas.set_single_image(decoded, cx);
+                                canvas.set_deleted(false, cx);
+                            }),
+                            None => {
+                                doc.svg_canvas =
+                                    Some(cx.new(|cx| ImageCanvas::new_single(decoded, cx)));
+                            }
+                        }
+                        if std::mem::take(&mut doc.svg_invalid) {
+                            doc.source = false;
+                        }
+                    }
+                    Some(DecodeOutcome::TooManyPixels {
+                        width,
+                        height,
+                        size,
+                    }) => {
+                        clear_svg_canvas(doc, cx);
+                        doc.svg_too_large = Some((width, height, size));
+                        doc.svg_meta = Some((width, height, size));
+                        if std::mem::take(&mut doc.svg_invalid) {
+                            doc.source = false;
+                        }
+                    }
+                    Some(DecodeOutcome::Failed) => {
+                        clear_svg_canvas(doc, cx);
+                        doc.svg_invalid = true;
+                        doc.source = true;
+                    }
+                    None => {
+                        clear_svg_canvas(doc, cx);
+                        doc.svg_invalid = false;
+                    }
                 }
-                None => Content::Text(cx.new(|cx| {
-                    let mut view =
-                        CodeView::new(document, super::highlight::grammar_for_path(&key.path), cx);
-                    view.set_open_line(open_line);
-                    view
-                })),
-            },
-            Ok(Read::Unchanged) => unreachable!(),
-            Ok(Read::Binary(size)) => Content::Binary { size },
-            Ok(Read::TooLarge(size)) => Content::TooLarge { size },
+                match kept_text {
+                    Some(view) => {
+                        view.update(cx, |view, cx| {
+                            view.set_document(document, cx);
+                            view.set_deleted(false, cx);
+                        });
+                        Content::Text(view)
+                    }
+                    None => Content::Text(cx.new(|cx| {
+                        let mut view = CodeView::new(
+                            document,
+                            super::highlight::grammar_for_path(&key.path),
+                            cx,
+                        );
+                        view.set_open_line(open_line);
+                        view
+                    })),
+                }
+            }
+            Ok(Read::Image(decoded, ..)) => {
+                clear_svg_canvas(doc, cx);
+                let (width, height, size) = (decoded.width, decoded.height, decoded.size);
+                let canvas = match kept_image {
+                    Some((canvas, ..)) => {
+                        canvas.update(cx, |canvas, cx| {
+                            canvas.set_single_image(decoded, cx);
+                            canvas.set_deleted(false, cx);
+                        });
+                        canvas
+                    }
+                    None => cx.new(|cx| ImageCanvas::new_single(decoded, cx)),
+                };
+                Content::Image {
+                    canvas,
+                    width,
+                    height,
+                    size,
+                }
+            }
+            Ok(Read::ImageTooLarge {
+                width,
+                height,
+                size,
+                ..
+            }) => {
+                drop_kept_image(kept_image, cx);
+                clear_svg_canvas(doc, cx);
+                Content::ImageTooLarge {
+                    width,
+                    height,
+                    size,
+                }
+            }
+            Ok(Read::ImageFailed { .. }) => {
+                drop_kept_image(kept_image, cx);
+                clear_svg_canvas(doc, cx);
+                Content::ImageFailed
+            }
+            Ok(Read::Unchanged(_)) => unreachable!(),
+            Ok(Read::Binary(size)) => {
+                drop_kept_image(kept_image, cx);
+                clear_svg_canvas(doc, cx);
+                Content::Binary { size }
+            }
+            Ok(Read::TooLarge(size)) => {
+                drop_kept_image(kept_image, cx);
+                clear_svg_canvas(doc, cx);
+                Content::TooLarge { size }
+            }
             Ok(Read::Missing) => {
-                if let Some(view) = &kept {
+                let kept = if let Some(view) = kept_text {
                     view.update(cx, |view, cx| view.set_deleted(true, cx));
-                }
+                    Some(DeletedContent::Text(view))
+                } else if let Some((canvas, width, height, size)) = kept_image {
+                    canvas.update(cx, |canvas, cx| canvas.set_deleted(true, cx));
+                    Some(DeletedContent::Image {
+                        canvas,
+                        width,
+                        height,
+                        size,
+                    })
+                } else {
+                    None
+                };
                 if !doc.has_changes_target {
                     doc.mode = DocMode::Code;
                     doc.diff = FileTabDiff::Idle;
@@ -2439,7 +2927,11 @@ impl UnifiedViewer {
                 }
                 Content::Deleted(kept)
             }
-            Err(error) => Content::Failed(error.to_string().into()),
+            Err(error) => {
+                drop_kept_image(kept_image, cx);
+                clear_svg_canvas(doc, cx);
+                Content::Failed(error.to_string().into())
+            }
         };
         self.show_line(&key, cx);
         if active {
@@ -2513,7 +3005,7 @@ impl UnifiedViewer {
             cx,
             move |client| {
                 Ok(matches!(
-                    client.files_read(&root, &relative, false),
+                    client.files_read(&root, &relative, false, None),
                     Ok(FileContent::Missing)
                 ))
             },
@@ -3014,8 +3506,13 @@ impl UnifiedViewer {
         self.request(
             cx,
             move |client| {
-                let diff =
-                    client.changes_diff(&root, &proto_target, &relative, req_base.as_deref())?;
+                let diff = client.changes_diff(
+                    &root,
+                    &proto_target,
+                    &relative,
+                    req_base.as_deref(),
+                    false,
+                )?;
                 let lines = match &diff.body {
                     runner_core::protocol::changes::DiffBody::Text { hunks, .. } => {
                         hunks.iter().map(|h| h.new_start.max(1)).collect::<Vec<_>>()
@@ -3091,10 +3588,17 @@ impl UnifiedViewer {
         let target_is_uncommitted = key.target == SelectedTarget::Uncommitted;
         let proto_target = key.target.to_protocol();
         let req_base = requested_base.clone();
+        let want_bytes = raster_image_format(&relative).is_some();
         let client = self.client.clone();
         let generation = self.generation;
         let task = cx.background_spawn(async move {
-            let diff = client.changes_diff(&root, &proto_target, &relative, req_base.as_deref())?;
+            let diff = client.changes_diff(
+                &root,
+                &proto_target,
+                &relative,
+                req_base.as_deref(),
+                want_bytes,
+            )?;
             // Only query commits/files when rail metadata or fresh matching version hints are
             // absent; normal Changes rail previews supply both and issue only `changes_diff`.
             let (has_head, branch_update, resolved_base) = if need_commits {
@@ -3139,7 +3643,7 @@ impl UnifiedViewer {
                 Some(diff.status == FileStatus::Deleted)
             } else if diff.status == FileStatus::Deleted {
                 Some(matches!(
-                    client.files_read(&root, &relative, false),
+                    client.files_read(&root, &relative, false, None),
                     Ok(FileContent::Missing)
                 ))
             } else {
@@ -3267,16 +3771,27 @@ impl UnifiedViewer {
                 doc.hunk_lines = hunks_copy.iter().map(|h| h.new_start.max(1)).collect();
                 doc.hunk_blobs = Some((diff.old_blob_id.clone(), diff.new_blob_id.clone()));
                 let pending_line = doc.pending_diff_line.take();
-                let kind = match prepared {
-                    PreparedDiffBody::Unified {
-                        old_doc,
-                        new_doc,
-                        hunks,
-                    } => {
-                        if let FileTabDiff::Loaded(existing) = &doc.diff
-                            && let LoadedDiffKind::Unified(entity) = &existing.kind
-                        {
-                            let entity = entity.clone();
+                let (existing_unified, existing_canvas, existing_svg_source) = match &doc.diff {
+                    FileTabDiff::Loaded(existing) => match &existing.kind {
+                        LoadedDiffKind::Unified(e) => (Some(e.clone()), None, false),
+                        LoadedDiffKind::Image { canvas, .. } => (None, Some(canvas.clone()), false),
+                        LoadedDiffKind::Svg {
+                            canvas,
+                            unified,
+                            source,
+                            ..
+                        } => (Some(unified.clone()), Some(canvas.clone()), *source),
+                        _ => (None, None, false),
+                    },
+                    _ => (None, None, false),
+                };
+                let make_or_update_unified =
+                    |existing: Option<Entity<UnifiedDiffView>>,
+                     old_doc: Arc<Document>,
+                     new_doc: Arc<Document>,
+                     hunks: Vec<DiffHunk>,
+                     cx: &mut Context<Self>| {
+                        if let Some(entity) = existing {
                             entity.update(cx, |v, cx| {
                                 v.set_show_viewed_footer(true);
                                 v.set_mode(effective_mode, cx);
@@ -3285,7 +3800,7 @@ impl UnifiedViewer {
                                     new_doc,
                                     &hunks,
                                     grammar,
-                                    file_label,
+                                    file_label.clone(),
                                     viewed,
                                     changed_since_viewed,
                                     cx,
@@ -3294,19 +3809,19 @@ impl UnifiedViewer {
                                     v.scroll_to_new_line(line, cx);
                                 }
                             });
-                            LoadedDiffKind::Unified(entity)
+                            entity
                         } else {
                             let esc_weak = weak.clone();
                             let toggle_weak = weak.clone();
-                            let focus_weak = weak;
+                            let focus_weak = weak.clone();
                             let toggle_key = key.clone();
-                            let entity = cx.new(|cx| {
+                            cx.new(|cx| {
                                 let mut v = UnifiedDiffView::new(
                                     old_doc,
                                     new_doc,
                                     &hunks,
                                     grammar,
-                                    file_label,
+                                    file_label.clone(),
                                     viewed,
                                     changed_since_viewed,
                                     cx,
@@ -3339,27 +3854,101 @@ impl UnifiedViewer {
                                     }),
                                 );
                                 v
+                            })
+                        }
+                    };
+                let make_or_update_canvas =
+                    |existing: Option<Entity<ImageCanvas>>,
+                     sides: image::DiffSides,
+                     cx: &mut Context<Self>| {
+                        if let Some(canvas) = existing {
+                            canvas.update(cx, |canvas, cx| {
+                                canvas.set_diff_sides(effective_mode, sides, cx);
                             });
-                            LoadedDiffKind::Unified(entity)
+                            canvas
+                        } else {
+                            let focus_weak = weak.clone();
+                            cx.new(|cx| {
+                                let mut canvas = ImageCanvas::new_diff(effective_mode, sides, cx);
+                                canvas.set_on_focus_in(Some(Rc::new(move |window, cx| {
+                                    let _ = focus_weak.update(cx, |this, cx| {
+                                        if let Some(on_in) = this.chrome.on_diff_focus_in.clone() {
+                                            on_in(window, cx);
+                                        }
+                                    });
+                                })));
+                                canvas
+                            })
+                        }
+                    };
+                let drop_unused_canvas = |canvas: Option<Entity<ImageCanvas>>, cx: &mut App| {
+                    if let Some(canvas) = canvas {
+                        canvas.update(cx, |canvas, cx| canvas.drop_atlas_textures(None, cx));
+                    }
+                };
+                let kind = match prepared {
+                    PreparedDiffBody::Unified {
+                        old_doc,
+                        new_doc,
+                        hunks,
+                    } => {
+                        drop_unused_canvas(existing_canvas, cx);
+                        LoadedDiffKind::Unified(make_or_update_unified(
+                            existing_unified,
+                            old_doc,
+                            new_doc,
+                            hunks,
+                            cx,
+                        ))
+                    }
+                    PreparedDiffBody::Image { sides } => {
+                        let one_sided = sides.is_one_sided();
+                        let canvas = make_or_update_canvas(existing_canvas, sides, cx);
+                        LoadedDiffKind::Image { canvas, one_sided }
+                    }
+                    PreparedDiffBody::Svg {
+                        old_doc,
+                        new_doc,
+                        hunks,
+                        sides,
+                    } => {
+                        let one_sided = sides.is_one_sided();
+                        let canvas = make_or_update_canvas(existing_canvas, sides, cx);
+                        let unified =
+                            make_or_update_unified(existing_unified, old_doc, new_doc, hunks, cx);
+                        LoadedDiffKind::Svg {
+                            canvas,
+                            unified,
+                            source: existing_svg_source,
+                            one_sided,
                         }
                     }
-                    PreparedDiffBody::CrlfOnly => LoadedDiffKind::CrlfOnly,
+                    PreparedDiffBody::CrlfOnly => {
+                        drop_unused_canvas(existing_canvas, cx);
+                        LoadedDiffKind::CrlfOnly
+                    }
                     PreparedDiffBody::Binary { old_size, new_size } => {
+                        drop_unused_canvas(existing_canvas, cx);
                         LoadedDiffKind::Binary { old_size, new_size }
                     }
                     PreparedDiffBody::TooLarge { old_size, new_size } => {
+                        drop_unused_canvas(existing_canvas, cx);
                         LoadedDiffKind::TooLarge { old_size, new_size }
                     }
                     PreparedDiffBody::ModeOnly { old_mode, new_mode } => {
+                        drop_unused_canvas(existing_canvas, cx);
                         LoadedDiffKind::ModeOnly { old_mode, new_mode }
                     }
                     PreparedDiffBody::Submodule {
                         old_commit,
                         new_commit,
-                    } => LoadedDiffKind::Submodule {
-                        old_commit,
-                        new_commit,
-                    },
+                    } => {
+                        drop_unused_canvas(existing_canvas, cx);
+                        LoadedDiffKind::Submodule {
+                            old_commit,
+                            new_commit,
+                        }
+                    }
                 };
                 doc.hint_status = Some(diff.status.clone());
                 doc.hint_counts = Some(diff.counts);
@@ -3384,6 +3973,7 @@ impl UnifiedViewer {
                 }));
             }
             Err(error) => {
+                doc.diff.drop_image_textures(None, cx);
                 let message = error.to_string();
                 if message.contains("has no changes in target") {
                     if key.target == SelectedTarget::Uncommitted {
@@ -3668,6 +4258,78 @@ impl UnifiedViewer {
 
     // ── Active Views & Markdown ────────────────────────────────────────
 
+    pub(super) fn active_is_image(&self) -> bool {
+        let Some(tab) = self.tabs.active() else {
+            return false;
+        };
+        let Some(format) = markdown::image_format(&tab.key.path) else {
+            return false;
+        };
+        let Some(doc) = self.docs.get(&tab.key) else {
+            return false;
+        };
+        if format == gpui::ImageFormat::Svg {
+            return true;
+        }
+        !matches!(
+            doc.content,
+            Content::Text(_) | Content::Deleted(Some(DeletedContent::Text(_)))
+        ) && !matches!(
+            &doc.diff,
+            FileTabDiff::Loaded(loaded) if matches!(loaded.kind, LoadedDiffKind::Unified(_))
+        )
+    }
+
+    pub(super) fn active_image_canvas(&self) -> Option<&Entity<ImageCanvas>> {
+        let tab = self.tabs.active()?;
+        let doc = self.docs.get(&tab.key)?;
+        if doc.mode == DocMode::Diff {
+            if !self.active_can_diff() {
+                return None;
+            }
+            return match &doc.diff {
+                FileTabDiff::Loaded(loaded) => match &loaded.kind {
+                    LoadedDiffKind::Image { canvas, .. } => Some(canvas),
+                    LoadedDiffKind::Svg {
+                        canvas,
+                        source: false,
+                        ..
+                    } => Some(canvas),
+                    _ => None,
+                },
+                _ => None,
+            };
+        }
+        if self.shows_svg_rendered(doc) {
+            return doc.svg_canvas.as_ref();
+        }
+        match &doc.content {
+            Content::Image { canvas, .. }
+            | Content::Deleted(Some(DeletedContent::Image { canvas, .. })) => Some(canvas),
+            _ => None,
+        }
+    }
+
+    pub(super) fn set_svg_diff_source(
+        &mut self,
+        key: &TabKey,
+        source: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(doc) = self.docs.get_mut(key)
+            && let FileTabDiff::Loaded(loaded) = &mut doc.diff
+            && let LoadedDiffKind::Svg {
+                source: current, ..
+            } = &mut loaded.kind
+            && *current != source
+        {
+            *current = source;
+            self.focus_active(window, cx);
+            cx.notify();
+        }
+    }
+
     pub(super) fn active_view(&self) -> Option<&Entity<CodeView>> {
         let tab = self.tabs.active()?;
         let doc = self.docs.get(&tab.key)?;
@@ -3675,30 +4337,54 @@ impl UnifiedViewer {
             return None;
         }
         match &doc.content {
-            Content::Text(view) | Content::Deleted(Some(view)) => Some(view),
+            Content::Text(view) | Content::Deleted(Some(DeletedContent::Text(view))) => Some(view),
             _ => None,
         }
     }
 
-    fn shows_rendered(&self, doc: &OpenDocument) -> bool {
+    pub(super) fn shows_markdown_rendered(&self, doc: &OpenDocument) -> bool {
         doc.mode == DocMode::Code
             && doc.rendered.is_some()
             && !doc.source
-            && matches!(doc.content, Content::Text(_) | Content::Deleted(Some(_)))
+            && matches!(
+                doc.content,
+                Content::Text(_) | Content::Deleted(Some(DeletedContent::Text(_)))
+            )
+    }
+
+    pub(super) fn shows_svg_rendered(&self, doc: &OpenDocument) -> bool {
+        doc.mode == DocMode::Code
+            && (doc.svg_canvas.is_some() || doc.svg_too_large.is_some())
+            && !doc.source
+            && matches!(
+                doc.content,
+                Content::Text(_) | Content::Deleted(Some(DeletedContent::Text(_)))
+            )
+    }
+
+    fn shows_rendered(&self, doc: &OpenDocument) -> bool {
+        self.shows_markdown_rendered(doc) || self.shows_svg_rendered(doc)
     }
 
     pub(super) fn active_rendered(&self) -> Option<&Entity<MarkdownView>> {
         let tab = self.tabs.active()?;
         let doc = self.docs.get(&tab.key)?;
-        self.shows_rendered(doc)
+        self.shows_markdown_rendered(doc)
             .then_some(doc.rendered.as_ref())
             .flatten()
+    }
+
+    pub(super) fn active_svg_rendered(&self) -> Option<bool> {
+        let tab = self.tabs.active()?;
+        let doc = self.docs.get(&tab.key)?;
+        self.shows_svg_rendered(doc).then_some(true)
     }
 
     fn active_markdown(&self) -> Option<bool> {
         let tab = self.tabs.active()?;
         let doc = self.docs.get(&tab.key)?;
-        doc.rendered.as_ref().map(|_| doc.source)
+        (doc.rendered.is_some() || doc.svg_canvas.is_some() || doc.svg_too_large.is_some())
+            .then_some(doc.source)
     }
 
     pub(super) fn toggle_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3803,10 +4489,11 @@ impl UnifiedViewer {
             return;
         }
         self.tree_hidden = saved.tree_hidden;
-        let source = super::settings(cx)
+        let markdown_source = super::settings(cx)
             .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
         let has_head = self.root_has_head();
         for item in saved.tabs {
+            let source = !is_svg(&item.key.path) && markdown_source;
             self.tabs.push_restored(item.key.clone(), item.preview);
             let mut doc = OpenDocument::new_code(source, has_head);
             doc.mode = item.mode;
@@ -3858,6 +4545,14 @@ impl UnifiedViewer {
         self.active_view().cloned()
     }
 
+    pub(crate) fn image_canvas(&self) -> Option<Entity<ImageCanvas>> {
+        self.active_image_canvas().cloned()
+    }
+
+    pub(crate) fn active_is_image_tab(&self) -> bool {
+        self.active_is_image()
+    }
+
     pub(crate) fn showing_diff(&self) -> bool {
         self.active_showing_diff()
     }
@@ -3881,7 +4576,13 @@ impl UnifiedViewer {
         self.apply_read(
             key,
             read,
-            Ok(Read::Text(document, None, (text.len() as u64, None))),
+            Ok(Read::Text(
+                document,
+                None,
+                None,
+                (text.len() as u64, None),
+                None,
+            )),
             cx,
         );
     }
@@ -4067,7 +4768,104 @@ impl UnifiedViewer {
 
 #[cfg(test)]
 mod tests {
-    use super::format_size;
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+
+    use ::image::codecs::png::PngEncoder;
+    use ::image::{ExtendedColorType, ImageEncoder};
+    use runner_core::companion::TerminalBytes;
+    use runner_core::protocol::files::{FileContent, FileStamp};
+    use runner_core::protocol::{
+        ClientError, DaemonClient, EventSubscription, Request, Response, Transport,
+    };
+
+    use super::{format_size, image, read_raster_file, read_text_or_svg_file, Read};
+
+    fn test_png(rgba: [u8; 4]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let pixels = vec![rgba[0], rgba[1], rgba[2], rgba[3]]
+            .into_iter()
+            .cycle()
+            .take(8 * 8 * 4)
+            .collect::<Vec<_>>();
+        PngEncoder::new(&mut buf)
+            .write_image(&pixels, 8, 8, ExtendedColorType::Rgba8)
+            .unwrap();
+        buf
+    }
+
+    struct StubSub;
+    impl EventSubscription for StubSub {
+        fn recv(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            runner_core::protocol::ClientEvent,
+                            runner_core::protocol::EventError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Err(runner_core::protocol::EventError::Closed) })
+        }
+    }
+
+    struct FakeFilesTransport {
+        state: Mutex<(Vec<u8>, Option<chrono::DateTime<chrono::Utc>>, bool)>,
+        requests: Mutex<Vec<(Option<bool>, Option<FileStamp>)>>,
+        bytes_transferred: Mutex<usize>,
+    }
+
+    impl Transport for FakeFilesTransport {
+        fn call(&self, request: Request) -> Result<Response, ClientError> {
+            match request {
+                Request::files_read {
+                    want_bytes,
+                    if_unchanged,
+                    ..
+                } => {
+                    self.requests
+                        .lock()
+                        .unwrap()
+                        .push((want_bytes, if_unchanged));
+                    let (bytes, modified, is_text) = self.state.lock().unwrap().clone();
+                    let size = bytes.len() as u64;
+                    if let Some(expected) = if_unchanged
+                        && expected.modified.is_some()
+                        && expected.size == size
+                        && expected.modified == modified
+                    {
+                        return Ok(Response::files_read(Ok(FileContent::Unchanged)));
+                    }
+                    if is_text {
+                        *self.bytes_transferred.lock().unwrap() += bytes.len();
+                        return Ok(Response::files_read(Ok(FileContent::Text {
+                            bytes: TerminalBytes(bytes),
+                            size,
+                            modified,
+                        })));
+                    }
+                    let send = want_bytes.unwrap_or(false);
+                    if send {
+                        *self.bytes_transferred.lock().unwrap() += bytes.len();
+                    }
+                    Ok(Response::files_read(Ok(FileContent::Binary {
+                        size,
+                        bytes: send.then_some(TerminalBytes(bytes)),
+                        modified,
+                    })))
+                }
+                other => Err(ClientError::msg(format!("unexpected request: {other:?}"))),
+            }
+        }
+
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            Box::new(StubSub)
+        }
+    }
 
     #[test]
     fn sizes_read_as_people_write_them() {
@@ -4076,5 +4874,276 @@ mod tests {
         assert_eq!(format_size(224_395_264), "214 MB");
         assert_eq!(format_size(12 * 1024), "12 KB");
         assert_eq!(format_size(10 * 1024 * 1024), "10 MB");
+    }
+
+    #[test]
+    fn ignored_image_poll_skips_bytes_until_stamp_changes_and_handles_missing_modified() {
+        let png_a = test_png([255, 0, 0, 255]);
+        let png_b = test_png([0, 255, 0, 255]);
+        assert_eq!(png_a.len(), png_b.len());
+        let size = png_a.len() as u64;
+        let t1: chrono::DateTime<chrono::Utc> = "2026-11-25T00:00:01Z".parse().unwrap();
+        let t2: chrono::DateTime<chrono::Utc> = "2026-11-25T00:00:02Z".parse().unwrap();
+        let t3: chrono::DateTime<chrono::Utc> = "2026-11-25T00:00:03Z".parse().unwrap();
+
+        let transport = Arc::new(FakeFilesTransport {
+            state: Mutex::new((png_a.clone(), Some(t1), false)),
+            requests: Mutex::new(Vec::new()),
+            bytes_transferred: Mutex::new(0),
+        });
+        let client = DaemonClient::new(transport.clone());
+
+        // 1. Unchanged ignored PNG: metadata-only probe transfers 0 bytes and returns Unchanged(None).
+        let hash_a = image::bytes_hash(&png_a);
+        let unchanged = read_raster_file(
+            &client,
+            Path::new("/repo"),
+            "build/shot.png",
+            gpui::ImageFormat::Png,
+            Some((size, Some(t1))),
+            Some(hash_a),
+        )
+        .unwrap();
+        assert!(matches!(unchanged, Read::Unchanged(None)));
+        assert_eq!(*transport.bytes_transferred.lock().unwrap(), 0);
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
+
+        // 2. Touching an ignored PNG (new mtime, identical bytes): poll 1 fetches once and
+        //    returns the persisted stamp; poll 2 with that stamp transfers 0 bytes.
+        transport.requests.lock().unwrap().clear();
+        *transport.bytes_transferred.lock().unwrap() = 0;
+        *transport.state.lock().unwrap() = (png_a.clone(), Some(t2), false);
+        let touched = read_raster_file(
+            &client,
+            Path::new("/repo"),
+            "build/shot.png",
+            gpui::ImageFormat::Png,
+            Some((size, Some(t1))),
+            Some(hash_a),
+        )
+        .unwrap();
+        let persisted_stamp = match touched {
+            Read::Unchanged(Some(stamp)) => stamp,
+            _ => panic!("touched PNG must persist updated stamp without replacing canvas"),
+        };
+        assert_eq!(persisted_stamp, (size, Some(t2)));
+        assert_eq!(*transport.bytes_transferred.lock().unwrap(), png_a.len());
+
+        transport.requests.lock().unwrap().clear();
+        *transport.bytes_transferred.lock().unwrap() = 0;
+        let after_touch = read_raster_file(
+            &client,
+            Path::new("/repo"),
+            "build/shot.png",
+            gpui::ImageFormat::Png,
+            Some(persisted_stamp),
+            Some(hash_a),
+        )
+        .unwrap();
+        assert!(matches!(after_touch, Read::Unchanged(None)));
+        assert_eq!(*transport.bytes_transferred.lock().unwrap(), 0);
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
+
+        // 3. Same-size regeneration with newer modified timestamp: probes without bytes, then fetches bytes.
+        transport.requests.lock().unwrap().clear();
+        *transport.bytes_transferred.lock().unwrap() = 0;
+        *transport.state.lock().unwrap() = (png_b.clone(), Some(t3), false);
+        let reloaded = read_raster_file(
+            &client,
+            Path::new("/repo"),
+            "build/shot.png",
+            gpui::ImageFormat::Png,
+            Some(persisted_stamp),
+            Some(hash_a),
+        )
+        .unwrap();
+        assert!(
+            matches!(reloaded, Read::Image(decoded, (s, Some(m)), _) if s == size && m == t3 && decoded.width == 8)
+        );
+        assert_eq!(transport.requests.lock().unwrap().len(), 2);
+        assert_eq!(*transport.bytes_transferred.lock().unwrap(), png_b.len());
+
+        // 4. Daemon without `modified`: falls back to byte comparison and still reloads same-size changes.
+        transport.requests.lock().unwrap().clear();
+        let hash_b = image::bytes_hash(&png_b);
+        *transport.state.lock().unwrap() = (png_b.clone(), None, false);
+        let legacy_same = read_raster_file(
+            &client,
+            Path::new("/repo"),
+            "build/shot.png",
+            gpui::ImageFormat::Png,
+            Some((size, None)),
+            Some(hash_b),
+        )
+        .unwrap();
+        assert!(matches!(legacy_same, Read::Unchanged(Some((s, None))) if s == size));
+
+        *transport.state.lock().unwrap() = (png_a.clone(), None, false);
+        let legacy_changed = read_raster_file(
+            &client,
+            Path::new("/repo"),
+            "build/shot.png",
+            gpui::ImageFormat::Png,
+            Some((size, None)),
+            Some(hash_b),
+        )
+        .unwrap();
+        assert!(matches!(legacy_changed, Read::Image(_, (s, None), h) if s == size && h == hash_a));
+
+        // 5. Unchanged ignored SVG transfers 0 bytes via conditional probe; touched SVG persists stamp.
+        let svg_bytes =
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#0f0"/></svg>"##
+                .to_vec();
+        let svg_size = svg_bytes.len() as u64;
+        let svg_hash = image::bytes_hash(&svg_bytes);
+        *transport.state.lock().unwrap() = (svg_bytes.clone(), Some(t1), true);
+        transport.requests.lock().unwrap().clear();
+        *transport.bytes_transferred.lock().unwrap() = 0;
+
+        let svg_unchanged = read_text_or_svg_file(
+            &client,
+            Path::new("/repo"),
+            "build/icon.svg",
+            false,
+            true,
+            Some((svg_size, Some(t1))),
+            Some(svg_hash),
+        )
+        .unwrap();
+        assert!(matches!(svg_unchanged, Read::Unchanged(None)));
+        assert_eq!(*transport.bytes_transferred.lock().unwrap(), 0);
+
+        *transport.state.lock().unwrap() = (svg_bytes.clone(), Some(t2), true);
+        let svg_touched = read_text_or_svg_file(
+            &client,
+            Path::new("/repo"),
+            "build/icon.svg",
+            false,
+            true,
+            Some((svg_size, Some(t1))),
+            Some(svg_hash),
+        )
+        .unwrap();
+        let svg_persisted = match svg_touched {
+            Read::Unchanged(Some(stamp)) => stamp,
+            _ => panic!("touched SVG must persist new stamp without replacing canvas"),
+        };
+        assert_eq!(svg_persisted, (svg_size, Some(t2)));
+        assert_eq!(
+            *transport.bytes_transferred.lock().unwrap(),
+            svg_bytes.len()
+        );
+
+        *transport.bytes_transferred.lock().unwrap() = 0;
+        let svg_after_touch = read_text_or_svg_file(
+            &client,
+            Path::new("/repo"),
+            "build/icon.svg",
+            false,
+            true,
+            Some(svg_persisted),
+            Some(svg_hash),
+        )
+        .unwrap();
+        assert!(matches!(svg_after_touch, Read::Unchanged(None)));
+        assert_eq!(*transport.bytes_transferred.lock().unwrap(), 0);
+
+        // 6. Missing `modified` on Text-classified SVG or raster still compares bytes and
+        //    reloads equal-length edits instead of short-circuiting on `(size, None)`.
+        let svg_v2 =
+            br##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#f00"/></svg>"##
+                .to_vec();
+        assert_eq!(svg_v2.len(), svg_bytes.len());
+        *transport.state.lock().unwrap() = (svg_bytes.clone(), None, true);
+        let svg_no_mtime_same = read_text_or_svg_file(
+            &client,
+            Path::new("/repo"),
+            "build/icon.svg",
+            false,
+            true,
+            Some((svg_size, None)),
+            Some(svg_hash),
+        )
+        .unwrap();
+        assert!(matches!(
+            svg_no_mtime_same,
+            Read::Unchanged(Some((s, None))) if s == svg_size
+        ));
+
+        *transport.state.lock().unwrap() = (svg_v2.clone(), None, true);
+        let svg_no_mtime_changed = read_text_or_svg_file(
+            &client,
+            Path::new("/repo"),
+            "build/icon.svg",
+            false,
+            true,
+            Some((svg_size, None)),
+            Some(svg_hash),
+        )
+        .unwrap();
+        assert!(matches!(
+            svg_no_mtime_changed,
+            Read::Text(_, None, Some(super::DecodeOutcome::Ready(_)), (s, None), Some(h))
+                if s == svg_size && h == image::bytes_hash(&svg_v2)
+        ));
+
+        let make_text_jpg = |rgb: [u8; 3]| {
+            use ::image::codecs::jpeg::JpegEncoder;
+            let mut jpg = Vec::new();
+            let pixels = vec![rgb[0], rgb[1], rgb[2]]
+                .into_iter()
+                .cycle()
+                .take(8 * 8 * 3)
+                .collect::<Vec<_>>();
+            JpegEncoder::new(&mut jpg)
+                .write_image(&pixels, 8, 8, ExtendedColorType::Rgb8)
+                .unwrap();
+            jpg
+        };
+        let mut jpg_a = make_text_jpg([255, 0, 0]);
+        let mut jpg_b = make_text_jpg([0, 0, 255]);
+        let max_len = jpg_a.len().max(jpg_b.len());
+        jpg_a.resize(max_len, 0xff);
+        jpg_b.resize(max_len, 0xff);
+        let jpg_size = max_len as u64;
+        let jpg_a_hash = image::bytes_hash(&jpg_a);
+        *transport.state.lock().unwrap() = (jpg_b.clone(), None, true);
+        let jpg_no_mtime_changed = read_raster_file(
+            &client,
+            Path::new("/repo"),
+            "build/photo.jpg",
+            gpui::ImageFormat::Jpeg,
+            Some((jpg_size, None)),
+            Some(jpg_a_hash),
+        )
+        .unwrap();
+        assert!(matches!(
+            jpg_no_mtime_changed,
+            Read::Image(decoded, (s, None), h)
+                if s == jpg_size && h == image::bytes_hash(&jpg_b) && decoded.width == 8
+        ));
+
+        // 7. Ordinary ignored Markdown without `modified` preserves the `(size, None)` fast path
+        //    so it does not reparse or refetch embedded local images on every poll.
+        let md_bytes = b"# Doc\n\n![shot](shot.png)\n".to_vec();
+        let md_size = md_bytes.len() as u64;
+        *transport.state.lock().unwrap() = (md_bytes, None, true);
+        transport.requests.lock().unwrap().clear();
+        let md_unchanged = read_text_or_svg_file(
+            &client,
+            Path::new("/repo"),
+            "build/README.md",
+            true,
+            false,
+            Some((md_size, None)),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(md_unchanged, Read::Unchanged(None)));
+        assert_eq!(
+            transport.requests.lock().unwrap().len(),
+            1,
+            "unchanged Markdown must not refetch embedded local images"
+        );
     }
 }

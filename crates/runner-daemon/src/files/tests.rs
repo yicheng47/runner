@@ -116,7 +116,8 @@ fn a_fixture_repository_reports_what_git_status_reports() {
         super::read(path, "bin.dat", false).unwrap(),
         FileContent::Binary {
             size: 3,
-            bytes: None
+            bytes: None,
+            modified: Some(_),
         }
     ));
     assert!(files.list(path, "../").is_err());

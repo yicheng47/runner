@@ -3847,3 +3847,386 @@ fn stale_non_uncommitted_refresh_does_not_overwrite_newer_base_selection() {
         "scope pill must remain on alt-base after discarding stale refresh A"
     );
 }
+
+fn encode_changes_png(w: u32, h: u32, rgba: [u8; 4]) -> Vec<u8> {
+    use image::codecs::png::PngEncoder;
+    use image::{ExtendedColorType, ImageEncoder};
+    let mut buf = Vec::new();
+    let pixels = vec![rgba[0], rgba[1], rgba[2], rgba[3]]
+        .into_iter()
+        .cycle()
+        .take((w as usize) * (h as usize) * 4)
+        .collect::<Vec<_>>();
+    PngEncoder::new(&mut buf)
+        .write_image(&pixels, w, h, ExtendedColorType::Rgba8)
+        .unwrap();
+    buf
+}
+
+#[test]
+fn image_diff_supports_unified_split_one_sided_undecodable_svg_and_plain_binary() {
+    use crate::app_settings::DiffViewMode;
+
+    let mut h = harness(None);
+    let root = h.repo_path.clone();
+
+    let old_shot = encode_changes_png(200, 100, [255, 0, 0, 255]);
+    let new_shot = encode_changes_png(300, 150, [0, 255, 0, 255]);
+    let added_png = encode_changes_png(64, 64, [0, 0, 255, 255]);
+    let untracked_png = encode_changes_png(48, 80, [255, 255, 0, 255]);
+    let gone_png = encode_changes_png(96, 48, [180, 40, 220, 255]);
+    let broken_old_png = encode_changes_png(72, 72, [20, 200, 200, 255]);
+    let old_svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect width="80" height="40" fill="#ef4444"/></svg>"##;
+    let new_svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="40"><rect width="80" height="40" fill="#22c55e"/></svg>"##;
+
+    std::fs::write(root.join("shot.png"), &old_shot).unwrap();
+    std::fs::write(root.join("gone.png"), &gone_png).unwrap();
+    std::fs::write(root.join("broken_after.png"), &broken_old_png).unwrap();
+    std::fs::write(root.join("icon.svg"), old_svg).unwrap();
+    std::fs::write(root.join("data.bin"), b"\x00old-binary").unwrap();
+    git(&root, &["add", "-A"]);
+    git(&root, &["commit", "-q", "-m", "add image fixtures"]);
+
+    // Prepare uncommitted edits covering every Diff case.
+    std::fs::write(root.join("shot.png"), &new_shot).unwrap();
+    std::fs::write(root.join("added.png"), &added_png).unwrap();
+    git(&root, &["add", "added.png"]);
+    std::fs::write(root.join("untracked.png"), &untracked_png).unwrap();
+    std::fs::remove_file(root.join("gone.png")).unwrap();
+    std::fs::write(
+        root.join("broken_after.png"),
+        b"\x89PNG\r\n\x1a\n\x00truncated",
+    )
+    .unwrap();
+    std::fs::write(root.join("icon.svg"), new_svg).unwrap();
+    std::fs::write(root.join("data.bin"), b"\x00new-binary-payload").unwrap();
+
+    h.store.update(&mut h.visual, |store, cx| {
+        store.update_settings(
+            |s| {
+                s.changes_diff_mode = DiffViewMode::Unified;
+                s.file_viewer_width = 460.;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    h.show(Some(chat_ctx("main-chat", Some("runner"), false)));
+    h.wait("image fixtures listed in Changes", |h| {
+        h.has("CHANGES_ROW shot.png")
+            && h.has("CHANGES_ROW added.png")
+            && h.has("CHANGES_ROW untracked.png")
+            && h.has("CHANGES_ROW gone.png")
+            && h.has("CHANGES_ROW broken_after.png")
+            && h.has("CHANGES_ROW icon.svg")
+            && h.has("CHANGES_ROW data.bin")
+    });
+    let viewer = h.view().read_with(&h.visual, |v, _| v.viewer().clone());
+
+    // 1. Modified image in Unified layout: Before above After at one shared scale.
+    h.click("CHANGES_ROW shot.png");
+    h.wait("shot.png image diff rendered in Unified", |h| {
+        h.has("IMAGE_CANVAS")
+            && h.has("IMAGE_DIFF_CAPTION_BEFORE")
+            && h.has("IMAGE_DIFF_CAPTION_AFTER")
+            && viewer.read_with(&h.visual, |v, _| {
+                v.image_canvas().is_some_and(|c| {
+                    c.read_with(&h.visual, |c, _| {
+                        c.last_image_bounds().is_some() && c.last_after_image_bounds().is_some()
+                    })
+                })
+            })
+    });
+    assert!(viewer.read_with(&h.visual, |v, _| v.active_is_image_tab()));
+    assert!(h.has("CHANGES_DIFF_MODE"));
+    assert!(!h.has("IMAGE_DIFF_SPLIT_DIVIDER"));
+
+    let diff_canvas = viewer
+        .read_with(&h.visual, |v, _| v.image_canvas())
+        .unwrap();
+    diff_canvas.read_with(&h.visual, |c, _| {
+        assert_eq!(c.diff_layout(), Some(DiffViewMode::Unified));
+        let b0 = c.last_image_bounds().unwrap();
+        let b1 = c.last_after_image_bounds().unwrap();
+        assert!(b0.bottom() < b1.top(), "Unified stacks Before above After");
+        let scale0 = f32::from(b0.size.width) / 200.;
+        let scale1 = f32::from(b1.size.width) / 300.;
+        assert!(
+            (scale0 - scale1).abs() < 0.02,
+            "Unified must draw both images at the same scale ({scale0} vs {scale1})"
+        );
+    });
+
+    // 2. Switching to Split in a narrow 460 px viewer auto-maximizes, draws side-by-side
+    //    at one scale with a divider, and Restore chat falls back to Unified while keeping pref.
+    h.click("CHANGES_DIFF_MODE_SPLIT");
+    h.wait("Split auto-maximizes and draws side by side", |h| {
+        h.host
+            .read_with(&h.visual, |host, _| host.maximized)
+            .unwrap()
+            && h.has("IMAGE_DIFF_SPLIT_DIVIDER")
+            && diff_canvas.read_with(&h.visual, |c, _| {
+                c.diff_layout() == Some(DiffViewMode::Split)
+                    && c.last_image_bounds().is_some()
+                    && c.last_after_image_bounds().is_some()
+            })
+    });
+    diff_canvas.read_with(&h.visual, |c, _| {
+        let b0 = c.last_image_bounds().unwrap();
+        let b1 = c.last_after_image_bounds().unwrap();
+        assert!(b0.right() < b1.left(), "Split places Before left of After");
+        let scale0 = f32::from(b0.size.width) / 200.;
+        let scale1 = f32::from(b1.size.width) / 300.;
+        assert!(
+            (scale0 - scale1).abs() < 0.02,
+            "Split must draw both images at the same scale ({scale0} vs {scale1})"
+        );
+    });
+
+    // Zoom until both images overflow their Split panes, then verify lockstep pan via scroll wheel.
+    diff_canvas.update(&mut h.visual, |c, cx| {
+        for _ in 0..10 {
+            c.step_zoom(true, cx);
+        }
+    });
+    h.visual.update(|window, _| window.refresh());
+    h.settle();
+    let (before_pan_0, before_pan_1) = diff_canvas.read_with(&h.visual, |c, _| {
+        (
+            c.last_image_bounds().unwrap().origin,
+            c.last_after_image_bounds().unwrap().origin,
+        )
+    });
+    let canvas_bounds = h.visual.debug_bounds("IMAGE_CANVAS").unwrap();
+    h.visual.simulate_event(gpui::ScrollWheelEvent {
+        position: canvas_bounds.center(),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(px(-30.), px(-20.))),
+        modifiers: Modifiers::default(),
+        touch_phase: gpui::TouchPhase::Moved,
+    });
+    h.visual.update(|window, _| window.refresh());
+    h.settle();
+    let (after_pan_0, after_pan_1) = diff_canvas.read_with(&h.visual, |c, _| {
+        (
+            c.last_image_bounds().unwrap().origin,
+            c.last_after_image_bounds().unwrap().origin,
+        )
+    });
+    assert!(
+        after_pan_0.x < before_pan_0.x && after_pan_0.y < before_pan_0.y,
+        "Before pane must pan with scroll ({before_pan_0:?} -> {after_pan_0:?})"
+    );
+    assert!(
+        after_pan_1.x < before_pan_1.x && after_pan_1.y < before_pan_1.y,
+        "After pane must pan in lockstep ({before_pan_1:?} -> {after_pan_1:?})"
+    );
+
+    // Viewed footer works on image diffs.
+    h.click("CHANGES_DIFF_VIEWED");
+    h.wait("image diff marked viewed", |h| {
+        viewer.read_with(&h.visual, |v, _| v.active_diff_viewed()) == Some((true, false))
+    });
+
+    // Restore chat: falls back to Unified while remembering Split.
+    h.host
+        .update(&mut h.visual, |host, _, cx| {
+            host.maximized = false;
+            cx.notify();
+        })
+        .unwrap();
+    h.wait("Restore chat falls back to Unified", |h| {
+        diff_canvas.read_with(&h.visual, |c, _| {
+            c.diff_layout() == Some(DiffViewMode::Unified)
+        })
+    });
+    assert_eq!(
+        h.store
+            .read_with(&h.visual, |s, _| s.settings.changes_diff_mode),
+        DiffViewMode::Split
+    );
+
+    // 3. One-sided Added, Untracked and Deleted images omit Unified | Split.
+    h.click("CHANGES_ROW added.png");
+    h.wait("added.png shows + Added without Unified|Split", |h| {
+        h.has("IMAGE_DIFF_CAPTION_ADDED") && !h.has("CHANGES_DIFF_MODE")
+    });
+    h.click("CHANGES_ROW untracked.png");
+    h.wait("untracked.png shows + Added without Unified|Split", |h| {
+        h.has("IMAGE_DIFF_CAPTION_ADDED") && !h.has("CHANGES_DIFF_MODE")
+    });
+    h.click("CHANGES_ROW gone.png");
+    h.wait("gone.png shows − Deleted without Unified|Split", |h| {
+        h.has("IMAGE_DIFF_CAPTION_DELETED") && !h.has("CHANGES_DIFF_MODE")
+    });
+
+    // 4. One undecodable side: Before renders while After shows the decode error.
+    h.click("CHANGES_ROW broken_after.png");
+    h.wait("broken_after.png renders Before and errors on After", |h| {
+        h.has("IMAGE_VIEW_IMG") && h.has("IMAGE_DIFF_SIDE_FAILED")
+    });
+
+    // 5. SVG Diff opens Rendered with Rendered | Source in header; Source is line diff.
+    h.click("CHANGES_ROW icon.svg");
+    h.wait("icon.svg diff opens Rendered with header toggle", |h| {
+        h.has("IMAGE_CANVAS") && h.has("DIFF_SVG_SOURCE")
+    });
+    h.click("DIFF_SVG_SOURCE_BTN");
+    h.wait("icon.svg diff switches to Source line diff", |h| {
+        h.has("CHANGES_DIFF_CODE")
+            && viewer
+                .read_with(&h.visual, |v, _| v.tab_diff_view())
+                .is_some()
+    });
+    h.click("DIFF_SVG_RENDERED");
+    h.wait("icon.svg diff switches back to Rendered", |h| {
+        h.has("IMAGE_CANVAS")
+            && viewer
+                .read_with(&h.visual, |v, _| v.image_canvas())
+                .is_some()
+    });
+
+    // 6. Non-image binary keeps its binary placeholder.
+    h.click("CHANGES_ROW data.bin");
+    h.wait("data.bin keeps binary placeholder", |h| {
+        h.has("CHANGES_PLACEHOLDER_BINARY")
+    });
+}
+
+fn encode_changes_jpeg_with_long_ascii_comment(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
+    use image::codecs::jpeg::JpegEncoder;
+    use image::{ExtendedColorType, ImageEncoder};
+    let mut jpg = Vec::new();
+    let pixels = vec![rgb[0], rgb[1], rgb[2]]
+        .into_iter()
+        .cycle()
+        .take((w as usize) * (h as usize) * 3)
+        .collect::<Vec<_>>();
+    JpegEncoder::new(&mut jpg)
+        .write_image(&pixels, w, h, ExtendedColorType::Rgb8)
+        .unwrap();
+    // Insert a >8 KB ASCII COM (0xFF 0xFE) segment right after SOI (0xFF 0xD8) so there is
+    // no NUL byte in the first 8 KB, causing git's 8 KB sniff to classify it as Text.
+    let comment = vec![b'A'; 9 * 1024];
+    let seg_len = (comment.len() + 2) as u16;
+    let mut out = Vec::with_capacity(jpg.len() + comment.len() + 4);
+    out.extend_from_slice(&jpg[..2]);
+    out.extend_from_slice(&[0xff, 0xfe]);
+    out.extend_from_slice(&seg_len.to_be_bytes());
+    out.extend_from_slice(&comment);
+    out.extend_from_slice(&jpg[2..]);
+    assert!(
+        !out[..runner_core::protocol::files::BINARY_SNIFF_BYTES].contains(&0),
+        "first 8 KB must contain no NUL bytes"
+    );
+    out
+}
+
+#[test]
+fn prepare_diff_body_detects_text_classified_raster_preserves_lfs_and_rejects_oversized_svg() {
+    use runner_core::companion::TerminalBytes;
+    use runner_core::protocol::changes::{ChangesDiff, DiffBody};
+
+    let make_diff = |path: &str, old: Vec<u8>, new: Vec<u8>| ChangesDiff {
+        path: path.into(),
+        status: FileStatus::Modified,
+        counts: DiffCounts::Lines {
+            added: 1,
+            removed: 1,
+        },
+        old_blob_id: Some("111".into()),
+        new_blob_id: Some("222".into()),
+        mode_change: None,
+        conflicted: false,
+        body: DiffBody::Text {
+            old: TerminalBytes(old),
+            new: TerminalBytes(new),
+            hunks: Vec::new(),
+        },
+    };
+
+    // 1. JPEG whose first 8 KB have no NUL bytes still opens as an image Diff.
+    let old_jpg = encode_changes_jpeg_with_long_ascii_comment(32, 24, [255, 0, 0]);
+    let new_jpg = encode_changes_jpeg_with_long_ascii_comment(48, 32, [0, 255, 0]);
+    let jpg_body = super::prepare_diff_body(&make_diff("photo.jpg", old_jpg, new_jpg));
+    match jpg_body {
+        super::PreparedDiffBody::Image {
+            sides: crate::surfaces::files::image::DiffSides::Two { before, after },
+        } => {
+            assert!(matches!(
+                before.state,
+                crate::surfaces::files::image::DiffSideState::Ready(ref img)
+                    if img.width == 32 && img.height == 24
+            ));
+            assert!(matches!(
+                after.state,
+                crate::surfaces::files::image::DiffSideState::Ready(ref img)
+                    if img.width == 48 && img.height == 32
+            ));
+        }
+        _ => panic!("expected PreparedDiffBody::Image for JPEG classified as Text"),
+    }
+
+    // 2. Git LFS pointer edit on `.png` and plain UTF-8 text starting with "BM..." on `.bmp`
+    //    both keep normal text line Diffs.
+    let lfs_old =
+        b"version https://git-lfs.github.com/spec/v1\noid sha256:aaa\nsize 100\n".to_vec();
+    let lfs_new =
+        b"version https://git-lfs.github.com/spec/v1\noid sha256:bbb\nsize 200\n".to_vec();
+    let lfs_body = super::prepare_diff_body(&make_diff("asset.png", lfs_old, lfs_new));
+    assert!(matches!(lfs_body, super::PreparedDiffBody::Unified { .. }));
+
+    let bmp_text_old = b"BMP header specification v1\n".to_vec();
+    let bmp_text_new = b"BMP header specification v2\n".to_vec();
+    assert!(crate::surfaces::files::image::detect_raster_magic(&bmp_text_old).is_some());
+    let bmp_text_body =
+        super::prepare_diff_body(&make_diff("notes.bmp", bmp_text_old, bmp_text_new));
+    assert!(matches!(
+        bmp_text_body,
+        super::PreparedDiffBody::Unified { .. }
+    ));
+
+    // When one side IS a real raster image and the other is plain text, keep the image Diff
+    // so the valid image renders alongside the per-side placeholder.
+    let mixed_jpg = encode_changes_jpeg_with_long_ascii_comment(32, 24, [10, 20, 30]);
+    let mixed_body = super::prepare_diff_body(&make_diff(
+        "photo.jpg",
+        b"version https://git-lfs.github.com/spec/v1\noid sha256:aaa\n".to_vec(),
+        mixed_jpg,
+    ));
+    assert!(matches!(
+        mixed_body,
+        super::PreparedDiffBody::Image {
+            sides: crate::surfaces::files::image::DiffSides::Two {
+                ref before,
+                ref after
+            }
+        } if matches!(before.state, crate::surfaces::files::image::DiffSideState::Failed)
+            && matches!(after.state, crate::surfaces::files::image::DiffSideState::Ready(_))
+    ));
+
+    // 3. Oversized SVG (> 16384 px) produces TooManyPixels in Diff without rasterizing.
+    let ok_svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="32"><rect width="64" height="32" fill="#0f0"/></svg>"##.to_vec();
+    let huge_svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="20000" height="100"><rect width="20000" height="100" fill="#f00"/></svg>"##.to_vec();
+    let svg_body = super::prepare_diff_body(&make_diff("icon.svg", ok_svg, huge_svg));
+    match svg_body {
+        super::PreparedDiffBody::Svg {
+            sides: crate::surfaces::files::image::DiffSides::Two { before, after },
+            ..
+        } => {
+            assert!(matches!(
+                before.state,
+                crate::surfaces::files::image::DiffSideState::Ready(_)
+            ));
+            assert!(matches!(
+                after.state,
+                crate::surfaces::files::image::DiffSideState::TooManyPixels {
+                    width: 20_000,
+                    height: 100,
+                    ..
+                }
+            ));
+        }
+        _ => panic!("expected PreparedDiffBody::Svg with TooManyPixels side"),
+    }
+}

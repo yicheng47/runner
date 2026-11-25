@@ -6,6 +6,7 @@ pub(crate) mod code;
 pub(crate) mod document;
 mod finder;
 pub(crate) mod highlight;
+pub(crate) mod image;
 mod links;
 pub(crate) mod open_file;
 mod panel_view;

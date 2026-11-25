@@ -5,7 +5,8 @@ use std::path::{Component, Path, PathBuf};
 
 use runner_core::companion::TerminalBytes;
 use runner_core::protocol::files::{
-    DirEntry, EntryKind, FileContent, GitStatus, IndexBudget, BINARY_SNIFF_BYTES, MAX_READ_BYTES,
+    DirEntry, EntryKind, FileContent, FileStamp, GitStatus, IndexBudget, BINARY_SNIFF_BYTES,
+    MAX_READ_BYTES,
 };
 
 use crate::error::{Error, Result};
@@ -174,6 +175,18 @@ pub fn walk(root: &Path, budget: &mut IndexBudget) -> (Vec<String>, bool) {
 /// and its bytes too with `want_bytes`. Either way, nothing over
 /// [`MAX_READ_BYTES`] and nothing outside the root.
 pub fn read(root: &Path, relative: &str, want_bytes: bool) -> Result<FileContent> {
+    read_if_changed(root, relative, want_bytes, None)
+}
+
+/// Conditional variant of [`read`]: when `if_unchanged` carries a known
+/// `(size, Some(modified))` that matches the opened file handle, returns
+/// [`FileContent::Unchanged`] without reading or transferring file bytes.
+pub fn read_if_changed(
+    root: &Path,
+    relative: &str,
+    want_bytes: bool,
+    if_unchanged: Option<FileStamp>,
+) -> Result<FileContent> {
     let path = resolve(root, relative)?;
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
@@ -204,10 +217,60 @@ pub fn read(root: &Path, relative: &str, want_bytes: bool) -> Result<FileContent
         }
         Err(error) => return Err(Error::msg(format!("{}: {error}", path.display()))),
     };
-    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
-        return Err(not_a_file());
+    let file_meta = match file.metadata() {
+        Ok(file_meta) if file_meta.is_file() => file_meta,
+        _ => return Err(not_a_file()),
+    };
+    if file_meta.len() > MAX_READ_BYTES {
+        return Ok(FileContent::TooLarge {
+            size: file_meta.len(),
+        });
     }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    let modified = file_meta
+        .modified()
+        .ok()
+        .or_else(|| metadata.modified().ok())
+        .map(chrono::DateTime::from);
+    if let Some(expected) = if_unchanged
+        && expected.modified.is_some()
+        && file_meta.len() == expected.size
+        && modified == expected.modified
+    {
+        return Ok(FileContent::Unchanged);
+    }
+    if !want_bytes {
+        let mut sniff = Vec::with_capacity((file_meta.len() as usize).min(BINARY_SNIFF_BYTES));
+        (&file)
+            .take(BINARY_SNIFF_BYTES as u64)
+            .read_to_end(&mut sniff)
+            .map_err(|error| Error::msg(format!("{}: {error}", path.display())))?;
+        if sniff.contains(&0) {
+            let size = file_meta.len().max(sniff.len() as u64);
+            if size > MAX_READ_BYTES {
+                return Ok(FileContent::TooLarge { size });
+            }
+            return Ok(FileContent::Binary {
+                size,
+                bytes: None,
+                modified,
+            });
+        }
+        let mut bytes = sniff;
+        let remaining = (MAX_READ_BYTES + 1).saturating_sub(bytes.len() as u64);
+        file.take(remaining)
+            .read_to_end(&mut bytes)
+            .map_err(|error| Error::msg(format!("{}: {error}", path.display())))?;
+        let size = bytes.len() as u64;
+        if size > MAX_READ_BYTES {
+            return Ok(FileContent::TooLarge { size });
+        }
+        return Ok(FileContent::Text {
+            bytes: TerminalBytes(bytes),
+            size,
+            modified,
+        });
+    }
+    let mut bytes = Vec::with_capacity((file_meta.len() as usize).min(MAX_READ_BYTES as usize));
     file.take(MAX_READ_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| Error::msg(format!("{}: {error}", path.display())))?;
@@ -218,13 +281,14 @@ pub fn read(root: &Path, relative: &str, want_bytes: bool) -> Result<FileContent
     if bytes[..bytes.len().min(BINARY_SNIFF_BYTES)].contains(&0) {
         return Ok(FileContent::Binary {
             size,
-            bytes: want_bytes.then_some(TerminalBytes(bytes)),
+            bytes: Some(TerminalBytes(bytes)),
+            modified,
         });
     }
     Ok(FileContent::Text {
         bytes: TerminalBytes(bytes),
         size,
-        modified: metadata.modified().ok().map(chrono::DateTime::from),
+        modified,
     })
 }
 
@@ -405,13 +469,14 @@ mod tests {
         let mut binary = vec![b'a'; BINARY_SNIFF_BYTES];
         binary[BINARY_SNIFF_BYTES - 1] = 0;
         std::fs::write(dir.path().join("bin"), &binary).unwrap();
-        assert_eq!(
+        assert!(matches!(
             read(dir.path(), "bin", false).unwrap(),
             FileContent::Binary {
-                size: BINARY_SNIFF_BYTES as u64,
+                size,
                 bytes: None,
-            }
-        );
+                modified: Some(_),
+            } if size == BINARY_SNIFF_BYTES as u64
+        ));
         let mut late_nul = vec![b'a'; BINARY_SNIFF_BYTES + 1];
         late_nul[BINARY_SNIFF_BYTES] = 0;
         std::fs::write(dir.path().join("late"), &late_nul).unwrap();
@@ -452,20 +517,22 @@ mod tests {
         let dir = tree();
         let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
         std::fs::write(dir.path().join("shot.png"), &png).unwrap();
-        assert_eq!(
+        assert!(matches!(
             read(dir.path(), "shot.png", false).unwrap(),
             FileContent::Binary {
-                size: png.len() as u64,
+                size,
                 bytes: None,
-            }
-        );
-        assert_eq!(
+                modified: Some(_),
+            } if size == png.len() as u64
+        ));
+        assert!(matches!(
             read(dir.path(), "shot.png", true).unwrap(),
             FileContent::Binary {
-                size: png.len() as u64,
-                bytes: Some(TerminalBytes(png)),
-            }
-        );
+                size,
+                bytes: Some(bytes),
+                modified: Some(_),
+            } if size == png.len() as u64 && bytes.0 == png
+        ));
         assert!(
             matches!(
                 read(dir.path(), "README.md", true).unwrap(),
@@ -478,7 +545,7 @@ mod tests {
         std::fs::write(dir.path().join("limit.bin"), &limit).unwrap();
         assert!(matches!(
             read(dir.path(), "limit.bin", true).unwrap(),
-            FileContent::Binary { size, bytes: Some(bytes) }
+            FileContent::Binary { size, bytes: Some(bytes), modified: Some(_) }
                 if size == MAX_READ_BYTES && bytes.0.len() == MAX_READ_BYTES as usize
         ));
         limit.push(0);
@@ -507,5 +574,69 @@ mod tests {
             assert!(read(dir.path(), "out/secret.png", true).is_err());
             assert!(read(dir.path(), "linked.png", true).is_err());
         }
+    }
+
+    #[test]
+    fn conditional_read_returns_unchanged_without_transferring_bytes_until_modified() {
+        let dir = tree();
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"/>";
+        std::fs::write(dir.path().join("icon.svg"), svg).unwrap();
+
+        let (size, modified) = match read(dir.path(), "icon.svg", false).unwrap() {
+            FileContent::Text {
+                bytes,
+                size,
+                modified: Some(modified),
+            } => {
+                assert_eq!(bytes.0, svg);
+                (size, modified)
+            }
+            other => panic!("expected Text with modified, got {other:?}"),
+        };
+
+        assert_eq!(
+            read_if_changed(
+                dir.path(),
+                "icon.svg",
+                false,
+                Some(FileStamp {
+                    size,
+                    modified: Some(modified),
+                }),
+            )
+            .unwrap(),
+            FileContent::Unchanged
+        );
+
+        // Missing modified in the stamp never short-circuits to Unchanged.
+        assert!(matches!(
+            read_if_changed(
+                dir.path(),
+                "icon.svg",
+                false,
+                Some(FileStamp {
+                    size,
+                    modified: None,
+                }),
+            )
+            .unwrap(),
+            FileContent::Text { .. }
+        ));
+
+        // Different timestamp reads the file again.
+        let earlier = modified - chrono::Duration::seconds(5);
+        assert!(matches!(
+            read_if_changed(
+                dir.path(),
+                "icon.svg",
+                false,
+                Some(FileStamp {
+                    size,
+                    modified: Some(earlier),
+                }),
+            )
+            .unwrap(),
+            FileContent::Text { .. }
+        ));
     }
 }

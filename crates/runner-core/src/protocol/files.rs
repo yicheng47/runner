@@ -32,6 +32,17 @@ pub const MAX_STATUS_IGNORED_BYTES: usize = 8 * 1024 * 1024;
 pub const FILES_CHANGED_EVENT: &str = "files/changed";
 pub const FILES_STATUS_EVENT: &str = "files/status";
 
+/// Whether `path`'s extension names a viewer-supported image format.
+pub fn is_image_path(path: &str) -> bool {
+    let Some((_, ext)) = path.rsplit_once('.') else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg"
+    )
+}
+
 /// What a Files view belongs to: a chat or terminal session, or a mission.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
@@ -349,6 +360,14 @@ pub struct WorktreeEntry {
     pub uncommitted: Option<usize>,
 }
 
+/// File metadata stamp for conditional `files_read` probes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileStamp {
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FileContent {
@@ -361,14 +380,21 @@ pub enum FileContent {
     Binary {
         size: u64,
         /// The file's bytes, only when `files_read` asked for them, as the
-        /// viewer does for a Markdown file's local images.
+        /// viewer does for image tabs and Markdown local images.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bytes: Option<TerminalBytes>,
+        /// Last modified time, used to detect regenerated binary files (e.g.
+        /// images overwritten at the same byte size) without re-sending bytes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        modified: Option<chrono::DateTime<chrono::Utc>>,
     },
     /// Over [`MAX_READ_BYTES`], so not read.
     TooLarge {
         size: u64,
     },
+    /// Returned only when `files_read` passed `if_unchanged` and the file's
+    /// on-disk size and modified time still match.
+    Unchanged,
     Missing,
 }
 
@@ -611,17 +637,23 @@ mod tests {
         let plain = FileContent::Binary {
             size: 3,
             bytes: None,
+            modified: None,
         };
         assert_eq!(
             serde_json::to_value(&plain).unwrap(),
             serde_json::json!({"kind": "binary", "size": 3})
         );
+        let modified = chrono::DateTime::parse_from_rfc3339("2026-11-25T01:02:03.123456Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
         let with_bytes = FileContent::Binary {
             size: 3,
             bytes: Some(TerminalBytes(b"\0hi".to_vec())),
+            modified: Some(modified),
         };
         let wire = serde_json::to_value(&with_bytes).unwrap();
         assert_eq!(wire["bytes"], "AGhp");
+        assert!(wire["modified"].is_string());
         assert_eq!(
             serde_json::from_value::<FileContent>(wire).unwrap(),
             with_bytes
@@ -632,7 +664,7 @@ mod tests {
             plain
         );
 
-        // A client from before `want_bytes` leaves it out; it reads as false.
+        // A client from before `want_bytes` / `if_unchanged` leaves both out.
         let old: crate::protocol::api::Request = serde_json::from_value(
             serde_json::json!({"files_read": {"root": "/repo", "path": "a.png"}}),
         )
@@ -641,8 +673,54 @@ mod tests {
             old,
             crate::protocol::api::Request::files_read {
                 want_bytes: None,
+                if_unchanged: None,
                 ..
             }
         ));
+
+        let stamped = crate::protocol::api::Request::files_read {
+            root: PathBuf::from("/repo"),
+            path: "a.svg".into(),
+            want_bytes: None,
+            if_unchanged: Some(FileStamp {
+                size: 42,
+                modified: Some(modified),
+            }),
+        };
+        let wire = serde_json::to_value(&stamped).unwrap();
+        let decoded: crate::protocol::api::Request = serde_json::from_value(wire).unwrap();
+        assert!(matches!(
+            decoded,
+            crate::protocol::api::Request::files_read {
+                want_bytes: None,
+                if_unchanged: Some(FileStamp { size: 42, modified: Some(m) }),
+                ..
+            } if m == modified
+        ));
+        let unchanged_wire = serde_json::to_value(&FileContent::Unchanged).unwrap();
+        assert_eq!(unchanged_wire, serde_json::json!({"kind": "unchanged"}));
+        assert_eq!(
+            serde_json::from_value::<FileContent>(unchanged_wire).unwrap(),
+            FileContent::Unchanged
+        );
+    }
+
+    #[test]
+    fn image_paths_recognize_supported_extensions() {
+        for path in [
+            "a.png",
+            "dir/b.PNG",
+            "photo.jpg",
+            "photo.JPEG",
+            "anim.gif",
+            "pic.webp",
+            "raw.bmp",
+            "icon.svg",
+        ] {
+            assert!(is_image_path(path), "{path}");
+        }
+        for path in ["a.txt", "a.tiff", "a.ico", "a.avif", "png", "dir/file"] {
+            assert!(!is_image_path(path), "{path}");
+        }
     }
 }

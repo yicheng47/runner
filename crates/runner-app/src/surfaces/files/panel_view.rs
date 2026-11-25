@@ -564,6 +564,14 @@ impl FilesView {
         self.viewer.read(cx).code_view()
     }
 
+    pub(crate) fn image_canvas(&self, cx: &App) -> Option<Entity<super::image::ImageCanvas>> {
+        self.viewer.read(cx).image_canvas()
+    }
+
+    pub(crate) fn active_is_image_tab(&self, cx: &App) -> bool {
+        self.viewer.read(cx).active_is_image_tab()
+    }
+
     pub(crate) fn showing_diff(&self, cx: &App) -> bool {
         self.viewer.read(cx).showing_diff()
     }

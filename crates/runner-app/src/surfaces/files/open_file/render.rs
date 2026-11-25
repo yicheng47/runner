@@ -6,8 +6,8 @@
 use super::*;
 use crate::file_icons::{self, IconSet};
 use crate::surfaces::changes::{
-    render_shared_diff_header, render_shared_diff_placeholder, DiffHeaderProps, DiffModeCallback,
-    PlaceholderViewedFooter,
+    render_diff_viewed_footer, render_shared_diff_header, render_shared_diff_placeholder,
+    DiffHeaderProps, DiffModeCallback, PlaceholderViewedFooter,
 };
 
 const LIST_WIDTH: f32 = 300.;
@@ -310,8 +310,19 @@ impl UnifiedViewer {
         }
         let showing_diff = self.active_showing_diff();
         let deleted = self.active_deleted();
+        let is_image = self.active_is_image();
         let code_active = !showing_diff && !deleted;
         let diff_active = showing_diff;
+        let code_label_key = if is_image {
+            "viewer.image"
+        } else {
+            "viewer.code"
+        };
+        let deleted_tip_key = if is_image {
+            "viewer.file_deleted_image_unavailable"
+        } else {
+            "viewer.file_deleted_code_unavailable"
+        };
 
         let code_btn = div()
             .id("viewer-mode-code")
@@ -333,15 +344,12 @@ impl UnifiedViewer {
             .items_center()
             .text_size(theme::text_meta())
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .when(deleted, |el| {
+            .when(deleted, move |el| {
                 el.opacity(0.4)
                     .text_color(theme::faint())
                     .cursor_default()
-                    .tooltip(|_, cx| {
-                        runner_app::ui::tooltip::tooltip_view(
-                            crate::i18n::t("viewer.file_deleted_code_unavailable"),
-                            cx,
-                        )
+                    .tooltip(move |_, cx| {
+                        runner_app::ui::tooltip::tooltip_view(crate::i18n::t(deleted_tip_key), cx)
                     })
             })
             .when(!deleted && code_active, |el| {
@@ -358,7 +366,7 @@ impl UnifiedViewer {
                         this.set_active_mode(DocMode::Code, window, cx);
                     }))
             })
-            .child(crate::i18n::text("viewer.code"));
+            .child(crate::i18n::text(code_label_key));
 
         let diff_btn = div()
             .id("viewer-mode-diff")
@@ -605,11 +613,36 @@ impl UnifiedViewer {
     ) -> AnyElement {
         let deleted = doc.is_working_tree_deleted(&tab.key);
         let name = tab.name().to_owned();
-        let folder = abbreviate_folder(tab.path());
+        let image_meta = match &doc.content {
+            Content::Image {
+                width,
+                height,
+                size,
+                ..
+            }
+            | Content::Deleted(Some(DeletedContent::Image {
+                width,
+                height,
+                size,
+                ..
+            })) => Some(image::format_dimensions_and_size(*width, *height, *size)),
+            Content::Text(_) | Content::Deleted(Some(DeletedContent::Text(_))) => doc
+                .svg_meta
+                .map(|(w, h, s)| image::format_dimensions_and_size(w, h, s)),
+            _ => None,
+        };
+        let folder = if image_meta.is_some() || (self.active_is_image() && !doc.svg_invalid) {
+            None
+        } else {
+            abbreviate_folder(tab.path())
+        };
         let hunks = self.active_hunk_lines();
         let hunk_count = hunks.len();
+        let show_hunk_badge = hunk_count > 0 && !deleted && self.active_image_canvas().is_none();
         let markdown_source = self.active_markdown();
-        let can_find = self.active_view().is_some() || self.active_rendered().is_some();
+        let can_find = self.active_view().is_some()
+            || self.active_rendered().is_some()
+            || self.shows_svg_rendered(doc);
         let find_shortcut = if cfg!(target_os = "macos") {
             "⌘F"
         } else {
@@ -649,6 +682,20 @@ impl UnifiedViewer {
                             .text_color(theme::text())
                             .child(name),
                     )
+                    .children(image_meta.map(|meta| {
+                        let meta_for_selector = meta.clone();
+                        div()
+                            .when(cfg!(test), move |el| {
+                                let meta = meta_for_selector.clone();
+                                el.debug_selector(move || format!("FILE_IMAGE_META {meta}"))
+                            })
+                            .min_w(px(0.))
+                            .flex_shrink(2.)
+                            .truncate()
+                            .text_size(theme::text_meta())
+                            .text_color(theme::muted())
+                            .child(meta)
+                    }))
                     .children(folder.map(|f| {
                         div()
                             .min_w(px(0.))
@@ -658,7 +705,7 @@ impl UnifiedViewer {
                             .text_color(theme::faint())
                             .child(f)
                     }))
-                    .when(hunk_count > 0 && !deleted, |el| {
+                    .when(show_hunk_badge, |el| {
                         el.child(
                             div()
                                 .id("file-hunks-badge")
@@ -930,11 +977,90 @@ impl UnifiedViewer {
                     .into_any_element(),
                 )
             }
-            Content::Text(_) if self.shows_rendered(doc) => {
+            Content::Image { canvas, .. } => canvas.clone().into_any_element(),
+            Content::ImageTooLarge {
+                width,
+                height,
+                size,
+            } => {
+                let (_, effective) = found_editors(cx);
+                self.render_placeholder(
+                    "FILE_IMAGE_TOO_LARGE",
+                    "triangle-alert.svg",
+                    format!(
+                        "{name} · {}",
+                        image::format_dimensions_and_size(*width, *height, *size)
+                    ),
+                    crate::i18n::text("viewer.image_too_many_pixels").to_owned(),
+                    Button::new(
+                        "file-open-large",
+                        crate::i18n::tf(
+                            "format.open_in_editor",
+                            &[("editor", effective.label().to_owned())],
+                        ),
+                    )
+                    .variant(ButtonVariant::Secondary)
+                    .debug_selector("FILE_OPEN_LARGE")
+                    .on_press(move |_, cx| {
+                        let _ = root.update(cx, |this, cx| this.open_in(None, cx));
+                    })
+                    .into_any_element(),
+                )
+            }
+            Content::ImageFailed => self.render_placeholder(
+                "FILE_IMAGE_FAILED",
+                "image-off.svg",
+                crate::i18n::text("viewer.image_decode_failed_title").to_owned(),
+                crate::i18n::tf("viewer.image_decode_failed_body", &[("name", name)]),
+                Button::new(
+                    "file-open-default",
+                    crate::i18n::text("ui.open_in_default_app"),
+                )
+                .variant(ButtonVariant::Secondary)
+                .debug_selector("FILE_OPEN_DEFAULT")
+                .on_press(move |_, cx| {
+                    let _ = root.update(cx, |this, cx| {
+                        if let Some(path) = this.active_path() {
+                            this.launch(Some(FileLinkEditor::DefaultApp), path, None, cx);
+                        }
+                    });
+                })
+                .into_any_element(),
+            ),
+            Content::Text(_) if self.shows_markdown_rendered(doc) => {
                 self.render_rendered(doc.rendered.clone(), None)
             }
+            Content::Text(_) if self.shows_svg_rendered(doc) => {
+                if let Some((width, height, size)) = doc.svg_too_large {
+                    let (_, effective) = found_editors(cx);
+                    self.render_placeholder(
+                        "FILE_IMAGE_TOO_LARGE",
+                        "triangle-alert.svg",
+                        format!(
+                            "{name} · {}",
+                            image::format_dimensions_and_size(width, height, size)
+                        ),
+                        crate::i18n::text("viewer.image_too_many_pixels").to_owned(),
+                        Button::new(
+                            "file-open-large",
+                            crate::i18n::tf(
+                                "format.open_in_editor",
+                                &[("editor", effective.label().to_owned())],
+                            ),
+                        )
+                        .variant(ButtonVariant::Secondary)
+                        .debug_selector("FILE_OPEN_LARGE")
+                        .on_press(move |_, cx| {
+                            let _ = root.update(cx, |this, cx| this.open_in(None, cx));
+                        })
+                        .into_any_element(),
+                    )
+                } else {
+                    self.render_svg_rendered(doc.svg_canvas.clone(), None)
+                }
+            }
             Content::Text(view) => self.render_code(view.clone(), None, window, cx),
-            Content::Deleted(view) => {
+            Content::Deleted(kept) => {
                 let close_root = cx.weak_entity();
                 let banner = div()
                     .when(cfg!(test), |element| {
@@ -998,11 +1124,40 @@ impl UnifiedViewer {
                             .child(crate::i18n::text("ui.close_file_tab")),
                     )
                     .into_any_element();
-                match view {
-                    Some(_) if self.shows_rendered(doc) => {
+                match kept {
+                    Some(DeletedContent::Text(_)) if self.shows_markdown_rendered(doc) => {
                         self.render_rendered(doc.rendered.clone(), Some(banner))
                     }
-                    Some(view) => self.render_code(view.clone(), Some(banner), window, cx),
+                    Some(DeletedContent::Text(_)) if self.shows_svg_rendered(doc) => {
+                        if let Some((width, height, size)) = doc.svg_too_large {
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .min_h(px(0.))
+                                .flex()
+                                .flex_col()
+                                .child(banner)
+                                .child(self.render_placeholder(
+                                    "FILE_IMAGE_TOO_LARGE",
+                                    "triangle-alert.svg",
+                                    format!(
+                                        "{name} · {}",
+                                        image::format_dimensions_and_size(width, height, size)
+                                    ),
+                                    crate::i18n::text("viewer.image_too_many_pixels").to_owned(),
+                                    div().into_any_element(),
+                                ))
+                                .into_any_element()
+                        } else {
+                            self.render_svg_rendered(doc.svg_canvas.clone(), Some(banner))
+                        }
+                    }
+                    Some(DeletedContent::Text(view)) => {
+                        self.render_code(view.clone(), Some(banner), window, cx)
+                    }
+                    Some(DeletedContent::Image { canvas, .. }) => {
+                        self.render_svg_rendered(Some(canvas.clone()), Some(banner))
+                    }
                     None => div()
                         .flex_1()
                         .flex()
@@ -1030,7 +1185,7 @@ impl UnifiedViewer {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let effective_mode = self.effective_diff_mode(cx);
-        let (status_opt, counts_opt, mode_change, conflicted, viewed_tuple) = match &doc.diff {
+        let (status_opt, mut counts_opt, mode_change, conflicted, viewed_tuple) = match &doc.diff {
             FileTabDiff::Loaded(loaded) => (
                 Some(&loaded.status),
                 Some(loaded.counts),
@@ -1047,6 +1202,114 @@ impl UnifiedViewer {
                 doc.hint_viewed,
             ),
         };
+        let hide_bin_count = match &doc.diff {
+            FileTabDiff::Loaded(loaded) => matches!(loaded.kind, LoadedDiffKind::Image { .. }),
+            FileTabDiff::Idle | FileTabDiff::Loading => raster_image_format(&key.path).is_some(),
+            _ => false,
+        };
+        if hide_bin_count && matches!(counts_opt, Some(DiffCounts::Binary)) {
+            counts_opt = None;
+        }
+        let one_sided_image_diff = match &doc.diff {
+            FileTabDiff::Loaded(loaded) => match &loaded.kind {
+                LoadedDiffKind::Image { one_sided, .. } => *one_sided,
+                LoadedDiffKind::Svg {
+                    source: false,
+                    one_sided,
+                    ..
+                } => *one_sided,
+                _ => false,
+            },
+            FileTabDiff::Idle | FileTabDiff::Loading => {
+                markdown::image_format(&key.path).is_some()
+                    && matches!(
+                        status_opt,
+                        Some(FileStatus::Added | FileStatus::Untracked | FileStatus::Deleted)
+                    )
+            }
+            _ => false,
+        };
+        let svg_diff_source = match &doc.diff {
+            FileTabDiff::Loaded(loaded) => match &loaded.kind {
+                LoadedDiffKind::Svg { source, .. } => Some(*source),
+                _ => None,
+            },
+            _ => None,
+        };
+        let extra_control = svg_diff_source.map(|source| {
+            let toggle_key = key.clone();
+            let pill = |id: &'static str,
+                        selector: &'static str,
+                        label_key: &'static str,
+                        active: bool,
+                        target_source: bool| {
+                let toggle_key = toggle_key.clone();
+                div()
+                    .id(id)
+                    .when(cfg!(test), move |el| {
+                        el.debug_selector(move || {
+                            if active {
+                                format!("{selector} active")
+                            } else {
+                                selector.into()
+                            }
+                        })
+                    })
+                    .h(px(22.))
+                    .px(px(8.))
+                    .rounded(px(4.))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .text_size(theme::text_meta())
+                    .when(active, |el| {
+                        el.bg(theme::raised())
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::text())
+                    })
+                    .when(!active, |el| {
+                        el.text_color(theme::muted())
+                            .hover(|h| h.text_color(theme::text()))
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .when(!active, |el| {
+                        el.on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.set_svg_diff_source(&toggle_key, target_source, window, cx);
+                        }))
+                    })
+                    .child(crate::i18n::text(label_key))
+            };
+            div()
+                .id("diff-svg-source")
+                .when(cfg!(test), |el| {
+                    el.debug_selector(|| "DIFF_SVG_SOURCE".into())
+                })
+                .flex_none()
+                .p(px(2.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(theme::border())
+                .bg(theme::panel())
+                .flex()
+                .items_center()
+                .gap(px(2.))
+                .child(pill(
+                    "diff-svg-rendered",
+                    "DIFF_SVG_RENDERED",
+                    "side_panel.rendered",
+                    !source,
+                    false,
+                ))
+                .child(pill(
+                    "diff-svg-source-btn",
+                    "DIFF_SVG_SOURCE_BTN",
+                    "side_panel.source",
+                    source,
+                    true,
+                ))
+                .into_any_element()
+        });
         let deleted = doc.is_working_tree_deleted(key);
         let weak = cx.weak_entity();
         let mode_handler: DiffModeCallback = Rc::new(move |mode, window, cx| {
@@ -1072,7 +1335,8 @@ impl UnifiedViewer {
             mode_change,
             conflicted,
             compare_label,
-            mode_switch: Some((effective_mode, mode_handler)),
+            extra_control,
+            mode_switch: (!one_sided_image_diff).then_some((effective_mode, mode_handler)),
             viewed,
             open_external: None,
             open_in_control,
@@ -1143,6 +1407,68 @@ impl UnifiedViewer {
                     entity.update(cx, |v, cx| v.set_mode(effective_mode, cx));
                     entity.clone().into_any_element()
                 }
+                LoadedDiffKind::Image { canvas, .. } => {
+                    canvas.update(cx, |c, cx| c.set_diff_mode(effective_mode, cx));
+                    let toggle_entity = cx.entity();
+                    let toggle_key = key.clone();
+                    let footer = render_diff_viewed_footer(
+                        &loaded.path,
+                        PlaceholderViewedFooter {
+                            viewed: loaded.viewed,
+                            changed_since_viewed: loaded.changed_since_viewed,
+                            on_toggle: Rc::new(move |_, cx| {
+                                let toggle_key = toggle_key.clone();
+                                toggle_entity.update(cx, |this, cx| {
+                                    this.toggle_viewed_for_tab(&toggle_key, cx);
+                                });
+                            }),
+                        },
+                    );
+                    div()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .flex()
+                        .flex_col()
+                        .child(canvas.clone())
+                        .child(footer)
+                        .into_any_element()
+                }
+                LoadedDiffKind::Svg {
+                    canvas,
+                    unified,
+                    source,
+                    ..
+                } => {
+                    if *source {
+                        unified.update(cx, |v, cx| v.set_mode(effective_mode, cx));
+                        unified.clone().into_any_element()
+                    } else {
+                        canvas.update(cx, |c, cx| c.set_diff_mode(effective_mode, cx));
+                        let toggle_entity = cx.entity();
+                        let toggle_key = key.clone();
+                        let footer = render_diff_viewed_footer(
+                            &loaded.path,
+                            PlaceholderViewedFooter {
+                                viewed: loaded.viewed,
+                                changed_since_viewed: loaded.changed_since_viewed,
+                                on_toggle: Rc::new(move |_, cx| {
+                                    let toggle_key = toggle_key.clone();
+                                    toggle_entity.update(cx, |this, cx| {
+                                        this.toggle_viewed_for_tab(&toggle_key, cx);
+                                    });
+                                }),
+                            },
+                        );
+                        div()
+                            .flex_1()
+                            .min_h(px(0.))
+                            .flex()
+                            .flex_col()
+                            .child(canvas.clone())
+                            .child(footer)
+                            .into_any_element()
+                    }
+                }
                 _ => {
                     let Some(root_path) = self.root_path() else {
                         return div().flex_1().into_any_element();
@@ -1203,6 +1529,21 @@ impl UnifiedViewer {
             .flex_col()
             .children(banner)
             .child(div().flex_1().min_h(px(0.)).children(page))
+            .into_any_element()
+    }
+
+    fn render_svg_rendered(
+        &self,
+        canvas: Option<Entity<ImageCanvas>>,
+        banner: Option<AnyElement>,
+    ) -> AnyElement {
+        div()
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .children(banner)
+            .children(canvas)
             .into_any_element()
     }
 
@@ -1382,11 +1723,15 @@ impl Render for UnifiedViewer {
             if self.active_showing_diff() {
                 if let Some(diff) = self.active_diff_view() {
                     diff.read(cx).focus_handle().clone().focus(window, cx);
+                } else if let Some(canvas) = self.active_image_canvas() {
+                    canvas.read(cx).focus_handle().clone().focus(window, cx);
                 }
             } else if let Some(page) = self.active_rendered() {
                 page.read(cx).focus_handle().clone().focus(window, cx);
             } else if let Some(code) = self.active_view() {
                 code.read(cx).focus_handle().clone().focus(window, cx);
+            } else if let Some(canvas) = self.active_image_canvas() {
+                canvas.read(cx).focus_handle().clone().focus(window, cx);
             }
         }
         let strip = self.render_strip(cx);
