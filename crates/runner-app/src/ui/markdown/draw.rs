@@ -187,7 +187,7 @@ impl Look {
         }
     }
 
-    fn line_height(&self) -> Pixels {
+    pub(super) fn line_height(&self) -> Pixels {
         px((self.base * 1.6).round())
     }
 

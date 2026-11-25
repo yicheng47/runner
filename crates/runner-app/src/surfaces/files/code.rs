@@ -23,7 +23,9 @@ use super::highlight::{self, Grammar, Highlights};
 use super::syntax::SyntaxTheme;
 use crate::theme;
 use crate::{Copy, SelectAll};
-use runner_app::ui::{app_scrollbar_gutter, Scrollbar, ScrollbarKind, ScrollbarMetrics};
+use runner_app::ui::{
+    app_scrollbar_gutter, Scrollbar, ScrollbarKind, ScrollbarLanes, ScrollbarMetrics,
+};
 
 const GUTTER_PAD_LEFT: f32 = 12.;
 const GUTTER_PAD_RIGHT: f32 = 16.;
@@ -40,11 +42,23 @@ struct Metrics {
     char_width: Pixels,
     /// From the element's left edge to the text's.
     text_left: Pixels,
+    lanes: ScrollbarLanes,
 }
 
 impl Metrics {
+    /// What the scrollbars' lanes leave of the view.
+    fn viewport(&self) -> Bounds<Pixels> {
+        Bounds::new(
+            self.bounds.origin,
+            size(
+                (self.bounds.size.width - self.lanes.right).max(px(0.)),
+                (self.bounds.size.height - self.lanes.bottom).max(px(0.)),
+            ),
+        )
+    }
+
     fn text_width(&self) -> Pixels {
-        (self.bounds.size.width - self.text_left).max(px(0.))
+        (self.viewport().size.width - self.text_left).max(px(0.))
     }
 }
 
@@ -392,7 +406,7 @@ impl CodeView {
         let (width, height) = self.content_size(metrics);
         self.bar_metrics.set((
             ScrollbarMetrics {
-                viewport: f32::from(metrics.bounds.size.height),
+                viewport: f32::from(metrics.viewport().size.height),
                 content: f32::from(height),
                 position: f32::from(self.scroll.y),
             },
@@ -407,7 +421,7 @@ impl CodeView {
     fn clamp_scroll(&mut self, metrics: &Metrics) {
         let (width, height) = self.content_size(metrics);
         let max_x = (width - metrics.text_width()).max(px(0.));
-        let max_y = (height - metrics.bounds.size.height).max(px(0.));
+        let max_y = (height - metrics.viewport().size.height).max(px(0.));
         self.scroll.x = self.scroll.x.clamp(px(0.), max_x);
         self.scroll.y = self.scroll.y.clamp(px(0.), max_y);
     }
@@ -418,7 +432,7 @@ impl CodeView {
             return;
         };
         let top = metrics.line_height * position.line as f32 + px(TOP_PAD);
-        let height = metrics.bounds.size.height;
+        let height = metrics.viewport().size.height;
         if top < self.scroll.y || top + metrics.line_height > self.scroll.y + height {
             self.scroll.y = top - (height - metrics.line_height) / 2.;
         }
@@ -452,7 +466,7 @@ impl CodeView {
         if modifiers.platform || modifiers.control || modifiers.alt {
             return;
         }
-        let page = metrics.bounds.size.height - metrics.line_height;
+        let page = metrics.viewport().size.height - metrics.line_height;
         let delta = match event.keystroke.key.as_str() {
             "up" => point(px(0.), metrics.line_height),
             "down" => point(px(0.), -metrics.line_height),
@@ -507,7 +521,8 @@ fn code_scrollbar(
                     cx.notify();
                 });
             }),
-        );
+        )
+        .fixed_width();
         if horizontal {
             bar.horizontal()
         } else {
@@ -524,10 +539,9 @@ impl Drop for CodeView {
 
 impl Render for CodeView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let text_left = self
-            .metrics
-            .get()
-            .map_or(px(0.), |metrics| metrics.text_left);
+        let (text_left, lane) = self.metrics.get().map_or_else(Default::default, |metrics| {
+            (metrics.text_left, metrics.lanes.right)
+        });
         div()
             .id("file-code")
             .when(cfg!(test), |element| {
@@ -547,7 +561,7 @@ impl Render for CodeView {
                     .top_0()
                     .bottom_0()
                     .left(text_left)
-                    .right(app_scrollbar_gutter())
+                    .right(lane)
                     .child(self.horizontal_bar.clone()),
             )
     }
@@ -636,7 +650,9 @@ struct CodeElement {
 }
 
 pub(crate) struct CodePrepaint {
-    hitbox: Hitbox,
+    /// Where text is selected; the wheel also scrolls over the lanes.
+    text_hitbox: Hitbox,
+    scroll_hitbox: Hitbox,
     metrics: Metrics,
     scroll: Point<Pixels>,
     rows: Vec<Row>,
@@ -704,20 +720,34 @@ impl Element for CodeElement {
             .to_string()
             .len();
         let text_left = px(GUTTER_PAD_LEFT) + char_width * digits as f32 + px(GUTTER_PAD_RIGHT);
-        let metrics = Metrics {
+        let mut metrics = Metrics {
             bounds,
             line_height,
             char_width,
             text_left,
+            lanes: ScrollbarLanes::default(),
         };
-        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        let (width, height) = self.view.read(cx).content_size(&metrics);
+        metrics.lanes = ScrollbarLanes::measure(
+            height,
+            bounds.size.height,
+            app_scrollbar_gutter().to_pixels(window.rem_size()),
+            |right| width - (bounds.size.width - text_left - right),
+        );
+        let viewport = metrics.viewport();
+        let scroll_hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
+        let text_hitbox = window.insert_hitbox(viewport, HitboxBehavior::Normal);
         let text_color = if self.view.read(cx).deleted {
             theme::faint()
         } else {
             theme::text()
         };
-        self.view.update(cx, |view, _| {
-            view.metrics.set(Some(metrics));
+        self.view.update(cx, |view, cx| {
+            let previous = view.metrics.replace(Some(metrics));
+            // The horizontal bar is laid out from the last frame's lanes.
+            if previous.map(|metrics| metrics.lanes) != Some(metrics.lanes) {
+                cx.notify();
+            }
             view.apply_reveal(&metrics);
             view.clamp_scroll(&metrics);
             view.measure_scrollbars(&metrics);
@@ -730,7 +760,7 @@ impl Element for CodeElement {
             .floor()
             .max(0.) as usize;
         let shown_lines =
-            (f32::from(bounds.size.height) / f32::from(line_height)).ceil() as usize + 1;
+            (f32::from(viewport.size.height) / f32::from(line_height)).ceil() as usize + 1;
         let last = (first + shown_lines).min(document.line_count());
         let text_x = bounds.left() + text_left - scroll.x;
         let visible = metrics.text_width();
@@ -837,7 +867,8 @@ impl Element for CodeElement {
             }
         }
         CodePrepaint {
-            hitbox,
+            text_hitbox,
+            scroll_hitbox,
             metrics,
             scroll,
             rows,
@@ -859,11 +890,12 @@ impl Element for CodeElement {
         cx: &mut App,
     ) {
         let metrics = prepaint.metrics;
+        let viewport = metrics.viewport();
         let text_bounds = Bounds::new(
             point(bounds.left() + metrics.text_left, bounds.top()),
-            size(metrics.text_width(), bounds.size.height),
+            size(metrics.text_width(), viewport.size.height),
         );
-        window.set_cursor_style(CursorStyle::IBeam, &prepaint.hitbox);
+        window.set_cursor_style(CursorStyle::IBeam, &prepaint.text_hitbox);
         let highlight = theme::find_highlight();
         let top = bounds.top() + px(TOP_PAD) - prepaint.scroll.y;
         window.with_content_mask(
@@ -898,7 +930,7 @@ impl Element for CodeElement {
                 }
             },
         );
-        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+        window.with_content_mask(Some(ContentMask { bounds: viewport }), |window| {
             for ((x, number), row) in prepaint.numbers.iter().zip(&prepaint.rows) {
                 let origin = point(*x, top + metrics.line_height * row.line as f32);
                 let _ = number.paint(
@@ -911,7 +943,13 @@ impl Element for CodeElement {
                 );
             }
         });
-        register_mouse(self.view.clone(), prepaint.hitbox.clone(), metrics, window);
+        register_mouse(
+            self.view.clone(),
+            prepaint.text_hitbox.clone(),
+            prepaint.scroll_hitbox.clone(),
+            metrics,
+            window,
+        );
     }
 }
 
@@ -930,9 +968,14 @@ pub(crate) fn word_at(line: &str, offset: usize) -> (usize, usize) {
     (start, end)
 }
 
-fn register_mouse(view: Entity<CodeView>, hitbox: Hitbox, metrics: Metrics, window: &mut Window) {
+fn register_mouse(
+    view: Entity<CodeView>,
+    text_hitbox: Hitbox,
+    scroll_hitbox: Hitbox,
+    metrics: Metrics,
+    window: &mut Window,
+) {
     let scroll_view = view.clone();
-    let scroll_hitbox = hitbox.clone();
     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
         if phase != DispatchPhase::Bubble || !scroll_hitbox.should_handle_scroll(window) {
             return;
@@ -946,11 +989,10 @@ fn register_mouse(view: Entity<CodeView>, hitbox: Hitbox, metrics: Metrics, wind
     });
 
     let down_view = view.clone();
-    let down_hitbox = hitbox.clone();
     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
         if phase != DispatchPhase::Bubble
             || event.button != MouseButton::Left
-            || !down_hitbox.is_hovered(window)
+            || !text_hitbox.is_hovered(window)
         {
             return;
         }
@@ -1019,7 +1061,7 @@ fn register_mouse(view: Entity<CodeView>, hitbox: Hitbox, metrics: Metrics, wind
         }
         move_view.update(cx, |view, cx| {
             // Dragging past an edge scrolls toward it.
-            let bounds = metrics.bounds;
+            let bounds = metrics.viewport();
             let mut delta = Point::default();
             if event.position.y < bounds.top() {
                 delta.y = bounds.top() - event.position.y;
@@ -1074,7 +1116,145 @@ fn position_at(view: &CodeView, metrics: &Metrics, at: Point<Pixels>) -> Positio
 
 #[cfg(test)]
 mod tests {
+    use gpui::{Modifiers, TestAppContext, VisualTestContext, WindowHandle};
+
     use super::*;
+
+    const WIDTH: f32 = 400.;
+    const HEIGHT: f32 = 300.;
+
+    fn open(text: &str) -> (WindowHandle<CodeView>, VisualTestContext) {
+        let document = Arc::new(Document::decode(text.as_bytes()));
+        let cx = &mut TestAppContext::single();
+        let window = cx.add_window(|_, cx| CodeView::new(document, None, cx));
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_resize(size(px(WIDTH), px(HEIGHT)));
+        // The pointer starts over the view, which shows the bars.
+        visual.simulate_mouse_move(point(px(-10.), px(-10.)), None, Modifiers::default());
+        visual
+            .executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        visual.run_until_parked();
+        (window, visual)
+    }
+
+    fn metrics(window: &WindowHandle<CodeView>, visual: &VisualTestContext) -> Metrics {
+        window
+            .read_with(visual, |view, _| view.metrics.get().unwrap())
+            .unwrap()
+    }
+
+    fn text(lines: usize, columns: usize) -> String {
+        format!("{}\n", "x".repeat(columns)).repeat(lines)
+    }
+
+    #[test]
+    fn the_scrollbars_take_a_lane_beside_the_code_on_the_axes_that_scroll() {
+        for (lines, columns, right, bottom) in [
+            (3, 5, 0., 0.),
+            (200, 5, 10., 0.),
+            (3, 500, 0., 10.),
+            (200, 500, 10., 10.),
+        ] {
+            let (window, mut visual) = open(&text(lines, columns));
+            let hidden = metrics(&window, &visual);
+            let viewport = hidden.viewport();
+            assert!(visual.debug_bounds("SCROLLBAR_THUMB").is_none());
+            assert!(visual.debug_bounds("SCROLLBAR_THUMB_X").is_none());
+            assert_eq!(viewport.right(), px(WIDTH - right), "{lines}x{columns}");
+            assert_eq!(viewport.bottom(), px(HEIGHT - bottom), "{lines}x{columns}");
+
+            visual.simulate_mouse_move(viewport.center(), None, Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(
+                metrics(&window, &visual).lanes,
+                hidden.lanes,
+                "showing the bars moves no text"
+            );
+            let vertical = visual.debug_bounds("SCROLLBAR_THUMB");
+            let horizontal = visual.debug_bounds("SCROLLBAR_THUMB_X");
+            assert_eq!(vertical.is_some(), right > 0., "{lines}x{columns}");
+            assert_eq!(horizontal.is_some(), bottom > 0., "{lines}x{columns}");
+            assert!(vertical.is_none_or(|thumb| thumb.left() >= viewport.right()));
+            assert!(horizontal.is_none_or(|thumb| thumb.top() >= viewport.bottom()));
+            if bottom > 0. {
+                let track = visual.debug_bounds("SCROLLBAR_TRACK_X").unwrap();
+                assert_eq!(track.right(), viewport.right(), "the bars do not meet");
+            }
+        }
+    }
+
+    #[test]
+    fn the_end_of_the_text_scrolls_clear_of_the_lanes() {
+        let (window, mut visual) = open(&text(200, 500));
+        window
+            .update(&mut visual, |view, _, cx| {
+                view.scroll_by(point(px(-1e6), px(-1e6)), cx)
+            })
+            .unwrap();
+        visual.run_until_parked();
+        let metrics = metrics(&window, &visual);
+        let (scroll, columns, lines) = window
+            .read_with(&visual, |view, _| {
+                (
+                    view.scroll,
+                    view.document.columns(),
+                    view.document.line_count(),
+                )
+            })
+            .unwrap();
+        let end = point(
+            metrics.text_left + metrics.char_width * columns as f32 - scroll.x,
+            px(TOP_PAD) + metrics.line_height * lines as f32 - scroll.y,
+        );
+        assert!(end.x <= metrics.viewport().right());
+        assert!(end.y <= metrics.viewport().bottom());
+    }
+
+    #[test]
+    fn the_lanes_follow_the_app_zoom() {
+        let (window, mut visual) = open(&text(200, 500));
+        visual.update(|window, _| {
+            window.set_rem_size(px(24.));
+            window.refresh();
+        });
+        visual.run_until_parked();
+        let lanes = metrics(&window, &visual).lanes;
+        assert_eq!((lanes.right, lanes.bottom), (px(15.), px(15.)));
+    }
+
+    #[test]
+    fn the_lanes_scroll_by_wheel_but_select_nothing_and_a_drag_into_one_scrolls() {
+        let (window, mut visual) = open(&text(200, 500));
+        let viewport = metrics(&window, &visual).viewport();
+        let lane = point(viewport.right() + px(5.), viewport.center().y);
+        visual.simulate_event(ScrollWheelEvent {
+            position: lane,
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-40.))),
+            ..Default::default()
+        });
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |view, _| assert_eq!(view.scroll.y, px(40.)))
+            .unwrap();
+        visual.simulate_mouse_down(lane, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(lane, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |view, _| {
+                assert_eq!(view.selection, None);
+                assert_eq!(view.scroll.x, px(0.));
+            })
+            .unwrap();
+
+        visual.simulate_mouse_down(viewport.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(lane, Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(lane, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |view, _| assert_eq!(view.scroll.x, px(5.)))
+            .unwrap();
+    }
 
     #[test]
     fn a_double_click_selects_the_word_under_it() {
