@@ -795,6 +795,11 @@ mod tests {
         std::fs::set_permissions(&agy, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let mut core = crate::test_support::test_core_in(dir.path().into());
+        core.runtime_shell_env
+            .write()
+            .unwrap()
+            .vars
+            .insert("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "true".into());
         core.sessions = crate::session::SessionManager::new(
             core.runtime_shell_env.clone(),
             core.runtime_discovery.clone(),

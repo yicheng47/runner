@@ -293,6 +293,7 @@ fn spec(session_id: &str, command: &str, args: &[&str]) -> SpawnSpec {
         command: command.to_string(),
         args: args.iter().map(|s| s.to_string()).collect(),
         env,
+        env_remove: Vec::new(),
         cwd: None,
         mission: false,
         shim_dir: None,
@@ -3006,4 +3007,126 @@ fn conversation_update_finishing_after_eof_is_not_forwarded() {
     assert!(rx
         .try_iter()
         .all(|event| !matches!(event, RuntimeOutput::ConversationStart(_))));
+}
+
+#[test]
+fn apply_command_env_strips_inherited_and_case_aliased_env_removals() {
+    let mut agy_spec = spec("agy-update", "agy", &["update"]);
+    agy_spec.env.insert("KEEP_SPEC".into(), "ok".into());
+    agy_spec
+        .env
+        .insert("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "true".into());
+    agy_spec
+        .env
+        .insert("agy_cli_disable_auto_update".into(), "true".into());
+    agy_spec.remove_env("AGY_CLI_DISABLE_AUTO_UPDATE", true);
+
+    // Windows-style case-folded removal clears every case alias from inherited
+    // base env as well as spec.env while keeping unrelated variables.
+    let mut win_cmd = CommandBuilder::new("agy");
+    win_cmd.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+    win_cmd.env("agy_cli_disable_auto_update", "true");
+    win_cmd.env("Agy_Cli_Disable_Auto_Update", "true");
+    win_cmd.env("KEEP_INHERITED", "1");
+    apply_command_env(&mut win_cmd, &agy_spec, "/bin", 80, 24, true).unwrap();
+    assert!(!win_cmd
+        .iter_full_env_as_str()
+        .any(|(k, _)| k.eq_ignore_ascii_case("AGY_CLI_DISABLE_AUTO_UPDATE")));
+    assert_eq!(win_cmd.get_env("KEEP_INHERITED"), Some("1".as_ref()));
+    assert_eq!(win_cmd.get_env("KEEP_SPEC"), Some("ok".as_ref()));
+
+    // Unix-style exact removal strips AGY_CLI_DISABLE_AUTO_UPDATE without
+    // touching unrelated variables, and specs without env_remove keep it.
+    let mut unix_spec = spec("agy-update-unix", "agy", &["update"]);
+    unix_spec.remove_env("AGY_CLI_DISABLE_AUTO_UPDATE", false);
+    let mut unix_cmd = CommandBuilder::new("agy");
+    unix_cmd.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+    unix_cmd.env("KEEP_INHERITED", "1");
+    apply_command_env(&mut unix_cmd, &unix_spec, "/bin", 80, 24, false).unwrap();
+    assert!(unix_cmd.get_env("AGY_CLI_DISABLE_AUTO_UPDATE").is_none());
+    assert_eq!(unix_cmd.get_env("KEEP_INHERITED"), Some("1".as_ref()));
+
+    let other_spec = spec("codex-update", "codex", &["update"]);
+    let mut other_cmd = CommandBuilder::new("codex");
+    other_cmd.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+    apply_command_env(&mut other_cmd, &other_spec, "/bin", 80, 24, cfg!(windows)).unwrap();
+    assert_eq!(
+        other_cmd.get_env("AGY_CLI_DISABLE_AUTO_UPDATE"),
+        Some("true".as_ref())
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn spawn_with_base_command_omits_inherited_disable_auto_update_for_agy_update() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let script = "#!/bin/sh\nprintf 'auto=%s\\n' \"${AGY_CLI_DISABLE_AUTO_UPDATE-UNSET}\"\n";
+    for name in ["agy", "codex"] {
+        let path = dir.path().join(name);
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let state = crate::test_support::test_core();
+    {
+        let mut env = state.runtime_shell_env.write().unwrap();
+        env.path = Some(dir.path().display().to_string());
+        env.vars.insert(
+            crate::runtime_status::TEST_ISOLATE_PATH_ENV.into(),
+            "1".into(),
+        );
+        env.vars
+            .insert("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "true".into());
+    }
+    state.runtime_discovery.write().unwrap().checking = false;
+
+    let collect_output = |rt: &PtyRuntime, spec: SpawnSpec| -> String {
+        let mut base = CommandBuilder::new(&spec.command);
+        base.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+        let (_session, stream) = rt.spawn_with_base_command(spec, base).unwrap();
+        let mut out = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match stream.recv_timeout(remaining) {
+                Ok(RuntimeOutput::Stream(bytes)) => out.extend_from_slice(&bytes),
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    };
+
+    let rt = PtyRuntime::new();
+    let agy_spec = crate::ops::runtime::runtime_update_spawn_spec(
+        &state,
+        crate::model::Runtime::Antigravity,
+        (80, 24),
+    )
+    .unwrap();
+    let agy_output = collect_output(&rt, agy_spec);
+    assert!(
+        agy_output.contains("auto=UNSET"),
+        "expected inherited AGY_CLI_DISABLE_AUTO_UPDATE to be unset for agy update, got: {agy_output:?}"
+    );
+
+    let codex_spec = crate::ops::runtime::runtime_update_spawn_spec(
+        &state,
+        crate::model::Runtime::Codex,
+        (80, 24),
+    )
+    .unwrap();
+    assert!(codex_spec.env_remove.is_empty());
+    let codex_output = collect_output(&rt, codex_spec);
+    assert!(
+        codex_output.contains("auto=true"),
+        "expected other update commands to keep inherited env untouched, got: {codex_output:?}"
+    );
+    rt.drain_workers();
 }

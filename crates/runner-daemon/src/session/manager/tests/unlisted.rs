@@ -115,6 +115,11 @@ fn runtime_update_spec_allows_live_sessions_without_stopping_or_restarting_them(
                 .env
                 .keys()
                 .any(|key| key.eq_ignore_ascii_case("AGY_CLI_DISABLE_AUTO_UPDATE")));
+            if definition.name == Runtime::Antigravity {
+                assert_eq!(spec.env_remove, ["AGY_CLI_DISABLE_AUTO_UPDATE"]);
+            } else {
+                assert!(spec.env_remove.is_empty());
+            }
             assert_eq!(state.sessions.live_session_ids(), live);
             assert!(fake.stops.lock().unwrap().is_empty());
             assert_eq!(fake.spawn_count(), 0);
@@ -217,6 +222,45 @@ fn apply_launch_env_strips_case_insensitive_aliases_when_folding_case() {
             .map(String::as_str),
         Some("")
     );
+}
+
+#[test]
+fn spawn_spec_remove_env_strips_case_aliases_when_folding_case() {
+    let mut win_spec = SpawnSpec {
+        env: BTreeMap::from([
+            ("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "true".into()),
+            ("agy_cli_disable_auto_update".into(), "true".into()),
+            ("Agy_Cli_Disable_Auto_Update".into(), "false".into()),
+            ("OTHER".into(), "keep".into()),
+        ]),
+        ..Default::default()
+    };
+    win_spec.remove_env("AGY_CLI_DISABLE_AUTO_UPDATE", true);
+    win_spec.remove_env("agy_cli_disable_auto_update", true);
+    assert!(!win_spec
+        .env
+        .keys()
+        .any(|k| k.eq_ignore_ascii_case("AGY_CLI_DISABLE_AUTO_UPDATE")));
+    assert_eq!(win_spec.env.get("OTHER").map(String::as_str), Some("keep"));
+    assert_eq!(win_spec.env_remove, ["AGY_CLI_DISABLE_AUTO_UPDATE"]);
+
+    let mut unix_spec = SpawnSpec {
+        env: BTreeMap::from([
+            ("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "true".into()),
+            ("agy_cli_disable_auto_update".into(), "keep".into()),
+        ]),
+        ..Default::default()
+    };
+    unix_spec.remove_env("AGY_CLI_DISABLE_AUTO_UPDATE", false);
+    assert!(!unix_spec.env.contains_key("AGY_CLI_DISABLE_AUTO_UPDATE"));
+    assert_eq!(
+        unix_spec
+            .env
+            .get("agy_cli_disable_auto_update")
+            .map(String::as_str),
+        Some("keep")
+    );
+    assert_eq!(unix_spec.env_remove, ["AGY_CLI_DISABLE_AUTO_UPDATE"]);
 }
 
 #[cfg(windows)]

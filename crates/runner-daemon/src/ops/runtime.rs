@@ -487,7 +487,7 @@ pub fn runtime_update_spawn_spec(
     if command.source == RuntimeCommandSource::Catalog {
         return Err(crate::runtime_status::runtime_not_found_error(runtime));
     }
-    Ok(state.sessions.update_spawn_spec(
+    let mut spec = state.sessions.update_spawn_spec(
         command.command,
         definition
             .update_args
@@ -496,7 +496,13 @@ pub fn runtime_update_spawn_spec(
             .collect(),
         runner_core::app_paths::home_dir(),
         size,
-    ))
+    );
+    if runtime == Runtime::Antigravity {
+        // Explicit `agy update` must not inherit AGY_CLI_DISABLE_AUTO_UPDATE
+        // from runnerd's process/registry environment or login-shell capture.
+        spec.remove_env("AGY_CLI_DISABLE_AUTO_UPDATE", cfg!(windows));
+    }
+    Ok(spec)
 }
 
 /// Starts the update PTY `runtime_update_spawn_spec` described. It is not a

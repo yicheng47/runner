@@ -39,6 +39,10 @@ pub struct SpawnSpec {
     /// passes this through unchanged; PATH composition / mission-bus
     /// env vars are decided by the caller.
     pub env: BTreeMap<String, String>,
+    /// Environment variable names that must be unset in the spawned child even
+    /// when inherited from the daemon's process/registry environment or
+    /// login-shell capture.
+    pub env_remove: Vec<String>,
     /// `true` for mission sessions (which get the bundled runner CLI
     /// plus mission-bus env). `false` for direct chats (off-bus
     /// invariant — see PR #51). The runtime uses this only to log /
@@ -63,6 +67,30 @@ pub struct SpawnSpec {
     /// the right size before the first paint. `None` falls back to
     /// the runner config's `default-size`.
     pub initial_size: Option<(u16, u16)>,
+}
+
+impl SpawnSpec {
+    /// Removes `name` from `self.env` and records it in `self.env_remove` so
+    /// the spawned child also unsets any inherited process/registry value.
+    pub fn remove_env(&mut self, name: &str, fold_case: bool) {
+        self.env.retain(|existing, _| {
+            if fold_case {
+                !existing.eq_ignore_ascii_case(name)
+            } else {
+                existing != name
+            }
+        });
+        let already_listed = self.env_remove.iter().any(|existing| {
+            if fold_case {
+                existing.eq_ignore_ascii_case(name)
+            } else {
+                existing == name
+            }
+        });
+        if !already_listed {
+            self.env_remove.push(name.to_owned());
+        }
+    }
 }
 
 #[derive(Default)]
