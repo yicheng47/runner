@@ -4117,6 +4117,107 @@ mod tests {
             del_mirror.test_stop_frames();
         }
 
+        // Part 6: Confirmed legacy zero-cell remote peer resizing to a new grid (80x24 -> 20x8)
+        // with a delayed zero-cell ack stays capped at REMOTE_ZERO_CELL_MAX_ATTEMPTS across 10
+        // prepaints, ignores a display-scale-only change while pending, and sends zero pushes
+        // after the delayed zero-cell ack arrives.
+        {
+            let (leg_ack_tx, leg_ack_rx) = mpsc::channel();
+            let leg_host = Arc::new(ResizeTestHost {
+                initial_cols: 80,
+                initial_rows: 24,
+                drop_first_resize: AtomicBool::new(false),
+                legacy_zero_cell: true,
+                next_seq: AtomicUsize::new(0),
+                resizes: Mutex::default(),
+                active_tx: Arc::default(),
+                ack: Mutex::new(None),
+            });
+            let leg_mirror = TerminalMirror::attach_remote(
+                DaemonClient::new(leg_host.clone()),
+                "remote-confirmed-legacy-grid".into(),
+                Arc::new(|| {}),
+            )
+            .unwrap();
+            *leg_host.ack.lock().unwrap() = Some(leg_ack_tx);
+            // Send an initial non-zero resize and confirm legacy zero-cell mode at 80x24.
+            leg_mirror.resize(80, 24, 9, 18);
+            leg_host
+                .active_tx
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .send(TerminalFrame::Resized {
+                    seq: 1,
+                    cols: 80,
+                    rows: 24,
+                    cell_width: 0,
+                    cell_height: 0,
+                    controller: TerminalController::Desktop,
+                })
+                .unwrap();
+            leg_ack_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("legacy confirmation frame should be processed");
+            assert!(leg_mirror.legacy_zero_cell_confirmed());
+            leg_host.resizes.lock().unwrap().clear();
+
+            // Mount a narrow pane (clamped to 20x8) and repaint 10 times before host acks.
+            let leg_pane = wheel_pane(&mut cx, &leg_mirror);
+            let leg_win = cx.add_window(|_, _| SizedRemoteHost {
+                width: px(80.),
+                height: px(90.),
+                pane: leg_pane,
+            });
+            let mut leg_vis = VisualTestContext::from_window(leg_win.into(), &cx);
+            for _ in 0..9 {
+                leg_vis.update(|window, _| window.refresh());
+                leg_vis.refresh().unwrap();
+            }
+            let pushes_before_ack = leg_host.resizes.lock().unwrap().clone();
+            assert_eq!(
+                pushes_before_ack.len(),
+                remote_cap,
+                "confirmed legacy peer with delayed new-grid ack must cap pushes: {pushes_before_ack:?}"
+            );
+            assert_eq!((pushes_before_ack[0].0, pushes_before_ack[0].1), (20, 8));
+
+            // A display-scale-only change while waiting for 20x8 must not restart pending pushes.
+            leg_vis.update(|window, _| window.set_scale_factor(1.0));
+            for _ in 0..4 {
+                leg_vis.update(|window, _| window.refresh());
+                leg_vis.refresh().unwrap();
+            }
+            assert_eq!(leg_host.resizes.lock().unwrap().len(), remote_cap);
+
+            // Delayed zero-cell ack arrives at 20x8 -> further prepaints send nothing.
+            leg_host
+                .active_tx
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .send(TerminalFrame::Resized {
+                    seq: 2,
+                    cols: 20,
+                    rows: 8,
+                    cell_width: 0,
+                    cell_height: 0,
+                    controller: TerminalController::Desktop,
+                })
+                .unwrap();
+            leg_ack_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("delayed zero-cell grid ack should be processed");
+            for _ in 0..10 {
+                leg_vis.update(|window, _| window.refresh());
+                leg_vis.refresh().unwrap();
+            }
+            assert_eq!(leg_host.resizes.lock().unwrap().len(), remote_cap);
+            leg_mirror.test_stop_frames();
+        }
+
         modern_remote_mirror.test_stop_frames();
         local_mirror.test_stop_frames();
         other_mirror.test_stop_frames();

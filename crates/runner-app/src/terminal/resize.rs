@@ -80,6 +80,14 @@ pub fn resolve_size_push(
             size
         }
     });
+    let same_target = |attempt: RemoteZeroCellAttempt, target: TerminalGridSize| -> bool {
+        attempt.epoch == resize_epoch
+            && if legacy_zero_cell_confirmed {
+                attempt.size.cols == target.cols && attempt.size.rows == target.rows
+            } else {
+                attempt.size == target
+            }
+    };
     let has_cell = session_cell.0 > 0 && session_cell.1 > 0;
     let last_pushed = if has_cell {
         zero_cell_state.clear();
@@ -97,21 +105,16 @@ pub fn resolve_size_push(
             cell_width: 0,
             cell_height: 0,
         }
-    } else if legacy_zero_cell_confirmed {
+    } else if legacy_zero_cell_confirmed
+        && effective
+            .is_some_and(|target| target.cols == session_cols && target.rows == session_rows)
+    {
         zero_cell_state.clear();
-        let (cell_width, cell_height) = effective
-            .map(|size| (size.cell_width, size.cell_height))
-            .unwrap_or((0, 0));
-        TerminalGridSize {
-            cols: session_cols,
-            rows: session_rows,
-            cell_width,
-            cell_height,
-        }
+        effective.unwrap()
     } else if let Some(attempt) = zero_cell_state.last {
-        if attempt.epoch == resize_epoch && Some(attempt.size) == effective {
+        if let Some(target) = effective.filter(|target| same_target(attempt, *target)) {
             if attempt.attempts >= REMOTE_ZERO_CELL_MAX_ATTEMPTS {
-                attempt.size
+                target
             } else {
                 TerminalGridSize {
                     cols: session_cols,
@@ -140,15 +143,13 @@ pub fn resolve_size_push(
 
     let verdict = size_push_verdict(effective, last_pushed, resize_owner);
     if let SizePushVerdict::Push(size) = verdict {
-        if is_remote && desktop_control && !has_cell && !legacy_zero_cell_confirmed {
+        if is_remote && desktop_control && !has_cell {
             zero_cell_state.last = match zero_cell_state.last {
-                Some(prev) if prev.epoch == resize_epoch && prev.size == size => {
-                    Some(RemoteZeroCellAttempt {
-                        epoch: resize_epoch,
-                        size,
-                        attempts: prev.attempts.saturating_add(1),
-                    })
-                }
+                Some(prev) if same_target(prev, size) => Some(RemoteZeroCellAttempt {
+                    epoch: resize_epoch,
+                    size,
+                    attempts: prev.attempts.saturating_add(1),
+                }),
                 _ => Some(RemoteZeroCellAttempt {
                     epoch: resize_epoch,
                     size,
@@ -403,11 +404,95 @@ mod tests {
             SizePushVerdict::Push(grid_101)
         );
         // Host answers with `(101, 30, cell: 0x0, Desktop)` -> legacy_zero_cell_confirmed = true.
+        // Same-grid and scale-only changes produce zero pushes.
+        for cell in [(16, 36), (8, 18)] {
+            let scaled = TerminalGridSize {
+                cols: 101,
+                rows: 30,
+                cell_width: cell.0,
+                cell_height: cell.1,
+            };
+            for _ in 0..5 {
+                assert_eq!(
+                    resolve_size_push(
+                        Some(scaled),
+                        101,
+                        30,
+                        (0, 0),
+                        true,
+                        true,
+                        true,
+                        1,
+                        true,
+                        &mut ack_state,
+                    ),
+                    SizePushVerdict::Unchanged
+                );
+            }
+        }
+        // When a confirmed legacy peer's target grid changes (101x30 -> 110x30) and the
+        // host acknowledgement is delayed, pushes stay capped at REMOTE_ZERO_CELL_MAX_ATTEMPTS
+        // across 10 prepaints, a display-scale-only change does NOT restart the pending work,
+        // and once the delayed zero-cell ack lands at 110x30 further prepaints send nothing.
+        let grid_110 = TerminalGridSize {
+            cols: 110,
+            rows: 30,
+            cell_width: 16,
+            cell_height: 36,
+        };
+        let legacy_grid_pushes: usize = (0..10)
+            .filter(|_| {
+                matches!(
+                    resolve_size_push(
+                        Some(grid_110),
+                        101,
+                        30,
+                        (0, 0),
+                        true,
+                        true,
+                        true,
+                        1,
+                        true,
+                        &mut ack_state,
+                    ),
+                    SizePushVerdict::Push(pushed) if pushed == grid_110
+                )
+            })
+            .count();
+        assert_eq!(
+            legacy_grid_pushes, cap,
+            "confirmed legacy peer with delayed grid ack must cap identical pushes"
+        );
+        let grid_110_rescaled = TerminalGridSize {
+            cols: 110,
+            rows: 30,
+            cell_width: 8,
+            cell_height: 18,
+        };
         for _ in 0..5 {
             assert_eq!(
                 resolve_size_push(
-                    Some(grid_101),
+                    Some(grid_110_rescaled),
                     101,
+                    30,
+                    (0, 0),
+                    true,
+                    true,
+                    true,
+                    1,
+                    true,
+                    &mut ack_state,
+                ),
+                SizePushVerdict::Unchanged,
+                "scale-only change must not restart pending grid work on a confirmed legacy peer"
+            );
+        }
+        // Delayed zero-cell ack arrives for 110x30 -> further prepaints send zero pushes.
+        for _ in 0..10 {
+            assert_eq!(
+                resolve_size_push(
+                    Some(grid_110_rescaled),
+                    110,
                     30,
                     (0, 0),
                     true,
@@ -420,27 +505,6 @@ mod tests {
                 SizePushVerdict::Unchanged
             );
         }
-        let grid_110 = TerminalGridSize {
-            cols: 110,
-            rows: 30,
-            cell_width: 16,
-            cell_height: 36,
-        };
-        assert_eq!(
-            resolve_size_push(
-                Some(grid_110),
-                101,
-                30,
-                (0, 0),
-                true,
-                true,
-                true,
-                1,
-                true,
-                &mut ack_state,
-            ),
-            SizePushVerdict::Push(grid_110)
-        );
 
         // Delayed/silent zero-cell peer starting at a DIFFERENT grid (80x24) while the
         // pane requests 20x8: retries stay capped at REMOTE_ZERO_CELL_MAX_ATTEMPTS across
