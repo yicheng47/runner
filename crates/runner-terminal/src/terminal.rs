@@ -660,6 +660,8 @@ pub struct TerminalMirror {
     sgr_pixels: Arc<AtomicBool>,
     sync_open: Arc<AtomicBool>,
     resize_epoch: AtomicU64,
+    sent_nonzero_cell_resize: AtomicBool,
+    legacy_zero_cell_confirmed: AtomicBool,
     client: DaemonClient,
     session_id: String,
     subscriber_id: AtomicU64,
@@ -832,11 +834,23 @@ impl TerminalMirror {
                                     &mut sequence,
                                     &mut mirror.parser.lock().unwrap(),
                                 );
-                                mirror.resize_local(
-                                    cols,
-                                    rows,
-                                    crate::kitty::CellSize::from_wire(cell_width, cell_height),
-                                );
+                                let incoming_cell =
+                                    crate::kitty::CellSize::from_wire(cell_width, cell_height);
+                                let desktop_zero_cell = incoming_cell
+                                    == crate::kitty::CellSize::ZERO
+                                    && controller == TerminalController::Desktop;
+                                mirror.resize_local(cols, rows, incoming_cell);
+                                if incoming_cell != crate::kitty::CellSize::ZERO {
+                                    mirror
+                                        .legacy_zero_cell_confirmed
+                                        .store(false, Ordering::Release);
+                                } else if desktop_zero_cell
+                                    && mirror.sent_nonzero_cell_resize.load(Ordering::Acquire)
+                                {
+                                    mirror
+                                        .legacy_zero_cell_confirmed
+                                        .store(true, Ordering::Release);
+                                }
                                 let changed = mirror.apply_controller(controller);
                                 if changed {
                                     (mirror.waker)();
@@ -957,6 +971,8 @@ impl TerminalMirror {
             sgr_pixels: Arc::new(AtomicBool::new(false)),
             sync_open,
             resize_epoch: AtomicU64::new(0),
+            sent_nonzero_cell_resize: AtomicBool::new(false),
+            legacy_zero_cell_confirmed: AtomicBool::new(false),
             client,
             session_id,
             subscriber_id: AtomicU64::new(attachment.subscriber_id),
@@ -1140,6 +1156,10 @@ impl TerminalMirror {
         self.scroll_mark.lock().unwrap().rebuild();
         *self.size.lock().unwrap() = (attachment.snapshot.cols, attachment.snapshot.rows);
         self.apply_controller(attachment.snapshot.controller.clone());
+        self.sent_nonzero_cell_resize
+            .store(false, Ordering::Release);
+        self.legacy_zero_cell_confirmed
+            .store(false, Ordering::Release);
         self.resize_epoch.fetch_add(1, Ordering::AcqRel);
         self.subscriber_id
             .store(attachment.subscriber_id, Ordering::Relaxed);
@@ -1189,6 +1209,9 @@ impl TerminalMirror {
     }
     pub fn resize_epoch(&self) -> u64 {
         self.resize_epoch.load(Ordering::Acquire)
+    }
+    pub fn legacy_zero_cell_confirmed(&self) -> bool {
+        self.legacy_zero_cell_confirmed.load(Ordering::Acquire)
     }
     fn sync_graphics_observer(&self, force: bool, allow_sync_decode: bool) {
         let observer = self.graphics_observer.lock().unwrap().clone();
@@ -1705,6 +1728,9 @@ impl TerminalMirror {
             return;
         }
         let (cell_width, cell_height) = incoming_cell.unwrap_or((0, 0));
+        if cell_width > 0 && cell_height > 0 {
+            self.sent_nonzero_cell_resize.store(true, Ordering::Release);
+        }
         self.client.resize(
             &self.session_id,
             self.subscriber_id.load(Ordering::Relaxed),

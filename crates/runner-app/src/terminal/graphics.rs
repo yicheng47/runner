@@ -583,15 +583,25 @@ pub(crate) fn record_paint_event(event: PaintEvent, cx: &mut App) {
 
 #[cfg(test)]
 #[derive(Default)]
-struct BackgroundTrace(Vec<(Bounds<Pixels>, gpui::Hsla)>);
+struct BackgroundTrace {
+    pane_background: Option<gpui::Hsla>,
+    cell_quads: Vec<(Bounds<Pixels>, gpui::Hsla)>,
+}
 
 #[cfg(test)]
 impl Global for BackgroundTrace {}
 
 #[cfg(test)]
+pub(crate) fn record_pane_background(color: gpui::Hsla, cx: &mut App) {
+    if cx.has_global::<BackgroundTrace>() {
+        cx.global_mut::<BackgroundTrace>().pane_background = Some(color);
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn record_cell_backgrounds(quads: &[(Bounds<Pixels>, gpui::Hsla)], cx: &mut App) {
     if cx.has_global::<BackgroundTrace>() {
-        cx.global_mut::<BackgroundTrace>().0 = quads.to_vec();
+        cx.global_mut::<BackgroundTrace>().cell_quads = quads.to_vec();
     }
 }
 
@@ -2022,7 +2032,10 @@ mod tests {
         visual.run_until_parked();
 
         let trace = visual.update(|_, cx| cx.global::<PaintTrace>().0.clone());
-        let bg_quads = visual.update(|_, cx| cx.global::<BackgroundTrace>().0.clone());
+        let (pane_bg_initial, bg_quads) = visual.update(|_, cx| {
+            let b = cx.global::<BackgroundTrace>();
+            (b.pane_background, b.cell_quads.clone())
+        });
         let band0_pos = trace
             .iter()
             .position(|e| matches!(e, PaintEvent::Image { band: 0, .. }))
@@ -2034,6 +2047,15 @@ mod tests {
         assert!(
             band0_pos < cell_bg_pos,
             "Band 0 image must paint behind explicit cell backgrounds"
+        );
+        assert_eq!(
+            pane_bg_initial,
+            Some(
+                gpui::rgba(
+                    ((bg.r as u32) << 24) | ((bg.g as u32) << 16) | ((bg.b as u32) << 8) | 0xff
+                )
+                .into()
+            )
         );
         assert_eq!(
             bg_quads.len(),
@@ -2048,12 +2070,96 @@ mod tests {
         assert!((f32::from(bg_quads[1].0.left()) - f32::from(col2_x)).abs() < 1e-2);
         assert!((f32::from(bg_quads[1].0.size.width) - f32::from(cell_w)).abs() < 1e-2);
 
-        // Once the Band 0 image is deleted, matching-pane-RGB backgrounds emit no redundant quads.
+        // OSC 11 overrides the terminal's default background to rgb:12/34/56.
+        // The pane background underneath Band 0 must adopt rgb(0x12, 0x34, 0x56),
+        // default cells must remain transparent so Band 0 stays visible, and
+        // explicit/inverse cells matching the OSC 11 RGB must still paint opaque.
+        let osc11_hsla: gpui::Hsla = gpui::rgba(0x1234_56ff).into();
+        let osc11_stream = concat!(
+            "\x1b]11;rgb:12/34/56\x07",
+            "\x1b[H\x1b[K",
+            "\x1b[48;2;18;52;86mE\x1b[0mD\x1b[7;38;2;18;52;86mI\x1b[0m",
+        );
         send_and_wait(
             &tx,
             &ack,
             TerminalFrame::Output {
                 seq: 2,
+                bytes: osc11_stream.as_bytes().into(),
+            },
+        );
+        visual.update(|window, cx| {
+            cx.set_global(PaintTrace::default());
+            cx.set_global(BackgroundTrace::default());
+            window.refresh();
+        });
+        visual.run_until_parked();
+        let trace_osc11 = visual.update(|_, cx| cx.global::<PaintTrace>().0.clone());
+        let (pane_bg_osc11, quads_osc11) = visual.update(|_, cx| {
+            let b = cx.global::<BackgroundTrace>();
+            (b.pane_background, b.cell_quads.clone())
+        });
+        assert!(
+            trace_osc11
+                .iter()
+                .any(|e| matches!(e, PaintEvent::Image { band: 0, .. })),
+            "Band 0 image must still paint under OSC 11"
+        );
+        assert_eq!(
+            pane_bg_osc11,
+            Some(osc11_hsla),
+            "OSC 11 effective default background must paint underneath Band 0"
+        );
+        assert_eq!(
+            quads_osc11.len(),
+            2,
+            "default cells under OSC 11 must stay transparent over Band 0 while explicit col 0 and inverse col 2 paint opaque: {quads_osc11:?}"
+        );
+        assert!((f32::from(quads_osc11[0].0.left()) - f32::from(col0_x)).abs() < 1e-2);
+        assert_eq!(quads_osc11[0].1, osc11_hsla);
+        assert!((f32::from(quads_osc11[1].0.left()) - f32::from(col2_x)).abs() < 1e-2);
+        assert_eq!(quads_osc11[1].1, osc11_hsla);
+
+        // OSC 111 resets the default background back to the theme color: pane
+        // background reverts, default cells remain transparent over Band 0, and
+        // explicit/inverse cells matching the theme RGB paint opaque again.
+        let reset_stream = format!(
+            "\x1b]111\x07\x1b[H\x1b[K\x1b[48;2;{};{};{}mE\x1b[0mD\x1b[7;38;2;{};{};{}mI\x1b[0m",
+            bg.r, bg.g, bg.b, bg.r, bg.g, bg.b
+        );
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: 3,
+                bytes: reset_stream.into_bytes().into(),
+            },
+        );
+        visual.update(|window, cx| {
+            cx.set_global(BackgroundTrace::default());
+            window.refresh();
+        });
+        visual.run_until_parked();
+        let (pane_bg_reset, quads_reset) = visual.update(|_, cx| {
+            let b = cx.global::<BackgroundTrace>();
+            (b.pane_background, b.cell_quads.clone())
+        });
+        assert_eq!(
+            pane_bg_reset, pane_bg_initial,
+            "OSC 111 must restore theme default pane background underneath Band 0"
+        );
+        assert_eq!(
+            quads_reset.len(),
+            2,
+            "after OSC 111 reset, only explicit col 0 and inverse col 2 should paint over Band 0: {quads_reset:?}"
+        );
+
+        // Once the Band 0 image is deleted, matching-pane-RGB backgrounds emit no redundant quads.
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: 4,
                 bytes: b"\x1b_Ga=d,d=I,i=1,q=2\x1b\\".into(),
             },
         );
@@ -2062,7 +2168,8 @@ mod tests {
             window.refresh();
         });
         visual.run_until_parked();
-        let quads_after_delete = visual.update(|_, cx| cx.global::<BackgroundTrace>().0.clone());
+        let quads_after_delete =
+            visual.update(|_, cx| cx.global::<BackgroundTrace>().cell_quads.clone());
         assert!(
             quads_after_delete.is_empty(),
             "without a Band 0 image, matching-pane-RGB cells must not emit extra quads"

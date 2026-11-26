@@ -29,7 +29,8 @@ use gpui::{
 
 use runner_app::terminal_ime::{TerminalInput, TerminalInputHandler};
 use runner_app::terminal_resize::{
-    device_cell_size, size_push_verdict, terminal_grid_size, SizePushVerdict, TerminalGridSize,
+    device_cell_size, resolve_size_push, terminal_grid_size, RemoteZeroCellState, SizePushVerdict,
+    TerminalGridSize,
 };
 use runner_app::theme;
 use runner_app::ui::tooltip::tooltip_view;
@@ -150,10 +151,10 @@ type HoverSignature = (GridPoint, u64, usize, (u16, u16), Option<PathBuf>);
 pub(crate) struct TerminalInteraction {
     session: Arc<TerminalMirror>,
     pub(crate) pane_size: Option<TerminalGridSize>,
-    /// Tracks the last size pushed for a remote mirror whose host still reports
-    /// a zero cell size (e.g. a legacy remote host that never echoes cell pixel
-    /// dimensions), keyed by `resize_epoch` so reconnects/control handovers retry.
-    last_pushed_zero_cell: Option<(u64, TerminalGridSize)>,
+    /// Tracks bounded retry state for a remote mirror whose host still reports
+    /// a zero cell size (allowing recovery after a dropped first same-grid
+    /// resize while preventing a legacy zero-cell host from spinning).
+    remote_zero_cell: RemoteZeroCellState,
     scroll_accumulator: f32,
     drag: Option<DragState>,
     last_hover_motion: Option<(ReportedPosition, MouseModifiers)>,
@@ -172,7 +173,7 @@ impl TerminalInteraction {
         Self {
             session,
             pane_size: None,
-            last_pushed_zero_cell: None,
+            remote_zero_cell: RemoteZeroCellState::default(),
             scroll_accumulator: 0.,
             drag: None,
             last_hover_motion: None,
@@ -1168,6 +1169,7 @@ impl TerminalElement {
 }
 
 pub struct GridPrepaint {
+    pane_background: Rgb,
     image_bands: [Vec<PaintedImage>; 3],
     backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
     find_matches: Vec<Bounds<Pixels>>,
@@ -1266,53 +1268,25 @@ impl Element for TerminalElement {
         let last_cell = self.session.cell_size();
         let is_remote = self.session.is_remote();
         let resize_epoch = self.session.resize_epoch();
+        let legacy_zero_cell_confirmed = self.session.legacy_zero_cell_confirmed();
         let desktop_control = self.session.control().desktop();
-        let last_pushed = self.interaction.update(cx, |interaction, _| {
+        let verdict = self.interaction.update(cx, |interaction, _| {
             interaction.pane_size = measured;
-            if last_cell.width > 0 && last_cell.height > 0 {
-                interaction.last_pushed_zero_cell = None;
-                TerminalGridSize {
-                    cols: last_cols,
-                    rows: last_rows,
-                    cell_width: last_cell.width,
-                    cell_height: last_cell.height,
-                }
-            } else if !is_remote || !self.resize_owner || !desktop_control {
-                interaction.last_pushed_zero_cell = None;
-                TerminalGridSize {
-                    cols: last_cols,
-                    rows: last_rows,
-                    cell_width: 0,
-                    cell_height: 0,
-                }
-            } else if let Some((epoch, pushed)) = interaction.last_pushed_zero_cell {
-                if epoch == resize_epoch && pushed.cols == last_cols && pushed.rows == last_rows {
-                    pushed
-                } else {
-                    interaction.last_pushed_zero_cell = None;
-                    TerminalGridSize {
-                        cols: last_cols,
-                        rows: last_rows,
-                        cell_width: 0,
-                        cell_height: 0,
-                    }
-                }
-            } else {
-                TerminalGridSize {
-                    cols: last_cols,
-                    rows: last_rows,
-                    cell_width: 0,
-                    cell_height: 0,
-                }
-            }
+            resolve_size_push(
+                measured,
+                last_cols,
+                last_rows,
+                (last_cell.width, last_cell.height),
+                is_remote,
+                self.resize_owner,
+                desktop_control,
+                resize_epoch,
+                legacy_zero_cell_confirmed,
+                &mut interaction.remote_zero_cell,
+            )
         });
-        match size_push_verdict(measured, last_pushed, self.resize_owner) {
+        match verdict {
             SizePushVerdict::Push(size) => {
-                if is_remote && desktop_control && (last_cell.width == 0 || last_cell.height == 0) {
-                    self.interaction.update(cx, |interaction, _| {
-                        interaction.last_pushed_zero_cell = Some((resize_epoch, size));
-                    });
-                }
                 // Keep timing and formatting out of release prepaint unless
                 // debug tracing is explicitly enabled.
                 if tracing::enabled!(tracing::Level::DEBUG) {
@@ -1336,6 +1310,7 @@ impl Element for TerminalElement {
             SizePushVerdict::Unchanged | SizePushVerdict::SuppressedNonOwner => {}
             SizePushVerdict::SuppressedUnplaced => {
                 return GridPrepaint {
+                    pane_background: self.style.palette.background,
                     image_bands: Default::default(),
                     backgrounds: Vec::new(),
                     find_matches: Vec::new(),
@@ -1492,12 +1467,13 @@ impl Element for TerminalElement {
                 &base,
                 terminal_palette,
             );
-            marked_background = palette::resolve_for(
+            let default_background = palette::resolve_for(
                 Color::Named(NamedColor::Background),
                 overrides,
                 &base,
                 terminal_palette,
             );
+            marked_background = default_background;
 
             for indexed in content.display_iter {
                 let cell = &indexed.cell;
@@ -1593,8 +1569,7 @@ impl Element for TerminalElement {
 
                 let explicit_bg = cell.bg != Color::Named(NamedColor::Background)
                     || cell.flags.contains(Flags::INVERSE);
-                if bg != terminal_palette.background || (!image_bands[0].is_empty() && explicit_bg)
-                {
+                if bg != default_background || (!image_bands[0].is_empty() && explicit_bg) {
                     let quad_bounds = Bounds::new(
                         point(
                             bounds.left() + cell_width * col as f32,
@@ -1881,6 +1856,7 @@ impl Element for TerminalElement {
         }
 
         GridPrepaint {
+            pane_background: marked_background,
             image_bands,
             backgrounds,
             find_matches,
@@ -1915,9 +1891,13 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        window.paint_quad(fill(bounds, to_hsla(self.style.palette.background, 1.)));
+        let pane_bg = to_hsla(prepaint.pane_background, 1.);
+        window.paint_quad(fill(bounds, pane_bg));
         #[cfg(test)]
-        super::graphics::record_paint_event(super::graphics::PaintEvent::PaneBackground, cx);
+        {
+            super::graphics::record_pane_background(pane_bg, cx);
+            super::graphics::record_paint_event(super::graphics::PaintEvent::PaneBackground, cx);
+        }
         paint_band(&prepaint.image_bands[0], bounds, window);
         #[cfg(test)]
         super::graphics::record_paint_band(0, &prepaint.image_bands[0], cx);
@@ -3760,7 +3740,7 @@ mod tests {
         assert_eq!(*other_host.resizes.lock().unwrap(), vec![expected_first]);
 
         // Second prepaint with identical `(cols, rows, cell_w, cell_h)`: local MUST retry
-        // and receive its ack; legacy remote MUST NOT spin.
+        // and receive its ack; legacy remote sends its bounded retry attempt #2 and then stops.
         visual.update(|window, _| window.refresh());
         visual.refresh().unwrap();
         ack_rx
@@ -3779,6 +3759,8 @@ mod tests {
             "local mirror must retry the identical same-grid resize after the first was dropped"
         );
 
+        let remote_cap = usize::from(runner_app::terminal_resize::REMOTE_ZERO_CELL_MAX_ATTEMPTS);
+
         // Repeated repaints: neither settled local nor legacy remote sends redundant resizes.
         for _ in 0..5 {
             visual.update(|window, _| window.refresh());
@@ -3787,36 +3769,188 @@ mod tests {
         assert_eq!(local_host.resizes.lock().unwrap().len(), 2);
         assert_eq!(
             other_host.resizes.lock().unwrap().len(),
-            1,
-            "legacy zero-cell remote host must not spin across repeated repaints"
+            remote_cap,
+            "legacy zero-cell remote host must stop after bounded retry attempts"
         );
 
-        // Scale change on legacy remote pushes once at 1x and does not spin afterwards.
+        // Scale change on legacy remote pushes up to `remote_cap` attempts at 1x and stops.
         visual.update(|window, _| window.set_scale_factor(1.0));
-        visual.refresh().unwrap();
-        let remote_count_1x = other_host.resizes.lock().unwrap().len();
-        assert_eq!(remote_count_1x, 2);
-        for _ in 0..3 {
+        for _ in 0..5 {
             visual.update(|window, _| window.refresh());
             visual.refresh().unwrap();
         }
-        assert_eq!(other_host.resizes.lock().unwrap().len(), remote_count_1x);
+        let remote_count_1x = other_host.resizes.lock().unwrap().len();
+        assert_eq!(remote_count_1x, remote_cap * 2);
 
-        // Reattaching the legacy remote mirror bumps resize_epoch so it pushes once after reconnect.
+        // Reattaching the legacy remote mirror bumps resize_epoch so it retries in the new epoch
+        // and stops after `remote_cap` attempts.
         other_mirror.reattach().unwrap();
-        visual.update(|window, _| window.refresh());
-        visual.refresh().unwrap();
-        let remote_count_reattached = other_host.resizes.lock().unwrap().len();
-        assert_eq!(remote_count_reattached, remote_count_1x + 1);
-        for _ in 0..2 {
+        for _ in 0..5 {
             visual.update(|window, _| window.refresh());
             visual.refresh().unwrap();
+        }
+        assert_eq!(other_host.resizes.lock().unwrap().len(), remote_cap * 3);
+
+        // Part 2: Current remote host that drops its first same-grid resize recovers on
+        // the second prepaint (without needing reconnect) and stops once cell_size lands.
+        let (remote_ack_tx, remote_ack_rx) = mpsc::channel();
+        let modern_remote_host = Arc::new(ResizeTestHost {
+            initial_cols: target_default.cols,
+            initial_rows: target_default.rows,
+            drop_first_resize: AtomicBool::new(true),
+            legacy_zero_cell: false,
+            next_seq: AtomicUsize::new(0),
+            resizes: Mutex::default(),
+            active_tx: Arc::default(),
+            ack: Mutex::new(None),
+        });
+        let modern_remote_mirror = TerminalMirror::attach_remote(
+            DaemonClient::new(modern_remote_host.clone()),
+            "modern-remote-retry".into(),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        *modern_remote_host.ack.lock().unwrap() = Some(remote_ack_tx);
+        let mr_left = wheel_pane(&mut cx, &modern_remote_mirror);
+        let mr_right = wheel_pane(&mut cx, &local_mirror);
+        let mr_window = cx.add_window(|_, _| WheelHost {
+            left: mr_left,
+            right: mr_right,
+            left_interactive: true,
+            right_interactive: true,
+            right_scrollable: false,
+            font_size: 14.,
+            gap: 20.,
+            line_height_factor: crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
+            copy_on_select: false,
+        });
+        let mut mr_visual = VisualTestContext::from_window(mr_window.into(), &cx);
+        assert_eq!(
+            modern_remote_mirror.cell_size(),
+            runner_terminal::kitty::CellSize::ZERO
+        );
+        assert_eq!(
+            *modern_remote_host.resizes.lock().unwrap(),
+            vec![expected_first]
+        );
+        mr_visual.update(|window, _| window.refresh());
+        mr_visual.refresh().unwrap();
+        remote_ack_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("modern remote host should accept retried same-grid resize");
+        assert_eq!(
+            modern_remote_mirror.cell_size(),
+            runner_terminal::kitty::CellSize {
+                width: target_default.cell_width,
+                height: target_default.cell_height,
+            }
+        );
+        for _ in 0..4 {
+            mr_visual.update(|window, _| window.refresh());
+            mr_visual.refresh().unwrap();
         }
         assert_eq!(
-            other_host.resizes.lock().unwrap().len(),
-            remote_count_reattached
+            *modern_remote_host.resizes.lock().unwrap(),
+            vec![expected_first, expected_first],
+            "settled modern remote host must not send redundant resizes after retry succeeds"
         );
 
+        // Part 3: Clamped remote panes (below 20x8 and above 512x256) keep raw pane_size
+        // while deduplicating against the clamped peer grid on both modern and legacy hosts.
+        struct SizedRemoteHost {
+            width: gpui::Pixels,
+            height: gpui::Pixels,
+            pane: WheelPane,
+        }
+        impl Render for SizedRemoteHost {
+            fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let style = TerminalStyle {
+                    palette: runner_terminal::palette::RUNNER,
+                    font: crate::app_settings::AppSettings::default()
+                        .terminal_font_family
+                        .font(cx),
+                    font_size: 14.,
+                    app_zoom: 1.0,
+                    line_height_factor: crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
+                    copy_on_select: false,
+                };
+                div().relative().size_full().child(
+                    div()
+                        .absolute()
+                        .left(px(0.))
+                        .top(px(0.))
+                        .w(self.width)
+                        .h(self.height)
+                        .child(
+                            TerminalElement::new(
+                                Arc::clone(&self.pane.terminal),
+                                self.pane.interaction.clone(),
+                                self.pane.input.clone(),
+                                self.pane.focus.clone(),
+                                true,
+                                true,
+                                style,
+                            )
+                            .scrollable(true),
+                        ),
+                )
+            }
+        }
+        for (label, w, h, clamped_cols, clamped_rows) in [
+            ("lower-clamp", px(80.), px(90.), 20u16, 8u16),
+            ("upper-clamp", px(5000.), px(6000.), 512u16, 256u16),
+        ] {
+            let (clamp_ack_tx, clamp_ack_rx) = mpsc::channel();
+            let host = Arc::new(ResizeTestHost {
+                initial_cols: clamped_cols,
+                initial_rows: clamped_rows,
+                drop_first_resize: AtomicBool::new(false),
+                legacy_zero_cell: false,
+                next_seq: AtomicUsize::new(0),
+                resizes: Mutex::default(),
+                active_tx: Arc::default(),
+                ack: Mutex::new(None),
+            });
+            let mirror = TerminalMirror::attach_remote(
+                DaemonClient::new(host.clone()),
+                format!("remote-{label}"),
+                Arc::new(|| {}),
+            )
+            .unwrap();
+            *host.ack.lock().unwrap() = Some(clamp_ack_tx);
+            let pane = wheel_pane(&mut cx, &mirror);
+            let win = cx.add_window(|_, _| SizedRemoteHost {
+                width: w,
+                height: h,
+                pane,
+            });
+            let mut vis = VisualTestContext::from_window(win.into(), &cx);
+            clamp_ack_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("clamped remote resize ack should arrive");
+            let raw = win
+                .read_with(&vis, |h, cx| h.pane.interaction.read(cx).pane_size.unwrap())
+                .unwrap();
+            assert_ne!(
+                (raw.cols, raw.rows),
+                (clamped_cols, clamped_rows),
+                "{label}: pane_size must preserve unclamped local pane dimensions"
+            );
+            for _ in 0..4 {
+                vis.update(|window, _| window.refresh());
+                vis.refresh().unwrap();
+            }
+            let pushes = host.resizes.lock().unwrap().clone();
+            assert_eq!(
+                pushes.len(),
+                1,
+                "{label}: clamped modern remote pane must not spin across repaints: {pushes:?}"
+            );
+            assert_eq!((pushes[0].0, pushes[0].1), (clamped_cols, clamped_rows));
+            mirror.test_stop_frames();
+        }
+
+        modern_remote_mirror.test_stop_frames();
         local_mirror.test_stop_frames();
         other_mirror.test_stop_frames();
     }

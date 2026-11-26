@@ -74,8 +74,8 @@ impl RemoteTransport {
         cell_height: u16,
     ) -> Result<(), ClientError> {
         let config = self.config.lock().unwrap().clone();
-        let cols = cols.max(20);
-        let rows = rows.max(8);
+        let cols = cols.clamp(20, 512);
+        let rows = rows.clamp(8, 256);
         let (cell_width, cell_height) =
             runner_core::protocol::terminal::normalize_cell_size(cell_width, cell_height)
                 .unwrap_or((config.cell_width, config.cell_height));
@@ -131,12 +131,13 @@ impl Transport for RemoteTransport {
                 cell_height,
             } => {
                 let config = self.check(&session_id)?;
+                let (cols, rows) = (cols.clamp(20, 512), rows.clamp(8, 256));
                 let result = if self.connected.load(Ordering::Acquire) {
                     self.client.remote_take_control(
                         config.computer,
                         config.session,
-                        cols.max(20),
-                        rows.max(8),
+                        cols,
+                        rows,
                         cell_width,
                         cell_height,
                     )
@@ -145,8 +146,8 @@ impl Transport for RemoteTransport {
                 };
                 if result.is_ok() {
                     let mut config = self.config.lock().unwrap();
-                    config.cols = cols.max(20);
-                    config.rows = rows.max(8);
+                    config.cols = cols;
+                    config.rows = rows;
                     if cell_width > 0 && cell_height > 0 {
                         config.cell_width = cell_width;
                         config.cell_height = cell_height;
@@ -206,7 +207,7 @@ impl Transport for RemoteTransport {
         if self.check(address).is_err() || !self.connected.load(Ordering::Acquire) {
             return;
         }
-        let (cols, rows) = (cols.max(20), rows.max(8));
+        let (cols, rows) = (cols.clamp(20, 512), rows.clamp(8, 256));
         {
             let mut config = self.config.lock().unwrap();
             config.cols = cols;

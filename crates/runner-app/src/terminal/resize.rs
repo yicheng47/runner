@@ -1,3 +1,15 @@
+/// Wire grid bounds enforced by the companion protocol (`ViewportRequest::clamped_size`).
+pub const REMOTE_MIN_COLS: u16 = 20;
+pub const REMOTE_MAX_COLS: u16 = 512;
+pub const REMOTE_MIN_ROWS: u16 = 8;
+pub const REMOTE_MAX_ROWS: u16 = 256;
+
+/// Maximum unacknowledged pushes for the same `(epoch, clamped_size)` when a
+/// remote host still reports a zero cell size. Allows recovery if a current
+/// host transiently drops or rejects the first same-grid resize while keeping
+/// a legacy zero-cell host from spinning across subsequent repaints.
+pub const REMOTE_ZERO_CELL_MAX_ATTEMPTS: u8 = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalGridSize {
     pub cols: u16,
@@ -6,12 +18,150 @@ pub struct TerminalGridSize {
     pub cell_height: u16,
 }
 
+impl TerminalGridSize {
+    pub fn clamped_remote(self) -> Self {
+        Self {
+            cols: self.cols.clamp(REMOTE_MIN_COLS, REMOTE_MAX_COLS),
+            rows: self.rows.clamp(REMOTE_MIN_ROWS, REMOTE_MAX_ROWS),
+            cell_width: self.cell_width,
+            cell_height: self.cell_height,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteZeroCellState {
+    last: Option<RemoteZeroCellAttempt>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RemoteZeroCellAttempt {
+    epoch: u64,
+    size: TerminalGridSize,
+    attempts: u8,
+}
+
+impl RemoteZeroCellState {
+    pub fn clear(&mut self) {
+        self.last = None;
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SizePushVerdict {
     Push(TerminalGridSize),
     Unchanged,
     SuppressedUnplaced,
     SuppressedNonOwner,
+}
+
+/// Decides whether prepaint should push a resize, clamping the compared and
+/// pushed grid to the companion wire bounds for remote mirrors (while leaving
+/// local measurements untouched) and combining positive legacy zero-cell
+/// `Resized` confirmation with bounded retries when a remote host still
+/// reports a zero cell size.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_size_push(
+    measured: Option<TerminalGridSize>,
+    session_cols: u16,
+    session_rows: u16,
+    session_cell: (u16, u16),
+    is_remote: bool,
+    resize_owner: bool,
+    desktop_control: bool,
+    resize_epoch: u64,
+    legacy_zero_cell_confirmed: bool,
+    zero_cell_state: &mut RemoteZeroCellState,
+) -> SizePushVerdict {
+    let effective = measured.map(|size| {
+        if is_remote {
+            size.clamped_remote()
+        } else {
+            size
+        }
+    });
+    let has_cell = session_cell.0 > 0 && session_cell.1 > 0;
+    let last_pushed = if has_cell {
+        zero_cell_state.clear();
+        TerminalGridSize {
+            cols: session_cols,
+            rows: session_rows,
+            cell_width: session_cell.0,
+            cell_height: session_cell.1,
+        }
+    } else if !is_remote || !resize_owner || !desktop_control {
+        zero_cell_state.clear();
+        TerminalGridSize {
+            cols: session_cols,
+            rows: session_rows,
+            cell_width: 0,
+            cell_height: 0,
+        }
+    } else if legacy_zero_cell_confirmed {
+        zero_cell_state.clear();
+        let (cell_width, cell_height) = effective
+            .map(|size| (size.cell_width, size.cell_height))
+            .unwrap_or((0, 0));
+        TerminalGridSize {
+            cols: session_cols,
+            rows: session_rows,
+            cell_width,
+            cell_height,
+        }
+    } else if let Some(attempt) = zero_cell_state.last {
+        if attempt.epoch == resize_epoch
+            && attempt.size.cols == session_cols
+            && attempt.size.rows == session_rows
+            && Some(attempt.size) == effective
+        {
+            if attempt.attempts >= REMOTE_ZERO_CELL_MAX_ATTEMPTS {
+                attempt.size
+            } else {
+                TerminalGridSize {
+                    cols: session_cols,
+                    rows: session_rows,
+                    cell_width: 0,
+                    cell_height: 0,
+                }
+            }
+        } else {
+            zero_cell_state.clear();
+            TerminalGridSize {
+                cols: session_cols,
+                rows: session_rows,
+                cell_width: 0,
+                cell_height: 0,
+            }
+        }
+    } else {
+        TerminalGridSize {
+            cols: session_cols,
+            rows: session_rows,
+            cell_width: 0,
+            cell_height: 0,
+        }
+    };
+
+    let verdict = size_push_verdict(effective, last_pushed, resize_owner);
+    if let SizePushVerdict::Push(size) = verdict {
+        if is_remote && desktop_control && !has_cell && !legacy_zero_cell_confirmed {
+            zero_cell_state.last = match zero_cell_state.last {
+                Some(prev) if prev.epoch == resize_epoch && prev.size == size => {
+                    Some(RemoteZeroCellAttempt {
+                        epoch: resize_epoch,
+                        size,
+                        attempts: prev.attempts.saturating_add(1),
+                    })
+                }
+                _ => Some(RemoteZeroCellAttempt {
+                    epoch: resize_epoch,
+                    size,
+                    attempts: 1,
+                }),
+            };
+        }
+    }
+    verdict
 }
 
 /// Converts logical cell metrics and display scale into device pixels, clamped
@@ -153,5 +303,173 @@ mod tests {
         assert_eq!(device_cell_size(800.0, 900.0, 2.0), (1024, 1024));
         assert_eq!(device_cell_size(8.4, 18.0, 2.0), (17, 36));
         assert_eq!(device_cell_size(8.0, 18.0, 0.0), (8, 18));
+    }
+
+    #[test]
+    fn remote_resize_clamps_both_bounds_recovers_from_failure_and_bounds_legacy_hosts() {
+        fn run_sim(
+            cols: u16,
+            rows: u16,
+            legacy: bool,
+            drop_first: bool,
+            prepaints: usize,
+        ) -> (usize, (u16, u16), (u16, u16)) {
+            let mut host_grid = (
+                cols.clamp(REMOTE_MIN_COLS, REMOTE_MAX_COLS),
+                rows.clamp(REMOTE_MIN_ROWS, REMOTE_MAX_ROWS),
+            );
+            let mut host_cell = (0u16, 0u16);
+            let mut state = RemoteZeroCellState::default();
+            let mut sends = 0usize;
+            let measured = Some(TerminalGridSize {
+                cols,
+                rows,
+                cell_width: 9,
+                cell_height: 18,
+            });
+            for _ in 0..prepaints {
+                if let SizePushVerdict::Push(size) = resolve_size_push(
+                    measured,
+                    host_grid.0,
+                    host_grid.1,
+                    host_cell,
+                    true,
+                    true,
+                    true,
+                    1,
+                    false,
+                    &mut state,
+                ) {
+                    sends += 1;
+                    assert!(
+                        (REMOTE_MIN_COLS..=REMOTE_MAX_COLS).contains(&size.cols)
+                            && (REMOTE_MIN_ROWS..=REMOTE_MAX_ROWS).contains(&size.rows),
+                        "remote push must use clamped wire grid: {size:?}"
+                    );
+                    if drop_first && sends == 1 {
+                        continue;
+                    }
+                    host_grid = (
+                        size.cols.clamp(REMOTE_MIN_COLS, REMOTE_MAX_COLS),
+                        size.rows.clamp(REMOTE_MIN_ROWS, REMOTE_MAX_ROWS),
+                    );
+                    if !legacy {
+                        host_cell = (size.cell_width, size.cell_height);
+                    }
+                }
+            }
+            (sends, host_grid, host_cell)
+        }
+
+        // Modern host at lower clamp (10x6 -> 20x8) and upper clamp (520x260 -> 512x256):
+        // single push across 5 prepaints, zero spin.
+        assert_eq!(run_sim(10, 6, false, false, 5), (1, (20, 8), (9, 18)));
+        assert_eq!(run_sim(520, 260, false, false, 5), (1, (512, 256), (9, 18)));
+
+        // Modern host dropping its first same-grid viewport recovers on retry at normal
+        // and clamped sizes, then stops.
+        assert_eq!(run_sim(80, 24, false, true, 5), (2, (80, 24), (9, 18)));
+        assert_eq!(run_sim(10, 6, false, true, 5), (2, (20, 8), (9, 18)));
+        assert_eq!(run_sim(520, 260, false, true, 5), (2, (512, 256), (9, 18)));
+
+        // Legacy zero-cell host is strictly bounded at REMOTE_ZERO_CELL_MAX_ATTEMPTS
+        // across 10 prepaints at normal and both clamped boundaries.
+        let cap = usize::from(REMOTE_ZERO_CELL_MAX_ATTEMPTS);
+        assert_eq!(run_sim(80, 24, true, false, 10), (cap, (80, 24), (0, 0)));
+        assert_eq!(run_sim(10, 6, true, false, 10), (cap, (20, 8), (0, 0)));
+        assert_eq!(
+            run_sim(520, 260, true, false, 10),
+            (cap, (512, 256), (0, 0))
+        );
+
+        // Legacy host that explicitly answers a non-zero resize with `Resized { cell: 0x0, Desktop }`
+        // stops immediately for unchanged `(cols, rows)` while still pushing real grid changes.
+        let mut ack_state = RemoteZeroCellState::default();
+        let grid_101 = TerminalGridSize {
+            cols: 101,
+            rows: 30,
+            cell_width: 16,
+            cell_height: 36,
+        };
+        assert_eq!(
+            resolve_size_push(
+                Some(grid_101),
+                80,
+                24,
+                (0, 0),
+                true,
+                true,
+                true,
+                1,
+                false,
+                &mut ack_state,
+            ),
+            SizePushVerdict::Push(grid_101)
+        );
+        // Host answers with `(101, 30, cell: 0x0, Desktop)` -> legacy_zero_cell_confirmed = true.
+        for _ in 0..5 {
+            assert_eq!(
+                resolve_size_push(
+                    Some(grid_101),
+                    101,
+                    30,
+                    (0, 0),
+                    true,
+                    true,
+                    true,
+                    1,
+                    true,
+                    &mut ack_state,
+                ),
+                SizePushVerdict::Unchanged
+            );
+        }
+        let grid_110 = TerminalGridSize {
+            cols: 110,
+            rows: 30,
+            cell_width: 16,
+            cell_height: 36,
+        };
+        assert_eq!(
+            resolve_size_push(
+                Some(grid_110),
+                101,
+                30,
+                (0, 0),
+                true,
+                true,
+                true,
+                1,
+                true,
+                &mut ack_state,
+            ),
+            SizePushVerdict::Push(grid_110)
+        );
+
+        // Local mirrors do not clamp to remote bounds and never latch zero-cell retries.
+        let mut local_state = RemoteZeroCellState::default();
+        let small = TerminalGridSize {
+            cols: 10,
+            rows: 6,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        for _ in 0..4 {
+            assert_eq!(
+                resolve_size_push(
+                    Some(small),
+                    10,
+                    6,
+                    (0, 0),
+                    false,
+                    true,
+                    true,
+                    1,
+                    false,
+                    &mut local_state,
+                ),
+                SizePushVerdict::Push(small)
+            );
+        }
     }
 }
