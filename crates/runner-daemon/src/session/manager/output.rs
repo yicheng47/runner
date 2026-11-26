@@ -1389,7 +1389,9 @@ impl SessionManager {
         events: &dyn SessionEvents,
         launch: Option<&Arc<AtomicBool>>,
     ) {
-        use runner_terminal::kitty::{prepare_command, ForwardedItem, ScanItem, ScanOutput};
+        use runner_terminal::kitty::{
+            resolve_command_media, should_read_media, Command, ForwardedItem, ScanItem, ScanOutput,
+        };
 
         match scanner.scan(bytes) {
             ScanOutput::Plain(text) => {
@@ -1428,22 +1430,72 @@ impl SessionManager {
                     return;
                 }
                 // Resolve local media (`t=f`, `t=t`, `t=s`) on the forwarder thread
-                // before acquiring the session state lock.
-                let mut prepared = Vec::with_capacity(items.len());
+                // before acquiring the session state lock, flushing bounded batches so
+                // a burst with many images cannot stage unbounded file/payload memory.
+                let staging_budget = self
+                    .kitty_staging_budget_bytes
+                    .load(Ordering::Relaxed)
+                    .max(1);
+                let mut staged = Vec::new();
+                let mut staged_bytes: usize = 0;
+                let flush_staged = |staged: &mut Vec<ForwardedItem>, staged_bytes: &mut usize| {
+                    if staged.is_empty() {
+                        return;
+                    }
+                    self.ingest_forwarded_for_launch(
+                        session_id, mission_id, staged, events, launch,
+                    );
+                    staged.clear();
+                    *staged_bytes = 0;
+                };
                 for item in items {
                     if launch.is_some_and(|stop| stop.load(Ordering::Acquire)) {
                         return;
                     }
                     match item {
-                        ScanItem::Text(text) => prepared.push(ForwardedItem::Text(text)),
-                        ScanItem::Command(raw) => match prepare_command(&raw, temp_dirs) {
-                            Some(cmd) => prepared.push(ForwardedItem::Command(cmd)),
-                            None => prepared.push(ForwardedItem::Discarded),
+                        ScanItem::Text(text) => {
+                            let len = text.len();
+                            if !staged.is_empty()
+                                && staged_bytes.saturating_add(len) > staging_budget
+                            {
+                                flush_staged(&mut staged, &mut staged_bytes);
+                            }
+                            staged_bytes = staged_bytes.saturating_add(len);
+                            #[cfg(test)]
+                            self.max_staged_kitty_bytes
+                                .fetch_max(staged_bytes, Ordering::Relaxed);
+                            staged.push(ForwardedItem::Text(text));
+                            if staged_bytes >= staging_budget {
+                                flush_staged(&mut staged, &mut staged_bytes);
+                            }
+                        }
+                        ScanItem::Command(raw) => match Command::parse(&raw) {
+                            Ok(command) => {
+                                let reads_media = should_read_media(&command);
+                                let inline_len = command.data.len();
+                                if !staged.is_empty()
+                                    && (reads_media
+                                        || staged_bytes.saturating_add(inline_len) > staging_budget)
+                                {
+                                    flush_staged(&mut staged, &mut staged_bytes);
+                                }
+                                let cmd = resolve_command_media(command, temp_dirs);
+                                let len = cmd.payload_bytes();
+                                staged_bytes = staged_bytes.saturating_add(len);
+                                #[cfg(test)]
+                                self.max_staged_kitty_bytes
+                                    .fetch_max(staged_bytes, Ordering::Relaxed);
+                                staged.push(ForwardedItem::Command(cmd));
+                                if reads_media || staged_bytes >= staging_budget {
+                                    flush_staged(&mut staged, &mut staged_bytes);
+                                }
+                            }
+                            Err(_) => staged.push(ForwardedItem::Discarded),
                         },
-                        ScanItem::Discarded => prepared.push(ForwardedItem::Discarded),
+                        ScanItem::Discarded => staged.push(ForwardedItem::Discarded),
                     }
                 }
-                self.ingest_forwarded_for_launch(session_id, mission_id, &prepared, events, launch);
+                flush_staged(&mut staged, &mut staged_bytes);
             }
         }
     }
@@ -1568,15 +1620,17 @@ impl SessionManager {
                 .apply(SessionEvent::Output, crate::session::clock::state_now());
             let model = state.terminal.clone();
             let (observation, program_statuses) = if let Some(model) = model.as_ref() {
-                let (observation, frames, last_seq) = model.feed_forwarded(first_seq, items);
+                let mut offset = 0u64;
+                let (observation, last_seq) =
+                    model.feed_forwarded_with(first_seq, items, |bytes| {
+                        let seq = first_seq + offset;
+                        offset += 1;
+                        Self::push_frame(
+                            &mut state,
+                            runner_core::protocol::terminal::TerminalFrame::Output { seq, bytes },
+                        );
+                    });
                 state.output_seq = state.output_seq.max(last_seq);
-                for (offset, bytes) in frames.into_iter().enumerate() {
-                    let seq = first_seq + offset as u64;
-                    Self::push_frame(
-                        &mut state,
-                        runner_core::protocol::terminal::TerminalFrame::Output { seq, bytes },
-                    );
-                }
                 (observation, model.take_program_statuses())
             } else {
                 state.output_seq = first_seq;

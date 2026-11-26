@@ -2304,7 +2304,8 @@ async fn remote_terminal_attach_viewport_take_control_and_claim_carry_cell_size(
         }
     ));
 
-    // 4. Remote claim_control carries cell size when reclaiming a free terminal.
+    // 4. Remote claim_control preserves host cell size on (0, 0) along BOTH the IfFree Attach
+    // path and the already-owned Viewport path, and updates it when non-zero.
     host.core
         .sessions
         .browser_resize(
@@ -2336,9 +2337,10 @@ async fn remote_terminal_attach_viewport_take_control_and_claim_carry_cell_size(
             break;
         }
     }
+    // 4a. IfFree Attach path with (0, 0) must NOT overwrite host's 14x28 with older 20x40.
     host.fixture
         .client
-        .claim_control("2".into(), session.clone(), 120, 40, 22, 44)
+        .claim_control("2".into(), session.clone(), 114, 34, 0, 0)
         .await
         .unwrap();
     assert_eq!(
@@ -2348,8 +2350,142 @@ async fn remote_terminal_attach_viewport_take_control_and_claim_carry_cell_size(
             .unwrap()
             .cell_size(),
         CellSize {
+            width: 14,
+            height: 28
+        }
+    );
+    // Drain the Resync emitted by the IfFree re-attach and re-attach to observe subsequent frames.
+    let (next, frame) = receive_terminal(attachment).await;
+    assert!(matches!(frame, TerminalFrame::Resync));
+    drop(next);
+    attachment = host
+        .fixture
+        .client
+        .attach(RemoteTerminal {
+            computer: "2".into(),
+            session: session.clone(),
+            cols: 114,
+            rows: 34,
+            cell_width: 0,
+            cell_height: 0,
+            take_control: false,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            attachment.snapshot.cell_width,
+            attachment.snapshot.cell_height
+        ),
+        (14, 28)
+    );
+
+    // 4b. Already-owned Viewport path with (0, 0) must also preserve host's 14x28.
+    host.fixture
+        .client
+        .claim_control("2".into(), session.clone(), 116, 36, 0, 0)
+        .await
+        .unwrap();
+    let (next, frame) = receive_terminal(attachment).await;
+    attachment = next;
+    assert!(matches!(
+        frame,
+        TerminalFrame::Resized {
+            cols: 116,
+            rows: 36,
+            cell_width: 14,
+            cell_height: 28,
+            ..
+        }
+    ));
+    assert_eq!(
+        host.core
+            .sessions
+            .terminal_model(&session)
+            .unwrap()
+            .cell_size(),
+        CellSize {
+            width: 14,
+            height: 28
+        }
+    );
+
+    // 4c. Already-owned Viewport path with explicit (22, 44) updates host cell size.
+    host.fixture
+        .client
+        .claim_control("2".into(), session.clone(), 120, 40, 22, 44)
+        .await
+        .unwrap();
+    let (next, frame) = receive_terminal(attachment).await;
+    attachment = next;
+    assert!(matches!(
+        frame,
+        TerminalFrame::Resized {
+            cols: 120,
+            rows: 40,
+            cell_width: 22,
+            cell_height: 44,
+            ..
+        }
+    ));
+    assert_eq!(
+        host.core
+            .sessions
+            .terminal_model(&session)
+            .unwrap()
+            .cell_size(),
+        CellSize {
             width: 22,
             height: 44
+        }
+    );
+
+    // 4d. IfFree Attach path with explicit (24, 48) updates host cell size.
+    host.core
+        .sessions
+        .browser_resize(
+            &session,
+            78,
+            "Transient2",
+            90,
+            25,
+            14,
+            28,
+            true,
+            false,
+            &host.core.db,
+        )
+        .unwrap();
+    host.core.sessions.release_browser(&session, 78);
+    loop {
+        let (next, frame) = receive_terminal(attachment).await;
+        attachment = next;
+        if matches!(
+            frame,
+            TerminalFrame::Resized {
+                controller: TerminalController::None,
+                cell_width: 14,
+                cell_height: 28,
+                ..
+            }
+        ) {
+            break;
+        }
+    }
+    host.fixture
+        .client
+        .claim_control("2".into(), session.clone(), 122, 42, 24, 48)
+        .await
+        .unwrap();
+    assert_eq!(
+        host.core
+            .sessions
+            .terminal_model(&session)
+            .unwrap()
+            .cell_size(),
+        CellSize {
+            width: 24,
+            height: 48
         }
     );
     drop(attachment);

@@ -1799,6 +1799,114 @@ async fn kitty_socket_single_reader_single_reply_normalized_stream_splitting_and
         let sub_file = tmp_dir_path.join("sub-1mib.bin");
         std::fs::write(&sub_file, &sub_raw).unwrap();
         let sub_b64 = b64(sub_file.to_string_lossy().as_bytes());
+
+        // 4a. Unconditionally prove the complete 73-frame (> 64 MiB) split below the socket queues
+        // so slow reader scheduling can never mask it via Resync.
+        {
+            use runner_terminal::kitty::{
+                prepare_command, CellSize, ForwardedItem, GlobalImageBudget, TempDirs,
+            };
+            use runner_terminal::terminal::{
+                ClipboardTarget, ModelOptions, TerminalHost, TerminalModel,
+            };
+            struct DirectHost;
+            impl TerminalHost for DirectHost {
+                fn write_input(&self, _: &str, _: &[u8]) -> anyhow::Result<()> {
+                    Ok(())
+                }
+                fn write_reply(&self, _: &str, _: &[u8]) -> anyhow::Result<()> {
+                    Ok(())
+                }
+                fn report_input_state(
+                    &self,
+                    _: &str,
+                    _: runner_terminal::input_state::InputObservation,
+                ) {
+                }
+                fn set_live_title(&self, _: &str, _: &str) -> anyhow::Result<()> {
+                    Ok(())
+                }
+                fn resize(&self, _: &str, _: u16, _: u16) -> anyhow::Result<()> {
+                    Ok(())
+                }
+                fn is_local_host(&self, _: &str) -> bool {
+                    true
+                }
+                fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+            }
+            let direct_model = TerminalModel::with_graphics(
+                Arc::new(DirectHost),
+                "direct-split-73".into(),
+                80,
+                24,
+                ModelOptions::default(),
+                CellSize::ZERO,
+                Some(Arc::new(GlobalImageBudget::new(128 * 1024 * 1024))),
+            )
+            .unwrap();
+            let temp_dirs = TempDirs::with_session_tmpdir(Some(&tmp_dir_path));
+            let items: Vec<ForwardedItem> = (1..=73u32)
+                .map(|n| {
+                    let raw = format!("a=t,i={n},t=f,f=24,s=500,v=466,q=1;{sub_b64}");
+                    ForwardedItem::Command(prepare_command(raw.as_bytes(), &temp_dirs).unwrap())
+                })
+                .collect();
+            let (_obs, frames, last_seq) = direct_model.feed_forwarded(1, &items);
+            assert_eq!(frames.len(), 73, "73 sub-1 MiB images must emit 73 frames");
+            assert_eq!(last_seq, 73);
+            let max_frame = frames.iter().map(Vec::len).max().unwrap_or(0);
+            let total_bytes: usize = frames.iter().map(Vec::len).sum();
+            assert!(
+                max_frame <= 1024 * 1024,
+                "normalized burst frame exceeded 1 MiB: {max_frame}"
+            );
+            assert!(
+                total_bytes > 64 * 1024 * 1024,
+                "expected >64 MiB total across frames, got {total_bytes}"
+            );
+            for worker in direct_model.stop_workers() {
+                let _ = worker.join();
+            }
+        }
+
+        // 4b. Over the real socket, first send a 40-image burst (< 64 frames, < 128 MiB) and
+        // unconditionally assert every frame arrives intact with zero Resync and max <= 1 MiB.
+        let mut burst_40 = Vec::new();
+        for n in 1..=40u32 {
+            let id_n = 350 + n;
+            burst_40.extend_from_slice(
+                format!("\x1b_Ga=t,i={id_n},t=f,f=24,s=500,v=466,q=1;{sub_b64}\x1b\\").as_bytes(),
+            );
+        }
+        burst_40.extend_from_slice(b"\x1b_Ga=q,i=997,f=24,s=1,v=1;AAAA\x1b\\");
+        runtime_t.push_output(&id_t, &burst_40);
+        assert_eq!(
+            runtime_t.wait_writes_len(1),
+            vec![b"\x1b_Gi=997;OK\x1b\\".to_vec()]
+        );
+        runtime_t.take_writes();
+        runtime_t.push_output(&id_t, b"burst-40-sentinel");
+        let mut burst_40_count = 0usize;
+        let mut burst_40_bytes = 0usize;
+        let mut burst_40_max = 0usize;
+        loop {
+            match raw_sub.frames.recv().unwrap() {
+                TerminalFrame::Output { bytes, .. } if bytes == b"burst-40-sentinel" => break,
+                TerminalFrame::Output { bytes, .. } => {
+                    burst_40_max = burst_40_max.max(bytes.len());
+                    burst_40_bytes += bytes.len();
+                    burst_40_count += 1;
+                }
+                TerminalFrame::Resized { .. } => {}
+                TerminalFrame::Resync => panic!("40-frame (<128 MiB) burst must never Resync"),
+            }
+        }
+        assert_eq!(burst_40_count, 40);
+        assert!(burst_40_max <= 1024 * 1024);
+        assert!(burst_40_bytes > 35 * 1024 * 1024);
+
+        // 4c. Now push a 73-image (> 64 MiB) burst over the real socket and unconditionally assert
+        // the transport survives without dropping ("output too large") and no frame exceeds 1 MiB.
         let mut burst_64m = Vec::new();
         for n in 1..=73u32 {
             let id_n = 400 + n;
@@ -1808,14 +1916,9 @@ async fn kitty_socket_single_reader_single_reply_normalized_stream_splitting_and
         }
         burst_64m.extend_from_slice(b"\x1b_Ga=q,i=998,f=24,s=1,v=1;AAAA\x1b\\");
 
-        // Drain raw_sub concurrently on a background thread while the burst pushes so the socket
-        // carries every frame without stalling, verifying none exceed 1 MiB.
         let mut drain_sub = raw_sub;
         let reader = std::thread::spawn(move || {
-            let mut count = 0usize;
-            let mut total_bytes = 0usize;
             let mut max_frame = 0usize;
-            let mut saw_resync = false;
             loop {
                 match drain_sub.frames.recv() {
                     Ok(TerminalFrame::Output { bytes, .. }) => {
@@ -1823,36 +1926,24 @@ async fn kitty_socket_single_reader_single_reply_normalized_stream_splitting_and
                             break;
                         }
                         max_frame = max_frame.max(bytes.len());
-                        total_bytes += bytes.len();
-                        count += 1;
                     }
-                    Ok(TerminalFrame::Resync) => {
-                        saw_resync = true;
-                        break;
-                    }
+                    Ok(TerminalFrame::Resync) => break,
                     Ok(TerminalFrame::Resized { .. }) => {}
                     Err(error) => panic!("socket dropped during >64 MiB burst: {error}"),
                 }
             }
-            (count, total_bytes, max_frame, saw_resync)
+            max_frame
         });
         runtime_t.push_output(&id_t, &burst_64m);
         let sentinel_writes = runtime_t.wait_writes_len(1);
         assert_eq!(sentinel_writes, vec![b"\x1b_Gi=998;OK\x1b\\".to_vec()]);
         runtime_t.take_writes();
         runtime_t.push_output(&id_t, b"burst-done-sentinel");
-        let (count, total_bytes, max_frame, saw_resync) = reader.join().unwrap();
+        let max_frame = reader.join().unwrap();
         assert!(
             max_frame <= 1024 * 1024,
             "normalized burst frame exceeded 1 MiB: {max_frame}"
         );
-        if !saw_resync {
-            assert_eq!(count, 73);
-            assert!(
-                total_bytes > 64 * 1024 * 1024,
-                "expected >64 MiB total across frames, got {total_bytes}"
-            );
-        }
         // The socket transport itself is still alive and serves a fresh attach cleanly.
         let post_burst = raw_transport.client().attach(&id_t).unwrap();
         assert_eq!(
@@ -1871,12 +1962,29 @@ async fn kitty_socket_single_reader_single_reply_normalized_stream_splitting_and
             .contains_key(&473));
 
         // 5. Queueing > 128 MiB of frames (well below 64 frames) triggers Resync over the real
-        // daemon socket. Reuse one 30 MiB `t=f` image (~40 MiB normalized frame) 7 times under the
-        // same image ID (`i=500`) so model storage stays at 30 MiB while 7 * ~40 MiB = ~280 MiB
-        // (14 frames << 64) are pushed unread: exceeding daemon FrameQueue (128 MiB) + client
-        // socket::Frames (128 MiB) by pigeonhole with zero sleeps or timing assumptions.
+        // daemon socket. Push 8 * ~41.9 MB = ~335 MB (strictly exceeding 3 daemon + 1 in-flight +
+        // 3 client = 7 frames) and synchronize on the daemon FrameQueue + a shared-connection
+        // fence session so `overflow_sub.frames.recv()` can never hang.
+        let sync_spawned = core_t
+            .sessions
+            .spawn_direct(
+                &role,
+                crate::session::manager::DirectLaunch {
+                    cwd: Some(root.path().to_str().unwrap().into()),
+                    cols: Some(80),
+                    rows: Some(24),
+                    ..Default::default()
+                },
+                &core_t.app_data_dir,
+                core_t.db.clone(),
+                Arc::new(core_t.session_events()),
+            )
+            .unwrap();
+        let sync_id = sync_spawned.id.clone();
+
         let overflow_transport = connect();
         let mut overflow_sub = overflow_transport.client().attach(&id_t).unwrap();
+        let mut sync_sub = overflow_transport.client().attach(&sync_id).unwrap();
         drop(mirrors);
         let raw_30m = vec![0x2Au8; 3200 * 3276 * 3]; // 31,449,600 B -> ~41.93 MB normalized
         let file_30m = tmp_dir_path.join("overflow-30mib.bin");
@@ -1884,12 +1992,45 @@ async fn kitty_socket_single_reader_single_reply_normalized_stream_splitting_and
         let file_30m_b64 = b64(file_30m.to_string_lossy().as_bytes());
         let cmd_30m = format!("\x1b_Ga=t,i=500,t=f,f=24,s=3200,v=3276;{file_30m_b64}\x1b\\");
         assert!(4 * (raw_30m.len() * 4 / 3) > TERMINAL_QUEUE_MAX_BYTES);
-        for _ in 0..7 {
+        for _ in 0..8 {
             runtime_t.push_output(&id_t, cmd_30m.as_bytes());
         }
-        let overflow_writes = runtime_t.wait_writes_len(7);
+        let overflow_writes = runtime_t.wait_writes_len(8);
         assert!(overflow_writes.iter().all(|w| w == b"\x1b_Gi=500;OK\x1b\\"));
         runtime_t.take_writes();
+
+        // Wait until either the daemon FrameQueue overflowed (removing `overflow_sub` after
+        // queuing Resync) or the daemon FrameQueue drained all 8 frames (335 MB) into the socket.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let daemon_overflowed = loop {
+            match core_t
+                .sessions
+                .subscriber_queue_state(&id_t, overflow_sub.subscriber_id)
+            {
+                None => break true,
+                Some((0, 0, false)) => break false,
+                Some((_, _, true)) => break true,
+                Some(_) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for overflow queue to fill or drain"
+                    );
+                    std::thread::yield_now();
+                }
+            }
+        };
+        if !daemon_overflowed {
+            // All 8 frames (335 MB) already left the daemon FrameQueue into the shared connection;
+            // send a fence on `sync_id` over the SAME socket connection so `read_loop` has already
+            // processed all 8 frames into `overflow_sub`'s client queue before we read it.
+            runtime_t.push_output(&sync_id, b"overflow-fence");
+            let fence = sync_sub.frames.recv().unwrap();
+            assert!(matches!(
+                fence,
+                TerminalFrame::Output { ref bytes, .. } if bytes == b"overflow-fence"
+            ));
+        }
+
         let mut got_resync = false;
         for _ in 0..16 {
             match overflow_sub.frames.recv() {
@@ -1907,9 +2048,11 @@ async fn kitty_socket_single_reader_single_reply_normalized_stream_splitting_and
         );
 
         drop(post_burst);
+        drop(sync_sub);
         drop(overflow_sub);
         drop(raw_transport);
         drop(overflow_transport);
+        core_t.sessions.kill(&sync_id).unwrap();
         core_t.sessions.kill(&id_t).unwrap();
         core_t.sessions.drain_terminal_workers();
         shutdown_t.cancel();

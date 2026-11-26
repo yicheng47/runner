@@ -159,6 +159,11 @@ impl FrameQueue {
         state.bytes = 0;
         state.frames.drain(..).collect()
     }
+    #[cfg(test)]
+    pub(super) fn snapshot_state(&self) -> (usize, usize, bool) {
+        let state = self.state.lock().unwrap();
+        (state.frames.len(), state.bytes, state.closed)
+    }
     pub(super) fn close(&self) {
         self.state.lock().unwrap().closed = true;
         self.ready.notify_one();
@@ -1100,6 +1105,20 @@ impl SessionManager {
                 }
             });
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn subscriber_queue_state(
+        &self,
+        id: &str,
+        subscriber: u64,
+    ) -> Option<(usize, usize, bool)> {
+        let state = self.session_state(id)?;
+        let state = state.lock().unwrap();
+        state
+            .subscribers
+            .iter()
+            .find(|sub| sub.id == subscriber)
+            .map(|sub| sub.queue.snapshot_state())
     }
     #[cfg(test)]
     pub(crate) fn record_terminal_input(&self, id: &str) -> mpsc::Receiver<Vec<u8>> {

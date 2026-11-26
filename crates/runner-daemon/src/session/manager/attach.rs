@@ -279,9 +279,29 @@ impl SessionManager {
             };
             state_guard.pending_resize = None;
             if let Some(terminal) = &state_guard.terminal {
+                let before_size = terminal.size();
+                let before_cell = terminal.cell_size();
                 let cell = terminal_cell
                     .map(|(width, height)| runner_terminal::kitty::CellSize { width, height });
                 terminal.resize_with_cell_size(terminal_size.0, terminal_size.1, cell);
+                let after_size = terminal.size();
+                let after_cell = terminal.cell_size();
+                if after_size != before_size || after_cell != before_cell {
+                    state_guard.output_seq += 1;
+                    let seq = state_guard.output_seq;
+                    let controller = state_guard.controller.wire();
+                    Self::push_plain_frame(
+                        &mut state_guard,
+                        runner_core::protocol::terminal::TerminalFrame::Resized {
+                            seq,
+                            cols: after_size.0,
+                            rows: after_size.1,
+                            cell_width: after_cell.width,
+                            cell_height: after_cell.height,
+                            controller,
+                        },
+                    );
+                }
             }
             (state_guard.output_seq, pending_persist)
         };

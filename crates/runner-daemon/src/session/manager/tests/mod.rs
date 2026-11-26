@@ -146,6 +146,7 @@ struct FakeRuntime {
     stop_failures: std::sync::Mutex<HashSet<String>>,
     resizes: std::sync::Mutex<Vec<(String, u16, u16)>>,
     pixel_resizes: std::sync::Mutex<Vec<PixelResizeRecord>>,
+    fail_next_resize: std::sync::Mutex<bool>,
     /// Runs inside `spawn` once the fork is recorded — lets a test land
     /// work (a resize) between the fork and the handle install.
     spawn_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
@@ -393,6 +394,9 @@ impl SessionRuntime for FakeRuntime {
         pixel_width: u16,
         pixel_height: u16,
     ) -> RuntimeResult<()> {
+        if std::mem::replace(&mut *self.fail_next_resize.lock().unwrap(), false) {
+            return Err(RuntimeError::Msg("injected resize failure".into()));
+        }
         self.resizes
             .lock()
             .unwrap()

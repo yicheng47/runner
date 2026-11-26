@@ -463,6 +463,9 @@ pub struct SessionManager {
     control_group_revision: AtomicU64,
     last_desktop_cell_size: Mutex<Option<(u16, u16)>>,
     image_budget: Arc<runner_terminal::kitty::GlobalImageBudget>,
+    kitty_staging_budget_bytes: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    max_staged_kitty_bytes: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
     wake_baseline_read: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     #[cfg(test)]
@@ -634,6 +637,11 @@ impl SessionManager {
             control_group_revision: AtomicU64::new(0),
             last_desktop_cell_size: Mutex::new(None),
             image_budget,
+            kitty_staging_budget_bytes: std::sync::atomic::AtomicUsize::new(
+                runner_terminal::kitty::MAX_NORMALIZED_FRAME_BYTES,
+            ),
+            #[cfg(test)]
+            max_staged_kitty_bytes: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             wake_baseline_read: Mutex::default(),
             #[cfg(test)]
@@ -649,6 +657,18 @@ impl SessionManager {
             #[cfg(test)]
             after_install_snapshot_hooks: Mutex::default(),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_kitty_staging_budget(&self, bytes: usize) {
+        self.kitty_staging_budget_bytes
+            .store(bytes.max(1), Ordering::Release);
+        self.max_staged_kitty_bytes.store(0, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn max_staged_kitty_bytes(&self) -> usize {
+        self.max_staged_kitty_bytes.load(Ordering::Acquire)
     }
 
     #[cfg(test)]

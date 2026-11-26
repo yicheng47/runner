@@ -125,6 +125,16 @@ impl SessionManager {
         if let Some(h) = forwarder {
             let _ = h.join();
         }
+        // Release both screens' Kitty image storage now that the forwarder has
+        // stopped, even when the retained terminal model stays alive for resume.
+        {
+            let state = state.lock().unwrap();
+            if state.handle.is_none() {
+                if let Some(terminal) = &state.terminal {
+                    terminal.clear_graphics();
+                }
+            }
+        }
         self.clear_killed(session_id);
         Ok(())
     }
@@ -286,6 +296,9 @@ impl SessionManager {
                 state.handle = None;
                 workers = if retain_terminal {
                     state.finish_companion_terminals();
+                    if let Some(terminal) = &state.terminal {
+                        terminal.clear_graphics();
+                    }
                     state.terminal_input = None;
                     for sub in state.subscribers.drain(..) {
                         sub.queue.close();

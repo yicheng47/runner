@@ -410,6 +410,7 @@ impl SessionManager {
             session.finish_companion_terminals();
             if let Some(terminal) = &session.terminal {
                 terminal.clear_program_status();
+                terminal.clear_graphics();
             }
             session.model.apply(
                 SessionEvent::Exited {

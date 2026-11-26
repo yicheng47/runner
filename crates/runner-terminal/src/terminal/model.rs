@@ -691,10 +691,25 @@ impl TerminalModel {
         if self.stopped.load(Ordering::Acquire) {
             return (None, Vec::new(), first_seq);
         }
+        let mut frames = Vec::new();
+        let (observation, last_seq) =
+            self.feed_forwarded_with(first_seq, items, |frame| frames.push(frame));
+        (observation, frames, last_seq)
+    }
+
+    pub fn feed_forwarded_with(
+        &self,
+        first_seq: u64,
+        items: &[crate::kitty::ForwardedItem],
+        mut emit_frame: impl FnMut(Vec<u8>),
+    ) -> (Option<InputObservation>, u64) {
+        if self.stopped.load(Ordering::Acquire) {
+            return (None, first_seq.saturating_sub(1));
+        }
         let now = Instant::now();
         let mut sequence = self.sequence.lock().unwrap();
         if first_seq <= sequence.last {
-            return (None, Vec::new(), sequence.last);
+            return (None, sequence.last);
         }
         let cell_size = self.cell_size();
         let mut parser = self.parser.lock().unwrap();
@@ -705,7 +720,12 @@ impl TerminalModel {
         let was_tui_ready = term_indicates_tui_ready(&term, &parser);
         parser.processor.begin_paint_tracking();
 
-        let mut normalized_segments: Vec<Vec<u8>> = Vec::new();
+        let mut splitter = crate::kitty::NormalizedFrameSplitter::new();
+        let mut frame_count = 0u64;
+        let mut push_frame = |frame: Vec<u8>| {
+            frame_count += 1;
+            emit_frame(frame);
+        };
         let mut saw_tui_ready_text = false;
         let status_start = self.pending_program_status.lock().unwrap().len();
         {
@@ -736,9 +756,7 @@ impl TerminalModel {
                             first_seq,
                             text,
                         );
-                        if !text.is_empty() {
-                            normalized_segments.push(text.clone());
-                        }
+                        splitter.push_slice(text, &mut push_frame);
                     }
                     crate::kitty::ForwardedItem::Command(prepared) => {
                         self.abort_side_scanners();
@@ -750,9 +768,11 @@ impl TerminalModel {
                         let result =
                             handler.execute_kitty(prepared, crate::kitty::ExecMode::Authoritative);
                         if emitted_can {
-                            normalized_segments.push(vec![0x18]);
+                            splitter.push_slice(&[0x18], &mut push_frame);
                         }
-                        normalized_segments.extend(result.normalized);
+                        for seg in result.normalized {
+                            splitter.push(seg, &mut push_frame);
+                        }
                         parser.reopen_sync_after_graphics(&mut handler, saved_sync);
                     }
                     crate::kitty::ForwardedItem::Discarded => {
@@ -763,16 +783,16 @@ impl TerminalModel {
                             |action| self.run_deferred_sync_action(action, cell_size),
                         );
                         if emitted_can {
-                            normalized_segments.push(vec![0x18]);
+                            splitter.push_slice(&[0x18], &mut push_frame);
                         }
                         parser.reopen_sync_after_graphics(&mut handler, saved_sync);
                     }
                 }
             }
         }
+        splitter.finish(&mut push_frame);
 
-        let frames = crate::kitty::split_normalized_frames(normalized_segments);
-        let last_seq = first_seq + frames.len().saturating_sub(1) as u64;
+        let last_seq = first_seq + frame_count.saturating_sub(1);
         if last_seq != first_seq {
             let mut pending = self.pending_program_status.lock().unwrap();
             for entry in pending.iter_mut().skip(status_start) {
@@ -804,7 +824,7 @@ impl TerminalModel {
         if schedule {
             let _ = self.sync_flush.send(());
         }
-        (observation, frames, last_seq)
+        (observation, last_seq)
     }
 
     pub fn publish_initial(&self) {
@@ -968,6 +988,11 @@ impl TerminalModel {
     }
     pub fn graphics(&self) -> &Arc<Mutex<crate::kitty::TerminalGraphics>> {
         &self.graphics
+    }
+    /// Clear both screens' image storage and release their bytes from the
+    /// shared global budget (used when a session ends while retaining text).
+    pub fn clear_graphics(&self) {
+        self.graphics.lock().unwrap().reset();
     }
     pub fn configure_named(&self, scrollback: usize, shape: &str) {
         let shape = match shape {

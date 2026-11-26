@@ -323,7 +323,7 @@ fn resume_applies_a_size_pushed_mid_fork() {
 
     let fake = fake_runtime();
     let mgr = mgr_with_fake(None, Arc::clone(&fake));
-    let events = capture();
+    let events: Arc<dyn SessionEvents> = capture();
     let spawned = mgr
         .spawn_direct(
             &role,
@@ -1785,5 +1785,216 @@ fn cell_size_propagates_to_pty_csi_14_16_new_spawns_take_back_push_controller_an
     for sid in [&id, &second.id, &third.id] {
         core.sessions.kill(sid).unwrap();
     }
+    core.sessions.drain_terminal_workers();
+}
+
+#[test]
+fn install_handle_state_notifies_retained_subscribers_on_cell_change_and_failed_reconcile() {
+    use runner_core::protocol::terminal::TerminalFrame;
+    use runner_terminal::kitty::CellSize;
+
+    let temp = tempfile::tempdir().unwrap();
+    let fake = fake_runtime();
+    let core = crate::test_support::test_core_in_with_runtime(
+        temp.path().to_owned(),
+        Arc::clone(&fake) as Arc<dyn SessionRuntime>,
+    );
+    let mut role = role("/bin/sh", &[]);
+    role.id = ulid::Ulid::new().to_string();
+    role.handle = "retain-resize".into();
+    role.runtime = "trae".into();
+    insert_role_row(&core.db.get().unwrap(), &role);
+
+    let events: Arc<dyn SessionEvents> = capture();
+    let first = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::clone(&events),
+        )
+        .unwrap();
+    let id = first.id.clone();
+
+    // Kill before any desktop cell size was reported so the retained terminal has (80, 24, 0x0).
+    core.sessions.kill(&id).unwrap();
+
+    // Attach a subscriber to the retained terminal model BEFORE resume.
+    let mut sub = core.sessions.attach_terminal(&id).unwrap();
+    assert_eq!(
+        (
+            sub.snapshot.cols,
+            sub.snapshot.rows,
+            sub.snapshot.cell_width,
+            sub.snapshot.cell_height
+        ),
+        (80, 24, 0, 0)
+    );
+
+    // 1a. Update remembered desktop cell size to 32x64 via another session, then resume `id` at
+    // the same 80x24 grid: install_handle_state must emit an ordered Resized for the cell change.
+    let helper = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::clone(&events),
+        )
+        .unwrap();
+    core.sessions
+        .resize_with_cell_size(&helper.id, 80, 24, 32, 64, &core.db)
+        .unwrap();
+
+    let seq_before_resume = core.sessions.terminal_output_sequence(&id);
+    core.sessions
+        .resume(
+            &id,
+            Some(80),
+            Some(24),
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::clone(&events),
+        )
+        .unwrap();
+    let frame = sub.frames.recv().unwrap();
+    assert!(
+        matches!(
+            frame,
+            TerminalFrame::Resized {
+                seq,
+                cols: 80,
+                rows: 24,
+                cell_width: 32,
+                cell_height: 64,
+                ..
+            } if seq == seq_before_resume + 1
+        ),
+        "expected ordered Resized frame for retained subscriber after cell-size change on resume, got {frame:?}"
+    );
+    assert_eq!(
+        core.sessions.terminal_output_sequence(&id),
+        seq_before_resume + 1
+    );
+    assert_eq!(
+        core.sessions.terminal_model(&id).unwrap().cell_size(),
+        CellSize {
+            width: 32,
+            height: 64
+        }
+    );
+
+    // 1b. Kill and resume at a new grid size (100x30) while keeping the same subscriber:
+    // install_handle_state must emit an ordered Resized for the grid change too.
+    core.sessions.kill(&id).unwrap();
+    let seq_before_grid = core.sessions.terminal_output_sequence(&id);
+    core.sessions
+        .resume(
+            &id,
+            Some(100),
+            Some(30),
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::clone(&events),
+        )
+        .unwrap();
+    let grid_frame = sub.frames.recv().unwrap();
+    assert!(
+        matches!(
+            grid_frame,
+            TerminalFrame::Resized {
+                seq,
+                cols: 100,
+                rows: 30,
+                cell_width: 32,
+                cell_height: 64,
+                ..
+            } if seq == seq_before_grid + 1
+        ),
+        "expected ordered Resized frame for retained subscriber after grid change on resume, got {grid_frame:?}"
+    );
+
+    // 2. Kill again, keep the same subscriber attached, and inject a mid-fork resize whose
+    // runtime reconciliation fails: install_handle_state must roll back the retained model to the
+    // spawned PTY geometry (100x30, 32x64) AND emit an ordered rollback Resized frame.
+    core.sessions.kill(&id).unwrap();
+    {
+        let sessions = Arc::clone(&core.sessions);
+        let pool = Arc::clone(&core.db);
+        let id = id.clone();
+        let fake_for_hook = Arc::clone(&fake);
+        *fake.spawn_hook.lock().unwrap() = Some(Box::new(move || {
+            sessions
+                .resize_with_cell_size(&id, 110, 34, 20, 40, &pool)
+                .unwrap();
+            *fake_for_hook.fail_next_resize.lock().unwrap() = true;
+        }));
+    }
+    core.sessions
+        .resume(
+            &id,
+            Some(100),
+            Some(30),
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::clone(&events),
+        )
+        .unwrap();
+    *fake.spawn_hook.lock().unwrap() = None;
+
+    let mid_fork = sub.frames.recv().unwrap();
+    let mid_seq = match mid_fork {
+        TerminalFrame::Resized {
+            seq,
+            cols: 110,
+            rows: 34,
+            cell_width: 20,
+            cell_height: 40,
+            ..
+        } => seq,
+        other => panic!("expected mid-fork Resized frame, got {other:?}"),
+    };
+    let rollback = sub.frames.recv().unwrap();
+    assert!(
+        matches!(
+            rollback,
+            TerminalFrame::Resized {
+                seq,
+                cols: 100,
+                rows: 30,
+                cell_width: 32,
+                cell_height: 64,
+                ..
+            } if seq == mid_seq + 1
+        ),
+        "expected ordered rollback Resized frame after failed mid-fork reconcile, got {rollback:?}"
+    );
+    let model = core.sessions.terminal_model(&id).unwrap();
+    assert_eq!(model.size(), (100, 30));
+    assert_eq!(
+        model.cell_size(),
+        CellSize {
+            width: 32,
+            height: 64
+        }
+    );
+    assert_eq!(core.sessions.terminal_output_sequence(&id), mid_seq + 1);
+
+    drop(sub);
+    core.sessions.kill(&id).unwrap();
+    core.sessions.kill(&helper.id).unwrap();
     core.sessions.drain_terminal_workers();
 }

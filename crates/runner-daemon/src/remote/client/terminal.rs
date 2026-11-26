@@ -80,6 +80,7 @@ struct Stream {
     requested: bool,
     resync_pending: usize,
     closed: bool,
+    scanner: runner_terminal::kitty::Scanner,
     listeners: BTreeMap<u64, Arc<Queue>>,
     waiting: Vec<oneshot::Sender<Result<TerminalAttachment>>>,
 }
@@ -116,6 +117,7 @@ impl Terminals {
                 requested: false,
                 resync_pending: 0,
                 closed: false,
+                scanner: runner_terminal::kitty::Scanner::new(),
                 listeners: BTreeMap::new(),
                 waiting: Vec::new(),
             });
@@ -218,14 +220,9 @@ impl Terminals {
         .clamped_size();
         stream.config.cols = cols;
         stream.config.rows = rows;
-        if let Some((cw, ch)) =
-            runner_core::protocol::terminal::normalize_cell_size(cell_width, cell_height)
-        {
-            stream.config.cell_width = cw;
-            stream.config.cell_height = ch;
-        }
-        let (wire_cw, wire_ch) =
-            super::wire_cell_size(stream.config.cell_width, stream.config.cell_height);
+        let (wire_cw, wire_ch) = super::wire_cell_size(cell_width, cell_height);
+        stream.config.cell_width = wire_cw.unwrap_or(0);
+        stream.config.cell_height = wire_ch.unwrap_or(0);
         if stream.requested || stream.assembling.is_some() {
             let _ = reply.send(Ok(serde_json::Value::Null));
             return;
@@ -361,6 +358,7 @@ impl Terminals {
             stream.assembling = None;
             stream.complete = false;
             stream.resync_pending = 0;
+            stream.scanner.reset();
             if !stream.closed {
                 stream.replay_valid = false;
             }
@@ -444,6 +442,25 @@ impl Terminals {
                     snapshot.cell_width = cell_width;
                     snapshot.cell_height = cell_height;
                     snapshot.controller = controller.clone();
+                    // Strip any Kitty graphics commands from pre-Phase-1 hosts across both
+                    // the snapshot and subsequent Output chunks so remote panes stay text-only.
+                    stream.scanner.reset();
+                    let split = snapshot.bytes.len() - snapshot.unfinished_len;
+                    let prefix = strip_remote_bytes(&mut stream.scanner, &snapshot.bytes[..split]);
+                    let suffix = if split < snapshot.bytes.len() {
+                        strip_remote_bytes(&mut stream.scanner, &snapshot.bytes[split..])
+                    } else {
+                        Vec::new()
+                    };
+                    snapshot.unfinished_len = suffix.len();
+                    snapshot.bytes = if suffix.is_empty() {
+                        prefix
+                    } else {
+                        let mut joined = Vec::with_capacity(prefix.len() + suffix.len());
+                        joined.extend_from_slice(&prefix);
+                        joined.extend_from_slice(&suffix);
+                        joined
+                    };
                     let resync_listeners = stream.listeners.len();
                     for queue in stream.listeners.values() {
                         queue.push(TerminalFrame::Resync);
@@ -493,10 +510,13 @@ impl Terminals {
                     return Err("Remote terminal output sequence changed".into());
                 }
                 stream.seq = output.seq;
-                stream.push(TerminalFrame::Output {
-                    seq: output.seq,
-                    bytes: output.data.0,
-                });
+                let bytes = strip_remote_bytes(&mut stream.scanner, &output.data.0);
+                if !bytes.is_empty() {
+                    stream.push(TerminalFrame::Output {
+                        seq: output.seq,
+                        bytes,
+                    });
+                }
             }
             c::HostMessage::Closed(closed) => {
                 if let Some(stream) = self.streams.get_mut(&closed.session) {
@@ -577,6 +597,22 @@ impl Stream {
                 snapshot: snapshot.clone(),
                 frames: Box::new(Frames { queue, cancel }),
             }));
+        }
+    }
+}
+
+fn strip_remote_bytes(scanner: &mut runner_terminal::kitty::Scanner, bytes: &[u8]) -> Vec<u8> {
+    use runner_terminal::kitty::{ScanItem, ScanOutput};
+    match scanner.scan(bytes) {
+        ScanOutput::Plain(text) => text.to_vec(),
+        ScanOutput::Items(items) => {
+            let mut out = Vec::new();
+            for item in items {
+                if let ScanItem::Text(text) = item {
+                    out.extend_from_slice(&text);
+                }
+            }
+            out
         }
     }
 }

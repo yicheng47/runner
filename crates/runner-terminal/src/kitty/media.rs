@@ -76,6 +76,17 @@ impl PreparedCommand {
             media: None,
         })
     }
+
+    /// Bytes currently retained in memory by this prepared command's payload
+    /// (inline data plus any resolved local-media bytes).
+    pub fn payload_bytes(&self) -> usize {
+        self.command.data.len().saturating_add(
+            self.media
+                .as_ref()
+                .and_then(|res| res.as_ref().ok())
+                .map_or(0, Vec::len),
+        )
+    }
 }
 
 /// Items handed from a session forwarder to `TerminalModel::feed_forwarded`.
@@ -87,17 +98,23 @@ pub enum ForwardedItem {
     Discarded,
 }
 
-/// Parse a raw scanned Kitty command and, if it names a local medium whose
-/// stateless header checks pass, read (and for `t=t`/`t=s`, delete/unlink) the
-/// local resource outside the session state lock.
-pub fn prepare_command(raw: &[u8], temp_dirs: &TempDirs) -> Option<PreparedCommand> {
-    let command = Command::parse(raw).ok()?;
+/// Resolve local media for an already-parsed command outside the session state
+/// lock when its stateless header checks pass.
+pub fn resolve_command_media(command: Command, temp_dirs: &TempDirs) -> PreparedCommand {
     let media = if should_read_media(&command) {
         Some(read_media(&command, temp_dirs))
     } else {
         None
     };
-    Some(PreparedCommand { command, media })
+    PreparedCommand { command, media }
+}
+
+/// Parse a raw scanned Kitty command and, if it names a local medium whose
+/// stateless header checks pass, read (and for `t=t`/`t=s`, delete/unlink) the
+/// local resource outside the session state lock.
+pub fn prepare_command(raw: &[u8], temp_dirs: &TempDirs) -> Option<PreparedCommand> {
+    let command = Command::parse(raw).ok()?;
+    Some(resolve_command_media(command, temp_dirs))
 }
 
 /// Stateless header checks matching Ghostty before opening any local file or

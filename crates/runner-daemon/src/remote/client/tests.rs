@@ -673,6 +673,179 @@ async fn terminal_attachment_maps_snapshot_output_resize_input_and_control() {
 }
 
 #[tokio::test]
+async fn remote_terminal_strips_kitty_graphics_from_pre_phase1_host_snapshot_and_split_output() {
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line, Point};
+    use runner_core::protocol::{
+        ClientError, DaemonClient, EventError, EventSubscription, Request, Response, Transport,
+    };
+    use runner_terminal::terminal::TerminalMirror;
+
+    struct ClosedEvents;
+    impl EventSubscription for ClosedEvents {
+        fn recv(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = std::result::Result<
+                            runner_core::protocol::ClientEvent,
+                            EventError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Err(EventError::Closed) })
+        }
+    }
+    struct SingleAttachment(StdMutex<Option<TerminalAttachment>>);
+    impl Transport for SingleAttachment {
+        fn call(&self, _request: Request) -> std::result::Result<Response, ClientError> {
+            Err(ClientError::msg("unused"))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            Box::new(ClosedEvents)
+        }
+        fn attach(&self, _id: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            self.0
+                .lock()
+                .unwrap()
+                .take()
+                .ok_or_else(|| ClientError::msg("already attached"))
+        }
+    }
+
+    let fixture = Fixture::new().await;
+    // Simulate a pre-Phase-1 companion host whose snapshot and Output messages contain raw Kitty
+    // graphics commands (including a direct display command split across two Output messages).
+    *fixture.core.fake.bytes.lock().unwrap() =
+        b"snap\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\ok\r\n".to_vec();
+    fixture.pair().await;
+    let attachment = fixture
+        .client
+        .attach(RemoteTerminal {
+            computer: "2".into(),
+            session: "session".into(),
+            cols: 80,
+            rows: 24,
+            cell_width: 0,
+            cell_height: 0,
+            take_control: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(attachment.snapshot.bytes, b"snapok\r\n");
+
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
+    let client = DaemonClient::new(Arc::new(SingleAttachment(StdMutex::new(Some(attachment)))));
+    let mirror = TerminalMirror::attach_remote(
+        client,
+        "session".into(),
+        Arc::new(move || {
+            let _ = wake_tx.send(());
+        }),
+    )
+    .unwrap();
+    let _viewer = mirror.view();
+
+    fn read_lines(m: &TerminalMirror) -> (String, String, Point) {
+        let term = m.term.lock();
+        let read_line = |line: i32| -> String {
+            (0..term.columns())
+                .map(|c| term.grid()[Point::new(Line(line), Column(c))].c)
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        };
+        (read_line(0), read_line(1), term.grid().cursor.point)
+    }
+    fn wait_row1(m: &TerminalMirror, rx: &std::sync::mpsc::Receiver<()>, expected: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let (_, row1, _) = read_lines(m);
+            if row1 == expected {
+                break;
+            }
+            let rem = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or_else(|| {
+                    panic!("timed out waiting for row1 == {expected:?}, got {row1:?}")
+                });
+            let _ = rx.recv_timeout(rem);
+        }
+    }
+
+    // Send a direct display command split across TWO separate v1 HostMessage::Output messages,
+    // waiting after each half so companion::Adapter cannot coalesce them into one message.
+    let tx = fixture.core.streams.lock().unwrap()[0].clone();
+    tx.send(TerminalFrame::Output {
+        seq: 1,
+        bytes: b"before\x1b_Ga=T,f=24,s=1,v=1;".to_vec(),
+    })
+    .unwrap();
+    let mirror_wait = Arc::clone(&mirror);
+    let wake_rx = tokio::task::spawn_blocking(move || {
+        wait_row1(&mirror_wait, &wake_rx, "before");
+        wake_rx
+    })
+    .await
+    .unwrap();
+
+    tx.send(TerminalFrame::Output {
+        seq: 2,
+        bytes: b"AAAA\x1b\\after".to_vec(),
+    })
+    .unwrap();
+    let mirror_wait = Arc::clone(&mirror);
+    let wake_rx = tokio::task::spawn_blocking(move || {
+        wait_row1(&mirror_wait, &wake_rx, "beforeafter");
+        wake_rx
+    })
+    .await
+    .unwrap();
+
+    // Send a graphics-only v1 Output message followed by trailing text.
+    tx.send(TerminalFrame::Output {
+        seq: 3,
+        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\".to_vec(),
+    })
+    .unwrap();
+    tx.send(TerminalFrame::Output {
+        seq: 4,
+        bytes: b"tail".to_vec(),
+    })
+    .unwrap();
+    let mirror_wait = Arc::clone(&mirror);
+    tokio::task::spawn_blocking(move || {
+        wait_row1(&mirror_wait, &wake_rx, "beforeaftertail");
+    })
+    .await
+    .unwrap();
+
+    {
+        let graphics = mirror.graphics().lock().unwrap();
+        assert!(
+            graphics.primary.images().is_empty(),
+            "remote mirror must store zero images from pre-Phase-1 hosts"
+        );
+        assert!(
+            graphics.primary.placements().is_empty(),
+            "remote mirror must store zero placements from pre-Phase-1 hosts"
+        );
+    }
+    let (row0, row1, cursor) = read_lines(&mirror);
+    assert_eq!(row0, "snapok");
+    assert_eq!(row1, "beforeaftertail");
+    assert_eq!(
+        cursor,
+        Point::new(Line(1), Column("beforeaftertail".len())),
+        "stripped direct display commands must not advance the cursor"
+    );
+    drop(mirror);
+}
+
+#[tokio::test]
 async fn only_explicit_reset_can_discard_corrupt_pairing_metadata() {
     for paired in [true, false] {
         let fixture = Fixture::new().await;

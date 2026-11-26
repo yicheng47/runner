@@ -3686,10 +3686,14 @@ fn daemon_global_image_budget_enforces_limit_across_concurrent_sessions_without_
         .images()
         .contains_key(&51));
 
-    // 4. Ending session A frees its bytes immediately so B's 1.2 MiB image now succeeds.
-    core.sessions.kill(&a).unwrap();
-    core.sessions.forget_session_state(&a);
-    assert!(budget.used() < 300_000, "ending A must free A's bytes");
+    // 4. Ordinary session_stop frees A's primary + alt images immediately (without forgetting
+    // session state) so B's 1.2 MiB image now succeeds while B stays live.
+    crate::ops::session::session_stop(&core, &a).unwrap();
+    assert_eq!(
+        budget.used(),
+        199_680,
+        "ordinary session_stop must release both primary and alt images immediately"
+    );
 
     runtime.push_output(
         &b,
@@ -3698,12 +3702,11 @@ fn daemon_global_image_budget_enforces_limit_across_concurrent_sessions_without_
     let b_retry = runtime.wait_writes_len(&b, 1);
     assert_eq!(b_retry, vec![b"\x1b_Gi=52;OK\x1b\\".to_vec()]);
 
-    core.sessions.kill(&b).unwrap();
-    core.sessions.forget_session_state(&b);
+    crate::ops::session::session_stop(&core, &b).unwrap();
     assert_eq!(
         budget.used(),
         0,
-        "ending all sessions must free budget to 0"
+        "stopping all sessions must free budget to 0 without forgetting session state"
     );
     core.sessions.drain_terminal_workers();
 }
@@ -3974,4 +3977,326 @@ fn daemon_frame_queue_resyncs_above_128_mib_below_frame_count_cap() {
     assert_eq!(drained.len(), 1);
     assert!(matches!(drained[0], TerminalFrame::Resync));
     assert!(queue.is_closed());
+}
+
+#[test]
+fn forwarder_bounds_staged_media_and_normalized_memory_across_burst() {
+    use crate::session::manager::SessionManager;
+    use base64::Engine as _;
+    use runner_core::protocol::terminal::TerminalFrame;
+    use runner_terminal::kitty::GlobalImageBudget;
+
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(RecordingRuntime::default());
+    let budget = Arc::new(GlobalImageBudget::new(8 * 1024 * 1024));
+    let mut core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
+    core.sessions = SessionManager::new_with_image_budget(
+        Arc::clone(&core.runtime_shell_env),
+        Arc::clone(&core.runtime_discovery),
+        Arc::clone(&runtime) as _,
+        budget,
+    );
+    core.sessions.set_runtime_events(core.events.clone());
+    core.sessions.set_kitty_staging_budget(64 * 1024);
+
+    let role = {
+        let conn = core.db.get().unwrap();
+        crate::test_support::insert_test_role(
+            &conn,
+            "bound-burst",
+            "bound-burst",
+            "trae",
+            "bound-burst",
+        );
+        crate::ops::role::get(&conn, "bound-burst").unwrap()
+    };
+    let spawned = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap();
+    let id = spawned.id.clone();
+    let mut sub = core.sessions.attach_terminal(&id).unwrap();
+
+    // Build ONE burst containing 10 interleaved text + 40 KiB `t=f` images (~407 KiB total raw,
+    // ~542 KiB normalized) with staging budget set to 64 KiB.
+    let img_raw = vec![0x55u8; 128 * 106 * 3]; // 40,704 B (< 64 KiB)
+    let img_file = temp.path().join("staged-40k.bin");
+    std::fs::write(&img_file, &img_raw).unwrap();
+    let path_b64 =
+        base64::engine::general_purpose::STANDARD.encode(img_file.to_string_lossy().as_bytes());
+    let mut burst = Vec::new();
+    let mut expected_replies = Vec::new();
+    for i in 1..=10u32 {
+        burst.extend_from_slice(format!("t{i}|").as_bytes());
+        burst.extend_from_slice(
+            format!("\x1b_Ga=t,i={i},t=f,f=24,s=128,v=106;{path_b64}\x1b\\").as_bytes(),
+        );
+        expected_replies.push(format!("\x1b_Gi={i};OK\x1b\\").into_bytes());
+    }
+    burst.extend_from_slice(b"end-burst");
+
+    runtime.push_output(&burst);
+    let replies = {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let writes = runtime.writes.lock().unwrap().clone();
+            if writes.len() >= 10 {
+                break writes;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for 10 ordered Kitty replies (got {})",
+                writes.len()
+            );
+            std::thread::yield_now();
+        }
+    };
+    assert_eq!(
+        replies, expected_replies,
+        "all 10 replies must arrive in exact stream order"
+    );
+
+    let peak_staged = core.sessions.max_staged_kitty_bytes();
+    assert!(
+        peak_staged >= img_raw.len() && peak_staged <= 64 * 1024,
+        "forwarder must bound staged media to a single batch/file (expected {}..=65536, got {peak_staged})",
+        img_raw.len()
+    );
+
+    let mut plain_text = Vec::new();
+    while !plain_text.ends_with(b"end-burst") {
+        match sub.frames.recv().unwrap() {
+            TerminalFrame::Output { bytes, .. } => {
+                if let Some(stripped) = runner_terminal::kitty::strip_graphics_commands(&bytes) {
+                    plain_text.extend_from_slice(&stripped);
+                } else {
+                    plain_text.extend_from_slice(&bytes);
+                }
+            }
+            TerminalFrame::Resized { .. } => {}
+            TerminalFrame::Resync => panic!("bounded 400 KiB burst must not Resync"),
+        }
+    }
+    assert_eq!(
+        String::from_utf8_lossy(&plain_text),
+        "t1|t2|t3|t4|t5|t6|t7|t8|t9|t10|end-burst"
+    );
+    let model = core.sessions.terminal_model(&id).unwrap();
+    let graphics = model.graphics().lock().unwrap();
+    for i in 1..=10u32 {
+        assert!(
+            graphics.primary.images().contains_key(&i),
+            "missing image i={i}"
+        );
+    }
+    drop(graphics);
+    drop(sub);
+    core.sessions.kill(&id).unwrap();
+    core.sessions.drain_terminal_workers();
+}
+
+#[test]
+fn retained_terminal_exit_keeps_text_and_releases_both_screens_graphics_budget() {
+    use crate::session::manager::SessionManager;
+    use base64::Engine as _;
+    use runner_core::protocol::{Runtime, RuntimeTaskKind, RuntimeUpdateState, RuntimeUpdateTask};
+    use runner_terminal::kitty::GlobalImageBudget;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct ClosableRuntime {
+        outputs: Mutex<HashMap<String, std::sync::mpsc::Sender<RuntimeOutput>>>,
+        writes: Mutex<Vec<Vec<u8>>>,
+        writes_cv: std::sync::Condvar,
+    }
+    impl ClosableRuntime {
+        fn push_output(&self, id: &str, bytes: &[u8]) {
+            self.outputs
+                .lock()
+                .unwrap()
+                .get(id)
+                .unwrap()
+                .send(RuntimeOutput::Stream(bytes.to_vec()))
+                .unwrap();
+        }
+        fn close(&self, id: &str) {
+            self.outputs.lock().unwrap().remove(id);
+        }
+        fn wait_writes_len(&self, expected: usize) -> Vec<Vec<u8>> {
+            let mut guard = self.writes.lock().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while guard.len() < expected {
+                let rem = deadline
+                    .checked_duration_since(std::time::Instant::now())
+                    .expect("timed out waiting for PTY replies");
+                let (next, _) = self.writes_cv.wait_timeout(guard, rem).unwrap();
+                guard = next;
+            }
+            guard.clone()
+        }
+    }
+    impl SessionRuntime for ClosableRuntime {
+        fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.outputs
+                .lock()
+                .unwrap()
+                .insert(spec.session_id.clone(), tx);
+            Ok((
+                RuntimeSession {
+                    runtime: "closable-kitty".into(),
+                    session_id: spec.session_id,
+                },
+                OutputStream::new(rx, Arc::new(AtomicBool::new(false))),
+            ))
+        }
+        fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
+            self.close(&session.session_id);
+            Ok(())
+        }
+        fn send_bytes(&self, _: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
+            self.writes.lock().unwrap().push(bytes.to_vec());
+            self.writes_cv.notify_all();
+            Ok(())
+        }
+        fn send_key(&self, _: &RuntimeSession, _: &str) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &RuntimeSession, _: u16, _: u16, _: u16, _: u16) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
+            Ok(Some(SessionStatus {
+                alive: false,
+                exit_code: Some(0),
+                ..Default::default()
+            }))
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(ClosableRuntime::default());
+    let budget = Arc::new(GlobalImageBudget::new(4 * 1024 * 1024));
+    let mut core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
+    core.sessions = SessionManager::new_with_image_budget(
+        Arc::clone(&core.runtime_shell_env),
+        Arc::clone(&core.runtime_discovery),
+        Arc::clone(&runtime) as _,
+        Arc::clone(&budget),
+    );
+    core.sessions.set_runtime_events(core.events.clone());
+
+    let role = {
+        let conn = core.db.get().unwrap();
+        crate::test_support::insert_test_role(
+            &conn,
+            "retain-exit",
+            "retain-exit",
+            "trae",
+            "retain-exit",
+        );
+        crate::ops::role::get(&conn, "retain-exit").unwrap()
+    };
+    let spawned = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap();
+    let id = spawned.id.clone();
+
+    // Mark session as a runtime update task so `forget_runtime_handle` takes the `retain_terminal`
+    // path on natural exit.
+    core.sessions
+        .runtime_updates
+        .lock()
+        .unwrap()
+        .tasks
+        .push(RuntimeUpdateTask {
+            id: id.clone(),
+            runtime: Runtime::Codex,
+            kind: RuntimeTaskKind::Update,
+            from_version: None,
+            to_version: None,
+            state: RuntimeUpdateState::Running,
+            step: "Updating".into(),
+            message: None,
+            exit_code: None,
+            installed_version: None,
+            running_sessions: 0,
+        });
+
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let img = b64(&vec![7u8; 200 * 200 * 3]); // 120,000 B each
+    runtime.push_output(
+        &id,
+        format!(
+            "retained-text\x1b_Ga=t,i=1,f=24,s=200,v=200;{img}\x1b\\\
+             \x1b[?1049h\x1b_Ga=t,i=2,f=24,s=200,v=200;{img}\x1b\\\x1b[?1049l"
+        )
+        .as_bytes(),
+    );
+    let replies = runtime.wait_writes_len(2);
+    assert_eq!(
+        replies,
+        vec![
+            b"\x1b_Gi=1;OK\x1b\\".to_vec(),
+            b"\x1b_Gi=2;OK\x1b\\".to_vec()
+        ]
+    );
+    assert_eq!(budget.used(), 240_000);
+
+    // Close PTY stream so forwarder exits through `forget_runtime_handle` (`retain_terminal=true`).
+    runtime.close(&id);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while core.sessions.live_runtime_session(&id).is_ok() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for retained-terminal session to exit"
+        );
+        std::thread::yield_now();
+    }
+
+    assert_eq!(
+        budget.used(),
+        0,
+        "retained-terminal exit must free both primary and alt screen graphics budget"
+    );
+    let model = core
+        .sessions
+        .terminal_model(&id)
+        .expect("retained terminal model must still exist after exit");
+    {
+        let graphics = model.graphics().lock().unwrap();
+        assert!(graphics.primary.images().is_empty());
+        assert!(graphics.alt.images().is_empty());
+    }
+    let snap = model.snapshot(0);
+    assert!(
+        String::from_utf8_lossy(&snap.bytes).contains("retained-text"),
+        "retained terminal text must survive graphics release on exit"
+    );
+
+    core.sessions.drain_terminal_workers();
 }
