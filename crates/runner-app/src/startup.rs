@@ -16,6 +16,87 @@ pub(crate) fn install_app_icon() {
     }
 }
 
+/// Sparkle replaces the bundle in place, but Finder, Launchpad and the Dock keep
+/// the previous version's icon cached until LaunchServices re-reads the bundle.
+#[cfg(target_os = "macos")]
+#[cfg(not(test))]
+pub(crate) fn refresh_cached_app_icon() {
+    use core_foundation::base::TCFType;
+    use core_foundation::url::{CFURLRef, CFURL};
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::{NSBundle, NSString};
+
+    #[link(name = "CoreServices", kind = "framework")]
+    unsafe extern "C" {
+        fn LSRegisterURL(url: CFURLRef, update: u8) -> i32;
+    }
+
+    let path = NSBundle::mainBundle().bundlePath().to_string();
+    // A development binary is not a bundle, and a translocated copy runs from
+    // a temporary path that should not be registered.
+    if !path.ends_with(".app") || path.contains("/AppTranslocation/") {
+        return;
+    }
+    std::thread::spawn(move || {
+        objc2::rc::autoreleasepool(|_| {
+            let Some(url) = CFURL::from_path(&path, true) else {
+                return;
+            };
+            unsafe { LSRegisterURL(url.as_concrete_TypeRef(), 1) };
+            NSWorkspace::sharedWorkspace().noteFileSystemChanged_(&NSString::from_str(&path));
+        });
+    });
+}
+
+/// An in-app update of a tarball install replaces `lib/runner/icon.png` behind
+/// the desktop icon's symlink, which icon caches do not notice on their own.
+/// Once per update, bumping the theme directory's mtime makes GTK rescan it,
+/// and KDE, whose loader keeps returning cached pixmaps, reloads on its
+/// session-bus `iconChanged` signal.
+#[cfg(target_os = "linux")]
+#[cfg(not(test))]
+pub(crate) fn refresh_cached_app_icon() {
+    use std::fs;
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(package) = exe.parent() else {
+        return;
+    };
+    let Some(prefix) = package.parent().and_then(Path::parent) else {
+        return;
+    };
+    let theme = prefix.join("share/icons/hicolor");
+    let modified = |path: &Path| fs::metadata(path).and_then(|meta| meta.modified()).ok();
+    if fs::symlink_metadata(theme.join("256x256/apps/runner.png"))
+        .is_ok_and(|meta| meta.file_type().is_symlink())
+        && let (Some(icon), Some(theme_modified)) =
+            (modified(&package.join("icon.png")), modified(&theme))
+        && icon > theme_modified
+        && fs::File::open(&theme)
+            .and_then(|dir| dir.set_modified(std::time::SystemTime::now()))
+            .is_ok()
+    {
+        std::thread::spawn(|| {
+            let _ = Command::new("dbus-send")
+                .args([
+                    "--session",
+                    "--type=signal",
+                    "/KIconLoader",
+                    "org.kde.KIconLoader.iconChanged",
+                    "int32:0",
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        });
+    }
+}
+
 #[cfg(not(test))]
 pub(crate) fn run() -> Result<()> {
     let paths = runner_app::bootstrap::native_paths()?;
@@ -69,6 +150,8 @@ pub(crate) fn run() -> Result<()> {
 
         #[cfg(target_os = "macos")]
         install_app_icon();
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        refresh_cached_app_icon();
 
         // Installed here, rather than in `boot_core`, so AppKit
         // registration happens on GPUI's process main thread.

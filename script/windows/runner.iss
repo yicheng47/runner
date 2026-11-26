@@ -45,6 +45,9 @@ SolidCompression=yes
 WizardStyle=modern
 CloseApplications=no
 RestartApplications=no
+; Runner registers no file types; this makes Explorer refresh its cached icons
+; once an update has replaced Runner.exe.
+ChangesAssociations=yes
 SetupMutex={#AppId}.setup
 #ifdef Sign
 SignTool=authenticode
