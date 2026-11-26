@@ -4084,7 +4084,7 @@ fn forwarder_bounds_staged_media_and_normalized_memory_across_burst() {
                     plain_text.extend_from_slice(&bytes);
                 }
             }
-            TerminalFrame::Resized { .. } => {}
+            TerminalFrame::Resized { .. } | TerminalFrame::ClearGraphics { .. } => {}
             TerminalFrame::Resync => panic!("bounded 400 KiB burst must not Resync"),
         }
     }
@@ -4303,17 +4303,64 @@ fn retained_terminal_exit_keeps_text_and_releases_both_screens_graphics_budget()
 
 #[test]
 fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
-    use crate::session::manager::{ExitEvent, RoleActivityEvent, SessionManager};
+    use crate::session::manager::{
+        ExitEvent, RoleActivityEvent, SessionManager, SessionSpawnedEvent,
+    };
+    use crate::session::runtime::RuntimeError;
     use base64::Engine as _;
+    use runner_core::protocol::{
+        ClientError, ClientEvent, DaemonClient, EventError, EventSubscription, Request, Response,
+        Transport,
+    };
     use runner_terminal::kitty::GlobalImageBudget;
+    use runner_terminal::terminal::TerminalBridge;
     use std::sync::Mutex;
+
+    struct ClosedEvents;
+    impl EventSubscription for ClosedEvents {
+        fn recv(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = std::result::Result<ClientEvent, EventError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Err(EventError::Closed) })
+        }
+    }
+    struct LocalSessionsTransport(Arc<SessionManager>);
+    impl Transport for LocalSessionsTransport {
+        fn call(&self, _request: Request) -> std::result::Result<Response, ClientError> {
+            Err(ClientError::msg("unused"))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            Box::new(ClosedEvents)
+        }
+        fn attach(
+            &self,
+            session_id: &str,
+        ) -> std::result::Result<runner_core::protocol::terminal::TerminalAttachment, ClientError>
+        {
+            self.0
+                .attach_terminal(session_id)
+                .map_err(|e| ClientError::msg(e.to_string()))
+        }
+    }
+
+    type StopGate = (
+        std::sync::mpsc::Sender<()>,
+        std::sync::mpsc::Receiver<RuntimeResult<()>>,
+    );
 
     #[derive(Default)]
     struct MultiLaunchRuntime {
-        /// Indexed by spawn ordinal (0 = launch 1, 1 = launch 2), both sharing the same session ID & runtime label.
+        /// Indexed by spawn ordinal (0 = launch 1, 1 = launch 2, ...), sharing the same session ID & runtime label.
         spawns: Mutex<Vec<Option<std::sync::mpsc::Sender<RuntimeOutput>>>>,
         writes: Mutex<Vec<Vec<u8>>>,
         writes_cv: std::sync::Condvar,
+        stop_gate: Mutex<Option<StopGate>>,
     }
     impl MultiLaunchRuntime {
         fn push_output(&self, launch: usize, bytes: &[u8]) {
@@ -4325,6 +4372,17 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
         }
         fn close_launch(&self, launch: usize) {
             self.spawns.lock().unwrap()[launch] = None;
+        }
+        fn arm_stop_gate(
+            &self,
+        ) -> (
+            std::sync::mpsc::Receiver<()>,
+            std::sync::mpsc::Sender<RuntimeResult<()>>,
+        ) {
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            *self.stop_gate.lock().unwrap() = Some((entered_tx, release_rx));
+            (entered_rx, release_tx)
         }
         fn wait_writes_len(&self, expected: usize) -> Vec<Vec<u8>> {
             let mut guard = self.writes.lock().unwrap();
@@ -4355,6 +4413,13 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
             ))
         }
         fn stop(&self, _: &RuntimeSession) -> RuntimeResult<()> {
+            let gate = self.stop_gate.lock().unwrap().take();
+            if let Some((entered_tx, release_rx)) = gate {
+                let _ = entered_tx.send(());
+                return release_rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("stop gate released");
+            }
             Ok(())
         }
         fn send_bytes(&self, _: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
@@ -4380,9 +4445,17 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
     struct PausingEvents {
         pause_tx: Mutex<Option<std::sync::mpsc::Sender<()>>>,
         release_rx: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
-        exit_tx: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        log: Arc<Mutex<Vec<&'static str>>>,
+        bridge: Arc<TerminalBridge>,
     }
     impl SessionEvents for PausingEvents {
+        fn spawned(&self, ev: &SessionSpawnedEvent) {
+            self.log.lock().unwrap().push("session/spawned");
+            self.bridge.handle_event(&ClientEvent {
+                name: "session/spawned".into(),
+                payload: serde_json::json!({ "session_id": ev.session_id }),
+            });
+        }
         fn role_activity(&self, ev: &RoleActivityEvent) {
             // Only pause the exiting forwarder's role_activity callback (after DB committed stopped),
             // not the initial spawn's active_sessions == 1 callback.
@@ -4395,10 +4468,12 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
                 }
             }
         }
-        fn exit(&self, _ev: &ExitEvent) {
-            if let Some(tx) = self.exit_tx.lock().unwrap().take() {
-                let _ = tx.send(());
-            }
+        fn exit(&self, ev: &ExitEvent) {
+            self.log.lock().unwrap().push("session/exit");
+            self.bridge.handle_event(&ClientEvent {
+                name: "session/exit".into(),
+                payload: serde_json::json!({ "session_id": ev.session_id }),
+            });
         }
     }
 
@@ -4414,6 +4489,10 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
     );
     core.sessions.set_runtime_events(core.events.clone());
 
+    let client = DaemonClient::new(Arc::new(LocalSessionsTransport(Arc::clone(&core.sessions))));
+    let bridge = TerminalBridge::new(client, Arc::new(|| {})).unwrap();
+    let events_log = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+
     let role = {
         let conn = core.db.get().unwrap();
         crate::test_support::insert_test_role(&conn, "overlap", "overlap", "trae", "overlap");
@@ -4421,11 +4500,11 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
     };
     let (pause_tx, pause_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
-    let (exit_tx, exit_rx) = std::sync::mpsc::channel();
-    let launch1_events: Arc<dyn SessionEvents> = Arc::new(PausingEvents {
+    let events: Arc<dyn SessionEvents> = Arc::new(PausingEvents {
         pause_tx: Mutex::new(Some(pause_tx)),
         release_rx: Mutex::new(Some(release_rx)),
-        exit_tx: Mutex::new(Some(exit_tx)),
+        log: Arc::clone(&events_log),
+        bridge: Arc::clone(&bridge),
     });
     let spawned = core
         .sessions
@@ -4439,7 +4518,7 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
             },
             &core.app_data_dir,
             core.db.clone(),
-            Arc::clone(&launch1_events),
+            Arc::clone(&events),
         )
         .unwrap();
     let id = spawned.id.clone();
@@ -4457,7 +4536,7 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
     runtime.take_writes();
     assert_eq!(budget.used(), 64 * 64 * 3);
 
-    // Close Launch 1's stream and pause its forwarder at `emit_role_activity` AFTER DB committed `stopped`.
+    // Part A: Close Launch 1's stream and pause its forwarder at `emit_role_activity` AFTER DB committed `stopped`.
     runtime.close_launch(0);
     pause_rx
         .recv_timeout(std::time::Duration::from_secs(10))
@@ -4476,9 +4555,12 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
             Some(24),
             &core.app_data_dir,
             core.db.clone(),
-            Arc::new(core.session_events()),
+            Arc::clone(&events),
         )
         .unwrap();
+    let mirror_launch2 = bridge
+        .session(&id)
+        .expect("bridge attached Launch 2 mirror on session/spawned");
     runtime.push_output(
         1,
         format!("\x1b_Ga=t,i=75,f=24,s=64,v=64;{img}\x1b\\").as_bytes(),
@@ -4499,18 +4581,29 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
         .images()
         .contains_key(&75));
 
-    // Release Launch 1's paused forwarder and wait for it to finish record_exit_status + forget_runtime_handle.
+    // Release Launch 1's paused forwarder and fence on its completion hook (not session/exit, which must be suppressed).
+    let launch1_done = core.sessions.watch_forwarder_exit(&id);
     let _ = release_tx.send(());
-    exit_rx
+    launch1_done
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("launch 1 forwarder completed exit");
-    // Give forget_runtime_handle_for_launch a clean synchronization point by verifying Launch 2
-    // still processes a query on its live handle + keeps image i=75 intact.
+    assert_eq!(
+        *events_log.lock().unwrap(),
+        vec!["session/spawned", "session/spawned"],
+        "stale launch 1 forwarder must not emit session/exit over resumed launch 2"
+    );
+    assert!(
+        bridge
+            .session(&id)
+            .is_some_and(|m| Arc::ptr_eq(&m, &mirror_launch2)),
+        "TerminalBridge must keep launch 2's mirror after stale launch 1 forwarder exits"
+    );
     runtime.push_output(1, b"\x1b_Ga=q,i=76,f=24,s=1,v=1;AAAA\x1b\\");
     assert_eq!(
         runtime.wait_writes_len(1),
         vec![b"\x1b_Gi=76;OK\x1b\\".to_vec()]
     );
+    runtime.take_writes();
     assert!(
         core.sessions.live_runtime_session(&id).is_ok(),
         "stale launch 1 forwarder must not forget launch 2's live handle"
@@ -4528,10 +4621,144 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
         "stale launch 1 forwarder must not erase launch 2's image 75"
     );
     assert_eq!(budget.used(), 64 * 64 * 3);
+    drop(mirror_launch2);
+    drop(bridge);
 
+    // Part B1: Delayed kill() paused inside runtime.stop() returning Ok(()) must not retire
+    // or wipe images of Launch 3 installed after Launch 2 exited cleanly.
+    let (stop1_entered, stop1_release) = runtime.arm_stop_gate();
+    let sessions_k1 = Arc::clone(&core.sessions);
+    let id_k1 = id.clone();
+    let kill1 = std::thread::spawn(move || sessions_k1.kill(&id_k1));
+    stop1_entered
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("kill1 entered runtime.stop");
+
+    let launch2_done = core.sessions.watch_forwarder_exit(&id);
     runtime.close_launch(1);
+    launch2_done
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("launch 2 exited cleanly");
+
+    core.sessions
+        .resume(
+            &id,
+            Some(80),
+            Some(24),
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap();
+    runtime.push_output(
+        2,
+        format!("\x1b_Ga=t,i=88,f=24,s=64,v=64;{img}\x1b\\").as_bytes(),
+    );
+    assert_eq!(
+        runtime.wait_writes_len(1),
+        vec![b"\x1b_Gi=88;OK\x1b\\".to_vec()]
+    );
+    runtime.take_writes();
+
+    stop1_release.send(Ok(())).unwrap();
+    kill1
+        .join()
+        .unwrap()
+        .expect("delayed kill1 returns Ok without disturbing launch 3");
+    assert!(
+        core.sessions.live_runtime_session(&id).is_ok(),
+        "delayed kill1 (Ok) must not remove launch 3's live handle"
+    );
+    assert!(
+        core.sessions
+            .terminal_model(&id)
+            .unwrap()
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .images()
+            .contains_key(&88),
+        "delayed kill1 (Ok) must not clear launch 3's image 88"
+    );
+    runtime.push_output(2, b"\x1b_Ga=q,i=89,f=24,s=1,v=1;AAAA\x1b\\");
+    assert_eq!(
+        runtime.wait_writes_len(1),
+        vec![b"\x1b_Gi=89;OK\x1b\\".to_vec()]
+    );
+    runtime.take_writes();
+
+    // Part B2: Delayed kill() paused inside runtime.stop() returning Err must also leave
+    // Launch 4's handle, state, and images intact.
+    let (stop2_entered, stop2_release) = runtime.arm_stop_gate();
+    let sessions_k2 = Arc::clone(&core.sessions);
+    let id_k2 = id.clone();
+    let kill2 = std::thread::spawn(move || sessions_k2.kill(&id_k2));
+    stop2_entered
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("kill2 entered runtime.stop");
+
+    let launch3_done = core.sessions.watch_forwarder_exit(&id);
+    runtime.close_launch(2);
+    launch3_done
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("launch 3 exited cleanly");
+
+    core.sessions
+        .resume(
+            &id,
+            Some(80),
+            Some(24),
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap();
+    runtime.push_output(
+        3,
+        format!("\x1b_Ga=t,i=99,f=24,s=64,v=64;{img}\x1b\\").as_bytes(),
+    );
+    assert_eq!(
+        runtime.wait_writes_len(1),
+        vec![b"\x1b_Gi=99;OK\x1b\\".to_vec()]
+    );
+    runtime.take_writes();
+
+    stop2_release
+        .send(Err(RuntimeError::Msg("stop failed".into())))
+        .unwrap();
+    assert!(
+        kill2.join().unwrap().is_err(),
+        "delayed kill2 must propagate its stop error"
+    );
+    assert!(
+        core.sessions.live_runtime_session(&id).is_ok(),
+        "delayed kill2 (Err) must not disturb launch 4's live handle"
+    );
+    assert!(
+        core.sessions
+            .terminal_model(&id)
+            .unwrap()
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .images()
+            .contains_key(&99),
+        "delayed kill2 (Err) must not clear launch 4's image 99"
+    );
+    runtime.push_output(3, b"\x1b_Ga=q,i=100,f=24,s=1,v=1;AAAA\x1b\\");
+    assert_eq!(
+        runtime.wait_writes_len(1),
+        vec![b"\x1b_Gi=100;OK\x1b\\".to_vec()]
+    );
+    runtime.take_writes();
+    assert_eq!(budget.used(), 64 * 64 * 3);
+
+    runtime.close_launch(3);
     core.sessions.kill(&id).unwrap();
     core.sessions.drain_terminal_workers();
+    assert_eq!(budget.used(), 0);
 }
 
 #[test]
@@ -4757,8 +4984,8 @@ fn stopping_or_retaining_exit_resyncs_local_mirrors_on_both_screens_while_preser
     crate::ops::session::session_stop(&core, &s1).unwrap();
     assert_eq!(budget.used(), 0);
     assert!(
-        matches!(raw_sub.frames.recv().unwrap(), TerminalFrame::Resync),
-        "stopping a session with graphics must deliver Resync to retained local subscribers"
+        matches!(raw_sub.frames.recv().unwrap(), TerminalFrame::ClearGraphics { .. }),
+        "stopping a session with graphics must deliver ordered ClearGraphics to retained local subscribers"
     );
     wait_until(
         || {
@@ -4769,11 +4996,12 @@ fn stopping_or_retaining_exit_resyncs_local_mirrors_on_both_screens_while_preser
     );
     assert!(
         read_row0(&mirror1).contains("kept-before-stop"),
-        "stop resync must preserve retained terminal text: {:?}",
+        "stop clear must preserve retained terminal text: {:?}",
         read_row0(&mirror1)
     );
 
-    // Resume at unchanged geometry: mirror1 receives the new process's text with zero stale images.
+    // Resume at unchanged geometry: both raw_sub (staying open!) and mirror1 receive the new
+    // process's text right after ClearGraphics with zero stale images.
     core.sessions
         .resume(
             &s1,
@@ -4785,6 +5013,10 @@ fn stopping_or_retaining_exit_resyncs_local_mirrors_on_both_screens_while_preser
         )
         .unwrap();
     runtime.push_latest(&s1, b"\r\nnew-launch-text");
+    assert!(matches!(
+        raw_sub.frames.recv().unwrap(),
+        TerminalFrame::Output { ref bytes, .. } if bytes == b"\r\nnew-launch-text"
+    ));
     wait_until(
         || {
             let term = mirror1.term.lock();
@@ -4793,7 +5025,7 @@ fn stopping_or_retaining_exit_resyncs_local_mirrors_on_both_screens_while_preser
                 .collect::<String>()
                 .contains("new-launch-text")
         },
-        "mirror1 must receive resumed process text after resync",
+        "mirror1 must receive resumed process text after ClearGraphics",
     );
     {
         let g = mirror1.graphics().lock().unwrap();
@@ -4839,7 +5071,7 @@ fn stopping_or_retaining_exit_resyncs_local_mirrors_on_both_screens_while_preser
             installed_version: None,
             running_sessions: 0,
         });
-    let mirror2 = TerminalMirror::attach(transport, s2.clone(), Arc::new(|| {})).unwrap();
+    let mirror2 = TerminalMirror::attach(transport.clone(), s2.clone(), Arc::new(|| {})).unwrap();
     runtime.push_latest(
         &s2,
         format!(
@@ -4875,8 +5107,77 @@ fn stopping_or_retaining_exit_resyncs_local_mirrors_on_both_screens_while_preser
         "agent-update mirror must preserve its retained text: {:?}",
         read_row0(&mirror2)
     );
-
     drop(mirror2);
+
+    // Part C: Ordinary non-retained natural exit with an UNREAD local subscriber + live mirror.
+    // The terminal is released on exit (`terminal_model` disappears), yet the unread subscriber
+    // MUST still receive "last text" followed by ClearGraphics (never Resync -> terminal not found).
+    let s3 = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap()
+        .id;
+    let mut unread_sub = core.sessions.attach_terminal(&s3).unwrap();
+    let mirror3 = TerminalMirror::attach(transport, s3.clone(), Arc::new(|| {})).unwrap();
+    let exit3_done = core.sessions.watch_forwarder_exit(&s3);
+    runtime.push_latest(
+        &s3,
+        format!(
+            "last text\x1b_Ga=T,i=20,f=24,s=32,v=32;{img}\x1b\\\
+             \x1b[?1049h\x1b_Ga=T,i=21,f=24,s=32,v=32;{img}\x1b\\\x1b[?1049l"
+        )
+        .as_bytes(),
+    );
+    assert_eq!(runtime.wait_writes_len(&s3, 2).len(), 2);
+    runtime.close_latest(&s3);
+    exit3_done
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("ordinary natural exit forwarder finished");
+    assert_eq!(budget.used(), 0);
+    assert!(
+        core.sessions.terminal_model(&s3).is_err(),
+        "ordinary natural exit must release the daemon terminal model"
+    );
+
+    // Drain unread_sub AFTER the daemon terminal was released: final text and ClearGraphics arrive in order.
+    let first_frame = unread_sub.frames.recv().unwrap();
+    let second_frame = unread_sub.frames.recv().unwrap();
+    assert!(
+        matches!(first_frame, TerminalFrame::Output { ref bytes, .. } if String::from_utf8_lossy(bytes).contains("last text")),
+        "unread subscriber must receive final text on ordinary exit, got {first_frame:?}"
+    );
+    assert!(
+        matches!(second_frame, TerminalFrame::ClearGraphics { .. }),
+        "unread subscriber must receive ordered ClearGraphics after final text, got {second_frame:?}"
+    );
+    assert!(
+        unread_sub.frames.recv().is_err(),
+        "stream closes cleanly after final text and ClearGraphics"
+    );
+
+    wait_until(
+        || {
+            let g = mirror3.graphics().lock().unwrap();
+            read_row0(&mirror3).contains("last text")
+                && g.primary.images().is_empty()
+                && g.alt.images().is_empty()
+        },
+        "mirror3 must preserve 'last text' and clear both screens' graphics on ordinary natural exit",
+    );
+
+    drop(mirror3);
+    drop(unread_sub);
     core.sessions.drain_terminal_workers();
 }
 

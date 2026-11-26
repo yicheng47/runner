@@ -225,6 +225,7 @@ impl SessionManager {
                     .model
                     .set_native_attention(semantics.native_attention);
             }
+            state_guard.last_launch = Some(Arc::clone(&handle.stop));
             state_guard.handle = Some(handle);
             state_guard
                 .model

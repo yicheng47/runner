@@ -189,7 +189,9 @@ impl Frames {
     fn frame_bytes(frame: &TerminalFrame) -> usize {
         match frame {
             TerminalFrame::Output { bytes, .. } => bytes.len(),
-            TerminalFrame::Resized { .. } | TerminalFrame::Resync => 0,
+            TerminalFrame::Resized { .. }
+            | TerminalFrame::ClearGraphics { .. }
+            | TerminalFrame::Resync => 0,
         }
     }
     fn push(&self, frame: TerminalFrame) {
@@ -578,7 +580,11 @@ impl SocketTransport {
                     }
                 }
             }
-            wire::OUTPUT | wire::RESIZED | wire::RESYNC | wire::TERMINAL_CLOSED => {
+            wire::OUTPUT
+            | wire::RESIZED
+            | wire::CLEAR_GRAPHICS
+            | wire::RESYNC
+            | wire::TERMINAL_CLOSED => {
                 let mut binary = Binary(&frame.payload);
                 let id = binary.u64()?;
                 let queue = self.frames.lock().unwrap().get(&id).and_then(Weak::upgrade);
@@ -609,6 +615,9 @@ impl SocketTransport {
                                 cell_height: binary.u16()?,
                                 controller: serde_json::from_slice(binary.0)?,
                             });
+                        }
+                        wire::CLEAR_GRAPHICS => {
+                            queue.push(TerminalFrame::ClearGraphics { seq: binary.u64()? });
                         }
                         wire::RESYNC => queue.push(TerminalFrame::Resync),
                         _ => queue.close(),

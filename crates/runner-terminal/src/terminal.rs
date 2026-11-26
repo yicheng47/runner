@@ -798,6 +798,17 @@ impl TerminalMirror {
                                 }
                             }
                         }
+                        TerminalFrame::ClearGraphics { seq } => {
+                            let mut sequence = mirror.sequence.lock().unwrap();
+                            if seq > sequence.last {
+                                sequence.last = seq;
+                                mirror.release_burst(
+                                    &mut sequence,
+                                    &mut mirror.parser.lock().unwrap(),
+                                );
+                                mirror.graphics.lock().unwrap().reset();
+                            }
+                        }
                         TerminalFrame::Resync => match mirror.client.attach(&mirror.session_id) {
                             Ok(attachment) => {
                                 let mut state = stopped.lock().unwrap();

@@ -1897,7 +1897,7 @@ async fn kitty_socket_single_reader_single_reply_normalized_stream_splitting_and
                     burst_40_bytes += bytes.len();
                     burst_40_count += 1;
                 }
-                TerminalFrame::Resized { .. } => {}
+                TerminalFrame::Resized { .. } | TerminalFrame::ClearGraphics { .. } => {}
                 TerminalFrame::Resync => panic!("40-frame (<128 MiB) burst must never Resync"),
             }
         }
@@ -1928,7 +1928,7 @@ async fn kitty_socket_single_reader_single_reply_normalized_stream_splitting_and
                         max_frame = max_frame.max(bytes.len());
                     }
                     Ok(TerminalFrame::Resync) => break,
-                    Ok(TerminalFrame::Resized { .. }) => {}
+                    Ok(TerminalFrame::Resized { .. } | TerminalFrame::ClearGraphics { .. }) => {}
                     Err(error) => panic!("socket dropped during >64 MiB burst: {error}"),
                 }
             }
@@ -2047,13 +2047,49 @@ async fn kitty_socket_single_reader_single_reply_normalized_stream_splitting_and
             "queueing >128 MiB must trigger TerminalFrame::Resync"
         );
 
+        // 6. Verify `wire::CLEAR_GRAPHICS` round-trips over the real socket in order after final text.
+        let mut clear_sub = raw_transport.client().attach(&id_t).unwrap();
+        let seq_before = core_t.sessions.terminal_output_sequence(&id_t);
+        runtime_t.push_output(&id_t, b"final-before-kill");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while core_t.sessions.terminal_output_sequence(&id_t) <= seq_before {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for final-before-kill on terminal model"
+            );
+            std::thread::yield_now();
+        }
+        core_t.sessions.kill(&id_t).unwrap();
+        let mut saw_final_text = false;
+        let mut saw_clear_graphics = false;
+        while let Ok(frame) = clear_sub.frames.recv() {
+            match frame {
+                TerminalFrame::Output { bytes, .. } if bytes == b"final-before-kill" => {
+                    assert!(
+                        !saw_clear_graphics,
+                        "final output must arrive before ClearGraphics"
+                    );
+                    saw_final_text = true;
+                }
+                TerminalFrame::ClearGraphics { .. } => {
+                    saw_clear_graphics = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            saw_final_text && saw_clear_graphics,
+            "socket subscriber must receive ordered final output then ClearGraphics on kill"
+        );
+
+        drop(clear_sub);
         drop(post_burst);
         drop(sync_sub);
         drop(overflow_sub);
         drop(raw_transport);
         drop(overflow_transport);
         core_t.sessions.kill(&sync_id).unwrap();
-        core_t.sessions.kill(&id_t).unwrap();
         core_t.sessions.drain_terminal_workers();
         shutdown_t.cancel();
     })

@@ -81,7 +81,7 @@ struct Stream {
     resync_pending: usize,
     closed: bool,
     scanner: runner_terminal::kitty::Scanner,
-    boundary: runner_terminal::snapshot::BoundaryScanner,
+    boundary: VtBoundaryState,
     listeners: BTreeMap<u64, Arc<Queue>>,
     waiting: Vec<oneshot::Sender<Result<TerminalAttachment>>>,
 }
@@ -118,8 +118,9 @@ impl Terminals {
                 requested: false,
                 resync_pending: 0,
                 closed: false,
-                scanner: runner_terminal::kitty::Scanner::new(),
-                boundary: runner_terminal::snapshot::BoundaryScanner::default(),
+                // Remote panes never execute Kitty commands, so buffer 0 payload bytes.
+                scanner: runner_terminal::kitty::Scanner::with_max_bytes(0),
+                boundary: VtBoundaryState::default(),
                 listeners: BTreeMap::new(),
                 waiting: Vec::new(),
             });
@@ -361,7 +362,7 @@ impl Terminals {
             stream.complete = false;
             stream.resync_pending = 0;
             stream.scanner.reset();
-            stream.boundary = runner_terminal::snapshot::BoundaryScanner::default();
+            stream.boundary.reset();
             if !stream.closed {
                 stream.replay_valid = false;
             }
@@ -449,7 +450,7 @@ impl Terminals {
                     // the snapshot and subsequent Output chunks so remote panes stay text-only,
                     // preserving VT sequence cancellation boundaries.
                     stream.scanner.reset();
-                    stream.boundary = runner_terminal::snapshot::BoundaryScanner::default();
+                    stream.boundary.reset();
                     let split = snapshot.bytes.len() - snapshot.unfinished_len;
                     if split == snapshot.bytes.len() {
                         snapshot.bytes = strip_remote_bytes(
@@ -621,15 +622,118 @@ impl Stream {
     }
 }
 
+/// O(1)-memory VT parser boundary tracker mirroring `BoundaryScanner::byte`
+/// without retaining sequence bodies. Used to decide whether stripping a legacy
+/// host's Kitty APC needs `CAN` (`0x18`) to cancel an interrupted VT sequence.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum VtBoundaryState {
+    #[default]
+    Ground,
+    Escape,
+    Csi,
+    Osc,
+    DcsHeader,
+    String,
+    StringEscape,
+    Utf8(u8),
+}
+
+impl VtBoundaryState {
+    fn reset(&mut self) {
+        *self = Self::Ground;
+    }
+
+    fn is_unfinished(self) -> bool {
+        self != Self::Ground
+    }
+
+    fn advance(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.byte(byte);
+        }
+    }
+
+    fn byte(&mut self, byte: u8) {
+        if matches!(self, Self::Utf8(_)) && !(0x80..=0xbf).contains(&byte) {
+            *self = Self::Ground;
+        }
+        if matches!(byte, 0x18 | 0x1a) {
+            *self = Self::Ground;
+            return;
+        }
+        if matches!(self, Self::Escape | Self::Csi | Self::DcsHeader)
+            && matches!(byte, 0..=0x1f | 0x7f)
+            && byte != 0x1b
+        {
+            return;
+        }
+        match *self {
+            Self::Ground => {
+                *self = match byte {
+                    0x1b => Self::Escape,
+                    0xc2..=0xdf => Self::Utf8(1),
+                    0xe0..=0xef => Self::Utf8(2),
+                    0xf0..=0xf4 => Self::Utf8(3),
+                    _ => Self::Ground,
+                };
+            }
+            Self::Escape => {
+                *self = match byte {
+                    0x1b => Self::Escape,
+                    b'[' => Self::Csi,
+                    b']' => Self::Osc,
+                    b'P' => Self::DcsHeader,
+                    b'X' | b'^' | b'_' => Self::String,
+                    0..=0x2f => Self::Escape,
+                    _ => Self::Ground,
+                };
+            }
+            Self::Csi | Self::DcsHeader => {
+                if byte == 0x1b {
+                    *self = Self::Escape;
+                } else if (0x40..=0x7e).contains(&byte) {
+                    *self = if matches!(self, Self::DcsHeader) {
+                        Self::String
+                    } else {
+                        Self::Ground
+                    };
+                }
+            }
+            Self::Osc | Self::String => {
+                if byte == 0x1b {
+                    *self = Self::StringEscape;
+                } else if byte == 7 && matches!(self, Self::Osc) {
+                    *self = Self::Ground;
+                }
+            }
+            Self::StringEscape => {
+                if byte == b'\\' {
+                    *self = Self::Ground;
+                } else {
+                    *self = Self::Escape;
+                    self.byte(byte);
+                }
+            }
+            Self::Utf8(left) => {
+                *self = if left == 1 {
+                    Self::Ground
+                } else {
+                    Self::Utf8(left - 1)
+                };
+            }
+        }
+    }
+}
+
 fn strip_remote_bytes(
     scanner: &mut runner_terminal::kitty::Scanner,
-    boundary: &mut runner_terminal::snapshot::BoundaryScanner,
+    boundary: &mut VtBoundaryState,
     bytes: Vec<u8>,
 ) -> Vec<u8> {
     use runner_terminal::kitty::{ScanItem, ScanOutput};
     let items = match scanner.scan(&bytes) {
         ScanOutput::Plain(_) => {
-            boundary.advance(&bytes, None);
+            boundary.advance(&bytes);
             return bytes;
         }
         ScanOutput::Items(items) => items,
@@ -638,14 +742,14 @@ fn strip_remote_bytes(
     for item in items {
         match item {
             ScanItem::Text(text) => {
-                boundary.advance(&text, None);
+                boundary.advance(&text);
                 out.extend_from_slice(&text);
             }
             ScanItem::Command(_) | ScanItem::Discarded => {
                 // Removing an APC that interrupted an unfinished VT sequence would otherwise
                 // glue the surrounding fragments into a different sequence (e.g. `CSI 2` + `CY`).
-                if !boundary.unfinished().is_empty() {
-                    boundary.advance(&[0x18], None);
+                if boundary.is_unfinished() {
+                    boundary.byte(0x18);
                     out.push(0x18);
                 }
             }

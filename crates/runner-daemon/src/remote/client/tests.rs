@@ -1032,8 +1032,9 @@ async fn remote_terminal_legacy_strip_preserves_vt_sequence_cancellation_boundar
     })
     .unwrap();
     let m = Arc::clone(&mirror);
-    tokio::task::spawn_blocking(move || {
+    let wake_rx = tokio::task::spawn_blocking(move || {
         wait_row(&m, &wake_rx, 2, "XCYZ");
+        wake_rx
     })
     .await
     .unwrap();
@@ -1041,6 +1042,59 @@ async fn remote_terminal_legacy_strip_preserves_vt_sequence_cancellation_boundar
     assert_eq!(
         read_row(&mirror, 2),
         ("XCYZ".into(), Point::new(Line(2), Column(4)))
+    );
+    assert!(mirror
+        .graphics()
+        .lock()
+        .unwrap()
+        .primary
+        .images()
+        .is_empty());
+
+    // 5. Long non-graphics OSC split across chunks streams through without buffering, and a legacy
+    //    Kitty APC interrupting an unfinished OSC still cancels it cleanly.
+    let big_osc_mid = vec![b'a'; 4096];
+    tx.send(TerminalFrame::Output {
+        seq: 8,
+        bytes: b"\x1b]9;start-".to_vec(),
+    })
+    .unwrap();
+    tx.send(TerminalFrame::Output {
+        seq: 9,
+        bytes: big_osc_mid,
+    })
+    .unwrap();
+    tx.send(TerminalFrame::Output {
+        seq: 10,
+        bytes: b"-end\x07M".to_vec(),
+    })
+    .unwrap();
+    let m = Arc::clone(&mirror);
+    let wake_rx = tokio::task::spawn_blocking(move || {
+        wait_row(&m, &wake_rx, 2, "XCYZM");
+        wake_rx
+    })
+    .await
+    .unwrap();
+    tx.send(TerminalFrame::Output {
+        seq: 11,
+        bytes: b"\x1b]9;unfinished-osc".to_vec(),
+    })
+    .unwrap();
+    tx.send(TerminalFrame::Output {
+        seq: 12,
+        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\N".to_vec(),
+    })
+    .unwrap();
+    let m = Arc::clone(&mirror);
+    tokio::task::spawn_blocking(move || {
+        wait_row(&m, &wake_rx, 2, "XCYZMN");
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        read_row(&mirror, 2),
+        ("XCYZMN".into(), Point::new(Line(2), Column(6)))
     );
     assert!(mirror
         .graphics()

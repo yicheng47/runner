@@ -997,6 +997,12 @@ impl TerminalModel {
         graphics.reset();
         had_graphics
     }
+    pub fn advance_sequence(&self, seq: u64) {
+        let mut sequence = self.sequence.lock().unwrap();
+        if seq > sequence.last {
+            sequence.last = seq;
+        }
+    }
     pub fn configure_named(&self, scrollback: usize, shape: &str) {
         let shape = match shape {
             "underline" => CursorShape::Underline,

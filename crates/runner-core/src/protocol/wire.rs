@@ -26,6 +26,7 @@ pub const ATTACH_ERROR: u8 = 16;
 pub const DETACH: u8 = 17;
 pub const SNAPSHOT_DATA: u8 = 18;
 pub const REQUEST_ERROR: u8 = 19;
+pub const CLEAR_GRAPHICS: u8 = 20;
 pub const PROTOCOL_MISMATCH: &str =
     "Runner CLI and daemon use different client protocols. Restart Runner and retry.";
 

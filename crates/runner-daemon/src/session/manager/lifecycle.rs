@@ -56,36 +56,56 @@ impl SessionManager {
         let Some(state) = self.session_state(session_id) else {
             return Ok(());
         };
-        let rt_session = {
+        let (rt_session, target_stop) = {
             let mut state = state.lock().unwrap();
-            match state.handle.as_ref().map(|h| h.runtime_session.clone()) {
-                Some(rt_session) => {
-                    state.killed = true;
-                    rt_session
-                }
-                None => {
-                    // Already gone.
-                    return Ok(());
-                }
-            }
+            let Some((rt_session, target_stop)) = state
+                .handle
+                .as_ref()
+                .map(|h| (h.runtime_session.clone(), Arc::clone(&h.stop)))
+            else {
+                // Already gone.
+                return Ok(());
+            };
+            state.killed = true;
+            (rt_session, target_stop)
         };
 
         // Stop verifies that the child is dead and reaped. Returns Err
         // while either half of that contract is unmet.
         if let Err(e) = self.runtime.stop(&rt_session) {
-            // Roll back: child is alive, the handle stays
-            // in the map, the killed marker is cleared. The
-            // caller sees the error.
-            state.lock().unwrap().killed = false;
-            Self::rearm_deferred_resize_after_rollback(session_id, &state);
+            // Roll back only if this launch still owns the session; a
+            // replacement launch may have installed while `stop` ran.
+            let still_owner = {
+                let mut guard = state.lock().unwrap();
+                let owned = guard
+                    .handle
+                    .as_ref()
+                    .is_some_and(|h| Arc::ptr_eq(&h.stop, &target_stop));
+                if owned {
+                    guard.killed = false;
+                }
+                owned
+            };
+            if still_owner {
+                Self::rearm_deferred_resize_after_rollback(session_id, &state);
+            }
+            self.prune_empty_session_state(session_id);
             return Err(e.into());
         }
 
-        // Stop succeeded. Now tear down the handle and reconcile.
+        // Stop succeeded. Revalidate launch identity under lock before tearing
+        // down the handle so a delayed kill cannot retire a replacement launch.
         let gate = state.lock().unwrap().delivery_gate.clone();
         let (stop, forwarder) = {
             let mut delivery = gate.state.lock().unwrap();
             let mut state = state.lock().unwrap();
+            if !state
+                .handle
+                .as_ref()
+                .is_some_and(|h| Arc::ptr_eq(&h.stop, &target_stop))
+            {
+                return Ok(());
+            }
             match state.handle.take() {
                 Some(mut h) => {
                     h.stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -111,7 +131,7 @@ impl SessionManager {
                     state.pending_resize = None;
                     (h.stop.clone(), h.forwarder.take())
                 }
-                None => return Ok(()), // raced with another caller; no-op
+                None => return Ok(()),
             }
         };
         self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Exited);
@@ -123,7 +143,17 @@ impl SessionManager {
             let _ = h.join();
         }
         let _ = stop;
-        self.clear_killed(session_id);
+        {
+            let mut guard = state.lock().unwrap();
+            if guard
+                .last_launch
+                .as_ref()
+                .is_none_or(|cur| Arc::ptr_eq(cur, &target_stop))
+            {
+                guard.killed = false;
+            }
+        }
+        self.prune_empty_session_state(session_id);
         Ok(())
     }
 
@@ -251,7 +281,8 @@ impl SessionManager {
         session_id: &str,
         runtime_session: &RuntimeSession,
     ) -> Result<()> {
-        self.forget_runtime_handle_for_launch(session_id, runtime_session, None)
+        self.forget_runtime_handle_for_launch(session_id, runtime_session, None)?;
+        Ok(())
     }
 
     pub(super) fn forget_runtime_handle_for_launch(
@@ -259,7 +290,7 @@ impl SessionManager {
         session_id: &str,
         runtime_session: &RuntimeSession,
         launch: Option<&Arc<AtomicBool>>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let retain_terminal = {
             #[cfg(test)]
             if let Some(before_read) = self.terminal_retention_read.lock().unwrap().take() {
@@ -274,12 +305,19 @@ impl SessionManager {
         };
         let control = self.terminal_control.lock().unwrap();
         let mut exited = false;
+        let mut still_current = true;
         let mut workers = Vec::new();
         // Update tasks retain output until dismissal or their success timeout.
         if let Some(state) = self.session_state(session_id) {
             let gate = state.lock().unwrap().delivery_gate.clone();
             let mut delivery = gate.state.lock().unwrap();
             let mut state = state.lock().unwrap();
+            if let Some(launch) = launch {
+                still_current = state
+                    .last_launch
+                    .as_ref()
+                    .is_none_or(|cur| Arc::ptr_eq(cur, launch));
+            }
             if state.handle.as_ref().is_some_and(|h| match launch {
                 Some(launch) => Arc::ptr_eq(&h.stop, launch),
                 None => Self::runtime_session_matches(&h.runtime_session, runtime_session),
@@ -319,7 +357,9 @@ impl SessionManager {
         if exited {
             self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Exited);
         }
-        self.prune_empty_session_state(session_id);
-        Ok(())
+        if still_current {
+            self.prune_empty_session_state(session_id);
+        }
+        Ok(still_current)
     }
 }

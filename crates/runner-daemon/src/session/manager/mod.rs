@@ -268,6 +268,7 @@ struct SessionState {
     delivery_line: Option<String>,
     delivery_prompted: bool,
     handle: Option<SessionHandle>,
+    last_launch: Option<Arc<AtomicBool>>,
     model: SessionModel,
     optimistic_completion: Option<OptimisticCompletion>,
     delivery_gate: Arc<DeliveryGate>,
@@ -480,6 +481,8 @@ pub struct SessionManager {
     install_checkout_hooks: Mutex<HashMap<String, Box<dyn FnOnce() + Send>>>,
     #[cfg(test)]
     after_install_snapshot_hooks: Mutex<HashMap<String, Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    forwarder_exit_hooks: Mutex<HashMap<String, Vec<std::sync::mpsc::Sender<()>>>>,
 }
 
 /// RAII guard that releases a session state's `resuming` flag on drop. The
@@ -656,6 +659,8 @@ impl SessionManager {
             install_checkout_hooks: Mutex::default(),
             #[cfg(test)]
             after_install_snapshot_hooks: Mutex::default(),
+            #[cfg(test)]
+            forwarder_exit_hooks: Mutex::default(),
         })
     }
 
@@ -669,6 +674,27 @@ impl SessionManager {
     #[cfg(test)]
     pub(crate) fn max_staged_kitty_bytes(&self) -> usize {
         self.max_staged_kitty_bytes.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn watch_forwarder_exit(&self, session_id: &str) -> std::sync::mpsc::Receiver<()> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.forwarder_exit_hooks
+            .lock()
+            .unwrap()
+            .entry(session_id.to_owned())
+            .or_default()
+            .push(tx);
+        rx
+    }
+
+    #[cfg(test)]
+    pub(super) fn notify_forwarder_exit_done(&self, session_id: &str) {
+        if let Some(waiters) = self.forwarder_exit_hooks.lock().unwrap().remove(session_id) {
+            for tx in waiters {
+                let _ = tx.send(());
+            }
+        }
     }
 
     #[cfg(test)]

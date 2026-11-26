@@ -89,25 +89,28 @@ impl SessionManager {
                 .and_then(|status| status.exit_code);
             let _ = manager.runtime.stop(&rt_session);
             manager.take_killed(&forwarder_id);
-            let _ =
-                manager.forget_runtime_handle_for_launch(&forwarder_id, &rt_session, Some(&stop));
-            // Finished update tasks keep their terminal until dismissed.
-            let retained = manager
-                .runtime_updates
-                .lock()
-                .unwrap()
-                .tasks
-                .iter()
-                .any(|task| task.id == forwarder_id);
-            if !retained {
-                manager.sessions.lock().unwrap().remove(&forwarder_id);
+            let still_current = manager
+                .forget_runtime_handle_for_launch(&forwarder_id, &rt_session, Some(&stop))
+                .unwrap_or(false);
+            if still_current {
+                // Finished update tasks keep their terminal until dismissed.
+                let retained = manager
+                    .runtime_updates
+                    .lock()
+                    .unwrap()
+                    .tasks
+                    .iter()
+                    .any(|task| task.id == forwarder_id);
+                if !retained {
+                    manager.sessions.lock().unwrap().remove(&forwarder_id);
+                }
+                events.exit(&ExitEvent {
+                    session_id: forwarder_id,
+                    mission_id: None,
+                    exit_code,
+                    success: exit_code == Some(0),
+                });
             }
-            events.exit(&ExitEvent {
-                session_id: forwarder_id,
-                mission_id: None,
-                exit_code,
-                success: exit_code == Some(0),
-            });
             let _ = completed.send(exit_code);
         });
         self.install_forwarder(&session_id, forwarder);

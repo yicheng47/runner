@@ -815,6 +815,7 @@ fn resized_frames_until_output(
                 sizes.push((cols, rows))
             }
             runner_core::protocol::terminal::TerminalFrame::Output { .. } => return sizes,
+            runner_core::protocol::terminal::TerminalFrame::ClearGraphics { .. } => {}
             runner_core::protocol::terminal::TerminalFrame::Resync => {
                 panic!("resize frames overflowed the subscriber")
             }
@@ -2158,8 +2159,9 @@ fn failed_pty_resize_preserves_accepted_geometry_allows_retry_and_rolls_back_unk
         "mirror must adopt authoritative 0x0 cell rollback"
     );
 
-    // Part B: Ordinary live cell-only resize where ioctl fails must preserve accepted geometry
-    // (0x0 -> establish 16x32 first, then fail 20x40), emit no bogus frame, and allow identical retry.
+    // Part B: Ordinary live resize failure preserves accepted geometry, emits no bogus frame,
+    // and allows an identical retry. On Windows a same-grid cell-only change intentionally skips
+    // ConPTY resize (succeeding with no ioctl), so the failed-ioctl/retry check changes the grid.
     core.sessions
         .resize_with_cell_size(&id, 80, 24, 16, 32, &core.db)
         .unwrap();
@@ -2173,57 +2175,298 @@ fn failed_pty_resize_preserves_accepted_geometry_allows_retry_and_rolls_back_unk
             ..
         }
     ));
-    let seq_before_fail = core.sessions.terminal_output_sequence(&id);
-    fake.pixel_resizes.lock().unwrap().clear();
-    *fake.fail_next_resize.lock().unwrap() = true;
-    let err = core
-        .sessions
-        .resize_with_cell_size(&id, 80, 24, 20, 40, &core.db);
-    assert!(err.is_err(), "live cell-only ioctl failure must return Err");
-    assert_eq!(
-        model.cell_size(),
-        CellSize {
-            width: 16,
-            height: 32
-        },
-        "failed live resize must preserve last accepted cell size"
-    );
-    assert_eq!(
-        core.sessions.terminal_output_sequence(&id),
-        seq_before_fail,
-        "failed live resize must not advance output_seq or publish a bogus Resized frame"
-    );
+    #[cfg(not(windows))]
+    {
+        let seq_before_fail = core.sessions.terminal_output_sequence(&id);
+        fake.pixel_resizes.lock().unwrap().clear();
+        *fake.fail_next_resize.lock().unwrap() = true;
+        let err = core
+            .sessions
+            .resize_with_cell_size(&id, 80, 24, 20, 40, &core.db);
+        assert!(err.is_err(), "live cell-only ioctl failure must return Err");
+        assert_eq!(
+            model.cell_size(),
+            CellSize {
+                width: 16,
+                height: 32
+            },
+            "failed live resize must preserve last accepted cell size"
+        );
+        assert_eq!(
+            core.sessions.terminal_output_sequence(&id),
+            seq_before_fail,
+            "failed live resize must not advance output_seq or publish a bogus Resized frame"
+        );
 
-    // Identical retry must NOT be deduplicated — it must issue the ioctl and publish 20x40.
-    core.sessions
-        .resize_with_cell_size(&id, 80, 24, 20, 40, &core.db)
-        .unwrap();
-    assert_eq!(
-        fake.pixel_resizes.lock().unwrap().as_slice(),
-        &[(id.clone(), 80, 24, 80 * 20, 24 * 40)],
-        "identical retry after failed live resize must issue a real ioctl"
-    );
-    assert_eq!(
-        model.cell_size(),
-        CellSize {
-            width: 20,
-            height: 40
-        }
-    );
-    assert!(matches!(
-        raw_sub.frames.recv().unwrap(),
-        TerminalFrame::Resized {
-            seq,
-            cols: 80,
-            rows: 24,
-            cell_width: 20,
-            cell_height: 40,
-            ..
-        } if seq == seq_before_fail + 1
-    ));
+        // Identical retry must NOT be deduplicated — it must issue the ioctl and publish 20x40.
+        core.sessions
+            .resize_with_cell_size(&id, 80, 24, 20, 40, &core.db)
+            .unwrap();
+        assert_eq!(
+            fake.pixel_resizes.lock().unwrap().as_slice(),
+            &[(id.clone(), 80, 24, 80 * 20, 24 * 40)],
+            "identical retry after failed live resize must issue a real ioctl"
+        );
+        assert_eq!(
+            model.cell_size(),
+            CellSize {
+                width: 20,
+                height: 40
+            }
+        );
+        assert!(matches!(
+            raw_sub.frames.recv().unwrap(),
+            TerminalFrame::Resized {
+                seq,
+                cols: 80,
+                rows: 24,
+                cell_width: 20,
+                cell_height: 40,
+                ..
+            } if seq == seq_before_fail + 1
+        ));
+    }
+    #[cfg(windows)]
+    {
+        // Same-grid cell-only change skips ConPTY resize on Windows without calling ioctl.
+        let seq_before_cell = core.sessions.terminal_output_sequence(&id);
+        fake.pixel_resizes.lock().unwrap().clear();
+        *fake.fail_next_resize.lock().unwrap() = true;
+        core.sessions
+            .resize_with_cell_size(&id, 80, 24, 20, 40, &core.db)
+            .unwrap();
+        assert!(
+            fake.pixel_resizes.lock().unwrap().is_empty(),
+            "Windows same-grid cell-only change must skip ConPTY resize"
+        );
+        assert!(
+            *fake.fail_next_resize.lock().unwrap(),
+            "skipped Windows ioctl must leave fail_next_resize armed"
+        );
+        assert_eq!(
+            model.cell_size(),
+            CellSize {
+                width: 20,
+                height: 40
+            }
+        );
+        assert!(matches!(
+            raw_sub.frames.recv().unwrap(),
+            TerminalFrame::Resized {
+                seq,
+                cols: 80,
+                rows: 24,
+                cell_width: 20,
+                cell_height: 40,
+                ..
+            } if seq == seq_before_cell + 1
+        ));
+
+        // Grid+cell change invokes ioctl, preserves accepted geometry on failure, and retries cleanly.
+        let seq_before_fail = core.sessions.terminal_output_sequence(&id);
+        let err = core
+            .sessions
+            .resize_with_cell_size(&id, 90, 28, 24, 48, &core.db);
+        assert!(err.is_err(), "grid+cell ioctl failure must return Err");
+        assert_eq!(model.size(), (80, 24));
+        assert_eq!(
+            model.cell_size(),
+            CellSize {
+                width: 20,
+                height: 40
+            }
+        );
+        assert_eq!(core.sessions.terminal_output_sequence(&id), seq_before_fail);
+
+        core.sessions
+            .resize_with_cell_size(&id, 90, 28, 24, 48, &core.db)
+            .unwrap();
+        assert_eq!(
+            fake.pixel_resizes.lock().unwrap().as_slice(),
+            &[(id.clone(), 90, 28, 90 * 24, 28 * 48)]
+        );
+        assert_eq!(model.size(), (90, 28));
+        assert_eq!(
+            model.cell_size(),
+            CellSize {
+                width: 24,
+                height: 48
+            }
+        );
+        assert!(matches!(
+            raw_sub.frames.recv().unwrap(),
+            TerminalFrame::Resized {
+                seq,
+                cols: 90,
+                rows: 28,
+                cell_width: 24,
+                cell_height: 48,
+                ..
+            } if seq == seq_before_fail + 1
+        ));
+    }
 
     drop(mirror);
     drop(raw_sub);
     core.sessions.kill(&id).unwrap();
+    core.sessions.drain_terminal_workers();
+}
+
+#[test]
+fn failed_control_transfer_preserves_sibling_ownership_and_succeeds_on_retry() {
+    use runner_core::companion::Controller as CompanionController;
+    use runner_core::protocol::terminal::{TerminalController, TerminalFrame};
+
+    let temp = tempfile::tempdir().unwrap();
+    let fake = fake_runtime();
+    let core = crate::test_support::test_core_in_with_runtime(
+        temp.path().to_owned(),
+        Arc::clone(&fake) as Arc<dyn SessionRuntime>,
+    );
+    let mut role = role("/bin/sh", &[]);
+    role.id = ulid::Ulid::new().to_string();
+    role.handle = "ctrl-atomic".into();
+    role.runtime = "trae".into();
+    insert_role_row(&core.db.get().unwrap(), &role);
+    let events: Arc<dyn SessionEvents> = capture();
+
+    let spawn_one = || {
+        core.sessions
+            .spawn_direct(
+                &role,
+                DirectLaunch {
+                    cwd: Some(temp.path().to_str().unwrap().into()),
+                    cols: Some(80),
+                    rows: Some(24),
+                    ..Default::default()
+                },
+                &core.app_data_dir,
+                core.db.clone(),
+                Arc::clone(&events),
+            )
+            .unwrap()
+            .id
+    };
+    let a = spawn_one();
+    let b = spawn_one();
+    crate::repo::node::create_tab(
+        &core.db.get().unwrap(),
+        None,
+        "Split",
+        0,
+        &serde_json::json!({"slots": [&a, &b]}).to_string(),
+    )
+    .unwrap();
+    core.sessions.note_control_layout_changed();
+
+    let mut sub_a = core.sessions.attach_terminal(&a).unwrap();
+    let mut sub_b = core.sessions.attach_terminal(&b).unwrap();
+    let seq_a0 = core.sessions.terminal_output_sequence(&a);
+    let seq_b0 = core.sessions.terminal_output_sequence(&b);
+
+    // 1. Failed browser TakeControl on `a` must leave BOTH `a` and sibling `b` at Desktop.
+    *fake.fail_next_resize.lock().unwrap() = true;
+    let err = core
+        .sessions
+        .browser_resize(&a, 7, "iPad", 90, 25, 14, 28, true, false, &core.db);
+    assert!(err.is_err(), "failed browser TakeControl must return Err");
+    assert_eq!(
+        core.sessions.browser_controller(&a, 7),
+        CompanionController::Desktop
+    );
+    assert_eq!(
+        core.sessions.browser_controller(&b, 7),
+        CompanionController::Desktop,
+        "failed browser TakeControl must not flip sibling ownership"
+    );
+    assert_eq!(core.sessions.terminal_output_sequence(&a), seq_a0);
+    assert_eq!(core.sessions.terminal_output_sequence(&b), seq_b0);
+
+    // 2. Retry succeeds: BOTH `a` and sibling `b` switch to Browser(7) and emit Resized.
+    core.sessions
+        .browser_resize(&a, 7, "iPad", 90, 25, 14, 28, true, false, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.browser_controller(&a, 7),
+        CompanionController::You
+    );
+    assert_eq!(
+        core.sessions.browser_controller(&b, 7),
+        CompanionController::You
+    );
+    assert!(matches!(
+        sub_a.frames.recv().unwrap(),
+        TerminalFrame::Resized {
+            cols: 90,
+            rows: 25,
+            cell_width: 14,
+            cell_height: 28,
+            controller: TerminalController::Browser { channel: 7, .. },
+            ..
+        }
+    ));
+    assert!(matches!(
+        sub_b.frames.recv().unwrap(),
+        TerminalFrame::Resized {
+            controller: TerminalController::Browser { channel: 7, .. },
+            ..
+        }
+    ));
+
+    // 3. Failed desktop Take Back on `a` must leave BOTH `a` and sibling `b` at Browser(7).
+    let seq_a1 = core.sessions.terminal_output_sequence(&a);
+    let seq_b1 = core.sessions.terminal_output_sequence(&b);
+    *fake.fail_next_resize.lock().unwrap() = true;
+    let err = core
+        .sessions
+        .take_back_terminal(&a, 100, 30, 18, 36, &core.db);
+    assert!(err.is_err(), "failed Take Back must return Err");
+    assert_eq!(
+        core.sessions.browser_controller(&a, 7),
+        CompanionController::You
+    );
+    assert_eq!(
+        core.sessions.browser_controller(&b, 7),
+        CompanionController::You,
+        "failed Take Back must not flip sibling ownership"
+    );
+    assert_eq!(core.sessions.terminal_output_sequence(&a), seq_a1);
+    assert_eq!(core.sessions.terminal_output_sequence(&b), seq_b1);
+
+    // 4. Retry succeeds: BOTH `a` and sibling `b` return to Desktop and emit Resized.
+    core.sessions
+        .take_back_terminal(&a, 100, 30, 18, 36, &core.db)
+        .unwrap();
+    assert_eq!(
+        core.sessions.browser_controller(&a, 7),
+        CompanionController::Desktop
+    );
+    assert_eq!(
+        core.sessions.browser_controller(&b, 7),
+        CompanionController::Desktop
+    );
+    assert!(matches!(
+        sub_a.frames.recv().unwrap(),
+        TerminalFrame::Resized {
+            cols: 100,
+            rows: 30,
+            cell_width: 18,
+            cell_height: 36,
+            controller: TerminalController::Desktop,
+            ..
+        }
+    ));
+    assert!(matches!(
+        sub_b.frames.recv().unwrap(),
+        TerminalFrame::Resized {
+            controller: TerminalController::Desktop,
+            ..
+        }
+    ));
+
+    drop(sub_a);
+    drop(sub_b);
+    core.sessions.kill(&a).unwrap();
+    core.sessions.kill(&b).unwrap();
     core.sessions.drain_terminal_workers();
 }

@@ -78,6 +78,9 @@ pub enum TerminalFrame {
         cell_height: u16,
         controller: TerminalController,
     },
+    ClearGraphics {
+        seq: u64,
+    },
     Resync,
 }
 

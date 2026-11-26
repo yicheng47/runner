@@ -465,7 +465,7 @@ fn output_until(
         loop {
             match incoming.recv().unwrap() {
                 TerminalFrame::Output { bytes, .. } => output.extend(bytes),
-                TerminalFrame::Resized { .. } => (),
+                TerminalFrame::Resized { .. } | TerminalFrame::ClearGraphics { .. } => (),
                 TerminalFrame::Resync => panic!("unexpected lag"),
             }
             if output.windows(marker.len()).any(|chunk| chunk == marker) {

@@ -414,30 +414,36 @@ impl SessionManager {
         exit_code: Option<i32>,
         crashed: bool,
         launch: Option<&Arc<AtomicBool>>,
-    ) {
-        if let Some(session) = self.session_state(session_id) {
-            let mut session = session.lock().unwrap();
-            if launch.is_some_and(|launch| {
-                session
+    ) -> bool {
+        let Some(session) = self.session_state(session_id) else {
+            return true;
+        };
+        let mut session = session.lock().unwrap();
+        if launch.is_some_and(|launch| {
+            session
+                .last_launch
+                .as_ref()
+                .is_some_and(|current| !Arc::ptr_eq(current, launch))
+                || session
                     .handle
                     .as_ref()
                     .is_some_and(|handle| !Arc::ptr_eq(&handle.stop, launch))
-            }) {
-                return;
-            }
-            session.optimistic_completion = None;
-            session.finish_companion_terminals();
-            if let Some(terminal) = &session.terminal {
-                terminal.clear_program_status();
-            }
-            session.model.apply(
-                SessionEvent::Exited {
-                    code: exit_code,
-                    crashed,
-                },
-                super::super::clock::state_now(),
-            );
+        }) {
+            return false;
         }
+        session.optimistic_completion = None;
+        session.finish_companion_terminals();
+        if let Some(terminal) = &session.terminal {
+            terminal.clear_program_status();
+        }
+        session.model.apply(
+            SessionEvent::Exited {
+                code: exit_code,
+                crashed,
+            },
+            super::super::clock::state_now(),
+        );
+        true
     }
 
     pub fn agent_status(&self, session_id: &str) -> AgentStatus {

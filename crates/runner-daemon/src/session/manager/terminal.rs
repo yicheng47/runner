@@ -127,7 +127,9 @@ impl FrameQueue {
     fn frame_bytes(frame: &TerminalFrame) -> usize {
         match frame {
             TerminalFrame::Output { bytes, .. } => bytes.len(),
-            TerminalFrame::Resized { .. } | TerminalFrame::Resync => 0,
+            TerminalFrame::Resized { .. }
+            | TerminalFrame::ClearGraphics { .. }
+            | TerminalFrame::Resync => 0,
         }
     }
     fn push(&self, frame: TerminalFrame) -> bool {
@@ -166,17 +168,6 @@ impl FrameQueue {
     }
     pub(super) fn close(&self) {
         self.state.lock().unwrap().closed = true;
-        self.ready.notify_one();
-    }
-    pub(super) fn resync(&self) {
-        let mut state = self.state.lock().unwrap();
-        if state.closed {
-            return;
-        }
-        state.frames.clear();
-        state.bytes = 0;
-        state.frames.push_back(TerminalFrame::Resync);
-        state.closed = true;
         self.ready.notify_one();
     }
 }
@@ -1286,14 +1277,19 @@ impl SessionManager {
         if !cleared {
             return;
         }
-        // Resync retained local subscribers before any resumed output or stream close so they
-        // rebuild from the cleared text-only snapshot on both primary and alt screens.
+        state.output_seq += 1;
+        let seq = state.output_seq;
+        if let Some(terminal) = &state.terminal {
+            terminal.advance_sequence(seq);
+        }
+        // Deliver an ordered graphics-clear frame to local subscribers only
+        // (companions hold no graphics) so queued final text is preserved on
+        // both ordinary and retained exits while both screens' images clear.
         state.subscribers.retain(|sub| {
             if sub.companion {
                 !sub.queue.is_closed()
             } else {
-                sub.queue.resync();
-                false
+                sub.queue.push(TerminalFrame::ClearGraphics { seq })
             }
         });
     }
@@ -1583,8 +1579,6 @@ impl SessionManager {
     ) -> Result<()> {
         let mut control = self.terminal_control.lock().unwrap();
         let (group, ids) = self.control_group(id, pool)?;
-        control.groups.insert(group, Controller::Desktop);
-        self.set_group_controller(&ids, id, &Controller::Desktop, &mut control);
         self.resize_controlled(
             id,
             cols,
@@ -1594,7 +1588,10 @@ impl SessionManager {
             pool,
             ResizeControl::TakeBack,
             &mut control,
-        )
+        )?;
+        control.groups.insert(group, Controller::Desktop);
+        self.set_group_controller(&ids, id, &Controller::Desktop, &mut control);
+        Ok(())
     }
     #[allow(clippy::too_many_arguments)]
     pub fn browser_resize(
@@ -1612,6 +1609,7 @@ impl SessionManager {
     ) -> Result<()> {
         let mut control = self.terminal_control.lock().unwrap();
         self.terminal_model(id)?;
+        let mut pending_group_take = None;
         if take || !viewport {
             let (group, ids) = self.control_group(id, pool)?;
             let free = ids
@@ -1636,23 +1634,7 @@ impl SessionManager {
                 return Ok(());
             }
             if take || !viewport && free {
-                control.groups.insert(
-                    group,
-                    Controller::Browser {
-                        channel,
-                        name: name.into(),
-                    },
-                );
-                self.set_group_controller(
-                    &ids,
-                    id,
-                    &Controller::Browser {
-                        channel,
-                        name: name.into(),
-                    },
-                    &mut control,
-                );
-                self.clear_composition(id, &mut control);
+                pending_group_take = Some((group, ids));
             }
         }
         self.resize_controlled(
@@ -1669,7 +1651,17 @@ impl SessionManager {
                 viewport,
             },
             &mut control,
-        )
+        )?;
+        if let Some((group, ids)) = pending_group_take {
+            let controller = Controller::Browser {
+                channel,
+                name: name.into(),
+            };
+            control.groups.insert(group, controller.clone());
+            self.set_group_controller(&ids, id, &controller, &mut control);
+            self.clear_composition(id, &mut control);
+        }
+        Ok(())
     }
     #[cfg(test)]
     pub fn release_browser(&self, id: &str, channel: u64) {

@@ -1372,6 +1372,11 @@ fn forward_terminal(
                 frame.payload.extend(serde_json::to_vec(&controller)?);
                 frame
             }
+            Ok(TerminalFrame::ClearGraphics { seq }) => {
+                let mut frame = wire::numbered(wire::CLEAR_GRAPHICS, id);
+                frame.payload.extend_from_slice(&seq.to_le_bytes());
+                frame
+            }
             Ok(TerminalFrame::Resync) => wire::numbered(wire::RESYNC, id),
             Err(_) => wire::numbered(wire::TERMINAL_CLOSED, id),
         };

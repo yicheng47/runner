@@ -531,14 +531,15 @@ impl SessionManager {
             if emit_activity {
                 emit_role_activity(&pool, &role, events.as_ref());
             }
-            manager_t.record_exit_status_for_launch(
+            let still_current = manager_t.record_exit_status_for_launch(
                 &session_id,
                 exit_code,
                 final_status == crate::model::SessionStatus::Crashed,
                 Some(&stop),
             );
             let mut runtime_probe_cleared = false;
-            if exit_code.is_some_and(|code| code != 0)
+            if still_current
+                && exit_code.is_some_and(|code| code != 0)
                 && !was_killed
                 && elapsed < Duration::from_secs(10)
                 && !turn_started
@@ -558,10 +559,17 @@ impl SessionManager {
                                 });
                     }
                     if let Some(state) = manager_t.session_state(&session_id) {
-                        state.lock().unwrap().model.apply(
-                            SessionEvent::StartupError(error),
-                            super::super::clock::state_now(),
-                        );
+                        let mut state = state.lock().unwrap();
+                        if state
+                            .last_launch
+                            .as_ref()
+                            .is_none_or(|cur| Arc::ptr_eq(cur, &stop))
+                        {
+                            state.model.apply(
+                                SessionEvent::StartupError(error),
+                                super::super::clock::state_now(),
+                            );
+                        }
                     }
                 }
             }
@@ -570,17 +578,23 @@ impl SessionManager {
                     events.emit("runtime/changed", &());
                 }
             }
-            events.exit(&ExitEvent {
-                session_id: session_id.clone(),
-                mission_id: mission_id.clone(),
-                exit_code,
-                success,
-            });
-            let _ =
-                manager_t.forget_runtime_handle_for_launch(&session_id, &rt_session, Some(&stop));
-            if closed_shell {
-                manager_t.forget_session_state(&session_id);
+            let still_current = still_current
+                && manager_t
+                    .forget_runtime_handle_for_launch(&session_id, &rt_session, Some(&stop))
+                    .unwrap_or(false);
+            if still_current {
+                if closed_shell {
+                    manager_t.forget_session_state(&session_id);
+                }
+                events.exit(&ExitEvent {
+                    session_id: session_id.clone(),
+                    mission_id: mission_id.clone(),
+                    exit_code,
+                    success,
+                });
             }
+            #[cfg(test)]
+            manager_t.notify_forwarder_exit_done(&session_id);
         })
     }
 

@@ -592,12 +592,4 @@ impl SessionManager {
         self.prune_empty_session_state(session_id);
         was_killed
     }
-
-    pub(super) fn clear_killed(&self, session_id: &str) {
-        if let Some(state) = self.session_state(session_id) {
-            state.lock().unwrap().killed = false;
-            Self::rearm_deferred_resize_after_rollback(session_id, &state);
-        }
-        self.prune_empty_session_state(session_id);
-    }
 }

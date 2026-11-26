@@ -427,6 +427,7 @@ impl Stream {
                         controller: self.controller(controller),
                     }));
                 }
+                TerminalFrame::ClearGraphics { .. } => {}
                 TerminalFrame::Resync => unreachable!(),
             }
         }
