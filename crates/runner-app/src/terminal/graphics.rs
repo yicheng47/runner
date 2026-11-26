@@ -14,7 +14,7 @@ use runner_app::terminal_resize::device_cell_size;
 use runner_terminal::kitty::{
     CellSize, PlacementId, StoredImage, TerminalGraphics, PER_SCREEN_LIMIT,
 };
-use runner_terminal::terminal::{MirrorGraphicsObserver, TerminalMirror};
+use runner_terminal::terminal::{LiveImageKey, MirrorGraphicsObserver, TerminalMirror};
 
 use super::element::TerminalInteraction;
 
@@ -23,6 +23,7 @@ use super::element::TerminalInteraction;
 pub(crate) const Z_BELOW_CELL_BG: i32 = -1_073_741_824;
 
 pub(crate) type TextureKey = (u32, u64);
+type LineageId = (u64, u32);
 
 #[derive(Clone)]
 pub(crate) struct PaintedImage {
@@ -34,11 +35,22 @@ pub(crate) struct PaintedImage {
     pub(crate) image: Arc<RenderImage>,
 }
 
+#[derive(Clone)]
+struct CachedTexture {
+    screen_lineage: u64,
+    source_width: u32,
+    source_height: u32,
+    image: Arc<RenderImage>,
+}
+
 #[derive(Default)]
 struct MirrorCache {
     last_sync_seq: u64,
-    textures: HashMap<TextureKey, Arc<RenderImage>>,
-    live_keys: HashSet<TextureKey>,
+    textures: HashMap<TextureKey, CachedTexture>,
+    /// O(1) index from `(screen_lineage, image_id)` to the newest cached
+    /// generation currently in `textures`.
+    by_lineage_id: HashMap<LineageId, u64>,
+    live_keys: HashMap<TextureKey, u64>,
     in_flight: HashSet<TextureKey>,
     failed: HashSet<TextureKey>,
 }
@@ -47,38 +59,77 @@ impl MirrorCache {
     fn drain_textures(&mut self) -> Vec<Arc<RenderImage>> {
         self.in_flight.clear();
         self.failed.clear();
-        self.textures.drain().map(|(_, image)| image).collect()
+        self.by_lineage_id.clear();
+        self.textures
+            .drain()
+            .map(|(_, cached)| cached.image)
+            .collect()
     }
 
-    /// Evicts cached textures that are no longer live, except the single newest
-    /// cached generation for any live image ID whose replacement is currently
-    /// `in_flight` so overlapping paints do not flash blank before the
-    /// replacement publishes.
+    fn insert_texture(&mut self, key: TextureKey, cached: CachedTexture) {
+        let lineage_id = (cached.screen_lineage, key.0);
+        self.textures.entry(key).or_insert(cached);
+        self.by_lineage_id
+            .entry(lineage_id)
+            .and_modify(|best| {
+                if key.1 > *best {
+                    *best = key.1;
+                }
+            })
+            .or_insert(key.1);
+    }
+
+    /// Evicts cached textures that are no longer live in linear time, except
+    /// the single newest stale generation matching any live `in_flight`
+    /// `(screen_lineage, image_id)` so same-screen replacements do not flash
+    /// blank before the new generation publishes.
     fn prune_stale_textures(&mut self) -> Vec<Arc<RenderImage>> {
-        let mut preserve_for_id: HashMap<u32, u64> = HashMap::new();
-        for &in_flight_key in &self.in_flight {
-            if !self.live_keys.contains(&in_flight_key) {
-                continue;
-            }
-            let id = in_flight_key.0;
-            if let Some(best_gen) = self
-                .textures
-                .keys()
-                .filter(|&&key| key.0 == id && !self.live_keys.contains(&key))
-                .map(|&(_, generation)| generation)
-                .max()
-            {
-                preserve_for_id.insert(id, best_gen);
+        let mut in_flight_lineages: HashSet<LineageId> =
+            HashSet::with_capacity(self.in_flight.len());
+        for key in &self.in_flight {
+            if let Some(&lineage) = self.live_keys.get(key) {
+                in_flight_lineages.insert((lineage, key.0));
             }
         }
+
+        let mut preserve_for_lineage: HashMap<LineageId, u64> =
+            HashMap::with_capacity(in_flight_lineages.len());
+        if !in_flight_lineages.is_empty() {
+            for (&(id, generation), cached) in &self.textures {
+                let lineage_id = (cached.screen_lineage, id);
+                if !self.live_keys.contains_key(&(id, generation))
+                    && in_flight_lineages.contains(&lineage_id)
+                {
+                    preserve_for_lineage
+                        .entry(lineage_id)
+                        .and_modify(|best| {
+                            if generation > *best {
+                                *best = generation;
+                            }
+                        })
+                        .or_insert(generation);
+                }
+            }
+        }
+
         let mut released = Vec::new();
-        self.textures.retain(|&key, image| {
-            let keep = self.live_keys.contains(&key)
-                || preserve_for_id.get(&key.0).copied() == Some(key.1);
+        self.by_lineage_id.clear();
+        self.textures.retain(|&key, cached| {
+            let lineage_id = (cached.screen_lineage, key.0);
+            let keep = self.live_keys.contains_key(&key)
+                || preserve_for_lineage.get(&lineage_id).copied() == Some(key.1);
             if keep {
+                self.by_lineage_id
+                    .entry(lineage_id)
+                    .and_modify(|best| {
+                        if key.1 > *best {
+                            *best = key.1;
+                        }
+                    })
+                    .or_insert(key.1);
                 true
             } else {
-                released.push(Arc::clone(image));
+                released.push(Arc::clone(&cached.image));
                 false
             }
         });
@@ -131,6 +182,7 @@ impl TextureStore {
         line_height: Pixels,
         scale_factor: f32,
         session_cell: CellSize,
+        sync_decode_pending: bool,
     ) -> ([Vec<PaintedImage>; 3], Vec<StoredImage>) {
         let storage = graphics.active(is_alt);
         if storage.placements().is_empty() {
@@ -214,29 +266,32 @@ impl TextureStore {
                 src.x == 0 && src.y == 0 && src.width == img.width && src.height == img.height;
             let cached = entry.and_then(|cache| {
                 if let Some(exact) = cache.textures.get(&tex_key) {
-                    return Some(Arc::clone(exact));
+                    return Some(Arc::clone(&exact.image));
                 }
-                if cache.in_flight.contains(&tex_key) {
-                    let fallback = cache
-                        .textures
-                        .iter()
-                        .filter(|(key, _)| key.0 == img.id && !cache.live_keys.contains(key))
-                        .max_by_key(|(key, _)| key.1)
-                        .map(|(_, image)| Arc::clone(image))?;
-                    let fallback_size = fallback.size(0);
+                if sync_decode_pending || cache.in_flight.contains(&tex_key) {
+                    let fallback_gen = cache
+                        .by_lineage_id
+                        .get(&(img.screen_lineage, img.id))
+                        .copied()?;
+                    let fallback_key = (img.id, fallback_gen);
+                    if !sync_decode_pending && cache.live_keys.contains_key(&fallback_key) {
+                        return None;
+                    }
+                    let fallback = cache.textures.get(&fallback_key)?;
                     if full_source
-                        || (fallback_size.width.0 as u32 == img.width
-                            && fallback_size.height.0 as u32 == img.height)
+                        || (fallback.source_width == img.width
+                            && fallback.source_height == img.height)
                     {
-                        return Some(fallback);
+                        return Some(Arc::clone(&fallback.image));
                     }
                 }
                 None
             });
             let Some(render_image) = cached else {
-                let already_pending = entry.is_some_and(|cache| {
-                    cache.in_flight.contains(&tex_key) || cache.failed.contains(&tex_key)
-                });
+                let already_pending = sync_decode_pending
+                    || entry.is_some_and(|cache| {
+                        cache.in_flight.contains(&tex_key) || cache.failed.contains(&tex_key)
+                    });
                 if !already_pending && missing_keys.insert(tex_key) {
                     missing.push(img.clone());
                 }
@@ -311,7 +366,7 @@ impl TextureStore {
                 {
                     continue;
                 }
-                entry.live_keys.insert(key);
+                entry.live_keys.insert(key, img.screen_lineage);
                 entry.in_flight.insert(key);
                 selected.push(img);
             }
@@ -330,7 +385,7 @@ impl TextureStore {
                 .map(|img| {
                     let key = (img.id, img.generation);
                     let decoded = decode_kitty_render_image(&img);
-                    (key, decoded)
+                    (key, img.screen_lineage, img.width, img.height, decoded)
                 })
                 .collect::<Vec<_>>()
         });
@@ -350,18 +405,27 @@ impl TextureStore {
                 let mut mirrors = store.mirrors.lock().unwrap();
                 if let Some(entry) = mirrors.get_mut(&mirror_id) {
                     let has_viewers = mirror.viewer_count() > 0;
-                    for (key, decoded) in decoded_batch {
+                    for (key, screen_lineage, source_width, source_height, decoded) in decoded_batch
+                    {
                         entry.in_flight.remove(&key);
                         if !mirror_live.contains(&key) {
                             entry.live_keys.remove(&key);
                             continue;
                         }
-                        if !has_viewers || !entry.live_keys.contains(&key) {
+                        if !has_viewers || !entry.live_keys.contains_key(&key) {
                             continue;
                         }
                         match decoded {
-                            Some(render_image) => {
-                                entry.textures.entry(key).or_insert(render_image);
+                            Some(image) => {
+                                entry.insert_texture(
+                                    key,
+                                    CachedTexture {
+                                        screen_lineage,
+                                        source_width,
+                                        source_height,
+                                        image,
+                                    },
+                                );
                                 inserted_any = true;
                             }
                             None => {
@@ -396,7 +460,7 @@ impl TextureStore {
             .lock()
             .unwrap()
             .get(&mirror_id)
-            .and_then(|entry| entry.textures.get(&key).cloned())
+            .and_then(|entry| entry.textures.get(&key).map(|c| Arc::clone(&c.image)))
     }
 
     #[cfg(test)]
@@ -424,10 +488,13 @@ impl MirrorGraphicsObserver for TextureStore {
         mirror_id: u64,
         sync_seq: u64,
         viewers: &Arc<AtomicUsize>,
-        live_keys: &[(u32, u64)],
+        live_keys: &[LiveImageKey],
         decode_candidates: &[StoredImage],
     ) {
-        let live_set: HashSet<TextureKey> = live_keys.iter().copied().collect();
+        let live_map: HashMap<TextureKey, u64> = live_keys
+            .iter()
+            .map(|k| ((k.image_id, k.generation), k.screen_lineage))
+            .collect();
         let (to_release, to_decode) = {
             let mut mirrors = self.mirrors.lock().unwrap();
             let entry = mirrors.entry(mirror_id).or_default();
@@ -435,17 +502,19 @@ impl MirrorGraphicsObserver for TextureStore {
                 return;
             }
             entry.last_sync_seq = sync_seq;
-            if viewers.load(Ordering::Acquire) == 0 || live_set.is_empty() {
+            if viewers.load(Ordering::Acquire) == 0 || live_map.is_empty() {
                 entry.live_keys.clear();
                 (entry.drain_textures(), Vec::new())
             } else {
-                entry.live_keys = live_set;
-                entry.in_flight.retain(|key| entry.live_keys.contains(key));
-                entry.failed.retain(|key| entry.live_keys.contains(key));
+                entry.live_keys = live_map;
+                entry
+                    .in_flight
+                    .retain(|key| entry.live_keys.contains_key(key));
+                entry.failed.retain(|key| entry.live_keys.contains_key(key));
                 let mut missing = Vec::new();
                 for img in decode_candidates {
                     let key = (img.id, img.generation);
-                    if entry.live_keys.contains(&key)
+                    if entry.live_keys.contains_key(&key)
                         && !entry.textures.contains_key(&key)
                         && !entry.in_flight.contains(&key)
                         && !entry.failed.contains(&key)
@@ -465,7 +534,7 @@ impl MirrorGraphicsObserver for TextureStore {
             return;
         }
 
-        let decoded: Vec<(TextureKey, Option<Arc<RenderImage>>)> = to_decode
+        let decoded: Vec<_> = to_decode
             .into_iter()
             .map(|img| {
                 let key = (img.id, img.generation);
@@ -476,7 +545,13 @@ impl MirrorGraphicsObserver for TextureStore {
                         hook(key);
                     }
                 }
-                (key, decode_kitty_render_image(&img))
+                (
+                    key,
+                    img.screen_lineage,
+                    img.width,
+                    img.height,
+                    decode_kitty_render_image(&img),
+                )
             })
             .collect();
 
@@ -489,14 +564,22 @@ impl MirrorGraphicsObserver for TextureStore {
                 entry.live_keys.clear();
                 entry.drain_textures()
             } else {
-                for (key, maybe_image) in decoded {
+                for (key, screen_lineage, source_width, source_height, maybe_image) in decoded {
                     entry.in_flight.remove(&key);
-                    if !entry.live_keys.contains(&key) {
+                    if !entry.live_keys.contains_key(&key) {
                         continue;
                     }
                     match maybe_image {
-                        Some(render_image) => {
-                            entry.textures.entry(key).or_insert(render_image);
+                        Some(image) => {
+                            entry.insert_texture(
+                                key,
+                                CachedTexture {
+                                    screen_lineage,
+                                    source_width,
+                                    source_height,
+                                    image,
+                                },
+                            );
                         }
                         None => {
                             entry.failed.insert(key);
@@ -1111,6 +1194,7 @@ mod tests {
             placement_count: 1,
             generation: 1,
             transmission: 1,
+            screen_lineage: 1,
         };
         let render_img = decode_kitty_render_image(&img).expect("oversized image should decode");
         let sz = render_img.size(0);
@@ -1382,7 +1466,11 @@ mod tests {
             test_mirror_id,
             1,
             &test_viewers,
-            &[(img1.id, img1.generation)],
+            &[LiveImageKey {
+                image_id: img1.id,
+                generation: img1.generation,
+                screen_lineage: img1.screen_lineage,
+            }],
             &[img1],
         );
 
@@ -1401,6 +1489,7 @@ mod tests {
                 width: 16,
                 height: 32,
             },
+            false,
         );
         assert!(missing.is_empty());
         assert_eq!(bands_2x[2].len(), 3);
@@ -1445,6 +1534,7 @@ mod tests {
             px(16.),
             1.0,
             CellSize::ZERO,
+            false,
         );
         assert_eq!(
             bands_zero_1x[2][0].dest_bounds.size,
@@ -1461,6 +1551,7 @@ mod tests {
             px(16.),
             2.0,
             CellSize::ZERO,
+            false,
         );
         assert_eq!(
             bands_zero_2x[2][0].dest_bounds.size,
@@ -1482,6 +1573,7 @@ mod tests {
                 width: 16,
                 height: 32,
             },
+            false,
         );
         assert!(bands_scrolled_off[2].is_empty());
 
@@ -1561,7 +1653,7 @@ mod tests {
                 mirror_id: u64,
                 sync_seq: u64,
                 viewers: &Arc<AtomicUsize>,
-                live_keys: &[(u32, u64)],
+                live_keys: &[LiveImageKey],
                 decode_candidates: &[StoredImage],
             ) {
                 if std::thread::current().id() == self.main_thread {
@@ -1726,7 +1818,7 @@ mod tests {
                 mirror_id: u64,
                 sync_seq: u64,
                 viewers: &Arc<AtomicUsize>,
-                live_keys: &[(u32, u64)],
+                live_keys: &[LiveImageKey],
                 decode_candidates: &[StoredImage],
             ) {
                 self.inner.on_graphics_updated(
@@ -1807,6 +1899,7 @@ mod tests {
             placement_count: 1,
             generation: 999_999,
             transmission: 999_999,
+            screen_lineage: 999_999,
         };
         visual.update(|_, cx| {
             store.schedule_decode(&mirror, &interaction, vec![pending_img], cx);
@@ -2016,7 +2109,11 @@ mod tests {
             mirror_id,
             1,
             &viewers,
-            &[(img1.id, img1.generation)],
+            &[LiveImageKey {
+                image_id: img1.id,
+                generation: img1.generation,
+                screen_lineage: img1.screen_lineage,
+            }],
             &[img1],
         );
 
@@ -2031,6 +2128,7 @@ mod tests {
             px(16.),
             1.0,
             cell,
+            false,
         );
         assert!(missing.is_empty());
         let ids: Vec<(u8, u32)> = bands[2].iter().map(|item| item.placement_order).collect();
@@ -2313,6 +2411,7 @@ mod tests {
                     px(16.),
                     window.scale_factor(),
                     mirror.cell_size(),
+                    mirror.frame_worker_sync_pending(),
                 );
                 bands[1]
                     .iter()
@@ -2614,6 +2713,7 @@ mod tests {
                 px(16.),
                 window.scale_factor(),
                 mirror.cell_size(),
+                mirror.frame_worker_sync_pending(),
             );
             bands[1].len()
         });
@@ -2633,5 +2733,709 @@ mod tests {
         visual.update(|window, _| window.refresh());
         visual.run_until_parked();
         assert_eq!(store.cached_count(mirror.mirror_id()), 2);
+    }
+
+    #[test]
+    fn pre_reconciliation_handoff_preserves_same_screen_replacement_without_stealing_decode() {
+        use std::sync::Condvar;
+
+        struct PreSyncGateObserver {
+            inner: Arc<TextureStore>,
+            gate: Arc<(Mutex<(bool, bool)>, Condvar)>,
+            pause_next: std::sync::atomic::AtomicBool,
+            sync_calls: std::sync::atomic::AtomicUsize,
+        }
+        impl MirrorGraphicsObserver for PreSyncGateObserver {
+            fn on_graphics_updated(
+                &self,
+                mirror_id: u64,
+                sync_seq: u64,
+                viewers: &Arc<AtomicUsize>,
+                live_keys: &[LiveImageKey],
+                decode_candidates: &[StoredImage],
+            ) {
+                if self.pause_next.swap(false, Ordering::AcqRel) {
+                    let (lock, cv) = &*self.gate;
+                    let mut state = lock.lock().unwrap();
+                    state.0 = true;
+                    cv.notify_all();
+                    while !state.1 {
+                        state = cv.wait(state).unwrap();
+                    }
+                }
+                self.sync_calls.fetch_add(1, Ordering::AcqRel);
+                self.inner.on_graphics_updated(
+                    mirror_id,
+                    sync_seq,
+                    viewers,
+                    live_keys,
+                    decode_candidates,
+                );
+            }
+            fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>) {
+                self.inner.on_last_viewer_dropped(mirror_id, viewers);
+            }
+            fn on_mirror_dropped(&self, mirror_id: u64) {
+                self.inner.on_mirror_dropped(mirror_id);
+            }
+        }
+
+        let mut cx = TestAppContext::single();
+        let (_host, mirror, tx, ack) =
+            mirror_named("pre-sync-handoff", TerminalController::Desktop);
+        let store = cx.update(|cx| TerminalTextureCache::attach_mirror(&mirror, cx));
+        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let observer = Arc::new(PreSyncGateObserver {
+            inner: Arc::clone(&store),
+            gate: Arc::clone(&gate),
+            pause_next: std::sync::atomic::AtomicBool::new(false),
+            sync_calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let _lease = mirror.view();
+
+        let interaction = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let window = cx.add_window(|_, cx| GraphicsPaneHost {
+            terminal: Some(Arc::clone(&mirror)),
+            interaction: Some(interaction.clone()),
+            input: Some(input.clone()),
+            focus: cx.focus_handle(),
+            font_size: 14.,
+            line_height_factor: 1.4,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(400.), px(260.)));
+        visual.update(|window, _| window.set_scale_factor(1.0));
+        visual.refresh().unwrap();
+
+        // Install frame 1 (red).
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: 1,
+                bytes: kitty_rgba_command(
+                    "a=T,f=32,s=16,v=16,i=77,C=1,q=2,z=-9",
+                    &solid_rgba(16, 16, [255, 0, 0, 255]),
+                )
+                .into(),
+            },
+        );
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let key1 = live_key_for(&mirror, 77);
+        let img1 = store
+            .cached_image(mirror.mirror_id(), key1)
+            .expect("frame 1 cached");
+
+        // Install the pre-reconciliation observer after frame 1's prepaint so
+        // frame 2 pauses immediately before `TextureStore::on_graphics_updated`.
+        mirror.set_graphics_observer(observer.clone());
+        observer.pause_next.store(true, Ordering::Release);
+        let frame2 = [
+            b"\x1b_Ga=d,d=I,i=77,q=2\x1b\\".to_vec(),
+            kitty_rgba_command(
+                "a=T,f=32,s=16,v=16,i=77,C=1,q=2,z=-9",
+                &solid_rgba(16, 16, [0, 255, 0, 255]),
+            ),
+        ]
+        .concat();
+        tx.send(TerminalFrame::Output {
+            seq: 2,
+            bytes: frame2.into(),
+        })
+        .unwrap();
+
+        {
+            let (lock, cv) = &*gate;
+            let mut state = lock.lock().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !state.0 {
+                let rem = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!rem.is_zero(), "timed out waiting for pre-sync barrier");
+                let (s, _) = cv.wait_timeout(state, rem).unwrap();
+                state = s;
+            }
+        }
+
+        // Model already exposes the new generation while TextureStore has NOT
+        // reconciled yet.
+        let key2 = live_key_for(&mirror, 77);
+        assert_ne!(key2, key1);
+        assert!(mirror.frame_worker_sync_pending());
+
+        let pane_bounds = visual.debug_bounds("GRAPHICS_PANE").unwrap();
+        let (pre_sync_bands, pre_sync_missing) = visual.update(|window, _| {
+            let _term = mirror.term.lock();
+            let graphics = mirror.graphics().lock().unwrap();
+            store.prepare_paint_bands(
+                mirror.mirror_id(),
+                false,
+                &graphics,
+                0,
+                pane_bounds,
+                px(8.),
+                px(16.),
+                window.scale_factor(),
+                mirror.cell_size(),
+                mirror.frame_worker_sync_pending(),
+            )
+        });
+        assert_eq!(
+            pre_sync_bands[1].len(),
+            1,
+            "overlapping prepaint before observer reconciliation must not blank"
+        );
+        assert!(
+            Arc::ptr_eq(&pre_sync_bands[1][0].image, &img1),
+            "overlapping prepaint before observer reconciliation must render frame 1"
+        );
+        assert!(
+            pre_sync_missing.is_empty(),
+            "prepaint must not claim missing generation via schedule_decode while frame worker sync is pending"
+        );
+
+        // Also run a real TerminalElement paint while paused before reconciliation
+        // and verify it paints image 77 without blanking or claiming in_flight.
+        visual.update(|window, cx| {
+            cx.set_global(PaintTrace::default());
+            window.refresh();
+        });
+        visual.run_until_parked();
+        let trace = visual.update(|_, cx| cx.global::<PaintTrace>().0.clone());
+        assert!(
+            trace
+                .iter()
+                .any(|e| matches!(e, PaintEvent::Image { band: 1, image_id: 77, .. })),
+            "real TerminalElement paint before reconciliation must keep image 77 visible: {trace:?}"
+        );
+        assert!(
+            store.cached_image(mirror.mirror_id(), key2).is_none(),
+            "schedule_decode must not have decoded key2 ahead of the frame worker"
+        );
+
+        // Release pre-sync barrier so the frame worker decodes key2 and swaps it in.
+        {
+            let (lock, cv) = &*gate;
+            let mut state = lock.lock().unwrap();
+            state.1 = true;
+            cv.notify_all();
+        }
+        ack.recv_timeout(Duration::from_secs(5))
+            .expect("frame 2 wake");
+        assert!(!mirror.frame_worker_sync_pending());
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+
+        let img2 = store
+            .cached_image(mirror.mirror_id(), key2)
+            .expect("frame worker must decode key2 once released");
+        assert!(!Arc::ptr_eq(&img1, &img2));
+        assert_eq!(store.cached_count(mirror.mirror_id()), 1);
+        assert!(
+            !visual.update(|window, _| window.has_image_atlas_entry(&img1)),
+            "frame 1 must be dropped from GPU atlas once frame 2 publishes"
+        );
+        assert!(visual.update(|window, _| window.has_image_atlas_entry(&img2)));
+    }
+
+    #[test]
+    fn delete_primary_switch_to_alt_and_upload_same_id_never_borrows_primary() {
+        use std::sync::Condvar;
+
+        struct PreSyncGateObserver {
+            inner: Arc<TextureStore>,
+            gate: Arc<(Mutex<(bool, bool)>, Condvar)>,
+            pause_next: std::sync::atomic::AtomicBool,
+        }
+        impl MirrorGraphicsObserver for PreSyncGateObserver {
+            fn on_graphics_updated(
+                &self,
+                mirror_id: u64,
+                sync_seq: u64,
+                viewers: &Arc<AtomicUsize>,
+                live_keys: &[LiveImageKey],
+                decode_candidates: &[StoredImage],
+            ) {
+                if self.pause_next.swap(false, Ordering::AcqRel) {
+                    let (lock, cv) = &*self.gate;
+                    let mut state = lock.lock().unwrap();
+                    state.0 = true;
+                    cv.notify_all();
+                    while !state.1 {
+                        state = cv.wait(state).unwrap();
+                    }
+                }
+                self.inner.on_graphics_updated(
+                    mirror_id,
+                    sync_seq,
+                    viewers,
+                    live_keys,
+                    decode_candidates,
+                );
+            }
+            fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>) {
+                self.inner.on_last_viewer_dropped(mirror_id, viewers);
+            }
+            fn on_mirror_dropped(&self, mirror_id: u64) {
+                self.inner.on_mirror_dropped(mirror_id);
+            }
+        }
+
+        let mut cx = TestAppContext::single();
+        let (_host, mirror, tx, ack) =
+            mirror_named("delete-primary-alt", TerminalController::Desktop);
+        let store = cx.update(|cx| TerminalTextureCache::attach_mirror(&mirror, cx));
+        let pre_gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let observer = Arc::new(PreSyncGateObserver {
+            inner: Arc::clone(&store),
+            gate: Arc::clone(&pre_gate),
+            pause_next: std::sync::atomic::AtomicBool::new(false),
+        });
+        let _lease = mirror.view();
+
+        let interaction = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let window = cx.add_window(|_, cx| GraphicsPaneHost {
+            terminal: Some(Arc::clone(&mirror)),
+            interaction: Some(interaction.clone()),
+            input: Some(input.clone()),
+            focus: cx.focus_handle(),
+            font_size: 14.,
+            line_height_factor: 1.4,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(400.), px(260.)));
+        visual.update(|window, _| window.set_scale_factor(1.0));
+        visual.refresh().unwrap();
+
+        // 1. Upload i=77 on primary screen.
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: 1,
+                bytes: kitty_rgba_command(
+                    "a=T,f=32,s=16,v=16,i=77,C=1,q=2,z=-9",
+                    &solid_rgba(16, 16, [255, 0, 0, 255]),
+                )
+                .into(),
+            },
+        );
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let primary_key = live_key_for(&mirror, 77);
+        let primary_img = store
+            .cached_image(mirror.mirror_id(), primary_key)
+            .expect("primary image cached");
+        assert!(visual.update(|window, _| window.has_image_atlas_entry(&primary_img)));
+
+        // 2. In one output frame: delete i=77 on primary, enter alt screen (1049h),
+        //    and upload a first alt image i=77. Pause both pre-reconciliation and
+        //    mid-decode to verify alt NEVER paints primary's deleted image.
+        let decode_gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let decode_gate_hook = Arc::clone(&decode_gate);
+        store.set_decode_hook(Some(Arc::new(move |key| {
+            if key.0 == 77 {
+                let (lock, cv) = &*decode_gate_hook;
+                let mut state = lock.lock().unwrap();
+                state.0 = true;
+                cv.notify_all();
+                while !state.1 {
+                    state = cv.wait(state).unwrap();
+                }
+            }
+        })));
+        mirror.set_graphics_observer(observer.clone());
+        observer.pause_next.store(true, Ordering::Release);
+
+        let combined = [
+            b"\x1b_Ga=d,d=I,i=77,q=2\x1b\\\x1b[?1049h".to_vec(),
+            kitty_rgba_command(
+                "a=T,f=32,s=16,v=16,i=77,C=1,q=2,z=-9",
+                &solid_rgba(16, 16, [0, 255, 0, 255]),
+            ),
+        ]
+        .concat();
+        tx.send(TerminalFrame::Output {
+            seq: 2,
+            bytes: combined.into(),
+        })
+        .unwrap();
+
+        // Check pre-reconciliation window.
+        {
+            let (lock, cv) = &*pre_gate;
+            let mut state = lock.lock().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !state.0 {
+                let rem = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!rem.is_zero());
+                let (s, _) = cv.wait_timeout(state, rem).unwrap();
+                state = s;
+            }
+        }
+        let pane_bounds = visual.debug_bounds("GRAPHICS_PANE").unwrap();
+        let pre_alt_bands = visual.update(|window, _| {
+            let _term = mirror.term.lock();
+            let graphics = mirror.graphics().lock().unwrap();
+            assert!(graphics.primary.images().is_empty());
+            store.prepare_paint_bands(
+                mirror.mirror_id(),
+                true,
+                &graphics,
+                0,
+                pane_bounds,
+                px(8.),
+                px(16.),
+                window.scale_factor(),
+                mirror.cell_size(),
+                mirror.frame_worker_sync_pending(),
+            )
+        });
+        assert!(
+            pre_alt_bands.0[1].is_empty(),
+            "pre-sync alt paint must not borrow deleted primary image"
+        );
+
+        // Advance to mid-decode barrier.
+        {
+            let (lock, cv) = &*pre_gate;
+            let mut state = lock.lock().unwrap();
+            state.1 = true;
+            cv.notify_all();
+        }
+        {
+            let (lock, cv) = &*decode_gate;
+            let mut state = lock.lock().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !state.0 {
+                let rem = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!rem.is_zero());
+                let (s, _) = cv.wait_timeout(state, rem).unwrap();
+                state = s;
+            }
+        }
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        assert!(
+            store
+                .cached_image(mirror.mirror_id(), primary_key)
+                .is_none(),
+            "deleted primary image must be evicted immediately in Phase 1"
+        );
+        assert!(
+            !visual.update(|window, _| window.has_image_atlas_entry(&primary_img)),
+            "deleted primary image must be dropped from GPU atlas immediately"
+        );
+        let mid_alt_bands = visual.update(|window, _| {
+            let _term = mirror.term.lock();
+            let graphics = mirror.graphics().lock().unwrap();
+            store.prepare_paint_bands(
+                mirror.mirror_id(),
+                true,
+                &graphics,
+                0,
+                pane_bounds,
+                px(8.),
+                px(16.),
+                window.scale_factor(),
+                mirror.cell_size(),
+                mirror.frame_worker_sync_pending(),
+            )
+        });
+        assert!(
+            mid_alt_bands.0[1].is_empty(),
+            "mid-decode alt paint must never return deleted primary image"
+        );
+
+        // Release decode barrier; alt image must publish cleanly.
+        store.set_decode_hook(None);
+        {
+            let (lock, cv) = &*decode_gate;
+            let mut state = lock.lock().unwrap();
+            state.1 = true;
+            cv.notify_all();
+        }
+        ack.recv_timeout(Duration::from_secs(5))
+            .expect("alt upload wake");
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let alt_key = {
+            let g = mirror.graphics().lock().unwrap();
+            let img = g.alt.image_by_id(77).unwrap();
+            (img.id, img.generation)
+        };
+        let alt_img = store
+            .cached_image(mirror.mirror_id(), alt_key)
+            .expect("alt image decoded");
+        assert!(!Arc::ptr_eq(&primary_img, &alt_img));
+
+        // 3. Clearing the active screen with `a=d,d=A` and uploading a new i=77
+        //    in the same frame invalidates screen lineage so the pre-clear alt
+        //    texture is evicted immediately and not borrowed mid-decode.
+        let clear_gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let clear_gate_hook = Arc::clone(&clear_gate);
+        store.set_decode_hook(Some(Arc::new(move |key| {
+            if key.0 == 77 {
+                let (lock, cv) = &*clear_gate_hook;
+                let mut state = lock.lock().unwrap();
+                state.0 = true;
+                cv.notify_all();
+                while !state.1 {
+                    state = cv.wait(state).unwrap();
+                }
+            }
+        })));
+        let clear_and_upload = [
+            b"\x1b_Ga=d,d=A,q=2\x1b\\".to_vec(),
+            kitty_rgba_command(
+                "a=T,f=32,s=16,v=16,i=77,C=1,q=2,z=-9",
+                &solid_rgba(16, 16, [0, 0, 255, 255]),
+            ),
+        ]
+        .concat();
+        tx.send(TerminalFrame::Output {
+            seq: 3,
+            bytes: clear_and_upload.into(),
+        })
+        .unwrap();
+        {
+            let (lock, cv) = &*clear_gate;
+            let mut state = lock.lock().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !state.0 {
+                let rem = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!rem.is_zero());
+                let (s, _) = cv.wait_timeout(state, rem).unwrap();
+                state = s;
+            }
+        }
+        assert!(
+            store.cached_image(mirror.mirror_id(), alt_key).is_none(),
+            "a=d,d=A clear must invalidate screen lineage and evict pre-clear image immediately"
+        );
+        let post_clear_mid = visual.update(|window, _| {
+            let _term = mirror.term.lock();
+            let graphics = mirror.graphics().lock().unwrap();
+            store.prepare_paint_bands(
+                mirror.mirror_id(),
+                true,
+                &graphics,
+                0,
+                pane_bounds,
+                px(8.),
+                px(16.),
+                window.scale_factor(),
+                mirror.cell_size(),
+                mirror.frame_worker_sync_pending(),
+            )
+        });
+        assert!(
+            post_clear_mid.0[1].is_empty(),
+            "post-clear upload must not borrow cleared screen's texture"
+        );
+        store.set_decode_hook(None);
+        {
+            let (lock, cv) = &*clear_gate;
+            let mut state = lock.lock().unwrap();
+            state.1 = true;
+            cv.notify_all();
+        }
+        ack.recv_timeout(Duration::from_secs(5))
+            .expect("post-clear upload wake");
+    }
+
+    #[test]
+    fn cropped_oversized_clamped_replacement_preserves_fallback_during_decode() {
+        use std::sync::Condvar;
+
+        let mut cx = TestAppContext::single();
+        let (_host, mirror, tx, ack) = mirror_named("clamped-crop", TerminalController::Desktop);
+        let store = cx.update(|cx| TerminalTextureCache::attach_mirror(&mirror, cx));
+        let _lease = mirror.view();
+
+        let interaction = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let window = cx.add_window(|_, cx| GraphicsPaneHost {
+            terminal: Some(Arc::clone(&mirror)),
+            interaction: Some(interaction.clone()),
+            input: Some(input.clone()),
+            focus: cx.focus_handle(),
+            font_size: 14.,
+            line_height_factor: 1.4,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(400.), px(260.)));
+        visual.update(|window, _| window.set_scale_factor(1.0));
+        visual.refresh().unwrap();
+
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let encode_oversized_cropped = |rgb: [u8; 3]| -> Vec<u8> {
+            let mut raw = Vec::with_capacity(9_000 * 3);
+            for _ in 0..9_000 {
+                raw.extend_from_slice(&rgb);
+            }
+            format!(
+                "\x1b[H\x1b_Ga=d,d=I,i=88,q=2\x1b\\\x1b_Ga=T,f=24,s=9000,v=1,w=8,h=1,i=88,C=1,q=2,z=-9;{}\x1b\\",
+                b64.encode(&raw),
+            )
+            .into_bytes()
+        };
+
+        // Initial 9000x1 RGB image cropped to 8x1 (clamped to 4500x1 RenderImage).
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: 1,
+                bytes: encode_oversized_cropped([255, 0, 0]).into(),
+            },
+        );
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let key1 = live_key_for(&mirror, 88);
+        let img1 = store
+            .cached_image(mirror.mirror_id(), key1)
+            .expect("oversized frame 1 cached");
+        assert_eq!(img1.size(0).width.0, 4_500);
+        assert_eq!(img1.size(0).height.0, 1);
+
+        // Pause identical-dimension replacement mid-decode.
+        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let gate_hook = Arc::clone(&gate);
+        store.set_decode_hook(Some(Arc::new(move |key| {
+            if key.0 == 88 {
+                let (lock, cv) = &*gate_hook;
+                let mut state = lock.lock().unwrap();
+                state.0 = true;
+                cv.notify_all();
+                while !state.1 {
+                    state = cv.wait(state).unwrap();
+                }
+            }
+        })));
+        tx.send(TerminalFrame::Output {
+            seq: 2,
+            bytes: encode_oversized_cropped([0, 255, 0]).into(),
+        })
+        .unwrap();
+        {
+            let (lock, cv) = &*gate;
+            let mut state = lock.lock().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !state.0 {
+                let rem = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!rem.is_zero());
+                let (s, _) = cv.wait_timeout(state, rem).unwrap();
+                state = s;
+            }
+        }
+
+        let pane_bounds = visual.debug_bounds("GRAPHICS_PANE").unwrap();
+        let (mid_bands, mid_missing) = visual.update(|window, _| {
+            let _term = mirror.term.lock();
+            let graphics = mirror.graphics().lock().unwrap();
+            store.prepare_paint_bands(
+                mirror.mirror_id(),
+                false,
+                &graphics,
+                0,
+                pane_bounds,
+                px(8.),
+                px(16.),
+                window.scale_factor(),
+                mirror.cell_size(),
+                mirror.frame_worker_sync_pending(),
+            )
+        });
+        assert!(mid_missing.is_empty());
+        assert_eq!(
+            mid_bands[1].len(),
+            1,
+            "cropped oversized clamped replacement must not blank while decoding"
+        );
+        assert!(Arc::ptr_eq(&mid_bands[1][0].image, &img1));
+
+        store.set_decode_hook(None);
+        {
+            let (lock, cv) = &*gate;
+            let mut state = lock.lock().unwrap();
+            state.1 = true;
+            cv.notify_all();
+        }
+        ack.recv_timeout(Duration::from_secs(5))
+            .expect("oversized frame 2 wake");
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let key2 = live_key_for(&mirror, 88);
+        let img2 = store
+            .cached_image(mirror.mirror_id(), key2)
+            .expect("oversized frame 2 cached");
+        assert!(!Arc::ptr_eq(&img1, &img2));
+        assert_eq!(store.cached_count(mirror.mirror_id()), 1);
+    }
+
+    #[test]
+    fn linear_prune_and_indexed_fallback_scale_for_2000_replaced_thumbnails() {
+        let cx = TestAppContext::single();
+        let store = cx.update(TerminalTextureCache::store);
+        let mirror_id = 888_888u64;
+        let lineage = 42u64;
+        let placeholder_rgba = image::RgbaImage::from_raw(1, 1, vec![0, 0, 255, 255]).unwrap();
+        let shared_render = crate::surfaces::files::image::bgra_to_render_image(placeholder_rgba);
+
+        let mut cache = MirrorCache::default();
+        for id in 1u32..=2_000u32 {
+            let old_key = (id, u64::from(id));
+            let new_key = (id, u64::from(id) + 10_000);
+            cache.insert_texture(
+                old_key,
+                CachedTexture {
+                    screen_lineage: lineage,
+                    source_width: 1,
+                    source_height: 1,
+                    image: Arc::clone(&shared_render),
+                },
+            );
+            cache.live_keys.insert(new_key, lineage);
+            cache.in_flight.insert(new_key);
+        }
+
+        // Add one deleted ID (2001) and one wrong-lineage ID (id 1 on lineage 99)
+        // that must both be evicted immediately.
+        cache.insert_texture(
+            (2_001, 2_001),
+            CachedTexture {
+                screen_lineage: lineage,
+                source_width: 1,
+                source_height: 1,
+                image: Arc::clone(&shared_render),
+            },
+        );
+        cache.insert_texture(
+            (1, 9_999),
+            CachedTexture {
+                screen_lineage: 99,
+                source_width: 1,
+                source_height: 1,
+                image: Arc::clone(&shared_render),
+            },
+        );
+
+        let released = cache.prune_stale_textures();
+        assert_eq!(
+            released.len(),
+            2,
+            "deleted ID 2001 and wrong-lineage ID 1 must be evicted while all 2000 same-lineage fallbacks remain"
+        );
+        assert_eq!(cache.textures.len(), 2_000);
+        assert_eq!(cache.by_lineage_id.len(), 2_000);
+        assert_eq!(cache.by_lineage_id.get(&(lineage, 1)), Some(&1));
+        assert!(!cache.by_lineage_id.contains_key(&(99, 1)));
+
+        store.mirrors.lock().unwrap().insert(mirror_id, cache);
+        store.on_mirror_dropped(mirror_id);
+        cx.run_until_parked();
     }
 }

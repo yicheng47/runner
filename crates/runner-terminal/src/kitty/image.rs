@@ -85,6 +85,10 @@ pub struct StoredImage {
     pub placement_count: u32,
     pub generation: u64,
     pub transmission: u64,
+    /// Monotonic lineage token of the screen storage (`primary` or `alt`) when
+    /// this image was inserted. Bumped on screen reset/clear-all so fallback
+    /// textures never cross screens or survive a cleared screen.
+    pub screen_lineage: u64,
 }
 
 impl StoredImage {
@@ -212,6 +216,7 @@ impl LoadingImage {
             placement_count: 0,
             generation: 0,
             transmission: 0,
+            screen_lineage: 0,
         })
     }
 
@@ -263,6 +268,7 @@ impl LoadingImage {
             placement_count: 0,
             generation: 0,
             transmission: 0,
+            screen_lineage: 0,
         })
     }
 }

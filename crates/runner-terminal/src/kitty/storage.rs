@@ -431,6 +431,9 @@ pub struct ImageStorage {
     /// Mirror mode applies stream deletes and only evicts at the safety cap
     /// (`2 * PER_SCREEN_LIMIT`).
     mirror_mode: bool,
+    /// Monotonic lineage token for this screen, bumped on `reset()`,
+    /// `clear_screen()` image deletion, and `a=d,d=A` image deletion.
+    lineage: u64,
 }
 
 impl Drop for ImageStorage {
@@ -458,6 +461,7 @@ impl ImageStorage {
             total_limit,
             budget,
             mirror_mode: false,
+            lineage: next_generation(),
         }
     }
 
@@ -535,6 +539,7 @@ impl ImageStorage {
 
     pub fn reset(&mut self) {
         self.loading = None;
+        self.lineage = next_generation();
         let had = !self.images.is_empty() || !self.placements.is_empty();
         self.placements.clear();
         self.images.clear();
@@ -663,6 +668,7 @@ impl ImageStorage {
         image.placement_count = 0;
         image.generation = self.generation;
         image.transmission = self.generation;
+        image.screen_lineage = self.lineage;
         self.total_bytes += new_decoded;
         self.encoded_bytes += new_encoded;
         self.images.insert(image.id, image);
@@ -1065,6 +1071,9 @@ impl ImageStorage {
             self.delete_if_unused(id);
         }
 
+        if self.images.len() < images_before {
+            self.lineage = next_generation();
+        }
         if self.placements.len() != placements_before || self.images.len() != images_before {
             self.mark_mutated();
         }
@@ -1105,6 +1114,9 @@ impl ImageStorage {
         match action {
             DeleteAction::All { delete_images } => {
                 self.delete_visible_placements(screen_lines, screen_cols, cell, delete_images);
+                if delete_images && self.images.len() < images_before {
+                    self.lineage = next_generation();
+                }
             }
             DeleteAction::Id {
                 delete_images,

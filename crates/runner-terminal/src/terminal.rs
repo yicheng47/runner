@@ -629,6 +629,23 @@ fn parse_with<H: Handler>(parser: &mut ParserState, handler: &mut H, bytes: &[u8
 
 static NEXT_MIRROR_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Live image identity carried to `MirrorGraphicsObserver` so texture caches can
+/// keep fallbacks strictly scoped to the originating screen lineage and ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LiveImageKey {
+    pub image_id: u32,
+    pub generation: u64,
+    pub screen_lineage: u64,
+}
+
+struct SyncPendingGuard<'a>(&'a AtomicUsize);
+
+impl Drop for SyncPendingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
+
 /// App-side hook notified when a mirror's graphics state changes, when its
 /// last [`TerminalView`] lease drops, or when the mirror itself is dropped.
 ///
@@ -641,7 +658,7 @@ pub trait MirrorGraphicsObserver: Send + Sync + 'static {
         mirror_id: u64,
         sync_seq: u64,
         viewers: &Arc<AtomicUsize>,
-        live_keys: &[(u32, u64)],
+        live_keys: &[LiveImageKey],
         decode_candidates: &[crate::kitty::StoredImage],
     );
 
@@ -657,6 +674,7 @@ pub struct TerminalMirror {
     graphics_observer: Arc<Mutex<Option<Arc<dyn MirrorGraphicsObserver>>>>,
     last_graphics_gen: Mutex<(u64, u64)>,
     graphics_sync_seq: AtomicU64,
+    frame_worker_sync_pending: AtomicUsize,
     sgr_pixels: Arc<AtomicBool>,
     sync_open: Arc<AtomicBool>,
     resize_epoch: AtomicU64,
@@ -813,6 +831,13 @@ impl TerminalMirror {
                         return;
                     };
                     let mut force_graphics_sync = false;
+                    // Mark frame-worker reconciliation in flight before mutating
+                    // `graphics` so overlapping UI prepaints preserve same-lineage
+                    // replacements and do not steal decodes via `schedule_decode`.
+                    mirror
+                        .frame_worker_sync_pending
+                        .fetch_add(1, Ordering::AcqRel);
+                    let sync_pending = SyncPendingGuard(&mirror.frame_worker_sync_pending);
                     match frame {
                         TerminalFrame::Output { seq, bytes } => {
                             if !mirror.feed_output(seq, &bytes) {
@@ -886,6 +911,7 @@ impl TerminalMirror {
                         },
                     }
                     mirror.sync_graphics_observer(force_graphics_sync, true);
+                    drop(sync_pending);
                     mirror.refresh_metadata();
                     mirror.wake_viewers();
                 }
@@ -971,6 +997,7 @@ impl TerminalMirror {
             graphics_observer: Arc::new(Mutex::new(None)),
             last_graphics_gen: Mutex::new((0, 0)),
             graphics_sync_seq: AtomicU64::new(0),
+            frame_worker_sync_pending: AtomicUsize::new(0),
             sgr_pixels: Arc::new(AtomicBool::new(false)),
             sync_open,
             resize_epoch: AtomicU64::new(0),
@@ -1193,6 +1220,9 @@ impl TerminalMirror {
     pub fn viewer_count(&self) -> usize {
         self.viewers.load(Ordering::Acquire)
     }
+    pub fn frame_worker_sync_pending(&self) -> bool {
+        self.frame_worker_sync_pending.load(Ordering::Acquire) > 0
+    }
     pub fn live_image_keys(&self) -> Vec<(u32, u64)> {
         let graphics = self.graphics.lock().unwrap();
         let mut keys =
@@ -1236,7 +1266,11 @@ impl TerminalMirror {
             let mut decode_candidates = Vec::new();
             for storage in [&graphics.primary, &graphics.alt] {
                 for img in storage.images().values() {
-                    live_keys.push((img.id, img.generation));
+                    live_keys.push(LiveImageKey {
+                        image_id: img.id,
+                        generation: img.generation,
+                        screen_lineage: img.screen_lineage,
+                    });
                     if allow_sync_decode && has_viewers {
                         decode_candidates.push(img.clone());
                     }
@@ -1438,6 +1472,9 @@ impl TerminalMirror {
         true
     }
     fn flush_held_output(&self) -> Option<Instant> {
+        self.frame_worker_sync_pending
+            .fetch_add(1, Ordering::AcqRel);
+        let sync_pending = SyncPendingGuard(&self.frame_worker_sync_pending);
         let mut sequence = self.sequence.lock().unwrap();
         let mut parser = self.parser.lock().unwrap();
         let now = Instant::now();
@@ -1492,6 +1529,9 @@ impl TerminalMirror {
         drop(sequence);
         if flushed {
             self.sync_graphics_observer(false, true);
+        }
+        drop(sync_pending);
+        if flushed {
             self.wake_viewers();
         }
         next

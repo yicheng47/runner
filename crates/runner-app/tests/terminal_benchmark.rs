@@ -182,7 +182,7 @@ fn kitty_graphics_30fps_stream_profile() {
     use base64::Engine as _;
     use image::ImageEncoder as _;
     use runner_terminal::kitty::{StoredImage, PER_SCREEN_LIMIT};
-    use runner_terminal::terminal::MirrorGraphicsObserver;
+    use runner_terminal::terminal::{LiveImageKey, MirrorGraphicsObserver};
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     #[derive(Default)]
@@ -197,7 +197,7 @@ fn kitty_graphics_30fps_stream_profile() {
             _mirror_id: u64,
             _sync_seq: u64,
             viewers: &Arc<AtomicUsize>,
-            _live_keys: &[(u32, u64)],
+            _live_keys: &[LiveImageKey],
             decode_candidates: &[StoredImage],
         ) {
             if viewers.load(Ordering::Acquire) == 0 {

@@ -1436,6 +1436,7 @@ impl Element for TerminalElement {
             {
                 let graphics = self.session.graphics().lock().unwrap();
                 let session_cell = self.session.cell_size();
+                let sync_decode_pending = self.session.frame_worker_sync_pending();
                 let (bands, missing) = texture_store.prepare_paint_bands(
                     self.session.mirror_id(),
                     mode.contains(TermMode::ALT_SCREEN),
@@ -1446,6 +1447,7 @@ impl Element for TerminalElement {
                     line_height,
                     scale_factor,
                     session_cell,
+                    sync_decode_pending,
                 );
                 image_bands = bands;
                 missing_images = missing;
