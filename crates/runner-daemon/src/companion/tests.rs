@@ -608,7 +608,7 @@ async fn slow_actions_and_follows_keep_terminals_live_and_preserve_request_order
             .unwrap()
             .push(TerminalFrame::Output {
                 seq: 11,
-                bytes: b"live output".to_vec(),
+                bytes: b"live output".into(),
             });
         loop {
             let msg = next(&mut adapter).await;
@@ -868,7 +868,7 @@ async fn explicit_overview_after_mutation_waits_for_a_fresh_bounded_scan() {
             .unwrap()
             .push(TerminalFrame::Output {
                 seq: 11,
-                bytes: b"live output".to_vec(),
+                bytes: b"live output".into(),
             });
         assert_eq!(next(&mut adapter).await["type"], "output");
         assert_eq!(fake.overview_calls.load(Ordering::Relaxed), 1);
@@ -897,7 +897,7 @@ async fn explicit_overview_after_mutation_waits_for_a_fresh_bounded_scan() {
             .unwrap()
             .push(TerminalFrame::Output {
                 seq: 12,
-                bytes: b"still live".to_vec(),
+                bytes: b"still live".into(),
             });
         assert_eq!(next(&mut adapter).await["type"], "output");
         assert_eq!(fake.overview_calls.load(Ordering::Relaxed), 2);
@@ -966,7 +966,7 @@ async fn explicit_overview_waiters_form_bounded_batches_without_stalling_termina
         .unwrap()
         .push(TerminalFrame::Output {
             seq: 11,
-            bytes: b"live output".to_vec(),
+            bytes: b"live output".into(),
         });
     assert_eq!(next(&mut adapter).await["type"], "output");
     assert_eq!(fake.overview_calls.load(Ordering::Relaxed), 1);
@@ -1144,7 +1144,7 @@ async fn slow_feed_pages_keep_input_output_live_with_bounded_requests_and_matchi
         .unwrap()
         .push(TerminalFrame::Output {
             seq: 11,
-            bytes: b"live output".to_vec(),
+            bytes: b"live output".into(),
         });
     assert_eq!(next(&mut adapter).await["type"], "output");
     assert_eq!(fake.feed_calls.load(Ordering::Relaxed), 1);
@@ -1235,7 +1235,7 @@ async fn terminal_chunks_order_fairness_overflow_and_resync_sequence() {
     for stream in &adapter.streams {
         stream.queue.lock().unwrap().push(TerminalFrame::Output {
             seq: 50,
-            bytes: vec![b'y'; TERMINAL_CHUNK_SIZE + 1],
+            bytes: vec![b'y'; TERMINAL_CHUNK_SIZE + 1].into(),
         });
     }
     let a3 = next(&mut adapter).await;
@@ -1249,7 +1249,7 @@ async fn terminal_chunks_order_fairness_overflow_and_resync_sequence() {
     let stream = adapter.streams.front().unwrap();
     assert!(!stream.queue.lock().unwrap().push(TerminalFrame::Output {
         seq: 100,
-        bytes: vec![0; MAX_MESSAGE_SIZE + 1]
+        bytes: vec![0; MAX_MESSAGE_SIZE + 1].into(),
     }));
     assert!(adapter.next(false).await.unwrap().is_none());
     let fresh = next(&mut adapter).await;
@@ -1282,7 +1282,7 @@ fn push_output(adapter: &Adapter, session: &str, bytes: &[u8]) -> bool {
         .unwrap()
         .push(TerminalFrame::Output {
             seq: 0,
-            bytes: bytes.to_vec(),
+            bytes: bytes.into(),
         })
 }
 fn push_resize(adapter: &Adapter, session: &str) {
@@ -1604,7 +1604,7 @@ fn input_classification_and_queue_bound() {
     let mut queue = Queue::default();
     assert!(queue.push(TerminalFrame::Output {
         seq: 1,
-        bytes: vec![0; MAX_MESSAGE_SIZE - 64]
+        bytes: vec![0; MAX_MESSAGE_SIZE - 64].into(),
     }));
     assert!(!queue.push(TerminalFrame::Resized {
         seq: 2,
@@ -1646,7 +1646,7 @@ async fn empty_snapshot_input_resize_and_close_preserve_per_terminal_order() {
         let mut queue = stream.queue.lock().unwrap();
         queue.push(TerminalFrame::Output {
             seq: 11,
-            bytes: b"before resize".to_vec(),
+            bytes: b"before resize".into(),
         });
         queue.push(TerminalFrame::Resized {
             seq: 12,
@@ -1661,7 +1661,7 @@ async fn empty_snapshot_input_resize_and_close_preserve_per_terminal_order() {
         });
         queue.push(TerminalFrame::Output {
             seq: 13,
-            bytes: b"after resize".to_vec(),
+            bytes: b"after resize".into(),
         });
         queue.push(TerminalFrame::Resized {
             seq: 14,
@@ -1821,7 +1821,7 @@ impl TerminalSubscription for HeldFrame {
             self.release.recv().unwrap();
             return Ok(TerminalFrame::Output {
                 seq: 11,
-                bytes: b"final output".to_vec(),
+                bytes: b"final output".into(),
             });
         }
         Err(ClientError::msg("closed"))

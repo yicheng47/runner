@@ -464,7 +464,7 @@ fn output_until(
         let mut output = Vec::new();
         loop {
             match incoming.recv().unwrap() {
-                TerminalFrame::Output { bytes, .. } => output.extend(bytes),
+                TerminalFrame::Output { bytes, .. } => output.extend_from_slice(&bytes),
                 TerminalFrame::Resized { .. } | TerminalFrame::ClearGraphics { .. } => (),
                 TerminalFrame::Resync => panic!("unexpected lag"),
             }

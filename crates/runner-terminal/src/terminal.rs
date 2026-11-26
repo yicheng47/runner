@@ -639,6 +639,7 @@ pub trait MirrorGraphicsObserver: Send + Sync + 'static {
     fn on_graphics_updated(
         &self,
         mirror_id: u64,
+        sync_seq: u64,
         viewers: &Arc<AtomicUsize>,
         live_keys: &[(u32, u64)],
         decode_candidates: &[crate::kitty::StoredImage],
@@ -655,8 +656,10 @@ pub struct TerminalMirror {
     graphics: Arc<Mutex<crate::kitty::TerminalGraphics>>,
     graphics_observer: Arc<Mutex<Option<Arc<dyn MirrorGraphicsObserver>>>>,
     last_graphics_gen: Mutex<(u64, u64)>,
+    graphics_sync_seq: AtomicU64,
     sgr_pixels: Arc<AtomicBool>,
     sync_open: Arc<AtomicBool>,
+    resize_epoch: AtomicU64,
     client: DaemonClient,
     session_id: String,
     subscriber_id: AtomicU64,
@@ -865,7 +868,7 @@ impl TerminalMirror {
                             Err(_) => return,
                         },
                     }
-                    mirror.sync_graphics_observer(force_graphics_sync);
+                    mirror.sync_graphics_observer(force_graphics_sync, true);
                     mirror.refresh_metadata();
                     mirror.wake_viewers();
                 }
@@ -888,7 +891,7 @@ impl TerminalMirror {
         }
         let attachment = self.client.attach(&self.session_id)?;
         self.restore(&attachment);
-        self.sync_graphics_observer(true);
+        self.sync_graphics_observer(true, false);
         self.start_frames(attachment)?;
         self.refresh_metadata();
         self.wake_viewers();
@@ -950,8 +953,10 @@ impl TerminalMirror {
             graphics: Arc::new(Mutex::new(crate::kitty::TerminalGraphics::mirror())),
             graphics_observer: Arc::new(Mutex::new(None)),
             last_graphics_gen: Mutex::new((0, 0)),
+            graphics_sync_seq: AtomicU64::new(0),
             sgr_pixels: Arc::new(AtomicBool::new(false)),
             sync_open,
+            resize_epoch: AtomicU64::new(0),
             client,
             session_id,
             subscriber_id: AtomicU64::new(attachment.subscriber_id),
@@ -1135,6 +1140,7 @@ impl TerminalMirror {
         self.scroll_mark.lock().unwrap().rebuild();
         *self.size.lock().unwrap() = (attachment.snapshot.cols, attachment.snapshot.rows);
         self.apply_controller(attachment.snapshot.controller.clone());
+        self.resize_epoch.fetch_add(1, Ordering::AcqRel);
         self.subscriber_id
             .store(attachment.subscriber_id, Ordering::Relaxed);
         if parser.sync_deadline().is_some() {
@@ -1175,15 +1181,21 @@ impl TerminalMirror {
         }
         keys
     }
-    pub fn wake_viewers_now(&self) {
-        self.wake_viewers();
+    pub fn wake_viewers_now(&self) -> bool {
+        self.wake_viewers()
     }
-    fn sync_graphics_observer(&self, force: bool) {
+    pub fn is_remote(&self) -> bool {
+        self.coalesce_bursts
+    }
+    pub fn resize_epoch(&self) -> u64 {
+        self.resize_epoch.load(Ordering::Acquire)
+    }
+    fn sync_graphics_observer(&self, force: bool, allow_sync_decode: bool) {
         let observer = self.graphics_observer.lock().unwrap().clone();
         let Some(observer) = observer else {
             return;
         };
-        let (live_keys, decode_candidates) = {
+        let (sync_seq, live_keys, decode_candidates) = {
             let graphics = self.graphics.lock().unwrap();
             let current_gen = (graphics.primary.generation, graphics.alt.generation);
             let mut last_gen = self.last_graphics_gen.lock().unwrap();
@@ -1191,6 +1203,7 @@ impl TerminalMirror {
                 return;
             }
             *last_gen = current_gen;
+            let sync_seq = self.graphics_sync_seq.fetch_add(1, Ordering::AcqRel) + 1;
             let has_viewers = self.viewers.load(Ordering::Acquire) > 0;
             let mut live_keys =
                 Vec::with_capacity(graphics.primary.images().len() + graphics.alt.images().len());
@@ -1198,15 +1211,16 @@ impl TerminalMirror {
             for storage in [&graphics.primary, &graphics.alt] {
                 for img in storage.images().values() {
                     live_keys.push((img.id, img.generation));
-                    if has_viewers {
+                    if allow_sync_decode && has_viewers {
                         decode_candidates.push(img.clone());
                     }
                 }
             }
-            (live_keys, decode_candidates)
+            (sync_seq, live_keys, decode_candidates)
         };
         observer.on_graphics_updated(
             self.mirror_id,
+            sync_seq,
             &self.viewers,
             &live_keys,
             &decode_candidates,
@@ -1252,7 +1266,7 @@ impl TerminalMirror {
             let cell_size = *self.cell_size.lock().unwrap();
             stream::configure_term_and_graphics(&mut term, &mut graphics, config, cell_size);
         }
-        self.sync_graphics_observer(false);
+        self.sync_graphics_observer(false, false);
         let shape = match cursor_shape {
             CursorShape::Block => "block",
             CursorShape::Underline => "underline",
@@ -1451,14 +1465,17 @@ impl TerminalMirror {
         drop(parser);
         drop(sequence);
         if flushed {
-            self.sync_graphics_observer(false);
+            self.sync_graphics_observer(false, true);
             self.wake_viewers();
         }
         next
     }
-    fn wake_viewers(&self) {
+    fn wake_viewers(&self) -> bool {
         if !self.sync_open.load(Ordering::Acquire) && self.viewers.load(Ordering::Acquire) > 0 {
             (self.waker)();
+            true
+        } else {
+            false
         }
     }
 
@@ -1635,6 +1652,9 @@ impl TerminalMirror {
             control.apply(controller);
             changed
         };
+        if changed && self.control().desktop() {
+            self.resize_epoch.fetch_add(1, Ordering::AcqRel);
+        }
         let mut pending = self.composition_clear_pending.lock().unwrap();
         if *pending
             && self.control().desktop()
@@ -2237,7 +2257,7 @@ impl TerminalMirror {
     }
     pub fn test_feed(&self, seq: u64, bytes: &[u8]) {
         if self.feed_output(seq, bytes) {
-            self.sync_graphics_observer(false);
+            self.sync_graphics_observer(false, true);
             self.wake_viewers();
         }
     }
@@ -2260,7 +2280,7 @@ impl TerminalMirror {
         self.apply_output_chunk(&mut sequence, &mut parser, seq, bytes);
         drop(parser);
         drop(sequence);
-        self.sync_graphics_observer(false);
+        self.sync_graphics_observer(false, true);
         self.wake_viewers();
     }
     /// Arm the background sync-flush thread for an already-open synchronized

@@ -512,7 +512,7 @@ impl SessionEvents for Capture {
                         session_id: id.clone(),
                         mission_id: mission_id.clone(),
                         seq,
-                        bytes,
+                        bytes: bytes.into_vec(),
                     });
                 }
             }

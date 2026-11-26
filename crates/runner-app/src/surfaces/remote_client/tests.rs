@@ -4210,7 +4210,7 @@ fn daemon_recovery_replaces_closed_remote_stream_without_taking_control_and_retr
     fake.frame_senders.lock().unwrap()[1]
         .send(Ok(TerminalFrame::Output {
             seq: 2,
-            bytes: b"\r\nrecovered output".to_vec(),
+            bytes: b"\r\nrecovered output".into(),
         }))
         .unwrap();
     fake.frame_entries.lock().unwrap()[1].recv().unwrap();

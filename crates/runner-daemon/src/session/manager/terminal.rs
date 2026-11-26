@@ -1327,7 +1327,7 @@ impl SessionManager {
                             Some(stripped) if stripped.is_empty() => Some(None),
                             Some(stripped) => Some(Some(TerminalFrame::Output {
                                 seq: *seq,
-                                bytes: stripped,
+                                bytes: stripped.into(),
                             })),
                             None => None,
                         }

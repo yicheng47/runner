@@ -9,8 +9,8 @@ use super::command::{
     CursorMovement, Display,
 };
 use super::storage::{
-    last_row_i64, CellSize, ImageStorage, Placement, PlacementKey, PlacementLocation,
-    TerminalGraphics, PARENT_CHAIN_LIMIT,
+    CellSize, ImageStorage, Placement, PlacementKey, PlacementLocation, TerminalGraphics,
+    PARENT_CHAIN_LIMIT,
 };
 
 /// Upper bound on bytes graphics may occupy inside a snapshot (48 MiB).
@@ -380,21 +380,25 @@ fn collect_candidates(
         rel_tracker.register(&req_images[..req_len], bytes);
 
         let visible = storage
-            .resolved_anchor(placement)
+            .resolved_signed_anchor(placement)
             .map(|anchor| {
-                if anchor.line >= 0 && i64::from(anchor.line) < screen_lines as i64 {
-                    true
-                } else if anchor.line < 0 {
-                    storage
-                        .image_by_id(key.image_id)
-                        .map(|img| {
-                            let (_, rows) = placement.grid_size(img.width, img.height, cell);
-                            last_row_i64(anchor.line, rows) >= 0
-                        })
-                        .unwrap_or(false)
-                } else {
-                    false
+                if anchor.column >= screen_cols as i64 || anchor.line >= screen_lines as i64 {
+                    return false;
                 }
+                if anchor.column >= 0 && anchor.line >= 0 {
+                    return true;
+                }
+                storage
+                    .image_by_id(key.image_id)
+                    .map(|img| {
+                        let (cols, rows) = placement.grid_size(img.width, img.height, cell);
+                        let horiz = anchor.column >= 0
+                            || (cols > 0 && anchor.column.saturating_add(i64::from(cols) - 1) >= 0);
+                        let vert = anchor.line >= 0
+                            || (rows > 0 && anchor.line.saturating_add(i64::from(rows) - 1) >= 0);
+                        horiz && vert
+                    })
+                    .unwrap_or(false)
             })
             .unwrap_or(false);
         if visible {

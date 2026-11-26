@@ -1650,13 +1650,15 @@ impl SessionManager {
             state
                 .model
                 .apply(SessionEvent::Output, crate::session::clock::state_now());
-            Self::push_plain_frame(
-                &mut state,
-                runner_core::protocol::terminal::TerminalFrame::Output {
-                    seq,
-                    bytes: bytes.to_vec(),
-                },
-            );
+            if !state.subscribers.is_empty() {
+                Self::push_plain_frame(
+                    &mut state,
+                    runner_core::protocol::terminal::TerminalFrame::Output {
+                        seq,
+                        bytes: bytes.into(),
+                    },
+                );
+            }
             let model = state.terminal.clone();
             let observation = model
                 .as_ref()
@@ -1712,7 +1714,10 @@ impl SessionManager {
                         offset += 1;
                         Self::push_frame(
                             &mut state,
-                            runner_core::protocol::terminal::TerminalFrame::Output { seq, bytes },
+                            runner_core::protocol::terminal::TerminalFrame::Output {
+                                seq,
+                                bytes: bytes.into(),
+                            },
                         );
                     });
                 state.output_seq = state.output_seq.max(last_seq);
@@ -1730,7 +1735,7 @@ impl SessionManager {
                         &mut state,
                         runner_core::protocol::terminal::TerminalFrame::Output {
                             seq: first_seq,
-                            bytes: text,
+                            bytes: text.into(),
                         },
                     );
                 }

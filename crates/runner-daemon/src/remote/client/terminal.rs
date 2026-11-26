@@ -535,7 +535,7 @@ impl Terminals {
                 if !bytes.is_empty() {
                     stream.push(TerminalFrame::Output {
                         seq: output.seq,
-                        bytes,
+                        bytes: bytes.into(),
                     });
                 }
             }

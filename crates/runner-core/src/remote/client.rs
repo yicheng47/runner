@@ -88,7 +88,7 @@ fn client_debug_keeps_snapshot_output_and_overview_bodies_private() {
     use crate::protocol::terminal::{TerminalController, TerminalFrame, TerminalSnapshot};
     let frame = TerminalFrame::Output {
         seq: 1,
-        bytes: b"terminal-canary".to_vec(),
+        bytes: b"terminal-canary".into(),
     };
     let snapshot = TerminalSnapshot {
         seq: 1,

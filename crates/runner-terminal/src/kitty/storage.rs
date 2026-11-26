@@ -131,6 +131,14 @@ pub struct PinLocation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignedPinLocation {
+    /// Viewport line (`0..rows` on visible screen, negative in scrollback history).
+    pub line: i64,
+    /// Viewport column (may be negative for relative placements shifted left of column 0).
+    pub column: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelativeLocation {
     pub parent: PlacementKey,
     pub horizontal_offset: i32,
@@ -871,11 +879,16 @@ impl ImageStorage {
         }
     }
 
-    /// Resolve a placement's effective anchor `(line, column)` on the grid.
-    /// Returns `None` for virtual placements or broken relative chains.
-    pub fn resolved_anchor(&self, placement: &Placement) -> Option<PinLocation> {
+    /// Resolve a placement's effective signed anchor `(line, column)` on the
+    /// grid, preserving negative columns produced by relative placements
+    /// (`H < 0`) whose right edge still overlaps the viewport. Returns `None`
+    /// for virtual placements or broken relative chains.
+    pub fn resolved_signed_anchor(&self, placement: &Placement) -> Option<SignedPinLocation> {
         match placement.location {
-            PlacementLocation::Pin(pin) => Some(pin),
+            PlacementLocation::Pin(pin) => Some(SignedPinLocation {
+                line: i64::from(pin.line),
+                column: i64::try_from(pin.column).ok()?,
+            }),
             PlacementLocation::Virtual => None,
             PlacementLocation::Relative(rel) => {
                 let chain = self.resolve_chain(rel)?;
@@ -883,18 +896,28 @@ impl ImageStorage {
                     PlacementLocation::Pin(pin) => pin,
                     _ => return None,
                 };
-                let col = i64::try_from(root_pin.column)
+                let column = i64::try_from(root_pin.column)
                     .ok()?
                     .saturating_add(i64::from(chain.horizontal_offset));
-                if col < 0 {
-                    return None;
-                }
-                Some(PinLocation {
-                    line: root_pin.line.saturating_add(chain.vertical_offset),
-                    column: col as usize,
-                })
+                let line =
+                    i64::from(root_pin.line).saturating_add(i64::from(chain.vertical_offset));
+                Some(SignedPinLocation { line, column })
             }
         }
+    }
+
+    /// Resolve a placement's effective non-negative-column anchor `(line, column)`
+    /// on the grid. Returns `None` for virtual placements, broken relative chains,
+    /// or anchors shifted left of column 0.
+    pub fn resolved_anchor(&self, placement: &Placement) -> Option<PinLocation> {
+        let signed = self.resolved_signed_anchor(placement)?;
+        if signed.column < 0 {
+            return None;
+        }
+        Some(PinLocation {
+            line: signed.line.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+            column: usize::try_from(signed.column).ok()?,
+        })
     }
 
     fn remove_placement_by_key(&mut self, key: PlacementKey) -> bool {

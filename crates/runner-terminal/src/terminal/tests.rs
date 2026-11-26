@@ -594,7 +594,7 @@ fn send_output(frames: &mpsc::Sender<ScriptedFrame>, seq: u64, bytes: &[u8]) {
     frames
         .send(Ok(TerminalFrame::Output {
             seq,
-            bytes: bytes.to_vec(),
+            bytes: bytes.into(),
         }))
         .unwrap();
 }

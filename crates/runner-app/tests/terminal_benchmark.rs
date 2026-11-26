@@ -195,6 +195,7 @@ fn kitty_graphics_30fps_stream_profile() {
         fn on_graphics_updated(
             &self,
             _mirror_id: u64,
+            _sync_seq: u64,
             viewers: &Arc<AtomicUsize>,
             _live_keys: &[(u32, u64)],
             decode_candidates: &[StoredImage],
@@ -297,14 +298,14 @@ fn kitty_graphics_30fps_stream_profile() {
         format!("\x1b_Ga=T,f=100,i=1,C=1,q=2;{}\x1b\\", b64.encode(&png_b)).into_bytes();
 
     // Measure pure clone overhead of TerminalFrame::Output across 2 local subscribers.
+    let shared_frame = runner_core::protocol::terminal::TerminalFrame::Output {
+        seq: 1,
+        bytes: raw_td_sample.clone().into(),
+    };
     let clone_start = Instant::now();
-    for i in 0..90 {
-        let frame = runner_core::protocol::terminal::TerminalFrame::Output {
-            seq: i as u64,
-            bytes: raw_td_sample.clone(),
-        };
-        let c1 = frame.clone();
-        let c2 = frame.clone();
+    for _ in 0..90 {
+        let c1 = shared_frame.clone();
+        let c2 = shared_frame.clone();
         std::hint::black_box((c1, c2));
     }
     let clone_raw_ms = clone_start.elapsed().as_secs_f64() * 1000.0 / 90.0;

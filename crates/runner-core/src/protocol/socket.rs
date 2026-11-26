@@ -602,7 +602,10 @@ impl SocketTransport {
                                 if last {
                                     let bytes = std::mem::take(&mut state.output);
                                     drop(state);
-                                    queue.push(TerminalFrame::Output { seq, bytes });
+                                    queue.push(TerminalFrame::Output {
+                                        seq,
+                                        bytes: bytes.into(),
+                                    });
                                 }
                             }
                         }
@@ -1050,7 +1053,7 @@ mod tests {
         for seq in 0..=TERMINAL_QUEUE_CAPACITY as u64 {
             queue.push(TerminalFrame::Output {
                 seq,
-                bytes: vec![42],
+                bytes: vec![42].into(),
             });
         }
         let mut state = queue.state.lock().unwrap();
@@ -1069,16 +1072,16 @@ mod tests {
         let chunk = 44 * 1024 * 1024;
         queue.push(TerminalFrame::Output {
             seq: 1,
-            bytes: vec![0; chunk],
+            bytes: vec![0; chunk].into(),
         });
         queue.push(TerminalFrame::Output {
             seq: 2,
-            bytes: vec![0; chunk],
+            bytes: vec![0; chunk].into(),
         });
         assert!(!queue.state.lock().unwrap().closed);
         queue.push(TerminalFrame::Output {
             seq: 3,
-            bytes: vec![0; chunk],
+            bytes: vec![0; chunk].into(),
         });
         let mut state = queue.state.lock().unwrap();
         assert!(state.closed);

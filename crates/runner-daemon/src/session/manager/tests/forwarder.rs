@@ -15,7 +15,7 @@ impl ForwarderCapture {
                 self.0
                     .lock()
                     .unwrap()
-                    .push(ForwardedEvent::Output(seq, bytes));
+                    .push(ForwardedEvent::Output(seq, bytes.into_vec()));
             }
         }
     }

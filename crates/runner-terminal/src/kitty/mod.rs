@@ -22,7 +22,8 @@ pub use media::{
 pub use scanner::{strip_graphics_commands, ScanItem, ScanOutput, Scanner, MAX_COMMAND_BYTES};
 pub use storage::{
     CellSize, GlobalImageBudget, ImageStorage, PinLocation, Placement, PlacementId, PlacementKey,
-    PlacementLocation, RelativeLocation, SourceRect, TerminalGraphics, DEFAULT_GLOBAL_BUDGET,
+    PlacementLocation, RelativeLocation, SignedPinLocation, SourceRect, TerminalGraphics,
+    DEFAULT_GLOBAL_BUDGET,
 };
 
 /// Maximum bytes packed into one normalized output frame before closing it and

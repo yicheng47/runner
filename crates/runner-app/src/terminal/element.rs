@@ -150,10 +150,10 @@ type HoverSignature = (GridPoint, u64, usize, (u16, u16), Option<PathBuf>);
 pub(crate) struct TerminalInteraction {
     session: Arc<TerminalMirror>,
     pub(crate) pane_size: Option<TerminalGridSize>,
-    /// Tracks the last size pushed while the session still reports a zero cell
-    /// size (e.g. before the first resize acknowledgement or against an older
-    /// remote host that never echoes cell pixel dimensions).
-    last_pushed_zero_cell: Option<TerminalGridSize>,
+    /// Tracks the last size pushed for a remote mirror whose host still reports
+    /// a zero cell size (e.g. a legacy remote host that never echoes cell pixel
+    /// dimensions), keyed by `resize_epoch` so reconnects/control handovers retry.
+    last_pushed_zero_cell: Option<(u64, TerminalGridSize)>,
     scroll_accumulator: f32,
     drag: Option<DragState>,
     last_hover_motion: Option<(ReportedPosition, MouseModifiers)>,
@@ -1264,6 +1264,9 @@ impl Element for TerminalElement {
         );
         let (last_cols, last_rows) = self.session.size();
         let last_cell = self.session.cell_size();
+        let is_remote = self.session.is_remote();
+        let resize_epoch = self.session.resize_epoch();
+        let desktop_control = self.session.control().desktop();
         let last_pushed = self.interaction.update(cx, |interaction, _| {
             interaction.pane_size = measured;
             if last_cell.width > 0 && last_cell.height > 0 {
@@ -1274,7 +1277,7 @@ impl Element for TerminalElement {
                     cell_width: last_cell.width,
                     cell_height: last_cell.height,
                 }
-            } else if !self.resize_owner {
+            } else if !is_remote || !self.resize_owner || !desktop_control {
                 interaction.last_pushed_zero_cell = None;
                 TerminalGridSize {
                     cols: last_cols,
@@ -1282,8 +1285,8 @@ impl Element for TerminalElement {
                     cell_width: 0,
                     cell_height: 0,
                 }
-            } else if let Some(pushed) = interaction.last_pushed_zero_cell {
-                if pushed.cols == last_cols && pushed.rows == last_rows {
+            } else if let Some((epoch, pushed)) = interaction.last_pushed_zero_cell {
+                if epoch == resize_epoch && pushed.cols == last_cols && pushed.rows == last_rows {
                     pushed
                 } else {
                     interaction.last_pushed_zero_cell = None;
@@ -1305,9 +1308,9 @@ impl Element for TerminalElement {
         });
         match size_push_verdict(measured, last_pushed, self.resize_owner) {
             SizePushVerdict::Push(size) => {
-                if last_cell.width == 0 || last_cell.height == 0 {
+                if is_remote && desktop_control && (last_cell.width == 0 || last_cell.height == 0) {
                     self.interaction.update(cx, |interaction, _| {
-                        interaction.last_pushed_zero_cell = Some(size);
+                        interaction.last_pushed_zero_cell = Some((resize_epoch, size));
                     });
                 }
                 // Keep timing and formatting out of release prepaint unless
@@ -1588,7 +1591,10 @@ impl Element for TerminalElement {
                     fg = fg * 0.66;
                 }
 
-                if bg != terminal_palette.background {
+                let explicit_bg = cell.bg != Color::Named(NamedColor::Background)
+                    || cell.flags.contains(Flags::INVERSE);
+                if bg != terminal_palette.background || (!image_bands[0].is_empty() && explicit_bg)
+                {
                     let quad_bounds = Bounds::new(
                         point(
                             bounds.left() + cell_width * col as f32,
@@ -1919,8 +1925,14 @@ impl Element for TerminalElement {
             window.paint_quad(fill(*quad_bounds, *color));
         }
         #[cfg(test)]
-        if !prepaint.backgrounds.is_empty() {
-            super::graphics::record_paint_event(super::graphics::PaintEvent::CellBackgrounds, cx);
+        {
+            super::graphics::record_cell_backgrounds(&prepaint.backgrounds, cx);
+            if !prepaint.backgrounds.is_empty() {
+                super::graphics::record_paint_event(
+                    super::graphics::PaintEvent::CellBackgrounds,
+                    cx,
+                );
+            }
         }
         let highlight = theme::find_highlight();
         let radius = px(2. * self.style.app_zoom);
@@ -3524,5 +3536,288 @@ mod tests {
             (right_id.clone(), b"\x1b[<0;0;0M".to_vec())
         );
         assert_eq!(right_writes[1], (right_id, b"\x1b[<0;0;0m".to_vec()));
+    }
+
+    #[test]
+    fn same_grid_resize_recovers_after_failure_and_legacy_remote_does_not_spin() {
+        use runner_core::protocol::terminal::{
+            TerminalAttachment, TerminalController, TerminalFrame, TerminalMetadata,
+            TerminalSnapshot, TerminalSubscription,
+        };
+        use runner_core::protocol::{
+            ClientError, DaemonClient, EventSubscription, Request, Response, Transport,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::mpsc;
+
+        struct Frames {
+            rx: mpsc::Receiver<TerminalFrame>,
+            active_tx: Arc<Mutex<Option<mpsc::Sender<TerminalFrame>>>>,
+        }
+        impl TerminalSubscription for Frames {
+            fn recv(&mut self) -> Result<TerminalFrame, ClientError> {
+                self.rx.recv().map_err(|_| ClientError::msg("closed"))
+            }
+            fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+                let active_tx = Arc::clone(&self.active_tx);
+                Arc::new(move || {
+                    active_tx.lock().unwrap().take();
+                })
+            }
+        }
+
+        struct ResizeTestHost {
+            initial_cols: u16,
+            initial_rows: u16,
+            drop_first_resize: AtomicBool,
+            legacy_zero_cell: bool,
+            next_seq: AtomicUsize,
+            resizes: Mutex<Vec<(u16, u16, u16, u16)>>,
+            active_tx: Arc<Mutex<Option<mpsc::Sender<TerminalFrame>>>>,
+            ack: Mutex<Option<mpsc::Sender<()>>>,
+        }
+        impl Transport for ResizeTestHost {
+            fn call(&self, request: Request) -> Result<Response, ClientError> {
+                match request {
+                    Request::terminal_metadata { .. } => {
+                        if let Some(tx) = self.ack.lock().unwrap().as_ref() {
+                            let _ = tx.send(());
+                        }
+                        Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+                    }
+                    _ => Err(ClientError::msg("unexpected request")),
+                }
+            }
+            fn subscribe(&self) -> Box<dyn EventSubscription> {
+                unreachable!()
+            }
+            fn attach(&self, _: &str) -> Result<TerminalAttachment, ClientError> {
+                let (tx, rx) = mpsc::channel();
+                *self.active_tx.lock().unwrap() = Some(tx);
+                Ok(TerminalAttachment {
+                    subscriber_id: 1,
+                    snapshot: TerminalSnapshot {
+                        seq: 0,
+                        activity: None,
+                        cols: self.initial_cols,
+                        rows: self.initial_rows,
+                        cell_width: 0,
+                        cell_height: 0,
+                        controller: TerminalController::Desktop,
+                        bytes: Vec::new(),
+                        unfinished_len: 0,
+                        preceding_char: None,
+                    },
+                    frames: Box::new(Frames {
+                        rx,
+                        active_tx: Arc::clone(&self.active_tx),
+                    }),
+                })
+            }
+            fn resize(
+                &self,
+                _: &str,
+                _: u64,
+                cols: u16,
+                rows: u16,
+                cell_width: u16,
+                cell_height: u16,
+            ) {
+                self.resizes
+                    .lock()
+                    .unwrap()
+                    .push((cols, rows, cell_width, cell_height));
+                if self.drop_first_resize.swap(false, Ordering::AcqRel) {
+                    return;
+                }
+                if self.legacy_zero_cell {
+                    return;
+                }
+                let seq = self.next_seq.fetch_add(1, Ordering::AcqRel) as u64 + 1;
+                if let Some(tx) = self.active_tx.lock().unwrap().as_ref() {
+                    let _ = tx.send(TerminalFrame::Resized {
+                        seq,
+                        cols,
+                        rows,
+                        cell_width,
+                        cell_height,
+                        controller: TerminalController::Desktop,
+                    });
+                }
+            }
+        }
+
+        // Measure the exact grid dimensions of the pane at default scale so the initial
+        // snapshot matches `(cols, rows)` with `cell_size == 0x0` right on `simulate_resize`.
+        let mut cx = TestAppContext::single();
+        let probe_host = Arc::new(ResizeTestHost {
+            initial_cols: 80,
+            initial_rows: 24,
+            drop_first_resize: AtomicBool::new(false),
+            legacy_zero_cell: true,
+            next_seq: AtomicUsize::new(0),
+            resizes: Mutex::default(),
+            active_tx: Arc::default(),
+            ack: Mutex::default(),
+        });
+        let probe_mirror = TerminalMirror::attach(
+            DaemonClient::new(probe_host),
+            "probe".into(),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        let probe_pane = wheel_pane(&mut cx, &probe_mirror);
+        let probe_right = wheel_pane(&mut cx, &probe_mirror);
+        let probe_window = cx.add_window(|_, _| WheelHost {
+            left: probe_pane,
+            right: probe_right,
+            left_interactive: true,
+            right_interactive: true,
+            right_scrollable: true,
+            font_size: 14.,
+            gap: 20.,
+            line_height_factor: crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
+            copy_on_select: false,
+        });
+        let probe_visual = VisualTestContext::from_window(probe_window.into(), &cx);
+        let target_default = probe_window
+            .read_with(&probe_visual, |host, cx| {
+                host.left.interaction.read(cx).pane_size.unwrap()
+            })
+            .unwrap();
+        drop(probe_visual);
+        probe_mirror.test_stop_frames();
+
+        // Part 1: Local mirror starts at exact `(cols, rows)` with zero cell size. First
+        // same-grid resize is dropped; next prepaint must retry the identical size and succeed.
+        let (ack_tx, ack_rx) = mpsc::channel();
+        let local_host = Arc::new(ResizeTestHost {
+            initial_cols: target_default.cols,
+            initial_rows: target_default.rows,
+            drop_first_resize: AtomicBool::new(true),
+            legacy_zero_cell: false,
+            next_seq: AtomicUsize::new(0),
+            resizes: Mutex::default(),
+            active_tx: Arc::default(),
+            ack: Mutex::new(None),
+        });
+        let local_mirror = TerminalMirror::attach(
+            DaemonClient::new(local_host.clone()),
+            "local-retry".into(),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        *local_host.ack.lock().unwrap() = Some(ack_tx);
+        let other_host = Arc::new(ResizeTestHost {
+            initial_cols: target_default.cols,
+            initial_rows: target_default.rows,
+            drop_first_resize: AtomicBool::new(false),
+            legacy_zero_cell: true,
+            next_seq: AtomicUsize::new(0),
+            resizes: Mutex::default(),
+            active_tx: Arc::default(),
+            ack: Mutex::default(),
+        });
+        let other_mirror = TerminalMirror::attach_remote(
+            DaemonClient::new(other_host.clone()),
+            "legacy-remote".into(),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+
+        let left_pane = wheel_pane(&mut cx, &local_mirror);
+        let right_pane = wheel_pane(&mut cx, &other_mirror);
+        let window = cx.add_window(|_, _| WheelHost {
+            left: left_pane,
+            right: right_pane,
+            left_interactive: true,
+            right_interactive: true,
+            right_scrollable: true,
+            font_size: 14.,
+            gap: 20.,
+            line_height_factor: crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
+            copy_on_select: false,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        // First prepaint (inside add_window): local drops resize #1 (cell stays 0x0);
+        // legacy remote pushes resize #1.
+        let expected_first = (
+            target_default.cols,
+            target_default.rows,
+            target_default.cell_width,
+            target_default.cell_height,
+        );
+        assert_eq!(
+            local_mirror.cell_size(),
+            runner_terminal::kitty::CellSize::ZERO,
+            "dropped first resize must leave authoritative cell size at 0x0"
+        );
+        assert_eq!(
+            *local_host.resizes.lock().unwrap(),
+            vec![expected_first],
+            "first prepaint must push the exact same-grid resize once"
+        );
+        assert_eq!(*other_host.resizes.lock().unwrap(), vec![expected_first]);
+
+        // Second prepaint with identical `(cols, rows, cell_w, cell_h)`: local MUST retry
+        // and receive its ack; legacy remote MUST NOT spin.
+        visual.update(|window, _| window.refresh());
+        visual.refresh().unwrap();
+        ack_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("retried local same-grid resize should be accepted and broadcast");
+        assert_eq!(
+            local_mirror.cell_size(),
+            runner_terminal::kitty::CellSize {
+                width: target_default.cell_width,
+                height: target_default.cell_height,
+            }
+        );
+        assert_eq!(
+            *local_host.resizes.lock().unwrap(),
+            vec![expected_first, expected_first],
+            "local mirror must retry the identical same-grid resize after the first was dropped"
+        );
+
+        // Repeated repaints: neither settled local nor legacy remote sends redundant resizes.
+        for _ in 0..5 {
+            visual.update(|window, _| window.refresh());
+            visual.refresh().unwrap();
+        }
+        assert_eq!(local_host.resizes.lock().unwrap().len(), 2);
+        assert_eq!(
+            other_host.resizes.lock().unwrap().len(),
+            1,
+            "legacy zero-cell remote host must not spin across repeated repaints"
+        );
+
+        // Scale change on legacy remote pushes once at 1x and does not spin afterwards.
+        visual.update(|window, _| window.set_scale_factor(1.0));
+        visual.refresh().unwrap();
+        let remote_count_1x = other_host.resizes.lock().unwrap().len();
+        assert_eq!(remote_count_1x, 2);
+        for _ in 0..3 {
+            visual.update(|window, _| window.refresh());
+            visual.refresh().unwrap();
+        }
+        assert_eq!(other_host.resizes.lock().unwrap().len(), remote_count_1x);
+
+        // Reattaching the legacy remote mirror bumps resize_epoch so it pushes once after reconnect.
+        other_mirror.reattach().unwrap();
+        visual.update(|window, _| window.refresh());
+        visual.refresh().unwrap();
+        let remote_count_reattached = other_host.resizes.lock().unwrap().len();
+        assert_eq!(remote_count_reattached, remote_count_1x + 1);
+        for _ in 0..2 {
+            visual.update(|window, _| window.refresh());
+            visual.refresh().unwrap();
+        }
+        assert_eq!(
+            other_host.resizes.lock().unwrap().len(),
+            remote_count_reattached
+        );
+
+        local_mirror.test_stop_frames();
+        other_mirror.test_stop_frames();
     }
 }

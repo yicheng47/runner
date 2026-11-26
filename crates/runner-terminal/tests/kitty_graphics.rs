@@ -3123,3 +3123,116 @@ fn snapshot_budget_matches_reachable_relative_placements_across_scroll_and_separ
     assert!(rev_short_out.len() < rev_len);
     assert!(rev_short_out.contains("i=1") && !rev_short_out.contains("i=2"));
 }
+
+#[test]
+fn snapshot_priority_treats_negative_column_overlapping_relative_placement_as_visible() {
+    use runner_terminal::kitty::SignedPinLocation;
+
+    let cell = CellSize {
+        width: 10,
+        height: 20,
+    };
+    let mut term = make_term(20, 6, 10);
+    let mut gfx = TerminalGraphics::authoritative(None);
+    let sgr = AtomicBool::new(false);
+    let mut proc = TrackedProcessor::new();
+    let mut sc = Scanner::new();
+    let payload_small = BASE64.encode(vec![0x11u8; 4 * 4 * 3]);
+    let payload_big = BASE64.encode(vec![0x22u8; 16 * 16 * 3]);
+
+    // Image 1: parent pinned at (row 2, col 2) (1-based CSI 3;3H).
+    // Image 2: older generation, 2x2 relative child of (2,2) with H=-3,V=-3 -> (-1,-1):
+    //   bottom-right cell (0,0) overlaps the visible screen -> tier 3 (visible).
+    // Image 3: newer generation, 1x1 relative child of (2,2) with H=-3,V=-3 -> (-1,-1):
+    //   fully outside the screen -> tier 1 (off-screen).
+    let mut stream = b"\x1b[3;3H".to_vec();
+    stream.extend_from_slice(&apc(&format!(
+        "a=T,f=24,s=4,v=4,i=1,p=1,c=1,r=1,C=1;{payload_small}"
+    )));
+    stream.extend_from_slice(&apc(&format!(
+        "a=T,f=24,s=16,v=16,i=2,p=1,P=1,Q=1,H=-3,V=-3,c=2,r=2,C=1;{payload_big}"
+    )));
+    stream.extend_from_slice(&apc(&format!(
+        "a=T,f=24,s=16,v=16,i=3,p=1,P=1,Q=1,H=-3,V=-3,c=1,r=1,C=1;{payload_big}"
+    )));
+    feed_term_with_stream(
+        &mut term,
+        &mut gfx,
+        &sgr,
+        cell,
+        &mut proc,
+        &mut sc,
+        &stream,
+        ExecMode::Authoritative,
+    );
+
+    let p2 = gfx
+        .primary
+        .placements()
+        .get(&PlacementKey {
+            image_id: 2,
+            placement_id: PlacementId::External(1),
+        })
+        .unwrap();
+    let p3 = gfx
+        .primary
+        .placements()
+        .get(&PlacementKey {
+            image_id: 3,
+            placement_id: PlacementId::External(1),
+        })
+        .unwrap();
+    assert_eq!(
+        gfx.primary.resolved_signed_anchor(p2),
+        Some(SignedPinLocation {
+            line: -1,
+            column: -1,
+        })
+    );
+    assert_eq!(
+        gfx.primary.resolved_signed_anchor(p3),
+        Some(SignedPinLocation {
+            line: -1,
+            column: -1,
+        })
+    );
+
+    // Measure full emission cost, then give a budget that fits parent + one big child
+    // (not both big children). Snapshot priority must keep visible image 2 over newer
+    // off-screen image 3.
+    let emit_all = |plan: &runner_terminal::kitty::snapshot::SnapshotGraphicsPlan| -> String {
+        let mut s = String::new();
+        plan.emit_screen_images(false, &gfx.primary, &mut s);
+        for row in 0..6 {
+            plan.emit_row_placements(false, row, &mut s);
+        }
+        s
+    };
+    let full = emit_all(
+        &runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+            &gfx,
+            false,
+            0,
+            6,
+            6,
+            20,
+            cell,
+            usize::MAX,
+        ),
+    );
+    let budget = full.len() - payload_big.len() / 2;
+    let plan = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx, false, 0, 6, 6, 20, cell, budget,
+    );
+    let out = emit_all(&plan);
+    assert!(out.len() <= budget);
+    assert!(out.contains("i=1,"), "parent image 1 must be kept");
+    assert!(
+        out.contains("i=2,"),
+        "partially visible negative-column relative child (image 2) must win priority"
+    );
+    assert!(
+        !out.contains("i=3,"),
+        "fully off-screen relative child (image 3) must be dropped before visible image 2"
+    );
+}

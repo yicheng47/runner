@@ -188,6 +188,28 @@ impl Queue {
         self.bytes -= Self::cost(&frame);
         Some(frame)
     }
+    fn pop_merged(&mut self) -> Option<TerminalFrame> {
+        let frame = self.pop()?;
+        match frame {
+            TerminalFrame::Output { seq, bytes } => {
+                if matches!(
+                    self.frames.front(),
+                    Some(TerminalFrame::Output { bytes: next, .. })
+                        if bytes.len() + next.len() <= TERMINAL_CHUNK_SIZE
+                ) {
+                    let mut merged = bytes.into_vec();
+                    self.merge_output(&mut merged);
+                    Some(TerminalFrame::Output {
+                        seq,
+                        bytes: merged.into(),
+                    })
+                } else {
+                    Some(TerminalFrame::Output { seq, bytes })
+                }
+            }
+            other => Some(other),
+        }
+    }
     fn merge_output(&mut self, merged: &mut Vec<u8>) {
         while let Some(TerminalFrame::Output { bytes, .. }) = self.frames.front() {
             if merged.len() + bytes.len() > TERMINAL_CHUNK_SIZE {
@@ -220,7 +242,7 @@ struct Stream {
     cancel: Arc<dyn Fn() + Send + Sync>,
     queue: Arc<Mutex<Queue>>,
     snapshot: Option<(TerminalSnapshot, usize)>,
-    output: Option<(Vec<u8>, usize)>,
+    output: Option<(runner_core::protocol::terminal::SharedBytes, usize)>,
     last_output: Option<Instant>,
     clipboard: VecDeque<(String, String, usize)>,
     seq: u64,
@@ -394,14 +416,7 @@ impl Stream {
             if self.output_due().is_some_and(|due| due > Instant::now()) {
                 return None;
             }
-            let frame = {
-                let mut queue = self.queue.lock().unwrap();
-                let mut frame = queue.pop()?;
-                if let TerminalFrame::Output { bytes, .. } = &mut frame {
-                    queue.merge_output(bytes);
-                }
-                frame
-            };
+            let frame = self.queue.lock().unwrap().pop_merged()?;
             match frame {
                 TerminalFrame::Output { bytes, .. } => {
                     if !bytes.is_empty() {

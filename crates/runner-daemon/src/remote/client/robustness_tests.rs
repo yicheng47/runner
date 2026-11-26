@@ -192,7 +192,7 @@ async fn stalled_writes_keep_more_than_thirty_two_inputs_in_order_and_report_ech
     fixture.core.streams.lock().unwrap()[0]
         .send(TerminalFrame::Output {
             seq: 1,
-            bytes: b"before".to_vec(),
+            bytes: b"before".into(),
         })
         .unwrap();
     let attachment = receive_terminal(attachment).await.0;
@@ -228,7 +228,7 @@ async fn stalled_writes_keep_more_than_thirty_two_inputs_in_order_and_report_ech
     fixture.core.streams.lock().unwrap()[0]
         .send(TerminalFrame::Output {
             seq: 2,
-            bytes: b"echo".to_vec(),
+            bytes: b"echo".into(),
         })
         .unwrap();
     let attachment = receive_terminal(attachment).await.0;

@@ -606,7 +606,7 @@ async fn terminal_attachment_maps_snapshot_output_resize_input_and_control() {
     let tx = fixture.core.streams.lock().unwrap()[0].clone();
     tx.send(TerminalFrame::Output {
         seq: 1,
-        bytes: b"output-canary".to_vec(),
+        bytes: b"output-canary".into(),
     })
     .unwrap();
     let mut frames = tokio::task::spawn_blocking(move || { assert!(matches!(attachment.frames.recv().unwrap(), TerminalFrame::Output { seq: 11, ref bytes } if bytes == b"output-canary")); attachment }).await.unwrap();
@@ -635,7 +635,7 @@ async fn terminal_attachment_maps_snapshot_output_resize_input_and_control() {
     .unwrap();
     tx.send(TerminalFrame::Output {
         seq: 3,
-        bytes: b"after-resize".to_vec(),
+        bytes: b"after-resize".into(),
     })
     .unwrap();
     let frames = tokio::task::spawn_blocking(move || {
@@ -782,7 +782,7 @@ async fn remote_terminal_strips_kitty_graphics_from_pre_phase1_host_snapshot_and
     let tx = fixture.core.streams.lock().unwrap()[0].clone();
     tx.send(TerminalFrame::Output {
         seq: 1,
-        bytes: b"before\x1b_Ga=T,f=24,s=1,v=1;".to_vec(),
+        bytes: b"before\x1b_Ga=T,f=24,s=1,v=1;".into(),
     })
     .unwrap();
     let mirror_wait = Arc::clone(&mirror);
@@ -795,7 +795,7 @@ async fn remote_terminal_strips_kitty_graphics_from_pre_phase1_host_snapshot_and
 
     tx.send(TerminalFrame::Output {
         seq: 2,
-        bytes: b"AAAA\x1b\\after".to_vec(),
+        bytes: b"AAAA\x1b\\after".into(),
     })
     .unwrap();
     let mirror_wait = Arc::clone(&mirror);
@@ -809,12 +809,12 @@ async fn remote_terminal_strips_kitty_graphics_from_pre_phase1_host_snapshot_and
     // Send a graphics-only v1 Output message followed by trailing text.
     tx.send(TerminalFrame::Output {
         seq: 3,
-        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\".to_vec(),
+        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\".into(),
     })
     .unwrap();
     tx.send(TerminalFrame::Output {
         seq: 4,
-        bytes: b"tail".to_vec(),
+        bytes: b"tail".into(),
     })
     .unwrap();
     let mirror_wait = Arc::clone(&mirror);
@@ -951,7 +951,7 @@ async fn remote_terminal_legacy_strip_preserves_vt_sequence_cancellation_boundar
     // 1. Across snapshot unfinished suffix: legacy graphics cancels `CSI 2`, so `CY` prints literally -> `XCY` at col 3.
     tx.send(TerminalFrame::Output {
         seq: 1,
-        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\CY".to_vec(),
+        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\CY".into(),
     })
     .unwrap();
     let m = Arc::clone(&mirror);
@@ -969,7 +969,7 @@ async fn remote_terminal_legacy_strip_preserves_vt_sequence_cancellation_boundar
     // 2. Same chunk: `X` + unfinished `CSI 2` + direct image + `CY` on row 1 -> `XCY` at col 3.
     tx.send(TerminalFrame::Output {
         seq: 2,
-        bytes: b"\r\nX\x1b[2\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\CY".to_vec(),
+        bytes: b"\r\nX\x1b[2\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\CY".into(),
     })
     .unwrap();
     let m = Arc::clone(&mirror);
@@ -987,7 +987,7 @@ async fn remote_terminal_legacy_strip_preserves_vt_sequence_cancellation_boundar
     // 3. Split across chunks: `\r\nX\x1b[2`, then split APC across two chunks, then `CY` on row 2 -> `XCY` at col 3.
     tx.send(TerminalFrame::Output {
         seq: 3,
-        bytes: b"\r\nX\x1b[2".to_vec(),
+        bytes: b"\r\nX\x1b[2".into(),
     })
     .unwrap();
     let m = Arc::clone(&mirror);
@@ -999,12 +999,12 @@ async fn remote_terminal_legacy_strip_preserves_vt_sequence_cancellation_boundar
     .unwrap();
     tx.send(TerminalFrame::Output {
         seq: 4,
-        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;".to_vec(),
+        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;".into(),
     })
     .unwrap();
     tx.send(TerminalFrame::Output {
         seq: 5,
-        bytes: b"AAAA\x1b\\CY".to_vec(),
+        bytes: b"AAAA\x1b\\CY".into(),
     })
     .unwrap();
     let m = Arc::clone(&mirror);
@@ -1023,12 +1023,12 @@ async fn remote_terminal_legacy_strip_preserves_vt_sequence_cancellation_boundar
     let seq_before = mirror.output_activity().last_output_seq;
     tx.send(TerminalFrame::Output {
         seq: 6,
-        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\".to_vec(),
+        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\".into(),
     })
     .unwrap();
     tx.send(TerminalFrame::Output {
         seq: 7,
-        bytes: b"Z".to_vec(),
+        bytes: b"Z".into(),
     })
     .unwrap();
     let m = Arc::clone(&mirror);
@@ -1056,17 +1056,17 @@ async fn remote_terminal_legacy_strip_preserves_vt_sequence_cancellation_boundar
     let big_osc_mid = vec![b'a'; 4096];
     tx.send(TerminalFrame::Output {
         seq: 8,
-        bytes: b"\x1b]9;start-".to_vec(),
+        bytes: b"\x1b]9;start-".into(),
     })
     .unwrap();
     tx.send(TerminalFrame::Output {
         seq: 9,
-        bytes: big_osc_mid,
+        bytes: big_osc_mid.into(),
     })
     .unwrap();
     tx.send(TerminalFrame::Output {
         seq: 10,
-        bytes: b"-end\x07M".to_vec(),
+        bytes: b"-end\x07M".into(),
     })
     .unwrap();
     let m = Arc::clone(&mirror);
@@ -1078,12 +1078,12 @@ async fn remote_terminal_legacy_strip_preserves_vt_sequence_cancellation_boundar
     .unwrap();
     tx.send(TerminalFrame::Output {
         seq: 11,
-        bytes: b"\x1b]9;unfinished-osc".to_vec(),
+        bytes: b"\x1b]9;unfinished-osc".into(),
     })
     .unwrap();
     tx.send(TerminalFrame::Output {
         seq: 12,
-        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\N".to_vec(),
+        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\N".into(),
     })
     .unwrap();
     let m = Arc::clone(&mirror);
@@ -2045,7 +2045,7 @@ async fn a_joining_subscriber_replays_snapshot_output_and_resize_without_invalid
     let tx = fixture.core.streams.lock().unwrap()[0].clone();
     tx.send(TerminalFrame::Output {
         seq: 1,
-        bytes: b"before join".to_vec(),
+        bytes: b"before join".into(),
     })
     .unwrap();
     let (first, frame) = receive_terminal(first).await;
@@ -2081,7 +2081,7 @@ async fn a_joining_subscriber_replays_snapshot_output_and_resize_without_invalid
     assert_eq!(fixture.core.streams.lock().unwrap().len(), 1);
     tx.send(TerminalFrame::Output {
         seq: 3,
-        bytes: b"both".to_vec(),
+        bytes: b"both".into(),
     })
     .unwrap();
     for attachment in [first, second] {
@@ -2100,7 +2100,7 @@ async fn two_subscribers_recover_repeatedly_and_settle_without_a_resync_loop() {
         let tx = fixture.core.streams.lock().unwrap().last().unwrap().clone();
         tx.send(TerminalFrame::Output {
             seq: 1,
-            bytes: b"shared output".to_vec(),
+            bytes: b"shared output".into(),
         })
         .unwrap();
         let (next, frame) = receive_terminal(first).await;
@@ -2251,7 +2251,7 @@ async fn replay_rollover_resyncs_once_then_both_subscribers_settle() {
     for seq in 1..=33 {
         tx.send(TerminalFrame::Output {
             seq,
-            bytes: vec![b'x'; c::TERMINAL_CHUNK_SIZE],
+            bytes: vec![b'x'; c::TERMINAL_CHUNK_SIZE].into(),
         })
         .unwrap();
         let (next, frame) = receive_terminal(first).await;
@@ -2270,7 +2270,7 @@ async fn replay_rollover_resyncs_once_then_both_subscribers_settle() {
     let tx = fixture.core.streams.lock().unwrap()[1].clone();
     tx.send(TerminalFrame::Output {
         seq: 1,
-        bytes: b"settled".to_vec(),
+        bytes: b"settled".into(),
     })
     .unwrap();
     for attachment in [first, second] {
@@ -2575,7 +2575,7 @@ async fn ipc_recovery_after_more_than_64_tiny_frames_settles_and_preserves_conte
                 screen.push(b'a' + round);
                 TerminalFrame::Output {
                     seq: index + 1,
-                    bytes: vec![b'a' + round],
+                    bytes: vec![b'a' + round].into(),
                 }
             } else {
                 TerminalFrame::Resized {
@@ -2608,7 +2608,7 @@ async fn ipc_recovery_after_more_than_64_tiny_frames_settles_and_preserves_conte
         let tx = fixture.core.streams.lock().unwrap().last().unwrap().clone();
         tx.send(TerminalFrame::Output {
             seq: 1,
-            bytes: b"tail".to_vec(),
+            bytes: b"tail".into(),
         })
         .unwrap();
         written(&mut *events, &[wire::OUTPUT], 1).await;

@@ -36,6 +36,7 @@ pub(crate) struct PaintedImage {
 
 #[derive(Default)]
 struct MirrorCache {
+    last_sync_seq: u64,
     textures: HashMap<TextureKey, Arc<RenderImage>>,
     live_keys: HashSet<TextureKey>,
     in_flight: HashSet<TextureKey>,
@@ -130,7 +131,7 @@ impl TextureStore {
         let entry = mirrors.get(&mirror_id);
 
         for (&key, placement) in storage.placements() {
-            let Some(pin) = storage.resolved_anchor(placement) else {
+            let Some(pin) = storage.resolved_signed_anchor(placement) else {
                 continue;
             };
             let Some(img) = storage.image_by_id(key.image_id) else {
@@ -145,7 +146,7 @@ impl TextureStore {
             if pw == 0 || ph == 0 {
                 continue;
             }
-            let viewport_row = i64::from(pin.line) + display_offset as i64;
+            let viewport_row = pin.line.saturating_add(display_offset as i64);
             let dest_x = pane_left + (pin.column as f32) * viewer_cw + (ox as f32) * sx;
             let dest_y = pane_top + (viewport_row as f32) * viewer_ch + (oy as f32) * sy;
             let dest_w = (pw as f32) * sx;
@@ -267,9 +268,10 @@ impl TextureStore {
         });
         cx.spawn(async move |cx| {
             let decoded_batch = work.await;
+            // Leave mirror teardown eviction to `Drop for TerminalMirror` ->
+            // `on_mirror_dropped` so painted textures are never dropped before
+            // passing through `enqueue_release` / `cx.drop_image`.
             let Some(mirror) = weak_mirror.upgrade() else {
-                let mut mirrors = store.mirrors.lock().unwrap();
-                mirrors.remove(&mirror_id);
                 return;
             };
             // Check live keys before locking `store.mirrors` so lock ordering
@@ -282,10 +284,11 @@ impl TextureStore {
                     let has_viewers = mirror.viewer_count() > 0;
                     for (key, decoded) in decoded_batch {
                         entry.in_flight.remove(&key);
-                        if !has_viewers
-                            || !mirror_live.contains(&key)
-                            || !entry.live_keys.contains(&key)
-                        {
+                        if !mirror_live.contains(&key) {
+                            entry.live_keys.remove(&key);
+                            continue;
+                        }
+                        if !has_viewers || !entry.live_keys.contains(&key) {
                             continue;
                         }
                         match decoded {
@@ -300,8 +303,10 @@ impl TextureStore {
                     }
                 }
             }
-            if inserted_any {
-                mirror.wake_viewers_now();
+            // Respect the mirror's DECSET 2026 synchronized-update wake guard:
+            // notifying `TerminalInteraction` wakes `TerminalViewport`, so only
+            // notify when `wake_viewers_now()` actually permits a wake.
+            if inserted_any && mirror.wake_viewers_now() {
                 let _ = weak_interaction.update(cx, |_, cx| cx.notify());
             }
         })
@@ -325,12 +330,22 @@ impl TextureStore {
             .get(&mirror_id)
             .map_or(0, |entry| entry.textures.len())
     }
+
+    #[cfg(test)]
+    pub(crate) fn live_keys_count(&self, mirror_id: u64) -> usize {
+        self.mirrors
+            .lock()
+            .unwrap()
+            .get(&mirror_id)
+            .map_or(0, |entry| entry.live_keys.len())
+    }
 }
 
 impl MirrorGraphicsObserver for TextureStore {
     fn on_graphics_updated(
         &self,
         mirror_id: u64,
+        sync_seq: u64,
         viewers: &Arc<AtomicUsize>,
         live_keys: &[(u32, u64)],
         decode_candidates: &[StoredImage],
@@ -338,20 +353,15 @@ impl MirrorGraphicsObserver for TextureStore {
         let live_set: HashSet<TextureKey> = live_keys.iter().copied().collect();
         let (to_release, to_decode) = {
             let mut mirrors = self.mirrors.lock().unwrap();
-            if viewers.load(Ordering::Acquire) == 0 {
-                let released = mirrors
-                    .remove(&mirror_id)
-                    .map(|mut entry| entry.drain_textures())
-                    .unwrap_or_default();
-                (released, Vec::new())
-            } else if live_set.is_empty() {
-                let released = mirrors
-                    .remove(&mirror_id)
-                    .map(|mut entry| entry.drain_textures())
-                    .unwrap_or_default();
-                (released, Vec::new())
+            let entry = mirrors.entry(mirror_id).or_default();
+            if sync_seq <= entry.last_sync_seq {
+                return;
+            }
+            entry.last_sync_seq = sync_seq;
+            if viewers.load(Ordering::Acquire) == 0 || live_set.is_empty() {
+                entry.live_keys.clear();
+                (entry.drain_textures(), Vec::new())
             } else {
-                let entry = mirrors.entry(mirror_id).or_default();
                 let mut released = Vec::new();
                 entry.textures.retain(|key, image| {
                     if live_set.contains(key) {
@@ -399,8 +409,8 @@ impl MirrorGraphicsObserver for TextureStore {
             return;
         };
         if viewers.load(Ordering::Acquire) == 0 {
+            entry.live_keys.clear();
             let released = entry.drain_textures();
-            mirrors.remove(&mirror_id);
             drop(mirrors);
             self.enqueue_release(released);
             return;
@@ -428,8 +438,11 @@ impl MirrorGraphicsObserver for TextureStore {
                 return;
             }
             mirrors
-                .remove(&mirror_id)
-                .map(|mut entry| entry.drain_textures())
+                .get_mut(&mirror_id)
+                .map(|entry| {
+                    entry.live_keys.clear();
+                    entry.drain_textures()
+                })
                 .unwrap_or_default()
         };
         self.enqueue_release(released);
@@ -565,6 +578,20 @@ pub(crate) fn record_paint_event(event: PaintEvent, cx: &mut App) {
             trace.clear();
         }
         trace.push(event);
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct BackgroundTrace(Vec<(Bounds<Pixels>, gpui::Hsla)>);
+
+#[cfg(test)]
+impl Global for BackgroundTrace {}
+
+#[cfg(test)]
+pub(crate) fn record_cell_backgrounds(quads: &[(Bounds<Pixels>, gpui::Hsla)], cx: &mut App) {
+    if cx.has_global::<BackgroundTrace>() {
+        cx.global_mut::<BackgroundTrace>().0 = quads.to_vec();
     }
 }
 
@@ -736,7 +763,7 @@ mod tests {
             &ack,
             TerminalFrame::Output {
                 seq,
-                bytes: kitty_rgba_command("a=T,f=32,s=4,v=4,i=1,C=1,q=2", &img_bytes),
+                bytes: kitty_rgba_command("a=T,f=32,s=4,v=4,i=1,C=1,q=2", &img_bytes).into(),
             },
         );
         assert_eq!(
@@ -783,7 +810,7 @@ mod tests {
                 &ack,
                 TerminalFrame::Output {
                     seq,
-                    bytes: kitty_rgba_command("a=T,f=32,s=4,v=4,i=1,C=1,q=2", &bytes),
+                    bytes: kitty_rgba_command("a=T,f=32,s=4,v=4,i=1,C=1,q=2", &bytes).into(),
                 },
             );
             if step < 199 {
@@ -831,7 +858,7 @@ mod tests {
             &ack,
             TerminalFrame::Output {
                 seq,
-                bytes: b"\x1b_Ga=d,d=I,i=1,q=2\x1b\\".to_vec(),
+                bytes: b"\x1b_Ga=d,d=I,i=1,q=2\x1b\\".into(),
             },
         );
         visual.run_until_parked();
@@ -863,7 +890,14 @@ mod tests {
         let (_, frames1, next_seq) = model.feed_forwarded(1, &[ForwardedItem::Command(cmd1)]);
         for bytes in frames1 {
             seq += 1;
-            send_and_wait(&tx, &ack, TerminalFrame::Output { seq, bytes });
+            send_and_wait(
+                &tx,
+                &ack,
+                TerminalFrame::Output {
+                    seq,
+                    bytes: bytes.into(),
+                },
+            );
         }
         let key_evict = live_key_for(&mirror, 10);
         let img_evict = store
@@ -881,7 +915,14 @@ mod tests {
         let (_, frames2, _) = model.feed_forwarded(next_seq + 1, &[ForwardedItem::Command(cmd2)]);
         for bytes in frames2 {
             seq += 1;
-            send_and_wait(&tx, &ack, TerminalFrame::Output { seq, bytes });
+            send_and_wait(
+                &tx,
+                &ack,
+                TerminalFrame::Output {
+                    seq,
+                    bytes: bytes.into(),
+                },
+            );
         }
         for handle in model.stop_workers() {
             let _ = handle.join();
@@ -1071,7 +1112,7 @@ mod tests {
             &ack,
             TerminalFrame::Output {
                 seq: 2,
-                bytes: stream,
+                bytes: stream.into(),
             },
         );
         mirror.start_selection(
@@ -1251,6 +1292,7 @@ mod tests {
         let img1 = graphics.primary.image_by_id(1).unwrap().clone();
         store.on_graphics_updated(
             test_mirror_id,
+            1,
             &test_viewers,
             &[(img1.id, img1.generation)],
             &[img1],
@@ -1357,5 +1399,673 @@ mod tests {
 
         store.on_mirror_dropped(test_mirror_id);
         visual.run_until_parked();
+    }
+
+    #[test]
+    fn configure_interleaving_keeps_cache_ordered_and_avoids_foreground_decode() {
+        use alacritty_terminal::vte::ansi::CursorShape;
+        use runner_core::protocol::terminal::{
+            TerminalAttachment, TerminalMetadata, TerminalSnapshot, TerminalSubscription,
+        };
+        use runner_core::protocol::{
+            ClientError, DaemonClient, EventSubscription, Request, Response, Transport,
+        };
+        use std::sync::mpsc;
+
+        struct Frames(mpsc::Receiver<TerminalFrame>);
+        impl TerminalSubscription for Frames {
+            fn recv(&mut self) -> Result<TerminalFrame, ClientError> {
+                self.0.recv().map_err(|_| ClientError::msg("closed"))
+            }
+            fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+                Arc::new(|| {})
+            }
+        }
+        struct InterleavingHost {
+            streams: Mutex<std::collections::VecDeque<(Vec<u8>, mpsc::Receiver<TerminalFrame>)>>,
+        }
+        impl Transport for InterleavingHost {
+            fn call(&self, request: Request) -> Result<Response, ClientError> {
+                match request {
+                    Request::terminal_metadata { .. } => {
+                        Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+                    }
+                    Request::terminal_configure { .. } => Ok(Response::terminal_configure(Ok(()))),
+                    _ => Err(ClientError::msg("unexpected request")),
+                }
+            }
+            fn subscribe(&self) -> Box<dyn EventSubscription> {
+                unreachable!()
+            }
+            fn attach(&self, _: &str) -> Result<TerminalAttachment, ClientError> {
+                let (snapshot_bytes, rx) = self.streams.lock().unwrap().pop_front().unwrap();
+                Ok(TerminalAttachment {
+                    subscriber_id: 1,
+                    snapshot: TerminalSnapshot {
+                        seq: 0,
+                        activity: None,
+                        cols: 80,
+                        rows: 4,
+                        cell_width: 8,
+                        cell_height: 16,
+                        controller: TerminalController::Desktop,
+                        bytes: snapshot_bytes,
+                        unfinished_len: 0,
+                        preceding_char: None,
+                    },
+                    frames: Box::new(Frames(rx)),
+                })
+            }
+        }
+
+        struct GateObserver {
+            inner: Arc<TextureStore>,
+            main_thread: std::thread::ThreadId,
+            pause_next_main: std::sync::atomic::AtomicBool,
+            main_decode_counts: Mutex<Vec<usize>>,
+            main_entered: mpsc::Sender<()>,
+            main_resume: Mutex<mpsc::Receiver<()>>,
+            worker_done: mpsc::Sender<(u64, usize)>,
+        }
+        impl MirrorGraphicsObserver for GateObserver {
+            fn on_graphics_updated(
+                &self,
+                mirror_id: u64,
+                sync_seq: u64,
+                viewers: &Arc<AtomicUsize>,
+                live_keys: &[(u32, u64)],
+                decode_candidates: &[StoredImage],
+            ) {
+                if std::thread::current().id() == self.main_thread {
+                    self.main_decode_counts
+                        .lock()
+                        .unwrap()
+                        .push(decode_candidates.len());
+                    if self.pause_next_main.swap(false, Ordering::AcqRel) {
+                        self.main_entered.send(()).unwrap();
+                        self.main_resume
+                            .lock()
+                            .unwrap()
+                            .recv_timeout(Duration::from_secs(5))
+                            .unwrap();
+                    }
+                    self.inner.on_graphics_updated(
+                        mirror_id,
+                        sync_seq,
+                        viewers,
+                        live_keys,
+                        decode_candidates,
+                    );
+                } else {
+                    self.inner.on_graphics_updated(
+                        mirror_id,
+                        sync_seq,
+                        viewers,
+                        live_keys,
+                        decode_candidates,
+                    );
+                    let _ = self.worker_done.send((sync_seq, live_keys.len()));
+                }
+            }
+            fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>) {
+                self.inner.on_last_viewer_dropped(mirror_id, viewers);
+            }
+            fn on_mirror_dropped(&self, mirror_id: u64) {
+                self.inner.on_mirror_dropped(mirror_id);
+            }
+        }
+
+        let cx = TestAppContext::single();
+        let store = cx.update(TerminalTextureCache::store);
+        let (tx1, rx1) = mpsc::channel();
+        let (tx2, rx2) = mpsc::channel();
+        let reattach_snapshot =
+            kitty_rgba_command("a=T,f=32,s=1,v=1,i=2,C=1,q=2", &[0, 255, 0, 255]);
+        let host = Arc::new(InterleavingHost {
+            streams: Mutex::new(std::collections::VecDeque::from([
+                (Vec::new(), rx1),
+                (reattach_snapshot, rx2),
+            ])),
+        });
+        let mirror =
+            TerminalMirror::attach(DaemonClient::new(host), "c1-order".into(), Arc::new(|| {}))
+                .unwrap();
+        let mirror_id = mirror.mirror_id();
+        let (main_entered_tx, main_entered_rx) = mpsc::channel();
+        let (main_resume_tx, main_resume_rx) = mpsc::channel();
+        let (worker_done_tx, worker_done_rx) = mpsc::channel();
+        let gate = Arc::new(GateObserver {
+            inner: Arc::clone(&store),
+            main_thread: std::thread::current().id(),
+            pause_next_main: std::sync::atomic::AtomicBool::new(true),
+            main_decode_counts: Mutex::default(),
+            main_entered: main_entered_tx,
+            main_resume: Mutex::new(main_resume_rx),
+            worker_done: worker_done_tx,
+        });
+        mirror.set_graphics_observer(gate.clone());
+
+        // 1. Load image 1 while hidden and scroll its placement into history.
+        tx1.send(TerminalFrame::Output {
+            seq: 1,
+            bytes: b"\x1b_Ga=T,f=32,s=1,v=1,i=1,C=1,q=2;/////w==\x1b\\\r\n\r\n\r\n\r\n\r\n\r\n"
+                .into(),
+        })
+        .unwrap();
+        let (seq1, count1) = worker_done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!((seq1, count1), (1, 1));
+        assert_eq!(store.cached_count(mirror_id), 0);
+
+        // 2. Take a lease, then shrink scrollback on the UI thread while pausing
+        //    its observer callback before TextureStore reconciliation. Meanwhile the
+        //    frame worker deletes image 1 and delivers the empty set first.
+        let _view = mirror.view();
+        let helper = std::thread::spawn(move || {
+            main_entered_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            tx1.send(TerminalFrame::Output {
+                seq: 2,
+                bytes: b"\x1b_Ga=d,d=I,i=1,q=2;\x1b\\".into(),
+            })
+            .unwrap();
+            let (seq_del, count_del) = worker_done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(count_del, 0);
+            assert!(seq_del > seq1);
+            main_resume_tx.send(()).unwrap();
+            (tx1, worker_done_rx)
+        });
+        mirror.configure(0, CursorShape::Block, false);
+        let (tx1, worker_done_rx) = helper.join().unwrap();
+
+        assert!(mirror.live_image_keys().is_empty());
+        assert_eq!(
+            store.cached_count(mirror_id),
+            0,
+            "stale configure callback must not resurrect deleted image"
+        );
+        assert_eq!(
+            store.live_keys_count(mirror_id),
+            0,
+            "stale configure callback must not resurrect live_keys"
+        );
+        assert_eq!(
+            *gate.main_decode_counts.lock().unwrap(),
+            vec![0],
+            "configure on UI thread must never pass decode_candidates"
+        );
+
+        // 3. Subsequent frame worker image still reconciles and caches cleanly.
+        tx1.send(TerminalFrame::Output {
+            seq: 3,
+            bytes: kitty_rgba_command(
+                "a=T,f=32,s=2,v=2,i=2,C=1,q=2",
+                &solid_rgba(2, 2, [9, 8, 7, 255]),
+            )
+            .into(),
+        })
+        .unwrap();
+        let (_, count2) = worker_done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(count2, 1);
+        assert_eq!(store.cached_count(mirror_id), 1);
+
+        // 4. Reattach on caller thread must also pass zero synchronous decode candidates.
+        drop(tx1);
+        mirror.reattach().unwrap();
+        assert_eq!(
+            *gate.main_decode_counts.lock().unwrap(),
+            vec![0, 0],
+            "reattach must not decode synchronously on the caller thread"
+        );
+        drop(tx2);
+        mirror.test_stop_frames();
+        drop(mirror);
+        cx.run_until_parked();
+    }
+
+    #[test]
+    fn pending_lazy_decode_does_not_lose_painted_textures_during_mirror_teardown() {
+        use std::sync::mpsc;
+
+        struct PausedDropObserver {
+            inner: Arc<TextureStore>,
+            drop_entered: mpsc::Sender<()>,
+            drop_proceed: Mutex<mpsc::Receiver<()>>,
+        }
+        impl MirrorGraphicsObserver for PausedDropObserver {
+            fn on_graphics_updated(
+                &self,
+                mirror_id: u64,
+                sync_seq: u64,
+                viewers: &Arc<AtomicUsize>,
+                live_keys: &[(u32, u64)],
+                decode_candidates: &[StoredImage],
+            ) {
+                self.inner.on_graphics_updated(
+                    mirror_id,
+                    sync_seq,
+                    viewers,
+                    live_keys,
+                    decode_candidates,
+                );
+            }
+            fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>) {
+                self.inner.on_last_viewer_dropped(mirror_id, viewers);
+            }
+            fn on_mirror_dropped(&self, mirror_id: u64) {
+                let _ = self.drop_entered.send(());
+                let _ = self
+                    .drop_proceed
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5));
+                self.inner.on_mirror_dropped(mirror_id);
+            }
+        }
+
+        let mut cx = TestAppContext::single();
+        let (_host, mirror, tx, ack) = mirror_named("teardown-race", TerminalController::Desktop);
+        let mirror_id = mirror.mirror_id();
+        let store = cx.update(|cx| TerminalTextureCache::attach_mirror(&mirror, cx));
+
+        let _leaked_lease = mirror.view();
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: 1,
+                bytes: kitty_rgba_command(
+                    "a=T,f=32,s=4,v=4,i=1,C=1,q=2",
+                    &solid_rgba(4, 4, [255, 80, 20, 255]),
+                )
+                .into(),
+            },
+        );
+        let key1 = live_key_for(&mirror, 1);
+        let img1 = store
+            .cached_image(mirror_id, key1)
+            .expect("image 1 should be decoded on frame worker");
+
+        let interaction = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let window = cx.add_window(|_, cx| GraphicsPaneHost {
+            terminal: Some(Arc::clone(&mirror)),
+            interaction: Some(interaction.clone()),
+            input: Some(input.clone()),
+            focus: cx.focus_handle(),
+            font_size: 14.,
+            line_height_factor: 1.4,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(400.), px(260.)));
+        visual.refresh().unwrap();
+        assert!(
+            visual.update(|window, _| window.has_image_atlas_entry(&img1)),
+            "image 1 must be painted into GPUI atlas before teardown"
+        );
+
+        // Queue a pending lazy decode alongside the already-painted texture.
+        let pending_img = StoredImage {
+            id: 2,
+            number: 0,
+            width: 4,
+            height: 4,
+            wire_format: Format::Rgba,
+            compression: Compression::None,
+            decoded_format: DecodedFormat::Rgba,
+            encoded_data: Arc::from(solid_rgba(4, 4, [10, 200, 10, 255])),
+            transient: false,
+            implicit_id: false,
+            placement_count: 1,
+            generation: 999_999,
+            transmission: 999_999,
+        };
+        visual.update(|_, cx| {
+            store.schedule_decode(&mirror, &interaction, vec![pending_img], cx);
+        });
+
+        // Unmount mirror from UI and stop its frame worker so this test owns the last Arc.
+        window
+            .update(&mut visual, |host, _, cx| {
+                host.terminal = None;
+                host.interaction = None;
+                host.input = None;
+                cx.notify();
+            })
+            .unwrap();
+        visual.refresh().unwrap();
+        visual.update(|window, _| window.refresh());
+        visual.refresh().unwrap();
+        drop(interaction);
+        drop(input);
+        visual.update(|_, _| {});
+        drop(tx);
+        mirror.test_stop_frames();
+        assert_eq!(Arc::strong_count(&mirror), 1);
+
+        // Install PausedDropObserver now (after prepaint can no longer overwrite it) so
+        // `Drop for TerminalMirror` pauses inside `on_mirror_dropped` after strong count
+        // reaches 0 (`Weak::upgrade() == None`) and before `store.on_mirror_dropped` runs.
+        let (drop_entered_tx, drop_entered_rx) = mpsc::channel();
+        let (drop_proceed_tx, drop_proceed_rx) = mpsc::channel();
+        mirror.set_graphics_observer(Arc::new(PausedDropObserver {
+            inner: Arc::clone(&store),
+            drop_entered: drop_entered_tx,
+            drop_proceed: Mutex::new(drop_proceed_rx),
+        }));
+
+        // Drop mirror on a helper thread that pauses inside `on_mirror_dropped` so
+        // `Weak::upgrade` is already `None` while the cache entry still holds `img1`.
+        let drop_thread = std::thread::spawn(move || drop(mirror));
+        drop_entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+
+        // Let `schedule_decode` finish while `Weak::upgrade() == None`. It must NOT
+        // remove the cache entry before `on_mirror_dropped` can enqueue `img1` for release.
+        visual.run_until_parked();
+        assert_eq!(
+            store.cached_count(mirror_id),
+            1,
+            "schedule_decode must leave teardown eviction to on_mirror_dropped"
+        );
+        assert!(visual.update(|window, _| window.has_image_atlas_entry(&img1)));
+
+        // Resume `on_mirror_dropped` and verify `img1` is evicted from GPUI's atlas.
+        drop_proceed_tx.send(()).unwrap();
+        drop_thread.join().unwrap();
+        visual.run_until_parked();
+        assert_eq!(store.cached_count(mirror_id), 0);
+        assert!(
+            !visual.update(|window, _| window.has_image_atlas_entry(&img1)),
+            "on_mirror_dropped must release the painted texture via cx.drop_image"
+        );
+    }
+
+    #[test]
+    fn lazy_decode_respects_decset_2026_synchronized_update_guard() {
+        let mut cx = TestAppContext::single();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let wakes_cb = Arc::clone(&wakes);
+        let (_host, mirror, tx, ack) = crate::terminal::control::tests::mirror_waking(
+            "graphics-sync-2026",
+            TerminalController::Desktop,
+            Arc::new(move || {
+                wakes_cb.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        let mirror_id = mirror.mirror_id();
+        let store = cx.update(|cx| TerminalTextureCache::attach_mirror(&mirror, cx));
+
+        // Load image 1 while hidden so it stays undecoded in TextureStore.
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: 1,
+                bytes: kitty_rgba_command(
+                    "a=T,f=32,s=4,v=4,i=1,C=1,q=2",
+                    &solid_rgba(4, 4, [0, 128, 255, 255]),
+                )
+                .into(),
+            },
+        );
+        drop(tx);
+        mirror.test_stop_frames();
+        assert_eq!(store.cached_count(mirror_id), 0);
+
+        let _view = mirror.view();
+        let interaction = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let interaction_notifies = Arc::new(AtomicUsize::new(0));
+        let notifies_cb = Arc::clone(&interaction_notifies);
+        let _sub = cx.update(|cx| {
+            cx.observe(&interaction, move |_, _| {
+                notifies_cb.fetch_add(1, Ordering::SeqCst);
+            })
+        });
+        let window = cx.add_window(|_, cx| GraphicsPaneHost {
+            terminal: Some(Arc::clone(&mirror)),
+            interaction: Some(interaction.clone()),
+            input: Some(input.clone()),
+            focus: cx.focus_handle(),
+            font_size: 14.,
+            line_height_factor: 1.4,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(400.), px(260.)));
+        // First refresh schedules lazy decode of image 1 without completing it yet.
+        visual.refresh().unwrap();
+        assert_eq!(store.cached_count(mirror_id), 0);
+
+        // Open DECSET 2026 synchronized update before the lazy decode finishes.
+        mirror.test_feed_unscheduled(2, b"\x1b[?2026h");
+        wakes.store(0, Ordering::SeqCst);
+        interaction_notifies.store(0, Ordering::SeqCst);
+
+        // Complete background lazy decode while DECSET 2026 is open.
+        visual.run_until_parked();
+        let key1 = live_key_for(&mirror, 1);
+        let img1 = store
+            .cached_image(mirror_id, key1)
+            .expect("lazy decode should populate cache while DECSET 2026 is open");
+        assert_eq!(
+            wakes.load(Ordering::SeqCst),
+            0,
+            "lazy decode must not wake mirror viewers during DECSET 2026"
+        );
+        assert_eq!(
+            interaction_notifies.load(Ordering::SeqCst),
+            0,
+            "lazy decode must not notify TerminalInteraction during DECSET 2026"
+        );
+
+        // Closing DECSET 2026 wakes viewers and the cached image paints cleanly.
+        mirror.test_feed_unscheduled(3, b"\x1b[?2026l");
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        visual.update(|window, _| window.refresh());
+        visual.refresh().unwrap();
+        assert!(visual.update(|window, _| window.has_image_atlas_entry(&img1)));
+    }
+
+    #[test]
+    fn relative_placement_with_negative_column_keeps_visible_overlap_and_culls_outside() {
+        let cx = TestAppContext::single();
+        let store = cx.update(TerminalTextureCache::store);
+        let cell = CellSize {
+            width: 8,
+            height: 16,
+        };
+        let mut graphics = TerminalGraphics::mirror();
+        let mut term = runner_terminal::replay::new_term(40, 10);
+        let sgr = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut scanner = runner_terminal::kitty::Scanner::default();
+        let mut proc: alacritty_terminal::vte::ansi::Processor =
+            alacritty_terminal::vte::ansi::Processor::new();
+
+        // Ghostty v1.4.0 vector: parent pinned at (2, 2) (1-based CSI 3;3H).
+        // - p=2: 2x2 child with H=-3, V=-3 -> origin (-1, -1); bottom-right cell (0, 0) visible.
+        // - p=3: 1x1 child with H=-3, V=-3 -> origin (-1, -1); fully outside.
+        // - p=4: 2x1 child with H=-3, V=-3 -> origin (-1, -1); ends at y=0, fully outside.
+        // - p=5: 1x2 child with H=-3, V=-3 -> origin (-1, -1); ends at x=0, fully outside.
+        let rgba = solid_rgba(16, 16, [120, 40, 200, 255]);
+        let mut stream = b"\x1b[3;3H".to_vec();
+        stream.extend_from_slice(&kitty_rgba_command(
+            "a=T,f=32,s=16,v=16,i=1,p=1,c=1,r=1,z=0,C=1,q=2",
+            &rgba,
+        ));
+        stream.extend_from_slice(b"\x1b_Ga=p,i=1,p=2,P=1,Q=1,H=-3,V=-3,c=2,r=2,z=1,C=1,q=2\x1b\\");
+        stream.extend_from_slice(b"\x1b_Ga=p,i=1,p=3,P=1,Q=1,H=-3,V=-3,c=1,r=1,z=2,C=1,q=2\x1b\\");
+        stream.extend_from_slice(b"\x1b_Ga=p,i=1,p=4,P=1,Q=1,H=-3,V=-3,c=2,r=1,z=3,C=1,q=2\x1b\\");
+        stream.extend_from_slice(b"\x1b_Ga=p,i=1,p=5,P=1,Q=1,H=-3,V=-3,c=1,r=2,z=4,C=1,q=2\x1b\\");
+        let mut handler = runner_terminal::terminal::stream::StreamHandler::new(
+            &mut term,
+            &mut graphics,
+            &sgr,
+            cell,
+            None,
+        );
+        if let runner_terminal::kitty::ScanOutput::Items(items) = scanner.scan(&stream) {
+            for item in items {
+                match item {
+                    runner_terminal::kitty::ScanItem::Text(text) => {
+                        proc.advance(&mut handler, &text);
+                    }
+                    runner_terminal::kitty::ScanItem::Command(raw) => {
+                        if let Some(cmd) = PreparedCommand::direct_only(&raw) {
+                            handler.execute_kitty(&cmd, runner_terminal::kitty::ExecMode::Mirror);
+                        }
+                    }
+                    runner_terminal::kitty::ScanItem::Discarded => {}
+                }
+            }
+        }
+
+        let mirror_id = 777_777u64;
+        let viewers = Arc::new(AtomicUsize::new(1));
+        let img1 = graphics.primary.image_by_id(1).unwrap().clone();
+        store.on_graphics_updated(
+            mirror_id,
+            1,
+            &viewers,
+            &[(img1.id, img1.generation)],
+            &[img1],
+        );
+
+        let pane_bounds = Bounds::new(point(px(10.), px(20.)), size(px(320.), px(160.)));
+        let (bands, missing) = store.prepare_paint_bands(
+            mirror_id,
+            false,
+            &graphics,
+            0,
+            pane_bounds,
+            px(8.),
+            px(16.),
+            1.0,
+            cell,
+        );
+        assert!(missing.is_empty());
+        let ids: Vec<(u8, u32)> = bands[2].iter().map(|item| item.placement_order).collect();
+        assert_eq!(
+            ids,
+            vec![(1, 1), (1, 2)],
+            "only parent p=1 and overlapping 2x2 child p=2 at (-1,-1) should survive culling"
+        );
+        let child = &bands[2][1];
+        assert_eq!(child.dest_bounds.origin, point(px(2.), px(4.)));
+        assert_eq!(child.dest_bounds.size, size(px(16.), px(32.)));
+
+        store.on_mirror_dropped(mirror_id);
+        cx.run_until_parked();
+    }
+
+    #[test]
+    fn explicit_and_inverse_cell_backgrounds_matching_pane_rgb_paint_over_band_zero() {
+        let mut cx = TestAppContext::single();
+        let (_host, mirror, tx, ack) = mirror_named("band-zero-bg", TerminalController::Desktop);
+        let _store = cx.update(|cx| TerminalTextureCache::attach_mirror(&mirror, cx));
+        let _view = mirror.view();
+
+        let interaction = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let window = cx.add_window(|_, cx| GraphicsPaneHost {
+            terminal: Some(Arc::clone(&mirror)),
+            interaction: Some(interaction.clone()),
+            input: Some(input.clone()),
+            focus: cx.focus_handle(),
+            font_size: 14.,
+            line_height_factor: 1.4,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(400.), px(260.)));
+        visual.update(|window, _| window.set_scale_factor(1.0));
+        visual.refresh().unwrap();
+
+        let (cell_w, line_h) = visual.update(|window, cx| {
+            let font = crate::app_settings::AppSettings::default()
+                .terminal_font_family
+                .font(cx);
+            let font_id = window.text_system().resolve_font(&font);
+            let cw = window.text_system().em_advance(font_id, px(14.)).unwrap();
+            let lh = px(crate::terminal::element::row_height(14., 1.4));
+            (cw, lh)
+        });
+        let pane_bounds = visual.debug_bounds("GRAPHICS_PANE").unwrap();
+        let bg = runner_terminal::palette::RUNNER.background;
+
+        // Col 0: explicit truecolor background equal to RUNNER.background (`E`).
+        // Col 1: default uncolored background (`D`) — must stay transparent over Band 0.
+        // Col 2: inverse cell whose foreground equals RUNNER.background (`I`) — must paint opaque.
+        let mut stream = format!(
+            "\x1b[48;2;{};{};{}mE\x1b[0mD\x1b[7;38;2;{};{};{}mI\x1b[0m",
+            bg.r, bg.g, bg.b, bg.r, bg.g, bg.b
+        )
+        .into_bytes();
+        stream.extend_from_slice(&kitty_rgba_command(
+            "a=T,f=32,s=40,v=20,i=1,p=1,z=-1073741825,C=1,q=2",
+            &solid_rgba(40, 20, [255, 0, 0, 255]),
+        ));
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: 1,
+                bytes: stream.into(),
+            },
+        );
+
+        visual.update(|window, cx| {
+            cx.set_global(PaintTrace::default());
+            cx.set_global(BackgroundTrace::default());
+            window.refresh();
+        });
+        visual.run_until_parked();
+
+        let trace = visual.update(|_, cx| cx.global::<PaintTrace>().0.clone());
+        let bg_quads = visual.update(|_, cx| cx.global::<BackgroundTrace>().0.clone());
+        let band0_pos = trace
+            .iter()
+            .position(|e| matches!(e, PaintEvent::Image { band: 0, .. }))
+            .expect("Band 0 image must paint");
+        let cell_bg_pos = trace
+            .iter()
+            .position(|e| *e == PaintEvent::CellBackgrounds)
+            .expect("explicit cell backgrounds must paint over Band 0");
+        assert!(
+            band0_pos < cell_bg_pos,
+            "Band 0 image must paint behind explicit cell backgrounds"
+        );
+        assert_eq!(
+            bg_quads.len(),
+            2,
+            "only explicit col 0 and inverse col 2 should emit quads; col 1 default must stay transparent: {bg_quads:?}"
+        );
+        let col0_x = pane_bounds.left();
+        let col2_x = pane_bounds.left() + cell_w * 2.0;
+        assert!((f32::from(bg_quads[0].0.left()) - f32::from(col0_x)).abs() < 1e-2);
+        assert!((f32::from(bg_quads[0].0.size.width) - f32::from(cell_w)).abs() < 1e-2);
+        assert!((f32::from(bg_quads[0].0.size.height) - f32::from(line_h)).abs() < 1e-2);
+        assert!((f32::from(bg_quads[1].0.left()) - f32::from(col2_x)).abs() < 1e-2);
+        assert!((f32::from(bg_quads[1].0.size.width) - f32::from(cell_w)).abs() < 1e-2);
+
+        // Once the Band 0 image is deleted, matching-pane-RGB backgrounds emit no redundant quads.
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: 2,
+                bytes: b"\x1b_Ga=d,d=I,i=1,q=2\x1b\\".into(),
+            },
+        );
+        visual.update(|window, cx| {
+            cx.set_global(BackgroundTrace::default());
+            window.refresh();
+        });
+        visual.run_until_parked();
+        let quads_after_delete = visual.update(|_, cx| cx.global::<BackgroundTrace>().0.clone());
+        assert!(
+            quads_after_delete.is_empty(),
+            "without a Band 0 image, matching-pane-RGB cells must not emit extra quads"
+        );
     }
 }

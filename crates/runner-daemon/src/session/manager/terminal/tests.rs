@@ -3963,15 +3963,15 @@ fn daemon_frame_queue_resyncs_above_128_mib_below_frame_count_cap() {
     assert!(3 * chunk.len() > TERMINAL_QUEUE_MAX_BYTES);
     assert!(queue.push(TerminalFrame::Output {
         seq: 1,
-        bytes: chunk.clone(),
+        bytes: chunk.clone().into(),
     }));
     assert!(queue.push(TerminalFrame::Output {
         seq: 2,
-        bytes: chunk.clone(),
+        bytes: chunk.clone().into(),
     }));
     assert!(!queue.push(TerminalFrame::Output {
         seq: 3,
-        bytes: chunk,
+        bytes: chunk.into(),
     }));
     let drained = queue.drain();
     assert_eq!(drained.len(), 1);
@@ -5805,6 +5805,89 @@ fn burst_of_65_one_pixel_file_images_coalesces_without_queue_resync() {
     }
     drop(g);
     drop(sub);
+    core.sessions.kill(&id).unwrap();
+    core.sessions.drain_terminal_workers();
+}
+
+#[test]
+fn push_frame_shares_output_bytes_across_local_subscribers() {
+    use crate::session::manager::SessionManager;
+    use runner_core::protocol::terminal::TerminalFrame;
+
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(RecordingRuntime::default());
+    let core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
+    let role = {
+        let conn = core.db.get().unwrap();
+        crate::test_support::insert_test_role(
+            &conn,
+            "shared-bytes",
+            "shared-bytes",
+            "trae",
+            "shared-bytes",
+        );
+        crate::ops::role::get(&conn, "shared-bytes").unwrap()
+    };
+    let id = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap()
+        .id;
+
+    let mut sub_a = core.sessions.attach_terminal(&id).unwrap();
+    let mut sub_b = core.sessions.attach_terminal(&id).unwrap();
+    let payload = vec![b'k'; 2 * 1024 * 1024];
+    let payload_ptr = payload.as_ptr();
+    let state = core.sessions.session_state_or_insert(&id);
+    {
+        let mut locked = state.lock().unwrap();
+        SessionManager::push_frame(
+            &mut locked,
+            TerminalFrame::Output {
+                seq: 1,
+                bytes: payload.into(),
+            },
+        );
+    }
+
+    let (
+        TerminalFrame::Output {
+            seq: s1,
+            bytes: bytes_a,
+        },
+        TerminalFrame::Output {
+            seq: s2,
+            bytes: bytes_b,
+        },
+    ) = (sub_a.frames.recv().unwrap(), sub_b.frames.recv().unwrap())
+    else {
+        panic!("expected Output frames for both local subscribers");
+    };
+    assert_eq!((s1, s2), (1, 1));
+    assert_eq!(bytes_a.len(), 2 * 1024 * 1024);
+    assert!(
+        bytes_a.ptr_eq(&bytes_b),
+        "push_frame must share output bytes across local subscribers without copying"
+    );
+    assert_eq!(
+        bytes_a.as_ptr(),
+        payload_ptr,
+        "push_frame must preserve the original payload allocation"
+    );
+
+    drop(sub_a);
+    drop(sub_b);
     core.sessions.kill(&id).unwrap();
     core.sessions.drain_terminal_workers();
 }
