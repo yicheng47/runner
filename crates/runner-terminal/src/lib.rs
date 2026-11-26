@@ -5,6 +5,7 @@
 pub mod delivery_probe;
 pub mod fixtures;
 pub mod input_state;
+pub mod kitty;
 pub mod mappings;
 pub mod palette;
 pub mod program_status;

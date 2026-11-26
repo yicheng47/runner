@@ -3157,3 +3157,180 @@ fn link_probe_budget_caps_lookups_and_extra_root_resolves_via_link_at_with() {
         }
     );
 }
+
+#[test]
+fn mirror_wakes_no_viewer_during_sync_update_with_graphics_and_title_event() {
+    let (mirror, frames, wakes) = scripted_mirror(false);
+    let _view = mirror.view();
+    mirror.set_cell_size(crate::kitty::CellSize {
+        width: 10,
+        height: 20,
+    });
+    wakes.store(0, Ordering::Release);
+
+    // Open a synchronized update containing an OSC title change (which fires
+    // `Event::Title` when `stop_sync` runs for the graphics command), a Kitty
+    // image placement, and trailing held text, WITHOUT closing the update.
+    let mut open = b"\x1b[?2026hAB\x1b]2;mid-sync-title\x1b\\".to_vec();
+    open.extend_from_slice(b"\x1b_Ga=T,t=d,f=24,s=1,v=1,i=1,p=1,c=2,r=1,C=0,q=2;/wAA\x1b\\");
+    open.extend_from_slice(b"CD");
+    send_output(&frames, 1, &open);
+    assert!(wait_for(Duration::from_secs(2), || {
+        mirror.output_activity().last_output_seq == 1
+    }));
+
+    // Neither the frame completion nor `Event::Title` fired during `stop_sync`
+    // may wake the viewer while the synchronized update remains open.
+    assert!(mirror.sync_state().0.is_some());
+    assert_eq!(wakes.load(Ordering::Acquire), 0);
+    assert!(mirror.graphics().lock().unwrap().primary.contains_image(1));
+
+    // Closing the update applies "CD" after the 2-column image and wakes the viewer.
+    send_output(&frames, 2, b"\x1b[?2026l");
+    assert!(wait_for(Duration::from_secs(2), || {
+        mirror.output_activity().last_output_seq == 2
+            && mirror.sync_state().0.is_none()
+            && wakes.load(Ordering::Acquire) > 0
+    }));
+    assert!(screen_text(&mirror).contains("AB  CD"));
+}
+
+#[test]
+fn mirror_repeated_graphics_in_unclosed_sync_flushes_at_original_deadline() {
+    let (mirror, frames, wakes) = scripted_mirror(false);
+    let _view = mirror.view();
+    wakes.store(0, Ordering::Release);
+
+    send_output(&frames, 1, b"\x1b[?2026hhello");
+    assert!(wait_for(Duration::from_secs(2), || {
+        mirror.output_activity().last_output_seq == 1
+    }));
+    let initial_deadline = mirror.sync_state().0.expect("sync opened");
+
+    // Send a graphics command inside the still-open update: the mirror must
+    // reopen sync WITHOUT pushing the effective deadline past `initial_deadline`.
+    send_output(
+        &frames,
+        2,
+        b"\x1b_Ga=t,t=d,f=24,s=1,v=1,i=1,q=2;/wAA\x1b\\tail",
+    );
+    assert!(wait_for(Duration::from_secs(2), || {
+        mirror.output_activity().last_output_seq == 2
+    }));
+    if let Some(deadline_after) = mirror.sync_state().0 {
+        assert_eq!(deadline_after, initial_deadline);
+    }
+
+    // The flush thread terminates the update at the original deadline and wakes viewers.
+    assert!(wait_for(Duration::from_secs(2), || {
+        mirror.sync_state().0.is_none()
+            && screen_text(&mirror).contains("hellotail")
+            && wakes.load(Ordering::Acquire) > 0
+    }));
+}
+
+#[test]
+fn mirror_restore_preserves_graphics_and_mode_1016() {
+    let cell = crate::kitty::CellSize {
+        width: 10,
+        height: 20,
+    };
+    let mut term = Term::new(
+        Config {
+            scrolling_history: 100,
+            kitty_keyboard: true,
+            ..Config::default()
+        },
+        &TermSize::new(20, 5),
+        alacritty_terminal::event::VoidListener,
+    );
+    let mut graphics = crate::kitty::TerminalGraphics::authoritative(None);
+    let sgr = AtomicBool::new(false);
+    let mut proc = crate::snapshot::TrackedProcessor::new();
+    let mut sc = crate::kitty::Scanner::new();
+    {
+        let mut handler =
+            crate::terminal::stream::StreamHandler::new(&mut term, &mut graphics, &sgr, cell, None);
+        let input =
+            b"\x1b[?1003;1016hhi\x1b_Ga=T,t=d,f=24,s=1,v=1,i=7,p=3,c=2,r=1,C=1,q=2;/wAA\x1b\\";
+        if let crate::kitty::ScanOutput::Items(items) = sc.scan(input) {
+            for item in items {
+                match item {
+                    crate::kitty::ScanItem::Text(t) => proc.advance(&mut handler, &t),
+                    crate::kitty::ScanItem::Command(raw) => {
+                        let prep = crate::kitty::PreparedCommand::direct_only(&raw).unwrap();
+                        handler.execute_kitty(&prep, crate::kitty::ExecMode::Authoritative);
+                    }
+                    crate::kitty::ScanItem::Discarded => {}
+                }
+            }
+        }
+    }
+    let bytes = crate::snapshot::serialize_with_options(
+        &term,
+        &[],
+        usize::MAX,
+        sgr.load(Ordering::Acquire),
+        Some((&graphics, cell)),
+    );
+
+    use runner_core::protocol::terminal::{
+        TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+    struct ClosedFrames;
+    impl TerminalSubscription for ClosedFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("closed"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            Arc::new(|| {})
+        }
+    }
+    struct DirectSnapshotHost(Mutex<Option<TerminalSnapshot>>);
+    impl Transport for DirectSnapshotHost {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: self.0.lock().unwrap().take().unwrap(),
+                frames: Box::new(ClosedFrames),
+            })
+        }
+    }
+    let snapshot = TerminalSnapshot {
+        seq: 1,
+        cols: 20,
+        rows: 5,
+        bytes,
+        unfinished_len: 0,
+        preceding_char: None,
+        activity: None,
+        controller: Default::default(),
+    };
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(DirectSnapshotHost(Mutex::new(Some(snapshot))))),
+        "restore-kitty".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    assert!(mirror.sgr_pixels());
+    let g = mirror.graphics().lock().unwrap();
+    assert!(g.primary.contains_image(7));
+    assert_eq!(
+        g.primary
+            .placements()
+            .get(&crate::kitty::PlacementKey {
+                image_id: 7,
+                placement_id: crate::kitty::PlacementId::External(3),
+            })
+            .unwrap()
+            .location,
+        crate::kitty::PlacementLocation::Pin(crate::kitty::PinLocation { line: 0, column: 2 })
+    );
+}

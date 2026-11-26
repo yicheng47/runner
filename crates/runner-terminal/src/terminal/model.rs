@@ -50,12 +50,15 @@ pub struct TerminalModel {
     workers: Mutex<Vec<thread::JoinHandle<()>>>,
     stopped: Arc<AtomicBool>,
     pub term: Arc<FairMutex<Term<EventProxy>>>,
+    graphics: Arc<Mutex<crate::kitty::TerminalGraphics>>,
+    sgr_pixels: Arc<AtomicBool>,
     host: Arc<dyn TerminalHost>,
     session_id: String,
     parser: Mutex<ParserState>,
     sync_flush: Sender<()>,
     sequence: Mutex<SequenceState>,
     size: Arc<Mutex<(u16, u16)>>,
+    cell_size: Arc<Mutex<crate::kitty::CellSize>>,
     title: Arc<Mutex<String>>,
     palette: Arc<Mutex<PaletteState>>,
     scheme: Arc<SchemeState>,
@@ -115,6 +118,26 @@ impl TerminalModel {
         rows: u16,
         options: ModelOptions,
     ) -> Result<Arc<Self>> {
+        Self::with_graphics(
+            host,
+            session_id,
+            cols,
+            rows,
+            options,
+            crate::kitty::CellSize::ZERO,
+            None,
+        )
+    }
+
+    pub fn with_graphics(
+        host: Arc<dyn TerminalHost>,
+        session_id: String,
+        cols: u16,
+        rows: u16,
+        options: ModelOptions,
+        cell_size: crate::kitty::CellSize,
+        image_budget: Option<Arc<crate::kitty::GlobalImageBudget>>,
+    ) -> Result<Arc<Self>> {
         let (events, rx) = mpsc::channel();
         let (sync_flush, sync_flush_requests) = mpsc::channel();
         let stopped = Arc::new(AtomicBool::new(false));
@@ -127,6 +150,12 @@ impl TerminalModel {
             },
         )));
         let size = Arc::new(Mutex::new((cols, rows)));
+        let initial_cell = if cell_size.width > 0 && cell_size.height > 0 {
+            cell_size.clamped()
+        } else {
+            crate::kitty::CellSize::ZERO
+        };
+        let cell_size = Arc::new(Mutex::new(initial_cell));
         let title = Arc::new(Mutex::new(options.initial_title));
         let scheme = Arc::new(SchemeState::default());
         let palette = Arc::new(Mutex::new(PaletteState::new(palette::RUNNER)));
@@ -144,12 +173,17 @@ impl TerminalModel {
             workers: Mutex::default(),
             stopped: Arc::clone(&stopped),
             term: Arc::clone(&term),
+            graphics: Arc::new(Mutex::new(crate::kitty::TerminalGraphics::authoritative(
+                image_budget,
+            ))),
+            sgr_pixels: Arc::new(AtomicBool::new(false)),
             host: Arc::clone(&host),
             session_id: session_id.clone(),
             parser: Mutex::default(),
             sync_flush,
             sequence: Mutex::default(),
             size: Arc::clone(&size),
+            cell_size: Arc::clone(&cell_size),
             title: Arc::clone(&title),
             palette: Arc::clone(&palette),
             scheme: Arc::clone(&scheme),
@@ -244,12 +278,13 @@ impl TerminalModel {
                         }
                         Event::TextAreaSizeRequest(format) => {
                             let (cols, rows) = *size.lock().unwrap();
+                            let cell = *cell_size.lock().unwrap();
                             write(
                                 format(WindowSize {
                                     num_lines: rows,
                                     num_cols: cols,
-                                    cell_width: 0,
-                                    cell_height: 0,
+                                    cell_width: cell.width,
+                                    cell_height: cell.height,
                                 })
                                 .as_bytes(),
                             );
@@ -333,17 +368,16 @@ impl TerminalModel {
         Ok(model)
     }
 
-    pub fn feed_output(&self, seq: u64, bytes: &[u8]) -> Option<InputObservation> {
-        if self.stopped.load(Ordering::Acquire) {
-            return None;
-        }
-        let now = Instant::now();
-        let mut sequence = self.sequence.lock().unwrap();
-        if seq <= sequence.last {
-            return None;
-        }
-        if let Some(recorder) = &self.fixture_recorder {
-            recorder.record_output(bytes);
+    fn parse_text_segment(
+        &self,
+        parser: &mut ParserState,
+        handler: &mut stream::StreamHandler<'_, EventProxy>,
+        cell_size: crate::kitty::CellSize,
+        seq: u64,
+        bytes: &[u8],
+    ) {
+        if bytes.is_empty() {
+            return;
         }
         let mut queries = scan_scheme_sequences(&mut self.scheme.tail.lock().unwrap(), bytes)
             .into_iter()
@@ -371,21 +405,9 @@ impl TerminalModel {
                 *self.live_cwd.lock().unwrap() = Some(cwd);
             }
         }
-        sequence.last = seq;
-        sequence.last_output_seq = seq;
-        sequence.last_output_at = Some(now);
-        if chunk_indicates_tui_ready(bytes) {
-            sequence.tui_ready_seq = sequence.tui_ready_seq.max(seq);
-        }
-        let mut parser = self.parser.lock().unwrap();
-        let mut tracker = self.input_tracker.lock().unwrap();
-        let mut term = self.term.lock();
-        let previous_mode = *term.mode();
-        let was_tui_ready = term_indicates_tui_ready(&term, &parser);
-        parser.processor.begin_paint_tracking();
         let mut fed = 0;
         for (end, scheme) in queries {
-            parse(&mut parser, &mut term, &bytes[fed..end]);
+            parser.parse_text(handler, &bytes[fed..end]);
             fed = end;
             match scheme {
                 Some(SchemeSequence::Subscribe) => {
@@ -401,6 +423,14 @@ impl TerminalModel {
                             self.palette.lock().unwrap().theme,
                         ))));
                 }
+                Some(SchemeSequence::CellSizeQuery) => {
+                    let _ = self
+                        .events
+                        .send(ProxyEvent::Terminal(Event::PtyWrite(format!(
+                            "\x1b[6;{};{}t",
+                            cell_size.height, cell_size.width
+                        ))));
+                }
                 None => {
                     let _ = self.events.send(ProxyEvent::Terminal(Event::PtyWrite(
                         crate::program_status::PROBE_REPLY.into(),
@@ -408,7 +438,51 @@ impl TerminalModel {
                 }
             }
         }
-        parse(&mut parser, &mut term, &bytes[fed..]);
+        parser.parse_text(handler, &bytes[fed..]);
+    }
+
+    /// Feed plain terminal output known to contain no Kitty graphics commands
+    /// (such as daemon-injected notices or a forwarder burst with no graphics).
+    pub fn feed_plain_text(&self, seq: u64, bytes: &[u8]) -> Option<InputObservation> {
+        if self.stopped.load(Ordering::Acquire) {
+            return None;
+        }
+        let now = Instant::now();
+        let mut sequence = self.sequence.lock().unwrap();
+        if seq <= sequence.last {
+            return None;
+        }
+        if let Some(recorder) = &self.fixture_recorder {
+            recorder.record_output(bytes);
+        }
+        sequence.last = seq;
+        sequence.last_output_seq = seq;
+        sequence.last_output_at = Some(now);
+        if chunk_indicates_tui_ready(bytes) {
+            sequence.tui_ready_seq = sequence.tui_ready_seq.max(seq);
+        }
+        let cell_size = self.cell_size();
+        let mut parser = self.parser.lock().unwrap();
+        let mut tracker = self.input_tracker.lock().unwrap();
+        let mut term = self.term.lock();
+        let mut graphics = self.graphics.lock().unwrap();
+        let previous_mode = *term.mode();
+        let was_tui_ready = term_indicates_tui_ready(&term, &parser);
+        parser.processor.begin_paint_tracking();
+        {
+            let events = &self.events;
+            let mut emit_reply = |reply: String| {
+                let _ = events.send(ProxyEvent::Terminal(Event::PtyWrite(reply)));
+            };
+            let mut handler = stream::StreamHandler::new(
+                &mut term,
+                &mut graphics,
+                &self.sgr_pixels,
+                cell_size,
+                Some(&mut emit_reply),
+            );
+            self.parse_text_segment(&mut parser, &mut handler, cell_size, seq, bytes);
+        }
         let observation = observe_parsed(
             &mut sequence,
             &mut tracker,
@@ -418,8 +492,9 @@ impl TerminalModel {
             seq,
             now,
         );
-        let schedule = parser.processor.sync_timeout().sync_timeout().is_some()
+        let schedule = parser.sync_deadline().is_some()
             && !std::mem::replace(&mut parser.flush_scheduled, true);
+        drop(graphics);
         drop(term);
         drop(tracker);
         drop(parser);
@@ -428,6 +503,237 @@ impl TerminalModel {
             let _ = self.sync_flush.send(());
         }
         observation
+    }
+
+    /// Feed raw PTY output, scanning for direct Kitty graphics commands inline.
+    /// Local media (`t=f`/`t=t`/`t=s`) are never read on this path; forwarders
+    /// resolve local media outside the session lock and call `feed_forwarded`.
+    pub fn feed_output(&self, seq: u64, bytes: &[u8]) -> Option<InputObservation> {
+        if self.stopped.load(Ordering::Acquire) {
+            return None;
+        }
+        let now = Instant::now();
+        let mut sequence = self.sequence.lock().unwrap();
+        if seq <= sequence.last {
+            return None;
+        }
+        if let Some(recorder) = &self.fixture_recorder {
+            recorder.record_output(bytes);
+        }
+        sequence.last = seq;
+        sequence.last_output_seq = seq;
+        sequence.last_output_at = Some(now);
+        let cell_size = self.cell_size();
+        let mut parser = self.parser.lock().unwrap();
+        let scanned = parser.kitty_scanner.scan(bytes);
+        let mut tracker = self.input_tracker.lock().unwrap();
+        let mut term = self.term.lock();
+        let mut graphics = self.graphics.lock().unwrap();
+        let previous_mode = *term.mode();
+        let was_tui_ready = term_indicates_tui_ready(&term, &parser);
+        parser.processor.begin_paint_tracking();
+        {
+            let events = &self.events;
+            let mut emit_reply = |reply: String| {
+                let _ = events.send(ProxyEvent::Terminal(Event::PtyWrite(reply)));
+            };
+            let mut handler = stream::StreamHandler::new(
+                &mut term,
+                &mut graphics,
+                &self.sgr_pixels,
+                cell_size,
+                Some(&mut emit_reply),
+            );
+            match scanned {
+                crate::kitty::ScanOutput::Plain(text) => {
+                    if chunk_indicates_tui_ready(text) {
+                        sequence.tui_ready_seq = sequence.tui_ready_seq.max(seq);
+                    }
+                    self.parse_text_segment(&mut parser, &mut handler, cell_size, seq, text);
+                }
+                crate::kitty::ScanOutput::Items(items) => {
+                    for item in items {
+                        match item {
+                            crate::kitty::ScanItem::Text(text) => {
+                                if chunk_indicates_tui_ready(&text) {
+                                    sequence.tui_ready_seq = sequence.tui_ready_seq.max(seq);
+                                }
+                                self.parse_text_segment(
+                                    &mut parser,
+                                    &mut handler,
+                                    cell_size,
+                                    seq,
+                                    &text,
+                                );
+                            }
+                            crate::kitty::ScanItem::Command(raw) => {
+                                self.scheme.tail.lock().unwrap().clear();
+                                let (saved_sync, _) =
+                                    parser.prepare_for_graphics_command(&mut handler, |_| {});
+                                if let Some(prepared) =
+                                    crate::kitty::PreparedCommand::direct_only(&raw)
+                                {
+                                    handler.execute_kitty(
+                                        &prepared,
+                                        crate::kitty::ExecMode::Authoritative,
+                                    );
+                                }
+                                parser.reopen_sync_after_graphics(&mut handler, saved_sync);
+                            }
+                            crate::kitty::ScanItem::Discarded => {
+                                self.scheme.tail.lock().unwrap().clear();
+                                let (saved_sync, _) =
+                                    parser.prepare_for_graphics_command(&mut handler, |_| {});
+                                parser.reopen_sync_after_graphics(&mut handler, saved_sync);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let observation = observe_parsed(
+            &mut sequence,
+            &mut tracker,
+            &mut term,
+            &parser,
+            (previous_mode, was_tui_ready),
+            seq,
+            now,
+        );
+        let schedule = parser.sync_deadline().is_some()
+            && !std::mem::replace(&mut parser.flush_scheduled, true);
+        drop(graphics);
+        drop(term);
+        drop(tracker);
+        drop(parser);
+        drop(sequence);
+        if schedule {
+            let _ = self.sync_flush.send(());
+        }
+        observation
+    }
+
+    /// Feed a pre-scanned forwarder burst (with local media already resolved
+    /// outside the session lock). Returns `(observation, normalized_frames,
+    /// last_seq)` where frames are split at `MAX_NORMALIZED_FRAME_BYTES` and
+    /// `last_seq` is the final sequence number recorded by the model
+    /// (`first_seq` even when `normalized_frames` is empty).
+    pub fn feed_forwarded(
+        &self,
+        first_seq: u64,
+        items: &[crate::kitty::ForwardedItem],
+    ) -> (Option<InputObservation>, Vec<Vec<u8>>, u64) {
+        if self.stopped.load(Ordering::Acquire) {
+            return (None, Vec::new(), first_seq);
+        }
+        let now = Instant::now();
+        let mut sequence = self.sequence.lock().unwrap();
+        if first_seq <= sequence.last {
+            return (None, Vec::new(), sequence.last);
+        }
+        let cell_size = self.cell_size();
+        let mut parser = self.parser.lock().unwrap();
+        let mut tracker = self.input_tracker.lock().unwrap();
+        let mut term = self.term.lock();
+        let mut graphics = self.graphics.lock().unwrap();
+        let previous_mode = *term.mode();
+        let was_tui_ready = term_indicates_tui_ready(&term, &parser);
+        parser.processor.begin_paint_tracking();
+
+        let mut normalized_segments: Vec<Vec<u8>> = Vec::new();
+        let mut saw_tui_ready_text = false;
+        let status_start = self.pending_program_status.lock().unwrap().len();
+        {
+            let events = &self.events;
+            let mut emit_reply = |reply: String| {
+                let _ = events.send(ProxyEvent::Terminal(Event::PtyWrite(reply)));
+            };
+            let mut handler = stream::StreamHandler::new(
+                &mut term,
+                &mut graphics,
+                &self.sgr_pixels,
+                cell_size,
+                Some(&mut emit_reply),
+            );
+            for item in items {
+                match item {
+                    crate::kitty::ForwardedItem::Text(text) => {
+                        if let Some(recorder) = &self.fixture_recorder {
+                            recorder.record_output(text);
+                        }
+                        if chunk_indicates_tui_ready(text) {
+                            saw_tui_ready_text = true;
+                        }
+                        self.parse_text_segment(
+                            &mut parser,
+                            &mut handler,
+                            cell_size,
+                            first_seq,
+                            text,
+                        );
+                        if !text.is_empty() {
+                            normalized_segments.push(text.clone());
+                        }
+                    }
+                    crate::kitty::ForwardedItem::Command(prepared) => {
+                        self.scheme.tail.lock().unwrap().clear();
+                        let (saved_sync, emitted_can) =
+                            parser.prepare_for_graphics_command(&mut handler, |_| {});
+                        let result =
+                            handler.execute_kitty(prepared, crate::kitty::ExecMode::Authoritative);
+                        if emitted_can && result.normalized.is_empty() {
+                            normalized_segments.push(vec![0x18]);
+                        }
+                        normalized_segments.extend(result.normalized);
+                        parser.reopen_sync_after_graphics(&mut handler, saved_sync);
+                    }
+                    crate::kitty::ForwardedItem::Discarded => {
+                        self.scheme.tail.lock().unwrap().clear();
+                        let (saved_sync, emitted_can) =
+                            parser.prepare_for_graphics_command(&mut handler, |_| {});
+                        if emitted_can {
+                            normalized_segments.push(vec![0x18]);
+                        }
+                        parser.reopen_sync_after_graphics(&mut handler, saved_sync);
+                    }
+                }
+            }
+        }
+
+        let frames = crate::kitty::split_normalized_frames(normalized_segments);
+        let last_seq = first_seq + frames.len().saturating_sub(1) as u64;
+        if last_seq != first_seq {
+            let mut pending = self.pending_program_status.lock().unwrap();
+            for entry in pending.iter_mut().skip(status_start) {
+                entry.0 = last_seq;
+            }
+        }
+        sequence.last = last_seq;
+        sequence.last_output_seq = last_seq;
+        sequence.last_output_at = Some(now);
+        if saw_tui_ready_text {
+            sequence.tui_ready_seq = sequence.tui_ready_seq.max(last_seq);
+        }
+        let observation = observe_parsed(
+            &mut sequence,
+            &mut tracker,
+            &mut term,
+            &parser,
+            (previous_mode, was_tui_ready),
+            last_seq,
+            now,
+        );
+        let schedule = parser.sync_deadline().is_some()
+            && !std::mem::replace(&mut parser.flush_scheduled, true);
+        drop(graphics);
+        drop(term);
+        drop(tracker);
+        drop(parser);
+        drop(sequence);
+        if schedule {
+            let _ = self.sync_flush.send(());
+        }
+        (observation, frames, last_seq)
     }
 
     pub fn publish_initial(&self) {
@@ -470,7 +776,7 @@ impl TerminalModel {
         let mut sequence = self.sequence.lock().unwrap();
         let mut parser = self.parser.lock().unwrap();
         let now = Instant::now();
-        match parser.processor.sync_timeout().sync_timeout() {
+        match parser.sync_deadline() {
             Some(deadline) if deadline > now => return Some(deadline),
             Some(_) => {}
             None => {
@@ -478,14 +784,28 @@ impl TerminalModel {
                 return None;
             }
         }
+        let cell_size = self.cell_size();
         let mut tracker = self.input_tracker.lock().unwrap();
         let mut term = self.term.lock();
+        let mut graphics = self.graphics.lock().unwrap();
         let previous_mode = *term.mode();
         let was_tui_ready = term_indicates_tui_ready(&term, &parser);
         let held = parser.processor.sync_bytes_count();
         parser.processor.begin_paint_tracking();
-        parser.processor.stop_sync(&mut *term);
-        parser.boundary.end_sync();
+        {
+            let events = &self.events;
+            let mut emit_reply = |reply: String| {
+                let _ = events.send(ProxyEvent::Terminal(Event::PtyWrite(reply)));
+            };
+            let mut handler = stream::StreamHandler::new(
+                &mut term,
+                &mut graphics,
+                &self.sgr_pixels,
+                cell_size,
+                Some(&mut emit_reply),
+            );
+            parser.finish_sync_timeout(&mut handler);
+        }
         parser.flush_scheduled = false;
         let seq = active_output_seq(&sequence);
         let observation = observe_parsed(
@@ -497,6 +817,7 @@ impl TerminalModel {
             seq,
             now,
         );
+        drop(graphics);
         drop(term);
         drop(tracker);
         drop(parser);
@@ -511,15 +832,33 @@ impl TerminalModel {
     }
 
     pub fn snapshot_with_history(&self, seq: u64, history: usize) -> TerminalSnapshot {
+        self.snapshot_with_options(seq, history, true)
+    }
+
+    pub fn snapshot_with_options(
+        &self,
+        seq: u64,
+        history: usize,
+        include_graphics: bool,
+    ) -> TerminalSnapshot {
         let sequence = self.sequence.lock().unwrap();
         let parser = self.parser.lock().unwrap();
         let term = self.term.lock();
+        let graphics = self.graphics.lock().unwrap();
+        let cell_size = *self.cell_size.lock().unwrap();
+        let sgr_pixels = self.sgr_pixels.load(Ordering::Acquire);
         let unfinished = parser.boundary.unfinished();
         TerminalSnapshot {
             seq,
             cols: term.columns() as u16,
             rows: term.screen_lines() as u16,
-            bytes: crate::snapshot::serialize_with_history(&*term, unfinished, history),
+            bytes: crate::snapshot::serialize_with_options(
+                &*term,
+                unfinished,
+                history,
+                sgr_pixels,
+                include_graphics.then_some((&*graphics, cell_size)),
+            ),
             unfinished_len: unfinished.len(),
             preceding_char: parser.processor.preceding_char(),
             activity: Some(TerminalSnapshotActivity {
@@ -541,6 +880,20 @@ impl TerminalModel {
     pub fn size(&self) -> (u16, u16) {
         *self.size.lock().unwrap()
     }
+    pub fn cell_size(&self) -> crate::kitty::CellSize {
+        *self.cell_size.lock().unwrap()
+    }
+    pub fn set_cell_size(&self, cell_size: crate::kitty::CellSize) {
+        if cell_size.width > 0 && cell_size.height > 0 {
+            *self.cell_size.lock().unwrap() = cell_size.clamped();
+        }
+    }
+    pub fn sgr_pixels(&self) -> bool {
+        self.sgr_pixels.load(Ordering::Acquire)
+    }
+    pub fn graphics(&self) -> &Arc<Mutex<crate::kitty::TerminalGraphics>> {
+        &self.graphics
+    }
     pub fn configure_named(&self, scrollback: usize, shape: &str) {
         let shape = match shape {
             "underline" => CursorShape::Underline,
@@ -559,18 +912,32 @@ impl TerminalModel {
             return;
         }
         let observation = {
+            let cell_size = self.cell_size();
             let mut sequence = self.sequence.lock().unwrap();
             let mut parser = self.parser.lock().unwrap();
             let mut tracker = self.input_tracker.lock().unwrap();
             let mut term = self.term.lock();
+            let mut graphics = self.graphics.lock().unwrap();
             let now = Instant::now();
             let previous_mode = *term.mode();
             let was_tui_ready = term_indicates_tui_ready(&term, &parser);
-            let held_sync = parser.processor.sync_timeout().sync_timeout().is_some();
+            let held_sync = parser.sync_deadline().is_some();
             let observation = if held_sync {
                 parser.processor.begin_paint_tracking();
-                parser.processor.stop_sync(&mut *term);
-                parser.boundary.end_sync();
+                {
+                    let events = &self.events;
+                    let mut emit_reply = |reply: String| {
+                        let _ = events.send(ProxyEvent::Terminal(Event::PtyWrite(reply)));
+                    };
+                    let mut handler = stream::StreamHandler::new(
+                        &mut term,
+                        &mut graphics,
+                        &self.sgr_pixels,
+                        cell_size,
+                        Some(&mut emit_reply),
+                    );
+                    parser.finish_sync_timeout(&mut handler);
+                }
                 let seq = active_output_seq(&sequence);
                 observe_parsed(
                     &mut sequence,
@@ -585,10 +952,14 @@ impl TerminalModel {
                 None
             };
             parser.flush_scheduled = false;
+            parser.sync_deadline = None;
+            parser.last_vte_deadline = None;
             let preceding = parser.processor.preceding_char();
             parser.processor.restore_preceding_char(preceding);
             parser.boundary = Default::default();
             parser.burst = Default::default();
+            parser.kitty_scanner.reset();
+            graphics.abort_loading();
             while !term.snapshot_state().title_stack.is_empty() {
                 Handler::pop_title(&mut *term);
             }
@@ -639,7 +1010,7 @@ impl TerminalModel {
         }
     }
     pub fn configure(&self, scrollback: usize, cursor_shape: CursorShape) {
-        self.term.lock().set_options(Config {
+        let config = Config {
             scrolling_history: scrollback,
             semantic_escape_chars: XTERM_WORD_SEPARATORS.to_owned(),
             default_cursor_style: CursorStyle {
@@ -647,7 +1018,11 @@ impl TerminalModel {
                 blinking: true,
             },
             ..term_config()
-        });
+        };
+        let mut term = self.term.lock();
+        let mut graphics = self.graphics.lock().unwrap();
+        let cell_size = *self.cell_size.lock().unwrap();
+        stream::configure_term_and_graphics(&mut term, &mut graphics, config, cell_size);
     }
     pub fn observe_input(&self, input: &InputEvent) {
         if let Some(recorder) = &self.fixture_recorder {
@@ -700,16 +1075,38 @@ impl TerminalModel {
         self.publish_input(observation);
     }
     pub fn resize(&self, cols: u16, rows: u16) {
+        self.resize_with_cell_size(cols, rows, None);
+    }
+    pub fn resize_with_cell_size(
+        &self,
+        cols: u16,
+        rows: u16,
+        cell_size: Option<crate::kitty::CellSize>,
+    ) {
         let _parser = self.parser.lock().unwrap();
         let mut term = self.term.lock();
+        let mut graphics = self.graphics.lock().unwrap();
         let mut size = self.size.lock().unwrap();
+        let mut current_cell = self.cell_size.lock().unwrap();
+        if let Some(cell) = cell_size {
+            if cell.width > 0 && cell.height > 0 {
+                *current_cell = cell.clamped();
+            }
+        }
+        let cell = *current_cell;
         if *size != (cols, rows) {
             if let Some(recorder) = &self.fixture_recorder {
                 recorder.record_resize(cols, rows);
             }
         }
         *size = (cols, rows);
-        term.resize(TermSize::new(cols as usize, rows as usize));
+        stream::resize_term_and_graphics(
+            &mut term,
+            &mut graphics,
+            cols as usize,
+            rows as usize,
+            cell,
+        );
     }
 }
 

@@ -5628,7 +5628,10 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "base64",
+ "flate2",
+ "libc",
  "log",
+ "png 0.18.1",
  "regex",
  "regex-syntax",
  "runner-core",
@@ -5636,6 +5639,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "unicode-width",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

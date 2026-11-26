@@ -89,6 +89,70 @@ pub fn serialize_with_history<T: EventListener>(
     unfinished: &[u8],
     history: usize,
 ) -> Vec<u8> {
+    serialize_with_options(term, unfinished, history, false, None)
+}
+
+pub fn serialize_with_options<T: EventListener>(
+    term: &Term<T>,
+    unfinished: &[u8],
+    history: usize,
+    sgr_pixels: bool,
+    graphics: Option<(&crate::kitty::TerminalGraphics, crate::kitty::CellSize)>,
+) -> Vec<u8> {
+    let text_only = serialize_body(term, history, sgr_pixels, None);
+    let Some((gfx, cell_size)) = graphics.filter(|(g, _)| !g.is_empty()) else {
+        let mut bytes = text_only.into_bytes();
+        bytes.extend_from_slice(unfinished);
+        return bytes;
+    };
+
+    let state = term.snapshot_state();
+    let alt = term.mode().contains(TermMode::ALT_SCREEN);
+    let primary = if alt {
+        state.inactive_grid
+    } else {
+        term.grid()
+    };
+    let primary_first_line = -(primary.history_size().min(history) as i32);
+
+    let reserved = text_only
+        .len()
+        .saturating_add(unfinished.len())
+        .saturating_add(crate::kitty::snapshot::SNAPSHOT_FRAME_HEADROOM);
+    let budget = runner_core::protocol::wire::MAX_FRAME
+        .saturating_sub(reserved)
+        .min(crate::kitty::snapshot::MAX_SNAPSHOT_GRAPHICS_BYTES);
+
+    let plan = crate::kitty::snapshot::SnapshotGraphicsPlan::build(
+        gfx,
+        alt,
+        primary_first_line,
+        primary.screen_lines(),
+        term.grid().screen_lines(),
+        term.columns(),
+        cell_size,
+        budget,
+    );
+    if plan.is_empty() {
+        let mut bytes = text_only.into_bytes();
+        bytes.extend_from_slice(unfinished);
+        return bytes;
+    }
+
+    let mut bytes = serialize_body(term, history, sgr_pixels, Some((gfx, &plan))).into_bytes();
+    bytes.extend_from_slice(unfinished);
+    bytes
+}
+
+fn serialize_body<T: EventListener>(
+    term: &Term<T>,
+    history: usize,
+    sgr_pixels: bool,
+    graphics: Option<(
+        &crate::kitty::TerminalGraphics,
+        &crate::kitty::snapshot::SnapshotGraphicsPlan,
+    )>,
+) -> String {
     let state = term.snapshot_state();
     let alt = term.mode().contains(TermMode::ALT_SCREEN);
     let (primary, primary_keyboard) = if alt {
@@ -109,14 +173,24 @@ pub fn serialize_with_history<T: EventListener>(
         keyboard_stack(&mut out, state.inactive_keyboard_mode_stack);
         out.push_str("\x1b[?1049l");
     }
-    grid(&mut out, primary, history);
+    grid(
+        &mut out,
+        primary,
+        history,
+        graphics.map(|(g, plan)| (&g.primary, plan, false)),
+    );
     cursor(&mut out, primary, &primary.saved_cursor, 0);
     out.push_str("\x1b7");
     cursor(&mut out, primary, &primary.cursor, 0);
     keyboard_stack(&mut out, primary_keyboard);
     if alt {
         out.push_str("\x1b[?1049h");
-        grid(&mut out, term.grid(), history);
+        grid(
+            &mut out,
+            term.grid(),
+            history,
+            graphics.map(|(g, plan)| (&g.alt, plan, true)),
+        );
         cursor(&mut out, term.grid(), &term.grid().saved_cursor, 0);
         out.push_str("\x1b7");
         keyboard_stack(&mut out, state.keyboard_mode_stack);
@@ -152,6 +226,9 @@ pub fn serialize_with_history<T: EventListener>(
             if term.mode().contains(mode) { 'h' } else { 'l' }
         )
         .unwrap();
+    }
+    if sgr_pixels {
+        out.push_str("\x1b[?1016h");
     }
     out.push_str(if term.mode().contains(TermMode::APP_KEYPAD) {
         "\x1b="
@@ -211,9 +288,7 @@ pub fn serialize_with_history<T: EventListener>(
     } else {
         '\x0f'
     });
-    let mut bytes = out.into_bytes();
-    bytes.extend_from_slice(unfinished);
-    bytes
+    out
 }
 
 fn keyboard_stack(out: &mut String, stack: &[KeyboardModes]) {
@@ -222,12 +297,24 @@ fn keyboard_stack(out: &mut String, stack: &[KeyboardModes]) {
     }
 }
 
-fn grid(out: &mut String, grid: &Grid<Cell>, history: usize) {
+fn grid(
+    out: &mut String,
+    grid: &Grid<Cell>,
+    history: usize,
+    screen_graphics: Option<(
+        &crate::kitty::ImageStorage,
+        &crate::kitty::snapshot::SnapshotGraphicsPlan,
+        bool,
+    )>,
+) {
     out.push_str("\x1b[3g");
     for column in 1..grid.columns() {
         write!(out, "\x1b[{}G\x1bH", column + 1).unwrap();
     }
     out.push_str("\x1b[?7h\x1b[H\x1b[0m\x1b]8;;\x1b\\");
+    if let Some((storage, plan, is_alt)) = screen_graphics {
+        plan.emit_screen_images(is_alt, storage, out);
+    }
     let mut previous = None;
     let mut previous_link = None;
     for line in -(grid.history_size().min(history) as i32)..grid.screen_lines() as i32 {
@@ -263,6 +350,9 @@ fn grid(out: &mut String, grid: &Grid<Cell>, history: usize) {
             if let Some(marks) = cell.zerowidth() {
                 out.extend(marks);
             }
+        }
+        if let Some((_, plan, is_alt)) = screen_graphics {
+            plan.emit_row_placements(is_alt, line, out);
         }
         if line + 1 < grid.screen_lines() as i32
             && !row[Column(grid.columns() - 1)]

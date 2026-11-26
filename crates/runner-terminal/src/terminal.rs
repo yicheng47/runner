@@ -27,6 +27,7 @@ use runner_core::protocol::{ClientError, ClientEvent, DaemonClient};
 pub mod find;
 mod links;
 mod model;
+pub mod stream;
 pub use links::{FileLinkContext, LinkTarget, TerminalLink};
 pub use model::{ClipboardTarget, ModelOptions, TerminalHost, TerminalModel, MAX_CLIPBOARD_BYTES};
 
@@ -106,6 +107,7 @@ pub fn query_color_for<T>(
 const SCHEME_SUBSCRIBE: &[u8] = b"\x1b[?2031h";
 const SCHEME_UNSUBSCRIBE: &[u8] = b"\x1b[?2031l";
 const SCHEME_QUERY: &[u8] = b"\x1b[?996n";
+const CELL_SIZE_QUERY: &[u8] = b"\x1b[16t";
 const SCHEME_PROBE_UNSUPPORTED: &str = "\x1b[?2031;0$y";
 
 /// `alacritty_terminal` answers `CSI ? u` with every flag the app pushed.
@@ -129,6 +131,7 @@ enum SchemeSequence {
     Subscribe,
     Unsubscribe,
     Query,
+    CellSizeQuery,
 }
 
 #[derive(Default)]
@@ -151,6 +154,7 @@ fn scan_scheme_sequences(tail: &mut Vec<u8>, chunk: &[u8]) -> Vec<(usize, Scheme
         (SCHEME_SUBSCRIBE, SchemeSequence::Subscribe),
         (SCHEME_UNSUBSCRIBE, SchemeSequence::Unsubscribe),
         (SCHEME_QUERY, SchemeSequence::Query),
+        (CELL_SIZE_QUERY, SchemeSequence::CellSizeQuery),
     ] {
         for (start, window) in buf.windows(needle.len()).enumerate() {
             let end = start + needle.len();
@@ -284,6 +288,97 @@ struct ParserState {
     flush_scheduled: bool,
     boundary: crate::snapshot::BoundaryScanner,
     burst: BurstHold,
+    /// Effective synchronized-update deadline, preserved across synthetic
+    /// `stop_sync` + reopen around Kitty graphics commands so repeated
+    /// graphics commands inside an unclosed update cannot postpone the 150 ms
+    /// flush, while explicit `CSI ? 2026 h` in user text still extends it.
+    sync_deadline: Option<Instant>,
+    /// Last deadline observed from `vte`'s `sync_timeout()`, used to
+    /// distinguish an explicit user extension from a synthetic reopen.
+    last_vte_deadline: Option<Instant>,
+    kitty_scanner: crate::kitty::Scanner,
+}
+
+impl ParserState {
+    fn sync_deadline(&self) -> Option<Instant> {
+        self.sync_deadline
+    }
+
+    fn parse_text<H: Handler>(&mut self, handler: &mut H, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        self.processor.advance(handler, bytes);
+        let vte_deadline = self.processor.sync_timeout().sync_timeout();
+        let held = vte_deadline.map(|_| self.processor.sync_bytes_count());
+        self.boundary.advance(bytes, held);
+        match vte_deadline {
+            None => {
+                self.sync_deadline = None;
+                self.last_vte_deadline = None;
+            }
+            Some(deadline) => {
+                if self.sync_deadline.is_none() || self.last_vte_deadline != Some(deadline) {
+                    self.sync_deadline = Some(deadline);
+                }
+                self.last_vte_deadline = Some(deadline);
+            }
+        }
+    }
+
+    /// Flush an open synchronized update (preserving its original deadline)
+    /// and abort any non-Ground `vte` state (such as the leading `ESC` of
+    /// `ESC ESC _ G`) before executing or discarding a Kitty graphics command.
+    fn prepare_for_graphics_command<H: Handler>(
+        &mut self,
+        handler: &mut H,
+        on_sync_open: impl FnOnce(bool),
+    ) -> (Option<Instant>, bool) {
+        let saved_deadline = self.sync_deadline;
+        if saved_deadline.is_some() {
+            on_sync_open(true);
+            self.processor.stop_sync(handler);
+            self.boundary.end_sync();
+            self.sync_deadline = None;
+            self.last_vte_deadline = None;
+        }
+        let emitted_can = if !self.boundary.unfinished().is_empty() {
+            // `CAN` (0x18) is a no-op in `Term` and returns `vte` and
+            // `BoundaryScanner` cleanly to Ground without dispatching a
+            // truncated escape sequence.
+            self.parse_text(handler, &[0x18]);
+            true
+        } else {
+            false
+        };
+        (saved_deadline, emitted_can)
+    }
+
+    /// Reopen a synchronized update flushed for a Kitty graphics command,
+    /// restoring the original opening deadline so `vte`'s fresh 150 ms timer
+    /// cannot defer the flush.
+    fn reopen_sync_after_graphics<H: Handler>(
+        &mut self,
+        handler: &mut H,
+        saved_deadline: Option<Instant>,
+    ) {
+        let Some(deadline) = saved_deadline else {
+            return;
+        };
+        self.processor.advance(handler, BEGIN_SYNC);
+        let vte_deadline = self.processor.sync_timeout().sync_timeout();
+        let held = vte_deadline.map(|_| self.processor.sync_bytes_count());
+        self.boundary.advance(BEGIN_SYNC, held);
+        self.sync_deadline = Some(deadline);
+        self.last_vte_deadline = vte_deadline;
+    }
+
+    fn finish_sync_timeout<H: Handler>(&mut self, handler: &mut H) {
+        self.processor.stop_sync(handler);
+        self.boundary.end_sync();
+        self.sync_deadline = None;
+        self.last_vte_deadline = None;
+    }
 }
 
 /// A remote mirror receives an agent's full-history reprint, sent when its
@@ -417,22 +512,21 @@ impl PaletteState {
     }
 }
 
+#[cfg(test)]
 fn parse(parser: &mut ParserState, term: &mut Term<EventProxy>, bytes: &[u8]) {
     parse_with(parser, term, bytes);
 }
 
+#[cfg(test)]
 fn parse_with<H: Handler>(parser: &mut ParserState, handler: &mut H, bytes: &[u8]) {
-    parser.processor.advance(handler, bytes);
-    let held = parser
-        .processor
-        .sync_timeout()
-        .sync_timeout()
-        .map(|_| parser.processor.sync_bytes_count());
-    parser.boundary.advance(bytes, held);
+    parser.parse_text(handler, bytes);
 }
 
 pub struct TerminalMirror {
     pub term: Arc<FairMutex<Term<EventProxy>>>,
+    graphics: Arc<Mutex<crate::kitty::TerminalGraphics>>,
+    sgr_pixels: Arc<AtomicBool>,
+    sync_open: Arc<AtomicBool>,
     client: DaemonClient,
     session_id: String,
     subscriber_id: AtomicU64,
@@ -440,6 +534,7 @@ pub struct TerminalMirror {
     sync_flush: Sender<()>,
     sequence: Mutex<SequenceState>,
     size: Mutex<(u16, u16)>,
+    cell_size: Mutex<crate::kitty::CellSize>,
     metadata: Mutex<TerminalMetadata>,
     control: Mutex<TerminalControl>,
     composition_clear_pending: Mutex<bool>,
@@ -660,10 +755,14 @@ impl TerminalMirror {
         drop(discarded);
         let (sync_flush, requests) = mpsc::channel();
         let viewers = Arc::new(AtomicUsize::new(0));
+        let sync_open = Arc::new(AtomicBool::new(false));
         let listener_viewers = Arc::clone(&viewers);
+        let listener_sync_open = Arc::clone(&sync_open);
         let listener_wake = Arc::clone(&waker);
         let listener_wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            if listener_viewers.load(Ordering::Acquire) > 0 {
+            if !listener_sync_open.load(Ordering::Acquire)
+                && listener_viewers.load(Ordering::Acquire) > 0
+            {
                 listener_wake();
             }
         });
@@ -680,6 +779,9 @@ impl TerminalMirror {
         )));
         let mirror = Arc::new(Self {
             term,
+            graphics: Arc::new(Mutex::new(crate::kitty::TerminalGraphics::mirror())),
+            sgr_pixels: Arc::new(AtomicBool::new(false)),
+            sync_open,
             client,
             session_id,
             subscriber_id: AtomicU64::new(attachment.subscriber_id),
@@ -687,6 +789,7 @@ impl TerminalMirror {
             sync_flush,
             sequence: Mutex::default(),
             size: Mutex::new((attachment.snapshot.cols, attachment.snapshot.rows)),
+            cell_size: Mutex::new(crate::kitty::CellSize::ZERO),
             metadata: Mutex::default(),
             control: Mutex::default(),
             composition_clear_pending: Mutex::new(false),
@@ -734,6 +837,8 @@ impl TerminalMirror {
         let mut sequence = self.sequence.lock().unwrap();
         let mut parser = self.parser.lock().unwrap();
         let mut term = self.term.lock();
+        let mut graphics = self.graphics.lock().unwrap();
+        let cell_size = *self.cell_size.lock().unwrap();
         let was_tui_ready = sequence.last > 0
             && attachment.snapshot.seq >= sequence.last
             && term_indicates_tui_ready(&term, &parser);
@@ -755,9 +860,11 @@ impl TerminalMirror {
                 tx: events,
                 waker: {
                     let viewers = Arc::clone(&self.viewers);
+                    let sync_open = Arc::clone(&self.sync_open);
                     let wake = Arc::clone(&self.waker);
                     Arc::new(move || {
-                        if viewers.load(Ordering::Acquire) > 0 {
+                        if !sync_open.load(Ordering::Acquire) && viewers.load(Ordering::Acquire) > 0
+                        {
                             wake();
                         }
                     })
@@ -765,12 +872,29 @@ impl TerminalMirror {
             },
         );
         *parser = ParserState::default();
+        *graphics = crate::kitty::TerminalGraphics::mirror();
+        self.sgr_pixels.store(false, Ordering::Release);
+        self.sync_open.store(false, Ordering::Release);
         let split = attachment.snapshot.bytes.len() - attachment.snapshot.unfinished_len;
-        parse(&mut parser, &mut term, &attachment.snapshot.bytes[..split]);
+        self.parse_mirror_bytes(
+            &mut parser,
+            &mut term,
+            &mut graphics,
+            cell_size,
+            &attachment.snapshot.bytes[..split],
+        );
         parser
             .processor
             .restore_preceding_char(attachment.snapshot.preceding_char);
-        parse(&mut parser, &mut term, &attachment.snapshot.bytes[split..]);
+        self.parse_mirror_bytes(
+            &mut parser,
+            &mut term,
+            &mut graphics,
+            cell_size,
+            &attachment.snapshot.bytes[split..],
+        );
+        self.sync_open
+            .store(parser.sync_deadline().is_some(), Ordering::Release);
         sequence.last = attachment.snapshot.seq;
         match attachment.snapshot.activity {
             Some(provenance) => {
@@ -836,7 +960,7 @@ impl TerminalMirror {
         self.apply_controller(attachment.snapshot.controller.clone());
         self.subscriber_id
             .store(attachment.subscriber_id, Ordering::Relaxed);
-        if parser.processor.sync_timeout().sync_timeout().is_some() {
+        if parser.sync_deadline().is_some() {
             parser.flush_scheduled = true;
             let _ = self.sync_flush.send(());
         }
@@ -879,7 +1003,12 @@ impl TerminalMirror {
             ..term_config()
         };
         *self.config.lock().unwrap() = config.clone();
-        self.term.lock().set_options(config);
+        {
+            let mut term = self.term.lock();
+            let mut graphics = self.graphics.lock().unwrap();
+            let cell_size = *self.cell_size.lock().unwrap();
+            stream::configure_term_and_graphics(&mut term, &mut graphics, config, cell_size);
+        }
         let shape = match cursor_shape {
             CursorShape::Block => "block",
             CursorShape::Underline => "underline",
@@ -903,6 +1032,52 @@ impl TerminalMirror {
             last_output_at: sequence.last_output_at,
         }
     }
+    fn parse_mirror_bytes(
+        &self,
+        parser: &mut ParserState,
+        term: &mut Term<EventProxy>,
+        graphics: &mut crate::kitty::TerminalGraphics,
+        cell_size: crate::kitty::CellSize,
+        bytes: &[u8],
+    ) -> Option<usize> {
+        let scanned = parser.kitty_scanner.scan(bytes);
+        let mut handler =
+            stream::StreamHandler::new(term, graphics, &self.sgr_pixels, cell_size, None);
+        match scanned {
+            crate::kitty::ScanOutput::Plain(text) => {
+                parser.parse_text(&mut handler, text);
+            }
+            crate::kitty::ScanOutput::Items(items) => {
+                for item in items {
+                    match item {
+                        crate::kitty::ScanItem::Text(text) => {
+                            parser.parse_text(&mut handler, &text);
+                        }
+                        crate::kitty::ScanItem::Command(raw) => {
+                            let (saved_sync, _) =
+                                parser.prepare_for_graphics_command(&mut handler, |open| {
+                                    self.sync_open.store(open, Ordering::Release);
+                                });
+                            if let Some(prepared) = crate::kitty::PreparedCommand::direct_only(&raw)
+                            {
+                                handler.execute_kitty(&prepared, crate::kitty::ExecMode::Mirror);
+                            }
+                            parser.reopen_sync_after_graphics(&mut handler, saved_sync);
+                        }
+                        crate::kitty::ScanItem::Discarded => {
+                            let (saved_sync, _) =
+                                parser.prepare_for_graphics_command(&mut handler, |open| {
+                                    self.sync_open.store(open, Ordering::Release);
+                                });
+                            parser.reopen_sync_after_graphics(&mut handler, saved_sync);
+                        }
+                    }
+                }
+            }
+        }
+        handler.finish()
+    }
+
     fn apply_output_chunk(
         &self,
         sequence: &mut SequenceState,
@@ -911,10 +1086,16 @@ impl TerminalMirror {
         bytes: &[u8],
     ) {
         let mut term = self.term.lock();
+        let mut graphics = self.graphics.lock().unwrap();
+        let cell_size = *self.cell_size.lock().unwrap();
         let previous = *term.mode();
         let was_tui_ready = term_indicates_tui_ready(&term, parser);
+        let display_offset = term.grid().display_offset();
         parser.processor.begin_paint_tracking();
-        self.track_scroll(&mut term, |tracker| parse_with(parser, tracker, bytes));
+        let moved = self.parse_mirror_bytes(parser, &mut term, &mut graphics, cell_size, bytes);
+        self.apply_scroll_tracking(&mut term, display_offset, moved);
+        self.sync_open
+            .store(parser.sync_deadline().is_some(), Ordering::Release);
         finish_parsed_chunk(sequence, &mut term, parser, previous, was_tui_ready, seq);
     }
     /// Returns whether the bytes reached the terminal; a held burst has not.
@@ -933,7 +1114,7 @@ impl TerminalMirror {
         let mut parser = self.parser.lock().unwrap();
         let released;
         let bytes = if self.coalesce_bursts {
-            let synchronized = parser.processor.sync_timeout().sync_timeout().is_some();
+            let synchronized = parser.sync_deadline().is_some();
             match parser.burst.feed(bytes, now, synchronized) {
                 Burst::Pass => bytes,
                 Burst::Held => {
@@ -951,8 +1132,7 @@ impl TerminalMirror {
             bytes
         };
         self.apply_output_chunk(&mut sequence, &mut parser, seq, bytes);
-        if parser.processor.sync_timeout().sync_timeout().is_some()
-            && !std::mem::replace(&mut parser.flush_scheduled, true)
+        if parser.sync_deadline().is_some() && !std::mem::replace(&mut parser.flush_scheduled, true)
         {
             let _ = self.sync_flush.send(());
         }
@@ -977,17 +1157,29 @@ impl TerminalMirror {
             .is_some_and(|deadline| deadline <= now)
             && self.release_burst(&mut sequence, &mut parser);
         if parser
-            .processor
-            .sync_timeout()
-            .sync_timeout()
+            .sync_deadline()
             .is_some_and(|deadline| deadline <= now)
         {
             let mut term = self.term.lock();
+            let mut graphics = self.graphics.lock().unwrap();
+            let cell_size = *self.cell_size.lock().unwrap();
             let previous = *term.mode();
             let was_tui_ready = term_indicates_tui_ready(&term, &parser);
+            let display_offset = term.grid().display_offset();
             parser.processor.begin_paint_tracking();
-            self.track_scroll(&mut term, |tracker| parser.processor.stop_sync(tracker));
-            parser.boundary.end_sync();
+            let moved = {
+                let mut handler = stream::StreamHandler::new(
+                    &mut term,
+                    &mut graphics,
+                    &self.sgr_pixels,
+                    cell_size,
+                    None,
+                );
+                parser.finish_sync_timeout(&mut handler);
+                handler.finish()
+            };
+            self.apply_scroll_tracking(&mut term, display_offset, moved);
+            self.sync_open.store(false, Ordering::Release);
             let seq = active_output_seq(&sequence);
             finish_parsed_chunk(
                 &mut sequence,
@@ -999,13 +1191,10 @@ impl TerminalMirror {
             );
             flushed = true;
         }
-        let next = [
-            parser.burst.deadline(),
-            parser.processor.sync_timeout().sync_timeout(),
-        ]
-        .into_iter()
-        .flatten()
-        .min();
+        let next = [parser.burst.deadline(), parser.sync_deadline()]
+            .into_iter()
+            .flatten()
+            .min();
         if next.is_none() {
             parser.flush_scheduled = false;
         }
@@ -1017,24 +1206,17 @@ impl TerminalMirror {
         next
     }
     fn wake_viewers(&self) {
-        if self.viewers.load(Ordering::Acquire) > 0 {
+        if !self.sync_open.load(Ordering::Acquire) && self.viewers.load(Ordering::Acquire) > 0 {
             (self.waker)();
         }
     }
 
-    /// Feeds the term through a scroll tracker and records how far the
-    /// content moved. A held viewport at the bottom scrolls back by the same
-    /// amount, stopping at the oldest line; one already scrolled back is kept
-    /// in place by alacritty.
-    fn track_scroll(
+    fn apply_scroll_tracking(
         &self,
         term: &mut Term<EventProxy>,
-        apply: impl FnOnce(&mut find::ScrollTracker<'_, EventProxy>),
+        display_offset: usize,
+        moved: Option<usize>,
     ) {
-        let display_offset = term.grid().display_offset();
-        let mut tracker = find::ScrollTracker::new(term);
-        apply(&mut tracker);
-        let moved = tracker.finish();
         if let Some(lines) = moved.filter(|lines| *lines > 0) {
             if display_offset == 0 && self.viewport_holds.load(Ordering::Acquire) > 0 {
                 term.scroll_display(Scroll::Delta(i32::try_from(lines).unwrap_or(i32::MAX)));
@@ -1246,13 +1428,21 @@ impl TerminalMirror {
     fn resize_local(&self, cols: u16, rows: u16) {
         let _parser = self.parser.lock().unwrap();
         let mut term = self.term.lock();
+        let mut graphics = self.graphics.lock().unwrap();
         let mut size = self.size.lock().unwrap();
+        let cell_size = *self.cell_size.lock().unwrap();
         let rows_changed = size.1 != rows;
         if *size != (cols, rows) {
             self.scroll_mark.lock().unwrap().rebuild();
         }
         *size = (cols, rows);
-        term.resize(TermSize::new(cols as usize, rows as usize));
+        stream::resize_term_and_graphics(
+            &mut term,
+            &mut graphics,
+            cols as usize,
+            rows as usize,
+            cell_size,
+        );
         if rows_changed {
             term.selection = None;
         }
@@ -1260,9 +1450,47 @@ impl TerminalMirror {
     pub fn size(&self) -> (u16, u16) {
         *self.size.lock().unwrap()
     }
+    pub fn cell_size(&self) -> crate::kitty::CellSize {
+        *self.cell_size.lock().unwrap()
+    }
+    pub fn set_cell_size(&self, cell_size: crate::kitty::CellSize) {
+        if cell_size.width > 0 && cell_size.height > 0 {
+            *self.cell_size.lock().unwrap() = cell_size.clamped();
+        }
+    }
+    pub fn sgr_pixels(&self) -> bool {
+        self.sgr_pixels.load(Ordering::Acquire)
+    }
+    pub fn graphics(&self) -> &Arc<Mutex<crate::kitty::TerminalGraphics>> {
+        &self.graphics
+    }
     pub fn scroll(&self, delta_lines: i32, bypass_reporting: bool, column: usize, row: usize) {
+        self.scroll_at(
+            delta_lines,
+            bypass_reporting,
+            crate::mappings::MousePosition {
+                column,
+                row,
+                pixel_x: 0,
+                pixel_y: 0,
+            },
+        );
+    }
+    pub fn scroll_at(
+        &self,
+        delta_lines: i32,
+        bypass_reporting: bool,
+        position: crate::mappings::MousePosition,
+    ) {
         let mode = *self.term.lock_unfair().mode();
-        match crate::mappings::encode_scroll(mode, delta_lines, bypass_reporting, column, row) {
+        let sgr_pixels = self.sgr_pixels();
+        match crate::mappings::encode_scroll_at(
+            mode,
+            sgr_pixels,
+            delta_lines,
+            bypass_reporting,
+            position,
+        ) {
             Some(bytes) => {
                 if !bytes.is_empty() {
                     let _ = self.write_user_bytes(&bytes);
@@ -1529,7 +1757,7 @@ fn term_indicates_tui_ready(term: &Term<EventProxy>, parser: &ParserState) -> bo
     let mode = *term.mode();
     mode.intersects(TUI_READY_MODES)
         || !mode.contains(TermMode::SHOW_CURSOR)
-        || parser.processor.sync_timeout().sync_timeout().is_some()
+        || parser.sync_deadline().is_some()
 }
 
 fn update_tui_ready(
@@ -1727,7 +1955,7 @@ impl TerminalMirror {
     pub fn sync_state(&self) -> (Option<Instant>, usize, bool) {
         let parser = self.parser.lock().unwrap();
         (
-            parser.processor.sync_timeout().sync_timeout(),
+            parser.sync_deadline(),
             parser.processor.sync_bytes_count(),
             parser.flush_scheduled,
         )

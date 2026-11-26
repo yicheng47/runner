@@ -1,19 +1,11 @@
 //! Find in terminal: the query's pattern, its matches over a `Term`'s active
-//! grid, and the tracker that measures how far output moved the content.
+//! grid, and the scroll-mark helper that carries matches across output.
 
-use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions as _;
 use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point};
 use alacritty_terminal::term::search::{Match, RegexSearch};
-use alacritty_terminal::term::{Term, TermMode};
-use alacritty_terminal::vte::ansi::cursor_icon::CursorIcon;
+use alacritty_terminal::term::Term;
 use unicode_width::UnicodeWidthChar as _;
-
-use alacritty_terminal::vte::ansi::{
-    Attr, CharsetIndex, ClearMode, CursorShape, CursorStyle, Handler, Hyperlink, KeyboardModes,
-    KeyboardModesApplyBehavior, LineClearMode, Mode, ModifyOtherKeys, PrivateMode, Rgb,
-    ScpCharPath, ScpUpdateMode, StandardCharset, TabulationClearMode,
-};
 
 /// Counts past this many read as "1000+".
 pub const MATCH_LIMIT: usize = 1000;
@@ -253,163 +245,6 @@ fn matches_left<T>(
         origin = before(term, start);
     }
     false
-}
-
-/// Feeds a `Term` and measures how far its content moves up. Every parser
-/// call is forwarded unchanged; after each call that can scroll, the tracker
-/// finds the row that was at the top of the screen. A row's cells keep their
-/// allocation while the ring buffer rotates and swaps rows (only a resize
-/// reallocates them), and one call scrolls at most a screen's height, so the
-/// row is always found and the count stays exact however long the output is,
-/// synchronized updates included. Calls made on the other screen are not
-/// counted; `finish` reports a switch of screens.
-pub struct ScrollTracker<'a, T> {
-    term: &'a mut Term<T>,
-    alt_screen: bool,
-    lines: usize,
-}
-
-impl<'a, T: EventListener> ScrollTracker<'a, T> {
-    pub fn new(term: &'a mut Term<T>) -> Self {
-        let alt_screen = term.mode().contains(TermMode::ALT_SCREEN);
-        Self {
-            term,
-            alt_screen,
-            lines: 0,
-        }
-    }
-
-    /// Lines moved up, or `None` when the parse ended on the other screen.
-    pub fn finish(self) -> Option<usize> {
-        (self.term.mode().contains(TermMode::ALT_SCREEN) == self.alt_screen).then_some(self.lines)
-    }
-
-    fn scrolling(&mut self, call: impl FnOnce(&mut Term<T>)) {
-        let row = row_address(self.term, Line(0));
-        call(self.term);
-        let term = &*self.term;
-        if term.mode().contains(TermMode::ALT_SCREEN) != self.alt_screen
-            || row_address(term, Line(0)) == row
-        {
-            return;
-        }
-        let screen_lines = term.screen_lines() as i32;
-        let in_history = (1..=screen_lines.min(term.history_size() as i32))
-            .find(|line| row_address(term, Line(-line)) == row);
-        // Without room in history the top row is reused at the bottom.
-        let reused = || (1..screen_lines).find(|line| row_address(term, Line(*line)) == row);
-        self.lines += match in_history {
-            Some(line) => line as usize,
-            None => reused().map_or(screen_lines as usize, |line| (screen_lines - line) as usize),
-        };
-    }
-}
-
-fn row_address<T>(term: &Term<T>, line: Line) -> usize {
-    std::ptr::from_ref(&term.grid()[line][Column(0)]) as usize
-}
-
-macro_rules! forward {
-    ($($name:ident($($arg:ident: $ty:ty),*);)*) => {
-        $(
-            #[inline]
-            fn $name(&mut self, $($arg: $ty),*) {
-                <Term<T> as Handler>::$name(self.term, $($arg),*)
-            }
-        )*
-    };
-}
-
-macro_rules! forward_scrolling {
-    ($($name:ident($($arg:ident: $ty:ty),*);)*) => {
-        $(
-            #[inline]
-            fn $name(&mut self, $($arg: $ty),*) {
-                self.scrolling(|term| <Term<T> as Handler>::$name(term, $($arg),*))
-            }
-        )*
-    };
-}
-
-/// Every `Handler` method, so the terminal behaves exactly as when fed
-/// directly; the fixture test below replays the corpus both ways.
-impl<T: EventListener> Handler for ScrollTracker<'_, T> {
-    forward_scrolling! {
-        input(c: char);
-        linefeed();
-        newline();
-        scroll_up(lines: usize);
-        delete_lines(lines: usize);
-        clear_screen(mode: ClearMode);
-        put_tab(count: u16);
-    }
-
-    forward! {
-        set_title(title: Option<String>);
-        set_cursor_style(style: Option<CursorStyle>);
-        set_cursor_shape(shape: CursorShape);
-        goto(line: i32, col: usize);
-        goto_line(line: i32);
-        goto_col(col: usize);
-        insert_blank(count: usize);
-        move_up(lines: usize);
-        move_down(lines: usize);
-        identify_terminal(intermediate: Option<char>);
-        device_status(arg: usize);
-        move_forward(col: usize);
-        move_backward(col: usize);
-        move_down_and_cr(row: usize);
-        move_up_and_cr(row: usize);
-        backspace();
-        carriage_return();
-        bell();
-        substitute();
-        set_horizontal_tabstop();
-        scroll_down(lines: usize);
-        insert_blank_lines(lines: usize);
-        erase_chars(count: usize);
-        delete_chars(count: usize);
-        move_backward_tabs(count: u16);
-        move_forward_tabs(count: u16);
-        save_cursor_position();
-        restore_cursor_position();
-        clear_line(mode: LineClearMode);
-        clear_tabs(mode: TabulationClearMode);
-        set_tabs(interval: u16);
-        reset_state();
-        reverse_index();
-        terminal_attribute(attr: Attr);
-        set_mode(mode: Mode);
-        unset_mode(mode: Mode);
-        report_mode(mode: Mode);
-        set_private_mode(mode: PrivateMode);
-        unset_private_mode(mode: PrivateMode);
-        report_private_mode(mode: PrivateMode);
-        set_scrolling_region(top: usize, bottom: Option<usize>);
-        set_keypad_application_mode();
-        unset_keypad_application_mode();
-        set_active_charset(index: CharsetIndex);
-        configure_charset(index: CharsetIndex, charset: StandardCharset);
-        set_color(index: usize, color: Rgb);
-        dynamic_color_sequence(prefix: String, index: usize, terminator: &str);
-        reset_color(index: usize);
-        clipboard_store(clipboard: u8, data: &[u8]);
-        clipboard_load(clipboard: u8, terminator: &str);
-        decaln();
-        push_title();
-        pop_title();
-        text_area_size_pixels();
-        text_area_size_chars();
-        set_hyperlink(hyperlink: Option<Hyperlink>);
-        set_mouse_cursor_icon(icon: CursorIcon);
-        report_keyboard_mode();
-        push_keyboard_mode(mode: KeyboardModes);
-        pop_keyboard_modes(to_pop: u16);
-        set_keyboard_mode(mode: KeyboardModes, behavior: KeyboardModesApplyBehavior);
-        set_modify_other_keys(mode: ModifyOtherKeys);
-        report_modify_other_keys();
-        set_scp(char_path: ScpCharPath, update_mode: ScpUpdateMode);
-    }
 }
 
 /// How far the content has moved up since the terminal was last rebuilt.
@@ -768,7 +603,15 @@ mod tests {
 
     /// Lines `bytes` moved the content, measured the way the mirror does.
     fn moved(term: &mut Term<VoidListener>, bytes: &[u8]) -> Option<usize> {
-        let mut tracker = ScrollTracker::new(term);
+        let mut graphics = crate::kitty::TerminalGraphics::mirror();
+        let sgr_pixels = std::sync::atomic::AtomicBool::new(false);
+        let mut tracker = crate::terminal::stream::StreamHandler::new(
+            term,
+            &mut graphics,
+            &sgr_pixels,
+            crate::kitty::CellSize::ZERO,
+            None,
+        );
         crate::snapshot::TrackedProcessor::new().advance(&mut tracker, bytes);
         tracker.finish()
     }
@@ -870,12 +713,26 @@ mod tests {
         // An update left open is applied when the flusher stops it.
         let mut term = full();
         let mut processor = crate::snapshot::TrackedProcessor::new();
+        let mut graphics = crate::kitty::TerminalGraphics::mirror();
+        let sgr_pixels = std::sync::atomic::AtomicBool::new(false);
         let mut open = b"\x1b[?2026h".to_vec();
         open.extend_from_slice(&numbered(0..1010, "more"));
-        let mut tracker = ScrollTracker::new(&mut term);
+        let mut tracker = crate::terminal::stream::StreamHandler::new(
+            &mut term,
+            &mut graphics,
+            &sgr_pixels,
+            crate::kitty::CellSize::ZERO,
+            None,
+        );
         processor.advance(&mut tracker, &open);
         assert_eq!(tracker.finish(), Some(0));
-        let mut tracker = ScrollTracker::new(&mut term);
+        let mut tracker = crate::terminal::stream::StreamHandler::new(
+            &mut term,
+            &mut graphics,
+            &sgr_pixels,
+            crate::kitty::CellSize::ZERO,
+            None,
+        );
         processor.stop_sync(&mut tracker);
         assert_eq!(tracker.finish(), Some(1010));
 
@@ -920,6 +777,8 @@ mod tests {
             let (cols, rows) = (fixture.header.cols as usize, fixture.header.rows as usize);
             let mut plain = term(cols, rows, 10_000);
             let mut tracked = term(cols, rows, 10_000);
+            let mut graphics = crate::kitty::TerminalGraphics::mirror();
+            let sgr_pixels = std::sync::atomic::AtomicBool::new(false);
             let mut plain_parser = crate::snapshot::TrackedProcessor::new();
             let mut tracked_parser = crate::snapshot::TrackedProcessor::new();
             for event in &fixture.events {
@@ -927,12 +786,25 @@ mod tests {
                     FixtureEvent::Data { data, .. } => {
                         let bytes = decode_chunk(data).unwrap();
                         plain_parser.advance(&mut plain, &bytes);
-                        tracked_parser.advance(&mut ScrollTracker::new(&mut tracked), &bytes);
+                        let mut handler = crate::terminal::stream::StreamHandler::new(
+                            &mut tracked,
+                            &mut graphics,
+                            &sgr_pixels,
+                            crate::kitty::CellSize::ZERO,
+                            None,
+                        );
+                        tracked_parser.advance(&mut handler, &bytes);
                     }
                     FixtureEvent::Resize { cols, rows, .. } => {
                         let size = || TermSize::new(*cols as usize, *rows as usize);
                         plain.resize(size());
-                        tracked.resize(size());
+                        crate::terminal::stream::resize_term_and_graphics(
+                            &mut tracked,
+                            &mut graphics,
+                            *cols as usize,
+                            *rows as usize,
+                            crate::kitty::CellSize::ZERO,
+                        );
                     }
                     _ => {}
                 }

@@ -58,6 +58,65 @@ pub struct MouseModifiers {
     pub control: bool,
 }
 
+/// Pointer location in both cell coordinates and zero-based, clamped session
+/// pixel coordinates (used when DEC private mode 1016 / SGR-Pixels is active).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MousePosition {
+    pub column: usize,
+    pub row: usize,
+    pub pixel_x: u32,
+    pub pixel_y: u32,
+}
+
+/// Map a pointer offset relative to the pane content origin into zero-based
+/// session pixel coordinates clamped to `0 ..= cols * cell_w - 1` and
+/// `0 ..= rows * cell_h - 1`. When the session cell size is zero, the viewer's
+/// own device-pixel cell size stands in.
+#[allow(clippy::too_many_arguments)]
+pub fn session_pixel_position(
+    offset_x: f32,
+    offset_y: f32,
+    viewer_cell_width: f32,
+    viewer_cell_height: f32,
+    cols: usize,
+    rows: usize,
+    session_cell: crate::kitty::CellSize,
+    viewer_cell_device: crate::kitty::CellSize,
+) -> (u32, u32) {
+    let cell_w = if session_cell.width > 0 {
+        session_cell.width
+    } else {
+        viewer_cell_device.width
+    };
+    let cell_h = if session_cell.height > 0 {
+        session_cell.height
+    } else {
+        viewer_cell_device.height
+    };
+    (
+        map_axis_pixel(offset_x, viewer_cell_width, cols, cell_w),
+        map_axis_pixel(offset_y, viewer_cell_height, rows, cell_h),
+    )
+}
+
+fn map_axis_pixel(offset: f32, viewer_cell: f32, count: usize, cell_px: u16) -> u32 {
+    let max_px = (count as u64)
+        .saturating_mul(u64::from(cell_px))
+        .saturating_sub(1)
+        .min(u64::from(u32::MAX)) as u32;
+    if max_px == 0 || !offset.is_finite() || !viewer_cell.is_finite() || viewer_cell <= 0.0 {
+        return 0;
+    }
+    let scaled = (f64::from(offset) / f64::from(viewer_cell) * f64::from(cell_px)).floor();
+    if scaled <= 0.0 {
+        0
+    } else if scaled >= f64::from(max_px) {
+        max_px
+    } else {
+        scaled as u32
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MouseAction {
     Press,
@@ -294,6 +353,27 @@ pub fn encode_scroll(
     column: usize,
     row: usize,
 ) -> Option<Vec<u8>> {
+    encode_scroll_at(
+        mode,
+        false,
+        delta_lines,
+        bypass_reporting,
+        MousePosition {
+            column,
+            row,
+            pixel_x: 0,
+            pixel_y: 0,
+        },
+    )
+}
+
+pub fn encode_scroll_at(
+    mode: TermMode,
+    sgr_pixels: bool,
+    delta_lines: i32,
+    bypass_reporting: bool,
+    position: MousePosition,
+) -> Option<Vec<u8>> {
     if delta_lines == 0 || bypass_reporting {
         return None;
     }
@@ -301,10 +381,17 @@ pub fn encode_scroll(
     let count = delta_lines.unsigned_abs() as usize;
     if mode.intersects(TermMode::MOUSE_MODE) {
         let button: u8 = if up { 64 } else { 65 };
-        let Some(column) = column.checked_add(1) else {
+        if sgr_pixels {
+            return Some(
+                format!("\x1b[<{button};{};{}M", position.pixel_x, position.pixel_y)
+                    .into_bytes()
+                    .repeat(count),
+            );
+        }
+        let Some(column) = position.column.checked_add(1) else {
             return Some(Vec::new());
         };
-        let Some(row) = row.checked_add(1) else {
+        let Some(row) = position.row.checked_add(1) else {
             return Some(Vec::new());
         };
         return Some(if mode.contains(TermMode::SGR_MOUSE) {
@@ -343,12 +430,35 @@ pub fn encode_mouse_press(
     modifiers: MouseModifiers,
     bypass_reporting: bool,
 ) -> Option<Vec<u8>> {
+    encode_mouse_press_at(
+        mode,
+        false,
+        button,
+        MousePosition {
+            column,
+            row,
+            pixel_x: 0,
+            pixel_y: 0,
+        },
+        modifiers,
+        bypass_reporting,
+    )
+}
+
+pub fn encode_mouse_press_at(
+    mode: TermMode,
+    sgr_pixels: bool,
+    button: MouseButton,
+    position: MousePosition,
+    modifiers: MouseModifiers,
+    bypass_reporting: bool,
+) -> Option<Vec<u8>> {
     encode_mouse(
         mode,
+        sgr_pixels,
         MouseAction::Press,
-        button,
-        column,
-        row,
+        Some(button),
+        position,
         modifiers,
         bypass_reporting,
     )
@@ -362,12 +472,35 @@ pub fn encode_mouse_release(
     modifiers: MouseModifiers,
     bypass_reporting: bool,
 ) -> Option<Vec<u8>> {
+    encode_mouse_release_at(
+        mode,
+        false,
+        button,
+        MousePosition {
+            column,
+            row,
+            pixel_x: 0,
+            pixel_y: 0,
+        },
+        modifiers,
+        bypass_reporting,
+    )
+}
+
+pub fn encode_mouse_release_at(
+    mode: TermMode,
+    sgr_pixels: bool,
+    button: MouseButton,
+    position: MousePosition,
+    modifiers: MouseModifiers,
+    bypass_reporting: bool,
+) -> Option<Vec<u8>> {
     encode_mouse(
         mode,
+        sgr_pixels,
         MouseAction::Release,
-        button,
-        column,
-        row,
+        Some(button),
+        position,
         modifiers,
         bypass_reporting,
     )
@@ -381,12 +514,35 @@ pub fn encode_mouse_motion(
     modifiers: MouseModifiers,
     bypass_reporting: bool,
 ) -> Option<Vec<u8>> {
+    encode_mouse_motion_at(
+        mode,
+        false,
+        Some(button),
+        MousePosition {
+            column,
+            row,
+            pixel_x: 0,
+            pixel_y: 0,
+        },
+        modifiers,
+        bypass_reporting,
+    )
+}
+
+pub fn encode_mouse_motion_at(
+    mode: TermMode,
+    sgr_pixels: bool,
+    button: Option<MouseButton>,
+    position: MousePosition,
+    modifiers: MouseModifiers,
+    bypass_reporting: bool,
+) -> Option<Vec<u8>> {
     encode_mouse(
         mode,
+        sgr_pixels,
         MouseAction::Motion,
         button,
-        column,
-        row,
+        position,
         modifiers,
         bypass_reporting,
     )
@@ -394,33 +550,54 @@ pub fn encode_mouse_motion(
 
 fn encode_mouse(
     mode: TermMode,
+    sgr_pixels: bool,
     action: MouseAction,
-    button: MouseButton,
-    column: usize,
-    row: usize,
+    button: Option<MouseButton>,
+    position: MousePosition,
     modifiers: MouseModifiers,
     bypass_reporting: bool,
 ) -> Option<Vec<u8>> {
     if bypass_reporting || !mode.intersects(TermMode::MOUSE_MODE) {
         return None;
     }
-    if action == MouseAction::Motion
-        && !mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION)
-    {
-        return None;
+    if action == MouseAction::Motion {
+        if button.is_none() {
+            if !mode.contains(TermMode::MOUSE_MOTION) {
+                return None;
+            }
+        } else if !mode.intersects(TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION) {
+            return None;
+        }
     }
 
     let button_code = match button {
-        MouseButton::Left => 0,
-        MouseButton::Middle => 1,
-        MouseButton::Right => 2,
+        Some(MouseButton::Left) => 0,
+        Some(MouseButton::Middle) => 1,
+        Some(MouseButton::Right) => 2,
+        None => 3,
     };
     let modifier_code = (u8::from(modifiers.shift) * 4)
         | (u8::from(modifiers.alt) * 8)
         | (u8::from(modifiers.control) * 16);
     let code = button_code | modifier_code | if action == MouseAction::Motion { 32 } else { 0 };
-    let column = column + 1;
-    let row = row + 1;
+
+    if sgr_pixels {
+        let suffix = if action == MouseAction::Release {
+            'm'
+        } else {
+            'M'
+        };
+        return Some(
+            format!(
+                "\x1b[<{code};{};{}{suffix}",
+                position.pixel_x, position.pixel_y
+            )
+            .into_bytes(),
+        );
+    }
+
+    let column = position.column.checked_add(1)?;
+    let row = position.row.checked_add(1)?;
 
     if mode.contains(TermMode::SGR_MOUSE) {
         let suffix = if action == MouseAction::Release {
