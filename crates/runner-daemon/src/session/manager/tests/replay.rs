@@ -391,6 +391,7 @@ fn install_replay_handle(
         forwarder: None,
         input: Default::default(),
         stop: Arc::new(AtomicBool::new(false)),
+        bound_stop: None,
     };
     let sink = ForwarderEmitCtx {
         crew_id: Some("scenario-crew".into()),

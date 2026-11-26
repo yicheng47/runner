@@ -38,6 +38,7 @@ impl SessionManager {
         }
         let (rt_session, output) = self.spawn_runtime(spec)?;
         let stop = output.stop_flag();
+        let bound_stop = output.bound_stop();
         self.install_handle(
             &session_id,
             SessionHandle {
@@ -52,6 +53,7 @@ impl SessionManager {
                 forwarder: None,
                 input: Default::default(),
                 stop: Arc::clone(&stop),
+                bound_stop: bound_stop.clone(),
             },
             None,
             initial_size,
@@ -87,30 +89,31 @@ impl SessionManager {
                 .ok()
                 .flatten()
                 .and_then(|status| status.exit_code);
-            let _ = manager.runtime.stop(&rt_session);
+            let _ = manager.stop_runtime_launch(&rt_session, bound_stop.as_ref());
             manager.take_killed(&forwarder_id);
-            let still_current = manager
-                .forget_runtime_handle_for_launch(&forwarder_id, &rt_session, Some(&stop))
-                .unwrap_or(false);
-            if still_current {
-                // Finished update tasks keep their terminal until dismissed.
-                let retained = manager
-                    .runtime_updates
-                    .lock()
-                    .unwrap()
-                    .tasks
-                    .iter()
-                    .any(|task| task.id == forwarder_id);
-                if !retained {
-                    manager.sessions.lock().unwrap().remove(&forwarder_id);
-                }
-                events.exit(&ExitEvent {
-                    session_id: forwarder_id,
+            let _ =
+                manager.forget_runtime_handle_for_launch(&forwarder_id, &rt_session, Some(&stop));
+            // Finished update tasks keep their terminal until dismissed.
+            let retained = manager
+                .runtime_updates
+                .lock()
+                .unwrap()
+                .tasks
+                .iter()
+                .any(|task| task.id == forwarder_id);
+            manager.publish_launch_exit(
+                &forwarder_id,
+                Some(&stop),
+                true,
+                !retained,
+                &ExitEvent {
+                    session_id: forwarder_id.clone(),
                     mission_id: None,
                     exit_code,
                     success: exit_code == Some(0),
-                });
-            }
+                },
+                events.as_ref(),
+            );
             let _ = completed.send(exit_code);
         });
         self.install_forwarder(&session_id, forwarder);

@@ -366,7 +366,7 @@ impl SessionManager {
                 session_id,
                 slot_handle,
             );
-            if let Err(e) = self.runtime.stop(&rt_session) {
+            if let Err(e) = self.stop_runtime_launch(&rt_session, output.bound_stop().as_ref()) {
                 log::warn!(
                     "failed to stop just-spawned PTY for cancelled session {session_id}: {e}"
                 );
@@ -455,6 +455,7 @@ impl SessionManager {
                 forwarder: None,
                 input: Default::default(),
                 stop,
+                bound_stop: output.bound_stop(),
             },
             spawn_emit_ctx.clone(),
             initial_size,

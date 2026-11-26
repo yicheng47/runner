@@ -116,6 +116,7 @@ impl StartupFixture {
                 forwarder: None,
                 input: Default::default(),
                 stop: output.stop_flag(),
+                bound_stop: None,
             },
             Some(ForwarderEmitCtx {
                 crew_id: None,

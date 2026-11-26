@@ -758,6 +758,7 @@ fn install_test_session_handle(manager: &SessionManager, session_id: &str) {
         forwarder: None,
         input: Default::default(),
         stop: Arc::new(AtomicBool::new(false)),
+        bound_stop: None,
     });
 }
 

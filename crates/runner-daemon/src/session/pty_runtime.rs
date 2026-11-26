@@ -30,8 +30,8 @@ use super::process::{kill_process, ProcessTree};
 #[cfg(unix)]
 use super::process::{process_command_line, reap_descendants, wait_for_process_exit_until};
 use super::runtime::{
-    BoundInput, OutputStream, RuntimeError, RuntimeOutput, RuntimeResult, RuntimeSession,
-    SessionActivityState, SessionRuntime, SessionStatus, SpawnSpec,
+    BoundInput, BoundStop, OutputStream, RuntimeError, RuntimeOutput, RuntimeResult,
+    RuntimeSession, SessionActivityState, SessionRuntime, SessionStatus, SpawnSpec,
 };
 use crate::session::state::{CTRL_C_INTERRUPT, ESCAPE_INTERRUPT};
 
@@ -139,6 +139,7 @@ struct SessionHandle {
     /// `IdleDetector`), so resizing an idle session doesn't read as Busy.
     last_resize: Mutex<Option<Instant>>,
     idle_detector: Arc<Mutex<IdleDetector>>,
+    hook_retirement: Option<super::hook_queue::HookRetirement>,
     pid: Option<i32>,
     process_tree: Option<ProcessTree>,
     command: String,
@@ -259,6 +260,7 @@ impl PtyRuntime {
         launch::adapt_windows_batch_command(&mut cmd)
             .map_err(|error| RuntimeError::Msg(error.to_string()))?;
 
+        let mut hook_retirement = None;
         let mut hook_status = spec
             .agent_runtime
             .and_then(|runtime| crate::runtimes::adapter(runtime).status_hooks())
@@ -270,6 +272,7 @@ impl PtyRuntime {
                         spec.session_id.clone(),
                         generation.clone(),
                     );
+                    hook_retirement = Some(receiver.retirement());
                     hooks.start_receiver(&spec, receiver)
                 } else {
                     None
@@ -367,6 +370,7 @@ impl PtyRuntime {
             alive: AtomicBool::new(true),
             last_resize: Mutex::new(None),
             idle_detector: Arc::new(Mutex::new(idle_detector)),
+            hook_retirement,
             pid,
             process_tree,
             command: format_command_summary(&spec.command, &spec.args),
@@ -408,12 +412,92 @@ impl PtyRuntime {
         readers.retain(|reader| !reader.is_finished());
         readers.push(worker);
 
+        let bound_stop: BoundStop = {
+            let handle = Arc::clone(&handle);
+            let session_id = spec.session_id.clone();
+            Arc::new(move || stop_handle(&session_id, &handle))
+        };
         let rt_session = RuntimeSession {
             runtime: RUNTIME_LABEL.to_string(),
             session_id: spec.session_id,
         };
-        let stream = OutputStream::new(rx, stop).holding(entry);
+        let stream = OutputStream::new(rx, stop)
+            .holding(entry)
+            .with_stop(bound_stop);
         Ok((rt_session, stream))
+    }
+}
+
+#[cfg(unix)]
+fn stop_handle(session_id: &str, handle: &Arc<SessionHandle>) -> RuntimeResult<()> {
+    if let Some(retirement) = handle.hook_retirement.as_ref() {
+        retirement.retire();
+    }
+    let mut killer = handle.killer.lock().expect("killer poisoned");
+    let child = handle.child.lock().expect("child slot poisoned").take();
+    // Snapshot before SIGHUP: once the agent is gone its children are
+    // reparented outside its tree and ancestry no longer identifies them.
+    let descendants = handle
+        .process_tree
+        .as_ref()
+        .map(ProcessTree::snapshot_descendants)
+        .unwrap_or_default();
+
+    let result = match child {
+        Some(mut child) => {
+            let result = stop_and_reap_child(
+                session_id,
+                handle.process_tree.as_ref(),
+                killer.as_mut(),
+                child.as_mut(),
+            );
+            match result {
+                Ok(status) => {
+                    record_exit_status(handle, status);
+                    Ok(())
+                }
+                Err(error) => {
+                    handle
+                        .child
+                        .lock()
+                        .expect("child slot poisoned")
+                        .replace(child);
+                    Err(error)
+                }
+            }
+        }
+        None => stop_child_owned_by_reader(session_id, handle.pid, killer.as_mut(), handle),
+    };
+    if result.is_ok() {
+        reap_descendants(session_id, &descendants);
+    }
+    result
+}
+
+#[cfg(windows)]
+fn stop_handle(session_id: &str, handle: &Arc<SessionHandle>) -> RuntimeResult<()> {
+    if let Some(retirement) = handle.hook_retirement.as_ref() {
+        retirement.retire();
+    }
+    let child = handle.child.lock().expect("child slot poisoned").take();
+    match child {
+        Some(mut child) => {
+            match stop_and_reap_child(session_id, handle.process_tree.as_ref(), child.as_mut()) {
+                Ok(status) => {
+                    record_exit_status(handle, status);
+                    Ok(())
+                }
+                Err(error) => {
+                    handle
+                        .child
+                        .lock()
+                        .expect("child slot poisoned")
+                        .replace(child);
+                    Err(error)
+                }
+            }
+        }
+        None => stop_child_owned_by_reader(session_id, handle),
     }
 }
 
@@ -435,92 +519,19 @@ impl SessionRuntime for PtyRuntime {
         self.spawn_with_base_command(spec, cmd)
     }
 
-    #[cfg(unix)]
     fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
-        self.hooks.retire(&session.session_id);
         // An untracked session's reader has reaped its child and its output
         // stream is gone, so it has already stopped.
         let Ok(handle) = lookup(self, &session.session_id) else {
             return Ok(());
         };
-        let mut killer = handle.killer.lock().expect("killer poisoned");
-        let child = handle.child.lock().expect("child slot poisoned").take();
-        // Snapshot before SIGHUP: once the agent is gone its children are
-        // reparented outside its tree and ancestry no longer identifies them.
-        let descendants = handle
-            .process_tree
-            .as_ref()
-            .map(ProcessTree::snapshot_descendants)
-            .unwrap_or_default();
-
-        let result = match child {
-            Some(mut child) => {
-                let result = stop_and_reap_child(
-                    &session.session_id,
-                    handle.process_tree.as_ref(),
-                    killer.as_mut(),
-                    child.as_mut(),
-                );
-                match result {
-                    Ok(status) => {
-                        record_exit_status(&handle, status);
-                        Ok(())
-                    }
-                    Err(error) => {
-                        handle
-                            .child
-                            .lock()
-                            .expect("child slot poisoned")
-                            .replace(child);
-                        Err(error)
-                    }
-                }
-            }
-            None => stop_child_owned_by_reader(
-                &session.session_id,
-                handle.pid,
-                killer.as_mut(),
-                &handle,
-            ),
-        };
-        if result.is_ok() {
-            reap_descendants(&session.session_id, &descendants);
-        }
-        result
+        stop_handle(&session.session_id, &handle)
     }
 
-    #[cfg(windows)]
-    fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
-        self.hooks.retire(&session.session_id);
-        // An untracked session's reader has reaped its child and its output
-        // stream is gone, so it has already stopped.
-        let Ok(handle) = lookup(self, &session.session_id) else {
-            return Ok(());
-        };
-        let child = handle.child.lock().expect("child slot poisoned").take();
-        match child {
-            Some(mut child) => {
-                match stop_and_reap_child(
-                    &session.session_id,
-                    handle.process_tree.as_ref(),
-                    child.as_mut(),
-                ) {
-                    Ok(status) => {
-                        record_exit_status(&handle, status);
-                        Ok(())
-                    }
-                    Err(error) => {
-                        handle
-                            .child
-                            .lock()
-                            .expect("child slot poisoned")
-                            .replace(child);
-                        Err(error)
-                    }
-                }
-            }
-            None => stop_child_owned_by_reader(&session.session_id, &handle),
-        }
+    fn bind_stop(&self, session: &RuntimeSession) -> Option<BoundStop> {
+        let handle = lookup(self, &session.session_id).ok()?;
+        let session_id = session.session_id.clone();
+        Some(Arc::new(move || stop_handle(&session_id, &handle)))
     }
 
     fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {

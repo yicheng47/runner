@@ -326,10 +326,15 @@ impl SessionManager {
     }
 
     fn publish_handle_install(&self, spawned: &SessionSpawnedEvent, events: &dyn SessionEvents) {
+        let publish_lock = self
+            .session_state(&spawned.session_id)
+            .map(|state| Arc::clone(&state.lock().unwrap().lifecycle_publish));
+        let _publish = publish_lock.as_ref().map(|lock| lock.lock().unwrap());
         if let Ok(terminal) = self.terminal_model(&spawned.session_id) {
             terminal.publish_initial();
         }
         events.spawned(spawned);
+        drop(_publish);
         self.notify_delivery_event(&spawned.session_id, router::SessionDeliveryEvent::Respawned);
     }
 

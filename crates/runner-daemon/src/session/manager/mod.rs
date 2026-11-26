@@ -130,6 +130,8 @@ struct SessionHandle {
     /// cleanup stalled — observed live as a stuck "Archiving…" pill
     /// on the chat page.
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Launch-bound runtime stopper so a delayed kill never stops a replacement launch reusing this id.
+    bound_stop: Option<super::runtime::BoundStop>,
     /// This process's PTY input; dropping the handle drops whatever it has not written.
     input: input_writer::InputQueue,
 }
@@ -269,6 +271,9 @@ struct SessionState {
     delivery_prompted: bool,
     handle: Option<SessionHandle>,
     last_launch: Option<Arc<AtomicBool>>,
+    /// Serializes `session/spawned` and `session/exit` emission for this session so an older
+    /// launch's exit can never be delivered after a replacement launch's spawn.
+    lifecycle_publish: Arc<Mutex<()>>,
     model: SessionModel,
     optimistic_completion: Option<OptimisticCompletion>,
     delivery_gate: Arc<DeliveryGate>,

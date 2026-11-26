@@ -984,6 +984,7 @@ fn settle_and_install_handle_drop_locks_before_db_and_reject_stale_resize_writes
         forwarder: None,
         input: Default::default(),
         stop: Default::default(),
+        bound_stop: None,
     };
     let check_mgr = Arc::clone(&mgr);
     let check_state = Arc::clone(&state);
@@ -1075,6 +1076,7 @@ fn install_handle_stalled_pool_checkout_keeps_terminal_control_free_1377() {
         forwarder: None,
         input: Default::default(),
         stop: Default::default(),
+        bound_stop: None,
     };
     let install_mgr = Arc::clone(&mgr);
     let install_pool = Arc::clone(&pool);
@@ -1357,6 +1359,7 @@ fn install_handle_and_prepare_unlisted_revalidate_control_group_after_tab_move_1
             forwarder: None,
             input: Default::default(),
             stop: Default::default(),
+            bound_stop: None,
         };
         install_mgr.install_handle(
             "moving-install",
@@ -2468,5 +2471,190 @@ fn failed_control_transfer_preserves_sibling_ownership_and_succeeds_on_retry() {
     drop(sub_b);
     core.sessions.kill(&a).unwrap();
     core.sessions.kill(&b).unwrap();
+    core.sessions.drain_terminal_workers();
+}
+
+#[test]
+fn resize_accepted_after_kill_detach_persists_to_sqlite_when_kill_finishes() {
+    use crate::session::manager::RoleActivityEvent;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct CloseableRuntime {
+        tx: Mutex<Option<std::sync::mpsc::Sender<RuntimeOutput>>>,
+    }
+    impl CloseableRuntime {
+        fn close(&self) {
+            *self.tx.lock().unwrap() = None;
+        }
+    }
+    impl SessionRuntime for CloseableRuntime {
+        fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            *self.tx.lock().unwrap() = Some(tx);
+            Ok((
+                RuntimeSession {
+                    runtime: "closeable".into(),
+                    session_id: spec.session_id,
+                },
+                OutputStream::new(rx, Arc::new(AtomicBool::new(false))),
+            ))
+        }
+        fn stop(&self, _: &RuntimeSession) -> RuntimeResult<()> {
+            self.close();
+            Ok(())
+        }
+        fn send_bytes(&self, _: &RuntimeSession, _: &[u8]) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn send_key(&self, _: &RuntimeSession, _: &str) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &RuntimeSession, _: u16, _: u16, _: u16, _: u16) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
+            Ok(Some(SessionStatus {
+                alive: false,
+                exit_code: Some(0),
+                ..Default::default()
+            }))
+        }
+    }
+
+    struct PausingRoleActivity {
+        pause_tx: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        release_rx: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    }
+    impl SessionEvents for PausingRoleActivity {
+        fn exit(&self, _: &ExitEvent) {}
+        fn role_activity(&self, ev: &RoleActivityEvent) {
+            if ev.active_sessions == 0 {
+                if let Some(tx) = self.pause_tx.lock().unwrap().take() {
+                    let _ = tx.send(());
+                    if let Some(rx) = self.release_rx.lock().unwrap().take() {
+                        rx.recv_timeout(std::time::Duration::from_secs(10))
+                            .expect("test must explicitly release paused role_activity");
+                    }
+                }
+            }
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(CloseableRuntime::default());
+    let mut core = crate::test_support::test_core_in_with_runtime(
+        temp.path().to_owned(),
+        Arc::clone(&runtime) as Arc<dyn SessionRuntime>,
+    );
+    // Use a multi-connection fixture pool so `read_db_size()` can inspect SQLite
+    // while `emit_role_activity` holds its own pooled connection across the pause.
+    core.db = Arc::new(crate::db::open_fixture_pool(&temp.path().join("runner.db")).unwrap());
+    core.sessions.set_resize_settle_ms(5);
+
+    let role = {
+        let conn = core.db.get().unwrap();
+        crate::test_support::insert_test_role(&conn, "rearm", "rearm", "trae", "rearm");
+        crate::ops::role::get(&conn, "rearm").unwrap()
+    };
+    let (pause_tx, pause_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let events: Arc<dyn SessionEvents> = Arc::new(PausingRoleActivity {
+        pause_tx: Mutex::new(Some(pause_tx)),
+        release_rx: Mutex::new(Some(release_rx)),
+    });
+    let spawned = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            events,
+        )
+        .unwrap();
+    let id = spawned.id.clone();
+
+    let read_db_size = || -> (Option<u16>, Option<u16>) {
+        let conn = core.db.get().unwrap();
+        let row = crate::repo::session::get_row(&conn, &id).unwrap().unwrap();
+        (row.last_cols, row.last_rows)
+    };
+    assert_eq!(read_db_size(), (Some(80), Some(24)));
+
+    // Pause the exiting forwarder AFTER `take_killed` (at `role_activity`) so `kill()` itself is
+    // the sole path clearing `state.killed` when `forwarder.join()` finishes.
+    runtime.close();
+    pause_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("forwarder paused at role_activity");
+
+    let sessions_kill = Arc::clone(&core.sessions);
+    let id_kill = id.clone();
+    let kill_thread = std::thread::spawn(move || sessions_kill.kill(&id_kill));
+
+    let state = core.sessions.session_state(&id).expect("session state");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let detached_and_killed = {
+            let guard = state.lock().unwrap();
+            guard.handle.is_none() && guard.killed
+        };
+        if detached_and_killed {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for kill() to detach handle while holding killed=true"
+        );
+        std::thread::yield_now();
+    }
+
+    // Resize 80x24 -> 91x31 after detach and wait for settle_pending_resize to defer it under killed=true.
+    core.sessions.resize(&id, 91, 31, &core.db).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let deferred = state
+            .lock()
+            .unwrap()
+            .pending_resize
+            .as_ref()
+            .is_some_and(|pending| pending.deferred_during_lifecycle);
+        if deferred {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for pending resize to defer during kill"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        read_db_size(),
+        (Some(80), Some(24)),
+        "deferred resize must not persist while kill is still in flight"
+    );
+
+    // Let the forwarder exit and kill() finish; kill() must clear `killed` and rearm deferred persistence.
+    let _ = release_tx.send(());
+    kill_thread.join().unwrap().unwrap();
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if read_db_size() == (Some(91), Some(31)) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "SQLite stayed at {:?} instead of persisting deferred 91x31 after kill finished",
+            read_db_size()
+        );
+        std::thread::yield_now();
+    }
     core.sessions.drain_terminal_workers();
 }

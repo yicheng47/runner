@@ -260,6 +260,7 @@ impl SessionManager {
             forwarder: None,
             input: Default::default(),
             stop: Default::default(),
+            bound_stop: None,
         });
     }
 

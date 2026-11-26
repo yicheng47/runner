@@ -301,7 +301,7 @@ impl SessionManager {
         // down before we install a `SessionHandle` that points at a
         // row that no longer exists.
         if !Self::session_row_exists(&pool, &session_id) {
-            if let Err(e) = self.runtime.stop(&rt_session) {
+            if let Err(e) = self.stop_runtime_launch(&rt_session, output.bound_stop().as_ref()) {
                 log::warn!(
                     "failed to stop just-spawned direct-chat PTY for vanished session \
                      {session_id}: {e}"
@@ -381,6 +381,7 @@ impl SessionManager {
                 forwarder: None,
                 input: Default::default(),
                 stop: output.stop_flag(),
+                bound_stop: output.bound_stop(),
             },
             None,
             initial_size,

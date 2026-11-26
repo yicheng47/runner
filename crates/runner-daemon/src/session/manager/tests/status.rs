@@ -259,6 +259,7 @@ fn direct_input_gate_timeout_is_bounded_and_does_not_pin_the_queue() {
         forwarder: None,
         input: Default::default(),
         stop: Arc::new(AtomicBool::new(false)),
+        bound_stop: None,
     });
     gate.state.lock().unwrap().in_flight = true;
 

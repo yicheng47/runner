@@ -3166,3 +3166,70 @@ fn spawn_with_base_command_omits_inherited_disable_auto_update_for_agy_update() 
     );
     rt.drain_workers();
 }
+
+#[cfg(unix)]
+#[test]
+fn bound_stop_from_prior_launch_never_stops_replacement_pty_or_hooks() {
+    use runner_core::protocol::hook::{HookReport, GENERATION_ENV, VERSION};
+
+    let rt = PtyRuntime::new();
+    let session_id = "bound-stop-reuse";
+
+    let mut launch1 = spec(session_id, "/bin/sh", &["-c", "exit 0"]);
+    launch1.agent_runtime = Some(crate::model::Runtime::Codex);
+    launch1.env.insert(GENERATION_ENV.into(), "gen-1".into());
+    let (_sess1, stream1) = rt.spawn(launch1).unwrap();
+    let stop1 = stream1
+        .bound_stop()
+        .expect("PtyRuntime must attach a launch-bound stop handle");
+
+    // Wait for Launch 1 to exit cleanly, then drop its stream so only Launch 2 owns the slot.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let rem = deadline
+            .checked_duration_since(Instant::now())
+            .expect("launch 1 did not exit");
+        match stream1.recv_timeout(rem) {
+            Ok(_) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!("launch 1 did not disconnect"),
+        }
+    }
+    drop(stream1);
+
+    // Spawn Launch 2 under the same session_id with a live child and its own hook generation.
+    let mut launch2 = spec(session_id, "/bin/sh", &["-c", "exec sleep 30"]);
+    launch2.agent_runtime = Some(crate::model::Runtime::Codex);
+    launch2.env.insert(GENERATION_ENV.into(), "gen-2".into());
+    let (sess2, stream2) = rt.spawn(launch2).unwrap();
+    let stop2 = stream2
+        .bound_stop()
+        .expect("launch 2 must carry its own launch-bound stop handle");
+
+    // Invoking Launch 1's stale bound stopper must neither kill Launch 2's PTY nor retire Launch 2's hooks.
+    stop1().expect("stale bound stop is a no-op once launch 1 is gone");
+    let status2 = rt
+        .status(&sess2)
+        .unwrap()
+        .expect("launch 2 must still be registered");
+    assert!(
+        status2.alive,
+        "stale launch 1 bound stop must not terminate launch 2's PTY"
+    );
+    let report = HookReport {
+        version: VERSION,
+        runtime: runner_core::protocol::Runtime::Codex,
+        session_id: session_id.into(),
+        generation: "gen-2".into(),
+        event: "Stop".into(),
+        caller_thread_id: Some("thread-2".into()),
+        payload: serde_json::json!({ "hook_event_name": "Stop", "session_id": "thread-2" }),
+        bridge_unavailable: false,
+    };
+    rt.admit_hook(report)
+        .expect("stale launch 1 bound stop must not retire launch 2's hook route");
+
+    stop2().unwrap();
+    drop(stream2);
+    rt.drain_workers();
+}

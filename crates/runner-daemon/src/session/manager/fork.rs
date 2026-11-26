@@ -339,7 +339,9 @@ impl SessionManager {
                 };
 
                 if !Self::session_row_exists(&pool, &session_id) {
-                    if let Err(error) = self.runtime.stop(&rt_session) {
+                    if let Err(error) =
+                        self.stop_runtime_launch(&rt_session, output.bound_stop().as_ref())
+                    {
                         log::warn!(
                             "failed to stop just-spawned fork PTY for vanished session {session_id}: {error}"
                         );
@@ -388,6 +390,7 @@ impl SessionManager {
                         forwarder: None,
                         input: Default::default(),
                         stop: output.stop_flag(),
+                        bound_stop: output.bound_stop(),
                     },
                     None,
                     initial_size,

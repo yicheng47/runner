@@ -603,6 +603,7 @@ fn forget_cannot_split_terminal_and_live_handle_installation() {
                 forwarder: None,
                 input: Default::default(),
                 stop: stream.stop_flag(),
+                bound_stop: None,
             },
             None,
             Some((80, 24)),

@@ -56,23 +56,25 @@ impl SessionManager {
         let Some(state) = self.session_state(session_id) else {
             return Ok(());
         };
-        let (rt_session, target_stop) = {
+        let (rt_session, bound_stop, target_stop) = {
             let mut state = state.lock().unwrap();
-            let Some((rt_session, target_stop)) = state
-                .handle
-                .as_ref()
-                .map(|h| (h.runtime_session.clone(), Arc::clone(&h.stop)))
-            else {
+            let Some(captured) = state.handle.as_ref().map(|h| {
+                (
+                    h.runtime_session.clone(),
+                    h.bound_stop.clone(),
+                    Arc::clone(&h.stop),
+                )
+            }) else {
                 // Already gone.
                 return Ok(());
             };
             state.killed = true;
-            (rt_session, target_stop)
+            captured
         };
 
         // Stop verifies that the child is dead and reaped. Returns Err
         // while either half of that contract is unmet.
-        if let Err(e) = self.runtime.stop(&rt_session) {
+        if let Err(e) = self.stop_runtime_launch(&rt_session, bound_stop.as_ref()) {
             // Roll back only if this launch still owns the session; a
             // replacement launch may have installed while `stop` ran.
             let still_owner = {
@@ -143,7 +145,7 @@ impl SessionManager {
             let _ = h.join();
         }
         let _ = stop;
-        {
+        let rearm = {
             let mut guard = state.lock().unwrap();
             if guard
                 .last_launch
@@ -151,7 +153,13 @@ impl SessionManager {
                 .is_none_or(|cur| Arc::ptr_eq(cur, &target_stop))
             {
                 guard.killed = false;
+                true
+            } else {
+                false
             }
+        };
+        if rearm {
+            Self::rearm_deferred_resize_after_rollback(session_id, &state);
         }
         self.prune_empty_session_state(session_id);
         Ok(())
@@ -281,7 +289,11 @@ impl SessionManager {
         session_id: &str,
         runtime_session: &RuntimeSession,
     ) -> Result<()> {
-        self.forget_runtime_handle_for_launch(session_id, runtime_session, None)?;
+        let still_current =
+            self.forget_runtime_handle_for_launch(session_id, runtime_session, None)?;
+        if still_current {
+            self.prune_empty_session_state(session_id);
+        }
         Ok(())
     }
 
@@ -357,9 +369,45 @@ impl SessionManager {
         if exited {
             self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Exited);
         }
+        Ok(still_current)
+    }
+
+    /// Publishes `session/exit` serialized with `session/spawned` for the same session id,
+    /// rechecking launch currency under `lifecycle_publish` so a launch whose exit raced past
+    /// a resumed launch (e.g. while paused in worker joins or delivery listeners) never drops
+    /// the replacement launch's mirror.
+    pub(super) fn publish_launch_exit(
+        &self,
+        session_id: &str,
+        launch: Option<&Arc<AtomicBool>>,
+        record_still_current: bool,
+        forget_state: bool,
+        event: &ExitEvent,
+        events: &dyn SessionEvents,
+    ) {
+        let publish_lock = self
+            .session_state(session_id)
+            .map(|state| Arc::clone(&state.lock().unwrap().lifecycle_publish));
+        let _publish = publish_lock.as_ref().map(|lock| lock.lock().unwrap());
+        let still_current = record_still_current
+            && match (launch, self.session_state(session_id)) {
+                (Some(launch), Some(state)) => state
+                    .lock()
+                    .unwrap()
+                    .last_launch
+                    .as_ref()
+                    .is_none_or(|cur| Arc::ptr_eq(cur, launch)),
+                _ => true,
+            };
+        if still_current {
+            events.exit(event);
+            if forget_state {
+                self.forget_session_state(session_id);
+            }
+        }
+        drop(_publish);
         if still_current {
             self.prune_empty_session_state(session_id);
         }
-        Ok(still_current)
     }
 }

@@ -211,6 +211,7 @@ pub struct OutputStream {
     /// the channel.
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     guard: Option<Box<dyn Send>>,
+    bound_stop: Option<BoundStop>,
 }
 
 impl OutputStream {
@@ -226,6 +227,7 @@ impl OutputStream {
             inner,
             stop,
             guard: None,
+            bound_stop: None,
             #[cfg(test)]
             test_agent: Default::default(),
         }
@@ -235,6 +237,17 @@ impl OutputStream {
     pub fn holding(mut self, guard: impl Send + 'static) -> Self {
         self.guard = Some(Box::new(guard));
         self
+    }
+
+    /// Attaches a launch-bound stop action so stopping this launch never hits a later launch reusing its id.
+    pub fn with_stop(mut self, stop: BoundStop) -> Self {
+        self.bound_stop = Some(stop);
+        self
+    }
+
+    /// Clone of the launch-bound stop action, if the runtime provided one.
+    pub fn bound_stop(&self) -> Option<BoundStop> {
+        self.bound_stop.clone()
     }
 
     /// Mirrors `Receiver::recv_timeout`. Used by the integration
@@ -304,6 +317,9 @@ pub type RuntimeResult<T> = std::result::Result<T, RuntimeError>;
 /// Writes input to one process of a session, never to a later process that reuses its id.
 pub type BoundInput = Box<dyn FnMut(&[u8]) -> RuntimeResult<()> + Send>;
 
+/// Stops one process of a session and retires only its hook route, never a later process that reuses its id.
+pub type BoundStop = std::sync::Arc<dyn Fn() -> RuntimeResult<()> + Send + Sync>;
+
 /// The session runtime trait. Frontend operations never touch this — they
 /// go through `SessionManager`, which in turn delegates
 /// to a `dyn SessionRuntime` for the per-session PTY work.
@@ -340,6 +356,11 @@ pub trait SessionRuntime: Send + Sync {
     /// Input bound to the session's current process, for the manager's queued writes. A runtime
     /// returning `None` takes them through `send_bytes`, and a bare `\r` through `send_key("Enter")`.
     fn bind_input(&self, _session: &RuntimeSession) -> Option<BoundInput> {
+        None
+    }
+
+    /// Stop action bound to the session's current process, mirroring [`Self::bind_input`].
+    fn bind_stop(&self, _session: &RuntimeSession) -> Option<BoundStop> {
         None
     }
 

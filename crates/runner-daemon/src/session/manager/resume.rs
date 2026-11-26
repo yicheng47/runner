@@ -751,6 +751,7 @@ impl SessionManager {
                 forwarder: None,
                 input: Default::default(),
                 stop: output.stop_flag(),
+                bound_stop: output.bound_stop(),
             },
             resume_emit_ctx.clone(),
             Some(initial_size),

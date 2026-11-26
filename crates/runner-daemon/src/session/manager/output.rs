@@ -150,6 +150,7 @@ impl SessionManager {
         // breaks out within ~500ms even if the reader/EOF
         // disconnect path stalls.
         let stop = output.stop_flag();
+        let bound_stop = output.bound_stop();
         thread::spawn(move || {
             // Drain PTY output until the runtime closes the channel
             // OR `kill` flips the stop flag. Stream chunks flow to
@@ -408,7 +409,7 @@ impl SessionManager {
 
             // Best-effort: tear down the PTY child now that the
             // output channel closed. Skipped if `kill` already did it.
-            let _ = manager_t.runtime.stop(&rt_session);
+            let _ = manager_t.stop_runtime_launch(&rt_session, bound_stop.as_ref());
 
             let was_killed = manager_t.take_killed(&session_id);
             crate::session::system_prompt::remove(&app_data_dir, &session_id);
@@ -578,21 +579,21 @@ impl SessionManager {
                     events.emit("runtime/changed", &());
                 }
             }
-            let still_current = still_current
-                && manager_t
-                    .forget_runtime_handle_for_launch(&session_id, &rt_session, Some(&stop))
-                    .unwrap_or(false);
-            if still_current {
-                if closed_shell {
-                    manager_t.forget_session_state(&session_id);
-                }
-                events.exit(&ExitEvent {
+            let _ =
+                manager_t.forget_runtime_handle_for_launch(&session_id, &rt_session, Some(&stop));
+            manager_t.publish_launch_exit(
+                &session_id,
+                Some(&stop),
+                still_current,
+                closed_shell,
+                &ExitEvent {
                     session_id: session_id.clone(),
                     mission_id: mission_id.clone(),
                     exit_code,
                     success,
-                });
-            }
+                },
+                events.as_ref(),
+            );
             #[cfg(test)]
             manager_t.notify_forwarder_exit_done(&session_id);
         })

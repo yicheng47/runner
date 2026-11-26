@@ -118,7 +118,24 @@ impl SessionManager {
                 );
             }
         }
-        self.runtime.spawn(spec)
+        let (rt_session, mut output) = self.runtime.spawn(spec)?;
+        if output.bound_stop().is_none() {
+            if let Some(bound_stop) = self.runtime.bind_stop(&rt_session) {
+                output = output.with_stop(bound_stop);
+            }
+        }
+        Ok((rt_session, output))
+    }
+
+    pub(super) fn stop_runtime_launch(
+        &self,
+        rt_session: &RuntimeSession,
+        bound_stop: Option<&super::super::runtime::BoundStop>,
+    ) -> super::super::runtime::RuntimeResult<()> {
+        match bound_stop {
+            Some(stop) => stop(),
+            None => self.runtime.stop(rt_session),
+        }
     }
 
     pub(super) fn resolve_role_executable(&self, role: &Role, pool: &DbPool) -> Result<Role> {

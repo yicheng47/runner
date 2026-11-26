@@ -52,6 +52,32 @@ pub struct HookReceiver {
     queue: Arc<Queue>,
 }
 
+/// Launch-bound retirement handle: closes and unregisters only the exact
+/// hook queue created for that launch, never a later launch reusing the id.
+#[derive(Clone)]
+pub(crate) struct HookRetirement {
+    routes: Weak<HookRoutes>,
+    queue: Weak<Queue>,
+}
+
+impl HookRetirement {
+    pub(crate) fn retire(&self) {
+        let Some(queue) = self.queue.upgrade() else {
+            return;
+        };
+        queue.close();
+        if let Some(routes) = self.routes.upgrade() {
+            let mut routes = routes.routes.lock().unwrap();
+            if routes
+                .get(&queue.session)
+                .is_some_and(|current| Arc::ptr_eq(current, &queue))
+            {
+                routes.remove(&queue.session);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) struct TestHookRoute {
     routes: Arc<HookRoutes>,
@@ -212,6 +238,13 @@ impl Queue {
 }
 
 impl HookReceiver {
+    pub(crate) fn retirement(&self) -> HookRetirement {
+        HookRetirement {
+            routes: Weak::clone(&self.routes),
+            queue: Arc::downgrade(&self.queue),
+        }
+    }
+
     pub(crate) fn is_retired(&self) -> bool {
         self.queue.state.lock().unwrap().closed
     }

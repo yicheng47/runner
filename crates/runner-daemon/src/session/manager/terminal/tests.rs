@@ -4354,24 +4354,45 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
         std::sync::mpsc::Receiver<RuntimeResult<()>>,
     );
 
+    struct LaunchHandle {
+        tx: Mutex<Option<std::sync::mpsc::Sender<RuntimeOutput>>>,
+        stopped: AtomicBool,
+    }
+    impl LaunchHandle {
+        fn stop_effect(&self) {
+            self.stopped.store(true, Ordering::Release);
+            *self.tx.lock().unwrap() = None;
+        }
+    }
+
     #[derive(Default)]
     struct MultiLaunchRuntime {
         /// Indexed by spawn ordinal (0 = launch 1, 1 = launch 2, ...), sharing the same session ID & runtime label.
-        spawns: Mutex<Vec<Option<std::sync::mpsc::Sender<RuntimeOutput>>>>,
+        spawns: Mutex<Vec<Arc<LaunchHandle>>>,
+        /// Production-like latest-by-session_id lookup table: an unbound `stop(&rt_session)` resolves here.
+        active: Arc<Mutex<std::collections::HashMap<String, Arc<LaunchHandle>>>>,
         writes: Mutex<Vec<Vec<u8>>>,
         writes_cv: std::sync::Condvar,
-        stop_gate: Mutex<Option<StopGate>>,
+        stop_gate: Arc<Mutex<Option<StopGate>>>,
     }
     impl MultiLaunchRuntime {
         fn push_output(&self, launch: usize, bytes: &[u8]) {
             self.spawns.lock().unwrap()[launch]
+                .tx
+                .lock()
+                .unwrap()
                 .as_ref()
                 .expect("launch stream open")
                 .send(RuntimeOutput::Stream(bytes.to_vec()))
                 .unwrap();
         }
         fn close_launch(&self, launch: usize) {
-            self.spawns.lock().unwrap()[launch] = None;
+            *self.spawns.lock().unwrap()[launch].tx.lock().unwrap() = None;
+        }
+        fn is_stopped(&self, launch: usize) -> bool {
+            self.spawns.lock().unwrap()[launch]
+                .stopped
+                .load(Ordering::Acquire)
         }
         fn arm_stop_gate(
             &self,
@@ -4403,24 +4424,62 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
     impl SessionRuntime for MultiLaunchRuntime {
         fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
             let (tx, rx) = std::sync::mpsc::channel();
-            self.spawns.lock().unwrap().push(Some(tx));
+            let handle = Arc::new(LaunchHandle {
+                tx: Mutex::new(Some(tx)),
+                stopped: AtomicBool::new(false),
+            });
+            self.spawns.lock().unwrap().push(Arc::clone(&handle));
+            self.active
+                .lock()
+                .unwrap()
+                .insert(spec.session_id.clone(), Arc::clone(&handle));
+            let stop_gate = Arc::clone(&self.stop_gate);
+            let captured = Arc::clone(&handle);
+            let bound_stop: crate::session::runtime::BoundStop = Arc::new(move || {
+                let gate = stop_gate.lock().unwrap().take();
+                let result = if let Some((entered_tx, release_rx)) = gate {
+                    let _ = entered_tx.send(());
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(10))
+                        .expect("stop gate released")
+                } else {
+                    Ok(())
+                };
+                if result.is_ok() {
+                    captured.stop_effect();
+                }
+                result
+            });
             Ok((
                 RuntimeSession {
                     runtime: "shared-label".into(),
                     session_id: spec.session_id,
                 },
-                OutputStream::new(rx, Arc::new(AtomicBool::new(false))),
+                OutputStream::new(rx, Arc::new(AtomicBool::new(false))).with_stop(bound_stop),
             ))
         }
-        fn stop(&self, _: &RuntimeSession) -> RuntimeResult<()> {
+        fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
             let gate = self.stop_gate.lock().unwrap().take();
-            if let Some((entered_tx, release_rx)) = gate {
+            let result = if let Some((entered_tx, release_rx)) = gate {
                 let _ = entered_tx.send(());
-                return release_rx
+                release_rx
                     .recv_timeout(std::time::Duration::from_secs(10))
-                    .expect("stop gate released");
+                    .expect("stop gate released")
+            } else {
+                Ok(())
+            };
+            if result.is_ok() {
+                if let Some(resolved) = self
+                    .active
+                    .lock()
+                    .unwrap()
+                    .get(&session.session_id)
+                    .cloned()
+                {
+                    resolved.stop_effect();
+                }
             }
-            Ok(())
+            result
         }
         fn send_bytes(&self, _: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
             self.writes.lock().unwrap().push(bytes.to_vec());
@@ -4621,24 +4680,48 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
         "stale launch 1 forwarder must not erase launch 2's image 75"
     );
     assert_eq!(budget.used(), 64 * 64 * 3);
-    drop(mirror_launch2);
-    drop(bridge);
 
-    // Part B1: Delayed kill() paused inside runtime.stop() returning Ok(()) must not retire
-    // or wipe images of Launch 3 installed after Launch 2 exited cleanly.
-    let (stop1_entered, stop1_release) = runtime.arm_stop_gate();
-    let sessions_k1 = Arc::clone(&core.sessions);
-    let id_k1 = id.clone();
-    let kill1 = std::thread::spawn(move || sessions_k1.kill(&id_k1));
-    stop1_entered
-        .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("kill1 entered runtime.stop");
+    // Part A2: Pause Launch 2's forwarder LATER — inside a public `SessionDeliveryListener` on
+    // `SessionDeliveryEvent::Exited` (after `forget_runtime_handle_for_launch` unlocked `state`).
+    // Resuming Launch 3 while paused here must still suppress Launch 2's stale `session/exit` and
+    // preserve Launch 3's mirror in `TerminalBridge`.
+    struct PausingExitedListener {
+        pause_tx: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        release_rx: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    }
+    impl crate::router::SessionDeliveryListener for PausingExitedListener {
+        fn session_delivery_event(
+            &self,
+            _session_id: &str,
+            event: crate::router::SessionDeliveryEvent,
+        ) {
+            if event == crate::router::SessionDeliveryEvent::Exited {
+                let tx = self.pause_tx.lock().unwrap().take();
+                if let Some(tx) = tx {
+                    let _ = tx.send(());
+                    let rx = self.release_rx.lock().unwrap().take();
+                    if let Some(rx) = rx {
+                        let _ = rx.recv_timeout(std::time::Duration::from_secs(10));
+                    }
+                }
+            }
+        }
+    }
+    let (exited_pause_tx, exited_pause_rx) = std::sync::mpsc::channel();
+    let (exited_release_tx, exited_release_rx) = std::sync::mpsc::channel();
+    let delivery_listener = Arc::new(PausingExitedListener {
+        pause_tx: Mutex::new(Some(exited_pause_tx)),
+        release_rx: Mutex::new(Some(exited_release_rx)),
+    });
+    let delivery_dyn: Arc<dyn crate::router::SessionDeliveryListener> =
+        Arc::clone(&delivery_listener) as _;
+    core.sessions
+        .register_delivery_listener(&id, Arc::downgrade(&delivery_dyn));
 
-    let launch2_done = core.sessions.watch_forwarder_exit(&id);
     runtime.close_launch(1);
-    launch2_done
+    exited_pause_rx
         .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("launch 2 exited cleanly");
+        .expect("launch 2 forwarder reached Exited delivery listener");
 
     core.sessions
         .resume(
@@ -4647,56 +4730,53 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
             Some(24),
             &core.app_data_dir,
             core.db.clone(),
-            Arc::new(core.session_events()),
+            Arc::clone(&events),
         )
         .unwrap();
+    let mirror_launch3 = bridge
+        .session(&id)
+        .expect("bridge attached Launch 3 mirror on session/spawned");
     runtime.push_output(
         2,
-        format!("\x1b_Ga=t,i=88,f=24,s=64,v=64;{img}\x1b\\").as_bytes(),
+        format!("\x1b_Ga=t,i=77,f=24,s=64,v=64;{img}\x1b\\").as_bytes(),
     );
     assert_eq!(
         runtime.wait_writes_len(1),
-        vec![b"\x1b_Gi=88;OK\x1b\\".to_vec()]
+        vec![b"\x1b_Gi=77;OK\x1b\\".to_vec()]
     );
     runtime.take_writes();
 
-    stop1_release.send(Ok(())).unwrap();
-    kill1
-        .join()
-        .unwrap()
-        .expect("delayed kill1 returns Ok without disturbing launch 3");
-    assert!(
-        core.sessions.live_runtime_session(&id).is_ok(),
-        "delayed kill1 (Ok) must not remove launch 3's live handle"
-    );
-    assert!(
-        core.sessions
-            .terminal_model(&id)
-            .unwrap()
-            .graphics()
-            .lock()
-            .unwrap()
-            .primary
-            .images()
-            .contains_key(&88),
-        "delayed kill1 (Ok) must not clear launch 3's image 88"
-    );
-    runtime.push_output(2, b"\x1b_Ga=q,i=89,f=24,s=1,v=1;AAAA\x1b\\");
-    assert_eq!(
-        runtime.wait_writes_len(1),
-        vec![b"\x1b_Gi=89;OK\x1b\\".to_vec()]
-    );
-    runtime.take_writes();
-
-    // Part B2: Delayed kill() paused inside runtime.stop() returning Err must also leave
-    // Launch 4's handle, state, and images intact.
-    let (stop2_entered, stop2_release) = runtime.arm_stop_gate();
-    let sessions_k2 = Arc::clone(&core.sessions);
-    let id_k2 = id.clone();
-    let kill2 = std::thread::spawn(move || sessions_k2.kill(&id_k2));
-    stop2_entered
+    let launch2_done = core.sessions.watch_forwarder_exit(&id);
+    let _ = exited_release_tx.send(());
+    launch2_done
         .recv_timeout(std::time::Duration::from_secs(10))
-        .expect("kill2 entered runtime.stop");
+        .expect("launch 2 forwarder finished after delivery listener released");
+    assert_eq!(
+        *events_log.lock().unwrap(),
+        vec!["session/spawned", "session/spawned", "session/spawned"],
+        "launch 2 forwarder paused in Exited delivery listener must not emit stale session/exit after launch 3 spawned"
+    );
+    assert!(
+        bridge
+            .session(&id)
+            .is_some_and(|m| Arc::ptr_eq(&m, &mirror_launch3)),
+        "TerminalBridge must keep launch 3's mirror after launch 2 finishes Exited listener"
+    );
+    drop(delivery_dyn);
+    drop(delivery_listener);
+    drop(mirror_launch2);
+    drop(mirror_launch3);
+    drop(bridge);
+
+    // Part B1: Delayed kill() paused inside bound_stop() returning Ok(()) must execute its stop
+    // effect only on Launch 3 and must never stop, retire, or wipe images of Launch 4.
+    let (stop1_entered, stop1_release) = runtime.arm_stop_gate();
+    let sessions_k1 = Arc::clone(&core.sessions);
+    let id_k1 = id.clone();
+    let kill1 = std::thread::spawn(move || sessions_k1.kill(&id_k1));
+    stop1_entered
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("kill1 entered bound stop");
 
     let launch3_done = core.sessions.watch_forwarder_exit(&id);
     runtime.close_launch(2);
@@ -4716,6 +4796,78 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
         .unwrap();
     runtime.push_output(
         3,
+        format!("\x1b_Ga=t,i=88,f=24,s=64,v=64;{img}\x1b\\").as_bytes(),
+    );
+    assert_eq!(
+        runtime.wait_writes_len(1),
+        vec![b"\x1b_Gi=88;OK\x1b\\".to_vec()]
+    );
+    runtime.take_writes();
+
+    stop1_release.send(Ok(())).unwrap();
+    kill1
+        .join()
+        .unwrap()
+        .expect("delayed kill1 returns Ok without disturbing launch 4");
+    assert!(
+        runtime.is_stopped(2),
+        "delayed kill1 must apply its stop effect to captured launch 3"
+    );
+    assert!(
+        !runtime.is_stopped(3),
+        "delayed kill1 must not stop replacement launch 4's runtime handle"
+    );
+    assert!(
+        core.sessions.live_runtime_session(&id).is_ok(),
+        "delayed kill1 (Ok) must not remove launch 4's live handle"
+    );
+    assert!(
+        core.sessions
+            .terminal_model(&id)
+            .unwrap()
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .images()
+            .contains_key(&88),
+        "delayed kill1 (Ok) must not clear launch 4's image 88"
+    );
+    runtime.push_output(3, b"\x1b_Ga=q,i=89,f=24,s=1,v=1;AAAA\x1b\\");
+    assert_eq!(
+        runtime.wait_writes_len(1),
+        vec![b"\x1b_Gi=89;OK\x1b\\".to_vec()]
+    );
+    runtime.take_writes();
+
+    // Part B2: Delayed kill() paused inside bound_stop() returning Err must also leave
+    // Launch 5's runtime handle, manager handle, state, and images intact.
+    let (stop2_entered, stop2_release) = runtime.arm_stop_gate();
+    let sessions_k2 = Arc::clone(&core.sessions);
+    let id_k2 = id.clone();
+    let kill2 = std::thread::spawn(move || sessions_k2.kill(&id_k2));
+    stop2_entered
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("kill2 entered bound stop");
+
+    let launch4_done = core.sessions.watch_forwarder_exit(&id);
+    runtime.close_launch(3);
+    launch4_done
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("launch 4 exited cleanly");
+
+    core.sessions
+        .resume(
+            &id,
+            Some(80),
+            Some(24),
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap();
+    runtime.push_output(
+        4,
         format!("\x1b_Ga=t,i=99,f=24,s=64,v=64;{img}\x1b\\").as_bytes(),
     );
     assert_eq!(
@@ -4732,8 +4884,12 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
         "delayed kill2 must propagate its stop error"
     );
     assert!(
+        !runtime.is_stopped(4),
+        "delayed kill2 (Err) must not stop replacement launch 5's runtime handle"
+    );
+    assert!(
         core.sessions.live_runtime_session(&id).is_ok(),
-        "delayed kill2 (Err) must not disturb launch 4's live handle"
+        "delayed kill2 (Err) must not disturb launch 5's live handle"
     );
     assert!(
         core.sessions
@@ -4745,9 +4901,9 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
             .primary
             .images()
             .contains_key(&99),
-        "delayed kill2 (Err) must not clear launch 4's image 99"
+        "delayed kill2 (Err) must not clear launch 5's image 99"
     );
-    runtime.push_output(3, b"\x1b_Ga=q,i=100,f=24,s=1,v=1;AAAA\x1b\\");
+    runtime.push_output(4, b"\x1b_Ga=q,i=100,f=24,s=1,v=1;AAAA\x1b\\");
     assert_eq!(
         runtime.wait_writes_len(1),
         vec![b"\x1b_Gi=100;OK\x1b\\".to_vec()]
@@ -4755,7 +4911,7 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
     runtime.take_writes();
     assert_eq!(budget.used(), 64 * 64 * 3);
 
-    runtime.close_launch(3);
+    runtime.close_launch(4);
     core.sessions.kill(&id).unwrap();
     core.sessions.drain_terminal_workers();
     assert_eq!(budget.used(), 0);
@@ -5168,10 +5324,12 @@ fn stopping_or_retaining_exit_resyncs_local_mirrors_on_both_screens_while_preser
 
     wait_until(
         || {
-            let g = mirror3.graphics().lock().unwrap();
-            read_row0(&mirror3).contains("last text")
-                && g.primary.images().is_empty()
-                && g.alt.images().is_empty()
+            let has_text = read_row0(&mirror3).contains("last text");
+            let graphics_empty = {
+                let g = mirror3.graphics().lock().unwrap();
+                g.primary.images().is_empty() && g.alt.images().is_empty()
+            };
+            has_text && graphics_empty
         },
         "mirror3 must preserve 'last text' and clear both screens' graphics on ordinary natural exit",
     );

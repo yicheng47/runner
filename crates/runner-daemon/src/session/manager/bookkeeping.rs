@@ -589,6 +589,9 @@ impl SessionManager {
             state.killed = false;
             was_killed
         };
+        if was_killed {
+            Self::rearm_deferred_resize_after_rollback(session_id, &state);
+        }
         self.prune_empty_session_state(session_id);
         was_killed
     }
