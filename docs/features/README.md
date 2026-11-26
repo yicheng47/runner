@@ -7,6 +7,7 @@ Since 2026-09-01 a spec's number **is** its tracking issue number: file the issu
 ## Active
 
 - [559 — Command palette](./559-command-palette.md) — command mode over the existing keymap and quick-switcher overlay ([#559](https://github.com/yicheng47/runner/issues/559)).
+- [818 — Terminal round trips](./818-terminal-round-trips.md) — typing and terminal output stop waiting on runnerd: key and paste observations become one-way frames ordered with their input, and terminal metadata follows change events instead of a request after every output frame, measured under contending output on macOS and Windows ([#818](https://github.com/yicheng47/runner/issues/818)).
 - [1263 — Remote route hardening](./1263-remote-route-hardening.md) — twenty review findings in the remote control route, fixed in four phases: route robustness and an echo reading, the host's relay loop and flow control, hello inside the handshake with terminal resume, and a leaner data path ([#1263](https://github.com/yicheng47/runner/issues/1263)). Phases 1 and 2 shipped in 0.19.8 and host relay liveness (addendum item 21) in 0.20.1; phases 3 and 4 remain open.
 - [1460 — Image preview in the Files viewer](./1460-image-preview.md) — image files open in an image tab with fit, zoom, pan, live reload and a checkerboard behind transparency, SVG renders with a Source toggle, and a changed image's Diff shows both versions with **Unified | Split** ([#1460](https://github.com/yicheng47/runner/issues/1460)).
 
