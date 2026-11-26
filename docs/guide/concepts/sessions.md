@@ -18,6 +18,12 @@ Hover a URL or file path to highlight it, then ⌘-click or Ctrl-click on macOS,
 
 When a runtime wraps an underlined URL onto indented rows or a hyperlink inside a table cell, hovering any fragment highlights the complete link; modifier-clicking any fragment opens the same destination. Links remain usable after reopening the session.
 
+## Terminal images and pixel mouse
+
+Local terminal panes display inline images from programs that use the Kitty graphics protocol, such as `kitten icat`, `chafa`, and terminal-hosted browsers or device simulators. Images stay clipped inside their pane underneath overlays such as the command palette and find bar, scroll with scrollback, and survive closing and reopening Runner while the session stays running in `runnerd`.
+
+Terminals also report real pixel window and cell sizes (`CSI 14 t` and `CSI 16 t`) and send zero-based SGR-Pixels mouse reports (mode 1016) and hover motion without a pressed button (mode 1003) to programs that request them. Hold Shift to bypass mouse reporting for local selection and scrollback.
+
 ## Choose the right action
 
 | Action | Effect |

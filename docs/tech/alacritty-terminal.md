@@ -8,11 +8,11 @@ It is three layers, bottom up.
 
 ## Layer 1: the byte parser
 
-`vte/src/lib.rs` implements Paul Williams' DEC ANSI parser state machine. It knows nothing about screens. It reads a byte stream and classifies it into a handful of actions: print a character, execute a control code such as linefeed, dispatch a CSI sequence such as cursor-move with its numeric parameters, dispatch an ESC sequence, or dispatch an OSC string such as set-title. It also reassembles UTF-8 across chunk boundaries, which is why the embedder can feed arbitrary PTY read sizes without worrying about a split multibyte character.
+`vte/src/lib.rs` implements Paul Williams' DEC ANSI parser state machine. It knows nothing about screens. It reads a byte stream and classifies it into a handful of actions: print a character, execute a control code such as linefeed, dispatch a CSI sequence such as cursor-move with its numeric parameters, dispatch an ESC sequence, or dispatch an OSC string such as set-title. It also reassembles UTF-8 across chunk boundaries, which is why the embedder can feed arbitrary PTY read sizes without worrying about a split multibyte character. One important omission: `vte` routes APC strings (`ESC _ ... ESC \`) into `SosPmApcString` and discards them without calling `Handler`, so Runner's `kitty::Scanner` splits Kitty graphics commands (`ESC _ G ... ESC \`) out before `vte` sees them, letting other APCs pass through to `vte`.
 
 ## Layer 2: the semantic handler
 
-`vte/src/ansi.rs` wraps the parser in a `Processor` and defines the `Handler` trait. This trait is the vocabulary of a terminal. It has about seventy methods, all with empty default bodies: input a char, goto line and column, linefeed, carriage return, clear screen, clear line, insert and delete lines, set and unset mode, report mode, set color, reset color, set title, set cursor style, report device status, and so on. The `Processor`'s job is to turn a raw CSI dispatch such as `ESC [ 5 ; 10 H` into one call to `goto` with those two numbers. The one public entry point is `advance`, which takes a handler and a byte slice. That is the call Runner makes in `feed_output`.
+`vte/src/ansi.rs` wraps the parser in a `Processor` and defines the `Handler` trait. This trait is the vocabulary of a terminal. It has about seventy methods, all with empty default bodies: input a char, goto line and column, linefeed, carriage return, clear screen, clear line, insert and delete lines, set and unset mode, report mode, set color, reset color, set title, set cursor style, report device status, and so on. The `Processor`'s job is to turn a raw CSI dispatch such as `ESC [ 5 ; 10 H` into one call to `goto` with those two numbers. The one public entry point is `advance`, which takes a handler and a byte slice. Runner feeds `advance` through `stream::StreamHandler` around `Term`. Note also that `vte`'s window-ops handler dispatches only CSI `14 t`, `18 t`, `22 t`, and `23 t` and drops `CSI 16 t` (cell pixel size), so `TerminalModel` side-scans for `CSI 16 t` alongside DEC 2031 sequences to answer it in stream order.
 
 The `Processor` also implements the synchronized-update extension: between `CSI ? 2026 h` and `CSI ? 2026 l` it buffers bytes and applies them at once, with a timeout, so a TUI can repaint without tearing.
 
@@ -36,7 +36,7 @@ The best single function to read is `Term::input`. It shows the whole cell model
 
 `grid/mod.rs` and `grid/storage.rs`. A `Grid<T>` is a `Storage<T>` of `Row<T>` plus a cursor, a saved cursor, a column count, a visible line count, a `display_offset`, and a maximum scrollback.
 
-`Storage` is a ring buffer: a `Vec` of rows and a `zero` index. Scrolling the screen up by one line does not move any memory. It is a modular add on `zero`, in `rotate`. Indexing by `Line` goes through `compute_index`, which applies the offset. Read `Grid::scroll_up`: when the region starts at the top, the scrollback limit grows, the buffer rotates, and the rows that rotated in are reset from the cursor's template. The old top row is now history. When the region does not start at the top, rows are swapped within the region and nothing enters history.
+`Storage` is a ring buffer: a `Vec` of rows and a `zero` index. Scrolling the screen up by one line does not move any memory. It is a modular add on `zero`, in `rotate`. Indexing by `Line` goes through `compute_index`, which applies the offset. Read `Grid::scroll_up`: whenever the scroll region starts at row 0—even for a partial top-anchored region, and for `DL` (`delete_lines`) at row 0—`alacritty_terminal` grows scrollback, rotates the whole ring buffer, and swaps the rows below the region back, so top rows enter history even inside a partial region. When the region does not start at row 0, rows are swapped within the region and nothing enters history. `StreamHandler` tracks row identity around scrolling calls so Kitty placements in history move with those rotated rows while placements inside a partial scroll region are clipped at its margins without shifting into history.
 
 Coordinates follow from this. `Line` is a signed integer. Zero is the top of the visible screen, positive goes down, negative goes up into scrollback. `Column` is unsigned. `display_offset` is how many lines the user has scrolled back. The two helpers `point_to_viewport` and `viewport_to_point` in `term/mod.rs` are a single addition each; Runner calls them in the paint loop and in mouse hit testing.
 
@@ -56,7 +56,7 @@ The flags are what a renderer reads: `INVERSE`, `BOLD`, `ITALIC`, `DIM`, `HIDDEN
 
 - `SHOW_CURSOR`: whether to paint a cursor at all.
 - `ALT_SCREEN`: which grid is active. The alternate screen has no scrollback and never reflows.
-- `MOUSE_REPORT_CLICK`, `MOUSE_MOTION`, `MOUSE_DRAG`, gathered as `MOUSE_MODE`: the TUI wants mouse events encoded and sent instead of handled locally. `SGR_MOUSE` and `UTF8_MOUSE` pick the encoding.
+- `MOUSE_REPORT_CLICK`, `MOUSE_MOTION`, `MOUSE_DRAG`, gathered as `MOUSE_MODE`: the TUI wants mouse events encoded and sent instead of handled locally. `SGR_MOUSE` and `UTF8_MOUSE` pick the encoding inside `alacritty_terminal`; mode 1016 (SGR-Pixels) is filed under `PrivateMode::Unknown(1016)` and ignored by `Term`, so Runner tracks it in `StreamHandler` (cleared on RIS or on setting 1005/1006/1015) and answers DECRQM for it there.
 - `BRACKETED_PASTE`: wrap pastes in `ESC [ 200 ~` and `ESC [ 201 ~` so the program can tell paste from typing.
 - `APP_CURSOR` and `APP_KEYPAD`: change how arrow and keypad keys are encoded.
 - `LINE_WRAP`: auto-wrap at the last column.
@@ -84,7 +84,7 @@ Some sequences require a reply to the child: a colour query, a text-area size qu
 - `Title(String)` and `ResetTitle`.
 - `Wakeup`: new content is available. Runner does not use this; it wakes from `feed_output` directly.
 
-Runner's `EventProxy` pushes these onto a channel and a per-session thread writes them to the PTY. That thread is also where Runner intercepts the DECRQM answer for mode 2031, which alacritty reports as unrecognised because it files the mode under unknown modes.
+Runner's `EventProxy` pushes these onto a channel and a per-session thread writes them to the PTY. That thread intercepts the DECRQM answer for mode 2031, which alacritty reports as unrecognised because it files the mode under unknown modes, while `StreamHandler` handles mode 1016's DECRQM and `CSI 14 t` directly (`alacritty_terminal`'s own `text_area_size_pixels` multiplies `u16` fields and can overflow past 65,535 px, so Runner computes `CSI 14 t` in `u32`).
 
 ## FairMutex
 
