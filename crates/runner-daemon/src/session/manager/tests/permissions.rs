@@ -1050,7 +1050,7 @@ fn claude_account_metadata_records_effective_chat_bypass() {
     use runner_core::protocol::runtime::RuntimeLaunchOption;
     let pool = pool_with_schema();
     let root = tempfile::tempdir().unwrap();
-    let mut accounts = crate::claude_accounts::load(&pool).unwrap();
+    let mut accounts = crate::runtimes::claude_code::accounts::load(&pool).unwrap();
     accounts
         .accounts
         .push(runner_core::protocol::ClaudeAccount {

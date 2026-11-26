@@ -537,7 +537,7 @@ pub(crate) fn set_live_agent_session_key(
                     if let Some(account) = &mut definition.claude_account {
                         // A new conversation belongs to the running account; an existing
                         // conversation selected again can still live in the old folder.
-                        let exists = crate::claude_accounts::transcript(
+                        let exists = crate::runtimes::claude_code::accounts::transcript(
                             &account.origin_folder,
                             row.cwd.as_deref(),
                             key,
@@ -2171,8 +2171,12 @@ mod launch_definition_tests {
         assert_eq!(read(), row);
 
         let existing_key = uuid::Uuid::new_v4().to_string();
-        let existing =
-            crate::claude_accounts::transcript(&native, row.cwd.as_deref(), &existing_key).unwrap();
+        let existing = crate::runtimes::claude_code::accounts::transcript(
+            &native,
+            row.cwd.as_deref(),
+            &existing_key,
+        )
+        .unwrap();
         std::fs::create_dir_all(existing.parent().unwrap()).unwrap();
         std::fs::write(existing, "existing conversation").unwrap();
         assert!(

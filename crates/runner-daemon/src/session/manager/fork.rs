@@ -137,18 +137,9 @@ impl SessionManager {
                     role.display_name.clone()
                 }
             });
-        let source_pin =
-            crate::claude_accounts::config_pin(&role, &self.shell_env.read().unwrap().vars);
+        let adapter = crate::runtimes::for_key(&role.runtime);
         let mut fork_definition = definition.clone();
-        let previous_account = definition.claude_account.as_ref();
-        let mut account = crate::claude_accounts::launch_account(
-            &pool,
-            &mut role,
-            &self.shell_env.read().unwrap().vars,
-            previous_account,
-            true,
-        )?;
-        let mut plan = crate::runtimes::for_key(&role.runtime)
+        let mut plan = adapter
             .fork_plan(source_key, &source_label)
             .ok_or_else(|| {
                 Error::msg(format!(
@@ -156,32 +147,21 @@ impl SessionManager {
                     role.runtime
                 ))
             })?;
-
-        if let Some(account) = &mut account {
-            let native_origin = runner_core::app_paths::home_dir().unwrap().join(".claude");
-            let origin = previous_account
-                .map(|previous| previous.origin_folder.as_str())
-                .or(source_pin.as_deref())
-                .unwrap_or_else(|| native_origin.to_str().unwrap());
-            account.permission_mode = crate::claude_accounts::last_permission(
-                origin,
-                resolved_cwd.as_deref(),
-                source_key,
-                previous_account
-                    .map(|previous| previous.permission_mode.as_str())
-                    .unwrap_or("default"),
-            );
-            if let router::runtime::ForkPlan::Direct(plan) = &mut plan {
-                crate::claude_accounts::resume_args(
-                    &mut plan.args,
-                    account,
-                    origin,
-                    resolved_cwd.as_deref(),
+        if let Some(accounts) = adapter.accounts() {
+            let shell_env = self.shell_env.read().unwrap().vars.clone();
+            accounts.prepare_fork(
+                &crate::runtimes::AccountForkContext {
+                    pool: &pool,
+                    shell_env: &shell_env,
+                    source: definition,
                     source_key,
-                );
-            }
+                    cwd: resolved_cwd.as_deref(),
+                },
+                &mut role,
+                &mut fork_definition,
+                &mut plan,
+            )?;
         }
-        fork_definition.claude_account = account;
         let mut direct_env = BTreeMap::new();
         if !Runtime::parse(&role.runtime).is_some_and(Runtime::is_shell) {
             direct_env.insert("RUNNER_HANDLE".into(), role.handle.clone());
@@ -306,18 +286,17 @@ impl SessionManager {
                     None,
                     Some(&pool),
                 );
-                if let Err(error) = crate::claude_accounts::sharing::launch(
-                    &pool,
-                    fork_definition.claude_account.as_ref(),
-                    &role,
-                    &mut spec,
-                ) {
-                    let _ = delete_failed_fork(&pool, &session_id);
-                    events.updated(&SessionUpdatedEvent {
-                        session_id: session_id.clone(),
-                        mission_id: None,
-                    });
-                    return Err(error);
+                if let Some(accounts) = adapter.accounts() {
+                    if let Err(error) =
+                        accounts.apply_spawn_spec(&pool, &fork_definition, &role, &mut spec)
+                    {
+                        let _ = delete_failed_fork(&pool, &session_id);
+                        events.updated(&SessionUpdatedEvent {
+                            session_id: session_id.clone(),
+                            mission_id: None,
+                        });
+                        return Err(error);
+                    }
                 }
                 self.seed_runtime_project_trust(
                     &session_id,
@@ -425,16 +404,15 @@ impl SessionManager {
                     .filter(|_| plan.resuming)
                     .map(|key| {
                         let runtime = role.runtime.clone();
-                        let account_folder = fork_definition
-                            .claude_account
-                            .as_ref()
-                            .map(|account| account.origin_folder.clone());
+                        let account_origin = adapter
+                            .accounts()
+                            .and_then(|accounts| accounts.conversation_origin(&fork_definition));
                         let cwd = resolved_cwd.clone();
                         let env = self.probe_env(crate::runtimes::for_key(&runtime), &role.env);
                         Box::new(move || {
                             super::output::conversation_exists(
                                 crate::runtimes::for_key(&runtime),
-                                account_folder.as_deref(),
+                                account_origin.as_deref(),
                                 cwd.as_deref(),
                                 &env,
                                 &key,

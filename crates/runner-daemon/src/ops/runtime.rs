@@ -94,7 +94,7 @@ fn claude_sign_in_status(
     shell_vars: &std::collections::BTreeMap<String, String>,
     usage: &runner_core::protocol::UsageSnapshot,
 ) -> RuntimeSignInStatus {
-    match crate::claude_accounts::active_sign_in_status(state, shell_vars) {
+    match crate::runtimes::claude_code::accounts::active_sign_in_status(state, shell_vars) {
         Some(RuntimeSignInStatus::Unknown) => {
             // An earlier `claude auth status` probe errored and was cached;
             // avoid re-spawning it whenever `runtime/changed` reloads the list.
@@ -107,7 +107,7 @@ fn claude_sign_in_status(
             }
             // Kick off a single background `claude auth status` check on native
             // single-account setups when no cached sign-in status is available yet.
-            crate::claude_accounts::refresh(state);
+            crate::runtimes::claude_code::accounts::refresh(state);
             RuntimeSignInStatus::Unknown
         }
     }
@@ -234,7 +234,7 @@ pub fn runtime_command_preview(
             crate::runtimes::custom_flags::help_flag_warning(runtime, &words, listed.as_ref());
     }
     if runtime == Runtime::ClaudeCode {
-        let accounts = crate::claude_accounts::load(&state.db)?;
+        let accounts = crate::runtimes::claude_code::accounts::load(&state.db)?;
         if let Some(account) = accounts.accounts.iter().find(|account| {
             accounts.accounts.len() > 1 && account.id == accounts.active_id && !account.native
         }) {
@@ -594,7 +594,7 @@ pub fn runtime_refresh(
                 RuntimeRowState::Detected | RuntimeRowState::Override
             )
     }) {
-        crate::claude_accounts::refresh(state);
+        crate::runtimes::claude_code::accounts::refresh(state);
     }
     Ok(status)
 }

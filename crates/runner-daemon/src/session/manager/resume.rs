@@ -276,32 +276,30 @@ impl SessionManager {
         let adapter = crate::runtimes::for_key(&role.runtime);
         let missing = adapter.missing_conversation();
         let probe_env = self.probe_env(adapter, &role.env);
-        let previous_account = snap
-            .launch_definition
-            .as_ref()
-            .and_then(|definition| definition.claude_account.as_ref());
-        let mut claude_account = crate::claude_accounts::launch_account(
-            &pool,
-            &mut role,
-            &self.shell_env.read().unwrap().vars,
-            previous_account,
-            fresh,
-        )?;
-        if let Some(account) = &mut claude_account {
-            if let Some(key) = snap.agent_session_key.as_deref() {
-                account.permission_mode = crate::claude_accounts::last_permission(
-                    &account.origin_folder,
-                    resolved_cwd_for_check.as_deref(),
-                    key,
-                    &account.permission_mode,
-                );
-            }
+        let accounts = adapter.accounts();
+        if let Some(accounts) = accounts {
+            let shell_env = self.shell_env.read().unwrap().vars.clone();
+            accounts.prepare_resume(
+                &crate::runtimes::AccountResumeContext {
+                    pool: &pool,
+                    shell_env: &shell_env,
+                    previous: snap.launch_definition.as_ref(),
+                    prior_key: snap.agent_session_key.as_deref(),
+                    cwd: resolved_cwd_for_check.as_deref(),
+                    fresh,
+                },
+                &mut role,
+                &mut new_definition,
+            )?;
         }
+        let origin_folder = accounts.and_then(|accounts| {
+            new_definition
+                .as_ref()
+                .and_then(|definition| accounts.conversation_origin(definition))
+        });
         let recovery_env = probe_env.clone();
         let conversation_exists = {
-            let origin_folder = claude_account
-                .as_ref()
-                .map(|account| account.origin_folder.clone());
+            let origin_folder = origin_folder.clone();
             let cwd = resolved_cwd_for_check.clone();
             move |key: &str| {
                 super::output::conversation_exists(
@@ -346,15 +344,12 @@ impl SessionManager {
             .as_deref()
             .filter(|_| conversation_missing && !fresh)
         {
-            let folder = claude_account
-                .as_ref()
-                .map(|account| PathBuf::from(&account.origin_folder))
-                .or_else(|| {
-                    adapter.conversation_folder(&crate::runtimes::ProbeContext {
-                        cwd: resolved_cwd_for_check.as_deref(),
-                        role_env: &recovery_env,
-                    })
-                });
+            let folder = origin_folder.clone().or_else(|| {
+                adapter.conversation_folder(&crate::runtimes::ProbeContext {
+                    cwd: resolved_cwd_for_check.as_deref(),
+                    role_env: &recovery_env,
+                })
+            });
             super::output::warn_missing_conversation(session_id, key, folder.as_deref());
         }
         let effective_prior_key = if fresh || (conversation_missing && !missing.reuse_key) {
@@ -368,28 +363,14 @@ impl SessionManager {
         if conversation_missing {
             plan.resuming = false;
         }
-        if let Some(account) = &mut claude_account {
-            if let Some(key) = effective_prior_key {
-                if account.origin_folder != account.folder {
-                    role.args = adapter.permissions().strip(&role.args);
-                }
-                crate::claude_accounts::resume_args(
-                    &mut plan.args,
-                    account,
-                    &account.origin_folder,
-                    resolved_cwd_for_check.as_deref(),
-                    key,
-                );
-            }
-            if !plan.resuming {
-                account.origin_folder = account.folder.clone();
-            }
-            let definition = new_definition.get_or_insert_with(|| {
-                snap.launch_definition
-                    .clone()
-                    .expect("recorded launch definition")
-            });
-            definition.claude_account = Some(account.clone());
+        if let Some(accounts) = accounts {
+            accounts.apply_resume_plan(
+                new_definition.as_mut(),
+                &mut role,
+                &mut plan,
+                effective_prior_key,
+                resolved_cwd_for_check.as_deref(),
+            );
         }
         if !allow_fresh_fallback
             && !plan.resuming
@@ -577,7 +558,9 @@ impl SessionManager {
             mission_bus_dir.as_deref(),
             Some(&pool),
         );
-        crate::claude_accounts::sharing::launch(&pool, claude_account.as_ref(), &role, &mut spec)?;
+        if let (Some(accounts), Some(definition)) = (accounts, new_definition.as_ref()) {
+            accounts.apply_spawn_spec(&pool, definition, &role, &mut spec)?;
+        }
 
         let started_at_dt = Utc::now();
         let started_at = started_at_dt.to_rfc3339();

@@ -462,8 +462,11 @@ pub fn action(core: &AppCore, action: ClaudeAccountAction) -> Result<ClaudeAccou
         login(core, account.clone())?;
     }
     if previous_active != state.active_id || was_multiple != (state.accounts.len() > 1) {
-        core.usage
-            .select_claude_account(&state.active_id, state.accounts.len() > 1);
+        core.usage.select_account(
+            Runtime::ClaudeCode,
+            &state.active_id,
+            state.accounts.len() > 1,
+        );
     }
     if let ClaudeAccountAction::Remove { id } = &action {
         if let Some(child) = core.claude_accounts.jobs.lock().unwrap().entries.remove(id) {
@@ -1159,6 +1162,215 @@ pub(crate) fn last_permission(
         }
     }
     mode
+}
+
+pub(super) struct Accounts;
+
+impl crate::runtimes::RuntimeAccounts for Accounts {
+    fn prepare_spawn(
+        &self,
+        pool: &db::DbPool,
+        role: &mut Role,
+        shell_env: &BTreeMap<String, String>,
+        definition: &mut crate::model::LaunchDefinition,
+        mission: bool,
+    ) -> Result<()> {
+        definition.claude_account = launch_account(pool, role, shell_env, None, true)?;
+        if let Some(account) = &mut definition.claude_account {
+            let args = if mission {
+                std::borrow::Cow::Borrowed(&role.args)
+            } else {
+                let options = db::runtime_launch_options(pool)?
+                    .get(&role.runtime)
+                    .cloned()
+                    .unwrap_or_default();
+                std::borrow::Cow::Owned(
+                    crate::runtimes::apply_launch_options(role, false, &options).args,
+                )
+            };
+            account.permission_mode =
+                crate::runtimes::RuntimeAdapter::native_permission_mode(&super::ClaudeCode, &args)
+                    .expect("account runtime has a native permission mode");
+        }
+        Ok(())
+    }
+
+    fn prepare_resume(
+        &self,
+        ctx: &crate::runtimes::AccountResumeContext<'_>,
+        role: &mut Role,
+        definition: &mut Option<crate::model::LaunchDefinition>,
+    ) -> Result<()> {
+        let previous_account = ctx
+            .previous
+            .and_then(|definition| definition.claude_account.as_ref());
+        let Some(mut account) =
+            launch_account(ctx.pool, role, ctx.shell_env, previous_account, ctx.fresh)?
+        else {
+            return Ok(());
+        };
+        if let Some(key) = ctx.prior_key {
+            account.permission_mode = last_permission(
+                &account.origin_folder,
+                ctx.cwd,
+                key,
+                &account.permission_mode,
+            );
+        }
+        let target = definition
+            .get_or_insert_with(|| ctx.previous.cloned().expect("recorded launch definition"));
+        target.claude_account = Some(account);
+        Ok(())
+    }
+
+    fn apply_resume_plan(
+        &self,
+        definition: Option<&mut crate::model::LaunchDefinition>,
+        role: &mut Role,
+        plan: &mut crate::router::runtime::ResumePlan,
+        prior_key: Option<&str>,
+        cwd: Option<&str>,
+    ) {
+        let Some(account) = definition.and_then(|definition| definition.claude_account.as_mut())
+        else {
+            return;
+        };
+        if let Some(key) = prior_key {
+            if account.origin_folder != account.folder {
+                role.args = crate::runtimes::RuntimeAdapter::permissions(&super::ClaudeCode)
+                    .strip(&role.args);
+            }
+            resume_args(&mut plan.args, account, &account.origin_folder, cwd, key);
+        }
+        if !plan.resuming {
+            account.origin_folder = account.folder.clone();
+        }
+    }
+
+    fn prepare_fork(
+        &self,
+        ctx: &crate::runtimes::AccountForkContext<'_>,
+        role: &mut Role,
+        fork_definition: &mut crate::model::LaunchDefinition,
+        plan: &mut crate::router::runtime::ForkPlan,
+    ) -> Result<()> {
+        let source_pin = config_pin(role, ctx.shell_env);
+        let previous_account = ctx.source.claude_account.as_ref();
+        let mut account = launch_account(ctx.pool, role, ctx.shell_env, previous_account, true)?;
+        if let Some(account) = &mut account {
+            let native_origin = runner_core::app_paths::home_dir()
+                .ok_or_else(|| Error::msg("home directory unavailable"))?
+                .join(".claude");
+            let origin = previous_account
+                .map(|previous| previous.origin_folder.as_str())
+                .or(source_pin.as_deref())
+                .unwrap_or_else(|| native_origin.to_str().unwrap());
+            account.permission_mode = last_permission(
+                origin,
+                ctx.cwd,
+                ctx.source_key,
+                previous_account
+                    .map(|previous| previous.permission_mode.as_str())
+                    .unwrap_or("default"),
+            );
+            if let crate::router::runtime::ForkPlan::Direct(plan) = plan {
+                resume_args(&mut plan.args, account, origin, ctx.cwd, ctx.source_key);
+            }
+        }
+        fork_definition.claude_account = account;
+        Ok(())
+    }
+
+    fn apply_spawn_spec(
+        &self,
+        pool: &db::DbPool,
+        definition: &crate::model::LaunchDefinition,
+        role: &Role,
+        spec: &mut crate::session::runtime::SpawnSpec,
+    ) -> Result<()> {
+        sharing::launch(pool, definition.claude_account.as_ref(), role, spec)
+    }
+
+    fn conversation_origin(&self, definition: &crate::model::LaunchDefinition) -> Option<PathBuf> {
+        definition
+            .claude_account
+            .as_ref()
+            .map(|account| PathBuf::from(&account.origin_folder))
+    }
+
+    fn conversation_exists_in(&self, origin: &Path, cwd: Option<&str>, key: &str) -> Option<bool> {
+        transcript(origin.to_str()?, cwd, key).map(|path| path.is_file())
+    }
+
+    fn active_account_id(&self, pool: &db::DbPool) -> Option<String> {
+        load(pool).ok().map(|state| state.active_id)
+    }
+
+    fn refresh_if_multiple(&self, core: &AppCore) {
+        if load(&core.db).is_ok_and(|state| state.accounts.len() > 1) {
+            refresh(core);
+        }
+    }
+
+    fn usage_snapshot(
+        &self,
+        pool: &db::DbPool,
+    ) -> Option<Box<dyn crate::runtimes::UsageAccountsSnapshot>> {
+        Some(Box::new(ClaudeUsageSnapshot(load(pool).ok()?)))
+    }
+
+    fn load_usage_lkg(&self, lkg: &db::UsageLkg) -> BTreeMap<String, crate::usage::AgentUsage> {
+        lkg.claude_accounts.clone()
+    }
+
+    fn save_usage_lkg(
+        &self,
+        lkg: &mut db::UsageLkg,
+        accounts: BTreeMap<String, crate::usage::AgentUsage>,
+    ) {
+        lkg.claude_accounts = accounts;
+    }
+}
+
+struct ClaudeUsageSnapshot(AccountsState);
+
+impl crate::runtimes::UsageAccountsSnapshot for ClaudeUsageSnapshot {
+    fn active_account_id(&self) -> &str {
+        &self.0.active_id
+    }
+
+    fn prepare_refresh(&self, core: &AppCore) {
+        if self.0.accounts.len() > 1 {
+            refresh_for_usage(core);
+        }
+    }
+
+    fn fetch_usage(
+        &self,
+        core: &AppCore,
+        env: &crate::shell_path::LoginShellEnv,
+        is_denied: &dyn Fn(&str, bool) -> bool,
+    ) -> Option<Vec<crate::runtimes::AccountUsageResult>> {
+        if self.0.accounts.len() <= 1 {
+            return None;
+        }
+        let statuses = core.claude_accounts.statuses.lock().unwrap().clone();
+        let mut results = Vec::new();
+        for account in &self.0.accounts {
+            if !statuses
+                .get(&account.id)
+                .is_some_and(|status| status.logged_in)
+            {
+                continue;
+            }
+            let denied = is_denied(&account.id, account.native);
+            results.push((
+                account.id.clone(),
+                super::usage::fetch_account(env, account, denied).map(Into::into),
+            ));
+        }
+        Some(results)
+    }
 }
 
 #[cfg(test)]
@@ -2251,5 +2463,94 @@ fi
             ]
         );
         assert!(transcript(&origin, Some("/tmp"), "../../escape").is_none());
+    }
+
+    #[test]
+    fn usage_snapshot_binds_fetch_mode_and_active_id_across_mid_refresh_changes() {
+        use crate::runtimes::adapter;
+        use crate::shell_path::LoginShellEnv;
+        use crate::usage::UnavailableReason;
+
+        let temp = tempfile::tempdir().unwrap();
+        let core = crate::test_support::test_core_in(temp.path().to_owned());
+        let mut state = initial(temp.path());
+        state.accounts.push(ClaudeAccount {
+            id: "work".into(),
+            name: "Work".into(),
+            folder: temp.path().join("work").to_string_lossy().into_owned(),
+            native: false,
+        });
+        state.active_id = "work".into();
+        db::app_state_set(
+            &core.db.get().unwrap(),
+            KEY,
+            &serde_json::to_string(&state).unwrap(),
+        )
+        .unwrap();
+        core.claude_accounts.statuses.lock().unwrap().insert(
+            "work".into(),
+            ClaudeAuthStatus {
+                logged_in: true,
+                ..Default::default()
+            },
+        );
+
+        let accounts = adapter(Runtime::ClaudeCode).accounts().unwrap();
+        let multi = accounts.usage_snapshot(&core.db).unwrap();
+        assert_eq!(multi.active_account_id(), "work");
+
+        // Switching to native and removing Work mid-refresh must not make this
+        // snapshot fall back to the single-account native fetch under "work".
+        let single_state = initial(temp.path());
+        db::app_state_set(
+            &core.db.get().unwrap(),
+            KEY,
+            &serde_json::to_string(&single_state).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            multi.fetch_usage(&core, &LoginShellEnv::default(), &|_, _| true),
+            Some(vec![(
+                "work".into(),
+                Err(UnavailableReason::KeychainDenied)
+            )])
+        );
+
+        // Removing the in-memory status too still keeps the multi-account mode
+        // (Some(empty)), preventing fallback to native fetch.
+        core.claude_accounts.statuses.lock().unwrap().remove("work");
+        assert_eq!(
+            multi.fetch_usage(&core, &LoginShellEnv::default(), &|_, _| true),
+            Some(Vec::new())
+        );
+
+        // A later database read failure also never triggers native fallback.
+        db::app_state_set(&core.db.get().unwrap(), KEY, "{broken").unwrap();
+        assert_eq!(
+            multi.fetch_usage(&core, &LoginShellEnv::default(), &|_, _| true),
+            Some(Vec::new())
+        );
+        assert!(accounts.usage_snapshot(&core.db).is_none());
+
+        // Conversely, a single-account snapshot stays on the single-account
+        // fallback even if a second account is added before fetch_usage runs.
+        db::app_state_set(
+            &core.db.get().unwrap(),
+            KEY,
+            &serde_json::to_string(&single_state).unwrap(),
+        )
+        .unwrap();
+        let single = accounts.usage_snapshot(&core.db).unwrap();
+        assert_eq!(single.active_account_id(), NATIVE_ID);
+        db::app_state_set(
+            &core.db.get().unwrap(),
+            KEY,
+            &serde_json::to_string(&state).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            single.fetch_usage(&core, &LoginShellEnv::default(), &|_, _| true),
+            None
+        );
     }
 }

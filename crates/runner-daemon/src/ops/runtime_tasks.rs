@@ -352,7 +352,7 @@ fn finish(core: &AppCore, id: &str, code: Option<i32>, error: Option<String>) {
             true,
         );
         if runtime == Runtime::ClaudeCode {
-            crate::claude_accounts::refresh(core);
+            crate::runtimes::claude_code::accounts::refresh(core);
         }
     }
     publish(core);

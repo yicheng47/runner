@@ -1,6 +1,6 @@
 pub(crate) mod antigravity;
 pub(crate) mod catalog;
-pub(crate) mod claude_code;
+pub mod claude_code;
 pub(crate) mod codex;
 pub(crate) mod copilot;
 pub(crate) mod cursor_agent;
@@ -256,6 +256,132 @@ pub struct UsageSource {
     ) -> Result<crate::usage::UsageReading, crate::usage::UnavailableReason>,
 }
 
+pub type AccountUsageResult = (
+    String,
+    std::result::Result<crate::usage::UsageReading, crate::usage::UnavailableReason>,
+);
+
+pub struct AccountResumeContext<'a> {
+    pub pool: &'a crate::db::DbPool,
+    pub shell_env: &'a std::collections::BTreeMap<String, String>,
+    pub previous: Option<&'a crate::model::LaunchDefinition>,
+    pub prior_key: Option<&'a str>,
+    pub cwd: Option<&'a str>,
+    pub fresh: bool,
+}
+
+pub struct AccountForkContext<'a> {
+    pub pool: &'a crate::db::DbPool,
+    pub shell_env: &'a std::collections::BTreeMap<String, String>,
+    pub source: &'a crate::model::LaunchDefinition,
+    pub source_key: &'a str,
+    pub cwd: Option<&'a str>,
+}
+
+pub trait UsageAccountsSnapshot: Send + Sync {
+    fn active_account_id(&self) -> &str;
+
+    fn prepare_refresh(&self, _core: &crate::AppCore) {}
+
+    fn fetch_usage(
+        &self,
+        _core: &crate::AppCore,
+        _env: &crate::shell_path::LoginShellEnv,
+        _is_denied: &dyn Fn(&str, bool) -> bool,
+    ) -> Option<Vec<AccountUsageResult>> {
+        None
+    }
+}
+
+pub trait RuntimeAccounts: Send + Sync {
+    fn prepare_spawn(
+        &self,
+        _pool: &crate::db::DbPool,
+        _role: &mut crate::model::Role,
+        _shell_env: &std::collections::BTreeMap<String, String>,
+        _definition: &mut crate::model::LaunchDefinition,
+        _mission: bool,
+    ) -> crate::error::Result<()> {
+        Ok(())
+    }
+
+    fn prepare_resume(
+        &self,
+        _ctx: &AccountResumeContext<'_>,
+        _role: &mut crate::model::Role,
+        _definition: &mut Option<crate::model::LaunchDefinition>,
+    ) -> crate::error::Result<()> {
+        Ok(())
+    }
+
+    fn apply_resume_plan(
+        &self,
+        _definition: Option<&mut crate::model::LaunchDefinition>,
+        _role: &mut crate::model::Role,
+        _plan: &mut ResumePlan,
+        _prior_key: Option<&str>,
+        _cwd: Option<&str>,
+    ) {
+    }
+
+    fn prepare_fork(
+        &self,
+        _ctx: &AccountForkContext<'_>,
+        _role: &mut crate::model::Role,
+        _fork_definition: &mut crate::model::LaunchDefinition,
+        _plan: &mut ForkPlan,
+    ) -> crate::error::Result<()> {
+        Ok(())
+    }
+
+    fn apply_spawn_spec(
+        &self,
+        _pool: &crate::db::DbPool,
+        _definition: &crate::model::LaunchDefinition,
+        _role: &crate::model::Role,
+        _spec: &mut SpawnSpec,
+    ) -> crate::error::Result<()> {
+        Ok(())
+    }
+
+    fn conversation_origin(&self, _definition: &crate::model::LaunchDefinition) -> Option<PathBuf> {
+        None
+    }
+
+    fn conversation_exists_in(
+        &self,
+        _origin: &Path,
+        _cwd: Option<&str>,
+        _key: &str,
+    ) -> Option<bool> {
+        None
+    }
+
+    fn active_account_id(&self, _pool: &crate::db::DbPool) -> Option<String> {
+        None
+    }
+
+    fn refresh_if_multiple(&self, _core: &crate::AppCore) {}
+
+    fn usage_snapshot(&self, _pool: &crate::db::DbPool) -> Option<Box<dyn UsageAccountsSnapshot>> {
+        None
+    }
+
+    fn load_usage_lkg(
+        &self,
+        _lkg: &crate::db::UsageLkg,
+    ) -> std::collections::BTreeMap<String, crate::usage::AgentUsage> {
+        std::collections::BTreeMap::new()
+    }
+
+    fn save_usage_lkg(
+        &self,
+        _lkg: &mut crate::db::UsageLkg,
+        _accounts: std::collections::BTreeMap<String, crate::usage::AgentUsage>,
+    ) {
+    }
+}
+
 pub type SkillState = Box<dyn Fn(&crate::skills::SkillEntry) -> crate::skills::GlobalState>;
 pub type SkillToggle =
     fn(&Path, Option<&Path>, &Path, bool) -> crate::error::Result<crate::skills::SkillCatalog>;
@@ -387,6 +513,9 @@ pub trait RuntimeAdapter: Send + Sync {
         None
     }
     fn usage(&self) -> Option<&'static UsageSource> {
+        None
+    }
+    fn accounts(&self) -> Option<&'static dyn RuntimeAccounts> {
         None
     }
     fn mcp_path(

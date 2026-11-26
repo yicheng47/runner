@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -48,36 +49,54 @@ struct UsageState {
     last_attempt_at: Option<DateTime<Utc>>,
     refresh_started_at: Option<Instant>,
     keychain_denied: bool,
-    claude_accounts: std::collections::BTreeMap<String, RuntimeUsage>,
-    claude_denied: std::collections::HashSet<String>,
-    active_claude: Option<String>,
+    runtime_accounts: HashMap<Runtime, BTreeMap<String, RuntimeUsage>>,
+    denied_accounts: HashMap<Runtime, HashSet<String>>,
+    active_accounts: HashMap<Runtime, String>,
     account_refresh_pending: bool,
     lkg_seq: u64,
 }
 
 impl UsageState {
-    fn show_claude_account(&mut self, id: &str) {
-        let value = self.claude_accounts.get(id).cloned().unwrap_or_default();
-        self.snapshot.runtimes.insert(Runtime::ClaudeCode, value);
+    fn show_account(&mut self, runtime: Runtime, id: &str) {
+        let value = self
+            .runtime_accounts
+            .get(&runtime)
+            .and_then(|accounts| accounts.get(id))
+            .cloned()
+            .unwrap_or_default();
+        self.snapshot.runtimes.insert(runtime, value);
     }
 
-    /// Claude Code's snapshot entry only shows the selected account's cached
-    /// usage, so the account cache is what is saved.
+    /// Account-backed runtimes only show the selected account's cached usage in
+    /// the main snapshot, so their per-account caches are saved separately.
     fn lkg(&self) -> UsageLkg {
-        UsageLkg {
+        let mut lkg = UsageLkg {
             runtimes: self
                 .snapshot
                 .runtimes
                 .iter()
-                .filter(|(runtime, _)| **runtime != Runtime::ClaudeCode)
+                .filter(|(runtime, _)| crate::runtimes::adapter(**runtime).accounts().is_none())
                 .filter_map(|(runtime, usage)| Some((*runtime, usage.value.clone()?)))
                 .collect(),
-            claude_accounts: self
-                .claude_accounts
-                .iter()
-                .filter_map(|(id, usage)| Some((id.clone(), usage.value.clone()?)))
-                .collect(),
+            ..UsageLkg::default()
+        };
+        for runtime in Runtime::ALL {
+            let Some(accounts) = crate::runtimes::adapter(runtime).accounts() else {
+                continue;
+            };
+            let saved = self
+                .runtime_accounts
+                .get(&runtime)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|(id, usage)| Some((id.clone(), usage.value.clone()?)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            accounts.save_usage_lkg(&mut lkg, saved);
         }
+        lkg
     }
 }
 
@@ -145,8 +164,10 @@ impl UsageService {
             return;
         }
         self.set_polling_enabled(true);
-        if crate::claude_accounts::load(&core.db).is_ok_and(|state| state.accounts.len() > 1) {
-            crate::claude_accounts::refresh(&core);
+        for runtime in Runtime::ALL {
+            if let Some(accounts) = crate::runtimes::adapter(runtime).accounts() {
+                accounts.refresh_if_multiple(&core);
+            }
         }
         if !self.discovery_started.swap(true, Ordering::AcqRel) {
             crate::runtime_status::start_background_discovery(
@@ -201,17 +222,28 @@ impl UsageService {
         self.state.lock().unwrap().snapshot.clone()
     }
 
-    pub fn claude_account_usage(&self) -> std::collections::BTreeMap<String, RuntimeUsage> {
-        self.state.lock().unwrap().claude_accounts.clone()
+    pub fn account_usage(&self, runtime: Runtime) -> BTreeMap<String, RuntimeUsage> {
+        self.state
+            .lock()
+            .unwrap()
+            .runtime_accounts
+            .get(&runtime)
+            .cloned()
+            .unwrap_or_default()
     }
 
-    pub fn select_claude_account(&self, id: &str, multiple: bool) {
+    pub fn select_account(&self, runtime: Runtime, id: &str, multiple: bool) {
         let mut state = self.state.lock().unwrap();
-        state.active_claude = Some(id.to_owned());
-        if !multiple && state.claude_denied.contains(id) {
+        state.active_accounts.insert(runtime, id.to_owned());
+        if !multiple
+            && state
+                .denied_accounts
+                .get(&runtime)
+                .is_some_and(|denied| denied.contains(id))
+        {
             state.keychain_denied = true;
         }
-        state.show_claude_account(id);
+        state.show_account(runtime, id);
     }
 
     pub fn restore(&self, pool: &crate::db::DbPool) {
@@ -234,30 +266,47 @@ impl UsageService {
                 return;
             }
         };
-        let active = crate::claude_accounts::load(pool)
-            .ok()
-            .map(|state| state.active_id);
-        self.restore_lkg(lkg, active.as_deref(), Utc::now());
+        let active: HashMap<Runtime, String> = Runtime::ALL
+            .into_iter()
+            .filter_map(|runtime| {
+                let id = crate::runtimes::adapter(runtime)
+                    .accounts()?
+                    .active_account_id(pool)?;
+                Some((runtime, id))
+            })
+            .collect();
+        self.restore_lkg(lkg, &active, Utc::now());
     }
 
-    fn restore_lkg(&self, lkg: UsageLkg, active_claude: Option<&str>, now: DateTime<Utc>) {
+    fn restore_lkg(
+        &self,
+        lkg: UsageLkg,
+        active_accounts: &HashMap<Runtime, String>,
+        now: DateTime<Utc>,
+    ) {
         let restored = |usage| RuntimeUsage {
             value: Some(usage),
             error: None,
         };
         let mut state = self.state.lock().unwrap();
-        for (runtime, usage) in lkg.runtimes {
-            if let Some(usage) = unexpired(usage, now) {
-                state.snapshot.runtimes.insert(runtime, restored(usage));
+        for (runtime, usage) in &lkg.runtimes {
+            if let Some(usage) = unexpired(usage.clone(), now) {
+                state.snapshot.runtimes.insert(*runtime, restored(usage));
             }
         }
-        for (id, usage) in lkg.claude_accounts {
-            if let Some(usage) = unexpired(usage, now) {
-                state.claude_accounts.insert(id, restored(usage));
+        for runtime in Runtime::ALL {
+            let Some(accounts) = crate::runtimes::adapter(runtime).accounts() else {
+                continue;
+            };
+            let entries = state.runtime_accounts.entry(runtime).or_default();
+            for (id, usage) in accounts.load_usage_lkg(&lkg) {
+                if let Some(usage) = unexpired(usage, now) {
+                    entries.insert(id, restored(usage));
+                }
             }
-        }
-        if let Some(id) = active_claude {
-            state.show_claude_account(id);
+            if let Some(id) = active_accounts.get(&runtime) {
+                state.show_account(runtime, id);
+            }
         }
     }
 
@@ -355,11 +404,10 @@ impl UsageService {
                         .unwrap(),
                 );
             }
-            if service.fetch_runtimes(false).contains(&Runtime::ClaudeCode)
-                && crate::claude_accounts::load(&core.db)
-                    .is_ok_and(|state| state.accounts.len() > 1)
-            {
-                crate::claude_accounts::refresh(&core);
+            for runtime in service.fetch_runtimes(false) {
+                if let Some(accounts) = crate::runtimes::adapter(runtime).accounts() {
+                    accounts.refresh_if_multiple(&core);
+                }
             }
             service.request_refresh(core.clone(), RefreshReason::Launch);
             let mut state = service.state.lock().unwrap();
@@ -411,13 +459,21 @@ impl UsageService {
         let env = core.runtime_shell_env.read().unwrap().clone();
         let enabled = self.fetch_runtimes(force);
         let mut results = Vec::new();
-        let account_state = crate::claude_accounts::load(&core.db).ok();
-        let accounts = account_state
-            .as_ref()
-            .filter(|state| state.accounts.len() > 1);
+        let account_snapshots: HashMap<Runtime, Box<dyn crate::runtimes::UsageAccountsSnapshot>> =
+            Runtime::ALL
+                .into_iter()
+                .filter_map(|runtime| {
+                    let snapshot = crate::runtimes::adapter(runtime)
+                        .accounts()?
+                        .usage_snapshot(&core.db)?;
+                    Some((runtime, snapshot))
+                })
+                .collect();
         let mut account_results = Vec::new();
-        if accounts.is_some() && enabled.contains(&Runtime::ClaudeCode) {
-            crate::claude_accounts::refresh_for_usage(core);
+        for &runtime in &enabled {
+            if let Some(snapshot) = account_snapshots.get(&runtime) {
+                snapshot.prepare_refresh(core);
+            }
         }
         if let Ok(statuses) = statuses {
             for status in statuses.runtimes {
@@ -432,28 +488,21 @@ impl UsageService {
                 let Some(command) = status.effective_command else {
                     continue;
                 };
-                if status.name == Runtime::ClaudeCode {
-                    if let Some(accounts) = accounts {
-                        let statuses = crate::claude_accounts::snapshot(core).ok();
-                        for account in &accounts.accounts {
-                            if !statuses
-                                .as_ref()
-                                .and_then(|snapshot| snapshot.statuses.get(&account.id))
-                                .is_some_and(|status| status.logged_in)
-                            {
-                                continue;
-                            }
-                            let state = self.state.lock().unwrap();
-                            let denied = state.claude_denied.contains(&account.id)
-                                || (account.native && state.keychain_denied);
-                            drop(state);
-                            account_results.push((
-                                account.id.clone(),
-                                crate::runtimes::claude_code::usage::fetch_account(
-                                    &env, account, denied,
-                                ),
-                            ));
-                        }
+                if let Some(snapshot) = account_snapshots.get(&status.name) {
+                    let is_denied = |id: &str, native: bool| {
+                        let state = self.state.lock().unwrap();
+                        state
+                            .denied_accounts
+                            .get(&status.name)
+                            .is_some_and(|denied| denied.contains(id))
+                            || (native && state.keychain_denied)
+                    };
+                    if let Some(fetched) = snapshot.fetch_usage(core, &env, &is_denied) {
+                        account_results.extend(
+                            fetched
+                                .into_iter()
+                                .map(|(id, result)| (status.name, id, result)),
+                        );
                         continue;
                     }
                 }
@@ -473,8 +522,13 @@ impl UsageService {
         if !remaining.is_zero() {
             thread::sleep(remaining);
         }
-        let active = account_state.as_ref().map(|state| state.active_id.as_str());
-        if let Some((seq, lkg)) = self.finish_fetch(results, account_results, active, Utc::now()) {
+        let active_accounts: HashMap<Runtime, String> = account_snapshots
+            .iter()
+            .map(|(&runtime, snapshot)| (runtime, snapshot.active_account_id().to_owned()))
+            .collect();
+        if let Some((seq, lkg)) =
+            self.finish_fetch(results, account_results, &active_accounts, Utc::now())
+        {
             self.save_lkg(&core.db, seq, &lkg);
         }
     }
@@ -495,43 +549,59 @@ impl UsageService {
     fn finish_fetch(
         &self,
         results: Vec<(Runtime, Result<UsageReading, UnavailableReason>)>,
-        account_results: Vec<(String, Result<Vec<UsageWindow>, UnavailableReason>)>,
-        fetched_claude: Option<&str>,
+        account_results: Vec<(Runtime, String, Result<UsageReading, UnavailableReason>)>,
+        fetched_accounts: &HashMap<Runtime, String>,
         now: DateTime<Utc>,
     ) -> Option<(u64, UsageLkg)> {
         let good = results.iter().any(|(_, result)| result.is_ok())
-            || account_results.iter().any(|(_, result)| result.is_ok());
+            || account_results.iter().any(|(_, _, result)| result.is_ok());
         let mut state = self.state.lock().unwrap();
         for (runtime, result) in results {
             if result == Err(UnavailableReason::KeychainDenied) {
                 state.keychain_denied = true;
             }
-            let entry = match fetched_claude {
-                Some(id) if runtime == Runtime::ClaudeCode => {
-                    state.claude_accounts.entry(id.to_owned()).or_default()
-                }
-                _ => state.snapshot.runtimes.entry(runtime).or_default(),
+            let entry = match fetched_accounts.get(&runtime) {
+                Some(id) => state
+                    .runtime_accounts
+                    .entry(runtime)
+                    .or_default()
+                    .entry(id.clone())
+                    .or_default(),
+                None => state.snapshot.runtimes.entry(runtime).or_default(),
             };
             apply_result(&mut entry.value, &mut entry.error, result, now);
         }
-        for (id, result) in account_results {
+        for (runtime, id, result) in account_results {
             if result == Err(UnavailableReason::KeychainDenied) {
-                state.claude_denied.insert(id.clone());
+                state
+                    .denied_accounts
+                    .entry(runtime)
+                    .or_default()
+                    .insert(id.clone());
             }
-            let entry = state.claude_accounts.entry(id).or_default();
-            apply_result(
-                &mut entry.value,
-                &mut entry.error,
-                result.map(Into::into),
-                now,
-            );
+            let entry = state
+                .runtime_accounts
+                .entry(runtime)
+                .or_default()
+                .entry(id)
+                .or_default();
+            apply_result(&mut entry.value, &mut entry.error, result, now);
         }
-        if let Some(id) = state
-            .active_claude
-            .clone()
-            .or_else(|| fetched_claude.map(str::to_owned))
-        {
-            state.show_claude_account(&id);
+        let mut show_runtimes: Vec<Runtime> = state.active_accounts.keys().copied().collect();
+        for &runtime in fetched_accounts.keys() {
+            if !show_runtimes.contains(&runtime) {
+                show_runtimes.push(runtime);
+            }
+        }
+        for runtime in show_runtimes {
+            if let Some(id) = state
+                .active_accounts
+                .get(&runtime)
+                .cloned()
+                .or_else(|| fetched_accounts.get(&runtime).cloned())
+            {
+                state.show_account(runtime, &id);
+            }
         }
         state.snapshot.last_fetch_at = Some(now);
         state.snapshot.refreshing = false;
@@ -735,7 +805,7 @@ mod account_cache_tests {
             .snapshot
             .runtimes
             .insert(Runtime::ClaudeCode, usage);
-        crate::claude_accounts::action(
+        crate::runtimes::claude_code::accounts::action(
             &core,
             runner_core::protocol::ClaudeAccountAction::Rename {
                 id: "native".into(),
@@ -771,16 +841,24 @@ mod account_cache_tests {
         };
         {
             let mut state = service.state.lock().unwrap();
-            state.claude_accounts.insert("native".into(), usage(82.));
-            state.claude_accounts.insert("work".into(), usage(24.));
-            state.claude_denied.insert("work".into());
+            let accounts = state
+                .runtime_accounts
+                .entry(Runtime::ClaudeCode)
+                .or_default();
+            accounts.insert("native".into(), usage(82.));
+            accounts.insert("work".into(), usage(24.));
+            state
+                .denied_accounts
+                .entry(Runtime::ClaudeCode)
+                .or_default()
+                .insert("work".into());
         }
-        service.select_claude_account("work", true);
+        service.select_account(Runtime::ClaudeCode, "work", true);
         assert_eq!(
             service.snapshot().get(Runtime::ClaudeCode).unwrap().windows[0].used_percent,
             24.
         );
-        service.select_claude_account("native", true);
+        service.select_account(Runtime::ClaudeCode, "native", true);
         assert_eq!(
             service.snapshot().get(Runtime::ClaudeCode).unwrap().windows[0].used_percent,
             82.
@@ -789,12 +867,13 @@ mod account_cache_tests {
             .state
             .lock()
             .unwrap()
-            .claude_denied
-            .contains("native"));
-        service.select_claude_account("unknown", true);
+            .denied_accounts
+            .get(&Runtime::ClaudeCode)
+            .is_some_and(|denied| denied.contains("native")));
+        service.select_account(Runtime::ClaudeCode, "unknown", true);
         assert_eq!(service.snapshot().get(Runtime::ClaudeCode), None);
-        assert_eq!(service.claude_account_usage().len(), 2);
-        service.select_claude_account("work", false);
+        assert_eq!(service.account_usage(Runtime::ClaudeCode).len(), 2);
+        service.select_account(Runtime::ClaudeCode, "work", false);
         assert!(service.state.lock().unwrap().keychain_denied);
     }
 }
@@ -887,7 +966,7 @@ mod lkg_tests {
                     }),
                 )],
                 Vec::new(),
-                None,
+                &HashMap::new(),
                 original,
             )
             .unwrap();
@@ -901,7 +980,7 @@ mod lkg_tests {
             .finish_fetch(
                 vec![(Runtime::Codex, Err(UnavailableReason::CodexNoAnswer))],
                 Vec::new(),
-                None,
+                &HashMap::new(),
                 now
             )
             .is_none());
@@ -915,7 +994,7 @@ mod lkg_tests {
             .finish_fetch(
                 vec![(Runtime::Codex, Ok(vec![window("Week", 31., None)].into()))],
                 Vec::new(),
-                None,
+                &HashMap::new(),
                 now,
             )
             .unwrap();
@@ -970,7 +1049,7 @@ mod lkg_tests {
                     .into()),
                 )],
                 Vec::new(),
-                None,
+                &HashMap::new(),
                 original,
             )
             .unwrap();
@@ -980,7 +1059,7 @@ mod lkg_tests {
             .finish_fetch(
                 vec![(Runtime::Antigravity, Err(UnavailableReason::SignIn))],
                 Vec::new(),
-                None,
+                &HashMap::new(),
                 now,
             )
             .is_none());
@@ -1031,6 +1110,10 @@ mod lkg_tests {
         .unwrap();
     }
 
+    fn claude_active(id: &str) -> HashMap<Runtime, String> {
+        HashMap::from([(Runtime::ClaudeCode, id.into())])
+    }
+
     fn fetch_and_save(
         core: &AppCore,
         service: &UsageService,
@@ -1038,15 +1121,26 @@ mod lkg_tests {
         account_results: Vec<(String, Result<Vec<UsageWindow>, UnavailableReason>)>,
         now: DateTime<Utc>,
     ) {
-        let accounts = crate::claude_accounts::load(&core.db).unwrap();
+        let active: HashMap<Runtime, String> = Runtime::ALL
+            .into_iter()
+            .filter_map(|runtime| {
+                let id = crate::runtimes::adapter(runtime)
+                    .accounts()?
+                    .active_account_id(&core.db)?;
+                Some((runtime, id))
+            })
+            .collect();
         let (seq, lkg) = service
             .finish_fetch(
                 results
                     .into_iter()
                     .map(|(runtime, result)| (runtime, result.map(Into::into)))
                     .collect(),
-                account_results,
-                Some(&accounts.active_id),
+                account_results
+                    .into_iter()
+                    .map(|(id, result)| (Runtime::ClaudeCode, id, result.map(Into::into)))
+                    .collect(),
+                &active,
                 now,
             )
             .unwrap();
@@ -1087,7 +1181,7 @@ mod lkg_tests {
                     ),
                 ],
                 Vec::new(),
-                Some("native"),
+                &claude_active("native"),
                 now,
             ),
             None
@@ -1142,15 +1236,19 @@ mod lkg_tests {
         );
         let service = restarted(&core);
         assert_eq!(claude_percent(&service), Some(24.));
-        assert_eq!(service.claude_account_usage().len(), 2);
+        assert_eq!(service.account_usage(Runtime::ClaudeCode).len(), 2);
         service.finish_fetch(
             Vec::new(),
-            vec![("work".into(), Err(UnavailableReason::ClaudeUnreachable))],
-            Some("work"),
+            vec![(
+                Runtime::ClaudeCode,
+                "work".into(),
+                Err(UnavailableReason::ClaudeUnreachable),
+            )],
+            &claude_active("work"),
             now,
         );
         assert_eq!(claude_percent(&service), Some(24.));
-        service.select_claude_account("native", true);
+        service.select_account(Runtime::ClaudeCode, "native", true);
         assert_eq!(claude_percent(&service), Some(82.));
     }
 
@@ -1172,9 +1270,9 @@ mod lkg_tests {
             ],
             earlier,
         );
-        service.select_claude_account("native", true);
+        service.select_account(Runtime::ClaudeCode, "native", true);
         save_accounts(&core, &["native"], "native");
-        service.select_claude_account("native", false);
+        service.select_account(Runtime::ClaudeCode, "native", false);
 
         assert_eq!(claude_percent(&restarted(&core)), Some(82.));
         assert_eq!(
@@ -1182,7 +1280,7 @@ mod lkg_tests {
                 let service = UsageService::without_fetch();
                 service.restore_lkg(
                     crate::db::usage_lkg(&core.db).unwrap().unwrap(),
-                    Some("native"),
+                    &claude_active("native"),
                     now + TimeDelta::minutes(6),
                 );
                 service
@@ -1223,7 +1321,7 @@ mod lkg_tests {
             earlier,
         );
         save_accounts(&core, &["native", "work"], "native");
-        service.select_claude_account("native", true);
+        service.select_account(Runtime::ClaudeCode, "native", true);
         assert_eq!(claude_percent(&service), Some(50.));
         fetch_and_save(
             &core,
@@ -1238,7 +1336,7 @@ mod lkg_tests {
         let restored = restarted(&core);
         assert_eq!(claude_percent(&restored), Some(50.));
         assert_eq!(
-            restored.claude_account_usage()["native"].value,
+            restored.account_usage(Runtime::ClaudeCode)["native"].value,
             Some(week(50., earlier))
         );
     }
@@ -1248,12 +1346,12 @@ mod lkg_tests {
         let service = UsageService::without_fetch();
         let now = Utc::now();
         let windows = |percent| vec![window("Week", percent, None)];
-        service.select_claude_account("work", true);
+        service.select_account(Runtime::ClaudeCode, "work", true);
         let (_, lkg) = service
             .finish_fetch(
                 vec![(Runtime::ClaudeCode, Ok(windows(50.).into()))],
                 Vec::new(),
-                Some("native"),
+                &claude_active("native"),
                 now,
             )
             .unwrap();
@@ -1262,8 +1360,12 @@ mod lkg_tests {
         assert!(!lkg.runtimes.contains_key(&Runtime::ClaudeCode));
         service.finish_fetch(
             Vec::new(),
-            vec![("work".into(), Err(UnavailableReason::ClaudeUnreachable))],
-            Some("native"),
+            vec![(
+                Runtime::ClaudeCode,
+                "work".into(),
+                Err(UnavailableReason::ClaudeUnreachable),
+            )],
+            &claude_active("native"),
             now,
         );
         assert_eq!(claude_percent(&service), None);
@@ -1271,7 +1373,7 @@ mod lkg_tests {
             service.snapshot().error(Runtime::ClaudeCode),
             Some(UnavailableReason::ClaudeUnreachable)
         );
-        service.select_claude_account("native", true);
+        service.select_account(Runtime::ClaudeCode, "native", true);
         assert_eq!(claude_percent(&service), Some(50.));
     }
 
@@ -1288,7 +1390,7 @@ mod lkg_tests {
                         Ok(vec![window("Week", percent, None)].into()),
                     )],
                     Vec::new(),
-                    Some("native"),
+                    &claude_active("native"),
                     at,
                 )
                 .unwrap()

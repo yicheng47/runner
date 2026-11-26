@@ -13,23 +13,19 @@ const EARLY_RESUME_EXIT: Duration = Duration::from_secs(3);
 /// conversation probe sees it; `None` when the runtime cannot tell.
 pub(super) type ConversationCheck = Box<dyn FnOnce() -> Option<bool> + Send>;
 
-/// A Claude account chat keeps its transcript in the account's origin
-/// folder; every other chat asks its runtime adapter.
+/// A session with an account origin checks that folder through the adapter's
+/// accounts hook; every other chat asks its runtime adapter directly.
 pub(super) fn conversation_exists(
     adapter: &dyn crate::runtimes::RuntimeAdapter,
-    account_folder: Option<&str>,
+    account_origin: Option<&Path>,
     cwd: Option<&str>,
     env: &HashMap<String, String>,
     key: &str,
 ) -> Option<bool> {
-    match account_folder {
-        Some(folder) => {
-            crate::claude_accounts::transcript(folder, cwd, key).map(|path| path.is_file())
-        }
-        None => {
-            adapter.conversation_exists(key, &crate::runtimes::ProbeContext { cwd, role_env: env })
-        }
+    if let (Some(accounts), Some(origin)) = (adapter.accounts(), account_origin) {
+        return accounts.conversation_exists_in(origin, cwd, key);
     }
+    adapter.conversation_exists(key, &crate::runtimes::ProbeContext { cwd, role_env: env })
 }
 
 // `log::set_logger` is once per process and a remote test owns it.

@@ -273,7 +273,7 @@ fn claude_preview_only_sets_config_dir_for_an_active_non_native_account() {
         .lines
         .iter()
         .any(|line| line.command.starts_with("CLAUDE_CONFIG_DIR=")));
-    let mut accounts = crate::claude_accounts::load(&state.db).unwrap();
+    let mut accounts = crate::runtimes::claude_code::accounts::load(&state.db).unwrap();
     accounts
         .accounts
         .push(runner_core::protocol::ClaudeAccount {
@@ -1201,9 +1201,10 @@ fn failed_claude_auth_status_probe_caches_error_without_looping_until_explicit_r
     std::fs::set_permissions(&claude_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let mut state = crate::test_support::test_core_in(app_data_dir);
-    state.claude_accounts = Arc::new(crate::claude_accounts::AccountService::default());
+    state.claude_accounts =
+        Arc::new(crate::runtimes::claude_code::accounts::AccountService::default());
     state.usage = Arc::new(crate::usage::UsageService::without_fetch());
-    struct JoinAccountsOnDrop(Arc<crate::claude_accounts::AccountService>);
+    struct JoinAccountsOnDrop(Arc<crate::runtimes::claude_code::accounts::AccountService>);
     impl Drop for JoinAccountsOnDrop {
         fn drop(&mut self) {
             self.0.stop_and_join_test_workers();
@@ -1248,7 +1249,7 @@ fn failed_claude_auth_status_probe_caches_error_without_looping_until_explicit_r
     );
 
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !crate::claude_accounts::snapshot(&state)
+    while !crate::runtimes::claude_code::accounts::snapshot(&state)
         .unwrap()
         .statuses
         .get("native")

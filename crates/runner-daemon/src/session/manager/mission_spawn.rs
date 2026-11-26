@@ -53,17 +53,9 @@ impl SessionManager {
             .permissions()
             .apply_mission(&role.args);
         let mut role = self.resolve_role_executable(&role, &pool)?;
-        launch_definition.claude_account = crate::claude_accounts::launch_account(
-            &pool,
-            &mut role,
-            &self.shell_env.read().unwrap().vars,
-            None,
-            true,
-        )?;
-        if let Some(account) = &mut launch_definition.claude_account {
-            account.permission_mode = crate::runtimes::for_key(&role.runtime)
-                .native_permission_mode(&role.args)
-                .expect("account runtime has a native permission mode");
+        if let Some(accounts) = crate::runtimes::for_key(&role.runtime).accounts() {
+            let shell_env = self.shell_env.read().unwrap().vars.clone();
+            accounts.prepare_spawn(&pool, &mut role, &shell_env, &mut launch_definition, true)?;
         }
 
         // Agent-native session resume: this is a *fresh* session row, so
@@ -149,12 +141,9 @@ impl SessionManager {
             Some(&mission_bus_dir),
             Some(&pool),
         );
-        crate::claude_accounts::sharing::launch(
-            &pool,
-            launch_definition.claude_account.as_ref(),
-            &role,
-            &mut spec,
-        )?;
+        if let Some(accounts) = crate::runtimes::for_key(&role.runtime).accounts() {
+            accounts.apply_spawn_spec(&pool, &launch_definition, &role, &mut spec)?;
+        }
 
         // Insert the row first (status=running with no runtime_*
         // metadata yet) so a fast-failing runtime spawn doesn't leave

@@ -92,7 +92,8 @@ pub(crate) fn status_list_with_events(
         .read()
         .map_err(|_| Error::msg("runtime discovery lock poisoned"))?
         .clone();
-    let config_env = crate::claude_accounts::sharing::config_env(pool, shell_env.vars.clone());
+    let config_env =
+        crate::runtimes::claude_code::accounts::sharing::config_env(pool, shell_env.vars.clone());
     let overrides = db::runtime_overrides(pool)?;
     let launch_options = db::runtime_launch_options(pool)?;
     let path = direct_chat_path(&shell_env);
