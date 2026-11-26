@@ -3950,6 +3950,173 @@ mod tests {
             mirror.test_stop_frames();
         }
 
+        // Part 4: Control handover (`None -> Desktop`) after a dropped first nonzero resize
+        // must clear legacy/pending flags and never let the handover frame itself confirm
+        // legacy zero-cell mode, so a current host gets its fresh retry in the new epoch.
+        {
+            let (ho_ack_tx, ho_ack_rx) = mpsc::channel();
+            let ho_host = Arc::new(ResizeTestHost {
+                initial_cols: target_default.cols,
+                initial_rows: target_default.rows,
+                drop_first_resize: AtomicBool::new(true),
+                legacy_zero_cell: false,
+                next_seq: AtomicUsize::new(10),
+                resizes: Mutex::default(),
+                active_tx: Arc::default(),
+                ack: Mutex::new(None),
+            });
+            let ho_mirror = TerminalMirror::attach_remote(
+                DaemonClient::new(ho_host.clone()),
+                "remote-handover".into(),
+                Arc::new(|| {}),
+            )
+            .unwrap();
+            *ho_host.ack.lock().unwrap() = Some(ho_ack_tx);
+            let epoch_before = ho_mirror.resize_epoch();
+            let ho_pane = wheel_pane(&mut cx, &ho_mirror);
+            let ho_right = wheel_pane(&mut cx, &local_mirror);
+            let ho_win = cx.add_window(|_, _| WheelHost {
+                left: ho_pane,
+                right: ho_right,
+                left_interactive: true,
+                right_interactive: true,
+                right_scrollable: false,
+                font_size: 14.,
+                gap: 20.,
+                line_height_factor: crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
+                copy_on_select: false,
+            });
+            let mut ho_vis = VisualTestContext::from_window(ho_win.into(), &cx);
+            assert_eq!(ho_host.resizes.lock().unwrap().len(), 1);
+            assert_eq!(
+                ho_mirror.cell_size(),
+                runner_terminal::kitty::CellSize::ZERO
+            );
+
+            // Simulate group-ownership handover frames on the real frame worker:
+            // Desktop -> None -> Desktop with zero cell size (e.g. push_controller).
+            for (seq, controller) in [
+                (1u64, TerminalController::None),
+                (2u64, TerminalController::Desktop),
+            ] {
+                ho_host
+                    .active_tx
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .send(TerminalFrame::Resized {
+                        seq,
+                        cols: target_default.cols,
+                        rows: target_default.rows,
+                        cell_width: 0,
+                        cell_height: 0,
+                        controller,
+                    })
+                    .unwrap();
+                ho_ack_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("handover frame should be processed");
+            }
+            assert!(ho_mirror.resize_epoch() > epoch_before);
+            assert!(
+                !ho_mirror.legacy_zero_cell_confirmed(),
+                "controller handover frame must not confirm legacy zero-cell mode"
+            );
+
+            // First prepaint in the new epoch must push and recover the current host's cell size.
+            ho_vis.update(|window, _| window.refresh());
+            ho_vis.refresh().unwrap();
+            ho_ack_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("new-epoch resize after handover should be accepted");
+            assert_eq!(
+                ho_mirror.cell_size(),
+                runner_terminal::kitty::CellSize {
+                    width: target_default.cell_width,
+                    height: target_default.cell_height,
+                }
+            );
+            assert_eq!(ho_host.resizes.lock().unwrap().len(), 2);
+            ho_mirror.test_stop_frames();
+        }
+
+        // Part 5: Delayed/silent remote host starting at 80x24/zero while pane clamps to
+        // 20x8 caps identical pushes at REMOTE_ZERO_CELL_MAX_ATTEMPTS across 10 prepaints,
+        // then settles cleanly once the delayed acknowledgement arrives.
+        {
+            let (del_ack_tx, del_ack_rx) = mpsc::channel();
+            let del_host = Arc::new(ResizeTestHost {
+                initial_cols: 80,
+                initial_rows: 24,
+                drop_first_resize: AtomicBool::new(false),
+                legacy_zero_cell: true,
+                next_seq: AtomicUsize::new(0),
+                resizes: Mutex::default(),
+                active_tx: Arc::default(),
+                ack: Mutex::new(None),
+            });
+            let del_mirror = TerminalMirror::attach_remote(
+                DaemonClient::new(del_host.clone()),
+                "remote-delayed-grid".into(),
+                Arc::new(|| {}),
+            )
+            .unwrap();
+            *del_host.ack.lock().unwrap() = Some(del_ack_tx);
+            let del_pane = wheel_pane(&mut cx, &del_mirror);
+            let del_win = cx.add_window(|_, _| SizedRemoteHost {
+                width: px(80.),
+                height: px(90.),
+                pane: del_pane,
+            });
+            let mut del_vis = VisualTestContext::from_window(del_win.into(), &cx);
+            for _ in 0..9 {
+                del_vis.update(|window, _| window.refresh());
+                del_vis.refresh().unwrap();
+            }
+            let pushes = del_host.resizes.lock().unwrap().clone();
+            assert_eq!(
+                pushes.len(),
+                remote_cap,
+                "delayed peer still at 80x24 must cap identical 20x8 pushes: {pushes:?}"
+            );
+            assert_eq!((pushes[0].0, pushes[0].1), (20, 8));
+
+            // Delayed peer finally acknowledges the clamped grid and non-zero cell size.
+            del_host
+                .active_tx
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .send(TerminalFrame::Resized {
+                    seq: 1,
+                    cols: 20,
+                    rows: 8,
+                    cell_width: pushes[0].2,
+                    cell_height: pushes[0].3,
+                    controller: TerminalController::Desktop,
+                })
+                .unwrap();
+            del_ack_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("delayed resize ack should be processed");
+            assert_eq!(del_mirror.size(), (20, 8));
+            assert_eq!(
+                del_mirror.cell_size(),
+                runner_terminal::kitty::CellSize {
+                    width: pushes[0].2,
+                    height: pushes[0].3,
+                }
+            );
+            for _ in 0..4 {
+                del_vis.update(|window, _| window.refresh());
+                del_vis.refresh().unwrap();
+            }
+            assert_eq!(del_host.resizes.lock().unwrap().len(), remote_cap);
+            del_mirror.test_stop_frames();
+        }
+
         modern_remote_mirror.test_stop_frames();
         local_mirror.test_stop_frames();
         other_mirror.test_stop_frames();

@@ -109,11 +109,7 @@ pub fn resolve_size_push(
             cell_height,
         }
     } else if let Some(attempt) = zero_cell_state.last {
-        if attempt.epoch == resize_epoch
-            && attempt.size.cols == session_cols
-            && attempt.size.rows == session_rows
-            && Some(attempt.size) == effective
-        {
+        if attempt.epoch == resize_epoch && Some(attempt.size) == effective {
             if attempt.attempts >= REMOTE_ZERO_CELL_MAX_ATTEMPTS {
                 attempt.size
             } else {
@@ -445,6 +441,97 @@ mod tests {
             ),
             SizePushVerdict::Push(grid_110)
         );
+
+        // Delayed/silent zero-cell peer starting at a DIFFERENT grid (80x24) while the
+        // pane requests 20x8: retries stay capped at REMOTE_ZERO_CELL_MAX_ATTEMPTS across
+        // 10 prepaints, a genuinely new target or new epoch pushes fresh, and a delayed
+        // non-zero acknowledgement settles cleanly to Unchanged.
+        let mut delayed_state = RemoteZeroCellState::default();
+        let narrow = TerminalGridSize {
+            cols: 20,
+            rows: 8,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        let pushes: usize = (0..10)
+            .filter(|_| {
+                matches!(
+                    resolve_size_push(
+                        Some(narrow),
+                        80,
+                        24,
+                        (0, 0),
+                        true,
+                        true,
+                        true,
+                        1,
+                        false,
+                        &mut delayed_state,
+                    ),
+                    SizePushVerdict::Push(_)
+                )
+            })
+            .count();
+        assert_eq!(
+            pushes, cap,
+            "delayed zero-cell peer at a different grid must cap identical pushes"
+        );
+        // A genuinely new requested size resets the cap and pushes.
+        let wider = TerminalGridSize {
+            cols: 40,
+            rows: 12,
+            cell_width: 9,
+            cell_height: 18,
+        };
+        assert_eq!(
+            resolve_size_push(
+                Some(wider),
+                80,
+                24,
+                (0, 0),
+                true,
+                true,
+                true,
+                1,
+                false,
+                &mut delayed_state,
+            ),
+            SizePushVerdict::Push(wider)
+        );
+        // An ownership/reconnect epoch bump pushes again for the same target.
+        assert_eq!(
+            resolve_size_push(
+                Some(wider),
+                80,
+                24,
+                (0, 0),
+                true,
+                true,
+                true,
+                2,
+                false,
+                &mut delayed_state,
+            ),
+            SizePushVerdict::Push(wider)
+        );
+        // Delayed peer finally acknowledges `(40, 12, 9, 18)` -> Unchanged forever.
+        for _ in 0..5 {
+            assert_eq!(
+                resolve_size_push(
+                    Some(wider),
+                    40,
+                    12,
+                    (9, 18),
+                    true,
+                    true,
+                    true,
+                    2,
+                    false,
+                    &mut delayed_state,
+                ),
+                SizePushVerdict::Unchanged
+            );
+        }
 
         // Local mirrors do not clamp to remote bounds and never latch zero-cell retries.
         let mut local_state = RemoteZeroCellState::default();

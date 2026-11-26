@@ -660,7 +660,7 @@ pub struct TerminalMirror {
     sgr_pixels: Arc<AtomicBool>,
     sync_open: Arc<AtomicBool>,
     resize_epoch: AtomicU64,
-    sent_nonzero_cell_resize: AtomicBool,
+    sent_nonzero_cell_resize_epoch: AtomicU64,
     legacy_zero_cell_confirmed: AtomicBool,
     client: DaemonClient,
     session_id: String,
@@ -836,22 +836,25 @@ impl TerminalMirror {
                                 );
                                 let incoming_cell =
                                     crate::kitty::CellSize::from_wire(cell_width, cell_height);
-                                let desktop_zero_cell = incoming_cell
-                                    == crate::kitty::CellSize::ZERO
-                                    && controller == TerminalController::Desktop;
                                 mirror.resize_local(cols, rows, incoming_cell);
+                                let changed = mirror.apply_controller(controller);
                                 if incoming_cell != crate::kitty::CellSize::ZERO {
                                     mirror
                                         .legacy_zero_cell_confirmed
                                         .store(false, Ordering::Release);
-                                } else if desktop_zero_cell
-                                    && mirror.sent_nonzero_cell_resize.load(Ordering::Acquire)
-                                {
-                                    mirror
-                                        .legacy_zero_cell_confirmed
-                                        .store(true, Ordering::Release);
+                                } else if !changed && mirror.control().desktop() {
+                                    let epoch = mirror.resize_epoch.load(Ordering::Acquire);
+                                    if epoch > 0
+                                        && mirror
+                                            .sent_nonzero_cell_resize_epoch
+                                            .load(Ordering::Acquire)
+                                            == epoch
+                                    {
+                                        mirror
+                                            .legacy_zero_cell_confirmed
+                                            .store(true, Ordering::Release);
+                                    }
                                 }
-                                let changed = mirror.apply_controller(controller);
                                 if changed {
                                     (mirror.waker)();
                                 }
@@ -971,7 +974,7 @@ impl TerminalMirror {
             sgr_pixels: Arc::new(AtomicBool::new(false)),
             sync_open,
             resize_epoch: AtomicU64::new(0),
-            sent_nonzero_cell_resize: AtomicBool::new(false),
+            sent_nonzero_cell_resize_epoch: AtomicU64::new(0),
             legacy_zero_cell_confirmed: AtomicBool::new(false),
             client,
             session_id,
@@ -1156,8 +1159,8 @@ impl TerminalMirror {
         self.scroll_mark.lock().unwrap().rebuild();
         *self.size.lock().unwrap() = (attachment.snapshot.cols, attachment.snapshot.rows);
         self.apply_controller(attachment.snapshot.controller.clone());
-        self.sent_nonzero_cell_resize
-            .store(false, Ordering::Release);
+        self.sent_nonzero_cell_resize_epoch
+            .store(0, Ordering::Release);
         self.legacy_zero_cell_confirmed
             .store(false, Ordering::Release);
         self.resize_epoch.fetch_add(1, Ordering::AcqRel);
@@ -1675,8 +1678,14 @@ impl TerminalMirror {
             control.apply(controller);
             changed
         };
-        if changed && self.control().desktop() {
-            self.resize_epoch.fetch_add(1, Ordering::AcqRel);
+        if changed {
+            self.sent_nonzero_cell_resize_epoch
+                .store(0, Ordering::Release);
+            self.legacy_zero_cell_confirmed
+                .store(false, Ordering::Release);
+            if self.control().desktop() {
+                self.resize_epoch.fetch_add(1, Ordering::AcqRel);
+            }
         }
         let mut pending = self.composition_clear_pending.lock().unwrap();
         if *pending
@@ -1729,7 +1738,9 @@ impl TerminalMirror {
         }
         let (cell_width, cell_height) = incoming_cell.unwrap_or((0, 0));
         if cell_width > 0 && cell_height > 0 {
-            self.sent_nonzero_cell_resize.store(true, Ordering::Release);
+            let epoch = self.resize_epoch.load(Ordering::Acquire);
+            self.sent_nonzero_cell_resize_epoch
+                .store(epoch, Ordering::Release);
         }
         self.client.resize(
             &self.session_id,
