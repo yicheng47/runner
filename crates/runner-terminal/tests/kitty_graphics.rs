@@ -2893,3 +2893,233 @@ fn reparenting_subtree_beyond_max_depth_returns_etoodeep_and_snapshot_clips_to_e
     assert!(two_img_tight_out.len() < two_img_len);
     assert!(two_img_tight_out.contains("i=2") && !two_img_tight_out.contains("i=1"));
 }
+
+#[test]
+fn snapshot_budget_matches_reachable_relative_placements_across_scroll_and_separate_images() {
+    let cell = CellSize {
+        width: 10,
+        height: 20,
+    };
+    let sgr = AtomicBool::new(false);
+    let tiny = BASE64.encode([1u8, 2, 3]);
+
+    let emit_screen_and_rows = |plan: &runner_terminal::kitty::snapshot::SnapshotGraphicsPlan,
+                                storage: &runner_terminal::kitty::storage::ImageStorage,
+                                first_line: i32,
+                                screen_lines: i32|
+     -> String {
+        let mut s = String::new();
+        plan.emit_screen_images(false, storage, &mut s);
+        for line in first_line..screen_lines {
+            plan.emit_row_placements(false, line, &mut s);
+        }
+        s
+    };
+
+    // Case 1: Unreachable relative placement whose root scrolled above
+    // `first_line = 0` must NOT be charged against a visible placement on the
+    // same image.
+    let mut term = make_term(20, 4, 10);
+    let mut gfx = TerminalGraphics::authoritative(None);
+    let mut proc = TrackedProcessor::new();
+    let mut sc = Scanner::new();
+    let mut stream = b"\x1b[1;1H".to_vec();
+    stream.extend_from_slice(&apc(&format!("a=T,f=24,s=1,v=1,i=7,p=1,C=1;{tiny}")));
+    stream.extend_from_slice(&apc("a=p,i=7,p=2,P=7,Q=1,H=1,V=0"));
+    // Scroll both p=1 (and relative p=2) above retained history (`first_line = 0`).
+    stream.extend_from_slice(b"\r\n\r\n\r\n\r\n\r\n");
+    stream.extend_from_slice(b"\x1b[1;1H");
+    stream.extend_from_slice(&apc("a=p,i=7,p=3,C=1"));
+    feed_term_with_stream(
+        &mut term,
+        &mut gfx,
+        &sgr,
+        cell,
+        &mut proc,
+        &mut sc,
+        &stream,
+        ExecMode::Authoritative,
+    );
+
+    let unlimited = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx,
+        false,
+        0,
+        4,
+        4,
+        20,
+        cell,
+        usize::MAX,
+    );
+    let full = emit_screen_and_rows(&unlimited, &gfx.primary, 0, 4);
+    assert!(full.contains("i=7") && full.contains("p=3") && !full.contains("p=2"));
+    let exact_len = full.len();
+
+    let exact_plan = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx, false, 0, 4, 4, 20, cell, exact_len,
+    );
+    assert_eq!(
+        emit_screen_and_rows(&exact_plan, &gfx.primary, 0, 4),
+        full,
+        "visible image + p=3 must fit at exact emitted byte length ({exact_len})"
+    );
+    let one_short = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx,
+        false,
+        0,
+        4,
+        4,
+        20,
+        cell,
+        exact_len - 1,
+    );
+    assert!(one_short.is_empty());
+
+    // Case 2: Relative placement whose parent belongs to a separate image.
+    // Parent image 1 (older generation) is pinned at row 0; child image 2
+    // (newer generation, so selected FIRST by the planner) has a relative
+    // placement pointing to parent (1, 1).
+    let mut term2 = make_term(20, 4, 10);
+    let mut gfx2 = TerminalGraphics::authoritative(None);
+    let mut proc2 = TrackedProcessor::new();
+    let mut sc2 = Scanner::new();
+    let mut cross = b"\x1b[1;1H".to_vec();
+    cross.extend_from_slice(&apc(&format!("a=T,f=24,s=1,v=1,i=1,p=1,C=1;{tiny}")));
+    cross.extend_from_slice(&apc(&format!(
+        "a=T,f=24,s=1,v=1,i=2,p=1,P=1,Q=1,H=2,V=0;{tiny}"
+    )));
+    feed_term_with_stream(
+        &mut term2,
+        &mut gfx2,
+        &sgr,
+        cell,
+        &mut proc2,
+        &mut sc2,
+        &cross,
+        ExecMode::Authoritative,
+    );
+
+    let cross_unlimited = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx2,
+        false,
+        0,
+        4,
+        4,
+        20,
+        cell,
+        usize::MAX,
+    );
+    let cross_full = emit_screen_and_rows(&cross_unlimited, &gfx2.primary, 0, 4);
+    assert!(cross_full.contains("i=1") && cross_full.contains("P=1,Q=1"));
+    let cross_len = cross_full.len();
+
+    // At exact combined length, both images and the newly reachable child
+    // placement fit and serialize to exact `cross_len`.
+    let cross_exact = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx2, false, 0, 4, 4, 20, cell, cross_len,
+    );
+    assert_eq!(
+        emit_screen_and_rows(&cross_exact, &gfx2.primary, 0, 4),
+        cross_full
+    );
+
+    // One byte short MUST NOT over-commit the budget when parent image 1 is
+    // considered after child image 2: parent image 1 is omitted (since adding
+    // it would also pull in child's relative command), keeping emitted bytes
+    // strictly <= budget.
+    let cross_short = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx2,
+        false,
+        0,
+        4,
+        4,
+        20,
+        cell,
+        cross_len - 1,
+    );
+    let cross_short_out = emit_screen_and_rows(&cross_short, &gfx2.primary, 0, 4);
+    assert!(
+        cross_short_out.len() < cross_len,
+        "emitted {} bytes for budget {}",
+        cross_short_out.len(),
+        cross_len - 1
+    );
+    assert!(cross_short_out.contains("i=2") && !cross_short_out.contains("i=1"));
+    assert!(!cross_short_out.contains("P=1,Q=1"));
+
+    // And when the budget is exactly the transmission length of image 2 alone
+    // (parent omitted, so child's relative placement is unreachable and not
+    // emitted), image 2 still fits without charging the omitted relative command.
+    let img2_only_len = cross_short_out.len();
+    let img2_exact = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx2,
+        false,
+        0,
+        4,
+        4,
+        20,
+        cell,
+        img2_only_len,
+    );
+    assert_eq!(
+        emit_screen_and_rows(&img2_exact, &gfx2.primary, 0, 4),
+        cross_short_out
+    );
+
+    // Reverse priority order: parent image 1 is newer (kept first), child
+    // image 2 is older (kept second, paying its relative command only then).
+    let mut term3 = make_term(20, 4, 10);
+    let mut gfx3 = TerminalGraphics::authoritative(None);
+    let mut proc3 = TrackedProcessor::new();
+    let mut sc3 = Scanner::new();
+    let mut rev = b"\x1b[1;1H".to_vec();
+    rev.extend_from_slice(&apc(&format!("a=t,f=24,s=1,v=1,i=2;{tiny}"))); // older gen
+    rev.extend_from_slice(&apc(&format!("a=T,f=24,s=1,v=1,i=1,p=1,C=1;{tiny}"))); // newer gen
+    rev.extend_from_slice(&apc("a=p,i=2,p=1,P=1,Q=1,H=2,V=0"));
+    feed_term_with_stream(
+        &mut term3,
+        &mut gfx3,
+        &sgr,
+        cell,
+        &mut proc3,
+        &mut sc3,
+        &rev,
+        ExecMode::Authoritative,
+    );
+    let rev_full = emit_screen_and_rows(
+        &runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+            &gfx3,
+            false,
+            0,
+            4,
+            4,
+            20,
+            cell,
+            usize::MAX,
+        ),
+        &gfx3.primary,
+        0,
+        4,
+    );
+    let rev_len = rev_full.len();
+    let rev_exact = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx3, false, 0, 4, 4, 20, cell, rev_len,
+    );
+    assert_eq!(
+        emit_screen_and_rows(&rev_exact, &gfx3.primary, 0, 4),
+        rev_full
+    );
+    let rev_short = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx3,
+        false,
+        0,
+        4,
+        4,
+        20,
+        cell,
+        rev_len - 1,
+    );
+    let rev_short_out = emit_screen_and_rows(&rev_short, &gfx3.primary, 0, 4);
+    assert!(rev_short_out.len() < rev_len);
+    assert!(rev_short_out.contains("i=1") && !rev_short_out.contains("i=2"));
+}

@@ -72,10 +72,13 @@ impl SnapshotGraphicsPlan {
             return Self::default();
         }
 
-        // Gather all candidate images across primary (and active alt screen).
+        // Gather all candidate images across primary (and active alt screen),
+        // along with reachability tracking for relative placements so planning
+        // and serialization agree to the exact byte.
         // Keep-order: active visible > inactive primary visible > non-visible,
         // newest generation first (so LRU is dropped first, visible last).
         let mut candidates = Vec::new();
+        let mut primary_rel = RelativeTracker::default();
         collect_candidates(
             ScreenKind::Primary,
             &graphics.primary,
@@ -85,7 +88,9 @@ impl SnapshotGraphicsPlan {
             screen_cols,
             cell,
             &mut candidates,
+            &mut primary_rel,
         );
+        let mut alt_rel = RelativeTracker::default();
         if alt_active {
             collect_candidates(
                 ScreenKind::Alt,
@@ -96,6 +101,7 @@ impl SnapshotGraphicsPlan {
                 screen_cols,
                 cell,
                 &mut candidates,
+                &mut alt_rel,
             );
         }
 
@@ -112,19 +118,26 @@ impl SnapshotGraphicsPlan {
         let mut occupied_rows: HashSet<(ScreenKind, i32)> = HashSet::new();
         let mut used = 0usize;
         for c in candidates {
+            let rel_tracker = match c.screen {
+                ScreenKind::Primary => &mut primary_rel,
+                ScreenKind::Alt => &mut alt_rel,
+            };
             let new_rows = c
                 .pin_rows
                 .iter()
                 .filter(|&&row| !occupied_rows.contains(&(c.screen, row)))
                 .count();
+            let newly_reachable_rel = rel_tracker.newly_reachable_bytes(c.image_id);
             let delta = c
                 .base_cost
-                .saturating_add(new_rows.saturating_mul(ROW_WRAPPER_BYTES));
+                .saturating_add(new_rows.saturating_mul(ROW_WRAPPER_BYTES))
+                .saturating_add(newly_reachable_rel);
             if used.saturating_add(delta) <= budget {
                 used += delta;
                 for row in c.pin_rows {
                     occupied_rows.insert((c.screen, row));
                 }
+                rel_tracker.mark_image_kept(c.image_id);
                 match c.screen {
                     ScreenKind::Primary => {
                         kept_primary.insert(c.image_id);
@@ -203,6 +216,90 @@ impl SnapshotGraphicsPlan {
     }
 }
 
+struct RelativeEntry {
+    bytes: usize,
+    missing_images: u8,
+}
+
+/// Tracks relative placements that reach an emittable root within
+/// `PARENT_CHAIN_LIMIT` links so their exact serialized bytes are charged once
+/// when the final missing image in their ancestor chain is retained.
+#[derive(Default)]
+struct RelativeTracker {
+    entries: Vec<RelativeEntry>,
+    by_image: HashMap<u32, Vec<usize>>,
+}
+
+impl RelativeTracker {
+    fn register(&mut self, required_images: &[u32], bytes: usize) {
+        let idx = self.entries.len();
+        self.entries.push(RelativeEntry {
+            bytes,
+            missing_images: required_images.len() as u8,
+        });
+        for &image_id in required_images {
+            self.by_image.entry(image_id).or_default().push(idx);
+        }
+    }
+
+    fn newly_reachable_bytes(&self, image_id: u32) -> usize {
+        let Some(indices) = self.by_image.get(&image_id) else {
+            return 0;
+        };
+        let mut sum = 0usize;
+        for &idx in indices {
+            if self.entries[idx].missing_images == 1 {
+                sum = sum.saturating_add(self.entries[idx].bytes);
+            }
+        }
+        sum
+    }
+
+    fn mark_image_kept(&mut self, image_id: u32) {
+        let Some(indices) = self.by_image.get(&image_id) else {
+            return;
+        };
+        for &idx in indices {
+            self.entries[idx].missing_images = self.entries[idx].missing_images.saturating_sub(1);
+        }
+    }
+}
+
+/// Walk a relative placement's ancestor chain up to `PARENT_CHAIN_LIMIT` links.
+/// Returns the deduplicated image IDs required for the placement to be emitted
+/// (its own image plus every ancestor's image up to the root) when the chain
+/// terminates at an emittable root, or `None` if unreachable.
+fn reachable_chain_images(
+    storage: &ImageStorage,
+    emittable_roots: &HashSet<PlacementKey>,
+    key: PlacementKey,
+    mut parent: PlacementKey,
+) -> Option<([u32; PARENT_CHAIN_LIMIT + 1], usize)> {
+    let mut req = [0u32; PARENT_CHAIN_LIMIT + 1];
+    req[0] = key.image_id;
+    let mut req_len = 1usize;
+    let mut depth = 1usize;
+    loop {
+        let p = storage.placements().get(&parent)?;
+        if !req[..req_len].contains(&parent.image_id) {
+            req[req_len] = parent.image_id;
+            req_len += 1;
+        }
+        match p.location {
+            PlacementLocation::Relative(parent_rel) => {
+                if depth >= PARENT_CHAIN_LIMIT {
+                    return None;
+                }
+                depth += 1;
+                parent = parent_rel.parent;
+            }
+            PlacementLocation::Pin(_) | PlacementLocation::Virtual => {
+                return emittable_roots.contains(&parent).then_some((req, req_len));
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn collect_candidates(
     screen: ScreenKind,
@@ -213,59 +310,18 @@ fn collect_candidates(
     screen_cols: usize,
     cell: CellSize,
     out: &mut Vec<super::snapshot::Candidate>,
+    rel_tracker: &mut RelativeTracker,
 ) {
     let mut has_visible: HashSet<u32> = HashSet::new();
     let mut placement_bytes: HashMap<u32, usize> = HashMap::new();
     let mut pin_rows: HashMap<u32, HashSet<i32>> = HashMap::new();
+    let mut emittable_roots: HashSet<PlacementKey> = HashSet::new();
 
+    // First pass: collect emittable root placements (Pin and Virtual) and
+    // measure their exact bytes (clipped crop keys + per-placement `\x1b[colG`).
+    // The shared `\x1b7` / `\x1b8` row wrapper is charged once per occupied row
+    // during candidate selection in `SnapshotGraphicsPlan::build`.
     for (&key, placement) in storage.placements() {
-        let visible = match placement.location {
-            PlacementLocation::Pin(pin) => {
-                if pin.line >= 0 && i64::from(pin.line) < screen_lines as i64 {
-                    true
-                } else if pin.line < 0 {
-                    storage
-                        .image_by_id(key.image_id)
-                        .and_then(|img| {
-                            placement.cell_rect(img.width, img.height, cell, screen_cols)
-                        })
-                        .is_some_and(|rect| rect.bottom_line >= 0)
-                } else {
-                    false
-                }
-            }
-            PlacementLocation::Relative(rel) => {
-                storage
-                    .resolved_anchor(placement)
-                    .map(|anchor| {
-                        if anchor.line >= 0 && i64::from(anchor.line) < screen_lines as i64 {
-                            true
-                        } else if anchor.line < 0 {
-                            storage
-                                .image_by_id(key.image_id)
-                                .map(|img| {
-                                    let (_, rows) =
-                                        placement.grid_size(img.width, img.height, cell);
-                                    last_row_i64(anchor.line, rows) >= 0
-                                })
-                                .unwrap_or(false)
-                        } else {
-                            false
-                        }
-                    })
-                    .unwrap_or(false)
-                    && storage.resolve_chain(rel).is_some()
-            }
-            PlacementLocation::Virtual => false,
-        };
-        if visible {
-            has_visible.insert(key.image_id);
-        }
-
-        // Measure the exact serialized bytes of the placement that will actually
-        // be emitted (clipped crop keys + per-placement `\x1b[colG`). The shared
-        // `\x1b7` / `\x1b8` row wrapper is charged once per occupied row during
-        // candidate selection in `SnapshotGraphicsPlan::build`.
         match placement.location {
             PlacementLocation::Pin(pin) => {
                 if i64::from(pin.line) >= screen_lines as i64 {
@@ -274,6 +330,7 @@ fn collect_candidates(
                 if let Some(adjusted) =
                     clipped_to_first_line(storage, key.image_id, *placement, first_line, cell)
                 {
+                    emittable_roots.insert(key);
                     let adjusted_line = match adjusted.location {
                         PlacementLocation::Pin(p) => p.line,
                         _ => unreachable!(),
@@ -285,11 +342,63 @@ fn collect_candidates(
                     *placement_bytes.entry(key.image_id).or_default() +=
                         exact_pin_placement_bytes(key, &adjusted);
                 }
+                let visible = if pin.line >= 0 {
+                    true
+                } else {
+                    storage
+                        .image_by_id(key.image_id)
+                        .and_then(|img| {
+                            placement.cell_rect(img.width, img.height, cell, screen_cols)
+                        })
+                        .is_some_and(|rect| rect.bottom_line >= 0)
+                };
+                if visible {
+                    has_visible.insert(key.image_id);
+                }
             }
-            PlacementLocation::Virtual | PlacementLocation::Relative(_) => {
+            PlacementLocation::Virtual => {
+                emittable_roots.insert(key);
                 *placement_bytes.entry(key.image_id).or_default() +=
                     exact_placement_command_bytes(key, placement);
             }
+            PlacementLocation::Relative(_) => {}
+        }
+    }
+
+    // Second pass: register only relative placements whose ancestor chain
+    // reaches an emittable root within `PARENT_CHAIN_LIMIT` links.
+    for (&key, placement) in storage.placements() {
+        let PlacementLocation::Relative(rel) = placement.location else {
+            continue;
+        };
+        let Some((req_images, req_len)) =
+            reachable_chain_images(storage, &emittable_roots, key, rel.parent)
+        else {
+            continue;
+        };
+        let bytes = exact_placement_command_bytes(key, placement);
+        rel_tracker.register(&req_images[..req_len], bytes);
+
+        let visible = storage
+            .resolved_anchor(placement)
+            .map(|anchor| {
+                if anchor.line >= 0 && i64::from(anchor.line) < screen_lines as i64 {
+                    true
+                } else if anchor.line < 0 {
+                    storage
+                        .image_by_id(key.image_id)
+                        .map(|img| {
+                            let (_, rows) = placement.grid_size(img.width, img.height, cell);
+                            last_row_i64(anchor.line, rows) >= 0
+                        })
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+        if visible {
+            has_visible.insert(key.image_id);
         }
     }
 
