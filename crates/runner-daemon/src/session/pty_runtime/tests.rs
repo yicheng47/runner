@@ -3294,6 +3294,8 @@ fn bound_stop_from_prior_launch_never_stops_replacement_pty_or_hooks() {
     let mut c = CommandBuilder::new("/bin/sh");
     c.args(["-c", "exit 0"]);
     let mut dummy_child = pair.slave.spawn_command(c).expect("spawn dummy");
+    let dummy_pid = dummy_child.process_id().expect("dummy child pid");
+    let dummy_tree = ProcessTree::adopt(dummy_pid).expect("adopt dummy child");
     let dummy_killer = dummy_child.clone_killer();
     let _ = dummy_child.wait();
     let handle3_with_hook = Arc::new(SessionHandle {
@@ -3306,8 +3308,8 @@ fn bound_stop_from_prior_launch_never_stops_replacement_pty_or_hooks() {
         last_resize: Mutex::new(None),
         idle_detector: Arc::clone(&handle3.idle_detector),
         hook_retirement: Some(receiver3.retirement()),
-        pid: handle3.pid,
-        process_tree: Some(ProcessTree::adopt(std::process::id()).unwrap()),
+        pid: Some(dummy_pid as i32),
+        process_tree: Some(dummy_tree),
         command: handle3.command.clone(),
     });
     stop_handle(reaped_session, &handle3_with_hook).unwrap();

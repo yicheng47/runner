@@ -486,9 +486,6 @@ fn stop_handle(session_id: &str, handle: &Arc<SessionHandle>) -> RuntimeResult<(
         retirement.retire();
     }
     let child = handle.child.lock().expect("child slot poisoned").take();
-    if child.is_none() && handle.exit_code.load(Ordering::Acquire) != EXIT_UNSET {
-        return Ok(());
-    }
     match child {
         Some(mut child) => {
             match stop_and_reap_child(session_id, handle.process_tree.as_ref(), child.as_mut()) {
