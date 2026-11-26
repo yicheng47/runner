@@ -2186,6 +2186,156 @@ fn no_tab_terminal_click_and_shortcut_persist_a_nonempty_tab_id() {
 }
 
 #[test]
+fn cmd_t_starts_new_tab_at_home_and_split_launcher_at_tab_cwd() {
+    let tmp = tempfile::Builder::new()
+        .prefix("cmd-t-terminal-home-")
+        .tempdir()
+        .unwrap();
+    let project_dir = tmp.path().join("project");
+    let sibling_dir = project_dir.join("nested");
+    let default_dir = tmp.path().join("default-dir");
+    std::fs::create_dir_all(&sibling_dir).unwrap();
+    std::fs::create_dir_all(&default_dir).unwrap();
+    let project_str = project_dir.to_string_lossy().into_owned();
+    let sibling_str = sibling_dir.to_string_lossy().into_owned();
+    let default_str = default_dir.to_string_lossy().into_owned();
+    let expected_home = runner_core::app_paths::home_dir()
+        .expect("tests require a home directory")
+        .to_string_lossy()
+        .into_owned();
+
+    let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
+    let mut project_id = String::new();
+    let mut initial_session_id = String::new();
+    let mut project_tab_id = String::new();
+    harness.act(|root, window, cx| {
+        root.start_chat_modal = None;
+        project_id = root
+            .core(cx)
+            .project_create_checked("Repo".into(), project_str.clone())
+            .unwrap()
+            .id;
+        root.app_store.update(cx, |store, _| {
+            store.settings.default_working_dir = default_str.clone();
+        });
+        root.new_terminal_tab_in(
+            ProjectScope::Project(project_id.clone()),
+            Some(sibling_str.clone()),
+            window,
+            cx,
+        );
+    });
+    harness.wait(
+        |h| {
+            h.read_root(|root, cx| {
+                if root.active_project_id(cx).as_deref() != Some(project_id.as_str()) {
+                    return false;
+                }
+                let Some(layout) = root.tabs.active() else {
+                    return false;
+                };
+                let Some(session_id) = layout.focused_session_id() else {
+                    return false;
+                };
+                project_tab_id = layout.id.clone();
+                initial_session_id = session_id.to_owned();
+                root.session_entry(session_id, cx)
+                    .and_then(|entry| entry.cwd.as_deref())
+                    == Some(sibling_str.as_str())
+            })
+        },
+        "initial project terminal tab ready",
+    );
+
+    // Pressing Cmd+T from a live project tab opens a new terminal tab in Recents at $HOME,
+    // ignoring both the active project folder and Settings -> Default working directory.
+    harness.act(|root, window, cx| {
+        root.new_terminal_action(&NewTerminal, window, cx);
+    });
+    let mut home_session_id = String::new();
+    harness.wait(
+        |h| {
+            h.read_root(|root, cx| {
+                let Some(layout) = root.tabs.active() else {
+                    return false;
+                };
+                if layout.id == project_tab_id {
+                    return false;
+                }
+                let Some(session_id) = layout.focused_session_id() else {
+                    return false;
+                };
+                let Some(entry) = root.session_entry(session_id, cx) else {
+                    return false;
+                };
+                home_session_id = session_id.to_owned();
+                root.active_project_id(cx).is_none()
+                    && entry.project_id.is_none()
+                    && entry.cwd.as_deref() == Some(expected_home.as_str())
+            })
+        },
+        "Cmd+T new terminal tab lands in Recents at HOME",
+    );
+
+    // Switching back to the project tab, adding an empty split pane with its launcher open,
+    // and pressing Cmd+T starts the shell in that split pane at the tab's sibling cwd.
+    let mut split_pane_id = String::new();
+    harness.act(|root, window, cx| {
+        root.activate_tab(&project_tab_id, window, cx);
+        let mut draft = root.tabs.active().unwrap().clone();
+        let first = draft.focused_pane_id.clone();
+        split_pane_id = draft.split(&first, SplitOrientation::Row).unwrap();
+        *root.tabs.active_mut().unwrap() = draft.clone();
+        root.save_workspace_layout(draft, false, cx).unwrap();
+        root.reload_tabs(cx).unwrap();
+        let layout = root.front_page_layout().unwrap();
+        assert_eq!(layout.focused_pane_id, split_pane_id);
+        assert!(layout.focused_session_id().is_none());
+        let pane = PaneKey::new(&layout.id, &split_pane_id);
+        let launcher = root.render_launcher(Some(pane), false, window, cx);
+        assert_eq!(launcher.read(cx).cwd.read(cx).text(), sibling_str);
+        root.new_terminal_action(&NewTerminal, window, cx);
+    });
+    let mut split_session_id = String::new();
+    harness.wait(
+        |h| {
+            h.read_root(|root, cx| {
+                let Some(layout) = root.tabs.active() else {
+                    return false;
+                };
+                if layout.id != project_tab_id {
+                    return false;
+                }
+                let Some(session_id) = layout
+                    .root
+                    .leaves()
+                    .into_iter()
+                    .find(|leaf| leaf.id == split_pane_id)
+                    .and_then(|leaf| leaf.session_id.as_deref())
+                else {
+                    return false;
+                };
+                let Some(entry) = root.session_entry(session_id, cx) else {
+                    return false;
+                };
+                split_session_id = session_id.to_owned();
+                entry.project_id.as_deref() == Some(project_id.as_str())
+                    && entry.cwd.as_deref() == Some(sibling_str.as_str())
+            })
+        },
+        "Cmd+T in split-pane launcher uses the tab cwd and project",
+    );
+
+    harness.act(|root, _, cx| {
+        for id in [&home_session_id, &split_session_id, &initial_session_id] {
+            if !id.is_empty() {
+                let _ = root.core(cx).session_close(id);
+            }
+        }
+    });
+}
+
+#[test]
 fn search_digits_escape_and_arrows_use_the_real_text_field_without_starting_unavailable_roles() {
     let mut harness = modal_harness(1200., 1000., Vec::new(), Vec::new(), ChatMode::Runtime);
     let mut launcher = None;

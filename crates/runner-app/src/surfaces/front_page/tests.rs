@@ -1284,6 +1284,51 @@ fn new_terminal_entry_points_inherit_remote_sibling_cwd_when_focused_pane_is_emp
     }
 }
 
+#[test]
+fn new_terminal_action_opens_remote_tab_in_recents_at_host_home() {
+    use crate::surfaces::remote_client::tests as remote_test;
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let (store, fake, _) = remote_test::fixture(&mut cx, temp.path());
+    remote_test::enable_front_page(&fake);
+    fake.set_overview(
+        serde_json::from_value(json!({
+            "projects":[{"id":"p", "name":"Project", "path":"/project/default"}],
+            "tabs":[{"id":"remote-tab", "project":"p", "name":"Shell tab", "pinned":false,
+                "panes":{"split":"column", "sizes":[0.5,0.5],
+                    "a":{"session":"s"}, "b":{"session":null}}, "shells":[]}],
+            "missions":[],
+            "sessions":{"s":{"kind":"shell", "title":"Active", "runtime":"shell",
+                "status":"running", "unread":false, "cwd":"/custom/sibling-folder"}}
+        }))
+        .unwrap(),
+    );
+    let window = remote_test::add_window(&mut cx, &store, temp.path(), "remote-home-shell");
+    window.update(&mut cx, remote_test::choose_host).unwrap();
+    cx.run_until_parked();
+    window
+        .update(&mut cx, |root, window, cx| {
+            let layout = root.front_page_layout_mut().unwrap();
+            let occupied = layout.root.leaves()[0].id.clone();
+            layout.focus_pane(&occupied);
+            assert_eq!(layout.focused_session_id(), Some("s"));
+            assert_eq!(root.active_project_id(cx).as_deref(), Some("p"));
+            root.new_terminal_action(&crate::NewTerminal, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let calls = remote_test::action_trace(&fake, "startShell");
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0]["project"].is_null());
+    assert!(calls[0]["cwd"].is_null());
+    let layouts = remote_test::action_trace(&fake, "layout");
+    assert_eq!(layouts.len(), 1);
+    assert_ne!(layouts[0]["target"]["id"], "remote-tab");
+    assert!(layouts[0]["project"].is_null());
+    assert_eq!(layouts[0]["panes"]["session"], "started-session");
+}
+
 struct PendingActionTrace {
     base: Arc<crate::surfaces::remote_client::tests::Fake>,
     operation: &'static str,

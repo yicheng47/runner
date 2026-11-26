@@ -2,8 +2,8 @@ use super::*;
 
 impl NativeRoot {
     pub(super) fn focused_empty_chat_pane(&self) -> Option<String> {
-        (self.route == AppRoute::Chat)
-            .then(|| self.tabs.active())
+        self.front_page_is_chat()
+            .then(|| self.front_page_layout())
             .flatten()
             .and_then(|layout| {
                 layout
@@ -48,12 +48,7 @@ impl NativeRoot {
                 return;
             }
         }
-        let pane = if remote {
-            self.front_page_layout().and_then(new_terminal_empty_pane)
-        } else {
-            self.focused_empty_chat_pane()
-        };
-        if let Some(pane_id) = pane {
+        if let Some(pane_id) = self.focused_empty_chat_pane() {
             let original = self.front_page_layout().unwrap().clone();
             let (scope, cwd) = if remote {
                 (
@@ -70,11 +65,11 @@ impl NativeRoot {
             };
             self.spawn_terminal_in_pane(pane_id, original, scope, cwd, window, cx);
         } else {
-            self.new_terminal_tab(
-                ProjectScope::or_root(self.active_project_id(cx)),
-                window,
-                cx,
-            );
+            let home = (!remote)
+                .then(runner_core::app_paths::home_dir)
+                .flatten()
+                .map(|path| path.to_string_lossy().into_owned());
+            self.new_terminal_tab_in(ProjectScope::Root, home, window, cx);
         }
     }
 
@@ -93,15 +88,6 @@ impl NativeRoot {
             window,
             cx,
         );
-    }
-
-    pub(crate) fn new_terminal_tab(
-        &mut self,
-        scope: ProjectScope,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.new_terminal_tab_in(scope, None, window, cx);
     }
 
     pub(crate) fn new_terminal_tab_in(
