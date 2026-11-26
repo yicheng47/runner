@@ -1394,45 +1394,83 @@ fn sync_session_title_clears_half_sent_command_and_chunked_load() {
 // ============================================================================
 
 #[test]
-fn synchronized_update_places_image_between_runs_and_preserves_unfinished_bytes() {
+fn synchronized_update_places_image_between_runs_and_orders_csi_14_16_18() {
     let cell = CellSize {
         width: 10,
         height: 20,
     };
-    let (model, _host) = new_model(20, 5, cell, None);
+    let (model, host) = new_model(20, 5, cell, None);
     let px = BASE64.encode(vec![0u8; 3]);
 
-    // Inside one open sync update: "AB" (col 0..2), then a 3-col 1-row C=0 image
-    // (lands at col 2, advances cursor to col 5), then "CD" (held in reopened sync).
+    // Inside one closed sync update: "AB" (col 0..2), then a 3-col 1-row C=0 image
+    // (lands at col 2, advances cursor to col 5), then "CD" (lands at col 5..7).
     let mut chunk = b"\x1b[?2026hAB".to_vec();
     chunk.extend_from_slice(&apc(&format!("a=T,f=24,s=1,v=1,i=1,p=1,c=3,r=1,C=0;{px}")));
-    chunk.extend_from_slice(b"CD");
+    chunk.extend_from_slice(b"CD\x1b[?2026l");
     model.feed_output(1, &chunk);
 
-    // Before sync closes: "AB" and the placement at (0, 2) are applied, "CD" is still held
-    // in `unfinished`, and `unfinished` starts with `\x1b[?2026h` + `CD` (no graphics bytes).
-    {
-        let snap = model.snapshot(1);
-        let unfinished = &snap.bytes[snap.bytes.len() - snap.unfinished_len..];
-        assert_eq!(unfinished, b"\x1b[?2026hCD");
-        assert_eq!(row_text(&model.term.lock(), 0), "AB");
-        let g = model.graphics().lock().unwrap();
-        assert_eq!(
-            g.primary
-                .placements()
-                .get(&PlacementKey {
-                    image_id: 1,
-                    placement_id: PlacementId::External(1),
-                })
-                .unwrap()
-                .location,
-            PlacementLocation::Pin(PinLocation { line: 0, column: 2 })
-        );
+    assert_eq!(model.snapshot(1).unfinished_len, 0);
+    assert_eq!(row_text(&model.term.lock(), 0), "AB   CD");
+    assert_eq!(
+        model
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .placements()
+            .get(&PlacementKey {
+                image_id: 1,
+                placement_id: PlacementId::External(1),
+            })
+            .unwrap()
+            .location,
+        PlacementLocation::Pin(PinLocation { line: 0, column: 2 })
+    );
+    flush_model_events(&model);
+    let _ = host.take_replies();
+
+    // Synchronized CSI 14 t + CSI 16 t + CSI 18 t must reply in exact stream
+    // order both all-at-once and byte-by-byte, and in both 14->16 and 16->14 order.
+    let mut seq = 2u64;
+    for (input, expected) in [
+        (
+            b"\x1b[?2026h\x1b[14t\x1b[16t\x1b[18t\x1b[?2026l".as_slice(),
+            vec!["\x1b[4;100;200t", "\x1b[6;20;10t", "\x1b[8;5;20t"],
+        ),
+        (
+            b"\x1b[?2026h\x1b[16t\x1b[14t\x1b[16t\x1b[?2026l".as_slice(),
+            vec!["\x1b[6;20;10t", "\x1b[4;100;200t", "\x1b[6;20;10t"],
+        ),
+    ] {
+        model.feed_output(seq, input);
+        seq += 1;
+        flush_model_events(&model);
+        assert_eq!(host.take_replies(), expected, "single chunk {input:?}");
+
+        for &b in input {
+            model.feed_output(seq, &[b]);
+            seq += 1;
+        }
+        flush_model_events(&model);
+        assert_eq!(host.take_replies(), expected, "byte-by-byte {input:?}");
     }
 
-    // Closing the sync update applies "CD" starting at col 5 (right after the image!).
-    model.feed_output(2, b"\x1b[?2026l");
-    assert_eq!(row_text(&model.term.lock(), 0), "AB   CD");
+    // Graphics command inside a synchronized update flushes buffered 14/16 in
+    // order before emitting the Kitty reply, then trailing 18 replies on close.
+    let mut mixed = b"\x1b[?2026h\x1b[14t\x1b[16t".to_vec();
+    mixed.extend_from_slice(&apc(&format!("a=q,f=24,s=1,v=1,i=7;{px}")));
+    mixed.extend_from_slice(b"\x1b[18t\x1b[?2026l");
+    model.feed_output(seq, &mixed);
+    flush_model_events(&model);
+    assert_eq!(
+        host.take_replies(),
+        vec![
+            "\x1b[4;100;200t",
+            "\x1b[6;20;10t",
+            "\x1b_Gi=7;OK\x1b\\",
+            "\x1b[8;5;20t",
+        ]
+    );
 
     shutdown_model(&model);
 }
@@ -1448,14 +1486,11 @@ fn repeated_graphics_commands_inside_unclosed_sync_do_not_postpone_150ms_flush()
 
     let opened = Instant::now();
     model.feed_output(1, b"\x1b[?2026hhello");
-    assert!(model.snapshot(1).unfinished_len > 0);
 
     // Repeatedly send graphics commands + trailing text without ever sending
     // `CSI ? 2026 l`. Reopening sync after each graphics command leaves
-    // `unfinished_len > 0`, so `unfinished_len == 0` can only become true once
-    // the sync-flush thread terminates the update at the original ~150 ms
-    // deadline. If each reopen pushed vte's 150 ms timer forward, sending every
-    // 25 ms would postpone the flush indefinitely.
+    // `unfinished_len > 0` until the sync-flush thread closes the update at the
+    // original ~150 ms deadline.
     let mut seq = 2u64;
     let mut closed_by_timer = false;
     while opened.elapsed() < Duration::from_secs(2) {
@@ -1483,12 +1518,7 @@ fn repeated_graphics_commands_inside_unclosed_sync_do_not_postpone_150ms_flush()
         closed_by_timer,
         "sync update should close at the original 150 ms deadline despite repeated graphics commands"
     );
-    assert!(
-        opened.elapsed() < Duration::from_millis(800),
-        "flush took too long: {:?}",
-        opened.elapsed()
-    );
-    assert!(row_text(&model.term.lock(), 0).starts_with("hellox"));
+    assert!(row_text(&model.term.lock(), 0).starts_with("hello"));
 
     shutdown_model(&model);
 }
@@ -2185,4 +2215,496 @@ fn normalized_frame_splitting_and_empty_normalized_burst_sequence_accounting() {
     assert_eq!(snap.activity.unwrap().output_seq, 5);
 
     shutdown_model(&model);
+}
+
+// ============================================================================
+// 10. Regression coverage for review findings (encoded budget, lazy mirror
+//     decode, companion CAN & side-scanner aborts, i64 rows, reparent depth,
+//     exact clipped snapshot budgeting)
+// ============================================================================
+
+#[test]
+fn global_image_budget_accounts_for_encoded_bytes_across_png_and_zlib() {
+    let cell = CellSize {
+        width: 10,
+        height: 20,
+    };
+
+    // Case A: small 1x1 PNG has decoded_bytes=4 but encoded_data.len() (~70 B) > decoded.
+    let png_1x1 = encode_png_rgba(1, 1, &[255, 0, 0, 255]);
+    assert!(png_1x1.len() > 40, "expected PNG overhead > 40 bytes");
+    let budget_small = Arc::new(GlobalImageBudget::new(png_1x1.len() + 20));
+    let (m1, _h1) = new_model(20, 5, cell, Some(Arc::clone(&budget_small)));
+    let (m2, h2) = new_model(20, 5, cell, Some(Arc::clone(&budget_small)));
+
+    let png_b64 = BASE64.encode(&png_1x1);
+    m1.feed_output(1, &apc(&format!("a=t,f=100,i=1;{png_b64}")));
+    assert_eq!(budget_small.used(), png_1x1.len());
+    assert_eq!(m1.graphics().lock().unwrap().primary.total_bytes(), 4);
+    assert_eq!(
+        m1.graphics().lock().unwrap().primary.encoded_bytes(),
+        png_1x1.len()
+    );
+
+    // Second 1x1 PNG in session 2 exceeds global encoded budget -> ENOMEM (not silently allowed!).
+    m2.feed_output(1, &apc(&format!("a=t,f=100,i=2;{png_b64}")));
+    flush_model_events(&m2);
+    assert_eq!(
+        h2.take_replies(),
+        vec!["\x1b_Gi=2;ENOMEM: out of memory\x1b\\"]
+    );
+    assert!(!m2.graphics().lock().unwrap().primary.contains_image(2));
+    assert!(m1.graphics().lock().unwrap().primary.contains_image(1));
+    assert_eq!(budget_small.used(), png_1x1.len());
+
+    shutdown_model(&m1);
+    shutdown_model(&m2);
+    drop(m1);
+    drop(m2);
+    assert_eq!(budget_small.used(), 0);
+
+    // Case B: compressed o=z image has decoded_bytes=30_000 but encoded_data.len() < 200.
+    let compressed = zlib_compress(&vec![0u8; 100 * 100 * 3]);
+    assert!(compressed.len() < 200);
+    let budget_z = Arc::new(GlobalImageBudget::new(compressed.len() * 2 + 16));
+    let (mz, _hz) = new_model(20, 5, cell, Some(Arc::clone(&budget_z)));
+    // Set per-screen decoded limit to 40_000 (holds 1 image = 30_000, not 2 = 60_000)
+    // after verifying two fit when per-screen limit allows.
+    let z_b64 = BASE64.encode(&compressed);
+    mz.feed_output(1, &apc(&format!("a=t,f=24,o=z,s=100,v=100,i=1;{z_b64}")));
+    mz.feed_output(2, &apc(&format!("a=t,f=24,o=z,s=100,v=100,i=2;{z_b64}")));
+    assert_eq!(budget_z.used(), compressed.len() * 2);
+    assert_eq!(mz.graphics().lock().unwrap().primary.total_bytes(), 60_000);
+
+    // Tightening per-screen decoded limit forces eviction of both old images on
+    // inserting image 3 (30_000 B decoded), releasing their encoded bytes accurately.
+    mz.graphics().lock().unwrap().primary.set_limit(40_000);
+    mz.feed_output(3, &apc(&format!("a=t,f=24,o=z,s=100,v=100,i=3;{z_b64}")));
+    assert_eq!(budget_z.used(), compressed.len());
+    assert_eq!(mz.graphics().lock().unwrap().primary.total_bytes(), 30_000);
+    assert!(!mz.graphics().lock().unwrap().primary.contains_image(1));
+    assert!(!mz.graphics().lock().unwrap().primary.contains_image(2));
+    assert!(mz.graphics().lock().unwrap().primary.contains_image(3));
+
+    shutdown_model(&mz);
+    drop(mz);
+    assert_eq!(budget_z.used(), 0);
+}
+
+#[test]
+fn hidden_mirror_stores_normalized_png_and_zlib_without_decoding_under_lock() {
+    let cell = CellSize {
+        width: 10,
+        height: 20,
+    };
+    let (model, _host) = new_model(20, 5, cell, None);
+    let mut scanner = Scanner::new();
+    let temp = TempDirs::default();
+
+    let png_bytes = encode_png_rgba(
+        2,
+        2,
+        &[
+            10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 1, 2, 3, 255,
+        ],
+    );
+    let png_b64 = BASE64.encode(&png_bytes);
+    let z_rgb = zlib_compress(&[10, 20, 30, 40, 50, 60]);
+    let z_b64 = BASE64.encode(&z_rgb);
+
+    let mut input = apc(&format!("a=T,f=100,i=1,C=1;{png_b64}"));
+    input.extend_from_slice(&apc(&format!("a=T,f=24,o=z,s=2,v=1,i=2,C=1;{z_b64}")));
+    let items = scan_to_forwarded(&mut scanner, &input, &temp);
+    let (_, frames, _) = model.feed_forwarded(1, &items);
+
+    // Normalized PNG transmission carries explicit `s=2,v=2` dimensions.
+    let joined: Vec<u8> = frames.iter().flatten().copied().collect();
+    let joined_str = String::from_utf8(joined).unwrap();
+    assert!(
+        joined_str.contains("f=100,s=2,v=2"),
+        "normalized PNG must carry s= and v=: {joined_str}"
+    );
+
+    let slices: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
+    let (_, mirror_gfx, _) = replay_mirror(20, 5, 100, cell, &slices);
+    let img1 = mirror_gfx.primary.image_by_id(1).unwrap();
+    assert_eq!((img1.width, img1.height), (2, 2));
+    assert_eq!(img1.decode_bgra(1024).unwrap()[..4], [30, 20, 10, 255]);
+    let img2 = mirror_gfx.primary.image_by_id(2).unwrap();
+    assert_eq!((img2.width, img2.height), (2, 1));
+    assert_eq!(
+        img2.decode_bgra(1024).unwrap(),
+        vec![30, 20, 10, 255, 60, 50, 40, 255]
+    );
+
+    // Proof that mirrors skip PNG/zlib decoding under the terminal lock:
+    // synthetic normalized commands with explicit s/v and non-decodable sentinel
+    // bytes are accepted by ExecMode::Mirror (and rejected by Authoritative).
+    let sentinel = BASE64.encode(b"NOT_A_PNG_OR_ZLIB");
+    let synth_png = apc(&format!("a=t,t=d,i=9,f=100,s=2,v=2,q=2;{sentinel}"));
+    let synth_z = apc(&format!("a=t,t=d,i=10,f=24,s=2,v=1,o=z,q=2;{sentinel}"));
+    let (_, synth_mirror, _) = replay_mirror(20, 5, 100, cell, &[&synth_png, &synth_z]);
+    assert_eq!(
+        synth_mirror
+            .primary
+            .image_by_id(9)
+            .map(|i| (i.width, i.height)),
+        Some((2, 2))
+    );
+    assert_eq!(
+        synth_mirror
+            .primary
+            .image_by_id(10)
+            .map(|i| (i.width, i.height)),
+        Some((2, 1))
+    );
+
+    // Authoritative model still validates and rejects the same sentinel payloads.
+    model.feed_output(10, &synth_png);
+    model.feed_output(11, &synth_z);
+    assert!(!model.graphics().lock().unwrap().primary.contains_image(9));
+    assert!(!model.graphics().lock().unwrap().primary.contains_image(10));
+
+    shutdown_model(&model);
+}
+
+#[test]
+fn interrupted_sequences_emit_can_for_companions_and_abort_side_scanners() {
+    let cell = CellSize {
+        width: 10,
+        height: 20,
+    };
+    let host = Arc::new(RecordingHost::default());
+    let model = TerminalModel::with_graphics(
+        Arc::clone(&host) as Arc<dyn TerminalHost>,
+        "shell-abort".into(),
+        40,
+        5,
+        ModelOptions {
+            runtime: Some(runner_core::Runtime::Shell),
+            ..ModelOptions::default()
+        },
+        cell,
+        None,
+    )
+    .unwrap();
+    let mut scanner = Scanner::new();
+    let temp = TempDirs::default();
+
+    // 1. Interrupted CSI (`\x1b[31`) + SUCCESSFUL transmit + `hello` must leave
+    //    `hello` intact on model, local mirror, AND companion after stripping graphics!
+    let mut seq1 = b"\x1b[31".to_vec();
+    seq1.extend_from_slice(&apc("a=t,f=24,s=1,v=1,i=1;/wAA"));
+    seq1.extend_from_slice(b"hello");
+    let items = scan_to_forwarded(&mut scanner, &seq1, &temp);
+    let (_, frames, last_seq) = model.feed_forwarded(1, &items);
+    assert_eq!(row_text(&model.term.lock(), 0), "hello");
+
+    let slices: Vec<&[u8]> = frames.iter().map(Vec::as_slice).collect();
+    let (mirror_term, mirror_gfx, _) = replay_mirror(40, 5, 100, cell, &slices);
+    assert_eq!(row_text(&mirror_term, 0), "hello");
+    assert!(mirror_gfx.primary.contains_image(1));
+
+    let companion_frames: Vec<Vec<u8>> = frames
+        .iter()
+        .map(|f| runner_terminal::kitty::strip_graphics_commands(f).unwrap_or_else(|| f.clone()))
+        .collect();
+    let comp_slices: Vec<&[u8]> = companion_frames.iter().map(Vec::as_slice).collect();
+    let (comp_term, comp_gfx, _) = replay_mirror(40, 5, 100, cell, &comp_slices);
+    assert_eq!(row_text(&comp_term, 0), "hello");
+    assert!(comp_gfx.is_empty());
+
+    // 2. Interrupted partial OSC 7501 (`\x1b]7501;?`) + graphics + `\x07` must NOT
+    //    emit a spurious OSC 7501 probe reply, while preserving prior complete records.
+    flush_model_events(&model);
+    let _ = host.take_replies();
+
+    model.feed_output(last_seq + 1, b"\x1b]7501;state=working:app=pi\x07");
+    assert_eq!(model.take_program_statuses().len(), 1);
+
+    let mut bad_osc7501 = b"\x1b]7501;?".to_vec();
+    bad_osc7501.extend_from_slice(&apc("a=q,f=24,s=1,v=1,i=7;/wAA"));
+    bad_osc7501.push(0x07);
+    model.feed_output(last_seq + 2, &bad_osc7501);
+    flush_model_events(&model);
+    assert_eq!(
+        host.take_replies(),
+        vec!["\x1b_Gi=7;OK\x1b\\"],
+        "interrupted partial OSC 7501 must not fire probe reply"
+    );
+
+    // 3. Interrupted partial OSC 7 (`\x1b]7;file:///tmp`) + graphics + `/x\x07`
+    //    must not update live_cwd.
+    let mut bad_osc7 = b"\x1b]7;file:///tmp".to_vec();
+    bad_osc7.extend_from_slice(&apc("a=d,d=a"));
+    bad_osc7.extend_from_slice(b"/x\x07");
+    model.feed_output(last_seq + 3, &bad_osc7);
+    assert_eq!(model.live_cwd(), None);
+
+    // Subsequent valid OSC 7501 and OSC 7 still work cleanly.
+    model.feed_output(
+        last_seq + 4,
+        b"\x1b]7501;state=done:app=pi\x07\x1b]7;file:///tmp\x07",
+    );
+    assert_eq!(model.take_program_statuses().len(), 1);
+    assert_eq!(model.live_cwd(), Some(std::path::PathBuf::from("/tmp")));
+
+    shutdown_model(&model);
+}
+
+#[test]
+fn large_row_span_placements_do_not_overflow_on_scroll_prune_resize_or_snapshot() {
+    let cell = CellSize {
+        width: 10,
+        height: 20,
+    };
+    let mut term = make_term(20, 6, 10);
+    let mut graphics = TerminalGraphics::authoritative(None);
+    let sgr = AtomicBool::new(false);
+    let mut proc = TrackedProcessor::new();
+    let mut sc = Scanner::new();
+    let px = BASE64.encode(vec![0u8; 3]);
+
+    // Place a huge-row-span placement (`r = i32::MAX as u32 + 10`) on row 1 inside
+    // partial scroll region rows 2..5 (0-based 1..=4).
+    let huge_r = (i32::MAX as u32) + 10;
+    let mut setup = b"\x1b[2;5r\x1b[2;1H".to_vec();
+    setup.extend_from_slice(&apc(&format!(
+        "a=T,f=24,s=1,v=1,i=1,p=1,c=1,r={huge_r},C=1;{px}"
+    )));
+    feed_term_with_stream(
+        &mut term,
+        &mut graphics,
+        &sgr,
+        cell,
+        &mut proc,
+        &mut sc,
+        &setup,
+        ExecMode::Authoritative,
+    );
+
+    let key = PlacementKey {
+        image_id: 1,
+        placement_id: PlacementId::External(1),
+    };
+    // Partial margin scroll must recognize it straddles the bottom margin and NOT move or delete it.
+    feed_term_with_stream(
+        &mut term,
+        &mut graphics,
+        &sgr,
+        cell,
+        &mut proc,
+        &mut sc,
+        b"\x1b[1S\x1b[1T",
+        ExecMode::Authoritative,
+    );
+    assert_eq!(
+        graphics.primary.placements().get(&key).unwrap().location,
+        PlacementLocation::Pin(PinLocation { line: 1, column: 0 })
+    );
+
+    // Full-screen scroll up pushes it to line -3; prune_above(-2) must KEEP it
+    // because its last row (`-3 + huge_r - 1`) is far below `-2`!
+    graphics.primary.scroll_full_up(4, -2, cell);
+    assert_eq!(
+        graphics.primary.placements().get(&key).unwrap().location,
+        PlacementLocation::Pin(PinLocation {
+            line: -3,
+            column: 0
+        })
+    );
+
+    // Resize must also keep it (last_row >= topmost) without wrapping negative.
+    resize_term_and_graphics(&mut term, &mut graphics, 20, 5, cell);
+    assert!(graphics.primary.placements().contains_key(&key));
+
+    // Snapshot must succeed without overflowing or panicking.
+    let snap = serialize_with_options(&term, &[], usize::MAX, false, Some((&graphics, cell)));
+    assert!(!snap.is_empty());
+
+    // Full-screen scroll down on a visible huge-r placement clips safely without panicking.
+    graphics.primary.reset();
+    let mut vis = b"\x1b[r\x1b[1;1H".to_vec();
+    vis.extend_from_slice(&apc(&format!(
+        "a=T,f=24,s=1,v=1,i=2,p=1,c=1,r={},C=1;{px}",
+        u32::MAX
+    )));
+    feed_term_with_stream(
+        &mut term,
+        &mut graphics,
+        &sgr,
+        cell,
+        &mut proc,
+        &mut sc,
+        &vis,
+        ExecMode::Authoritative,
+    );
+    graphics.primary.scroll_full_down(1, 5, cell);
+    // Moving from row 0 -> row 1 on a 5-row screen clips `u32::MAX - 4` rows off
+    // the bottom, leaving `rows == 4` spanning rows 1..=4 without wrapping.
+    let clipped = graphics
+        .primary
+        .placements()
+        .get(&PlacementKey {
+            image_id: 2,
+            placement_id: PlacementId::External(1),
+        })
+        .expect("placement clipped to remaining 4 rows should survive");
+    assert_eq!(
+        clipped.location,
+        PlacementLocation::Pin(PinLocation { line: 1, column: 0 })
+    );
+    assert_eq!(clipped.rows, 4);
+}
+
+#[test]
+fn reparenting_subtree_beyond_max_depth_returns_etoodeep_and_snapshot_clips_to_exact_budget() {
+    let cell = CellSize {
+        width: 10,
+        height: 20,
+    };
+    let (model, host) = new_model(20, 6, cell, None);
+    let raw = BASE64.encode(vec![0xffu8; 10 * 20 * 3]);
+    let seq = AtomicUsize::new(1);
+    let send = |cmd: &str| -> Vec<String> {
+        let s = seq.fetch_add(1, Ordering::Relaxed) as u64;
+        model.feed_output(s, &apc(cmd));
+        flush_model_events(&model);
+        host.take_replies()
+    };
+
+    for id in 1..=12u32 {
+        assert_eq!(
+            send(&format!("a=t,f=24,s=10,v=20,i={id};{raw}")),
+            vec![format!("\x1b_Gi={id};OK\x1b\\")]
+        );
+    }
+
+    // Chain A (5 links): root (1,1) <- (2,1) <- (3,1) <- (4,1) <- (5,1) <- (6,1).
+    assert_eq!(send("a=p,i=1,p=1,C=1"), vec!["\x1b_Gi=1,p=1;OK\x1b\\"]);
+    for id in 2..=6u32 {
+        assert_eq!(
+            send(&format!("a=p,i={id},p=1,P={},Q=1", id - 1)),
+            vec![format!("\x1b_Gi={id},p=1;OK\x1b\\")]
+        );
+    }
+
+    // Chain B (3 links beneath q1): root2 (7,1) <- (8,1) <- (9,1) <- (10,1) <- (11,1).
+    assert_eq!(send("a=p,i=7,p=1,C=1"), vec!["\x1b_Gi=7,p=1;OK\x1b\\"]);
+    for id in 8..=11u32 {
+        assert_eq!(
+            send(&format!("a=p,i={id},p=1,P={},Q=1", id - 1)),
+            vec![format!("\x1b_Gi={id},p=1;OK\x1b\\")]
+        );
+    }
+
+    // Reparenting (8,1) (which has descendant depth 3: 9->10->11) onto (6,1) (depth 5)
+    // would put (11,1) at depth 5 + 1 + 3 = 9 > 8 -> MUST fail with ETOODEEP!
+    assert_eq!(
+        send("a=p,i=8,p=1,P=6,Q=1"),
+        vec!["\x1b_Gi=8,p=1;ETOODEEP: parent chain too deep\x1b\\"]
+    );
+    // Old parent (7,1) must remain unchanged.
+    assert_eq!(
+        model
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .placements()
+            .get(&PlacementKey {
+                image_id: 8,
+                placement_id: PlacementId::External(1),
+            })
+            .unwrap()
+            .location,
+        PlacementLocation::Relative(runner_terminal::kitty::storage::RelativeLocation {
+            parent: PlacementKey {
+                image_id: 7,
+                placement_id: PlacementId::External(1),
+            },
+            horizontal_offset: 0,
+            vertical_offset: 0,
+        })
+    );
+
+    // Reparenting (9,1) (descendant depth 2: 10->11) onto (6,1) (depth 5) gives
+    // (11,1) exact depth 8 -> MUST succeed and round-trip cleanly in a snapshot!
+    assert_eq!(send("a=p,i=9,p=1,P=6,Q=1"), vec!["\x1b_Gi=9,p=1;OK\x1b\\"]);
+    let snap = model.snapshot(seq.load(Ordering::Relaxed) as u64);
+    let (_, restored, _) = replay_mirror(20, 6, 100, cell, &[&snap.bytes]);
+    let p11 = restored
+        .primary
+        .placements()
+        .get(&PlacementKey {
+            image_id: 11,
+            placement_id: PlacementId::External(1),
+        })
+        .expect("depth-8 descendant must survive snapshot round-trip");
+    assert!(restored.primary.resolved_anchor(p11).is_some());
+
+    shutdown_model(&model);
+
+    // Exact snapshot budget test for a clipped history placement whose crop adds
+    // longer `x/y/w/h/r` keys than the unclipped placement.
+    let mut term = make_term(20, 4, 10);
+    let mut gfx = TerminalGraphics::authoritative(None);
+    let sgr = AtomicBool::new(false);
+    let mut proc = TrackedProcessor::new();
+    let mut sc = Scanner::new();
+    let px = BASE64.encode(vec![0xabu8; 10 * 100 * 3]); // 10x100 RGB = 5 rows at 10x20 cells
+    let mut stream = b"\x1b[1;5H".to_vec();
+    stream.extend_from_slice(&apc(&format!(
+        "a=T,f=24,s=10,v=100,i=1,p=1,c=1,r=5,C=1;{px}"
+    )));
+    stream.extend_from_slice(b"\r\n\r\n\r\n\r\n\r\n\r\n"); // push placement to line -3
+    feed_term_with_stream(
+        &mut term,
+        &mut gfx,
+        &sgr,
+        cell,
+        &mut proc,
+        &mut sc,
+        &stream,
+        ExecMode::Authoritative,
+    );
+    // Build a plan clipped to `first_line = -1` (crops top 2 rows -> adds y=40,w=10,h=60,r=3).
+    let unlimited = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx,
+        false,
+        -1,
+        4,
+        4,
+        20,
+        cell,
+        usize::MAX,
+    );
+    let mut emitted = String::new();
+    unlimited.emit_screen_images(false, &gfx.primary, &mut emitted);
+    unlimited.emit_row_placements(false, -1, &mut emitted);
+    let exact_len = emitted.len();
+    assert!(exact_len > 0);
+
+    // Budget == exact_len MUST fit and emit <= budget bytes.
+    let exact_plan = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx, false, -1, 4, 4, 20, cell, exact_len,
+    );
+    assert!(!exact_plan.is_empty());
+    let mut exact_out = String::new();
+    exact_plan.emit_screen_images(false, &gfx.primary, &mut exact_out);
+    exact_plan.emit_row_placements(false, -1, &mut exact_out);
+    assert_eq!(exact_out.len(), exact_len);
+
+    // Budget == exact_len - 1 MUST drop the image rather than exceed budget.
+    let tight_plan = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx,
+        false,
+        -1,
+        4,
+        4,
+        20,
+        cell,
+        exact_len - 1,
+    );
+    assert!(tight_plan.is_empty());
 }

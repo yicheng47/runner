@@ -368,6 +368,23 @@ impl TerminalModel {
         Ok(model)
     }
 
+    fn abort_side_scanners(&self) {
+        self.scheme.tail.lock().unwrap().clear();
+        self.program_status.lock().unwrap().abort_pending();
+        if let Some(reports) = &self.cwd_reports {
+            reports.lock().unwrap().carry.clear();
+        }
+    }
+
+    fn emit_cell_size_reply(&self, cell_size: crate::kitty::CellSize) {
+        let _ = self
+            .events
+            .send(ProxyEvent::Terminal(Event::PtyWrite(format!(
+                "\x1b[6;{};{}t",
+                cell_size.height, cell_size.width
+            ))));
+    }
+
     fn parse_text_segment(
         &self,
         parser: &mut ParserState,
@@ -407,7 +424,20 @@ impl TerminalModel {
         }
         let mut fed = 0;
         for (end, scheme) in queries {
-            parser.parse_text(handler, &bytes[fed..end]);
+            let slice = &bytes[fed..end];
+            if matches!(scheme, Some(SchemeSequence::SyncEnd)) && parser.has_held_csi16() {
+                parser.flush_sync_with_csi16(handler, slice, || {
+                    self.emit_cell_size_reply(cell_size);
+                });
+                fed = end;
+                continue;
+            }
+            if parser.would_overflow_sync(slice.len()) {
+                parser.flush_sync_with_csi16(handler, &[], || {
+                    self.emit_cell_size_reply(cell_size);
+                });
+            }
+            parser.parse_text(handler, slice);
             fed = end;
             match scheme {
                 Some(SchemeSequence::Subscribe) => {
@@ -424,13 +454,13 @@ impl TerminalModel {
                         ))));
                 }
                 Some(SchemeSequence::CellSizeQuery) => {
-                    let _ = self
-                        .events
-                        .send(ProxyEvent::Terminal(Event::PtyWrite(format!(
-                            "\x1b[6;{};{}t",
-                            cell_size.height, cell_size.width
-                        ))));
+                    if parser.sync_deadline().is_some() {
+                        parser.record_held_csi16();
+                    } else {
+                        self.emit_cell_size_reply(cell_size);
+                    }
                 }
+                Some(SchemeSequence::SyncEnd) => {}
                 None => {
                     let _ = self.events.send(ProxyEvent::Terminal(Event::PtyWrite(
                         crate::program_status::PROBE_REPLY.into(),
@@ -438,7 +468,13 @@ impl TerminalModel {
                 }
             }
         }
-        parser.parse_text(handler, &bytes[fed..]);
+        let tail = &bytes[fed..];
+        if parser.would_overflow_sync(tail.len()) {
+            parser.flush_sync_with_csi16(handler, &[], || {
+                self.emit_cell_size_reply(cell_size);
+            });
+        }
+        parser.parse_text(handler, tail);
     }
 
     /// Feed plain terminal output known to contain no Kitty graphics commands
@@ -474,7 +510,7 @@ impl TerminalModel {
             let mut emit_reply = |reply: String| {
                 let _ = events.send(ProxyEvent::Terminal(Event::PtyWrite(reply)));
             };
-            let mut handler = stream::StreamHandler::new(
+            let mut handler = stream::StreamHandler::new_model(
                 &mut term,
                 &mut graphics,
                 &self.sgr_pixels,
@@ -509,6 +545,15 @@ impl TerminalModel {
     /// Local media (`t=f`/`t=t`/`t=s`) are never read on this path; forwarders
     /// resolve local media outside the session lock and call `feed_forwarded`.
     pub fn feed_output(&self, seq: u64, bytes: &[u8]) -> Option<InputObservation> {
+        self.feed_output_inner(seq, bytes, true)
+    }
+
+    fn feed_output_inner(
+        &self,
+        seq: u64,
+        bytes: &[u8],
+        schedule_sync_flush: bool,
+    ) -> Option<InputObservation> {
         if self.stopped.load(Ordering::Acquire) {
             return None;
         }
@@ -537,7 +582,7 @@ impl TerminalModel {
             let mut emit_reply = |reply: String| {
                 let _ = events.send(ProxyEvent::Terminal(Event::PtyWrite(reply)));
             };
-            let mut handler = stream::StreamHandler::new(
+            let mut handler = stream::StreamHandler::new_model(
                 &mut term,
                 &mut graphics,
                 &self.sgr_pixels,
@@ -567,9 +612,12 @@ impl TerminalModel {
                                 );
                             }
                             crate::kitty::ScanItem::Command(raw) => {
-                                self.scheme.tail.lock().unwrap().clear();
-                                let (saved_sync, _) =
-                                    parser.prepare_for_graphics_command(&mut handler, |_| {});
+                                self.abort_side_scanners();
+                                let (saved_sync, _) = parser.prepare_for_graphics_command(
+                                    &mut handler,
+                                    |_| {},
+                                    || self.emit_cell_size_reply(cell_size),
+                                );
                                 if let Some(prepared) =
                                     crate::kitty::PreparedCommand::direct_only(&raw)
                                 {
@@ -581,9 +629,12 @@ impl TerminalModel {
                                 parser.reopen_sync_after_graphics(&mut handler, saved_sync);
                             }
                             crate::kitty::ScanItem::Discarded => {
-                                self.scheme.tail.lock().unwrap().clear();
-                                let (saved_sync, _) =
-                                    parser.prepare_for_graphics_command(&mut handler, |_| {});
+                                self.abort_side_scanners();
+                                let (saved_sync, _) = parser.prepare_for_graphics_command(
+                                    &mut handler,
+                                    |_| {},
+                                    || self.emit_cell_size_reply(cell_size),
+                                );
                                 parser.reopen_sync_after_graphics(&mut handler, saved_sync);
                             }
                         }
@@ -600,7 +651,8 @@ impl TerminalModel {
             seq,
             now,
         );
-        let schedule = parser.sync_deadline().is_some()
+        let schedule = schedule_sync_flush
+            && parser.sync_deadline().is_some()
             && !std::mem::replace(&mut parser.flush_scheduled, true);
         drop(graphics);
         drop(term);
@@ -648,7 +700,7 @@ impl TerminalModel {
             let mut emit_reply = |reply: String| {
                 let _ = events.send(ProxyEvent::Terminal(Event::PtyWrite(reply)));
             };
-            let mut handler = stream::StreamHandler::new(
+            let mut handler = stream::StreamHandler::new_model(
                 &mut term,
                 &mut graphics,
                 &self.sgr_pixels,
@@ -676,21 +728,27 @@ impl TerminalModel {
                         }
                     }
                     crate::kitty::ForwardedItem::Command(prepared) => {
-                        self.scheme.tail.lock().unwrap().clear();
-                        let (saved_sync, emitted_can) =
-                            parser.prepare_for_graphics_command(&mut handler, |_| {});
+                        self.abort_side_scanners();
+                        let (saved_sync, emitted_can) = parser.prepare_for_graphics_command(
+                            &mut handler,
+                            |_| {},
+                            || self.emit_cell_size_reply(cell_size),
+                        );
                         let result =
                             handler.execute_kitty(prepared, crate::kitty::ExecMode::Authoritative);
-                        if emitted_can && result.normalized.is_empty() {
+                        if emitted_can {
                             normalized_segments.push(vec![0x18]);
                         }
                         normalized_segments.extend(result.normalized);
                         parser.reopen_sync_after_graphics(&mut handler, saved_sync);
                     }
                     crate::kitty::ForwardedItem::Discarded => {
-                        self.scheme.tail.lock().unwrap().clear();
-                        let (saved_sync, emitted_can) =
-                            parser.prepare_for_graphics_command(&mut handler, |_| {});
+                        self.abort_side_scanners();
+                        let (saved_sync, emitted_can) = parser.prepare_for_graphics_command(
+                            &mut handler,
+                            |_| {},
+                            || self.emit_cell_size_reply(cell_size),
+                        );
                         if emitted_can {
                             normalized_segments.push(vec![0x18]);
                         }
@@ -797,14 +855,14 @@ impl TerminalModel {
             let mut emit_reply = |reply: String| {
                 let _ = events.send(ProxyEvent::Terminal(Event::PtyWrite(reply)));
             };
-            let mut handler = stream::StreamHandler::new(
+            let mut handler = stream::StreamHandler::new_model(
                 &mut term,
                 &mut graphics,
                 &self.sgr_pixels,
                 cell_size,
                 Some(&mut emit_reply),
             );
-            parser.finish_sync_timeout(&mut handler);
+            parser.finish_sync_timeout(&mut handler, || self.emit_cell_size_reply(cell_size));
         }
         parser.flush_scheduled = false;
         let seq = active_output_seq(&sequence);
@@ -929,14 +987,16 @@ impl TerminalModel {
                     let mut emit_reply = |reply: String| {
                         let _ = events.send(ProxyEvent::Terminal(Event::PtyWrite(reply)));
                     };
-                    let mut handler = stream::StreamHandler::new(
+                    let mut handler = stream::StreamHandler::new_model(
                         &mut term,
                         &mut graphics,
                         &self.sgr_pixels,
                         cell_size,
                         Some(&mut emit_reply),
                     );
-                    parser.finish_sync_timeout(&mut handler);
+                    parser.finish_sync_timeout(&mut handler, || {
+                        self.emit_cell_size_reply(cell_size);
+                    });
                 }
                 let seq = active_output_seq(&sequence);
                 observe_parsed(
@@ -954,6 +1014,8 @@ impl TerminalModel {
             parser.flush_scheduled = false;
             parser.sync_deadline = None;
             parser.last_vte_deadline = None;
+            parser.sync_opening_preceding = None;
+            parser.held_csi16.clear();
             let preceding = parser.processor.preceding_char();
             parser.processor.restore_preceding_char(preceding);
             parser.boundary = Default::default();
@@ -1126,6 +1188,24 @@ impl TerminalModel {
     }
     pub fn is_shell(&self) -> bool {
         self.cwd_reports.is_some()
+    }
+    /// Feed output synchronously without arming the background sync-flush
+    /// thread so tests can assert mid-sync state without racing the 150 ms timer.
+    pub fn test_feed_output_unscheduled(&self, seq: u64, bytes: &[u8]) -> Option<InputObservation> {
+        self.feed_output_inner(seq, bytes, false)
+    }
+    /// Current synchronized-update deadline recorded on the parser.
+    pub fn test_sync_deadline(&self) -> Option<Instant> {
+        self.parser.lock().unwrap().sync_deadline()
+    }
+    /// Arm the background sync-flush thread for an already-open synchronized
+    /// update created via [`Self::test_feed_output_unscheduled`].
+    pub fn test_arm_sync_flush(&self) {
+        let mut parser = self.parser.lock().unwrap();
+        if parser.sync_deadline().is_some() && !std::mem::replace(&mut parser.flush_scheduled, true)
+        {
+            let _ = self.sync_flush.send(());
+        }
     }
 }
 

@@ -1,10 +1,10 @@
 //! Kitty image chunk accumulation, bounded zlib inflation, PNG validation and
 //! decoding, and stored image metadata. Contains no filesystem access.
 
-use std::io::{Cursor, Read as _};
+use std::io::Cursor;
 use std::sync::Arc;
 
-use flate2::read::ZlibDecoder;
+use flate2::{Decompress, FlushDecompress, Status};
 
 use super::command::{Command, Compression, Display, Format, Quiet, Response};
 
@@ -88,12 +88,18 @@ pub struct StoredImage {
 }
 
 impl StoredImage {
-    /// Bytes counted against per-screen and daemon-wide limits: RGB at 3 bpp,
-    /// RGBA (including decoded PNG) at 4 bpp, matching Ghostty.
+    /// Bytes counted against the per-screen limit: RGB at 3 bpp, RGBA
+    /// (including decoded PNG) at 4 bpp, matching Ghostty.
     pub fn storage_bytes(&self) -> usize {
         (self.width as usize)
             .saturating_mul(self.height as usize)
             .saturating_mul(self.decoded_format.bpp())
+    }
+
+    /// Actual encoded payload bytes retained in memory, counted against the
+    /// daemon-wide `GlobalImageBudget`.
+    pub fn encoded_bytes(&self) -> usize {
+        self.encoded_data.len()
     }
 
     /// Decode the stored image into tight RGBA8 pixels (`width * height * 4`).
@@ -204,6 +210,61 @@ impl LoadingImage {
             transmission: 0,
         })
     }
+
+    /// Complete a normalized transmission on a mirror without inflating zlib or
+    /// decoding PNG under the terminal lock. Authoritative `runnerd` always
+    /// validates payloads and emits explicit `s=` / `v=` dimensions (even for
+    /// PNG); if a non-normalized PNG arrives without dimensions, fall back to
+    /// `complete`.
+    pub fn complete_normalized_mirror(
+        self,
+        max_decoded_bytes: usize,
+    ) -> Result<StoredImage, ImageError> {
+        if self.data.len() > MAX_TRANSMITTED_BYTES {
+            return Err(ImageError::InvalidData);
+        }
+        if self.format == Format::Png && (self.width == 0 || self.height == 0) {
+            return self.complete(max_decoded_bytes);
+        }
+        if self.width == 0 || self.height == 0 {
+            return Err(ImageError::DimensionsRequired);
+        }
+        if self.width > MAX_DIMENSION || self.height > MAX_DIMENSION {
+            return Err(ImageError::DimensionsTooLarge);
+        }
+        let decoded_format = match self.format {
+            Format::Rgb => DecodedFormat::Rgb,
+            Format::Rgba | Format::Png => DecodedFormat::Rgba,
+        };
+        let expected = (self.width as usize)
+            .checked_mul(self.height as usize)
+            .and_then(|pixels| pixels.checked_mul(decoded_format.bpp()))
+            .ok_or(ImageError::OutOfMemory)?;
+        if expected > max_decoded_bytes {
+            return Err(ImageError::OutOfMemory);
+        }
+        if self.format != Format::Png
+            && self.compression == Compression::None
+            && self.data.len() != expected
+        {
+            return Err(ImageError::InvalidData);
+        }
+        Ok(StoredImage {
+            id: self.id,
+            number: self.number,
+            width: self.width,
+            height: self.height,
+            wire_format: self.format,
+            compression: self.compression,
+            decoded_format,
+            encoded_data: Arc::from(self.data),
+            transient: self.transient,
+            implicit_id: self.implicit_id,
+            placement_count: 0,
+            generation: 0,
+            transmission: 0,
+        })
+    }
 }
 
 pub fn validate_transmitted(
@@ -265,46 +326,77 @@ pub fn validate_transmitted(
 }
 
 fn validate_zlib_exact_len(compressed: &[u8], expected: usize) -> Result<(), ImageError> {
-    let mut decoder = ZlibDecoder::new(compressed);
+    let mut decomp = Decompress::new(true);
     let mut scratch = [0u8; 16 * 1024];
+    let mut in_pos = 0usize;
     let mut total = 0usize;
     loop {
         let want = (expected + 1 - total).min(scratch.len());
-        let n = decoder
-            .read(&mut scratch[..want])
+        let before_in = decomp.total_in();
+        let before_out = decomp.total_out();
+        let status = decomp
+            .decompress(
+                &compressed[in_pos..],
+                &mut scratch[..want],
+                FlushDecompress::Sync,
+            )
             .map_err(|_| ImageError::DecompressionFailed)?;
-        if n == 0 {
-            break;
-        }
-        total += n;
+        let consumed = (decomp.total_in() - before_in) as usize;
+        let produced = (decomp.total_out() - before_out) as usize;
+        in_pos += consumed;
+        total += produced;
         if total > expected {
             // Stop inflating past s * v * bpp without allocating the excess.
             return Err(ImageError::InvalidData);
         }
+        match status {
+            Status::StreamEnd => {
+                return if total == expected {
+                    Ok(())
+                } else {
+                    Err(ImageError::InvalidData)
+                };
+            }
+            Status::Ok => {
+                if consumed == 0 && produced == 0 {
+                    return Err(ImageError::DecompressionFailed);
+                }
+            }
+            Status::BufError => {
+                return Err(ImageError::DecompressionFailed);
+            }
+        }
     }
-    if total != expected {
-        return Err(ImageError::InvalidData);
-    }
-    Ok(())
 }
 
 fn inflate_bounded(compressed: &[u8], limit: usize) -> Result<Vec<u8>, ImageError> {
-    let mut decoder = ZlibDecoder::new(compressed);
+    let mut decomp = Decompress::new(true);
     let mut out = Vec::new();
     let mut scratch = [0u8; 16 * 1024];
+    let mut in_pos = 0usize;
     loop {
-        let n = decoder
-            .read(&mut scratch)
+        let before_in = decomp.total_in();
+        let before_out = decomp.total_out();
+        let status = decomp
+            .decompress(&compressed[in_pos..], &mut scratch, FlushDecompress::Sync)
             .map_err(|_| ImageError::DecompressionFailed)?;
-        if n == 0 {
-            break;
-        }
-        if out.len().saturating_add(n) > limit {
+        let consumed = (decomp.total_in() - before_in) as usize;
+        let produced = (decomp.total_out() - before_out) as usize;
+        in_pos += consumed;
+        if out.len().saturating_add(produced) > limit {
             return Err(ImageError::DecompressionFailed);
         }
-        out.extend_from_slice(&scratch[..n]);
+        out.extend_from_slice(&scratch[..produced]);
+        match status {
+            Status::StreamEnd => return Ok(out),
+            Status::Ok => {
+                if consumed == 0 && produced == 0 {
+                    return Err(ImageError::DecompressionFailed);
+                }
+            }
+            Status::BufError => return Err(ImageError::DecompressionFailed),
+        }
     }
-    Ok(out)
 }
 
 fn png_decoder(bytes: &[u8]) -> png::Decoder<Cursor<&[u8]>> {
@@ -628,6 +720,84 @@ mod tests {
             ),
             Err(ImageError::DimensionsTooLarge)
         );
+    }
+
+    #[test]
+    fn rejects_truncated_and_corrupted_zlib_streams_for_raw_and_png() {
+        let rgb = vec![10u8, 20, 30, 40, 50, 60];
+        let z_rgb = zlib_compress(&rgb);
+        // Dropping any of the trailing 1..=4 Adler-32 checksum bytes must fail.
+        for drop_bytes in 1..=4 {
+            let truncated = &z_rgb[..z_rgb.len() - drop_bytes];
+            assert_eq!(
+                validate_transmitted(
+                    Format::Rgb,
+                    Compression::Zlib,
+                    2,
+                    1,
+                    truncated,
+                    PER_SCREEN_LIMIT
+                ),
+                Err(ImageError::DecompressionFailed),
+                "raw rgb truncated by {drop_bytes}"
+            );
+            assert_eq!(
+                decode_to_rgba(
+                    Format::Rgb,
+                    Compression::Zlib,
+                    2,
+                    1,
+                    truncated,
+                    PER_SCREEN_LIMIT
+                ),
+                Err(ImageError::DecompressionFailed),
+                "decode raw rgb truncated by {drop_bytes}"
+            );
+        }
+        // Flipping a checksum bit must also fail.
+        let mut bad_crc = z_rgb.clone();
+        *bad_crc.last_mut().unwrap() ^= 0x01;
+        assert_eq!(
+            validate_transmitted(
+                Format::Rgb,
+                Compression::Zlib,
+                2,
+                1,
+                &bad_crc,
+                PER_SCREEN_LIMIT
+            ),
+            Err(ImageError::DecompressionFailed)
+        );
+
+        let png_bytes = make_png(2, 1, png::ColorType::Rgba, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let z_png = zlib_compress(&png_bytes);
+        for drop_bytes in 1..=4 {
+            let truncated = &z_png[..z_png.len() - drop_bytes];
+            assert_eq!(
+                validate_transmitted(
+                    Format::Png,
+                    Compression::Zlib,
+                    0,
+                    0,
+                    truncated,
+                    PER_SCREEN_LIMIT
+                ),
+                Err(ImageError::DecompressionFailed),
+                "zlib png truncated by {drop_bytes}"
+            );
+            assert_eq!(
+                decode_to_rgba(
+                    Format::Png,
+                    Compression::Zlib,
+                    0,
+                    0,
+                    truncated,
+                    PER_SCREEN_LIMIT
+                ),
+                Err(ImageError::DecompressionFailed),
+                "decode zlib png truncated by {drop_bytes}"
+            );
+        }
     }
 
     fn crc32(bytes: &[u8]) -> u32 {

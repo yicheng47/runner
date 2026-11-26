@@ -3160,7 +3160,8 @@ fn link_probe_budget_caps_lookups_and_extra_root_resolves_via_link_at_with() {
 
 #[test]
 fn mirror_wakes_no_viewer_during_sync_update_with_graphics_and_title_event() {
-    let (mirror, frames, wakes) = scripted_mirror(false);
+    let (mirror, _frames, wakes) = scripted_mirror(false);
+    mirror.test_stop_frames();
     let _view = mirror.view();
     mirror.set_cell_size(crate::kitty::CellSize {
         width: 10,
@@ -3171,13 +3172,11 @@ fn mirror_wakes_no_viewer_during_sync_update_with_graphics_and_title_event() {
     // Open a synchronized update containing an OSC title change (which fires
     // `Event::Title` when `stop_sync` runs for the graphics command), a Kitty
     // image placement, and trailing held text, WITHOUT closing the update.
+    // Feed unscheduled so the mid-sync assertions cannot race the 150 ms timer.
     let mut open = b"\x1b[?2026hAB\x1b]2;mid-sync-title\x1b\\".to_vec();
     open.extend_from_slice(b"\x1b_Ga=T,t=d,f=24,s=1,v=1,i=1,p=1,c=2,r=1,C=0,q=2;/wAA\x1b\\");
     open.extend_from_slice(b"CD");
-    send_output(&frames, 1, &open);
-    assert!(wait_for(Duration::from_secs(2), || {
-        mirror.output_activity().last_output_seq == 1
-    }));
+    mirror.test_feed_unscheduled(1, &open);
 
     // Neither the frame completion nor `Event::Title` fired during `stop_sync`
     // may wake the viewer while the synchronized update remains open.
@@ -3186,47 +3185,150 @@ fn mirror_wakes_no_viewer_during_sync_update_with_graphics_and_title_event() {
     assert!(mirror.graphics().lock().unwrap().primary.contains_image(1));
 
     // Closing the update applies "CD" after the 2-column image and wakes the viewer.
-    send_output(&frames, 2, b"\x1b[?2026l");
-    assert!(wait_for(Duration::from_secs(2), || {
-        mirror.output_activity().last_output_seq == 2
-            && mirror.sync_state().0.is_none()
-            && wakes.load(Ordering::Acquire) > 0
-    }));
+    mirror.test_feed_unscheduled(2, b"\x1b[?2026l");
+    assert!(mirror.sync_state().0.is_none());
+    assert!(wakes.load(Ordering::Acquire) > 0);
     assert!(screen_text(&mirror).contains("AB  CD"));
 }
 
 #[test]
 fn mirror_repeated_graphics_in_unclosed_sync_flushes_at_original_deadline() {
-    let (mirror, frames, wakes) = scripted_mirror(false);
+    let (mirror, _frames, wakes) = scripted_mirror(false);
+    mirror.test_stop_frames();
     let _view = mirror.view();
     wakes.store(0, Ordering::Release);
 
-    send_output(&frames, 1, b"\x1b[?2026hhello");
-    assert!(wait_for(Duration::from_secs(2), || {
-        mirror.output_activity().last_output_seq == 1
-    }));
+    mirror.test_feed_unscheduled(1, b"\x1b[?2026hhello");
     let initial_deadline = mirror.sync_state().0.expect("sync opened");
+    assert_eq!(wakes.load(Ordering::Acquire), 0);
 
-    // Send a graphics command inside the still-open update: the mirror must
-    // reopen sync WITHOUT pushing the effective deadline past `initial_deadline`.
-    send_output(
-        &frames,
-        2,
-        b"\x1b_Ga=t,t=d,f=24,s=1,v=1,i=1,q=2;/wAA\x1b\\tail",
-    );
-    assert!(wait_for(Duration::from_secs(2), || {
-        mirror.output_activity().last_output_seq == 2
-    }));
-    if let Some(deadline_after) = mirror.sync_state().0 {
-        assert_eq!(deadline_after, initial_deadline);
-    }
+    // A graphics command inside the still-open update must reopen sync WITHOUT
+    // pushing the effective deadline past `initial_deadline` or waking viewers.
+    mirror.test_feed_unscheduled(2, b"\x1b_Ga=t,t=d,f=24,s=1,v=1,i=1,q=2;/wAA\x1b\\tail");
+    assert_eq!(mirror.sync_state().0, Some(initial_deadline));
+    assert_eq!(wakes.load(Ordering::Acquire), 0);
 
-    // The flush thread terminates the update at the original deadline and wakes viewers.
+    // Arm the real flush thread: it must flush at the original deadline and wake viewers.
+    mirror.test_arm_sync_flush();
     assert!(wait_for(Duration::from_secs(2), || {
         mirror.sync_state().0.is_none()
             && screen_text(&mirror).contains("hellotail")
             && wakes.load(Ordering::Acquire) > 0
     }));
+}
+
+#[test]
+fn model_sync_preserves_unfinished_deadline_and_orders_deferred_csi16_on_timeout() {
+    #[derive(Default)]
+    struct ReplyHost {
+        replies: Mutex<Vec<String>>,
+    }
+    impl TerminalHost for ReplyHost {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, bytes: &[u8]) -> Result<()> {
+            if !bytes.is_empty() {
+                self.replies
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8(bytes.to_vec()).unwrap());
+            }
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    let cell = crate::kitty::CellSize {
+        width: 10,
+        height: 20,
+    };
+    let host = Arc::new(ReplyHost::default());
+    let model = TerminalModel::with_graphics(
+        Arc::clone(&host) as Arc<dyn TerminalHost>,
+        "model-sync-deterministic".into(),
+        20,
+        5,
+        ModelOptions::default(),
+        cell,
+        None,
+    )
+    .unwrap();
+
+    // Feed unscheduled: mid-sync state (unfinished bytes, exact deadline, and
+    // zero premature replies for buffered CSI 14 t / CSI 16 t) is checked
+    // synchronously without racing the 150 ms timer.
+    let mut chunk = b"\x1b[?2026hAB".to_vec();
+    chunk.extend_from_slice(b"\x1b_Ga=T,t=d,f=24,s=1,v=1,i=1,p=1,c=3,r=1,C=0,q=2;/wAA\x1b\\");
+    chunk.extend_from_slice(b"CD\x1b[14t\x1b[16t\x1b[18t");
+    model.test_feed_output_unscheduled(1, &chunk);
+
+    let initial_deadline = model.test_sync_deadline().expect("sync opened");
+    let snap = model.snapshot(1);
+    let unfinished = &snap.bytes[snap.bytes.len() - snap.unfinished_len..];
+    assert_eq!(unfinished, b"\x1b[?2026hCD\x1b[14t\x1b[16t\x1b[18t");
+    assert_eq!(
+        crate::replay::row_cells(&model.term.lock(), 0).trim_end(),
+        "AB"
+    );
+    model.flush_events();
+    assert!(
+        host.replies.lock().unwrap().is_empty(),
+        "CSI 14 t / 16 t / 18 t must stay buffered while sync is open"
+    );
+
+    // Another graphics command inside the unclosed update flushes the held
+    // `CD\x1b[14t\x1b[16t\x1b[18t` in exact stream order BEFORE executing the
+    // query, then reopens sync keeping `initial_deadline`.
+    model.test_feed_output_unscheduled(
+        2,
+        b"\x1b_Ga=q,f=24,s=1,v=1,i=9;/wAA\x1b\\EF\x1b[14t\x1b[16t",
+    );
+    assert_eq!(model.test_sync_deadline(), Some(initial_deadline));
+    model.flush_events();
+    assert_eq!(
+        std::mem::take(&mut *host.replies.lock().unwrap()),
+        vec![
+            "\x1b[4;100;200t",
+            "\x1b[6;20;10t",
+            "\x1b[8;5;20t",
+            "\x1b_Gi=9;OK\x1b\\",
+        ]
+    );
+    assert_eq!(
+        crate::replay::row_cells(&model.term.lock(), 0).trim_end(),
+        "AB   CD"
+    );
+
+    // Arm the real sync-flush thread: on timeout, `EF` paints and the deferred
+    // `CSI 14 t` / `CSI 16 t` flush in exact order.
+    model.test_arm_sync_flush();
+    assert!(wait_for(Duration::from_secs(2), || {
+        model.test_sync_deadline().is_none()
+    }));
+    model.flush_events();
+    assert_eq!(
+        std::mem::take(&mut *host.replies.lock().unwrap()),
+        vec!["\x1b[4;100;200t", "\x1b[6;20;10t"]
+    );
+    assert_eq!(
+        crate::replay::row_cells(&model.term.lock(), 0).trim_end(),
+        "AB   CDEF"
+    );
+
+    for worker in model.stop_workers() {
+        worker.join().unwrap();
+    }
 }
 
 #[test]

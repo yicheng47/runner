@@ -78,6 +78,15 @@ impl TrackedProcessor {
             self.preceding.wrote_visible = false;
         }
     }
+
+    /// Discard any buffered synchronized update without dispatching it,
+    /// restoring `preceding_char` while keeping `wrote_visible` intact for the
+    /// enclosing chunk's paint tracking.
+    pub fn reset_sync_preserving_paint(&mut self, preceding: Option<char>) {
+        let wrote_visible = self.preceding.wrote_visible;
+        self.restore_preceding_char(preceding);
+        self.preceding.wrote_visible = wrote_visible;
+    }
 }
 
 pub fn serialize<T: EventListener>(term: &Term<T>, unfinished: &[u8]) -> Vec<u8> {
@@ -510,6 +519,12 @@ impl BoundaryScanner {
 
     pub fn unfinished(&self) -> &[u8] {
         self.synchronized.as_deref().unwrap_or(&self.pending)
+    }
+
+    /// Bytes currently held inside an open synchronized update (excluding the
+    /// synthetic `ESC [ ? 2026 h` prefix), matching `vte`'s sync buffer.
+    pub fn sync_held_bytes(&self) -> Option<&[u8]> {
+        self.synchronized.as_deref().map(|s| &s[SYNC_BEGIN.len()..])
     }
 
     pub fn end_sync(&mut self) {

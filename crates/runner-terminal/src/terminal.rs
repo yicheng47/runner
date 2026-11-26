@@ -108,6 +108,8 @@ const SCHEME_SUBSCRIBE: &[u8] = b"\x1b[?2031h";
 const SCHEME_UNSUBSCRIBE: &[u8] = b"\x1b[?2031l";
 const SCHEME_QUERY: &[u8] = b"\x1b[?996n";
 const CELL_SIZE_QUERY: &[u8] = b"\x1b[16t";
+const SYNC_END: &[u8] = b"\x1b[?2026l";
+const VTE_SYNC_BUFFER_SIZE: usize = 0x20_0000;
 const SCHEME_PROBE_UNSUPPORTED: &str = "\x1b[?2031;0$y";
 
 /// `alacritty_terminal` answers `CSI ? u` with every flag the app pushed.
@@ -132,6 +134,7 @@ enum SchemeSequence {
     Unsubscribe,
     Query,
     CellSizeQuery,
+    SyncEnd,
 }
 
 #[derive(Default)]
@@ -155,6 +158,7 @@ fn scan_scheme_sequences(tail: &mut Vec<u8>, chunk: &[u8]) -> Vec<(usize, Scheme
         (SCHEME_UNSUBSCRIBE, SchemeSequence::Unsubscribe),
         (SCHEME_QUERY, SchemeSequence::Query),
         (CELL_SIZE_QUERY, SchemeSequence::CellSizeQuery),
+        (SYNC_END, SchemeSequence::SyncEnd),
     ] {
         for (start, window) in buf.windows(needle.len()).enumerate() {
             let end = start + needle.len();
@@ -296,6 +300,13 @@ struct ParserState {
     /// Last deadline observed from `vte`'s `sync_timeout()`, used to
     /// distinguish an explicit user extension from a synthetic reopen.
     last_vte_deadline: Option<Instant>,
+    /// `preceding_char` at the moment the active synchronized update opened,
+    /// so deferred `CSI 16 t` replay preserves `REP` state.
+    sync_opening_preceding: Option<char>,
+    /// Byte offsets within the active synchronized update's held buffer where
+    /// `CSI 16 t` ended, so replies fire in stream order with `CSI 14 t` when
+    /// the synchronized update flushes.
+    held_csi16: Vec<usize>,
     kitty_scanner: crate::kitty::Scanner,
 }
 
@@ -304,10 +315,25 @@ impl ParserState {
         self.sync_deadline
     }
 
+    fn has_held_csi16(&self) -> bool {
+        self.sync_deadline.is_some() && !self.held_csi16.is_empty()
+    }
+
+    fn would_overflow_sync(&self, next_len: usize) -> bool {
+        self.has_held_csi16()
+            && self.processor.sync_bytes_count().saturating_add(next_len)
+                >= VTE_SYNC_BUFFER_SIZE - 1
+    }
+
+    fn record_held_csi16(&mut self) {
+        self.held_csi16.push(self.processor.sync_bytes_count());
+    }
+
     fn parse_text<H: Handler>(&mut self, handler: &mut H, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
+        let was_sync = self.sync_deadline.is_some();
         self.processor.advance(handler, bytes);
         let vte_deadline = self.processor.sync_timeout().sync_timeout();
         let held = vte_deadline.map(|_| self.processor.sync_bytes_count());
@@ -316,12 +342,63 @@ impl ParserState {
             None => {
                 self.sync_deadline = None;
                 self.last_vte_deadline = None;
+                self.sync_opening_preceding = None;
+                self.held_csi16.clear();
             }
             Some(deadline) => {
+                if !was_sync {
+                    self.sync_opening_preceding = self.processor.preceding_char();
+                }
                 if self.sync_deadline.is_none() || self.last_vte_deadline != Some(deadline) {
                     self.sync_deadline = Some(deadline);
                 }
                 self.last_vte_deadline = Some(deadline);
+            }
+        }
+    }
+
+    /// Flush an open synchronized update that contains deferred `CSI 16 t`
+    /// queries by replaying its buffered bytes in sub-slices split at each
+    /// recorded query offset so `CSI 14 t`, `CSI 16 t`, and `CSI 18 t` replies
+    /// fire in exact stream order.
+    fn flush_sync_with_csi16<H: Handler>(
+        &mut self,
+        handler: &mut H,
+        extra_before_end: &[u8],
+        mut emit_csi16: impl FnMut(),
+    ) {
+        let mut held = self
+            .boundary
+            .sync_held_bytes()
+            .map(<[u8]>::to_vec)
+            .unwrap_or_default();
+        held.extend_from_slice(extra_before_end);
+        let cuts = std::mem::take(&mut self.held_csi16);
+        let opening_preceding = self.sync_opening_preceding.take();
+        self.sync_deadline = None;
+        self.last_vte_deadline = None;
+        self.boundary.end_sync();
+        if !extra_before_end.is_empty() {
+            self.boundary.advance(extra_before_end, None);
+        }
+        self.processor
+            .reset_sync_preserving_paint(opening_preceding);
+        let mut pos = 0usize;
+        for cut in cuts {
+            let cut = cut.min(held.len());
+            if cut > pos {
+                self.processor.advance(handler, &held[pos..cut]);
+                if self.processor.sync_timeout().sync_timeout().is_some() {
+                    self.processor.stop_sync(handler);
+                }
+                pos = cut;
+            }
+            emit_csi16();
+        }
+        if pos < held.len() {
+            self.processor.advance(handler, &held[pos..]);
+            if self.processor.sync_timeout().sync_timeout().is_some() {
+                self.processor.stop_sync(handler);
             }
         }
     }
@@ -333,14 +410,20 @@ impl ParserState {
         &mut self,
         handler: &mut H,
         on_sync_open: impl FnOnce(bool),
+        emit_csi16: impl FnMut(),
     ) -> (Option<Instant>, bool) {
         let saved_deadline = self.sync_deadline;
         if saved_deadline.is_some() {
             on_sync_open(true);
-            self.processor.stop_sync(handler);
-            self.boundary.end_sync();
-            self.sync_deadline = None;
-            self.last_vte_deadline = None;
+            if !self.held_csi16.is_empty() {
+                self.flush_sync_with_csi16(handler, &[], emit_csi16);
+            } else {
+                self.processor.stop_sync(handler);
+                self.boundary.end_sync();
+                self.sync_deadline = None;
+                self.last_vte_deadline = None;
+                self.sync_opening_preceding = None;
+            }
         }
         let emitted_can = if !self.boundary.unfinished().is_empty() {
             // `CAN` (0x18) is a no-op in `Term` and returns `vte` and
@@ -365,19 +448,26 @@ impl ParserState {
         let Some(deadline) = saved_deadline else {
             return;
         };
+        let preceding = self.processor.preceding_char();
         self.processor.advance(handler, BEGIN_SYNC);
         let vte_deadline = self.processor.sync_timeout().sync_timeout();
         let held = vte_deadline.map(|_| self.processor.sync_bytes_count());
         self.boundary.advance(BEGIN_SYNC, held);
         self.sync_deadline = Some(deadline);
         self.last_vte_deadline = vte_deadline;
+        self.sync_opening_preceding = preceding;
     }
 
-    fn finish_sync_timeout<H: Handler>(&mut self, handler: &mut H) {
-        self.processor.stop_sync(handler);
-        self.boundary.end_sync();
-        self.sync_deadline = None;
-        self.last_vte_deadline = None;
+    fn finish_sync_timeout<H: Handler>(&mut self, handler: &mut H, emit_csi16: impl FnMut()) {
+        if !self.held_csi16.is_empty() {
+            self.flush_sync_with_csi16(handler, &[], emit_csi16);
+        } else {
+            self.processor.stop_sync(handler);
+            self.boundary.end_sync();
+            self.sync_deadline = None;
+            self.last_vte_deadline = None;
+            self.sync_opening_preceding = None;
+        }
     }
 }
 
@@ -1054,10 +1144,13 @@ impl TerminalMirror {
                             parser.parse_text(&mut handler, &text);
                         }
                         crate::kitty::ScanItem::Command(raw) => {
-                            let (saved_sync, _) =
-                                parser.prepare_for_graphics_command(&mut handler, |open| {
+                            let (saved_sync, _) = parser.prepare_for_graphics_command(
+                                &mut handler,
+                                |open| {
                                     self.sync_open.store(open, Ordering::Release);
-                                });
+                                },
+                                || {},
+                            );
                             if let Some(prepared) = crate::kitty::PreparedCommand::direct_only(&raw)
                             {
                                 handler.execute_kitty(&prepared, crate::kitty::ExecMode::Mirror);
@@ -1065,10 +1158,13 @@ impl TerminalMirror {
                             parser.reopen_sync_after_graphics(&mut handler, saved_sync);
                         }
                         crate::kitty::ScanItem::Discarded => {
-                            let (saved_sync, _) =
-                                parser.prepare_for_graphics_command(&mut handler, |open| {
+                            let (saved_sync, _) = parser.prepare_for_graphics_command(
+                                &mut handler,
+                                |open| {
                                     self.sync_open.store(open, Ordering::Release);
-                                });
+                                },
+                                || {},
+                            );
                             parser.reopen_sync_after_graphics(&mut handler, saved_sync);
                         }
                     }
@@ -1175,7 +1271,7 @@ impl TerminalMirror {
                     cell_size,
                     None,
                 );
-                parser.finish_sync_timeout(&mut handler);
+                parser.finish_sync_timeout(&mut handler, || {});
                 handler.finish()
             };
             self.apply_scroll_tracking(&mut term, display_offset, moved);
@@ -1950,6 +2046,36 @@ impl TerminalMirror {
     pub fn test_feed(&self, seq: u64, bytes: &[u8]) {
         if self.feed_output(seq, bytes) {
             self.wake_viewers();
+        }
+    }
+    /// Feed output synchronously on the caller's thread without arming the
+    /// background sync-flush thread, so mid-sync assertions cannot race the
+    /// 150 ms timer.
+    pub fn test_feed_unscheduled(&self, seq: u64, bytes: &[u8]) {
+        let mut sequence = self.sequence.lock().unwrap();
+        if seq <= sequence.last {
+            return;
+        }
+        let now = Instant::now();
+        sequence.last = seq;
+        sequence.last_output_seq = seq;
+        sequence.last_output_at = Some(now);
+        if chunk_indicates_tui_ready(bytes) {
+            sequence.tui_ready_seq = sequence.tui_ready_seq.max(seq);
+        }
+        let mut parser = self.parser.lock().unwrap();
+        self.apply_output_chunk(&mut sequence, &mut parser, seq, bytes);
+        drop(parser);
+        drop(sequence);
+        self.wake_viewers();
+    }
+    /// Arm the background sync-flush thread for an already-open synchronized
+    /// update created via [`Self::test_feed_unscheduled`].
+    pub fn test_arm_sync_flush(&self) {
+        let mut parser = self.parser.lock().unwrap();
+        if parser.sync_deadline().is_some() && !std::mem::replace(&mut parser.flush_scheduled, true)
+        {
+            let _ = self.sync_flush.send(());
         }
     }
     pub fn sync_state(&self) -> (Option<Instant>, usize, bool) {

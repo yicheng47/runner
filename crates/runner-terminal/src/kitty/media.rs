@@ -5,8 +5,12 @@ use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use super::command::{Command, Compression, Control, Medium, Transmission};
-use super::image::{ImageError, MAX_DIMENSION, MAX_TRANSMITTED_BYTES};
+#[cfg(any(test, all(unix, not(target_os = "android"))))]
+use super::command::Compression;
+use super::command::{Command, Control, Medium, Transmission};
+#[cfg(any(test, all(unix, not(target_os = "android"))))]
+use super::image::MAX_DIMENSION;
+use super::image::{ImageError, MAX_TRANSMITTED_BYTES};
 
 /// Allowed temporary-directory roots for `t=t` (temporary file) transmissions.
 #[derive(Debug, Clone, Default)]
@@ -157,17 +161,23 @@ fn read_file(
         return Err(ImageError::InvalidData);
     }
 
-    #[cfg(not(windows))]
-    if raw_path.contains(&0) {
-        return Err(ImageError::InvalidData);
-    }
-
-    let path_str = std::str::from_utf8(raw_path).map_err(|_| ImageError::InvalidData)?;
+    #[cfg(unix)]
+    let mut file = {
+        use std::os::unix::ffi::OsStrExt as _;
+        if raw_path.contains(&0) {
+            return Err(ImageError::InvalidData);
+        }
+        let path = Path::new(std::ffi::OsStr::from_bytes(raw_path));
+        open_readonly_nonblocking(path).map_err(|_| ImageError::InvalidData)?
+    };
 
     #[cfg(windows)]
-    windows_path::check_path(path_str).map_err(|_| ImageError::InvalidData)?;
+    let mut file = {
+        let path_str = std::str::from_utf8(raw_path).map_err(|_| ImageError::InvalidData)?;
+        windows_path::check_path(path_str).map_err(|_| ImageError::InvalidData)?;
+        open_readonly_nonblocking(Path::new(path_str)).map_err(|_| ImageError::InvalidData)?
+    };
 
-    let mut file = open_readonly_nonblocking(path_str).map_err(|_| ImageError::InvalidData)?;
     let canonical = canonical_path_from_file(&file).map_err(|_| ImageError::InvalidData)?;
 
     validate_canonical_path(&canonical)?;
@@ -177,8 +187,7 @@ fn read_file(
         if !is_path_in_any_dir(&temp_dirs.allowed_roots(), &canonical) {
             return Err(ImageError::TemporaryFileNotInTempDir);
         }
-        let canon_str = canonical.to_string_lossy();
-        if !canon_str.contains("tty-graphics-protocol") {
+        if !contains_temp_marker(&canonical) {
             return Err(ImageError::TemporaryFileNotNamedCorrectly);
         }
         delete_path = Some(canonical.clone());
@@ -226,7 +235,7 @@ fn read_file(
 }
 
 #[cfg(unix)]
-fn open_readonly_nonblocking(path: &str) -> std::io::Result<File> {
+fn open_readonly_nonblocking(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt as _;
     std::fs::OpenOptions::new()
         .read(true)
@@ -235,8 +244,25 @@ fn open_readonly_nonblocking(path: &str) -> std::io::Result<File> {
 }
 
 #[cfg(windows)]
-fn open_readonly_nonblocking(path: &str) -> std::io::Result<File> {
+fn open_readonly_nonblocking(path: &Path) -> std::io::Result<File> {
     File::open(path)
+}
+
+fn contains_temp_marker(path: &Path) -> bool {
+    const MARKER: &[u8] = b"tty-graphics-protocol";
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        path.as_os_str()
+            .as_bytes()
+            .windows(MARKER.len())
+            .any(|window| window == MARKER)
+    }
+    #[cfg(windows)]
+    {
+        let _ = MARKER;
+        path.to_string_lossy().contains("tty-graphics-protocol")
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -305,25 +331,30 @@ fn canonicalize_dir(dir: &Path) -> std::io::Result<PathBuf> {
     #[cfg(windows)]
     {
         let s = canon.to_string_lossy().into_owned();
-        return Ok(PathBuf::from(strip_windows_verbatim_drive(&s)));
+        Ok(PathBuf::from(strip_windows_verbatim_drive(&s)))
     }
     #[cfg(not(windows))]
-    Ok(canon)
+    {
+        Ok(canon)
+    }
 }
 
 fn validate_canonical_path(path: &Path) -> Result<(), ImageError> {
-    let text = path.to_str().ok_or(ImageError::InvalidData)?;
     #[cfg(windows)]
     {
+        let text = path.to_str().ok_or(ImageError::InvalidData)?;
         windows_path::check_canonical_path(text).map_err(|_| ImageError::InvalidData)
     }
     #[cfg(not(windows))]
     {
-        if text == "/proc"
-            || text.starts_with("/proc/")
-            || text == "/sys"
-            || text.starts_with("/sys/")
-            || ((text == "/dev" || text.starts_with("/dev/")) && !text.starts_with("/dev/shm/"))
+        use std::os::unix::ffi::OsStrExt as _;
+        let bytes = path.as_os_str().as_bytes();
+        if bytes == b"/proc"
+            || bytes.starts_with(b"/proc/")
+            || bytes == b"/sys"
+            || bytes.starts_with(b"/sys/")
+            || ((bytes == b"/dev" || bytes.starts_with(b"/dev/"))
+                && !bytes.starts_with(b"/dev/shm/"))
         {
             return Err(ImageError::InvalidData);
         }
@@ -332,12 +363,33 @@ fn validate_canonical_path(path: &Path) -> Result<(), ImageError> {
 }
 
 fn is_path_in_any_dir(dirs: &[PathBuf], path: &Path) -> bool {
-    let Some(path_str) = path.to_str() else {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        let path_bytes = path.as_os_str().as_bytes();
+        dirs.iter()
+            .any(|dir| is_unix_path_in_dir(dir.as_os_str().as_bytes(), path_bytes))
+    }
+    #[cfg(windows)]
+    {
+        let Some(path_str) = path.to_str() else {
+            return false;
+        };
+        dirs.iter()
+            .filter_map(|d| d.to_str())
+            .any(|dir| is_path_in_dir(dir, path_str))
+    }
+}
+
+#[cfg(unix)]
+fn is_unix_path_in_dir(dir: &[u8], path: &[u8]) -> bool {
+    if dir.is_empty() || !path.starts_with(dir) {
         return false;
-    };
-    dirs.iter()
-        .filter_map(|d| d.to_str())
-        .any(|dir| is_path_in_dir(dir, path_str))
+    }
+    if path.len() == dir.len() || dir.ends_with(b"/") {
+        return true;
+    }
+    path[dir.len()] == b'/'
 }
 
 /// True if `path` equals `dir` or lies beneath it on a separator boundary.
@@ -361,16 +413,11 @@ pub fn is_path_in_dir(dir: &str, path: &str) -> bool {
     }
     #[cfg(not(windows))]
     {
-        if !path.starts_with(dir) {
-            return false;
-        }
-        if path.len() == dir.len() || dir.ends_with('/') {
-            return true;
-        }
-        path.as_bytes()[dir.len()] == b'/'
+        is_unix_path_in_dir(dir.as_bytes(), path.as_bytes())
     }
 }
 
+#[cfg(any(test, all(unix, not(target_os = "android"))))]
 fn valid_shm_name(name: &[u8], name_max: usize) -> bool {
     if name.is_empty() || name.len() > name_max || name == b"/" {
         return false;
@@ -378,12 +425,14 @@ fn valid_shm_name(name: &[u8], name_max: usize) -> bool {
     !name.contains(&0)
 }
 
+#[cfg(any(test, all(unix, not(target_os = "android"))))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ShmRange {
     start: usize,
     end: usize,
 }
 
+#[cfg(any(test, all(unix, not(target_os = "android"))))]
 fn shared_memory_range(t: &Transmission, stat_size: usize) -> Result<ShmRange, ImageError> {
     let expected_size = match t.format.raw_bpp() {
         None => None,
@@ -415,6 +464,46 @@ fn shared_memory_range(t: &Transmission, stat_size: usize) -> Result<ShmRange, I
     })
 }
 
+#[cfg(all(unix, not(target_os = "android"), not(target_os = "macos")))]
+enum PreadError {
+    Unsupported,
+    Invalid,
+}
+
+#[cfg(all(unix, not(target_os = "android"), not(target_os = "macos")))]
+fn pread_exact(fd: libc::c_int, offset: usize, len: usize) -> Result<Vec<u8>, PreadError> {
+    let mut buf = vec![0u8; len];
+    let mut filled = 0usize;
+    while filled < len {
+        let off = libc::off_t::try_from(offset + filled).map_err(|_| PreadError::Invalid)?;
+        let n = unsafe {
+            libc::pread(
+                fd,
+                buf[filled..].as_mut_ptr().cast::<libc::c_void>(),
+                len - filled,
+                off,
+            )
+        };
+        if n > 0 {
+            filled += n as usize;
+        } else if n == 0 {
+            // Writer truncated the shm object before `len` bytes: fail cleanly
+            // without risking SIGBUS from a shared memory mapping.
+            return Err(PreadError::Invalid);
+        } else {
+            let err = std::io::Error::last_os_error();
+            match err.raw_os_error() {
+                Some(libc::EINTR) => continue,
+                Some(libc::ESPIPE | libc::ENOTSUP | libc::EINVAL) if filled == 0 => {
+                    return Err(PreadError::Unsupported);
+                }
+                _ => return Err(PreadError::Invalid),
+            }
+        }
+    }
+    Ok(buf)
+}
+
 #[cfg(all(unix, not(target_os = "android")))]
 fn read_shared_memory(t: &Transmission, name: &[u8]) -> Result<Vec<u8>, ImageError> {
     use std::ffi::CString;
@@ -429,20 +518,21 @@ fn read_shared_memory(t: &Transmission, name: &[u8]) -> Result<Vec<u8>, ImageErr
     if fd < 0 {
         return Err(ImageError::InvalidData);
     }
-
-    struct ShmGuard {
-        fd: libc::c_int,
-        name: CString,
+    // Unlink immediately after opening so the name is never left behind or
+    // reused concurrently, matching Ghostty `graphics_image.zig`.
+    unsafe {
+        libc::shm_unlink(c_name.as_ptr());
     }
-    impl Drop for ShmGuard {
+
+    struct FdGuard(libc::c_int);
+    impl Drop for FdGuard {
         fn drop(&mut self) {
             unsafe {
-                libc::close(self.fd);
-                libc::shm_unlink(self.name.as_ptr());
+                libc::close(self.0);
             }
         }
     }
-    let _guard = ShmGuard { fd, name: c_name };
+    let _guard = FdGuard(fd);
 
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstat(fd, &mut stat) } != 0 || stat.st_size <= 0 {
@@ -452,6 +542,20 @@ fn read_shared_memory(t: &Transmission, name: &[u8]) -> Result<Vec<u8>, ImageErr
     let range = shared_memory_range(t, stat_size)?;
     if range.start == range.end {
         return Ok(Vec::new());
+    }
+
+    // On Linux and other Unixes that support `pread` on shm fds, copy via
+    // `pread` so a concurrent writer truncating the shm object returns EOF
+    // instead of raising SIGBUS in runnerd. On macOS, XNU's `DTYPE_PSXSHM`
+    // forbids both `pread` and resizing an already-sized object, so `mmap` is
+    // both required and safe from truncation faults.
+    #[cfg(not(target_os = "macos"))]
+    {
+        match pread_exact(fd, range.start, range.end - range.start) {
+            Ok(bytes) => return Ok(bytes),
+            Err(PreadError::Unsupported) => {}
+            Err(PreadError::Invalid) => return Err(ImageError::InvalidData),
+        }
     }
 
     let map = unsafe {
@@ -833,8 +937,13 @@ mod tests {
         .unwrap();
         assert_eq!(prep.media, Some(Err(ImageError::InvalidData)));
 
-        // Shared memory round-trip and unlink.
-        let shm_name = format!("/rnr-k-{}-{}", std::process::id(), 1);
+        // Shared memory round-trip and immediate unlink.
+        static SHM_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+        let shm_name = format!(
+            "/rnr-k-{}-{}",
+            std::process::id(),
+            SHM_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
         let c_name = std::ffi::CString::new(shm_name.as_str()).unwrap();
         let fd = unsafe {
             libc::shm_open(
@@ -843,41 +952,109 @@ mod tests {
                 0o600 as libc::c_uint,
             )
         };
-        if fd >= 0 {
-            let payload = [11u8, 22, 33];
-            assert_eq!(
-                unsafe { libc::ftruncate(fd, payload.len() as libc::off_t) },
-                0
-            );
-            let map = unsafe {
-                libc::mmap(
-                    std::ptr::null_mut(),
-                    payload.len(),
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_SHARED,
-                    fd,
-                    0,
-                )
-            };
-            assert_ne!(map, libc::MAP_FAILED);
-            unsafe {
-                std::ptr::copy_nonoverlapping(payload.as_ptr(), map.cast::<u8>(), payload.len());
-                libc::munmap(map, payload.len());
-                libc::close(fd);
-            }
-
-            let shm_b64 = b64(shm_name.as_bytes());
-            let prep = prepare_command(
-                format!("a=t,t=s,f=24,s=1,v=1,i=1;{shm_b64}").as_bytes(),
-                &temp_dirs,
+        assert!(
+            fd >= 0,
+            "shm_open({shm_name}) failed: {}",
+            std::io::Error::last_os_error()
+        );
+        let payload = [11u8, 22, 33];
+        assert_eq!(
+            unsafe { libc::ftruncate(fd, payload.len() as libc::off_t) },
+            0
+        );
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                payload.len(),
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd,
+                0,
             )
-            .unwrap();
-            assert_eq!(prep.media, Some(Ok(payload.to_vec())));
+        };
+        assert_ne!(map, libc::MAP_FAILED);
+        unsafe {
+            std::ptr::copy_nonoverlapping(payload.as_ptr(), map.cast::<u8>(), payload.len());
+            libc::munmap(map, payload.len());
+            libc::close(fd);
+        }
 
-            // Must have been unlinked.
-            let reopened =
-                unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDONLY, 0 as libc::c_uint) };
-            assert!(reopened < 0, "shm object should have been unlinked");
+        let shm_b64 = b64(shm_name.as_bytes());
+        let prep = prepare_command(
+            format!("a=t,t=s,f=24,s=1,v=1,i=1;{shm_b64}").as_bytes(),
+            &temp_dirs,
+        )
+        .unwrap();
+        assert_eq!(prep.media, Some(Ok(payload.to_vec())));
+
+        // Must have been unlinked immediately on open.
+        let reopened =
+            unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDONLY, 0 as libc::c_uint) };
+        assert!(reopened < 0, "shm object should have been unlinked");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_non_utf8_paths_are_handled_as_raw_bytes() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        // Byte-level validation accepts valid non-UTF-8 paths and blocks /dev /proc /sys.
+        let ok_non_utf8 = PathBuf::from(OsStr::from_bytes(
+            b"/tmp/tty-graphics-protocol-\xff\xfe.bin",
+        ));
+        assert_eq!(validate_canonical_path(&ok_non_utf8), Ok(()));
+        assert!(contains_temp_marker(&ok_non_utf8));
+        assert!(is_path_in_any_dir(&[PathBuf::from("/tmp")], &ok_non_utf8));
+        assert!(!is_path_in_any_dir(
+            &[PathBuf::from("/var/tmp")],
+            &ok_non_utf8
+        ));
+
+        let blocked_non_utf8 = PathBuf::from(OsStr::from_bytes(b"/dev/tty-\xff"));
+        assert_eq!(
+            validate_canonical_path(&blocked_non_utf8),
+            Err(ImageError::InvalidData)
+        );
+        let shm_non_utf8 = PathBuf::from(OsStr::from_bytes(
+            b"/dev/shm/tty-graphics-protocol-\xff.bin",
+        ));
+        assert_eq!(validate_canonical_path(&shm_non_utf8), Ok(()));
+
+        // End-to-end file read & t=t unlink for a non-UTF-8 filename on filesystems
+        // that allow arbitrary byte names (e.g. Linux ext4/tmpfs). macOS APFS rejects
+        // invalid UTF-8 filenames at creation with EILSEQ.
+        let dir = tempfile::tempdir().unwrap();
+        let temp_dirs = TempDirs::explicit(vec![dir.path().to_path_buf()]);
+        let mut raw_f = dir.path().as_os_str().as_bytes().to_vec();
+        raw_f.extend_from_slice(b"/img-\xff.bin");
+        let path_f = PathBuf::from(OsStr::from_bytes(&raw_f));
+        match std::fs::write(&path_f, [9u8, 8, 7]) {
+            Ok(()) => {
+                let payload = b64(&raw_f);
+                let prep = prepare_command(
+                    format!("a=t,t=f,f=24,s=1,v=1,i=1;{payload}").as_bytes(),
+                    &temp_dirs,
+                )
+                .unwrap();
+                assert_eq!(prep.media, Some(Ok(vec![9, 8, 7])));
+                assert!(path_f.exists());
+
+                let mut raw_t = dir.path().as_os_str().as_bytes().to_vec();
+                raw_t.extend_from_slice(b"/tty-graphics-protocol-\xff.bin");
+                let path_t = PathBuf::from(OsStr::from_bytes(&raw_t));
+                std::fs::write(&path_t, [4u8, 5, 6]).unwrap();
+                let payload_t = b64(&raw_t);
+                let prep_t = prepare_command(
+                    format!("a=t,t=t,f=24,s=1,v=1,i=2;{payload_t}").as_bytes(),
+                    &temp_dirs,
+                )
+                .unwrap();
+                assert_eq!(prep_t.media, Some(Ok(vec![4, 5, 6])));
+                assert!(!path_t.exists());
+            }
+            Err(err) if cfg!(target_os = "macos") && err.raw_os_error() == Some(libc::EILSEQ) => {}
+            Err(err) => panic!("unexpected error creating non-UTF-8 test file: {err}"),
         }
     }
 }

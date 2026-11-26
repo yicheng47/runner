@@ -805,6 +805,63 @@ fn parse_animation_compose(kv: &Kv) -> AnimationFrameComposition {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn format_normalized_transmission_header(
+    image_id: u32,
+    format: Format,
+    width: u32,
+    height: u32,
+    compression: Compression,
+    transient: bool,
+    display: Option<&Display>,
+) -> String {
+    let mut header = String::with_capacity(96);
+    let action = if display.is_some() { 'T' } else { 't' };
+    let _ = write!(
+        header,
+        "\x1b_Ga={action},t=d,i={image_id},f={},s={width},v={height}",
+        format.code()
+    );
+    if compression == Compression::Zlib {
+        header.push_str(",o=z");
+    }
+    if transient {
+        header.push_str(",N=1");
+    }
+    if let Some(d) = display {
+        write_display_keys(&mut header, d);
+    }
+    header.push_str(",q=2;");
+    header
+}
+
+/// Exact serialized byte length of a normalized `a=t` or `a=T` transmission.
+#[allow(clippy::too_many_arguments)]
+pub fn normalized_transmission_len(
+    image_id: u32,
+    format: Format,
+    width: u32,
+    height: u32,
+    compression: Compression,
+    transient: bool,
+    display: Option<&Display>,
+    payload_len: usize,
+) -> usize {
+    let header = format_normalized_transmission_header(
+        image_id,
+        format,
+        width,
+        height,
+        compression,
+        transient,
+        display,
+    );
+    header
+        .len()
+        .saturating_add(base64_encoded_len(payload_len))
+        .saturating_add(2)
+}
+
 /// Encode a self-contained normalized `a=t` or `a=T` transmission command for
 /// mirrors and snapshots.
 #[allow(clippy::too_many_arguments)]
@@ -819,26 +876,15 @@ pub fn encode_normalized_transmission(
     display: Option<&Display>,
     payload: &[u8],
 ) {
-    let mut header = String::with_capacity(96);
-    let action = if display.is_some() { 'T' } else { 't' };
-    let _ = write!(
-        header,
-        "\x1b_Ga={action},t=d,i={image_id},f={}",
-        format.code()
+    let header = format_normalized_transmission_header(
+        image_id,
+        format,
+        width,
+        height,
+        compression,
+        transient,
+        display,
     );
-    if format != Format::Png {
-        let _ = write!(header, ",s={width},v={height}");
-    }
-    if compression == Compression::Zlib {
-        header.push_str(",o=z");
-    }
-    if transient {
-        header.push_str(",N=1");
-    }
-    if let Some(d) = display {
-        write_display_keys(&mut header, d);
-    }
-    header.push_str(",q=2;");
     let encoded_len = base64_encoded_len(payload.len());
     out.reserve(header.len() + encoded_len + 2);
     out.extend_from_slice(header.as_bytes());

@@ -34,16 +34,43 @@ pub struct StreamHandler<'a, T> {
     cell_size: CellSize,
     reply: Option<&'a mut dyn FnMut(String)>,
     initial_alt_screen: bool,
+    track_find_scroll: bool,
     lines: usize,
 }
 
 impl<'a, T: EventListener> StreamHandler<'a, T> {
+    /// Handler that tracks find scroll-up rows (used by `TerminalMirror` and
+    /// find tests).
     pub fn new(
         term: &'a mut Term<T>,
         graphics: &'a mut TerminalGraphics,
         sgr_pixels: &'a AtomicBool,
         cell_size: CellSize,
         reply: Option<&'a mut dyn FnMut(String)>,
+    ) -> Self {
+        Self::with_find_scroll(term, graphics, sgr_pixels, cell_size, reply, true)
+    }
+
+    /// Handler for `TerminalModel`, which does not need find scroll-row
+    /// tracking and takes a zero-overhead pass-through fast path when no
+    /// placements are active.
+    pub fn new_model(
+        term: &'a mut Term<T>,
+        graphics: &'a mut TerminalGraphics,
+        sgr_pixels: &'a AtomicBool,
+        cell_size: CellSize,
+        reply: Option<&'a mut dyn FnMut(String)>,
+    ) -> Self {
+        Self::with_find_scroll(term, graphics, sgr_pixels, cell_size, reply, false)
+    }
+
+    fn with_find_scroll(
+        term: &'a mut Term<T>,
+        graphics: &'a mut TerminalGraphics,
+        sgr_pixels: &'a AtomicBool,
+        cell_size: CellSize,
+        reply: Option<&'a mut dyn FnMut(String)>,
+        track_find_scroll: bool,
     ) -> Self {
         let initial_alt_screen = term.mode().contains(TermMode::ALT_SCREEN);
         Self {
@@ -53,8 +80,14 @@ impl<'a, T: EventListener> StreamHandler<'a, T> {
             cell_size,
             reply,
             initial_alt_screen,
+            track_find_scroll,
             lines: 0,
         }
+    }
+
+    #[inline]
+    fn has_placements(&self) -> bool {
+        !self.graphics.primary.placements().is_empty() || !self.graphics.alt.placements().is_empty()
     }
 
     /// Lines moved up on the initial screen, or `None` when the parse ended on
@@ -82,7 +115,7 @@ impl<'a, T: EventListener> StreamHandler<'a, T> {
     }
 
     /// Measure how many rows alacritty moved `Line(0)` upward, updating find's
-    /// scroll counter when still on the initial screen.
+    /// scroll counter when tracking find and still on the initial screen.
     fn measure_and_advance_find(&mut self, row0_before: usize) -> usize {
         let term = &*self.term;
         if row_address(term, Line(0)) == row0_before {
@@ -97,7 +130,9 @@ impl<'a, T: EventListener> StreamHandler<'a, T> {
             Some(line) => line as usize,
             None => reused().map_or(screen_lines as usize, |line| (screen_lines - line) as usize),
         };
-        if term.mode().contains(TermMode::ALT_SCREEN) == self.initial_alt_screen {
+        if self.track_find_scroll
+            && term.mode().contains(TermMode::ALT_SCREEN) == self.initial_alt_screen
+        {
             self.lines += moved;
         }
         moved
@@ -359,21 +394,55 @@ macro_rules! forward {
 impl<T: EventListener> Handler for StreamHandler<'_, T> {
     #[inline]
     fn input(&mut self, c: char) {
+        if !self.has_placements() {
+            if !self.track_find_scroll {
+                <Term<T> as Handler>::input(self.term, c);
+                return;
+            }
+            let row0 = row_address(self.term, Line(0));
+            <Term<T> as Handler>::input(self.term, c);
+            self.measure_and_advance_find(row0);
+            return;
+        }
         self.wrap_scrolling_call(|term| <Term<T> as Handler>::input(term, c));
     }
 
     #[inline]
     fn put_tab(&mut self, count: u16) {
+        if !self.has_placements() {
+            if !self.track_find_scroll {
+                <Term<T> as Handler>::put_tab(self.term, count);
+                return;
+            }
+            let row0 = row_address(self.term, Line(0));
+            <Term<T> as Handler>::put_tab(self.term, count);
+            self.measure_and_advance_find(row0);
+            return;
+        }
         self.wrap_scrolling_call(|term| <Term<T> as Handler>::put_tab(term, count));
     }
 
     #[inline]
     fn linefeed(&mut self) {
+        if !self.has_placements() {
+            if !self.track_find_scroll {
+                <Term<T> as Handler>::linefeed(self.term);
+                return;
+            }
+            let row0 = row_address(self.term, Line(0));
+            <Term<T> as Handler>::linefeed(self.term);
+            self.measure_and_advance_find(row0);
+            return;
+        }
         let region = self.term.snapshot_state().scroll_region.clone();
         let scrolled = self.term.grid().cursor.point.line + 1 == region.end;
-        let row0 = row_address(self.term, Line(0));
+        let row0 = self
+            .track_find_scroll
+            .then(|| row_address(self.term, Line(0)));
         <Term<T> as Handler>::linefeed(self.term);
-        self.measure_and_advance_find(row0);
+        if let Some(row0) = row0 {
+            self.measure_and_advance_find(row0);
+        }
         if scrolled {
             self.apply_scroll_up_graphics(region, 1);
         }
@@ -381,11 +450,25 @@ impl<T: EventListener> Handler for StreamHandler<'_, T> {
 
     #[inline]
     fn newline(&mut self) {
+        if !self.has_placements() {
+            if !self.track_find_scroll {
+                <Term<T> as Handler>::newline(self.term);
+                return;
+            }
+            let row0 = row_address(self.term, Line(0));
+            <Term<T> as Handler>::newline(self.term);
+            self.measure_and_advance_find(row0);
+            return;
+        }
         let region = self.term.snapshot_state().scroll_region.clone();
         let scrolled = self.term.grid().cursor.point.line + 1 == region.end;
-        let row0 = row_address(self.term, Line(0));
+        let row0 = self
+            .track_find_scroll
+            .then(|| row_address(self.term, Line(0)));
         <Term<T> as Handler>::newline(self.term);
-        self.measure_and_advance_find(row0);
+        if let Some(row0) = row0 {
+            self.measure_and_advance_find(row0);
+        }
         if scrolled {
             self.apply_scroll_up_graphics(region, 1);
         }
@@ -393,11 +476,25 @@ impl<T: EventListener> Handler for StreamHandler<'_, T> {
 
     #[inline]
     fn scroll_up(&mut self, lines: usize) {
+        if !self.has_placements() {
+            if !self.track_find_scroll {
+                <Term<T> as Handler>::scroll_up(self.term, lines);
+                return;
+            }
+            let row0 = row_address(self.term, Line(0));
+            <Term<T> as Handler>::scroll_up(self.term, lines);
+            self.measure_and_advance_find(row0);
+            return;
+        }
         let region = self.term.snapshot_state().scroll_region.clone();
         let clamped = lines.min((region.end - region.start).0.max(0) as usize);
-        let row0 = row_address(self.term, Line(0));
+        let row0 = self
+            .track_find_scroll
+            .then(|| row_address(self.term, Line(0)));
         <Term<T> as Handler>::scroll_up(self.term, lines);
-        self.measure_and_advance_find(row0);
+        if let Some(row0) = row0 {
+            self.measure_and_advance_find(row0);
+        }
         if clamped > 0 {
             self.apply_scroll_up_graphics(region, clamped);
         }
@@ -405,6 +502,10 @@ impl<T: EventListener> Handler for StreamHandler<'_, T> {
 
     #[inline]
     fn scroll_down(&mut self, lines: usize) {
+        if !self.has_placements() {
+            <Term<T> as Handler>::scroll_down(self.term, lines);
+            return;
+        }
         let region = self.term.snapshot_state().scroll_region.clone();
         let clamped = lines.min((region.end - region.start).0.max(0) as usize);
         <Term<T> as Handler>::scroll_down(self.term, lines);
@@ -415,6 +516,10 @@ impl<T: EventListener> Handler for StreamHandler<'_, T> {
 
     #[inline]
     fn reverse_index(&mut self) {
+        if !self.has_placements() {
+            <Term<T> as Handler>::reverse_index(self.term);
+            return;
+        }
         let region = self.term.snapshot_state().scroll_region.clone();
         let scrolled = self.term.grid().cursor.point.line == region.start;
         <Term<T> as Handler>::reverse_index(self.term);
@@ -425,6 +530,16 @@ impl<T: EventListener> Handler for StreamHandler<'_, T> {
 
     #[inline]
     fn delete_lines(&mut self, lines: usize) {
+        if !self.has_placements() {
+            if !self.track_find_scroll {
+                <Term<T> as Handler>::delete_lines(self.term, lines);
+                return;
+            }
+            let row0 = row_address(self.term, Line(0));
+            <Term<T> as Handler>::delete_lines(self.term, lines);
+            self.measure_and_advance_find(row0);
+            return;
+        }
         let region = self.term.snapshot_state().scroll_region.clone();
         let origin = self.term.grid().cursor.point.line;
         let screen_lines = self.term.screen_lines();
@@ -435,9 +550,13 @@ impl<T: EventListener> Handler for StreamHandler<'_, T> {
         } else {
             0
         };
-        let row0 = row_address(self.term, Line(0));
+        let row0 = self
+            .track_find_scroll
+            .then(|| row_address(self.term, Line(0)));
         <Term<T> as Handler>::delete_lines(self.term, lines);
-        self.measure_and_advance_find(row0);
+        if let Some(row0) = row0 {
+            self.measure_and_advance_find(row0);
+        }
         if effective > 0 {
             let is_alt = self.term.mode().contains(TermMode::ALT_SCREEN);
             let topmost = self.term.topmost_line().0;
@@ -451,17 +570,32 @@ impl<T: EventListener> Handler for StreamHandler<'_, T> {
 
     #[inline]
     fn clear_screen(&mut self, mode: ClearMode) {
+        if self.graphics.is_empty() {
+            if !self.track_find_scroll {
+                <Term<T> as Handler>::clear_screen(self.term, mode);
+                return;
+            }
+            let row0 = row_address(self.term, Line(0));
+            <Term<T> as Handler>::clear_screen(self.term, mode);
+            self.measure_and_advance_find(row0);
+            return;
+        }
         let is_alt = self.term.mode().contains(TermMode::ALT_SCREEN);
-        let row0 = row_address(self.term, Line(0));
+        let row0 = self
+            .track_find_scroll
+            .then(|| row_address(self.term, Line(0)));
         let clear_all = matches!(mode, ClearMode::All);
         let clear_saved = matches!(mode, ClearMode::Saved);
-        let pushed_on_all = if clear_all && !is_alt {
-            clear_viewport_positions(self.term)
-        } else {
-            0
-        };
+        let pushed_on_all =
+            if clear_all && !is_alt && !self.graphics.primary.placements().is_empty() {
+                clear_viewport_positions(self.term)
+            } else {
+                0
+            };
         <Term<T> as Handler>::clear_screen(self.term, mode);
-        self.measure_and_advance_find(row0);
+        if let Some(row0) = row0 {
+            self.measure_and_advance_find(row0);
+        }
 
         if clear_all {
             let screen_lines = self.term.screen_lines();
@@ -504,7 +638,7 @@ impl<T: EventListener> Handler for StreamHandler<'_, T> {
 
         <Term<T> as Handler>::set_private_mode(self.term, mode);
 
-        if entering_alt {
+        if entering_alt && !self.graphics.alt.is_empty() {
             let screen_lines = self.term.screen_lines();
             let screen_cols = self.term.columns();
             self.graphics

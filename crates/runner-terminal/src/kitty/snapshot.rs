@@ -5,10 +5,12 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::command::{
-    base64_encoded_len, encode_normalized_transmission, write_display_keys, CursorMovement, Display,
+    encode_normalized_transmission, normalized_transmission_len, write_display_keys,
+    CursorMovement, Display,
 };
 use super::storage::{
-    CellSize, ImageStorage, Placement, PlacementKey, PlacementLocation, TerminalGraphics,
+    last_row_i64, CellSize, ImageStorage, Placement, PlacementKey, PlacementLocation,
+    TerminalGraphics, PARENT_CHAIN_LIMIT,
 };
 
 /// Upper bound on bytes graphics may occupy inside a snapshot (48 MiB).
@@ -160,7 +162,7 @@ impl SnapshotGraphicsPlan {
         for &root_key in &plan.virtual_roots {
             if let Some(&placement) = storage.placements().get(&root_key) {
                 emit_placement_command(out, root_key, &placement);
-                emit_children(out, plan, root_key);
+                emit_children(out, plan, root_key, 0);
             }
         }
     }
@@ -179,7 +181,7 @@ impl SnapshotGraphicsPlan {
             if let PlacementLocation::Pin(pin) = placement.location {
                 let _ = write!(out, "\x1b[{}G", pin.column + 1);
                 emit_placement_command(out, key, &placement);
-                emit_children(out, plan, key);
+                emit_children(out, plan, key, 0);
             }
         }
         out.push_str("\x1b8");
@@ -203,7 +205,7 @@ fn collect_candidates(
     for (&key, placement) in storage.placements() {
         let visible = match placement.location {
             PlacementLocation::Pin(pin) => {
-                if pin.line >= 0 && pin.line < screen_lines as i32 {
+                if pin.line >= 0 && i64::from(pin.line) < screen_lines as i64 {
                     true
                 } else if pin.line < 0 {
                     storage
@@ -220,7 +222,7 @@ fn collect_candidates(
                 storage
                     .resolved_anchor(placement)
                     .map(|anchor| {
-                        if anchor.line >= 0 && anchor.line < screen_lines as i32 {
+                        if anchor.line >= 0 && i64::from(anchor.line) < screen_lines as i64 {
                             true
                         } else if anchor.line < 0 {
                             storage
@@ -228,7 +230,7 @@ fn collect_candidates(
                                 .map(|img| {
                                     let (_, rows) =
                                         placement.grid_size(img.width, img.height, cell);
-                                    anchor.line.saturating_add(rows.saturating_sub(1) as i32) >= 0
+                                    last_row_i64(anchor.line, rows) >= 0
                                 })
                                 .unwrap_or(false)
                         } else {
@@ -244,26 +246,23 @@ fn collect_candidates(
             has_visible.insert(key.image_id);
         }
 
-        // Only count placements that would actually be emitted.
-        let emittable = match placement.location {
+        // Measure the exact serialized bytes of the placement that will actually
+        // be emitted (including clipped crop keys and per-row cursor wrappers).
+        let cost = match placement.location {
             PlacementLocation::Pin(pin) => {
-                pin.line < screen_lines as i32
-                    && (pin.line >= first_line
-                        || clipped_to_first_line(
-                            storage,
-                            key.image_id,
-                            *placement,
-                            first_line,
-                            cell,
-                        )
-                        .is_some())
+                if i64::from(pin.line) >= screen_lines as i64 {
+                    None
+                } else {
+                    clipped_to_first_line(storage, key.image_id, *placement, first_line, cell)
+                        .map(|adjusted| exact_pin_placement_upper_bytes(key, &adjusted))
+                }
             }
-            PlacementLocation::Virtual | PlacementLocation::Relative(_) => true,
+            PlacementLocation::Virtual | PlacementLocation::Relative(_) => {
+                Some(exact_placement_command_bytes(key, placement))
+            }
         };
-        if emittable {
-            // Conservative upper bound covering `\x1b7`, `\x1b[colG`, `a=p...`, `\x1b8`.
-            let est = estimate_placement_bytes(key, placement);
-            *placement_bytes.entry(key.image_id).or_default() += est;
+        if let Some(bytes) = cost {
+            *placement_bytes.entry(key.image_id).or_default() += bytes;
         }
     }
 
@@ -275,7 +274,7 @@ fn collect_candidates(
             (true, false) => 1,
             (false, false) => 0,
         };
-        let tx_cost = estimate_transmission_bytes(img);
+        let tx_cost = exact_transmission_bytes(img);
         let p_cost = placement_bytes.get(&img.id).copied().unwrap_or(0);
         out.push(Candidate {
             screen,
@@ -295,16 +294,35 @@ struct Candidate {
     cost: usize,
 }
 
-fn estimate_transmission_bytes(img: &super::image::StoredImage) -> usize {
-    // Header `\x1b_Ga=t,t=d,i=...,f=...,s=...,v=...,o=z,N=1,q=2;` (< 80 bytes) + base64 + `\x1b\\`.
-    80 + base64_encoded_len(img.encoded_data.len()) + 2
+fn exact_transmission_bytes(img: &super::image::StoredImage) -> usize {
+    normalized_transmission_len(
+        img.id,
+        img.wire_format,
+        img.width,
+        img.height,
+        img.compression,
+        img.transient,
+        None,
+        img.encoded_data.len(),
+    )
 }
 
-fn estimate_placement_bytes(key: PlacementKey, placement: &Placement) -> usize {
+fn exact_pin_placement_upper_bytes(key: PlacementKey, adjusted: &Placement) -> usize {
+    let mut tmp = String::new();
+    let col = match adjusted.location {
+        PlacementLocation::Pin(pin) => pin.column,
+        _ => 0,
+    };
+    let _ = write!(tmp, "\x1b7\x1b[{}G", col + 1);
+    emit_placement_command(&mut tmp, key, adjusted);
+    tmp.push_str("\x1b8");
+    tmp.len()
+}
+
+fn exact_placement_command_bytes(key: PlacementKey, placement: &Placement) -> usize {
     let mut tmp = String::new();
     emit_placement_command(&mut tmp, key, placement);
-    // Add room for `\x1b7\x1b[99999G` and `\x1b8` around row placements.
-    tmp.len() + 20
+    tmp.len()
 }
 
 fn clipped_to_first_line(
@@ -322,10 +340,11 @@ fn clipped_to_first_line(
     }
     let img = storage.image_by_id(image_id)?;
     let (_, rows) = placement.grid_size(img.width, img.height, cell);
-    let clip = (first_line - pin.line) as u32;
-    if rows == 0 || clip >= rows {
+    let clip_i64 = i64::from(first_line) - i64::from(pin.line);
+    if rows == 0 || clip_i64 >= i64::from(rows) {
         return None;
     }
+    let clip = clip_i64 as u32;
     if !placement.clip_top(img.width, img.height, cell, clip, rows) {
         return None;
     }
@@ -356,14 +375,14 @@ fn build_screen_plan(
     plan.image_ids = image_ids.into_iter().map(|(_, id)| id).collect();
 
     // Collect root placements (Pin and Virtual) whose image was kept.
-    let mut emitted_keys: HashSet<PlacementKey> = HashSet::new();
+    let mut emitted_depths: HashMap<PlacementKey, usize> = HashMap::new();
     for (&key, &placement) in storage.placements() {
         if !kept_images.contains(&key.image_id) {
             continue;
         }
         match placement.location {
             PlacementLocation::Pin(pin) => {
-                if pin.line >= screen_lines as i32 {
+                if i64::from(pin.line) >= screen_lines as i64 {
                     continue;
                 }
                 let Some(adjusted) =
@@ -376,11 +395,11 @@ fn build_screen_plan(
                     _ => unreachable!(),
                 };
                 plan.by_line.entry(line).or_default().push((key, adjusted));
-                emitted_keys.insert(key);
+                emitted_depths.insert(key, 0);
             }
             PlacementLocation::Virtual => {
                 plan.virtual_roots.push(key);
-                emitted_keys.insert(key);
+                emitted_depths.insert(key, 0);
             }
             PlacementLocation::Relative(_) => {}
         }
@@ -403,21 +422,24 @@ fn build_screen_plan(
         });
     }
 
-    // Attach relative placements whose entire ancestor chain was kept.
+    // Attach relative placements whose entire ancestor chain was kept, bounded
+    // to `PARENT_CHAIN_LIMIT` links to stay consistent with `resolve_chain`.
     loop {
         let mut added = false;
         for (&key, &placement) in storage.placements() {
-            if emitted_keys.contains(&key) || !kept_images.contains(&key.image_id) {
+            if emitted_depths.contains_key(&key) || !kept_images.contains(&key.image_id) {
                 continue;
             }
             if let PlacementLocation::Relative(rel) = placement.location {
-                if emitted_keys.contains(&rel.parent) {
-                    plan.children
-                        .entry(rel.parent)
-                        .or_default()
-                        .push((key, placement));
-                    emitted_keys.insert(key);
-                    added = true;
+                if let Some(&parent_depth) = emitted_depths.get(&rel.parent) {
+                    if parent_depth < PARENT_CHAIN_LIMIT {
+                        plan.children
+                            .entry(rel.parent)
+                            .or_default()
+                            .push((key, placement));
+                        emitted_depths.insert(key, parent_depth + 1);
+                        added = true;
+                    }
                 }
             }
         }
@@ -442,13 +464,16 @@ fn build_screen_plan(
     plan
 }
 
-fn emit_children(out: &mut String, plan: &ScreenPlan, parent: PlacementKey) {
+fn emit_children(out: &mut String, plan: &ScreenPlan, parent: PlacementKey, depth: usize) {
+    if depth >= PARENT_CHAIN_LIMIT {
+        return;
+    }
     let Some(children) = plan.children.get(&parent) else {
         return;
     };
     for &(child_key, child_placement) in children {
         emit_placement_command(out, child_key, &child_placement);
-        emit_children(out, plan, child_key);
+        emit_children(out, plan, child_key, depth + 1);
     }
 }
 

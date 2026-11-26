@@ -329,9 +329,7 @@ impl Placement {
         if cols == 0 || rows == 0 {
             return None;
         }
-        let bottom_line = pin
-            .line
-            .saturating_add((rows - 1).min(i32::MAX as u32) as i32);
+        let bottom_line = last_row_i64(pin.line, rows).min(i64::from(i32::MAX)) as i32;
         let right_col = pin
             .column
             .saturating_add((cols - 1) as usize)
@@ -343,6 +341,10 @@ impl Placement {
             right_col,
         })
     }
+}
+
+pub(crate) fn last_row_i64(top_line: i32, rows: u32) -> i64 {
+    i64::from(top_line) + i64::from(rows.saturating_sub(1))
 }
 
 fn scale_dimension(value: u32, numerator: u32, denominator: u32) -> u32 {
@@ -403,7 +405,10 @@ pub struct ImageStorage {
     images: HashMap<u32, StoredImage>,
     placements: HashMap<PlacementKey, Placement>,
     pub loading: Option<LoadingImage>,
+    /// Decoded RGB/RGBA byte count enforced against the per-screen limit.
     total_bytes: usize,
+    /// Actual retained encoded payload bytes enforced against `GlobalImageBudget`.
+    encoded_bytes: usize,
     total_limit: usize,
     budget: Option<Arc<GlobalImageBudget>>,
     /// Mirror mode applies stream deletes and only evicts at the safety cap
@@ -414,9 +419,10 @@ pub struct ImageStorage {
 impl Drop for ImageStorage {
     fn drop(&mut self) {
         if let Some(budget) = &self.budget {
-            budget.release(self.total_bytes);
+            budget.release(self.encoded_bytes);
         }
         self.total_bytes = 0;
+        self.encoded_bytes = 0;
     }
 }
 
@@ -431,6 +437,7 @@ impl ImageStorage {
             placements: HashMap::new(),
             loading: None,
             total_bytes: 0,
+            encoded_bytes: 0,
             total_limit,
             budget,
             mirror_mode: false,
@@ -449,6 +456,10 @@ impl ImageStorage {
 
     pub fn total_bytes(&self) -> usize {
         self.total_bytes
+    }
+
+    pub fn encoded_bytes(&self) -> usize {
+        self.encoded_bytes
     }
 
     pub fn total_limit(&self) -> usize {
@@ -511,9 +522,10 @@ impl ImageStorage {
         self.placements.clear();
         self.images.clear();
         if let Some(budget) = &self.budget {
-            budget.release(self.total_bytes);
+            budget.release(self.encoded_bytes);
         }
         self.total_bytes = 0;
+        self.encoded_bytes = 0;
         if had {
             self.mark_mutated();
         }
@@ -537,44 +549,48 @@ impl ImageStorage {
         id
     }
 
-    /// Add or replace an image, enforcing both the per-screen limit and the
-    /// optional daemon-wide `GlobalImageBudget`. Returns the evicted image IDs
-    /// in eviction order so `exec` can emit normalized deletes before the new
-    /// transmission.
+    /// Add or replace an image, enforcing both the per-screen decoded limit and
+    /// the optional daemon-wide encoded `GlobalImageBudget`. Returns the
+    /// evicted image IDs in eviction order so `exec` can emit normalized
+    /// deletes before the new transmission.
     pub fn add_image(&mut self, mut image: StoredImage) -> Result<Vec<EvictedImage>, ImageError> {
-        let new_len = image.storage_bytes();
-        if new_len > self.total_limit {
+        let new_decoded = image.storage_bytes();
+        let new_encoded = image.encoded_bytes();
+        if new_decoded > self.total_limit {
             return Err(ImageError::OutOfMemory);
         }
-        let old_len = self
+        let (old_decoded, old_encoded) = self
             .images
             .get(&image.id)
-            .map_or(0, StoredImage::storage_bytes);
-        let evictable = self.total_bytes.saturating_sub(old_len);
-        let screen_excess = (self.total_bytes - old_len)
-            .saturating_add(new_len)
+            .map_or((0, 0), |img| (img.storage_bytes(), img.encoded_bytes()));
+        let evictable_decoded = self.total_bytes.saturating_sub(old_decoded);
+        let evictable_encoded = self.encoded_bytes.saturating_sub(old_encoded);
+        let screen_excess = (self.total_bytes - old_decoded)
+            .saturating_add(new_decoded)
             .saturating_sub(self.total_limit);
 
         let victims = if let Some(budget) = self.budget.clone() {
+            if new_encoded > budget.limit {
+                return Err(ImageError::OutOfMemory);
+            }
             loop {
                 let current = budget.used.load(Ordering::Acquire);
                 let global_excess = current
-                    .saturating_sub(old_len)
-                    .saturating_add(new_len)
+                    .saturating_sub(old_encoded)
+                    .saturating_add(new_encoded)
                     .saturating_sub(budget.limit);
-                let needed = screen_excess.max(global_excess);
-                if needed > evictable {
+                if screen_excess > evictable_decoded || global_excess > evictable_encoded {
                     return Err(ImageError::OutOfMemory);
                 }
-                let (plan, evicted_sum) = if needed == 0 {
+                let (plan, evicted_encoded) = if screen_excess == 0 && global_excess == 0 {
                     (Vec::new(), 0)
                 } else {
-                    self.plan_evictions(needed, Some(image.id))
+                    self.plan_evictions(screen_excess, global_excess, Some(image.id))
                         .ok_or(ImageError::OutOfMemory)?
                 };
-                let freed = old_len + evicted_sum;
-                if new_len > freed {
-                    let net_add = new_len - freed;
+                let freed_encoded = old_encoded + evicted_encoded;
+                if new_encoded > freed_encoded {
+                    let net_add = new_encoded - freed_encoded;
                     if current.saturating_add(net_add) > budget.limit {
                         continue;
                     }
@@ -591,14 +607,14 @@ impl ImageStorage {
                         break plan;
                     }
                 } else {
-                    let net_sub = freed - new_len;
+                    let net_sub = freed_encoded - new_encoded;
                     budget.used.fetch_sub(net_sub, Ordering::AcqRel);
                     break plan;
                 }
             }
         } else if screen_excess > 0 {
             let (plan, _) = self
-                .plan_evictions(screen_excess, Some(image.id))
+                .plan_evictions(screen_excess, 0, Some(image.id))
                 .ok_or(ImageError::OutOfMemory)?;
             plan
         } else {
@@ -611,6 +627,7 @@ impl ImageStorage {
             let orphaned_other = self.remove_orphans_tracking_other(victim_id, false);
             if let Some(removed) = self.images.remove(&victim_id) {
                 self.total_bytes -= removed.storage_bytes();
+                self.encoded_bytes -= removed.encoded_bytes();
             }
             evicted_report.push(EvictedImage {
                 id: victim_id,
@@ -622,13 +639,15 @@ impl ImageStorage {
             self.remove_placements_by_image_id(image.id);
             self.remove_orphans(false);
             self.total_bytes -= old.storage_bytes();
+            self.encoded_bytes -= old.encoded_bytes();
         }
 
         self.mark_mutated();
         image.placement_count = 0;
         image.generation = self.generation;
         image.transmission = self.generation;
-        self.total_bytes += new_len;
+        self.total_bytes += new_decoded;
+        self.encoded_bytes += new_encoded;
         self.images.insert(image.id, image);
 
         Ok(evicted_report)
@@ -636,14 +655,24 @@ impl ImageStorage {
 
     /// Read-only eviction plan matching Ghostty `evictImageExcept`:
     /// unused before placed, transient before non-transient, oldest generation
-    /// first, then lowest image ID.
-    fn plan_evictions(&self, req: usize, exclude_id: Option<u32>) -> Option<(Vec<u32>, usize)> {
+    /// first, then lowest image ID. Selects victims until both per-screen
+    /// decoded excess and daemon-wide encoded excess are satisfied.
+    fn plan_evictions(
+        &self,
+        req_decoded: usize,
+        req_encoded: usize,
+        exclude_id: Option<u32>,
+    ) -> Option<(Vec<u32>, usize)> {
+        if req_decoded == 0 && req_encoded == 0 {
+            return Some((Vec::new(), 0));
+        }
         #[derive(Clone, Copy)]
         struct Candidate {
             priority: u8,
             generation: u64,
             id: u32,
-            bytes: usize,
+            decoded_bytes: usize,
+            encoded_bytes: usize,
         }
         let mut candidates: Vec<Candidate> = self
             .images
@@ -656,18 +685,21 @@ impl ImageStorage {
                     priority,
                     generation: img.generation,
                     id: img.id,
-                    bytes: img.storage_bytes(),
+                    decoded_bytes: img.storage_bytes(),
+                    encoded_bytes: img.encoded_bytes(),
                 }
             })
             .collect();
         candidates.sort_by_key(|c| (c.priority, c.generation, c.id));
         let mut chosen = Vec::new();
-        let mut sum = 0usize;
+        let mut sum_decoded = 0usize;
+        let mut sum_encoded = 0usize;
         for c in candidates {
             chosen.push(c.id);
-            sum += c.bytes;
-            if sum >= req {
-                return Some((chosen, sum));
+            sum_decoded += c.decoded_bytes;
+            sum_encoded += c.encoded_bytes;
+            if sum_decoded >= req_decoded && sum_encoded >= req_encoded {
+                return Some((chosen, sum_encoded));
             }
         }
         None
@@ -759,7 +791,35 @@ impl ImageStorage {
             depth += 1;
             key = rel.parent;
         }
+        if let Some(child_key) = child {
+            if self.placements.contains_key(&child_key) {
+                let descendant_depth = self.max_descendant_depth(child_key);
+                if depth.saturating_add(descendant_depth) > PARENT_CHAIN_LIMIT {
+                    return Err(ParentError::TooDeep);
+                }
+            }
+        }
         Ok(parent)
+    }
+
+    fn max_descendant_depth(&self, root: PlacementKey) -> usize {
+        let mut max_depth = 0usize;
+        let mut frontier = vec![(root, 0usize)];
+        while let Some((node, depth)) = frontier.pop() {
+            if depth > PARENT_CHAIN_LIMIT {
+                return depth;
+            }
+            for (&key, placement) in &self.placements {
+                if let PlacementLocation::Relative(rel) = placement.location {
+                    if rel.parent == node && key != root {
+                        let next_depth = depth + 1;
+                        max_depth = max_depth.max(next_depth);
+                        frontier.push((key, next_depth));
+                    }
+                }
+            }
+        }
+        max_depth
     }
 
     pub fn resolve_chain(&self, rel: RelativeLocation) -> Option<ResolvedChain> {
@@ -848,10 +908,12 @@ impl ImageStorage {
             return;
         }
         if let Some(img) = self.images.remove(&image_id) {
-            let bytes = img.storage_bytes();
-            self.total_bytes -= bytes;
+            let decoded = img.storage_bytes();
+            let encoded = img.encoded_bytes();
+            self.total_bytes -= decoded;
+            self.encoded_bytes -= encoded;
             if let Some(budget) = &self.budget {
-                budget.release(bytes);
+                budget.release(encoded);
             }
         }
     }
@@ -1264,8 +1326,8 @@ impl ImageStorage {
         if lines == 0 || self.placements.is_empty() {
             return;
         }
-        let delta = i32::try_from(lines).unwrap_or(i32::MAX);
-        let bottom = screen_lines as i32 - 1;
+        let delta = i64::try_from(lines).unwrap_or(i64::from(i32::MAX));
+        let bottom = screen_lines as i64 - 1;
         let mut doomed = Vec::new();
         let mut mutated = false;
         let mut moved = false;
@@ -1274,18 +1336,20 @@ impl ImageStorage {
             let PlacementLocation::Pin(pin) = placement.location else {
                 continue;
             };
-            if pin.line < 0 || pin.line > bottom {
+            let pin_line = i64::from(pin.line);
+            if pin_line < 0 || pin_line > bottom {
                 continue;
             }
-            let new_y = pin.line.saturating_add(delta);
+            let new_y = pin_line + delta;
             if new_y > bottom {
                 doomed.push(key);
                 mutated = true;
                 continue;
             }
+            let new_y_i32 = new_y as i32;
             let Some(img) = self.images.get(&key.image_id) else {
                 placement.location = PlacementLocation::Pin(PinLocation {
-                    line: new_y,
+                    line: new_y_i32,
                     column: pin.column,
                 });
                 moved = true;
@@ -1294,29 +1358,29 @@ impl ImageStorage {
             let (_, rows) = placement.grid_size(img.width, img.height, cell);
             if rows == 0 {
                 placement.location = PlacementLocation::Pin(PinLocation {
-                    line: new_y,
+                    line: new_y_i32,
                     column: pin.column,
                 });
                 moved = true;
                 continue;
             }
-            let bottom_clip = (new_y.saturating_add(rows as i32 - 1) - bottom).max(0) as u32;
-            if bottom_clip >= rows {
+            let bottom_clip = (new_y + i64::from(rows - 1) - bottom).max(0);
+            if bottom_clip >= i64::from(rows) {
                 doomed.push(key);
                 mutated = true;
             } else if bottom_clip > 0 {
-                if !placement.clip_bottom(img.width, img.height, cell, bottom_clip, rows) {
+                if !placement.clip_bottom(img.width, img.height, cell, bottom_clip as u32, rows) {
                     doomed.push(key);
                 } else {
                     placement.location = PlacementLocation::Pin(PinLocation {
-                        line: new_y,
+                        line: new_y_i32,
                         column: pin.column,
                     });
                 }
                 mutated = true;
             } else {
                 placement.location = PlacementLocation::Pin(PinLocation {
-                    line: new_y,
+                    line: new_y_i32,
                     column: pin.column,
                 });
                 moved = true;
@@ -1343,6 +1407,9 @@ impl ImageStorage {
         if delta == 0 || self.placements.is_empty() {
             return;
         }
+        let top64 = i64::from(top);
+        let bottom64 = i64::from(bottom);
+        let delta64 = i64::from(delta);
         let mut doomed = Vec::new();
         let mut mutated = false;
         let mut moved = false;
@@ -1361,19 +1428,19 @@ impl ImageStorage {
             if cols == 0 || rows == 0 {
                 continue;
             }
-            let end_line = pin.line.saturating_add(rows as i32 - 1);
-            if end_line > bottom {
+            let end_line = last_row_i64(pin.line, rows);
+            if end_line > bottom64 {
                 // Straddles the bottom margin: do not move.
                 continue;
             }
-            let new_y = pin.line.saturating_add(delta);
-            let top_clip = (top - new_y).max(0) as u32;
-            let bottom_clip = (new_y.saturating_add(rows as i32 - 1) - bottom).max(0) as u32;
-            if top_clip >= rows || bottom_clip >= rows {
+            let new_y = i64::from(pin.line) + delta64;
+            let top_clip = (top64 - new_y).max(0);
+            let bottom_clip = (new_y + i64::from(rows - 1) - bottom64).max(0);
+            if top_clip >= i64::from(rows) || bottom_clip >= i64::from(rows) {
                 doomed.push(key);
                 mutated = true;
             } else if top_clip > 0 {
-                if !placement.clip_top(img.width, img.height, cell, top_clip, rows) {
+                if !placement.clip_top(img.width, img.height, cell, top_clip as u32, rows) {
                     doomed.push(key);
                 } else {
                     placement.location = PlacementLocation::Pin(PinLocation {
@@ -1383,18 +1450,18 @@ impl ImageStorage {
                 }
                 mutated = true;
             } else if bottom_clip > 0 {
-                if !placement.clip_bottom(img.width, img.height, cell, bottom_clip, rows) {
+                if !placement.clip_bottom(img.width, img.height, cell, bottom_clip as u32, rows) {
                     doomed.push(key);
                 } else {
                     placement.location = PlacementLocation::Pin(PinLocation {
-                        line: new_y,
+                        line: new_y as i32,
                         column: pin.column,
                     });
                 }
                 mutated = true;
             } else {
                 placement.location = PlacementLocation::Pin(PinLocation {
-                    line: new_y,
+                    line: new_y as i32,
                     column: pin.column,
                 });
                 moved = true;
@@ -1418,6 +1485,7 @@ impl ImageStorage {
         if self.placements.is_empty() {
             return;
         }
+        let topmost64 = i64::from(topmost_line);
         let doomed: Vec<PlacementKey> = self
             .placements
             .iter()
@@ -1430,8 +1498,8 @@ impl ImageStorage {
                     .get(&key.image_id)
                     .map(|img| p.grid_size(img.width, img.height, cell).1)
                     .unwrap_or(0);
-                let last_row = pin.line.saturating_add(rows.saturating_sub(1) as i32);
-                (last_row < topmost_line).then_some(key)
+                let last_row = last_row_i64(pin.line, rows);
+                (last_row < topmost64).then_some(key)
             })
             .collect();
         if doomed.is_empty() {
@@ -1458,14 +1526,18 @@ impl ImageStorage {
         if self.placements.is_empty() {
             return;
         }
+        let shift64 = i64::from(line_shift);
+        let topmost64 = i64::from(topmost_line);
+        let new_rows64 = new_rows as i64;
         let mut doomed = Vec::new();
         for (&key, p) in &mut self.placements {
             let PlacementLocation::Pin(pin) = p.location else {
                 continue;
             };
-            let new_line = pin.line.saturating_add(line_shift);
+            let new_line = i64::from(pin.line) + shift64;
+            let clamped_line = new_line.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
             p.location = PlacementLocation::Pin(PinLocation {
-                line: new_line,
+                line: clamped_line,
                 column: pin.column,
             });
             let rows = self
@@ -1473,8 +1545,8 @@ impl ImageStorage {
                 .get(&key.image_id)
                 .map(|img| p.grid_size(img.width, img.height, cell).1)
                 .unwrap_or(0);
-            let last_row = new_line.saturating_add(rows.saturating_sub(1) as i32);
-            if pin.column >= new_cols || new_line >= new_rows as i32 || last_row < topmost_line {
+            let last_row = new_line + i64::from(rows.saturating_sub(1));
+            if pin.column >= new_cols || new_line >= new_rows64 || last_row < topmost64 {
                 doomed.push(key);
             }
         }

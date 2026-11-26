@@ -124,6 +124,16 @@ impl Parser {
         self.shell_finished = false;
     }
 
+    /// Abort any in-progress escape, OSC or control-string sequence without
+    /// discarding already-recorded status entries or shell prompt state.
+    pub(crate) fn abort_pending(&mut self) {
+        self.mode = Mode::Ground;
+        self.payload.clear();
+        self.length = 0;
+        self.discard_report = false;
+        self.release_activity();
+    }
+
     fn release_activity(&mut self) {
         self.activity_bytes += self.pending_bytes;
         self.pending_bytes = 0;

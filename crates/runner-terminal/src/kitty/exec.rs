@@ -375,7 +375,10 @@ fn load_and_add_image<H: ExecuteHost>(
     };
 
     let display = loading.display.take();
-    let image = loading.complete(storage.total_limit())?;
+    let image = match mode {
+        ExecMode::Authoritative => loading.complete(storage.total_limit())?,
+        ExecMode::Mirror => loading.complete_normalized_mirror(storage.total_limit())?,
+    };
     let evicted = storage.add_image(image.clone())?;
     if mode == ExecMode::Authoritative {
         emit_evictions(&evicted, normalized);
