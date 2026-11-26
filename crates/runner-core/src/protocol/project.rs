@@ -83,12 +83,17 @@ pub fn deepest_folder_of<'a>(
 }
 
 fn lexical_components(path: &str) -> Vec<&str> {
-    let root = if path.starts_with("\\\\") || path.starts_with("//") {
-        Some("//")
+    let (root, path) = if let Some(rest) = path.strip_prefix(r"\\?\") {
+        match rest.get(..4) {
+            Some(unc) if unc.eq_ignore_ascii_case(r"UNC\") => (Some("//"), &rest[4..]),
+            _ => (None, rest),
+        }
+    } else if path.starts_with("\\\\") || path.starts_with("//") {
+        (Some("//"), path)
     } else if path.starts_with(['/', '\\']) {
-        Some("/")
+        (Some("/"), path)
     } else {
-        None
+        (None, path)
     };
     root.into_iter()
         .chain(
@@ -124,6 +129,17 @@ mod tests {
         assert_eq!(find("/tmp/scratch"), None);
         assert_eq!(find("Users/jason/repos/yicheng47/runner"), None);
         assert_eq!(find("/nas/share/media"), None);
+        assert_eq!(find(r"\\?\C:\host\work\app"), Some(2));
+        assert_eq!(find(r"\\?\UNC\nas\share\media"), Some(3));
+        let verbatim = [r"\\?\C:\host\work", r"\\?\UNC\nas\share"];
+        assert_eq!(
+            deepest_folder_of(verbatim, r"C:\host\work\app", false),
+            Some(0)
+        );
+        assert_eq!(
+            deepest_folder_of(verbatim, r"\\nas\share\media", false),
+            Some(1)
+        );
     }
 
     #[test]

@@ -1491,6 +1491,7 @@
 "client.folders_on" = "Folders on {computer}"
 "client.folder_choices" = "Projects and recent"
 "client.folder_parent" = "Parent"
+"client.folder_drives" = "Drives"
 "client.folder_loading" = "Loading folders…"
 "client.folder_failed" = "{computer} couldn’t list this folder."
 "client.folder_empty" = "No folders inside. You can use this one."

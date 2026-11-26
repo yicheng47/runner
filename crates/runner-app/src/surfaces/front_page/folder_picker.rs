@@ -75,6 +75,8 @@ pub(crate) struct FolderPicker {
     requested: Option<String>,
     page: Option<FolderPage>,
     parent: Option<String>,
+    drives: Vec<String>,
+    drive_list: bool,
     selected: usize,
     return_focus: Option<FocusHandle>,
     loading: bool,
@@ -111,6 +113,8 @@ impl FolderPicker {
             requested: None,
             page: None,
             parent: None,
+            drives: Vec::new(),
+            drive_list: false,
             selected: 0,
             return_focus: None,
             loading: false,
@@ -212,6 +216,7 @@ impl FolderPicker {
                 .map(|page| page.path.clone());
         }
         self.browsing = true;
+        self.drive_list = false;
         self.requested = path.clone();
         self.page = None;
         self.loading = true;
@@ -230,6 +235,7 @@ impl FolderPicker {
                     Ok(page) => {
                         picker.requested = Some(page.path.clone());
                         picker.parent = page.parent.clone();
+                        picker.drives = page.drives.clone();
                         picker.page = Some(page);
                     }
                     Err(_) => picker.failed = true,
@@ -262,9 +268,10 @@ impl FolderPicker {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum FolderAction {
     Choices,
+    Drives,
     Load(Option<String>),
     Choose(String),
 }
@@ -282,9 +289,15 @@ impl FolderPicker {
                 .collect();
         }
         let mut actions = vec![FolderAction::Choices];
-        if let Some(parent) = &self.parent {
-            actions.push(FolderAction::Load(Some(parent.clone())));
+        if self.drive_list {
+            actions.extend(
+                self.drives
+                    .iter()
+                    .map(|drive| FolderAction::Load(Some(drive.clone()))),
+            );
+            return actions;
         }
+        actions.extend(self.parent_action());
         if self.failed {
             actions.push(FolderAction::Load(self.requested.clone()));
         }
@@ -300,6 +313,15 @@ impl FolderPicker {
         }
         actions
     }
+    fn parent_action(&self) -> Option<FolderAction> {
+        if self.drive_list {
+            return None;
+        }
+        match &self.parent {
+            Some(parent) => Some(FolderAction::Load(Some(parent.clone()))),
+            None => (!self.drives.is_empty()).then_some(FolderAction::Drives),
+        }
+    }
     fn activate(&mut self, action: FolderAction, window: &mut Window, cx: &mut Context<Self>) {
         if self.loading && action != FolderAction::Choices {
             return;
@@ -309,6 +331,12 @@ impl FolderPicker {
                 self.generation += 1;
                 self.loading = false;
                 self.browsing = false;
+                self.drive_list = false;
+                self.selected = 0;
+                cx.notify();
+            }
+            FolderAction::Drives => {
+                self.drive_list = true;
                 self.selected = 0;
                 cx.notify();
             }
@@ -389,32 +417,48 @@ impl Render for FolderPicker {
                 FolderAction::Choices,
                 cx,
             ));
-            let path = self
-                .page
-                .as_ref()
-                .map(|page| page.path.as_str())
-                .or(self.requested.as_deref())
-                .unwrap_or_default();
+            let path: SharedString = if self.drive_list {
+                crate::i18n::text("client.folder_drives").into()
+            } else {
+                self.page
+                    .as_ref()
+                    .map(|page| page.path.as_str())
+                    .or(self.requested.as_deref())
+                    .unwrap_or_default()
+                    .to_owned()
+                    .into()
+            };
             rows.push(
                 div()
                     .px_2()
                     .py_1()
                     .text_size(theme::text_meta())
                     .text_color(theme::muted())
-                    .child(path.to_owned())
+                    .child(path)
                     .into_any_element(),
             );
-            if let Some(parent) = self.parent.clone() {
+            if let Some(parent) = self.parent_action() {
                 rows.push(self.row(
                     "parent".into(),
                     crate::i18n::text("client.folder_parent").into(),
                     None,
                     "arrow-up.svg",
-                    FolderAction::Load(Some(parent)),
+                    parent,
                     cx,
                 ));
             }
-            if self.loading {
+            if self.drive_list {
+                for (index, drive) in self.drives.iter().enumerate() {
+                    rows.push(self.row(
+                        format!("drive-{index}"),
+                        drive.clone(),
+                        None,
+                        "folder.svg",
+                        FolderAction::Load(Some(drive.clone())),
+                        cx,
+                    ));
+                }
+            } else if self.loading {
                 rows.push(
                     div()
                         .debug_selector(|| "HOST_FOLDER_LOADING".into())
@@ -579,7 +623,7 @@ impl Render for FolderPicker {
             let path = self
                 .page
                 .as_ref()
-                .filter(|_| !self.failed)
+                .filter(|_| !self.failed && !self.drive_list)
                 .map(|page| page.path.clone());
             content = content.child(
                 div().debug_selector(|| "HOST_FOLDER_USE".into()).child(
@@ -741,6 +785,90 @@ mod tests {
                 })
             })
             .unwrap();
+    }
+
+    #[test]
+    fn parent_of_a_windows_drive_root_lists_the_host_drives() {
+        let _theme = crate::theme_snapshot::ThemeGuard::new();
+        let temp = tempfile::tempdir().unwrap();
+        let mut cx = TestAppContext::single();
+        let (store, fake, _) = fixture(&mut cx, temp.path());
+        enable_front_page(&fake);
+        let window = add_window(&mut cx, &store, temp.path(), "drive-folders");
+        window.update(&mut cx, choose_host).unwrap();
+        cx.run_until_parked();
+        let picker = window
+            .update(&mut cx, |root, _, cx| {
+                let input = cx.new(|cx| TextField::new(cx.focus_handle(), "", "", true));
+                let client = root.front_page_client(cx);
+                cx.new(|cx| {
+                    FolderPicker::new(client, "Host".into(), "windows".into(), input, vec![], cx)
+                })
+            })
+            .unwrap();
+        picker.update(&mut cx, |picker, cx| {
+            picker.set_anchor(
+                Bounds {
+                    origin: point(px(40.), px(40.)),
+                    size: size(px(360.), px(32.)),
+                },
+                cx,
+            )
+        });
+        let drives = serde_json::json!(["C:\\", "D:\\"]);
+        fake.queue_result(
+            "folders",
+            Ok(serde_json::json!({"path":"C:\\","parent":null,"folders":["Users"],"drives":drives})),
+        );
+        fake.queue_result(
+            "folders",
+            Ok(serde_json::json!({"path":"D:\\","parent":null,"folders":["Work"],"drives":drives})),
+        );
+        let window = cx.add_window(|_, _| PickerHost(picker.clone()));
+        window
+            .update(&mut cx, |_, window, cx| {
+                picker.update(cx, |picker, cx| picker.browse(window, cx))
+            })
+            .unwrap();
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.run_until_parked();
+        let actions = picker.read_with(&visual, |picker, _| picker.keyboard_actions());
+        assert_eq!(actions[1], FolderAction::Drives);
+        assert!(actions.contains(&FolderAction::Choose("C:\\".into())));
+
+        let parent = visual.debug_bounds("HOST_FOLDER_ROW:parent").unwrap();
+        visual.simulate_click(parent.center(), Default::default());
+        visual.run_until_parked();
+        assert_eq!(
+            picker.read_with(&visual, |picker, _| picker.keyboard_actions()),
+            [
+                FolderAction::Choices,
+                FolderAction::Load(Some("C:\\".into())),
+                FolderAction::Load(Some("D:\\".into())),
+            ]
+        );
+        assert!(visual.debug_bounds("HOST_FOLDER_ROW:parent").is_none());
+        let use_folder = visual.debug_bounds("HOST_FOLDER_USE").unwrap();
+        visual.simulate_click(use_folder.center(), Default::default());
+        visual.run_until_parked();
+        picker.read_with(&visual, |picker, cx| {
+            assert!(picker.open);
+            assert!(picker.input.read(cx).text().is_empty());
+        });
+
+        let d = visual.debug_bounds("HOST_FOLDER_ROW:drive-1").unwrap();
+        visual.simulate_click(d.center(), Default::default());
+        visual.run_until_parked();
+        let requests = crate::surfaces::remote_client::tests::action_trace(&fake, "folders");
+        assert_eq!(requests.last().unwrap()["path"], "D:\\");
+        assert!(visual.debug_bounds("HOST_FOLDER_ROW:parent").is_some());
+        let use_folder = visual.debug_bounds("HOST_FOLDER_USE").unwrap();
+        visual.simulate_click(use_folder.center(), Default::default());
+        visual.run_until_parked();
+        picker.read_with(&visual, |picker, cx| {
+            assert!(!picker.open);
+            assert_eq!(picker.input.read(cx).text(), "D:\\");
+        });
     }
 
     #[test]

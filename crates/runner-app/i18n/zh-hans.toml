@@ -1491,6 +1491,7 @@
 "client.folders_on" = "{computer} 上的文件夹"
 "client.folder_choices" = "项目和最近"
 "client.folder_parent" = "上一级"
+"client.folder_drives" = "驱动器"
 "client.folder_loading" = "正在加载文件夹…"
 "client.folder_failed" = "{computer} 无法列出此文件夹。"
 "client.folder_empty" = "没有子文件夹。你可以使用此文件夹。"

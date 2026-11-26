@@ -555,6 +555,8 @@ pub struct FolderPage {
     pub path: String,
     pub parent: Option<String>,
     pub folders: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub drives: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
