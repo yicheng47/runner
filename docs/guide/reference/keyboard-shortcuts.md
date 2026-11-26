@@ -14,7 +14,7 @@ In macOS terminal panes, **Settings → Terminal → Option as Meta key** defaul
 | --- | --- | --- |
 | New window | ⇧⌘N | Ctrl+Shift+N |
 | New tab: show the launcher page; the tab is created when something starts | ⌘N | Ctrl+N |
-| New terminal; fill the focused empty pane or create a tab | ⌘T | Ctrl+Shift+T |
+| New terminal: use the open launcher or focused empty pane's folder, or open a new tab in home | ⌘T | Ctrl+Shift+T |
 | New mission: show the launcher page's crew step without creating a tab | ⇧⌘M | Ctrl+Shift+M |
 | Command palette | ⌘K | Ctrl+Shift+P |
 | Search files by name in the side panel's folder | ⇧⌘O | Ctrl+Shift+O |
