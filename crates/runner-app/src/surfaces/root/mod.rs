@@ -264,6 +264,7 @@ pub(crate) struct NativeRoot {
     pub(crate) mission_workspace: Entity<MissionWorkspace>,
     pub(crate) _appearance_subscription: Option<Subscription>,
     pub(crate) _activation_subscription: Option<Subscription>,
+    pub(crate) _visibility_subscription: Option<Subscription>,
     pub(crate) _bounds_subscription: Option<Subscription>,
     pub(crate) _project_cwd_subscription: Option<Subscription>,
     pub(crate) _updater_subscription: Subscription,

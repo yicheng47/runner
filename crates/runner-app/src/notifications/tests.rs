@@ -2013,3 +2013,163 @@ fn dismiss_all_waits_for_in_flight_withdrawals_even_after_posted_is_empty() {
         assert!(this.pending_dismissals.is_empty());
     });
 }
+
+#[test]
+fn refresh_permission_coalesces_concurrent_queries_into_one_follow_up() {
+    use std::sync::{Arc, Mutex};
+
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    cx.update(|cx| {
+        cx.set_global(crate::GlobalAppStore(store));
+        install(cx);
+    });
+    cx.run_until_parked();
+    let controller = cx.read(|cx| cx.global::<GlobalNotifications>().0.clone());
+
+    let pending: Arc<Mutex<Vec<futures::channel::oneshot::Sender<Permission>>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let make_query = {
+        let pending = Arc::clone(&pending);
+        move |_: &gpui::BackgroundExecutor| {
+            let (tx, rx) = futures::channel::oneshot::channel();
+            pending.lock().unwrap().push(tx);
+            rx
+        }
+    };
+
+    controller.update(&mut cx, |this, cx| {
+        this.request_permission_refresh_with(make_query.clone(), cx);
+        this.request_permission_refresh_with(make_query.clone(), cx);
+        this.request_permission_refresh_with(make_query, cx);
+        assert!(this.permission_refresh_in_flight);
+        assert!(this.permission_refresh_queued);
+    });
+    assert_eq!(pending.lock().unwrap().len(), 1);
+
+    #[cfg(any(target_os = "macos", windows))]
+    let (first_answer, second_answer) = (Permission::Denied, Permission::Allowed);
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let (first_answer, second_answer) = (Permission::Unknown, Permission::Unknown);
+
+    pending
+        .lock()
+        .unwrap()
+        .remove(0)
+        .send(first_answer)
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.read(permission), first_answer);
+    assert_eq!(
+        pending.lock().unwrap().len(),
+        1,
+        "overlapping refresh requests should coalesce into one follow-up query"
+    );
+    controller.read_with(&cx, |this, _| {
+        assert!(this.permission_refresh_in_flight);
+        assert!(!this.permission_refresh_queued);
+    });
+
+    pending
+        .lock()
+        .unwrap()
+        .remove(0)
+        .send(second_answer)
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.read(permission), second_answer);
+    assert!(pending.lock().unwrap().is_empty());
+    controller.read_with(&cx, |this, _| {
+        assert!(!this.permission_refresh_in_flight);
+        assert!(!this.permission_refresh_queued);
+    });
+}
+
+#[test]
+fn minimized_active_window_defers_notification_withdrawal_until_visible() {
+    use runner_app::pane_layout::{PaneLayout, TabSet};
+    use runner_core::protocol::node::{NodeRow, NodeType};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = gpui::TestAppContext::single();
+    let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+    store.update(&mut cx, |store, _| {
+        crate::app_store::seed_mixed_working_sessions(store)
+    });
+    let row = NodeRow {
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
+        parent_id: None,
+        position: 0,
+        node_type: NodeType::Tab,
+        name: None,
+        ref_id: None,
+        layout: Some(
+            PaneLayout::single(Some("direct-agent"), &[])
+                .serialize()
+                .unwrap(),
+        ),
+        pinned_position: None,
+        last_completed_at: None,
+        last_viewed_at: None,
+        created_at: String::new(),
+    };
+    store.update(&mut cx, |store, _| store.nodes = vec![row.clone()]);
+    cx.update(|cx| {
+        cx.set_app_identity("com.wycstudios.runner-dev", "Runner");
+        install(cx);
+    });
+
+    let window = cx.add_window(|window, cx| {
+        let mut root = NativeRoot::new(
+            "main".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        );
+        root.tabs = TabSet::from_rows(std::slice::from_ref(&row));
+        root.tabs.activate(&row.id);
+        root.route = AppRoute::Chat;
+        root
+    });
+    let mut visual = gpui::VisualTestContext::from_window(window.into(), &cx);
+    visual.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+
+    // Mimic Windows `WM_ACTIVATE(WA_ACTIVE, fMinimized != 0)`: active window
+    // whose OS visibility is still `Hidden` (minimized).
+    visual.simulate_visibility_change(gpui::WindowVisibility::Hidden);
+    cx.run_until_parked();
+    assert!(!cx.update(visible).app_active);
+
+    cx.update(|cx| {
+        store.update(cx, |store, cx| {
+            store
+                .session_statuses
+                .insert("direct-agent".into(), wait(WaitReason::Approval, "new"));
+            store.revisions.activity += 1;
+            cx.notify();
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(cx.delivered_system_notifications().len(), 1);
+
+    cx.update(view_changed);
+    cx.run_until_parked();
+    assert_eq!(
+        cx.delivered_system_notifications().len(),
+        1,
+        "minimized active window must not withdraw notifications before becoming visible"
+    );
+
+    visual.simulate_visibility_change(gpui::WindowVisibility::Visible);
+    cx.run_until_parked();
+    assert!(
+        cx.delivered_system_notifications().is_empty(),
+        "restoring window visibility should withdraw notifications for the visible chat"
+    );
+}
