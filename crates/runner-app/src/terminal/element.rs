@@ -29,17 +29,20 @@ use gpui::{
 
 use runner_app::terminal_ime::{TerminalInput, TerminalInputHandler};
 use runner_app::terminal_resize::{
-    size_push_verdict, terminal_grid_size, SizePushVerdict, TerminalGridSize,
+    device_cell_size, size_push_verdict, terminal_grid_size, SizePushVerdict, TerminalGridSize,
 };
 use runner_app::theme;
 use runner_app::ui::tooltip::tooltip_view;
+use runner_terminal::kitty::CellSize;
 use runner_terminal::mappings::{
-    encode_mouse_motion, encode_mouse_press, encode_mouse_release, MouseButton, MouseModifiers,
+    encode_mouse_motion_at, encode_mouse_press_at, encode_mouse_release_at, session_pixel_position,
+    MouseButton, MouseModifiers, MousePosition,
 };
 use runner_terminal::palette::{self, TerminalPalette};
 use runner_terminal::terminal::{FileLinkContext, LinkTarget, TerminalLink, TerminalMirror};
 
 use super::glyphs::{snapped_cell_bounds, ProceduralCell};
+use super::graphics::{paint_band, PaintedImage, TerminalTextureCache};
 use crate::file_links::FileLinkRoute;
 
 /// A terminal row's height in pixels: the font size times the line-height
@@ -53,8 +56,23 @@ struct TerminalGeometry {
     bounds: Bounds<Pixels>,
     cell_width: Pixels,
     line_height: Pixels,
+    scale_factor: f32,
     cols: usize,
     rows: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReportedPosition {
+    Cell(usize, usize),
+    Pixel(u32, u32),
+}
+
+fn reported_position(sgr_pixels: bool, position: MousePosition) -> ReportedPosition {
+    if sgr_pixels {
+        ReportedPosition::Pixel(position.pixel_x, position.pixel_y)
+    } else {
+        ReportedPosition::Cell(position.column, position.row)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -80,7 +98,7 @@ enum DragKind {
         column_select: bool,
     },
     Reported {
-        last: (usize, usize, MouseModifiers),
+        last: (ReportedPosition, MouseModifiers),
     },
 }
 
@@ -132,8 +150,13 @@ type HoverSignature = (GridPoint, u64, usize, (u16, u16), Option<PathBuf>);
 pub(crate) struct TerminalInteraction {
     session: Arc<TerminalMirror>,
     pub(crate) pane_size: Option<TerminalGridSize>,
+    /// Tracks the last size pushed while the session still reports a zero cell
+    /// size (e.g. before the first resize acknowledgement or against an older
+    /// remote host that never echoes cell pixel dimensions).
+    last_pushed_zero_cell: Option<TerminalGridSize>,
     scroll_accumulator: f32,
     drag: Option<DragState>,
+    last_hover_motion: Option<(ReportedPosition, MouseModifiers)>,
     next_generation: u64,
     hovered_link: Option<TerminalLink>,
     hover_signature: Option<HoverSignature>,
@@ -149,8 +172,10 @@ impl TerminalInteraction {
         Self {
             session,
             pane_size: None,
+            last_pushed_zero_cell: None,
             scroll_accumulator: 0.,
             drag: None,
+            last_hover_motion: None,
             next_generation: 0,
             hovered_link: None,
             hover_signature: None,
@@ -246,8 +271,9 @@ impl TerminalInteraction {
         }
         if interactive {
             let (column, row) = viewport_cell(geometry, event.position);
+            let position = mouse_position(&self.session, geometry, event.position, column, row);
             self.session
-                .scroll(whole, event.modifiers.shift, column, row);
+                .scroll_at(whole, event.modifiers.shift, position);
         } else {
             self.session.scroll_local(whole);
         }
@@ -348,6 +374,7 @@ impl TerminalInteraction {
         let Some(button) = mouse_button(event.button) else {
             return;
         };
+        self.last_hover_motion = None;
         let hit = hit_test(&self.session, geometry, event.position);
         let mode = self.session.mode();
         let modifiers = mouse_modifiers(event.modifiers);
@@ -376,21 +403,24 @@ impl TerminalInteraction {
         }
 
         if reporting {
-            if let Some(bytes) = encode_mouse_press(
-                mode,
-                button,
+            let sgr_pixels = self.session.sgr_pixels();
+            let position = mouse_position(
+                &self.session,
+                geometry,
+                event.position,
                 hit.viewport_column,
                 hit.viewport_row,
-                modifiers,
-                false,
-            ) {
+            );
+            if let Some(bytes) =
+                encode_mouse_press_at(mode, sgr_pixels, button, position, modifiers, false)
+            {
                 let _ = self.session.write_user_bytes(&bytes);
             }
             self.drag = Some(DragState {
                 generation,
                 button,
                 kind: DragKind::Reported {
-                    last: (hit.viewport_column, hit.viewport_row, modifiers),
+                    last: (reported_position(sgr_pixels, position), modifiers),
                 },
                 autoscroll: 0,
                 endpoint_column: hit.point.column.0,
@@ -464,14 +494,23 @@ impl TerminalInteraction {
                 *moved |= hit.point != *initial;
             }
             DragKind::Reported { last } => {
+                let mode = self.session.mode();
+                let sgr_pixels = self.session.sgr_pixels();
+                let position = mouse_position(
+                    &self.session,
+                    geometry,
+                    event.position,
+                    hit.viewport_column,
+                    hit.viewport_row,
+                );
                 let modifiers = mouse_modifiers(event.modifiers);
-                let current = (hit.viewport_column, hit.viewport_row, modifiers);
+                let current = (reported_position(sgr_pixels, position), modifiers);
                 if interactive && *last != current {
-                    if let Some(bytes) = encode_mouse_motion(
-                        self.session.mode(),
-                        drag.button,
-                        hit.viewport_column,
-                        hit.viewport_row,
+                    if let Some(bytes) = encode_mouse_motion_at(
+                        mode,
+                        sgr_pixels,
+                        Some(drag.button),
+                        position,
                         modifiers,
                         false,
                     ) {
@@ -500,6 +539,38 @@ impl TerminalInteraction {
             }
         }
         self.drag = Some(drag);
+    }
+
+    fn hover_motion(
+        &mut self,
+        event: &MouseMoveEvent,
+        geometry: TerminalGeometry,
+        hovered: bool,
+        interactive: bool,
+    ) {
+        if !hovered || !interactive || event.modifiers.shift {
+            self.last_hover_motion = None;
+            return;
+        }
+        let mode = self.session.mode();
+        if !mode.contains(TermMode::MOUSE_MOTION) {
+            self.last_hover_motion = None;
+            return;
+        }
+        let sgr_pixels = self.session.sgr_pixels();
+        let (column, row) = viewport_cell(geometry, event.position);
+        let position = mouse_position(&self.session, geometry, event.position, column, row);
+        let modifiers = mouse_modifiers(event.modifiers);
+        let current = (reported_position(sgr_pixels, position), modifiers);
+        if self.last_hover_motion == Some(current) {
+            return;
+        }
+        if let Some(bytes) =
+            encode_mouse_motion_at(mode, sgr_pixels, None, position, modifiers, false)
+        {
+            let _ = self.session.write_user_bytes(&bytes);
+            self.last_hover_motion = Some(current);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -549,15 +620,19 @@ impl TerminalInteraction {
             }
             DragKind::Link { .. } => {}
             DragKind::Reported { .. } => {
+                let mode = self.session.mode();
+                let sgr_pixels = self.session.sgr_pixels();
+                let position = mouse_position(
+                    &self.session,
+                    geometry,
+                    event.position,
+                    hit.viewport_column,
+                    hit.viewport_row,
+                );
                 let modifiers = mouse_modifiers(event.modifiers);
                 if interactive {
-                    if let Some(bytes) = encode_mouse_release(
-                        self.session.mode(),
-                        button,
-                        hit.viewport_column,
-                        hit.viewport_row,
-                        modifiers,
-                        false,
+                    if let Some(bytes) = encode_mouse_release_at(
+                        mode, sgr_pixels, button, position, modifiers, false,
                     ) {
                         let _ = self.session.write_user_bytes(&bytes);
                     }
@@ -773,6 +848,37 @@ fn viewport_cell(geometry: TerminalGeometry, position: Point<Pixels>) -> (usize,
     (raw_column, viewport_row)
 }
 
+fn mouse_position(
+    session: &TerminalMirror,
+    geometry: TerminalGeometry,
+    position: Point<Pixels>,
+    column: usize,
+    row: usize,
+) -> MousePosition {
+    let viewer_cw = f32::from(geometry.cell_width);
+    let viewer_ch = f32::from(geometry.line_height);
+    let (dev_w, dev_h) = device_cell_size(viewer_cw, viewer_ch, geometry.scale_factor);
+    let (pixel_x, pixel_y) = session_pixel_position(
+        f32::from(position.x - geometry.bounds.left()),
+        f32::from(position.y - geometry.bounds.top()),
+        viewer_cw,
+        viewer_ch,
+        geometry.cols,
+        geometry.rows,
+        session.cell_size(),
+        CellSize {
+            width: dev_w,
+            height: dev_h,
+        },
+    );
+    MousePosition {
+        column,
+        row,
+        pixel_x,
+        pixel_y,
+    }
+}
+
 fn accumulate_scroll(accumulator: &mut f32, lines: f32) -> i32 {
     *accumulator += lines;
     let whole = accumulator.trunc() as i32;
@@ -964,6 +1070,7 @@ impl TerminalElement {
             if phase != DispatchPhase::Capture {
                 return;
             }
+            let hovered = move_hitbox.is_hovered(window);
             let link_context = move_file_links
                 .as_ref()
                 .map(|route| route.link_context(cx))
@@ -973,7 +1080,7 @@ impl TerminalElement {
                     event.modifiers,
                     geometry,
                     event.position,
-                    move_hitbox.is_hovered(window),
+                    hovered,
                     interactive,
                     &link_context,
                 )
@@ -990,9 +1097,17 @@ impl TerminalElement {
                 }
             }
             if event.pressed_button.is_none() {
+                if interaction.read(cx).drag.is_none() {
+                    interaction.update(cx, |interaction, _| {
+                        interaction.hover_motion(event, geometry, hovered, interactive);
+                    });
+                }
                 return;
             }
             if interaction.read(cx).drag.is_none() {
+                interaction.update(cx, |interaction, _| {
+                    interaction.last_hover_motion = None;
+                });
                 return;
             }
             interaction.update(cx, |interaction, _| {
@@ -1053,6 +1168,7 @@ impl TerminalElement {
 }
 
 pub struct GridPrepaint {
+    image_bands: [Vec<PaintedImage>; 3],
     backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
     find_matches: Vec<Bounds<Pixels>>,
     find_current: Vec<Bounds<Pixels>>,
@@ -1066,6 +1182,7 @@ pub struct GridPrepaint {
     marked_text: Option<(Bounds<Pixels>, ShapedLine, Hsla)>,
     cell_width: Pixels,
     line_height: Pixels,
+    scale_factor: f32,
     cols: usize,
     rows: usize,
     mode: TermMode,
@@ -1136,43 +1253,87 @@ impl Element for TerminalElement {
                 input.cancel_composition();
             });
         }
+        let texture_store = TerminalTextureCache::attach_mirror(&self.session, cx);
+        let scale_factor = window.scale_factor();
         let measured = terminal_grid_size(
             f32::from(bounds.size.width),
             f32::from(bounds.size.height),
             f32::from(cell_width),
             f32::from(line_height),
+            scale_factor,
         );
-        self.interaction
-            .update(cx, |interaction, _| interaction.pane_size = measured);
         let (last_cols, last_rows) = self.session.size();
-        match size_push_verdict(
-            measured,
-            TerminalGridSize {
-                cols: last_cols,
-                rows: last_rows,
-            },
-            self.resize_owner,
-        ) {
+        let last_cell = self.session.cell_size();
+        let last_pushed = self.interaction.update(cx, |interaction, _| {
+            interaction.pane_size = measured;
+            if last_cell.width > 0 && last_cell.height > 0 {
+                interaction.last_pushed_zero_cell = None;
+                TerminalGridSize {
+                    cols: last_cols,
+                    rows: last_rows,
+                    cell_width: last_cell.width,
+                    cell_height: last_cell.height,
+                }
+            } else if !self.resize_owner {
+                interaction.last_pushed_zero_cell = None;
+                TerminalGridSize {
+                    cols: last_cols,
+                    rows: last_rows,
+                    cell_width: 0,
+                    cell_height: 0,
+                }
+            } else if let Some(pushed) = interaction.last_pushed_zero_cell {
+                if pushed.cols == last_cols && pushed.rows == last_rows {
+                    pushed
+                } else {
+                    interaction.last_pushed_zero_cell = None;
+                    TerminalGridSize {
+                        cols: last_cols,
+                        rows: last_rows,
+                        cell_width: 0,
+                        cell_height: 0,
+                    }
+                }
+            } else {
+                TerminalGridSize {
+                    cols: last_cols,
+                    rows: last_rows,
+                    cell_width: 0,
+                    cell_height: 0,
+                }
+            }
+        });
+        match size_push_verdict(measured, last_pushed, self.resize_owner) {
             SizePushVerdict::Push(size) => {
+                if last_cell.width == 0 || last_cell.height == 0 {
+                    self.interaction.update(cx, |interaction, _| {
+                        interaction.last_pushed_zero_cell = Some(size);
+                    });
+                }
                 // Keep timing and formatting out of release prepaint unless
                 // debug tracing is explicitly enabled.
                 if tracing::enabled!(tracing::Level::DEBUG) {
                     let started = Instant::now();
-                    self.session.resize(size.cols, size.rows, 0, 0);
+                    self.session
+                        .resize(size.cols, size.rows, size.cell_width, size.cell_height);
                     tracing::debug!(
-                        "terminal resize prepaint: session={} size={}x{} push_us={}",
+                        "terminal resize prepaint: session={} size={}x{} cell={}x{} push_us={}",
                         self.session.session_id(),
                         size.cols,
                         size.rows,
+                        size.cell_width,
+                        size.cell_height,
                         started.elapsed().as_micros(),
                     );
                 } else {
-                    self.session.resize(size.cols, size.rows, 0, 0);
+                    self.session
+                        .resize(size.cols, size.rows, size.cell_width, size.cell_height);
                 }
             }
             SizePushVerdict::Unchanged | SizePushVerdict::SuppressedNonOwner => {}
             SizePushVerdict::SuppressedUnplaced => {
                 return GridPrepaint {
+                    image_bands: Default::default(),
                     backgrounds: Vec::new(),
                     find_matches: Vec::new(),
                     find_current: Vec::new(),
@@ -1186,6 +1347,7 @@ impl Element for TerminalElement {
                     marked_text: None,
                     cell_width,
                     line_height,
+                    scale_factor,
                     cols: last_cols as usize,
                     rows: last_rows as usize,
                     mode: TermMode::NONE,
@@ -1200,6 +1362,7 @@ impl Element for TerminalElement {
             bounds,
             cell_width,
             line_height,
+            scale_factor,
             cols: cols as usize,
             rows: rows as usize,
         };
@@ -1284,12 +1447,31 @@ impl Element for TerminalElement {
         let mode;
         let marked_foreground;
         let marked_background;
+        let image_bands;
+        let missing_images;
 
         {
             let term = self.session.term.lock();
             let content = term.renderable_content();
             mode = content.mode;
             let display_offset = content.display_offset;
+            {
+                let graphics = self.session.graphics().lock().unwrap();
+                let session_cell = self.session.cell_size();
+                let (bands, missing) = texture_store.prepare_paint_bands(
+                    self.session.mirror_id(),
+                    mode.contains(TermMode::ALT_SCREEN),
+                    &graphics,
+                    display_offset,
+                    bounds,
+                    cell_width,
+                    line_height,
+                    scale_factor,
+                    session_cell,
+                );
+                image_bands = bands;
+                missing_images = missing;
+            }
             let overrides = content.colors;
             let selection = content.selection;
             let renderable_cursor = content.cursor;
@@ -1688,7 +1870,12 @@ impl Element for TerminalElement {
                     (cursor_bounds, line, to_hsla(marked_background, 1.))
                 });
 
+        if !missing_images.is_empty() {
+            texture_store.schedule_decode(&self.session, &self.interaction, missing_images, cx);
+        }
+
         GridPrepaint {
+            image_bands,
             backgrounds,
             find_matches,
             find_current,
@@ -1702,6 +1889,7 @@ impl Element for TerminalElement {
             marked_text,
             cell_width,
             line_height,
+            scale_factor,
             cols: cols as usize,
             rows: rows as usize,
             mode,
@@ -1722,8 +1910,17 @@ impl Element for TerminalElement {
         cx: &mut App,
     ) {
         window.paint_quad(fill(bounds, to_hsla(self.style.palette.background, 1.)));
+        #[cfg(test)]
+        super::graphics::record_paint_event(super::graphics::PaintEvent::PaneBackground, cx);
+        paint_band(&prepaint.image_bands[0], bounds, window);
+        #[cfg(test)]
+        super::graphics::record_paint_band(0, &prepaint.image_bands[0], cx);
         for (quad_bounds, color) in &prepaint.backgrounds {
             window.paint_quad(fill(*quad_bounds, *color));
+        }
+        #[cfg(test)]
+        if !prepaint.backgrounds.is_empty() {
+            super::graphics::record_paint_event(super::graphics::PaintEvent::CellBackgrounds, cx);
         }
         let highlight = theme::find_highlight();
         let radius = px(2. * self.style.app_zoom);
@@ -1746,6 +1943,13 @@ impl Element for TerminalElement {
         for quad_bounds in &prepaint.selections {
             window.paint_quad(fill(*quad_bounds, selection_color));
         }
+        #[cfg(test)]
+        if !prepaint.selections.is_empty() {
+            super::graphics::record_paint_event(super::graphics::PaintEvent::Selections, cx);
+        }
+        paint_band(&prepaint.image_bands[1], bounds, window);
+        #[cfg(test)]
+        super::graphics::record_paint_band(1, &prepaint.image_bands[1], cx);
         for cell in &prepaint.procedural {
             cell.paint(window);
         }
@@ -1759,7 +1963,16 @@ impl Element for TerminalElement {
                 cx,
             );
         }
+        #[cfg(test)]
+        if !prepaint.lines.is_empty() || !prepaint.procedural.is_empty() {
+            super::graphics::record_paint_event(super::graphics::PaintEvent::Text, cx);
+        }
+        paint_band(&prepaint.image_bands[2], bounds, window);
+        #[cfg(test)]
+        super::graphics::record_paint_band(2, &prepaint.image_bands[2], cx);
         if let Some((cursor_bounds, line, background)) = &prepaint.marked_text {
+            #[cfg(test)]
+            super::graphics::record_paint_event(super::graphics::PaintEvent::CursorOrIme, cx);
             window.with_content_mask(Some(ContentMask { bounds }), |window| {
                 window.paint_quad(fill(
                     Bounds::new(
@@ -1778,6 +1991,8 @@ impl Element for TerminalElement {
                 );
             });
         } else if let Some((cursor_bounds, shape)) = prepaint.cursor {
+            #[cfg(test)]
+            super::graphics::record_paint_event(super::graphics::PaintEvent::CursorOrIme, cx);
             let focused = self.focus_handle.is_focused(window);
             let color = to_hsla(self.style.palette.cursor, if focused { 1. } else { 0.5 });
             match shape {
@@ -1851,6 +2066,7 @@ impl Element for TerminalElement {
                 bounds,
                 cell_width: prepaint.cell_width,
                 line_height: prepaint.line_height,
+                scale_factor: prepaint.scale_factor,
                 cols: prepaint.cols,
                 rows: prepaint.rows,
             },
@@ -1888,11 +2104,15 @@ mod tests {
     use alacritty_terminal::term::TermMode;
     use runner_terminal::mappings::encode_scroll;
 
+    type RecordedResize = (String, u16, u16, u16, u16);
+
     #[derive(Default)]
     struct RecordingRuntime {
         outputs: Mutex<HashMap<String, std::sync::mpsc::Sender<RuntimeOutput>>>,
         writes: Mutex<Vec<(String, Vec<u8>)>>,
         written: Condvar,
+        resizes: Mutex<Vec<RecordedResize>>,
+        resized: Condvar,
     }
 
     impl RecordingRuntime {
@@ -1907,6 +2127,28 @@ mod tests {
                 .unwrap();
             assert!(!timeout.timed_out(), "queued terminal input did not arrive");
             assert_eq!(writes.len(), count);
+        }
+
+        fn wait_for_resize(
+            &self,
+            session_id: &str,
+            ready: impl Fn(&(String, u16, u16, u16, u16)) -> bool,
+        ) -> (u16, u16, u16, u16) {
+            let (resizes, timeout) = self
+                .resized
+                .wait_timeout_while(
+                    self.resizes.lock().unwrap(),
+                    std::time::Duration::from_secs(5),
+                    |resizes| !resizes.iter().any(|r| r.0 == session_id && ready(r)),
+                )
+                .unwrap();
+            assert!(!timeout.timed_out(), "expected resize did not arrive");
+            let found = resizes
+                .iter()
+                .rev()
+                .find(|r| r.0 == session_id && ready(r))
+                .unwrap();
+            (found.1, found.2, found.3, found.4)
         }
     }
 
@@ -1944,7 +2186,22 @@ mod tests {
             self.send_bytes(session, key.as_bytes())
         }
 
-        fn resize(&self, _: &RuntimeSession, _: u16, _: u16, _: u16, _: u16) -> RuntimeResult<()> {
+        fn resize(
+            &self,
+            session: &RuntimeSession,
+            cols: u16,
+            rows: u16,
+            pixel_width: u16,
+            pixel_height: u16,
+        ) -> RuntimeResult<()> {
+            self.resizes.lock().unwrap().push((
+                session.session_id.clone(),
+                cols,
+                rows,
+                pixel_width,
+                pixel_height,
+            ));
+            self.resized.notify_all();
             Ok(())
         }
 
@@ -2429,12 +2686,14 @@ mod tests {
             let id = window.text_system().resolve_font(&font);
             f32::from(window.text_system().em_advance(id, px(14.)).unwrap())
         });
+        let scale_factor = visual.update(|window, _| window.scale_factor());
         let expected_rows = |factor: f32| {
             runner_app::terminal_resize::terminal_grid_size(
                 240.,
                 160.,
                 cell_width,
                 super::row_height(14., factor),
+                scale_factor,
             )
             .unwrap()
             .rows
@@ -2643,6 +2902,7 @@ mod tests {
             bounds: Bounds::new(point(px(120.), px(80.)), gpui::size(px(200.), px(160.))),
             cell_width: px(10.),
             line_height: px(20.),
+            scale_factor: 1.0,
             cols: 20,
             rows: 8,
         };
@@ -2891,5 +3151,378 @@ mod tests {
         let writes = runtime.writes.lock().unwrap();
         assert_eq!(writes[0], (session_id.clone(), b"k".to_vec()));
         assert_eq!(writes[1], (session_id, b"ni".to_vec()));
+    }
+
+    #[test]
+    fn scale_factor_change_pushes_new_cell_size_without_changing_grid_dimensions() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(RecordingRuntime::default());
+        let core = test_core(temp.path(), Arc::clone(&runtime));
+        let role = probe_role(&core);
+        let left_terminal = spawn_terminal(&core, &runtime, &role, temp.path());
+        let right_terminal = spawn_terminal(&core, &runtime, &role, temp.path());
+        let session_id = left_terminal.session_id().to_owned();
+        let mut cx = TestAppContext::single();
+        let (left, right) = (
+            wheel_pane(&mut cx, &left_terminal),
+            wheel_pane(&mut cx, &right_terminal),
+        );
+        let window = cx.add_window(|_, _| WheelHost {
+            left,
+            right,
+            left_interactive: true,
+            right_interactive: true,
+            right_scrollable: true,
+            font_size: 14.,
+            gap: 20.,
+            line_height_factor: crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
+            copy_on_select: false,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(700.), px(300.)));
+        visual.update(|window, _| window.set_scale_factor(1.0));
+        visual.refresh().unwrap();
+
+        let (cw, ch) = visual.update(|window, cx| {
+            let font = crate::app_settings::AppSettings::default()
+                .terminal_font_family
+                .font(cx);
+            let id = window.text_system().resolve_font(&font);
+            (
+                f32::from(window.text_system().em_advance(id, px(14.)).unwrap()),
+                super::row_height(14., crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT),
+            )
+        });
+        let size_1x =
+            runner_app::terminal_resize::terminal_grid_size(240., 160., cw, ch, 1.0).unwrap();
+        let size_2x =
+            runner_app::terminal_resize::terminal_grid_size(240., 160., cw, ch, 2.0).unwrap();
+        assert_eq!((size_1x.cols, size_1x.rows), (size_2x.cols, size_2x.rows));
+        assert_ne!(
+            (size_1x.cell_width, size_1x.cell_height),
+            (size_2x.cell_width, size_2x.cell_height)
+        );
+
+        let expected_1x_px = (
+            size_1x.cols.saturating_mul(size_1x.cell_width),
+            size_1x.rows.saturating_mul(size_1x.cell_height),
+        );
+        let expected_2x_px = (
+            size_2x.cols.saturating_mul(size_2x.cell_width),
+            size_2x.rows.saturating_mul(size_2x.cell_height),
+        );
+        let first = runtime.wait_for_resize(&session_id, |r| {
+            r.1 == size_1x.cols && r.2 == size_1x.rows && (r.3, r.4) == expected_1x_px
+        });
+        assert_eq!(
+            first,
+            (
+                size_1x.cols,
+                size_1x.rows,
+                expected_1x_px.0,
+                expected_1x_px.1
+            )
+        );
+
+        // Wait for the mirror to receive the 1x cell size, then change ONLY the scale factor.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while left_terminal.cell_size()
+            != (runner_terminal::kitty::CellSize {
+                width: size_1x.cell_width,
+                height: size_1x.cell_height,
+            })
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "1x cell size never arrived"
+            );
+            std::thread::yield_now();
+        }
+
+        visual.update(|window, _| window.set_scale_factor(2.0));
+        visual.refresh().unwrap();
+
+        let second = runtime.wait_for_resize(&session_id, |r| {
+            r.1 == size_2x.cols && r.2 == size_2x.rows && (r.3, r.4) == expected_2x_px
+        });
+        assert_eq!(
+            second,
+            (
+                size_2x.cols,
+                size_2x.rows,
+                expected_2x_px.0,
+                expected_2x_px.1
+            ),
+            "changing only display scale must push a resize with updated pixel dimensions"
+        );
+    }
+
+    #[test]
+    fn sgr_pixels_and_mode_1003_hover_motion_follow_spec() {
+        use gpui::{Modifiers, MouseButton};
+
+        struct OverlayHost {
+            left: WheelPane,
+            right: WheelPane,
+            show_overlay: bool,
+        }
+
+        impl Render for OverlayHost {
+            fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let style = TerminalStyle {
+                    palette: runner_terminal::palette::RUNNER,
+                    font: crate::app_settings::AppSettings::default()
+                        .terminal_font_family
+                        .font(cx),
+                    font_size: 14.,
+                    app_zoom: 1.0,
+                    line_height_factor: crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
+                    copy_on_select: false,
+                };
+                div()
+                    .relative()
+                    .size_full()
+                    .flex()
+                    .gap(px(20.))
+                    .p(px(10.))
+                    .child(
+                        div()
+                            .debug_selector(|| "SGR_LEFT".into())
+                            .w(px(240.))
+                            .h(px(160.))
+                            .child(
+                                TerminalElement::new(
+                                    Arc::clone(&self.left.terminal),
+                                    self.left.interaction.clone(),
+                                    self.left.input.clone(),
+                                    self.left.focus.clone(),
+                                    true,
+                                    true,
+                                    style.clone(),
+                                )
+                                .scrollable(true),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "SGR_RIGHT".into())
+                            .w(px(240.))
+                            .h(px(160.))
+                            .child(
+                                TerminalElement::new(
+                                    Arc::clone(&self.right.terminal),
+                                    self.right.interaction.clone(),
+                                    self.right.input.clone(),
+                                    self.right.focus.clone(),
+                                    true,
+                                    true,
+                                    style,
+                                )
+                                .scrollable(true),
+                            ),
+                    )
+                    .when(self.show_overlay, |root| {
+                        root.child(
+                            div()
+                                .debug_selector(|| "SGR_OVERLAY".into())
+                                .absolute()
+                                .left(px(10.))
+                                .top(px(10.))
+                                .w(px(120.))
+                                .h(px(120.))
+                                .occlude(),
+                        )
+                    })
+            }
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(RecordingRuntime::default());
+        let core = test_core(temp.path(), Arc::clone(&runtime));
+        let role = probe_role(&core);
+        let left_terminal = spawn_terminal(&core, &runtime, &role, temp.path());
+        let right_terminal = spawn_terminal(&core, &runtime, &role, temp.path());
+        let left_id = left_terminal.session_id().to_owned();
+        let right_id = right_terminal.session_id().to_owned();
+
+        // Enable mode 1003 (any-event motion) + mode 1016 (SGR-Pixels) on the left pane,
+        // and mode 1002 + 1016 (button-drag only, no hover) on the right pane.
+        emit_output(&runtime, &left_terminal, b"\x1b[?1003;1016h", |t| {
+            t.mode().contains(TermMode::MOUSE_MOTION) && t.sgr_pixels()
+        });
+        emit_output(&runtime, &right_terminal, b"\x1b[?1002;1016h", |t| {
+            t.mode().contains(TermMode::MOUSE_DRAG)
+                && !t.mode().contains(TermMode::MOUSE_MOTION)
+                && t.sgr_pixels()
+        });
+
+        let mut cx = TestAppContext::single();
+        let (left, right) = (
+            wheel_pane(&mut cx, &left_terminal),
+            wheel_pane(&mut cx, &right_terminal),
+        );
+        let window = cx.add_window(|_, _| OverlayHost {
+            left,
+            right,
+            show_overlay: false,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.update(|window, _| window.set_scale_factor(2.0));
+        visual.simulate_resize(gpui::size(px(700.), px(300.)));
+
+        let left_bounds = visual.debug_bounds("SGR_LEFT").unwrap();
+        let right_bounds = visual.debug_bounds("SGR_RIGHT").unwrap();
+        let left_size = window
+            .read_with(&visual, |host, cx| {
+                host.left.interaction.read(cx).pane_size.unwrap()
+            })
+            .unwrap();
+        // Wait for the 2x cell size to round-trip from daemon -> mirror.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while left_terminal.cell_size().width != left_size.cell_width
+            || right_terminal.cell_size().width != left_size.cell_width
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cell size never landed"
+            );
+            std::thread::yield_now();
+        }
+        visual.refresh().unwrap();
+
+        let drain_writes = |expected: usize| -> Vec<(String, Vec<u8>)> {
+            if expected > 0 {
+                runtime.wait_for_writes(expected);
+            }
+            std::mem::take(&mut *runtime.writes.lock().unwrap())
+        };
+
+        // 1. Hover motion under mode 1003 + 1016 over left pane (button code 35, zero-based pixels).
+        let p_origin = point(left_bounds.left(), left_bounds.top());
+        visual.simulate_mouse_move(p_origin, None, Modifiers::default());
+        // Duplicate at same pixel must be dropped.
+        visual.simulate_mouse_move(p_origin, None, Modifiers::default());
+        // Moving 2 logical px right (= ~4 session px at 2x scale, still inside cell 0!) must report!
+        let p_inside_cell = point(left_bounds.left() + px(2.), left_bounds.top() + px(1.));
+        visual.simulate_mouse_move(p_inside_cell, None, Modifiers::default());
+        let writes = drain_writes(2);
+        assert_eq!(writes[0], (left_id.clone(), b"\x1b[<35;0;0M".to_vec()));
+        let second = String::from_utf8(writes[1].1.clone()).unwrap();
+        assert!(
+            second.starts_with("\x1b[<35;") && second.ends_with('M'),
+            "{second}"
+        );
+        assert_ne!(
+            second, "\x1b[<35;0;0M",
+            "intra-cell pixel move must report new pixels"
+        );
+
+        // 2. Shift bypasses hover reporting and forgets last hover position.
+        visual.simulate_mouse_move(
+            point(left_bounds.left() + px(4.), left_bounds.top() + px(2.)),
+            None,
+            Modifiers::shift(),
+        );
+        // Hovering over the right pane (mode 1002 only) reports nothing to either pane,
+        // and clears left pane's remembered hover position.
+        visual.simulate_mouse_move(right_bounds.center(), None, Modifiers::default());
+        visual.run_until_parked();
+        assert!(runtime.writes.lock().unwrap().is_empty());
+
+        // Returning to p_origin on the left pane must report again because leave forgot last position.
+        visual.simulate_mouse_move(p_origin, None, Modifiers::default());
+        assert_eq!(
+            drain_writes(1)[0],
+            (left_id.clone(), b"\x1b[<35;0;0M".to_vec())
+        );
+
+        // 3. An occluding overlay (like command palette / popover) over left pane blocks hover
+        // and forgets last position.
+        window
+            .update(&mut visual, |host, _, cx| {
+                host.show_overlay = true;
+                cx.notify();
+            })
+            .unwrap();
+        visual.refresh().unwrap();
+        let overlay_pt = point(left_bounds.left() + px(20.), left_bounds.top() + px(20.));
+        visual.simulate_mouse_move(overlay_pt, None, Modifiers::default());
+        visual.run_until_parked();
+        assert!(
+            runtime.writes.lock().unwrap().is_empty(),
+            "hover over occluding overlay must not report to terminal underneath"
+        );
+        window
+            .update(&mut visual, |host, _, cx| {
+                host.show_overlay = false;
+                cx.notify();
+            })
+            .unwrap();
+        visual.refresh().unwrap();
+        visual.simulate_mouse_move(p_origin, None, Modifiers::default());
+        assert_eq!(
+            drain_writes(1)[0],
+            (left_id.clone(), b"\x1b[<35;0;0M".to_vec())
+        );
+
+        // 4. Press, intra-cell pixel drag (+ dedup), release, and wheel under 1016.
+        let p_down = point(left_bounds.left() + px(1.), left_bounds.top() + px(1.));
+        let p_drag = point(left_bounds.left() + px(3.), left_bounds.top() + px(2.));
+        visual.simulate_mouse_down(p_down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(p_down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(p_drag, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(p_drag, MouseButton::Left, Modifiers::default());
+        visual.simulate_event(gpui::ScrollEvent {
+            position: p_origin,
+            delta: gpui::ScrollDelta::Lines(point(0., 1.)),
+            ..Default::default()
+        });
+        let writes = drain_writes(4);
+        assert!(writes.iter().all(|(id, _)| id == &left_id));
+        let press = String::from_utf8(writes[0].1.clone()).unwrap();
+        let drag = String::from_utf8(writes[1].1.clone()).unwrap();
+        let release = String::from_utf8(writes[2].1.clone()).unwrap();
+        let wheel = String::from_utf8(writes[3].1.clone()).unwrap();
+        assert!(
+            press.starts_with("\x1b[<0;") && press.ends_with('M'),
+            "{press}"
+        );
+        assert!(
+            drag.starts_with("\x1b[<32;") && drag.ends_with('M'),
+            "{drag}"
+        );
+        assert!(
+            release.starts_with("\x1b[<0;") && release.ends_with('m'),
+            "{release}"
+        );
+        assert_eq!(wheel, "\x1b[<64;0;0M");
+        assert_ne!(
+            &press[5..press.len() - 1],
+            &drag[6..drag.len() - 1],
+            "intra-cell drag under 1016 must report new pixel coordinates"
+        );
+        assert_eq!(
+            &drag[6..drag.len() - 1],
+            &release[5..release.len() - 1],
+            "release must match drag endpoint pixels"
+        );
+
+        // 5. Right pane without 1003 reports press/release under 1016 but never hover.
+        visual.simulate_mouse_down(
+            point(right_bounds.left(), right_bounds.top()),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_up(
+            point(right_bounds.left(), right_bounds.top()),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        let right_writes = drain_writes(2);
+        assert_eq!(
+            right_writes[0],
+            (right_id.clone(), b"\x1b[<0;0;0M".to_vec())
+        );
+        assert_eq!(right_writes[1], (right_id, b"\x1b[<0;0;0m".to_vec()));
     }
 }

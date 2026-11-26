@@ -317,7 +317,12 @@ pub(crate) fn attached<T: 'static>(
 ) -> AttachedChat {
     let interaction = cx.new(|_| super::super::TerminalInteraction::new(terminal.clone()));
     interaction.update(cx, |interaction, _| {
-        interaction.pane_size = Some(runner_app::terminal_resize::TerminalGridSize { cols, rows })
+        interaction.pane_size = Some(runner_app::terminal_resize::TerminalGridSize {
+            cols,
+            rows,
+            cell_width: 0,
+            cell_height: 0,
+        })
     });
     let input = cx.new(|_| TerminalInput::new(terminal.clone()));
     let focus = cx.focus_handle();
@@ -364,13 +369,17 @@ fn take_back_and_continue_send_each_panes_size_and_enter_activates_the_card() {
             })
             .unwrap();
         for (host, size) in [(&left_host, measured[0]), (&right_host, measured[1])] {
+            assert!(size.cell_width > 0 && size.cell_height > 0, "{size:?}");
             assert!(
                 host.sizes.lock().unwrap().is_empty(),
                 "covered prepaint pushes no size"
             );
-            assert!(
-                matches!(host.calls.lock().unwrap().as_slice(), [Request::terminal_take_back { cols, rows, .. }] if (*cols, *rows) == (size.cols, size.rows))
-            );
+            assert!(matches!(
+                host.calls.lock().unwrap().as_slice(),
+                [Request::terminal_take_back { cols, rows, cell_width, cell_height, .. }]
+                if (*cols, *rows, *cell_width, *cell_height)
+                    == (size.cols, size.rows, size.cell_width, size.cell_height)
+            ));
         }
         assert_ne!(measured[0], measured[1]);
         left_host.calls.lock().unwrap().clear();
@@ -378,9 +387,12 @@ fn take_back_and_continue_send_each_panes_size_and_enter_activates_the_card() {
         let action = visual.debug_bounds("REMOTE_CONTROL_ACTION").unwrap();
         visual.simulate_click(action.center(), Default::default());
         for (host, size) in [(&left_host, measured[0]), (&right_host, measured[1])] {
-            assert!(
-                matches!(host.calls.lock().unwrap().as_slice(), [Request::terminal_take_back { cols, rows, .. }] if (*cols, *rows) == (size.cols, size.rows))
-            );
+            assert!(matches!(
+                host.calls.lock().unwrap().as_slice(),
+                [Request::terminal_take_back { cols, rows, cell_width, cell_height, .. }]
+                if (*cols, *rows, *cell_width, *cell_height)
+                    == (size.cols, size.rows, size.cell_width, size.cell_height)
+            ));
         }
     }
 }

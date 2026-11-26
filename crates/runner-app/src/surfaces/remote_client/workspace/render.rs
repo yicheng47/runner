@@ -3,7 +3,11 @@ use super::*;
 impl RemoteClient {
     pub(crate) fn mission_surface(&self, cx: &mut Context<NativeRoot>) -> Entity<MissionWorkspace> {
         let remote = self.workspace.as_ref().unwrap();
-        let mut sizes = remote.sizes.clone();
+        let mut sizes: HashMap<String, (u16, u16)> = remote
+            .sizes
+            .iter()
+            .map(|(id, size)| (id.clone(), (size.cols, size.rows)))
+            .collect();
         sizes.extend(
             remote
                 .terminals
@@ -162,6 +166,7 @@ impl RemoteClient {
                         f32::from(bounds.size.height),
                         f32::from(cell),
                         style.row_height(),
+                        window.scale_factor(),
                     ) {
                         let owner = owner.clone();
                         let session = session.clone();
@@ -173,7 +178,12 @@ impl RemoteClient {
                                     .as_mut()
                                     .filter(|remote| remote.epoch == epoch)
                                 {
-                                    let measured = (size.cols.max(20), size.rows.max(8));
+                                    let measured = runner_app::terminal_resize::TerminalGridSize {
+                                        cols: size.cols.max(20),
+                                        rows: size.rows.max(8),
+                                        cell_width: size.cell_width,
+                                        cell_height: size.cell_height,
+                                    };
                                     if remote.sizes.insert(session, measured) != Some(measured) {
                                         root.remote_client.attach_remote_panes(cx);
                                         cx.notify();
@@ -378,23 +388,29 @@ impl RemoteClient {
         };
         let terminal = pane.attachment.terminal.clone();
         let transport = pane.transport.clone();
-        let (cols, rows) = pane
+        let (cols, rows, cell_width, cell_height) = pane
             .attachment
             .terminal_interaction
             .read(cx)
             .pane_size
-            .map(|size| (size.cols, size.rows))
             .or(fallback_size)
-            .unwrap_or_else(|| terminal.size());
+            .map_or_else(
+                || {
+                    let (cols, rows) = terminal.size();
+                    let cell = terminal.cell_size();
+                    (cols, rows, cell.width, cell.height)
+                },
+                |size| (size.cols, size.rows, size.cell_width, size.cell_height),
+            );
         let epoch = remote.epoch;
         pane.auto_taken = true;
         pane.control_failed = false;
         let taking = terminal.clone();
         let task = cx.background_spawn(async move {
             if force_take {
-                taking.take_back(cols, rows, 0, 0)
+                taking.take_back(cols, rows, cell_width, cell_height)
             } else {
-                transport.claim_if_free(cols, rows)
+                transport.claim_if_free(cols, rows, cell_width, cell_height)
             }
         });
         let id = id.to_owned();

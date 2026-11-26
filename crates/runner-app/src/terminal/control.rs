@@ -353,6 +353,7 @@ pub(crate) fn measure_panes<E: ParentElement>(
                                     f32::from(bounds.size.height),
                                     f32::from(cell_width),
                                     line_height,
+                                    window.scale_factor(),
                                 );
                                 for interaction in &interactions {
                                     interaction
@@ -389,8 +390,15 @@ fn take_back_targets(
 ) {
     for (terminal, interaction) in targets {
         let size = interaction.read(cx).pane_size;
-        let (cols, rows) = size.map_or_else(|| terminal.size(), |size| (size.cols, size.rows));
-        if let Err(error) = terminal.take_back(cols, rows, 0, 0) {
+        let (cols, rows, cell_width, cell_height) = size.map_or_else(
+            || {
+                let (cols, rows) = terminal.size();
+                let cell = terminal.cell_size();
+                (cols, rows, cell.width, cell.height)
+            },
+            |size| (size.cols, size.rows, size.cell_width, size.cell_height),
+        );
+        if let Err(error) = terminal.take_back(cols, rows, cell_width, cell_height) {
             if let Some(window) = cx
                 .active_window()
                 .and_then(|window| window.downcast::<NativeRoot>())

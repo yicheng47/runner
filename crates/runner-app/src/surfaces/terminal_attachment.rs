@@ -9,6 +9,7 @@ impl AttachedChat {
         cx: &mut Context<T>,
         mut on_write: impl FnMut(&mut T, Result<(), String>, &mut Context<T>) + 'static,
     ) -> Self {
+        crate::terminal::graphics::TerminalTextureCache::attach_mirror(&terminal, cx);
         terminal.set_palette(style.palette);
         app_settings::configure_terminal(&terminal, settings);
         let terminal_scrollbar = cx.new(|_| Scrollbar::terminal(Arc::clone(&terminal)));

@@ -483,6 +483,9 @@ impl AppStore {
         });
         let bridge = TerminalBridge::with_session_waker(host.client.clone(), waker)
             .expect("terminal event bridge installation is infallible");
+        bridge.set_graphics_observer(crate::terminal::graphics::TerminalTextureCache::observer(
+            cx,
+        ));
 
         let wake_task = cx.spawn(async move |weak, cx| {
             while let Some(id) = wake_rx.next().await {

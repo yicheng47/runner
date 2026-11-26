@@ -627,9 +627,34 @@ fn parse_with<H: Handler>(parser: &mut ParserState, handler: &mut H, bytes: &[u8
     parser.parse_text(handler, bytes);
 }
 
+static NEXT_MIRROR_ID: AtomicU64 = AtomicU64::new(1);
+
+/// App-side hook notified when a mirror's graphics state changes, when its
+/// last [`TerminalView`] lease drops, or when the mirror itself is dropped.
+///
+/// Callbacks run with no mirror `term` or `graphics` locks held so implementations
+/// can decode images off the UI thread and release GPU textures without waiting
+/// for a prepaint.
+pub trait MirrorGraphicsObserver: Send + Sync + 'static {
+    fn on_graphics_updated(
+        &self,
+        mirror_id: u64,
+        viewers: &Arc<AtomicUsize>,
+        live_keys: &[(u32, u64)],
+        decode_candidates: &[crate::kitty::StoredImage],
+    );
+
+    fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>);
+
+    fn on_mirror_dropped(&self, mirror_id: u64);
+}
+
 pub struct TerminalMirror {
+    mirror_id: u64,
     pub term: Arc<FairMutex<Term<EventProxy>>>,
     graphics: Arc<Mutex<crate::kitty::TerminalGraphics>>,
+    graphics_observer: Arc<Mutex<Option<Arc<dyn MirrorGraphicsObserver>>>>,
+    last_graphics_gen: Mutex<(u64, u64)>,
     sgr_pixels: Arc<AtomicBool>,
     sync_open: Arc<AtomicBool>,
     client: DaemonClient,
@@ -658,6 +683,15 @@ pub struct TerminalMirror {
     /// Keys, typed text and pastes sent, so a blinking cursor shows again
     /// before the echo arrives.
     typed: AtomicU64,
+}
+
+impl Drop for TerminalMirror {
+    fn drop(&mut self) {
+        let observer = self.graphics_observer.lock().unwrap().clone();
+        if let Some(observer) = observer {
+            observer.on_mirror_dropped(self.mirror_id);
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -690,12 +724,19 @@ struct FrameWorkerState {
 }
 
 pub struct TerminalView {
+    mirror_id: u64,
     viewers: Arc<AtomicUsize>,
+    graphics_observer: Arc<Mutex<Option<Arc<dyn MirrorGraphicsObserver>>>>,
 }
 
 impl Drop for TerminalView {
     fn drop(&mut self) {
-        self.viewers.fetch_sub(1, Ordering::Release);
+        if self.viewers.fetch_sub(1, Ordering::AcqRel) == 1 {
+            let observer = self.graphics_observer.lock().unwrap().clone();
+            if let Some(observer) = observer {
+                observer.on_last_viewer_dropped(self.mirror_id, &self.viewers);
+            }
+        }
     }
 }
 
@@ -766,6 +807,7 @@ impl TerminalMirror {
                     let Some(mirror) = weak.upgrade() else {
                         return;
                     };
+                    let mut force_graphics_sync = false;
                     match frame {
                         TerminalFrame::Output { seq, bytes } => {
                             if !mirror.feed_output(seq, &bytes) {
@@ -818,10 +860,12 @@ impl TerminalMirror {
                                 mirror.restore(&attachment);
                                 state.cancel = attachment.frames.cancellation();
                                 frames = attachment.frames;
+                                force_graphics_sync = true;
                             }
                             Err(_) => return,
                         },
                     }
+                    mirror.sync_graphics_observer(force_graphics_sync);
                     mirror.refresh_metadata();
                     mirror.wake_viewers();
                 }
@@ -844,6 +888,7 @@ impl TerminalMirror {
         }
         let attachment = self.client.attach(&self.session_id)?;
         self.restore(&attachment);
+        self.sync_graphics_observer(true);
         self.start_frames(attachment)?;
         self.refresh_metadata();
         self.wake_viewers();
@@ -900,8 +945,11 @@ impl TerminalMirror {
             },
         )));
         let mirror = Arc::new(Self {
+            mirror_id: NEXT_MIRROR_ID.fetch_add(1, Ordering::Relaxed),
             term,
             graphics: Arc::new(Mutex::new(crate::kitty::TerminalGraphics::mirror())),
+            graphics_observer: Arc::new(Mutex::new(None)),
+            last_graphics_gen: Mutex::new((0, 0)),
             sgr_pixels: Arc::new(AtomicBool::new(false)),
             sync_open,
             client,
@@ -1100,13 +1148,79 @@ impl TerminalMirror {
             *self.metadata.lock().unwrap() = metadata;
         }
     }
+    pub fn mirror_id(&self) -> u64 {
+        self.mirror_id
+    }
+    pub fn set_graphics_observer(&self, observer: Arc<dyn MirrorGraphicsObserver>) {
+        let mut slot = self.graphics_observer.lock().unwrap();
+        if slot
+            .as_ref()
+            .is_some_and(|existing| Arc::ptr_eq(existing, &observer))
+        {
+            return;
+        }
+        *slot = Some(observer);
+    }
+    pub fn viewer_count(&self) -> usize {
+        self.viewers.load(Ordering::Acquire)
+    }
+    pub fn live_image_keys(&self) -> Vec<(u32, u64)> {
+        let graphics = self.graphics.lock().unwrap();
+        let mut keys =
+            Vec::with_capacity(graphics.primary.images().len() + graphics.alt.images().len());
+        for storage in [&graphics.primary, &graphics.alt] {
+            for img in storage.images().values() {
+                keys.push((img.id, img.generation));
+            }
+        }
+        keys
+    }
+    pub fn wake_viewers_now(&self) {
+        self.wake_viewers();
+    }
+    fn sync_graphics_observer(&self, force: bool) {
+        let observer = self.graphics_observer.lock().unwrap().clone();
+        let Some(observer) = observer else {
+            return;
+        };
+        let (live_keys, decode_candidates) = {
+            let graphics = self.graphics.lock().unwrap();
+            let current_gen = (graphics.primary.generation, graphics.alt.generation);
+            let mut last_gen = self.last_graphics_gen.lock().unwrap();
+            if !force && *last_gen == current_gen {
+                return;
+            }
+            *last_gen = current_gen;
+            let has_viewers = self.viewers.load(Ordering::Acquire) > 0;
+            let mut live_keys =
+                Vec::with_capacity(graphics.primary.images().len() + graphics.alt.images().len());
+            let mut decode_candidates = Vec::new();
+            for storage in [&graphics.primary, &graphics.alt] {
+                for img in storage.images().values() {
+                    live_keys.push((img.id, img.generation));
+                    if has_viewers {
+                        decode_candidates.push(img.clone());
+                    }
+                }
+            }
+            (live_keys, decode_candidates)
+        };
+        observer.on_graphics_updated(
+            self.mirror_id,
+            &self.viewers,
+            &live_keys,
+            &decode_candidates,
+        );
+    }
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
     pub fn view(&self) -> TerminalView {
         self.viewers.fetch_add(1, Ordering::AcqRel);
         TerminalView {
+            mirror_id: self.mirror_id,
             viewers: Arc::clone(&self.viewers),
+            graphics_observer: Arc::clone(&self.graphics_observer),
         }
     }
     pub fn title(&self) -> String {
@@ -1138,6 +1252,7 @@ impl TerminalMirror {
             let cell_size = *self.cell_size.lock().unwrap();
             stream::configure_term_and_graphics(&mut term, &mut graphics, config, cell_size);
         }
+        self.sync_graphics_observer(false);
         let shape = match cursor_shape {
             CursorShape::Block => "block",
             CursorShape::Underline => "underline",
@@ -1336,6 +1451,7 @@ impl TerminalMirror {
         drop(parser);
         drop(sequence);
         if flushed {
+            self.sync_graphics_observer(false);
             self.wake_viewers();
         }
         next
@@ -1953,6 +2069,7 @@ pub struct TerminalBridge {
     client: DaemonClient,
     sessions: Mutex<HashMap<String, Arc<TerminalMirror>>>,
     palette: Mutex<Option<palette::TerminalPalette>>,
+    graphics_observer: Mutex<Option<Arc<dyn MirrorGraphicsObserver>>>,
     waker: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
@@ -1969,11 +2086,20 @@ impl TerminalBridge {
             client,
             sessions: Mutex::default(),
             palette: Mutex::default(),
+            graphics_observer: Mutex::default(),
             waker,
         });
         let observer: Arc<dyn runner_core::protocol::terminal::TerminalLifecycle> = bridge.clone();
         bridge.client.observe_terminals(Arc::downgrade(&observer));
         Ok(bridge)
+    }
+
+    pub fn set_graphics_observer(&self, observer: Arc<dyn MirrorGraphicsObserver>) {
+        *self.graphics_observer.lock().unwrap() = Some(Arc::clone(&observer));
+        let sessions = self.sessions.lock().unwrap();
+        for mirror in sessions.values() {
+            mirror.set_graphics_observer(Arc::clone(&observer));
+        }
     }
 
     pub fn attach(&self, session_id: &str) -> Result<Arc<TerminalMirror>> {
@@ -1988,6 +2114,9 @@ impl TerminalBridge {
             session_id.to_owned(),
             Arc::new(move || wake(&id)),
         )?;
+        if let Some(observer) = self.graphics_observer.lock().unwrap().clone() {
+            mirror.set_graphics_observer(observer);
+        }
         mirror.set_palette(self.palette.lock().unwrap().unwrap_or(palette::RUNNER));
         sessions.insert(session_id.to_owned(), Arc::clone(&mirror));
         Ok(mirror)
@@ -2108,6 +2237,7 @@ impl TerminalMirror {
     }
     pub fn test_feed(&self, seq: u64, bytes: &[u8]) {
         if self.feed_output(seq, bytes) {
+            self.sync_graphics_observer(false);
             self.wake_viewers();
         }
     }
@@ -2130,6 +2260,7 @@ impl TerminalMirror {
         self.apply_output_chunk(&mut sequence, &mut parser, seq, bytes);
         drop(parser);
         drop(sequence);
+        self.sync_graphics_observer(false);
         self.wake_viewers();
     }
     /// Arm the background sync-flush thread for an already-open synchronized
@@ -2148,9 +2279,6 @@ impl TerminalMirror {
             parser.processor.sync_bytes_count(),
             parser.flush_scheduled,
         )
-    }
-    pub fn viewer_count(&self) -> usize {
-        self.viewers.load(Ordering::Acquire)
     }
 }
 

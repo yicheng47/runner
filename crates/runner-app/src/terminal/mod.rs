@@ -6,6 +6,7 @@ pub(crate) mod element;
 pub(crate) mod find;
 pub(crate) mod fonts;
 pub(crate) mod glyphs;
+pub(crate) mod graphics;
 pub mod ime;
 pub(crate) mod input;
 pub mod paste;

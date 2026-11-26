@@ -36,9 +36,15 @@ impl RemoteClient {
         if remote.terminal_epoch != terminal_epoch {
             for (id, pane) in &remote.terminals {
                 if let Some(size) = pane.attachment.terminal_interaction.read(cx).pane_size {
-                    remote
-                        .sizes
-                        .insert(id.clone(), (size.cols.max(20), size.rows.max(8)));
+                    remote.sizes.insert(
+                        id.clone(),
+                        runner_app::terminal_resize::TerminalGridSize {
+                            cols: size.cols.max(20),
+                            rows: size.rows.max(8),
+                            cell_width: size.cell_width,
+                            cell_height: size.cell_height,
+                        },
+                    );
                 }
             }
             remote.recovery.extend(remote.terminals.keys().cloned());
@@ -702,7 +708,7 @@ impl RemoteClient {
             {
                 continue;
             }
-            let Some(&(cols, rows)) = remote.sizes.get(&id) else {
+            let Some(&size) = remote.sizes.get(&id) else {
                 continue;
             };
             let take_control = if is_tab {
@@ -715,10 +721,10 @@ impl RemoteClient {
             let config = RemoteTerminal {
                 computer: remote.computer.id.clone(),
                 session: id.clone(),
-                cols,
-                rows,
-                cell_width: 0,
-                cell_height: 0,
+                cols: size.cols,
+                rows: size.rows,
+                cell_width: size.cell_width,
+                cell_height: size.cell_height,
                 take_control,
             };
             let address = config.address();

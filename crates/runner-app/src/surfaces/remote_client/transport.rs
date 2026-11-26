@@ -66,18 +66,27 @@ impl RemoteTransport {
         (DaemonClient::new(transport.clone()), lifetime, transport)
     }
 
-    pub(crate) fn claim_if_free(&self, cols: u16, rows: u16) -> Result<(), ClientError> {
+    pub(crate) fn claim_if_free(
+        &self,
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+    ) -> Result<(), ClientError> {
         let config = self.config.lock().unwrap().clone();
         let cols = cols.max(20);
         let rows = rows.max(8);
+        let (cell_width, cell_height) =
+            runner_core::protocol::terminal::normalize_cell_size(cell_width, cell_height)
+                .unwrap_or((config.cell_width, config.cell_height));
         let result = if self.connected.load(Ordering::Acquire) {
             self.client.remote_claim_control(
                 config.computer,
                 config.session,
                 cols,
                 rows,
-                config.cell_width,
-                config.cell_height,
+                cell_width,
+                cell_height,
             )
         } else {
             Err(ClientError::msg("remote terminal is disconnected"))
@@ -86,6 +95,10 @@ impl RemoteTransport {
             let mut config = self.config.lock().unwrap();
             config.cols = cols;
             config.rows = rows;
+            if cell_width > 0 && cell_height > 0 {
+                config.cell_width = cell_width;
+                config.cell_height = cell_height;
+            }
         }
         result
     }
@@ -205,5 +218,146 @@ impl Transport for RemoteTransport {
         }
         self.client
             .resize(address, subscriber, cols, rows, cell_width, cell_height);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use runner_core::protocol::terminal::{
+        TerminalController, TerminalFrame, TerminalSnapshot, TerminalSubscription,
+    };
+
+    #[derive(Default)]
+    struct CellRecordingTransport {
+        attaches: Mutex<Vec<RemoteTerminal>>,
+        takes: Mutex<Vec<(u16, u16, u16, u16)>>,
+        claims: Mutex<Vec<(u16, u16, u16, u16)>>,
+        resizes: Mutex<Vec<(u16, u16, u16, u16)>>,
+    }
+
+    struct ClosedFrames;
+    impl TerminalSubscription for ClosedFrames {
+        fn recv(&mut self) -> Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("closed"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            Arc::new(|| {})
+        }
+    }
+
+    impl Transport for CellRecordingTransport {
+        fn call(&self, request: Request) -> Result<Response, ClientError> {
+            match request {
+                Request::remote_take_control {
+                    cols,
+                    rows,
+                    cell_width,
+                    cell_height,
+                    ..
+                } => {
+                    self.takes
+                        .lock()
+                        .unwrap()
+                        .push((cols, rows, cell_width, cell_height));
+                    Ok(Response::remote_take_control(Ok(())))
+                }
+                Request::remote_claim_control {
+                    cols,
+                    rows,
+                    cell_width,
+                    cell_height,
+                    ..
+                } => {
+                    self.claims
+                        .lock()
+                        .unwrap()
+                        .push((cols, rows, cell_width, cell_height));
+                    Ok(Response::remote_claim_control(Ok(())))
+                }
+                _ => Err(ClientError::msg("unexpected request")),
+            }
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach_remote(&self, config: RemoteTerminal) -> Result<TerminalAttachment, ClientError> {
+            let (cols, rows, cell_width, cell_height) = (
+                config.cols,
+                config.rows,
+                config.cell_width,
+                config.cell_height,
+            );
+            self.attaches.lock().unwrap().push(config);
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: TerminalSnapshot {
+                    seq: 1,
+                    activity: None,
+                    cols,
+                    rows,
+                    cell_width,
+                    cell_height,
+                    controller: TerminalController::Desktop,
+                    bytes: Vec::new(),
+                    unfinished_len: 0,
+                    preceding_char: None,
+                },
+                frames: Box::new(ClosedFrames),
+            })
+        }
+        fn resize(&self, _: &str, _: u64, cols: u16, rows: u16, cell_width: u16, cell_height: u16) {
+            self.resizes
+                .lock()
+                .unwrap()
+                .push((cols, rows, cell_width, cell_height));
+        }
+    }
+
+    #[test]
+    fn remote_attach_take_claim_and_resize_carry_cell_size() {
+        let base = Arc::new(CellRecordingTransport::default());
+        let config = RemoteTerminal {
+            computer: "peer-1".into(),
+            session: "sess-1".into(),
+            cols: 96,
+            rows: 32,
+            cell_width: 16,
+            cell_height: 36,
+            take_control: true,
+        };
+        let address = config.address();
+        let connected = Arc::new(AtomicBool::new(true));
+        let (daemon, _lifetime, transport) = RemoteTransport::client_with_handle(
+            DaemonClient::new(base.clone()),
+            config,
+            "Remote".into(),
+            connected,
+        );
+
+        let attached = daemon.attach(&address).unwrap();
+        assert_eq!(
+            (attached.snapshot.cell_width, attached.snapshot.cell_height),
+            (16, 36)
+        );
+        {
+            let attaches = base.attaches.lock().unwrap();
+            assert_eq!(attaches.len(), 1);
+            assert_eq!((attaches[0].cell_width, attaches[0].cell_height), (16, 36));
+        }
+
+        transport.claim_if_free(100, 34, 18, 38).unwrap();
+        assert_eq!(base.claims.lock().unwrap().as_slice(), &[(100, 34, 18, 38)]);
+
+        daemon
+            .terminal_take_back(&address, 110, 40, 20, 42)
+            .unwrap();
+        assert_eq!(base.takes.lock().unwrap().as_slice(), &[(110, 40, 20, 42)]);
+
+        daemon.resize(&address, 1, 110, 40, 10, 21);
+        assert_eq!(
+            base.resizes.lock().unwrap().as_slice(),
+            &[(110, 40, 10, 21)]
+        );
     }
 }

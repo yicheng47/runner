@@ -152,7 +152,7 @@ fn halve_rgba(src: &RgbaImage) -> RgbaImage {
     RgbaImage::from_raw(dw, dh, dst).expect("halved RGBA buffer matches dimensions")
 }
 
-fn rgba_to_render_image(mut rgba: RgbaImage) -> Arc<RenderImage> {
+pub(crate) fn rgba_to_render_image(mut rgba: RgbaImage) -> Arc<RenderImage> {
     for pixel in rgba.as_mut().as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
@@ -161,7 +161,7 @@ fn rgba_to_render_image(mut rgba: RgbaImage) -> Arc<RenderImage> {
     )])))
 }
 
-fn clamp_frame_to_texture_limit(mut rgba: RgbaImage) -> RgbaImage {
+pub(crate) fn clamp_frame_to_texture_limit(mut rgba: RgbaImage) -> RgbaImage {
     while rgba.width() > MAX_TEXTURE_SIDE || rgba.height() > MAX_TEXTURE_SIDE {
         rgba = halve_rgba(&rgba);
     }

@@ -10,6 +10,7 @@ use super::element::TerminalElement;
 struct TerminalViewport {
     element: TerminalElement,
     last_link_root: Option<PathBuf>,
+    last_scale_factor: f32,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -76,6 +77,7 @@ impl Element for TerminalViewportElement {
             .file_links
             .as_ref()
             .and_then(|route| route.link_context(cx).extra_root);
+        let scale_factor = window.scale_factor();
         let view =
             window.with_element_state::<Entity<TerminalViewport>, _>(id.unwrap(), |view, _| {
                 let view = view.unwrap_or_else(|| {
@@ -86,6 +88,7 @@ impl Element for TerminalViewportElement {
                         TerminalViewport {
                             element,
                             last_link_root,
+                            last_scale_factor: scale_factor,
                             _subscriptions: subscriptions,
                         }
                     })
@@ -94,6 +97,7 @@ impl Element for TerminalViewportElement {
                     let old = &view.element;
                     let new = &self.element;
                     let link_root_changed = view.last_link_root != next_link_root;
+                    let scale_changed = view.last_scale_factor != scale_factor;
                     let changed = !std::sync::Arc::ptr_eq(&old.session, &new.session)
                         || old.interaction != new.interaction
                         || old.input != new.input
@@ -103,7 +107,8 @@ impl Element for TerminalViewportElement {
                         || old.resize_owner != new.resize_owner
                         || old.style != new.style
                         || old.find != new.find
-                        || link_root_changed;
+                        || link_root_changed
+                        || scale_changed;
                     if old.interaction != new.interaction
                         || old.input != new.input
                         || old.find != new.find
@@ -112,6 +117,7 @@ impl Element for TerminalViewportElement {
                     }
                     view.element = new.clone();
                     view.last_link_root = next_link_root;
+                    view.last_scale_factor = scale_factor;
                     if changed {
                         cx.notify();
                     }

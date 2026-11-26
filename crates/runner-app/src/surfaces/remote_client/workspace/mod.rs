@@ -95,7 +95,7 @@ pub(crate) struct RemoteWindow {
     pair_epoch: u64,
     attachment_generation: u64,
     pending: HashMap<String, Arc<()>>,
-    sizes: HashMap<String, (u16, u16)>,
+    sizes: HashMap<String, runner_app::terminal_resize::TerminalGridSize>,
     errors: HashSet<String>,
     connected: Arc<AtomicBool>,
     pub(super) connection: Connection,
@@ -273,7 +273,7 @@ impl RemoteClient {
             .terminals
             .get(id)
             .map(|pane| pane.attachment.terminal.size())
-            .or_else(|| remote.sizes.get(id).copied())
+            .or_else(|| remote.sizes.get(id).map(|size| (size.cols, size.rows)))
     }
 
     pub(crate) fn remote_terminal_palette(

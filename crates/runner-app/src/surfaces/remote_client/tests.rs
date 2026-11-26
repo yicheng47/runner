@@ -393,7 +393,8 @@ impl Transport for Fake {
                 session,
                 cols,
                 rows,
-                ..
+                cell_width,
+                cell_height,
             } => {
                 self.claims
                     .lock()
@@ -421,8 +422,8 @@ impl Transport for Fake {
                         seq,
                         cols,
                         rows,
-                        cell_width: 0,
-                        cell_height: 0,
+                        cell_width,
+                        cell_height,
                         controller,
                     }));
                 }
@@ -460,7 +461,12 @@ impl Transport for Fake {
         Box::new(Events(rx))
     }
     fn attach_remote(&self, config: RemoteTerminal) -> Result<TerminalAttachment, ClientError> {
-        let (cols, rows) = (config.cols, config.rows);
+        let (cols, rows, cell_width, cell_height) = (
+            config.cols,
+            config.rows,
+            config.cell_width,
+            config.cell_height,
+        );
         self.attaches.lock().unwrap().push(config);
         if self.fail_attach.load(Ordering::SeqCst) {
             return Err(ClientError::msg("test attach failed"));
@@ -476,8 +482,8 @@ impl Transport for Fake {
                 activity: None,
                 cols,
                 rows,
-                cell_width: 0,
-                cell_height: 0,
+                cell_width,
+                cell_height,
                 controller: self.controller.lock().unwrap().clone(),
                 bytes: self.snapshot.lock().unwrap().clone(),
                 unfinished_len: 0,
