@@ -41,6 +41,7 @@ fn core_at(app_data_dir: PathBuf, db: Arc<runner_daemon::db::DbPool>) -> AppCore
         runtime_shell_env,
         runtime_discovery,
         usage: Arc::new(runner_daemon::usage::UsageService::default()),
+        telemetry: Arc::new(runner_daemon::telemetry::TelemetryService::without_network()),
         claude_accounts: Arc::new(
             runner_daemon::runtimes::claude_code::accounts::AccountService::without_authentication(
             ),

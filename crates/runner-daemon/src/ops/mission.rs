@@ -711,6 +711,7 @@ pub async fn mission_start_impl_with_size(
     };
     if !was_completed {
         state.events.emit("onboarding/changed", &());
+        state.telemetry.notify_onboarding_completed();
     }
     log::info!(
         "mission starting: id={} crew={:?} title={:?}",

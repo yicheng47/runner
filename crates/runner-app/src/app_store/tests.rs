@@ -241,7 +241,69 @@ fn refresh_kinds_preserve_each_data_dependency() {
         StoreRefreshKind::for_event(&event("onboarding/changed")),
         Some(StoreRefreshKind::Onboarding)
     );
+    assert_eq!(
+        StoreRefreshKind::for_event(&event("telemetry/changed")),
+        Some(StoreRefreshKind::Telemetry)
+    );
     assert_eq!(StoreRefreshKind::for_event(&event("unrelated")), None);
+}
+
+#[gpui::test]
+fn app_store_defers_telemetry_status_off_startup_and_preserves_event_batches(
+    cx: &mut gpui::TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let store = crate::app_store::test_lifecycle_store(cx, temp.path());
+    assert!(store.read_with(cx, |store, _| store.telemetry.is_none()));
+
+    // Ordinary StoreRefreshKind::All (e.g., role/activity) must complete without scanning telemetry.
+    let before_full = store.read_with(cx, |store, _| store.revisions.full_refresh);
+    store.update(cx, |store, cx| store.refresh(StoreRefreshKind::All, cx));
+    for _ in 0..200 {
+        cx.run_until_parked();
+        if store.read_with(cx, |store, _| {
+            store.revisions.full_refresh > before_full && !store.refresh_in_flight
+        }) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(store.read_with(cx, |store, _| store.revisions.full_refresh > before_full));
+    assert!(store.read_with(cx, |store, _| store.telemetry.is_none()));
+
+    // Daemon event batch merging `telemetry/changed` with another refresh (`chat/layout-changed` -> All)
+    // must still preserve the telemetry dirty bit and load the updated status.
+    let core = store.read_with(cx, |store, _| store.test_core.clone());
+    let initial = core.telemetry.status(&core).unwrap();
+    let initial_id = initial.install_id.clone().expect("initial install id");
+    store.update(cx, |store, cx| store.set_telemetry_status(initial, cx));
+
+    let rotated = core.telemetry.reset_id(&core).unwrap();
+    let rotated_id = rotated.install_id.expect("rotated install id");
+    assert_ne!(rotated_id, initial_id);
+    // Emit a non-telemetry event in the same burst so the foreground event loop merges
+    // Telemetry + Nodes into All.
+    core.events.emit("chat/layout-changed", &());
+    for _ in 0..200 {
+        cx.run_until_parked();
+        if store.read_with(cx, |store, _| {
+            store
+                .telemetry
+                .as_ref()
+                .and_then(|s| s.install_id.as_deref())
+                == Some(rotated_id.as_str())
+        }) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        store.read_with(cx, |store, _| store
+            .telemetry
+            .as_ref()
+            .and_then(|s| s.install_id.clone())),
+        Some(rotated_id)
+    );
 }
 
 #[test]

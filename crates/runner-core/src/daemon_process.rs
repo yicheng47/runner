@@ -475,9 +475,14 @@ pub fn executable_hash(path: &Path) -> io::Result<String> {
     }
     Ok(format!("{:x}", hash.finalize()))
 }
+fn preserve_runner_env(key: &std::ffi::OsStr) -> bool {
+    key == "RUNNER_RECORD_INPUT_FIXTURE"
+        || key == "RUNNER_TELEMETRY"
+        || (cfg!(any(test, debug_assertions)) && key == "RUNNER_HEARTBEAT_TEST_URL")
+}
 fn clean_command(command: &mut Command, data: &Path) {
     for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("RUNNER_") && key != "RUNNER_RECORD_INPUT_FIXTURE" {
+        if key.to_string_lossy().starts_with("RUNNER_") && !preserve_runner_env(&key) {
             command.env_remove(key);
         }
     }
@@ -499,7 +504,7 @@ pub fn cleaned_path(
 /// Call before starting any threads that could read or write the process environment.
 pub unsafe fn clean_environment(data: &Path) {
     for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("RUNNER_") && key != "RUNNER_RECORD_INPUT_FIXTURE" {
+        if key.to_string_lossy().starts_with("RUNNER_") && !preserve_runner_env(&key) {
             unsafe { std::env::remove_var(key) };
         }
     }

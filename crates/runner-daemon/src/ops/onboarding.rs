@@ -35,6 +35,7 @@ pub fn status(core: &AppCore) -> Result<OnboardingStatus> {
 pub fn complete(core: &AppCore) -> Result<OnboardingStatus> {
     if crate::db::mark_onboarding_completed(&core.db)? {
         core.events.emit("onboarding/changed", &());
+        core.telemetry.notify_onboarding_completed();
     }
     status(core)
 }
@@ -42,6 +43,7 @@ pub fn complete(core: &AppCore) -> Result<OnboardingStatus> {
 pub(crate) fn mark_completed_on_activity(core: &AppCore) -> Result<()> {
     if crate::db::mark_onboarding_completed(&core.db)? {
         core.events.emit("onboarding/changed", &());
+        core.telemetry.notify_onboarding_completed();
     }
     Ok(())
 }

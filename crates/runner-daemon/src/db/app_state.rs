@@ -62,6 +62,11 @@ pub(crate) fn app_state_set(conn: &Connection, key: &str, value: &str) -> Result
     Ok(())
 }
 
+pub(crate) fn app_state_delete(conn: &Connection, key: &str) -> Result<()> {
+    conn.execute("DELETE FROM _app_state WHERE key = ?1", params![key])?;
+    Ok(())
+}
+
 pub(crate) fn onboarding_completed_at_conn(conn: &Connection) -> Result<Option<String>> {
     app_state_get(conn, ONBOARDING_COMPLETED_KEY)
 }

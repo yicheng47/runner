@@ -31,6 +31,7 @@ pub mod shell_integration;
 pub mod shell_path;
 pub mod skills;
 pub(crate) mod slow_stage;
+pub mod telemetry;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod usage;
@@ -64,6 +65,7 @@ pub struct AppCore {
     /// Current login-shell probe state and diagnostics for agent availability.
     pub runtime_discovery: runtime_status::SharedDiscoveryState,
     pub usage: Arc<usage::UsageService>,
+    pub telemetry: Arc<telemetry::TelemetryService>,
     pub claude_accounts: Arc<runtimes::claude_code::accounts::AccountService>,
     /// Live per-mission event-bus watchers. Mounted by `mission_start` once
     /// the opening events are durable; unmounted by `mission_stop` and on

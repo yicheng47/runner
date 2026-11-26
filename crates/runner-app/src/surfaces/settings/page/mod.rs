@@ -84,6 +84,7 @@ pub(crate) enum SettingsPane {
     Usage,
     Skills,
     Mcp,
+    Privacy,
     Updates,
     About,
     Archived,
@@ -105,6 +106,7 @@ impl SettingsPane {
             Some("usage") => Self::Usage,
             Some("mcp") => Self::Mcp,
             Some("skills") => Self::Skills,
+            Some("privacy") => Self::Privacy,
             Some("updates") => Self::Updates,
             Some("about") | Some("diagnostics") => Self::About,
             Some("archived") => Self::Archived,
@@ -128,6 +130,7 @@ impl SettingsPane {
             Self::Usage => "usage",
             Self::Skills => "skills",
             Self::Mcp => "mcp",
+            Self::Privacy => "privacy",
             Self::Updates => "updates",
             Self::About => "about",
             Self::Archived => "archived",
@@ -150,6 +153,7 @@ impl SettingsPane {
             Self::Usage => crate::i18n::text("ui.usage"),
             Self::Skills => crate::i18n::text("ui.skills"),
             Self::Mcp => "MCP",
+            Self::Privacy => crate::i18n::text("privacy.title"),
             Self::Updates => crate::i18n::text("ui.updates"),
             Self::About => crate::i18n::text("ui.about"),
             Self::Archived => crate::i18n::text("ui.archived"),
@@ -186,6 +190,13 @@ impl SettingsPane {
                 "ui.changes",
                 "ui.sessions",
             ],
+            Self::Privacy => &[
+                "privacy.telemetry_section",
+                "privacy.heartbeat_label",
+                "privacy.install_id_label",
+                "privacy.reset_id",
+                "privacy.honors_dnt",
+            ],
             Self::About => &["ui.application_logs"],
             _ => &[],
         };
@@ -208,6 +219,7 @@ impl SettingsPane {
             Self::Usage => "gauge.svg",
             Self::Skills => "file-text.svg",
             Self::Mcp => "plug.svg",
+            Self::Privacy => "shield.svg",
             Self::Updates => "refresh-cw.svg",
             Self::About => "info.svg",
             Self::Archived => "archive.svg",
@@ -231,7 +243,11 @@ const INTEGRATION_PANES: &[SettingsPane] = &[SettingsPane::Agents, SettingsPane:
 
 const CLOUD_PANES: &[SettingsPane] = &[SettingsPane::Account, SettingsPane::Remote];
 
-const SYSTEM_PANES: &[SettingsPane] = &[SettingsPane::Updates, SettingsPane::About];
+const SYSTEM_PANES: &[SettingsPane] = &[
+    SettingsPane::Privacy,
+    SettingsPane::Updates,
+    SettingsPane::About,
+];
 
 const NAV_GROUPS: &[(&str, &[SettingsPane])] = &[
     ("ui.app", APP_PANES),
@@ -319,6 +335,7 @@ pub(crate) struct SettingsState {
     pub(crate) language: Entity<StyledSelect>,
     pub(crate) quit_behavior: Entity<StyledSelect>,
     agents: Option<Entity<settings::agents::AgentsPane>>,
+    pub(crate) privacy: Option<Entity<settings::privacy::PrivacyPane>>,
     updates: Option<Entity<settings::updates::UpdatesPane>>,
     about: Option<Entity<settings::about::AboutPane>>,
     pub(crate) archived: Option<Entity<settings::archived::ArchivedPane>>,
@@ -594,6 +611,7 @@ impl SettingsState {
             language,
             quit_behavior,
             agents: None,
+            privacy: None,
             updates: None,
             about: None,
             archived: None,
@@ -950,6 +968,18 @@ impl NativeRoot {
                 let _ = self.core(cx).runtime_check_updates(false);
             }
             SettingsPane::Skills | SettingsPane::Mcp => {}
+            SettingsPane::Privacy => {
+                if self.settings_page.privacy.is_none() {
+                    let app_store = self.app_store.clone();
+                    self.settings_page.privacy =
+                        Some(cx.new(|pane_cx| {
+                            settings::privacy::PrivacyPane::new(app_store, pane_cx)
+                        }));
+                }
+                if let Some(privacy) = self.settings_page.privacy.clone() {
+                    privacy.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
+                }
+            }
             SettingsPane::Updates => {
                 if self.settings_page.updates.is_none() {
                     let app_store = self.app_store.clone();

@@ -1622,4 +1622,558 @@ fn setup_state_handles_visibility_generation_guards_and_finish_resets() {
     assert!(!state.open);
     assert!(!state.more_agents);
     assert_eq!(state.create_starter_crew, None);
+    assert_eq!(state.telemetry_desired, None);
+}
+
+#[gpui::test]
+fn setup_telemetry_checkbox_defaults_checked_and_syncs_opt_out_to_privacy_pane(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let (store, handle, mut visual) = open_test_root(&temp, cx, |root, _| {
+        root.setup.status = Some(runtime_status(true, Vec::new()));
+        root.setup.proposal = Some(two_slot_proposal());
+    });
+    wait_until(&mut visual, |visual| {
+        let _ = handle.update(visual, |_, window, _| window.refresh());
+        store.read_with(visual, |store, _| store.telemetry.is_some())
+            && visual.debug_bounds("SETUP_TELEMETRY_CHECKBOX").is_some()
+    });
+
+    assert!(visual.debug_bounds("SETUP_TELEMETRY_STRIP").is_some());
+    assert!(visual.debug_bounds("SETUP_TELEMETRY_CHECKBOX").is_some());
+    assert!(visual.debug_bounds("SETUP_TELEMETRY_LINK").is_some());
+    let checked = handle
+        .read_with(&visual, |root, cx| {
+            root.setup
+                .telemetry_checked(root.app_store.read(cx).telemetry.as_ref())
+        })
+        .unwrap();
+    assert!(checked);
+
+    // Unchecking updates daemon telemetry state and clears Install ID.
+    click_selector(&mut visual, "SETUP_TELEMETRY_CHECKBOX");
+    wait_until(&mut visual, |visual| {
+        store.read_with(visual, |store, _| {
+            store
+                .telemetry
+                .as_ref()
+                .is_some_and(|status| !status.enabled && status.install_id.is_none())
+        })
+    });
+
+    // Finishing setup keeps telemetry disabled and synced in Settings → Privacy.
+    click_selector(&mut visual, "SETUP_SKIP");
+    wait_until(&mut visual, |visual| {
+        store.read_with(visual, |store, _| store.onboarding_completed())
+    });
+
+    let _ = handle.update(&mut visual, |root, window, cx| {
+        root.enter_settings_pane(
+            crate::surfaces::settings::page::SettingsPane::Privacy,
+            window,
+            cx,
+        );
+    });
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("PRIVACY_INSTALL_ID_CLEARED").is_some());
+    assert!(store.read_with(&visual, |store, _| {
+        store
+            .telemetry
+            .as_ref()
+            .is_some_and(|status| !status.enabled && status.install_id.is_none())
+    }));
+}
+
+#[gpui::test]
+fn setup_telemetry_opt_out_persists_before_onboarding_complete_on_immediate_finish(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let (store, handle, mut visual) = open_test_root(&temp, cx, |root, _| {
+        root.setup.status = Some(runtime_status(true, Vec::new()));
+        root.setup.proposal = Some(two_slot_proposal());
+        root.setup.set_telemetry_desired(false);
+    });
+
+    let _ = handle.update(&mut visual, |root, window, cx| {
+        root.finish_setup(false, window, cx);
+    });
+    wait_until(&mut visual, |visual| {
+        store.read_with(visual, |store, _| store.onboarding_completed())
+    });
+
+    let status = store
+        .read_with(&visual, |store, _| store.client.telemetry_status())
+        .unwrap();
+    assert!(!status.enabled);
+    assert!(status.install_id.is_none());
+}
+
+#[gpui::test]
+fn setup_telemetry_checkbox_locks_when_env_override_is_active(cx: &mut TestAppContext) {
+    let _ = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut vars = std::collections::BTreeMap::new();
+    vars.insert("DO_NOT_TRACK".to_owned(), "1".to_owned());
+    let telemetry = std::sync::Arc::new(runner_daemon::telemetry::TelemetryService::with_config(
+        runner_daemon::telemetry::TelemetryConfig {
+            dev_build: true,
+            env: runner_daemon::telemetry::TelemetryEnvSource::Fixed(vars),
+            network_enabled: false,
+            ..runner_daemon::telemetry::TelemetryConfig::default()
+        },
+    ));
+    let store =
+        crate::app_store::test_lifecycle_store_with_telemetry(cx, temp.path(), Some(telemetry));
+    let handle = cx.add_window(|window, cx| {
+        window.resize(size(px(1200.), px(960.)));
+        let mut root = NativeRoot::new(
+            "main".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        );
+        root.setup.loaded_once = true;
+        root.setup.catalog = test_catalog();
+        root.setup.status = Some(runtime_status(true, Vec::new()));
+        root.setup.proposal = Some(two_slot_proposal());
+        root
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(handle.into(), cx);
+    visual.simulate_resize(size(px(1200.), px(960.)));
+    let _ = handle.update(&mut visual, |_, window, _| window.refresh());
+    wait_until(&mut visual, |visual| {
+        let _ = handle.update(visual, |_, window, _| window.refresh());
+        store.read_with(visual, |store, _| store.telemetry.is_some())
+            && visual.debug_bounds("SETUP_TELEMETRY_ENV_NOTICE").is_some()
+    });
+
+    click_selector(&mut visual, "SETUP_TELEMETRY_CHECKBOX");
+    let checked = handle
+        .read_with(&visual, |root, cx| {
+            root.setup
+                .telemetry_checked(root.app_store.read(cx).telemetry.as_ref())
+        })
+        .unwrap();
+    assert!(!checked);
+    let status = store
+        .read_with(&visual, |store, _| store.client.telemetry_status())
+        .unwrap();
+    assert!(!status.enabled);
+    assert_eq!(status.env_override.as_deref(), Some("DO_NOT_TRACK=1"));
+}
+
+#[gpui::test]
+fn setup_overlapping_telemetry_clicks_and_skip_persists_final_opt_out_with_zero_pings(
+    cx: &mut TestAppContext,
+) {
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let _ = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+
+    // Local listener counting any accidental heartbeat delivery.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let stop_server = Arc::new(AtomicBool::new(false));
+    let hits_bg = Arc::clone(&hits);
+    let stop_bg = Arc::clone(&stop_server);
+    let server_handle = std::thread::spawn(move || {
+        while let Ok((_stream, _)) = listener.accept() {
+            if stop_bg.load(Ordering::Acquire) {
+                break;
+            }
+            hits_bg.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+
+    let telemetry = Arc::new(runner_daemon::telemetry::TelemetryService::with_config(
+        runner_daemon::telemetry::TelemetryConfig {
+            dev_build: false,
+            endpoint: format!("http://{addr}/api/heartbeat"),
+            version: "0.20.4".into(),
+            build_stamp: "20261126.0220".into(),
+            channel: "production".into(),
+            os: "macos".into(),
+            arch: "aarch64".into(),
+            timeout: Duration::from_secs(2),
+            interval: runner_daemon::telemetry::HEARTBEAT_INTERVAL,
+            env: runner_daemon::telemetry::TelemetryEnvSource::Fixed(Default::default()),
+            network_enabled: true,
+        },
+    ));
+    let store = crate::app_store::test_lifecycle_store_with_telemetry(
+        cx,
+        temp.path(),
+        Some(Arc::clone(&telemetry)),
+    );
+    let core = store.read_with(cx, |store, _| store.test_core.clone());
+    core.runtime_discovery.write().unwrap().checking = false;
+    telemetry.start_scheduler(core.clone());
+
+    let handle = cx.add_window(|window, cx| {
+        window.resize(size(px(1200.), px(960.)));
+        let mut root = NativeRoot::new(
+            "main".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        );
+        root.setup.loaded_once = true;
+        root.setup.catalog = test_catalog();
+        root.setup.status = Some(runtime_status(true, Vec::new()));
+        root.setup.proposal = Some(two_slot_proposal());
+        root
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(handle.into(), cx);
+    visual.simulate_resize(size(px(1200.), px(960.)));
+    wait_until(&mut visual, |visual| {
+        let _ = handle.update(visual, |_, window, _| window.refresh());
+        store.read_with(visual, |store, _| store.telemetry.is_some())
+            && visual.debug_bounds("SETUP_TELEMETRY_CHECKBOX").is_some()
+    });
+
+    // First opt out cleanly so the next click will attempt to re-enable.
+    click_selector(&mut visual, "SETUP_TELEMETRY_CHECKBOX");
+    wait_until(&mut visual, |visual| {
+        store.read_with(visual, |store, _| {
+            store
+                .telemetry
+                .as_ref()
+                .is_some_and(|status| !status.enabled)
+        }) && handle
+            .read_with(visual, |root, _| {
+                root.setup.telemetry_write_in_flight.is_none()
+            })
+            .unwrap_or(false)
+    });
+
+    // Overlapping sequence without draining between clicks:
+    // 1. Click ON spawns an enable write (`latest_seq` = N).
+    // 2. While that enable write is still queued/in-flight, click OFF coalesces the
+    //    final opt-out (`latest_seq` = N + 1) and immediately click Skip, which marks
+    //    the write state finished before spawning.
+    // Even when both background tasks execute in any order, the stale enable is dropped
+    // and the final opt-out commits before onboarding_complete() wakes the worker.
+    let checkbox = visual
+        .debug_bounds("SETUP_TELEMETRY_CHECKBOX")
+        .expect("SETUP_TELEMETRY_CHECKBOX")
+        .center();
+    let skip = visual
+        .debug_bounds("SETUP_SKIP")
+        .expect("SETUP_SKIP")
+        .center();
+    visual.simulate_click(checkbox, Modifiers::default());
+    visual.simulate_click(checkbox, Modifiers::default());
+    visual.simulate_click(skip, Modifiers::default());
+
+    wait_until(&mut visual, |visual| {
+        store.read_with(visual, |store, _| store.onboarding_completed())
+    });
+    visual.run_until_parked();
+
+    let status = core.telemetry.status(&core).unwrap();
+    assert!(
+        !status.enabled,
+        "final opt-out must win over earlier enable"
+    );
+    assert!(status.install_id.is_none());
+    assert_eq!(
+        core.telemetry.try_send_once(&core, chrono::Utc::now()),
+        runner_daemon::telemetry::SendOutcome::SkippedDisabled
+    );
+
+    telemetry.stop();
+    stop_server.store(true, Ordering::Release);
+    let _ = TcpStream::connect(addr);
+    server_handle.join().unwrap();
+    assert_eq!(
+        hits.load(Ordering::Relaxed),
+        0,
+        "heartbeat worker must send zero requests after opt-out in Setup"
+    );
+}
+
+#[gpui::test]
+fn setup_three_queued_telemetry_clicks_without_finish_persists_final_opt_out(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let (store, handle, mut visual) = open_test_root(&temp, cx, |root, _| {
+        root.setup.status = Some(runtime_status(true, Vec::new()));
+        root.setup.proposal = Some(two_slot_proposal());
+    });
+    wait_until(&mut visual, |visual| {
+        let _ = handle.update(visual, |_, window, _| window.refresh());
+        store.read_with(visual, |store, _| store.telemetry.is_some())
+            && visual.debug_bounds("SETUP_TELEMETRY_CHECKBOX").is_some()
+    });
+
+    // Starting from ON, queue OFF -> ON -> OFF without draining or clicking Finish.
+    let checkbox = visual
+        .debug_bounds("SETUP_TELEMETRY_CHECKBOX")
+        .expect("SETUP_TELEMETRY_CHECKBOX")
+        .center();
+    visual.simulate_click(checkbox, Modifiers::default());
+    visual.simulate_click(checkbox, Modifiers::default());
+    visual.simulate_click(checkbox, Modifiers::default());
+
+    wait_until(&mut visual, |visual| {
+        handle
+            .read_with(visual, |root, _| {
+                root.setup.telemetry_write_in_flight.is_none()
+                    && root.setup.telemetry_desired.is_none()
+            })
+            .unwrap_or(false)
+    });
+
+    let status = store
+        .read_with(&visual, |store, _| store.client.telemetry_status())
+        .unwrap();
+    assert!(
+        !status.enabled,
+        "three queued clicks OFF->ON->OFF must persist final OFF even without Finish"
+    );
+    assert!(status.install_id.is_none());
+}
+
+#[gpui::test]
+fn setup_acknowledged_toggle_then_external_opt_out_and_skip_preserves_external_opt_out(
+    cx: &mut TestAppContext,
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let (store, handle, mut visual) = open_test_root(&temp, cx, |root, _| {
+        root.setup.status = Some(runtime_status(true, Vec::new()));
+        root.setup.proposal = Some(two_slot_proposal());
+    });
+    wait_until(&mut visual, |visual| {
+        let _ = handle.update(visual, |_, window, _| window.refresh());
+        store.read_with(visual, |store, _| store.telemetry.is_some())
+            && visual.debug_bounds("SETUP_TELEMETRY_CHECKBOX").is_some()
+    });
+
+    // Toggle OFF then ON in Setup and wait for both to be fully acknowledged.
+    click_selector(&mut visual, "SETUP_TELEMETRY_CHECKBOX");
+    wait_until(&mut visual, |visual| {
+        handle
+            .read_with(visual, |root, _| {
+                root.setup.telemetry_write_in_flight.is_none()
+                    && root.setup.telemetry_desired.is_none()
+            })
+            .unwrap_or(false)
+            && store.read_with(visual, |store, _| {
+                store.telemetry.as_ref().is_some_and(|s| !s.enabled)
+            })
+    });
+    click_selector(&mut visual, "SETUP_TELEMETRY_CHECKBOX");
+    wait_until(&mut visual, |visual| {
+        handle
+            .read_with(visual, |root, _| {
+                root.setup.telemetry_write_in_flight.is_none()
+                    && root.setup.telemetry_desired.is_none()
+            })
+            .unwrap_or(false)
+            && store.read_with(visual, |store, _| {
+                store.telemetry.as_ref().is_some_and(|s| s.enabled)
+            })
+    });
+
+    // Another window/client turns telemetry OFF externally.
+    let core = store.read_with(&visual, |store, _| store.test_core.clone());
+    core.telemetry.set_enabled(&core, false).unwrap();
+    wait_until(&mut visual, |visual| {
+        store.read_with(visual, |store, _| {
+            store.telemetry.as_ref().is_some_and(|s| !s.enabled)
+        })
+    });
+
+    // Clicking Skip in Setup must NOT restore the earlier acknowledged ON choice.
+    click_selector(&mut visual, "SETUP_SKIP");
+    wait_until(&mut visual, |visual| {
+        store.read_with(visual, |store, _| store.onboarding_completed())
+    });
+
+    let status = core.telemetry.status(&core).unwrap();
+    assert!(
+        !status.enabled,
+        "Finish must not overwrite an external opt-out after an earlier click was retired"
+    );
+    assert!(status.install_id.is_none());
+}
+
+#[gpui::test]
+fn setup_telemetry_checkbox_ignores_clicks_until_initial_status_loads(cx: &mut TestAppContext) {
+    let _ = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut vars = std::collections::BTreeMap::new();
+    vars.insert("DO_NOT_TRACK".to_owned(), "1".to_owned());
+    let telemetry = std::sync::Arc::new(runner_daemon::telemetry::TelemetryService::with_config(
+        runner_daemon::telemetry::TelemetryConfig {
+            dev_build: true,
+            env: runner_daemon::telemetry::TelemetryEnvSource::Fixed(vars),
+            network_enabled: false,
+            ..runner_daemon::telemetry::TelemetryConfig::default()
+        },
+    ));
+    let store =
+        crate::app_store::test_lifecycle_store_with_telemetry(cx, temp.path(), Some(telemetry));
+    assert!(store.read_with(cx, |store, _| store.telemetry.is_none()));
+    let handle = cx.add_window(|window, cx| {
+        window.resize(size(px(1200.), px(960.)));
+        let mut root = NativeRoot::new(
+            "main".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        );
+        root.setup.loaded_once = true;
+        root.setup.catalog = test_catalog();
+        root.setup.status = Some(runtime_status(true, Vec::new()));
+        root.setup.proposal = Some(two_slot_proposal());
+        // Attempt to toggle BEFORE initial async telemetry_status has arrived.
+        root.setup.toggle_telemetry(&store, cx);
+        root
+    });
+    let mut visual = VisualTestContext::from_window(handle.into(), cx);
+    wait_until(&mut visual, |visual| {
+        store.read_with(visual, |store, _| store.telemetry.is_some())
+    });
+
+    let status = store
+        .read_with(&visual, |store, _| store.client.telemetry_status())
+        .unwrap();
+    assert!(
+        status.stored_enabled,
+        "pre-load click under DO_NOT_TRACK must not mutate stored preference"
+    );
+    assert!(!status.enabled);
+    assert_eq!(status.env_override.as_deref(), Some("DO_NOT_TRACK=1"));
+}
+
+#[gpui::test]
+fn setup_closing_window_during_pending_opt_out_aborts_finish_without_completing_onboarding(
+    cx: &mut TestAppContext,
+) {
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let _ = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = Arc::new(AtomicUsize::new(0));
+    let stop_server = Arc::new(AtomicBool::new(false));
+    let hits_bg = Arc::clone(&hits);
+    let stop_bg = Arc::clone(&stop_server);
+    let server_handle = std::thread::spawn(move || {
+        while let Ok((_stream, _)) = listener.accept() {
+            if stop_bg.load(Ordering::Acquire) {
+                break;
+            }
+            hits_bg.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+
+    let telemetry = Arc::new(runner_daemon::telemetry::TelemetryService::with_config(
+        runner_daemon::telemetry::TelemetryConfig {
+            dev_build: false,
+            endpoint: format!("http://{addr}/api/heartbeat"),
+            version: "0.20.4".into(),
+            build_stamp: "20261126.0220".into(),
+            channel: "production".into(),
+            os: "macos".into(),
+            arch: "aarch64".into(),
+            timeout: Duration::from_secs(2),
+            interval: runner_daemon::telemetry::HEARTBEAT_INTERVAL,
+            env: runner_daemon::telemetry::TelemetryEnvSource::Fixed(Default::default()),
+            network_enabled: true,
+        },
+    ));
+    let store = crate::app_store::test_lifecycle_store_with_telemetry(
+        cx,
+        temp.path(),
+        Some(Arc::clone(&telemetry)),
+    );
+    let core = store.read_with(cx, |store, _| store.test_core.clone());
+    core.runtime_discovery.write().unwrap().checking = false;
+    telemetry.start_scheduler(core.clone());
+
+    let handle = cx.add_window(|window, cx| {
+        window.resize(size(px(1200.), px(960.)));
+        let mut root = NativeRoot::new(
+            "main".into(),
+            temp.path().join("logs"),
+            None,
+            None,
+            store.clone(),
+            window,
+            cx,
+        );
+        root.setup.loaded_once = true;
+        root.setup.catalog = test_catalog();
+        root.setup.status = Some(runtime_status(true, Vec::new()));
+        root.setup.proposal = Some(two_slot_proposal());
+        root
+    });
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(handle.into(), cx);
+    visual.simulate_resize(size(px(1200.), px(960.)));
+    wait_until(&mut visual, |visual| {
+        let _ = handle.update(visual, |_, window, _| window.refresh());
+        store.read_with(visual, |store, _| store.telemetry.is_some())
+    });
+
+    // Hold an opt-out write in flight (SQLite still defaults to enabled=true),
+    // start Skip (which registers the waiter on SetupState), then immediately close
+    // the window before that write can acknowledge.
+    let _ = handle.update(&mut visual, |root, window, cx| {
+        root.setup.set_telemetry_desired(false);
+        root.setup.telemetry_write_in_flight = root.setup.telemetry_desired;
+        root.finish_setup(false, window, cx);
+        window.remove_window();
+    });
+    visual.run_until_parked();
+    drop(visual);
+    cx.run_until_parked();
+
+    let onboarding = store
+        .read_with(cx, |store, _| store.client.onboarding_status())
+        .unwrap();
+    assert!(
+        !onboarding.completed,
+        "closing Setup while an opt-out write is pending must abort Finish before onboarding_complete()"
+    );
+    assert_eq!(
+        core.telemetry.try_send_once(&core, chrono::Utc::now()),
+        runner_daemon::telemetry::SendOutcome::SkippedOnboardingIncomplete
+    );
+
+    telemetry.stop();
+    stop_server.store(true, Ordering::Release);
+    let _ = TcpStream::connect(addr);
+    server_handle.join().unwrap();
+    assert_eq!(
+        hits.load(Ordering::Relaxed),
+        0,
+        "heartbeat worker must not send while opt-out write was unacknowledged"
+    );
 }

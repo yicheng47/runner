@@ -1,4 +1,43 @@
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const BUILD_STAMP: Option<&str> = option_env!("RUNNER_BUILD_STAMP");
+pub const RELEASE_CHANNEL: Option<&str> = option_env!("RUNNER_RELEASE_CHANNEL");
+
+pub fn is_dev_build() -> bool {
+    is_dev_build_for(cfg!(debug_assertions), BUILD_STAMP)
+}
+
+fn is_dev_build_for(debug_assertions: bool, build_stamp: Option<&str>) -> bool {
+    debug_assertions || build_stamp.is_none_or(str::is_empty)
+}
+
+pub fn heartbeat_channel(release_channel: Option<&str>) -> &'static str {
+    match release_channel {
+        Some("production") => "production",
+        Some("nightly") => "nightly",
+        Some("preview-nightly") => "preview-nightly",
+        _ => "production",
+    }
+}
+
+pub fn heartbeat_os() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else {
+        "linux"
+    }
+}
+
+pub fn heartbeat_arch() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        std::env::consts::ARCH
+    }
+}
 
 pub fn display_version() -> String {
     compose_display_version(
@@ -89,5 +128,28 @@ mod tests {
         assert_eq!(version_label("0.8.3 (05926cb)"), "v0.8.3 (05926cb)");
         assert_eq!(version_label("0.8.3-nightly (dev)"), "v0.8.3-nightly (dev)");
         assert_eq!(version_label("Nightly (05926cb)"), "Nightly (05926cb)");
+    }
+
+    #[test]
+    fn heartbeat_metadata_helpers_return_schema_values() {
+        assert_eq!(heartbeat_channel(Some("production")), "production");
+        assert_eq!(heartbeat_channel(Some("nightly")), "nightly");
+        assert_eq!(
+            heartbeat_channel(Some("preview-nightly")),
+            "preview-nightly"
+        );
+        assert_eq!(heartbeat_channel(Some("unknown")), "production");
+        assert_eq!(heartbeat_channel(None), "production");
+        assert!(matches!(heartbeat_os(), "macos" | "windows" | "linux"));
+        assert!(!heartbeat_arch().is_empty());
+        assert!(is_dev_build_for(true, None));
+        assert!(is_dev_build_for(true, Some("20261126.1")));
+        assert!(is_dev_build_for(false, None));
+        assert!(is_dev_build_for(false, Some("")));
+        assert!(!is_dev_build_for(false, Some("20261126.1")));
+        assert_eq!(
+            is_dev_build(),
+            is_dev_build_for(cfg!(debug_assertions), BUILD_STAMP)
+        );
     }
 }

@@ -437,6 +437,11 @@ impl NativeRoot {
                 .clone()
                 .map(IntoElement::into_any_element),
             SettingsPane::Skills | SettingsPane::Mcp => None,
+            SettingsPane::Privacy => self
+                .settings_page
+                .privacy
+                .clone()
+                .map(IntoElement::into_any_element),
             SettingsPane::Updates => self
                 .settings_page
                 .updates
