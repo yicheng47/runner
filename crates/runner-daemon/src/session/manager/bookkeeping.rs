@@ -155,7 +155,7 @@ impl SessionManager {
     #[cfg(test)]
     pub(crate) fn key_test_manager() -> Arc<Self> {
         Self::new(
-            Arc::new(RwLock::new(crate::shell_path::LoginShellEnv::default())),
+            Arc::new(RwLock::new(crate::test_support::isolated_shell_env(None))),
             Arc::new(RwLock::new(crate::shell_path::DiscoveryState::pending())),
             Arc::new(super::super::pty_runtime::PtyRuntime::new()),
         )

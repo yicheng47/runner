@@ -49,7 +49,7 @@ pub(crate) fn test_core_in_with_runtime(
     app_data_dir: PathBuf,
     runtime: Arc<dyn SessionRuntime>,
 ) -> AppCore {
-    let runtime_shell_env = Arc::new(std::sync::RwLock::new(LoginShellEnv::default()));
+    let runtime_shell_env = Arc::new(std::sync::RwLock::new(isolated_shell_env(None)));
     let runtime_discovery = Arc::new(std::sync::RwLock::new(
         crate::shell_path::DiscoveryState::startup(None, None),
     ));
@@ -66,7 +66,7 @@ pub(crate) fn test_core_in_with_runtime(
         app_data_dir,
         sessions,
         files: Arc::new(crate::files::FilesService::new(
-            Arc::clone(&runtime_shell_env),
+            Arc::new(std::sync::RwLock::new(LoginShellEnv::default())),
             events.clone(),
         )),
         runtime_shell_env,
@@ -95,6 +95,31 @@ pub(crate) fn test_core_with_runtime(runtime: Arc<dyn SessionRuntime>) -> AppCor
 
 pub(crate) fn test_core() -> AppCore {
     test_core_in(PathBuf::new())
+}
+
+pub(crate) fn isolate_shell_env(env: &mut LoginShellEnv) {
+    env.vars.insert(
+        crate::runtime_status::TEST_ISOLATE_PATH_ENV.into(),
+        "1".into(),
+    );
+}
+
+pub(crate) fn isolated_shell_env(path: Option<&std::path::Path>) -> LoginShellEnv {
+    let mut env = LoginShellEnv {
+        path: path.map(|path| path.display().to_string()),
+        vars: Default::default(),
+    };
+    isolate_shell_env(&mut env);
+    env
+}
+
+pub(crate) fn isolate_runtime_path(core: &AppCore, path: Option<&std::path::Path>) {
+    {
+        let mut env = core.runtime_shell_env.write().unwrap();
+        env.path = path.map(|path| path.display().to_string());
+        isolate_shell_env(&mut env);
+    }
+    core.runtime_discovery.write().unwrap().checking = false;
 }
 
 pub(crate) fn insert_test_role(

@@ -222,12 +222,13 @@ fn update_spec_runs_the_effective_executable_with_its_update_argument() {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let state = crate::test_support::test_core();
-    {
-        let mut env = state.runtime_shell_env.write().unwrap();
-        env.path = Some(bin.path().display().to_string());
-        env.vars
-            .insert("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "true".into());
-    }
+    crate::test_support::isolate_runtime_path(&state, Some(bin.path()));
+    state
+        .runtime_shell_env
+        .write()
+        .unwrap()
+        .vars
+        .insert("AGY_CLI_DISABLE_AUTO_UPDATE".into(), "true".into());
 
     let spec = runtime_update_spawn_spec(&state, Runtime::Codex, (90, 28)).unwrap();
     assert_eq!(spec.command, bin.path().join("codex").display().to_string());
@@ -257,8 +258,7 @@ fn update_spec_runs_the_effective_executable_with_its_update_argument() {
 fn missing_agent_preview_uses_catalog_command_without_requiring_installation() {
     let state = crate::test_support::test_core();
     let root = tempfile::tempdir().unwrap();
-    state.runtime_shell_env.write().unwrap().path = Some(root.path().display().to_string());
-    state.runtime_discovery.write().unwrap().checking = false;
+    crate::test_support::isolate_runtime_path(&state, Some(root.path()));
     let preview = runtime_command_preview(&state, Runtime::Trae, false).unwrap();
     assert_eq!(preview.lines[0].command, "traecli");
     assert!(!preview.lines.is_empty());
@@ -406,7 +406,7 @@ fn custom_flags_reads_stderr_from_help_probe_like_agy() {
     std::fs::set_permissions(&agy, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let state = crate::test_support::test_core();
-    state.runtime_shell_env.write().unwrap().path = Some(bin.path().display().to_string());
+    crate::test_support::isolate_runtime_path(&state, Some(bin.path()));
     runtime_set_override(&state, Runtime::Antigravity, agy.to_str().unwrap()).unwrap();
 
     let ok = runtime_set_custom_flags(&state, Runtime::Antigravity, "--known-flag").unwrap();
@@ -437,10 +437,9 @@ fn rejected_opencode_override_preserves_active_path_version_cache() {
     }
 
     let state = crate::test_support::test_core();
-    state.runtime_shell_env.write().unwrap().path = Some(path_dir.display().to_string());
+    crate::test_support::isolate_runtime_path(&state, Some(&path_dir));
     {
         let mut discovery = state.runtime_discovery.write().unwrap();
-        discovery.checking = false;
         discovery.result = Some(crate::shell_path::DiscoveryResult {
             shell: Some("/bin/zsh".into()),
             outcome: crate::shell_path::DiscoveryOutcome::Ok,
@@ -511,13 +510,9 @@ fn runtime_status_list_reports_npm_availability_and_read_only_sign_in_statuses()
     let empty_home = tempfile::tempdir().unwrap();
 
     let state = crate::test_support::test_core();
+    crate::test_support::isolate_runtime_path(&state, Some(bin.path()));
     {
         let mut env = state.runtime_shell_env.write().unwrap();
-        env.path = Some(bin.path().display().to_string());
-        env.vars.insert(
-            crate::runtime_status::TEST_ISOLATE_PATH_ENV.into(),
-            "1".into(),
-        );
         // Point HOME and CODEX_HOME away from developer machine creds so the
         // initial check stays deterministic even when run locally.
         env.vars.insert(
@@ -529,7 +524,6 @@ fn runtime_status_list_reports_npm_availability_and_read_only_sign_in_statuses()
             codex_home.path().to_string_lossy().into_owned(),
         );
     }
-    state.runtime_discovery.write().unwrap().checking = false;
 
     let initial = runtime_status_list(&state).unwrap();
     assert!(initial.npm_available);
@@ -599,7 +593,7 @@ fn sync_probe_preserves_async_notification_and_generation_ordering() {
     std::fs::write(
             &opencode,
             format!(
-                "#!/bin/sh\nif [ ! -f \"{}\" ]; then\n  : > \"{}\"\n  i=0\n  while [ ! -f \"{}\" ] && [ $i -lt 300 ]; do\n    sleep 0.01\n    i=$((i + 1))\n  done\n  echo 'unrecognized'\nelse\n  echo '1.19.5'\nfi\n",
+                "#!/bin/sh\nPATH=\"/usr/bin:/bin${{PATH:+:$PATH}}\"\nif [ ! -f \"{}\" ]; then\n  : > \"{}\"\n  i=0\n  while [ ! -f \"{}\" ] && [ $i -lt 300 ]; do\n    sleep 0.01\n    i=$((i + 1))\n  done\n  echo 'unrecognized'\nelse\n  echo '1.19.5'\nfi\n",
                 started.display(),
                 started.display(),
                 release_async.display(),
@@ -609,7 +603,7 @@ fn sync_probe_preserves_async_notification_and_generation_ordering() {
     std::fs::set_permissions(&opencode, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let state = crate::test_support::test_core();
-    state.runtime_shell_env.write().unwrap().path = Some(dir.path().display().to_string());
+    crate::test_support::isolate_runtime_path(&state, Some(dir.path()));
     let mut rx = state.events.subscribe();
 
     crate::runtime_status::versions::request_probes(
@@ -680,7 +674,7 @@ fn sync_probe_preserves_async_notification_and_generation_ordering() {
     std::fs::write(
             &slow_v1,
             format!(
-                "#!/bin/sh\n: > \"{}\"\ni=0\nwhile [ ! -f \"{}\" ] && [ $i -lt 300 ]; do\n  sleep 0.01\n  i=$((i + 1))\ndone\necho '1.19.5'\n",
+                "#!/bin/sh\nPATH=\"/usr/bin:/bin${{PATH:+:$PATH}}\"\n: > \"{}\"\ni=0\nwhile [ ! -f \"{}\" ] && [ $i -lt 300 ]; do\n  sleep 0.01\n  i=$((i + 1))\ndone\necho '1.19.5'\n",
                 slow_started.display(),
                 release_slow.display(),
             ),
@@ -693,6 +687,7 @@ fn sync_probe_preserves_async_notification_and_generation_ordering() {
     std::fs::set_permissions(&fast_v2, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let state2 = crate::test_support::test_core();
+    crate::test_support::isolate_runtime_path(&state2, None);
     crate::db::set_runtime_override(&state2.db, "opencode", Some(slow_v1.to_str().unwrap()))
         .unwrap();
 
@@ -756,7 +751,7 @@ fn write_two_stage_probe_script(
     std::fs::write(
             path,
             format!(
-                "#!/bin/sh\nif [ \"$1\" != \"--version\" ]; then\n  exit 9\nfi\nif [ ! -f \"{}\" ]; then\n  : > \"{}\"\n  i=0\n  while [ ! -f \"{}\" ] && [ $i -lt 300 ]; do\n    sleep 0.01\n    i=$((i + 1))\n  done\n  echo '{}'\n  exit 0\nfi\n: > \"{}\"\ni=0\nwhile [ ! -f \"{}\" ] && [ $i -lt 300 ]; do\n  sleep 0.01\n  i=$((i + 1))\ndone\necho '{}'\n",
+                "#!/bin/sh\nPATH=\"/usr/bin:/bin${{PATH:+:$PATH}}\"\nif [ \"$1\" != \"--version\" ]; then\n  exit 9\nfi\nif [ ! -f \"{}\" ]; then\n  : > \"{}\"\n  i=0\n  while [ ! -f \"{}\" ] && [ $i -lt 300 ]; do\n    sleep 0.01\n    i=$((i + 1))\n  done\n  echo '{}'\n  exit 0\nfi\n: > \"{}\"\ni=0\nwhile [ ! -f \"{}\" ] && [ $i -lt 300 ]; do\n  sleep 0.01\n  i=$((i + 1))\ndone\necho '{}'\n",
                 first_started.display(),
                 first_started.display(),
                 release_first.display(),
@@ -790,7 +785,7 @@ fn older_async_probe_completing_first_cannot_bypass_sync_launch_gate() {
     );
 
     let state = crate::test_support::test_core();
-    state.runtime_shell_env.write().unwrap().path = Some(dir.path().display().to_string());
+    crate::test_support::isolate_runtime_path(&state, Some(dir.path()));
 
     request_version_probe(&state, Runtime::OpenCode);
     wait_for(
@@ -898,6 +893,7 @@ fn older_async_probe_completing_first_still_emits_runtime_changed_on_status_read
     );
 
     let state = crate::test_support::test_core();
+    crate::test_support::isolate_runtime_path(&state, None);
     crate::db::set_runtime_override(&state.db, "opencode", Some(opencode.to_str().unwrap()))
         .unwrap();
     let mut rx = state.events.subscribe();
@@ -977,7 +973,7 @@ fn same_path_replacement_before_refresh_refuses_launch_without_spawning_standalo
         std::fs::write(
                 &tmp,
                 format!(
-                    "#!/bin/sh\nif [ \"$1\" = --version ]; then\n  echo '{version}'\n  exit 0\nfi\ntouch '{}'\nexit 0\n",
+                    "#!/bin/sh\nPATH=\"/usr/bin:/bin${{PATH:+:$PATH}}\"\nif [ \"$1\" = --version ]; then\n  echo '{version}'\n  exit 0\nfi\ntouch '{}'\nexit 0\n",
                     standalone_called.display()
                 ),
             )
@@ -989,7 +985,7 @@ fn same_path_replacement_before_refresh_refuses_launch_without_spawning_standalo
     write_script("opencode.v2", "2.1.0");
 
     let state = crate::test_support::test_core();
-    state.runtime_shell_env.write().unwrap().path = Some(dir.path().display().to_string());
+    crate::test_support::isolate_runtime_path(&state, Some(dir.path()));
     assert_eq!(
         crate::runtime_status::versions::ensure_probed(
             Runtime::OpenCode,
@@ -1045,7 +1041,7 @@ fn classified_opencode_startup_error_clears_cached_probe_so_status_list_preserve
     std::fs::write(
             &opencode,
             format!(
-                "#!/bin/sh\nmode=$(cat '{}')\nif [ \"$1\" = --version ]; then\n  if [ \"$mode\" = v2 ]; then\n    echo '2.1.0'\n  else\n    echo '1.19.5'\n  fi\n  exit 0\nfi\nif [ \"$mode\" = v1 ]; then\n  echo \"error: unknown option '--standalone'\"\n  exit 1\nfi\nexit 0\n",
+                "#!/bin/sh\nPATH=\"/usr/bin:/bin${{PATH:+:$PATH}}\"\nmode=$(cat '{}')\nif [ \"$1\" = --version ]; then\n  if [ \"$mode\" = v2 ]; then\n    echo '2.1.0'\n  else\n    echo '1.19.5'\n  fi\n  exit 0\nfi\nif [ \"$mode\" = v1 ]; then\n  echo \"error: unknown option '--standalone'\"\n  exit 1\nfi\nexit 0\n",
                 mode_file.display()
             ),
         )
@@ -1059,8 +1055,7 @@ fn classified_opencode_startup_error_clears_cached_probe_so_status_list_preserve
         Arc::new(crate::session::pty_runtime::PtyRuntime::new()),
     );
     state.sessions.set_runtime_events(state.events.clone());
-    state.runtime_shell_env.write().unwrap().path = Some(dir.path().display().to_string());
-    state.runtime_discovery.write().unwrap().checking = false;
+    crate::test_support::isolate_runtime_path(&state, Some(dir.path()));
 
     assert_eq!(
         crate::runtime_status::versions::ensure_probed(
@@ -1208,17 +1203,20 @@ fn failed_claude_auth_status_probe_caches_error_without_looping_until_explicit_r
     let mut state = crate::test_support::test_core_in(app_data_dir);
     state.claude_accounts = Arc::new(crate::claude_accounts::AccountService::default());
     state.usage = Arc::new(crate::usage::UsageService::without_fetch());
-    {
-        let mut env = state.runtime_shell_env.write().unwrap();
-        env.path = Some(bin.display().to_string());
-        env.vars.insert(
-            crate::runtime_status::TEST_ISOLATE_PATH_ENV.into(),
-            "1".into(),
-        );
-        env.vars
-            .insert("HOME".into(), empty_home.to_string_lossy().into_owned());
+    struct JoinAccountsOnDrop(Arc<crate::claude_accounts::AccountService>);
+    impl Drop for JoinAccountsOnDrop {
+        fn drop(&mut self) {
+            self.0.stop_and_join_test_workers();
+        }
     }
-    state.runtime_discovery.write().unwrap().checking = false;
+    let _join_accounts = JoinAccountsOnDrop(Arc::clone(&state.claude_accounts));
+    crate::test_support::isolate_runtime_path(&state, Some(&bin));
+    state
+        .runtime_shell_env
+        .write()
+        .unwrap()
+        .vars
+        .insert("HOME".into(), empty_home.to_string_lossy().into_owned());
     crate::db::set_runtime_override(&state.db, "claude-code", claude_bin.to_str()).unwrap();
     crate::db::app_state_set(
         &state.db.get().unwrap(),
@@ -1305,6 +1303,13 @@ fn failed_claude_auth_status_probe_caches_error_without_looping_until_explicit_r
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(probe_count(), 2);
+    assert_eq!(
+        crate::runtime_status::direct_chat_path(&state.runtime_shell_env.read().unwrap()),
+        bin.display().to_string()
+    );
+    assert!(crate::runtime_status::is_path_isolated(
+        &state.runtime_shell_env
+    ));
     let mut emitted = Vec::new();
     while let Ok(evt) = events.try_recv() {
         emitted.push(evt.name);

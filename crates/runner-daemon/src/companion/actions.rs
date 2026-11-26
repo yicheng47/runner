@@ -1234,7 +1234,7 @@ mod tests {
         let executable = std::env::current_exe().unwrap();
         crate::db::set_runtime_override(&core.db, "codex", executable.to_str()).unwrap();
         crate::db::set_runtime_override(&core.db, "claude-code", executable.to_str()).unwrap();
-        core.runtime_shell_env.write().unwrap().path = Some(String::new());
+        crate::test_support::isolate_runtime_path(&core, None);
         core.usage.set_enabled(vec![Runtime::Codex, Runtime::Pi]);
         let value = AgentUsage {
             credits: Some(p::UsageCredits {
@@ -1324,6 +1324,7 @@ mod tests {
         std::fs::write(&executable, "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'codex-cli 0.166.0'; exit; fi\nread answer\necho done\n").unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut core = crate::test_support::test_core_in(dir.path().into());
+        crate::test_support::isolate_runtime_path(&core, None);
         core.sessions = crate::session::SessionManager::new(
             core.runtime_shell_env.clone(),
             core.runtime_discovery.clone(),
@@ -1400,6 +1401,7 @@ mod tests {
         fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
             let core = std::sync::Arc::new(crate::test_support::test_core_in(dir.path().into()));
+            crate::test_support::isolate_runtime_path(&core, None);
             let executable = std::env::current_exe().unwrap();
             crate::db::set_runtime_override(&core.db, "codex", executable.to_str()).unwrap();
             crate::db::set_runtime_override(&core.db, "claude-code", executable.to_str()).unwrap();

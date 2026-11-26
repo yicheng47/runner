@@ -127,7 +127,7 @@ mod process_tests {
                 command,
                 pool,
                 discovery: state(),
-                env: Arc::new(RwLock::new(LoginShellEnv::default())),
+                env: Arc::new(RwLock::new(crate::test_support::isolated_shell_env(None))),
                 runtime,
             }
         }
@@ -165,14 +165,18 @@ mod process_tests {
     }
 
     fn state() -> SharedDiscoveryState {
-        Arc::new(RwLock::new(crate::shell_path::DiscoveryState::startup(
-            None, None,
-        )))
+        let mut discovery = crate::shell_path::DiscoveryState::startup(None, None);
+        discovery.checking = false;
+        Arc::new(RwLock::new(discovery))
     }
 
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\nPATH=\"/usr/bin:/bin${{PATH:+:$PATH}}\"\n{body}\n"),
+        )
+        .unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
     }
@@ -206,7 +210,7 @@ printf '%s' '{"models":[{"slug":"cached-model","visibility":"list"}]}'"#,
                 shell: None,
                 outcome: crate::shell_path::DiscoveryOutcome::Ok,
                 duration_ms: 0,
-                env: LoginShellEnv::default(),
+                env: crate::test_support::isolated_shell_env(None),
             },
         )
         .unwrap();

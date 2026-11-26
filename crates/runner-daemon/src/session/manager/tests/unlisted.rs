@@ -77,6 +77,7 @@ fn runtime_update_spec_allows_live_sessions_without_stopping_or_restarting_them(
     {
         saw_antigravity |= definition.name == Runtime::Antigravity;
         let mut state = crate::test_support::test_core();
+        crate::test_support::isolate_runtime_path(&state, None);
         let fake = fake_runtime();
         state.sessions = SessionManager::new(
             Arc::clone(&state.runtime_shell_env),

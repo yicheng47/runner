@@ -454,6 +454,23 @@ pub(crate) fn run(query: Query<'_>) -> Result<Vec<u8>, Reason> {
 }
 
 fn run_process(query: Query<'_>, merge_stderr: bool) -> std::io::Result<Vec<u8>> {
+    let path = direct_chat_path(query.env);
+    #[cfg(test)]
+    if query
+        .env
+        .vars
+        .get(super::TEST_ISOLATE_PATH_ENV)
+        .is_some_and(|value| value == "1")
+        && std::path::Path::new(query.executable)
+            .parent()
+            .is_none_or(|parent| parent.as_os_str().is_empty())
+        && super::find_executable(query.executable, &path).is_none()
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "isolated test PATH does not contain executable",
+        ));
+    }
     let mut output = tempfile::tempfile()?;
     let mut command = Command::new(query.executable);
     if query
@@ -467,7 +484,7 @@ fn run_process(query: Query<'_>, merge_stderr: bool) -> std::io::Result<Vec<u8>>
     command
         .args(query.args)
         .envs(&query.env.vars)
-        .env("PATH", direct_chat_path(query.env))
+        .env("PATH", path)
         .stdin(if query.stdin.is_some() {
             Stdio::piped()
         } else {
