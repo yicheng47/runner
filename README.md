@@ -22,7 +22,7 @@
 <p align="center">
   <strong>Where terminal agents work together.</strong>
   <br />
-  Claude Code, Codex, Antigravity CLI, Copilot CLI and pi on the same task, in one mission. Each agent keeps its own TUI in a real terminal; Runner is what sits between them.
+  Claude Code, Codex, Antigravity CLI and pi on the same task, in one mission. Each agent keeps its own TUI in a real terminal; Runner is what sits between them.
 </p>
 
 <p align="center">
@@ -113,9 +113,9 @@ If Runner is useful to you, consider supporting its ongoing development and main
 
 ## Supported agents
 
-**First-tier:** Claude Code, Codex, Antigravity CLI, Grok Build and pi. Runner is developed and tested against these.
+**First-tier:** Claude Code, Codex, Antigravity CLI and pi. These four runtimes are Runner's first-class citizens — actively developed, tested, and maintained against upstream CLI changes.
 
-**Community-supported:** GitHub Copilot CLI, Cursor, OpenCode v2 and TRAE CLI (opt-in). They run chats and missions, and Runner relies on the people who use them to find problems: [open an issue](https://github.com/yicheng47/runner/issues/new) when something breaks.
+**Community-supported:** Grok Build, GitHub Copilot CLI, Cursor, OpenCode v2 and TRAE CLI (opt-in). They run chats and missions on a best-effort basis, and Runner relies mainly on community [issues](https://github.com/yicheng47/runner/issues/new) and pull requests to catch regressions and keep their adapters up to date.
 
 Features and platform support vary by agent.
 

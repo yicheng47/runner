@@ -2,7 +2,7 @@
 
 Runner 启动独立安装的智能体 CLI，并保留其原生终端界面。在 **设置 → 智能体（Settings → Agents）** 中启用智能体、检查检测到的可执行文件，或指定可执行文件覆盖。
 
-Runner 将智能体分为两级支持。**一级支持**的智能体是 Claude Code、Codex、Antigravity CLI、Grok Build 和 pi：Runner 针对它们开发和测试。**社区支持**的智能体是 GitHub Copilot CLI、Cursor、OpenCode v2 和 TRAE CLI：它们可以运行聊天和任务，但 Runner 依靠使用者发现问题，遇到故障请[提交 issue](https://github.com/yicheng47/runner/issues/new)。同一级别内，各智能体的功能仍有差异；下文分别说明每个智能体支持的功能。
+Runner 将智能体分为两级支持。**一级支持**的智能体是 Claude Code、Codex、Antigravity CLI 和 pi：这四个运行时是 Runner 的一等公民，会持续开发、测试并跟进上游 CLI 变更。**社区支持**的智能体是 Grok Build、GitHub Copilot CLI、Cursor、OpenCode v2 和 TRAE CLI：它们按尽力支持原则运行聊天和任务，排查故障与适配上游变更主要依赖社区[提交 issue](https://github.com/yicheng47/runner/issues/new) 或 PR。同一级别内，各智能体的功能仍有差异；下文分别说明每个智能体支持的功能。
 
 ## 智能体设置
 

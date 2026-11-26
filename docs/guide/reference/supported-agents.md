@@ -2,7 +2,7 @@
 
 Runner launches separately installed agent CLIs and keeps their native terminal interfaces. Enable agents, inspect detected executables, and choose executable overrides in **Settings → Agents**.
 
-Runner supports agents in two tiers. **First-tier** agents are Claude Code, Codex, Antigravity CLI, Grok Build and pi: Runner is developed and tested against them. **Community-supported** agents are GitHub Copilot CLI, Cursor, OpenCode v2 and TRAE CLI: they run chats and missions, but Runner relies on the people who use them to find problems, so [open an issue](https://github.com/yicheng47/runner/issues/new) when something breaks. Within each tier, features still vary by agent; the sections below say what each one supports.
+Runner supports agents in two tiers. **First-tier** agents are Claude Code, Codex, Antigravity CLI and pi: these four are Runner's first-class runtimes, actively developed, tested, and maintained against upstream CLI changes. **Community-supported** agents are Grok Build, GitHub Copilot CLI, Cursor, OpenCode v2 and TRAE CLI: they run chats and missions on a best-effort basis, and Runner relies mainly on community [issues](https://github.com/yicheng47/runner/issues/new) and pull requests to catch regressions and keep them working. Within each tier, features still vary by agent; the sections below say what each one supports.
 
 ## Agent settings
 

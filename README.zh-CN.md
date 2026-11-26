@@ -22,7 +22,7 @@
 <p align="center">
   <strong>让终端 agent 协同工作。</strong>
   <br />
-  Claude Code、Codex、Antigravity CLI、Copilot CLI 和 pi 在同一个 mission 里做同一件事。每个 agent 在真实终端里保留自己的 TUI，Runner 是夹在它们中间的那一层。
+  Claude Code、Codex、Antigravity CLI 和 pi 在同一个 mission 里做同一件事。每个 agent 在真实终端里保留自己的 TUI，Runner 是夹在它们中间的那一层。
 </p>
 
 <p align="center">
@@ -113,9 +113,9 @@ https://github.com/user-attachments/assets/a45d2440-da17-4be4-8de5-0902f59eb1da
 
 ## 支持的 Agent
 
-**一级支持：** Claude Code、Codex、Antigravity CLI、Grok Build 和 pi。Runner 针对这些 agent 开发和测试。
+**一级支持：** Claude Code、Codex、Antigravity CLI 和 pi。这四个运行时是 Runner 的一等公民，会持续开发、测试并跟进上游 CLI 变更。
 
-**社区支持：** GitHub Copilot CLI、Cursor、OpenCode v2 和 TRAE CLI（按需启用）。它们可以运行聊天和任务，Runner 依靠使用者发现问题，遇到故障请[提交 issue](https://github.com/yicheng47/runner/issues/new)。
+**社区支持：** Grok Build、GitHub Copilot CLI、Cursor、OpenCode v2 和 TRAE CLI（按需启用）。它们按尽力支持原则运行聊天和任务，排查故障与适配上游变更主要依赖社区[提交 issue](https://github.com/yicheng47/runner/issues/new) 或 PR。
 
 各 agent 的功能和平台支持有所不同。
 

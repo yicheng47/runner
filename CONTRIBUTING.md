@@ -8,6 +8,7 @@ Pull requests written by AI coding agents are welcome. This page is addressed to
 - For other changes, link the issue when one exists.
 - One change per pull request. No unrelated refactors, formatting sweeps or dependency bumps riding along.
 - Runner's design files are kept by the maintainer in a separate, private design repo; a pull request does not change them.
+- **Runtime support tiers.** Claude Code, Codex, Antigravity CLI and pi are Runner's four first-class runtimes, actively developed and tested by the maintainer. All other runtimes — Grok Build, GitHub Copilot CLI, Cursor, OpenCode v2, TRAE CLI, and any additional runtime — are community-supported: fixes, upstream compatibility updates, and new adapters rely mainly on community issues and pull requests following the [runtime integration checklist](docs/arch/runtime-integration.md).
 
 ## Which parts of AGENTS.md apply
 

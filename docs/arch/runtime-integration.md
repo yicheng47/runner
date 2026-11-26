@@ -4,6 +4,10 @@
 
 A runtime is supported when a person can use it in a chat and a crew can use it in a mission, with the same lifecycle and coordination guarantees as Runner's other agents. Starting its executable is only one part of that contract. This document covers an agent CLI such as `agy`; it does not describe adding another PTY implementation behind `SessionRuntime`, or adding a shell.
 
+## Support tiers
+
+Runner maintains two runtime support tiers. **First-tier** runtimes are **Claude Code**, **Codex**, **Antigravity CLI** and **pi**: these four are Runner's first-class citizens, actively developed, tested, and kept current against upstream CLI changes. **Community-supported** runtimes — currently **Grok Build**, **GitHub Copilot CLI**, **Cursor**, **OpenCode v2** and **TRAE CLI**, plus any additional runtime — are maintained on a best-effort basis and rely mainly on community issues and pull requests for fixes, upstream compatibility updates, and new capabilities.
+
 ## Priority and release rules
 
 | Priority | Meaning | Release rule |
