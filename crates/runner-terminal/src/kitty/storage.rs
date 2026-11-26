@@ -802,20 +802,31 @@ impl ImageStorage {
         Ok(parent)
     }
 
+    /// Longest relative descendant chain beneath `root` (0 if `root` has no
+    /// relative children). Walks each relative placement's bounded ancestor
+    /// chain (`<= PARENT_CHAIN_LIMIT` hops), taking O(placements) time without
+    /// extra allocations even for wide trees with many direct children.
     fn max_descendant_depth(&self, root: PlacementKey) -> usize {
         let mut max_depth = 0usize;
-        let mut frontier = vec![(root, 0usize)];
-        while let Some((node, depth)) = frontier.pop() {
-            if depth > PARENT_CHAIN_LIMIT {
-                return depth;
-            }
-            for (&key, placement) in &self.placements {
-                if let PlacementLocation::Relative(rel) = placement.location {
-                    if rel.parent == node && key != root {
-                        let next_depth = depth + 1;
-                        max_depth = max_depth.max(next_depth);
-                        frontier.push((key, next_depth));
+        for placement in self.placements.values() {
+            let PlacementLocation::Relative(mut rel) = placement.location else {
+                continue;
+            };
+            let mut steps = 1usize;
+            loop {
+                if rel.parent == root {
+                    max_depth = max_depth.max(steps);
+                    break;
+                }
+                if steps > PARENT_CHAIN_LIMIT {
+                    break;
+                }
+                match self.placements.get(&rel.parent).map(|p| p.location) {
+                    Some(PlacementLocation::Relative(parent_rel)) => {
+                        rel = parent_rel;
+                        steps += 1;
                     }
+                    _ => break,
                 }
             }
         }

@@ -3266,17 +3266,21 @@ fn model_sync_preserves_unfinished_deadline_and_orders_deferred_csi16_on_timeout
     .unwrap();
 
     // Feed unscheduled: mid-sync state (unfinished bytes, exact deadline, and
-    // zero premature replies for buffered CSI 14 t / CSI 16 t) is checked
-    // synchronously without racing the 150 ms timer.
+    // zero premature replies for buffered CSI 14 t, CSI 16 t, CSI ? 996 n,
+    // OSC 7501 probe, and CSI 18 t) is checked synchronously without racing the
+    // 150 ms timer.
     let mut chunk = b"\x1b[?2026hAB".to_vec();
     chunk.extend_from_slice(b"\x1b_Ga=T,t=d,f=24,s=1,v=1,i=1,p=1,c=3,r=1,C=0,q=2;/wAA\x1b\\");
-    chunk.extend_from_slice(b"CD\x1b[14t\x1b[16t\x1b[18t");
+    chunk.extend_from_slice(b"CD\x1b[14t\x1b[16t\x1b[?996n\x1b]7501;?\x07\x1b[18t");
     model.test_feed_output_unscheduled(1, &chunk);
 
     let initial_deadline = model.test_sync_deadline().expect("sync opened");
     let snap = model.snapshot(1);
     let unfinished = &snap.bytes[snap.bytes.len() - snap.unfinished_len..];
-    assert_eq!(unfinished, b"\x1b[?2026hCD\x1b[14t\x1b[16t\x1b[18t");
+    assert_eq!(
+        unfinished,
+        b"\x1b[?2026hCD\x1b[14t\x1b[16t\x1b[?996n\x1b]7501;?\x07\x1b[18t"
+    );
     assert_eq!(
         crate::replay::row_cells(&model.term.lock(), 0).trim_end(),
         "AB"
@@ -3284,15 +3288,15 @@ fn model_sync_preserves_unfinished_deadline_and_orders_deferred_csi16_on_timeout
     model.flush_events();
     assert!(
         host.replies.lock().unwrap().is_empty(),
-        "CSI 14 t / 16 t / 18 t must stay buffered while sync is open"
+        "native and side-scanned queries must stay buffered while sync is open"
     );
 
-    // Another graphics command inside the unclosed update flushes the held
-    // `CD\x1b[14t\x1b[16t\x1b[18t` in exact stream order BEFORE executing the
+    // Another graphics command inside the unclosed update flushes all held
+    // native + side-scanned replies in exact stream order BEFORE executing the
     // query, then reopens sync keeping `initial_deadline`.
     model.test_feed_output_unscheduled(
         2,
-        b"\x1b_Ga=q,f=24,s=1,v=1,i=9;/wAA\x1b\\EF\x1b[14t\x1b[16t",
+        b"\x1b_Ga=q,f=24,s=1,v=1,i=9;/wAA\x1b\\EF\x1b[16t\x1b[?996n\x1b]7501;?\x07\x1b[14t",
     );
     assert_eq!(model.test_sync_deadline(), Some(initial_deadline));
     model.flush_events();
@@ -3301,6 +3305,8 @@ fn model_sync_preserves_unfinished_deadline_and_orders_deferred_csi16_on_timeout
         vec![
             "\x1b[4;100;200t",
             "\x1b[6;20;10t",
+            "\x1b[?997;1n",
+            crate::program_status::PROBE_REPLY,
             "\x1b[8;5;20t",
             "\x1b_Gi=9;OK\x1b\\",
         ]
@@ -3311,7 +3317,7 @@ fn model_sync_preserves_unfinished_deadline_and_orders_deferred_csi16_on_timeout
     );
 
     // Arm the real sync-flush thread: on timeout, `EF` paints and the deferred
-    // `CSI 14 t` / `CSI 16 t` flush in exact order.
+    // mixed side-scanned + native queries flush in exact stream order.
     model.test_arm_sync_flush();
     assert!(wait_for(Duration::from_secs(2), || {
         model.test_sync_deadline().is_none()
@@ -3319,7 +3325,12 @@ fn model_sync_preserves_unfinished_deadline_and_orders_deferred_csi16_on_timeout
     model.flush_events();
     assert_eq!(
         std::mem::take(&mut *host.replies.lock().unwrap()),
-        vec!["\x1b[4;100;200t", "\x1b[6;20;10t"]
+        vec![
+            "\x1b[6;20;10t",
+            "\x1b[?997;1n",
+            crate::program_status::PROBE_REPLY,
+            "\x1b[4;100;200t",
+        ]
     );
     assert_eq!(
         crate::replay::row_cells(&model.term.lock(), 0).trim_end(),

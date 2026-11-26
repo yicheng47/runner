@@ -1429,17 +1429,30 @@ fn synchronized_update_places_image_between_runs_and_orders_csi_14_16_18() {
     flush_model_events(&model);
     let _ = host.take_replies();
 
-    // Synchronized CSI 14 t + CSI 16 t + CSI 18 t must reply in exact stream
-    // order both all-at-once and byte-by-byte, and in both 14->16 and 16->14 order.
+    // Synchronized native + side-scanned queries (`CSI 14 t`, `CSI 16 t`,
+    // `CSI ? 996 n`, `OSC 7501 ; ?`, `CSI 18 t`) must reply in exact stream
+    // order both all-at-once and byte-by-byte.
     let mut seq = 2u64;
     for (input, expected) in [
         (
-            b"\x1b[?2026h\x1b[14t\x1b[16t\x1b[18t\x1b[?2026l".as_slice(),
-            vec!["\x1b[4;100;200t", "\x1b[6;20;10t", "\x1b[8;5;20t"],
+            b"\x1b[?2026h\x1b[14t\x1b[16t\x1b[?996n\x1b]7501;?\x07\x1b[18t\x1b[?2026l".as_slice(),
+            vec![
+                "\x1b[4;100;200t",
+                "\x1b[6;20;10t",
+                "\x1b[?997;1n",
+                runner_terminal::program_status::PROBE_REPLY,
+                "\x1b[8;5;20t",
+            ],
         ),
         (
-            b"\x1b[?2026h\x1b[16t\x1b[14t\x1b[16t\x1b[?2026l".as_slice(),
-            vec!["\x1b[6;20;10t", "\x1b[4;100;200t", "\x1b[6;20;10t"],
+            b"\x1b[?2026h\x1b[16t\x1b[?996n\x1b]7501;?\x1b\\\x1b[14t\x1b[16t\x1b[?2026l".as_slice(),
+            vec![
+                "\x1b[6;20;10t",
+                "\x1b[?997;1n",
+                runner_terminal::program_status::PROBE_REPLY,
+                "\x1b[4;100;200t",
+                "\x1b[6;20;10t",
+            ],
         ),
     ] {
         model.feed_output(seq, input);
@@ -1455,20 +1468,24 @@ fn synchronized_update_places_image_between_runs_and_orders_csi_14_16_18() {
         assert_eq!(host.take_replies(), expected, "byte-by-byte {input:?}");
     }
 
-    // Graphics command inside a synchronized update flushes buffered 14/16 in
-    // order before emitting the Kitty reply, then trailing 18 replies on close.
-    let mut mixed = b"\x1b[?2026h\x1b[14t\x1b[16t".to_vec();
+    // Graphics command inside a synchronized update flushes all buffered native
+    // and side-scanned queries in order before emitting the Kitty reply, then
+    // trailing queries reply on close.
+    let mut mixed = b"\x1b[?2026h\x1b[16t\x1b[?996n\x1b]7501;?\x07\x1b[14t".to_vec();
     mixed.extend_from_slice(&apc(&format!("a=q,f=24,s=1,v=1,i=7;{px}")));
-    mixed.extend_from_slice(b"\x1b[18t\x1b[?2026l");
+    mixed.extend_from_slice(b"\x1b[18t\x1b[?996n\x1b[?2026l");
     model.feed_output(seq, &mixed);
     flush_model_events(&model);
     assert_eq!(
         host.take_replies(),
         vec![
-            "\x1b[4;100;200t",
             "\x1b[6;20;10t",
+            "\x1b[?997;1n",
+            runner_terminal::program_status::PROBE_REPLY,
+            "\x1b[4;100;200t",
             "\x1b_Gi=7;OK\x1b\\",
             "\x1b[8;5;20t",
+            "\x1b[?997;1n",
         ]
     );
 
@@ -2365,6 +2382,29 @@ fn hidden_mirror_stores_normalized_png_and_zlib_without_decoding_under_lock() {
     assert!(!model.graphics().lock().unwrap().primary.contains_image(9));
     assert!(!model.graphics().lock().unwrap().primary.contains_image(10));
 
+    // Un-normalized PNG missing `s=` / `v=` (e.g. raw PTY output from an older
+    // remote host) is rejected on a mirror without invoking the PNG decoder.
+    let missing_dims_png = apc(&format!("a=t,t=d,i=11,f=100,q=2;{png_b64}"));
+    // Mismatched metadata (`s=4,v=4` wrapping a 2x2 PNG) is stored lazily on
+    // the mirror, and deferred decode rejects the header/metadata mismatch.
+    let mismatched_dims_png = apc(&format!("a=t,t=d,i=12,f=100,s=4,v=4,q=2;{png_b64}"));
+    let (_, edge_mirror, _) =
+        replay_mirror(20, 5, 100, cell, &[&missing_dims_png, &mismatched_dims_png]);
+    assert!(
+        !edge_mirror.primary.contains_image(11),
+        "mirror must reject PNG missing s/v metadata without decoding under lock"
+    );
+    let mismatched = edge_mirror.primary.image_by_id(12).unwrap();
+    assert_eq!((mismatched.width, mismatched.height), (4, 4));
+    assert_eq!(
+        mismatched.decode_rgba(4096),
+        Err(runner_terminal::kitty::image::ImageError::InvalidData)
+    );
+    assert_eq!(
+        mismatched.decode_bgra(4096),
+        Err(runner_terminal::kitty::image::ImageError::InvalidData)
+    );
+
     shutdown_model(&model);
 }
 
@@ -2631,6 +2671,27 @@ fn reparenting_subtree_beyond_max_depth_returns_etoodeep_and_snapshot_clips_to_e
     // Reparenting (9,1) (descendant depth 2: 10->11) onto (6,1) (depth 5) gives
     // (11,1) exact depth 8 -> MUST succeed and round-trip cleanly in a snapshot!
     assert_eq!(send("a=p,i=9,p=1,P=6,Q=1"), vec!["\x1b_Gi=9,p=1;OK\x1b\\"]);
+
+    // Wide-fanout tree check: give (12,1) 64 direct children, then verify
+    // reparenting (12,1) onto depth-7 (10,1) fails with ETOODEEP (children
+    // would reach depth 9) while reparenting onto depth-6 (9,1) succeeds
+    // (children reach exact depth 8).
+    assert_eq!(send("a=p,i=12,p=1,C=1"), vec!["\x1b_Gi=12,p=1;OK\x1b\\"]);
+    for pid in 2..=65u32 {
+        assert_eq!(
+            send(&format!("a=p,i=12,p={pid},P=12,Q=1")),
+            vec![format!("\x1b_Gi=12,p={pid};OK\x1b\\")]
+        );
+    }
+    assert_eq!(
+        send("a=p,i=12,p=1,P=10,Q=1"),
+        vec!["\x1b_Gi=12,p=1;ETOODEEP: parent chain too deep\x1b\\"]
+    );
+    assert_eq!(
+        send("a=p,i=12,p=1,P=9,Q=1"),
+        vec!["\x1b_Gi=12,p=1;OK\x1b\\"]
+    );
+
     let snap = model.snapshot(seq.load(Ordering::Relaxed) as u64);
     let (_, restored, _) = replay_mirror(20, 6, 100, cell, &[&snap.bytes]);
     let p11 = restored
@@ -2707,4 +2768,128 @@ fn reparenting_subtree_beyond_max_depth_returns_etoodeep_and_snapshot_clips_to_e
         exact_len - 1,
     );
     assert!(tight_plan.is_empty());
+
+    // Shared row wrapper (`\x1b7` / `\x1b8`) is charged ONCE per occupied row:
+    // (a) one image with two placements on row 0;
+    // (b) two distinct images sharing row 0.
+    let mut term2 = make_term(20, 4, 10);
+    let mut gfx2 = TerminalGraphics::authoritative(None);
+    let mut proc2 = TrackedProcessor::new();
+    let mut sc2 = Scanner::new();
+    let tiny = BASE64.encode([1u8, 2, 3]);
+    let mut same_row_one_img = b"\x1b[1;1H".to_vec();
+    same_row_one_img.extend_from_slice(&apc(&format!("a=T,f=24,s=1,v=1,i=1,p=1,C=1;{tiny}")));
+    same_row_one_img.extend_from_slice(b"\x1b[1;5H");
+    same_row_one_img.extend_from_slice(&apc("a=p,i=1,p=2,C=1"));
+    feed_term_with_stream(
+        &mut term2,
+        &mut gfx2,
+        &sgr,
+        cell,
+        &mut proc2,
+        &mut sc2,
+        &same_row_one_img,
+        ExecMode::Authoritative,
+    );
+    let emit_all_row0 = |plan: &runner_terminal::kitty::snapshot::SnapshotGraphicsPlan,
+                         storage: &runner_terminal::kitty::storage::ImageStorage|
+     -> String {
+        let mut s = String::new();
+        plan.emit_screen_images(false, storage, &mut s);
+        plan.emit_row_placements(false, 0, &mut s);
+        s
+    };
+    let one_img_unlimited = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx2,
+        false,
+        0,
+        4,
+        4,
+        20,
+        cell,
+        usize::MAX,
+    );
+    let one_img_len = emit_all_row0(&one_img_unlimited, &gfx2.primary).len();
+    let one_img_exact = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx2,
+        false,
+        0,
+        4,
+        4,
+        20,
+        cell,
+        one_img_len,
+    );
+    assert_eq!(
+        emit_all_row0(&one_img_exact, &gfx2.primary).len(),
+        one_img_len,
+        "one image with two placements on the same row must fit at its exact emitted byte length"
+    );
+    let one_img_tight = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx2,
+        false,
+        0,
+        4,
+        4,
+        20,
+        cell,
+        one_img_len - 1,
+    );
+    assert!(one_img_tight.is_empty());
+
+    // Add a second distinct image sharing row 0: both must fit at their exact
+    // combined emitted length (row 0 wrapper paid only once, not twice).
+    let mut second_img = b"\x1b[1;9H".to_vec();
+    second_img.extend_from_slice(&apc(&format!("a=T,f=24,s=1,v=1,i=2,p=1,C=1;{tiny}")));
+    feed_term_with_stream(
+        &mut term2,
+        &mut gfx2,
+        &sgr,
+        cell,
+        &mut proc2,
+        &mut sc2,
+        &second_img,
+        ExecMode::Authoritative,
+    );
+    let two_img_unlimited = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx2,
+        false,
+        0,
+        4,
+        4,
+        20,
+        cell,
+        usize::MAX,
+    );
+    let two_img_out = emit_all_row0(&two_img_unlimited, &gfx2.primary);
+    let two_img_len = two_img_out.len();
+    assert!(two_img_out.contains("i=1") && two_img_out.contains("i=2"));
+
+    let two_img_exact = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx2,
+        false,
+        0,
+        4,
+        4,
+        20,
+        cell,
+        two_img_len,
+    );
+    let two_img_exact_out = emit_all_row0(&two_img_exact, &gfx2.primary);
+    assert_eq!(two_img_exact_out.len(), two_img_len);
+    assert!(two_img_exact_out.contains("i=1") && two_img_exact_out.contains("i=2"));
+
+    let two_img_tight = runner_terminal::kitty::snapshot::SnapshotGraphicsPlan::build(
+        &gfx2,
+        false,
+        0,
+        4,
+        4,
+        20,
+        cell,
+        two_img_len - 1,
+    );
+    let two_img_tight_out = emit_all_row0(&two_img_tight, &gfx2.primary);
+    assert!(two_img_tight_out.len() < two_img_len);
+    assert!(two_img_tight_out.contains("i=2") && !two_img_tight_out.contains("i=1"));
 }

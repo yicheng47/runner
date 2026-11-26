@@ -286,6 +286,15 @@ fn parse_cwd_report(payload: &[u8], is_local: &impl Fn(&str) -> bool) -> Option<
 /// a flusher per session instead. `flush_scheduled` lives under the parser's
 /// lock so a feed that opens an update and a flusher that finds none pending
 /// cannot interleave and leave a deadline unwatched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeferredSyncAction {
+    SchemeSubscribe,
+    SchemeUnsubscribe,
+    SchemeQuery,
+    CellSizeQuery,
+    ProgramStatusProbe,
+}
+
 #[derive(Default)]
 struct ParserState {
     processor: crate::snapshot::TrackedProcessor,
@@ -301,12 +310,13 @@ struct ParserState {
     /// distinguish an explicit user extension from a synthetic reopen.
     last_vte_deadline: Option<Instant>,
     /// `preceding_char` at the moment the active synchronized update opened,
-    /// so deferred `CSI 16 t` replay preserves `REP` state.
+    /// so deferred side-scanned reply replay preserves `REP` state.
     sync_opening_preceding: Option<char>,
     /// Byte offsets within the active synchronized update's held buffer where
-    /// `CSI 16 t` ended, so replies fire in stream order with `CSI 14 t` when
-    /// the synchronized update flushes.
-    held_csi16: Vec<usize>,
+    /// side-scanned queries/toggles (`CSI 16 t`, `CSI ? 2031 h/l`,
+    /// `CSI ? 996 n`, `OSC 7501 ; ?`) ended, so their actions fire in exact
+    /// stream order alongside native `vte` replies when the update flushes.
+    held_sync_actions: Vec<(usize, DeferredSyncAction)>,
     kitty_scanner: crate::kitty::Scanner,
 }
 
@@ -315,18 +325,19 @@ impl ParserState {
         self.sync_deadline
     }
 
-    fn has_held_csi16(&self) -> bool {
-        self.sync_deadline.is_some() && !self.held_csi16.is_empty()
+    fn has_held_sync_actions(&self) -> bool {
+        self.sync_deadline.is_some() && !self.held_sync_actions.is_empty()
     }
 
     fn would_overflow_sync(&self, next_len: usize) -> bool {
-        self.has_held_csi16()
+        self.has_held_sync_actions()
             && self.processor.sync_bytes_count().saturating_add(next_len)
                 >= VTE_SYNC_BUFFER_SIZE - 1
     }
 
-    fn record_held_csi16(&mut self) {
-        self.held_csi16.push(self.processor.sync_bytes_count());
+    fn record_held_sync_action(&mut self, action: DeferredSyncAction) {
+        self.held_sync_actions
+            .push((self.processor.sync_bytes_count(), action));
     }
 
     fn parse_text<H: Handler>(&mut self, handler: &mut H, bytes: &[u8]) {
@@ -343,7 +354,7 @@ impl ParserState {
                 self.sync_deadline = None;
                 self.last_vte_deadline = None;
                 self.sync_opening_preceding = None;
-                self.held_csi16.clear();
+                self.held_sync_actions.clear();
             }
             Some(deadline) => {
                 if !was_sync {
@@ -357,15 +368,15 @@ impl ParserState {
         }
     }
 
-    /// Flush an open synchronized update that contains deferred `CSI 16 t`
-    /// queries by replaying its buffered bytes in sub-slices split at each
-    /// recorded query offset so `CSI 14 t`, `CSI 16 t`, and `CSI 18 t` replies
-    /// fire in exact stream order.
-    fn flush_sync_with_csi16<H: Handler>(
+    /// Flush an open synchronized update that contains deferred side-scanned
+    /// actions by replaying its buffered bytes in sub-slices split at each
+    /// recorded offset so native and side-scanned replies fire in exact stream
+    /// order.
+    fn flush_sync_with_actions<H: Handler>(
         &mut self,
         handler: &mut H,
         extra_before_end: &[u8],
-        mut emit_csi16: impl FnMut(),
+        mut on_action: impl FnMut(DeferredSyncAction),
     ) {
         let mut held = self
             .boundary
@@ -373,7 +384,7 @@ impl ParserState {
             .map(<[u8]>::to_vec)
             .unwrap_or_default();
         held.extend_from_slice(extra_before_end);
-        let cuts = std::mem::take(&mut self.held_csi16);
+        let cuts = std::mem::take(&mut self.held_sync_actions);
         let opening_preceding = self.sync_opening_preceding.take();
         self.sync_deadline = None;
         self.last_vte_deadline = None;
@@ -384,7 +395,7 @@ impl ParserState {
         self.processor
             .reset_sync_preserving_paint(opening_preceding);
         let mut pos = 0usize;
-        for cut in cuts {
+        for (cut, action) in cuts {
             let cut = cut.min(held.len());
             if cut > pos {
                 self.processor.advance(handler, &held[pos..cut]);
@@ -393,7 +404,7 @@ impl ParserState {
                 }
                 pos = cut;
             }
-            emit_csi16();
+            on_action(action);
         }
         if pos < held.len() {
             self.processor.advance(handler, &held[pos..]);
@@ -410,13 +421,13 @@ impl ParserState {
         &mut self,
         handler: &mut H,
         on_sync_open: impl FnOnce(bool),
-        emit_csi16: impl FnMut(),
+        on_action: impl FnMut(DeferredSyncAction),
     ) -> (Option<Instant>, bool) {
         let saved_deadline = self.sync_deadline;
         if saved_deadline.is_some() {
             on_sync_open(true);
-            if !self.held_csi16.is_empty() {
-                self.flush_sync_with_csi16(handler, &[], emit_csi16);
+            if !self.held_sync_actions.is_empty() {
+                self.flush_sync_with_actions(handler, &[], on_action);
             } else {
                 self.processor.stop_sync(handler);
                 self.boundary.end_sync();
@@ -458,9 +469,13 @@ impl ParserState {
         self.sync_opening_preceding = preceding;
     }
 
-    fn finish_sync_timeout<H: Handler>(&mut self, handler: &mut H, emit_csi16: impl FnMut()) {
-        if !self.held_csi16.is_empty() {
-            self.flush_sync_with_csi16(handler, &[], emit_csi16);
+    fn finish_sync_timeout<H: Handler>(
+        &mut self,
+        handler: &mut H,
+        on_action: impl FnMut(DeferredSyncAction),
+    ) {
+        if !self.held_sync_actions.is_empty() {
+            self.flush_sync_with_actions(handler, &[], on_action);
         } else {
             self.processor.stop_sync(handler);
             self.boundary.end_sync();
@@ -1149,7 +1164,7 @@ impl TerminalMirror {
                                 |open| {
                                     self.sync_open.store(open, Ordering::Release);
                                 },
-                                || {},
+                                |_| {},
                             );
                             if let Some(prepared) = crate::kitty::PreparedCommand::direct_only(&raw)
                             {
@@ -1163,7 +1178,7 @@ impl TerminalMirror {
                                 |open| {
                                     self.sync_open.store(open, Ordering::Release);
                                 },
-                                || {},
+                                |_| {},
                             );
                             parser.reopen_sync_after_graphics(&mut handler, saved_sync);
                         }
@@ -1271,7 +1286,7 @@ impl TerminalMirror {
                     cell_size,
                     None,
                 );
-                parser.finish_sync_timeout(&mut handler, || {});
+                parser.finish_sync_timeout(&mut handler, |_| {});
                 handler.finish()
             };
             self.apply_scroll_tracking(&mut term, display_offset, moved);

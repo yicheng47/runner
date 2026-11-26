@@ -376,13 +376,39 @@ impl TerminalModel {
         }
     }
 
-    fn emit_cell_size_reply(&self, cell_size: crate::kitty::CellSize) {
-        let _ = self
-            .events
-            .send(ProxyEvent::Terminal(Event::PtyWrite(format!(
-                "\x1b[6;{};{}t",
-                cell_size.height, cell_size.width
-            ))));
+    fn run_deferred_sync_action(
+        &self,
+        action: DeferredSyncAction,
+        cell_size: crate::kitty::CellSize,
+    ) {
+        match action {
+            DeferredSyncAction::SchemeSubscribe => {
+                self.scheme.subscribed.store(true, Ordering::Relaxed);
+            }
+            DeferredSyncAction::SchemeUnsubscribe => {
+                self.scheme.subscribed.store(false, Ordering::Relaxed);
+            }
+            DeferredSyncAction::SchemeQuery => {
+                let _ = self
+                    .events
+                    .send(ProxyEvent::Terminal(Event::PtyWrite(scheme_report(
+                        self.palette.lock().unwrap().theme,
+                    ))));
+            }
+            DeferredSyncAction::CellSizeQuery => {
+                let _ = self
+                    .events
+                    .send(ProxyEvent::Terminal(Event::PtyWrite(format!(
+                        "\x1b[6;{};{}t",
+                        cell_size.height, cell_size.width
+                    ))));
+            }
+            DeferredSyncAction::ProgramStatusProbe => {
+                let _ = self.events.send(ProxyEvent::Terminal(Event::PtyWrite(
+                    crate::program_status::PROBE_REPLY.into(),
+                )));
+            }
+        }
     }
 
     fn parse_text_segment(
@@ -425,53 +451,40 @@ impl TerminalModel {
         let mut fed = 0;
         for (end, scheme) in queries {
             let slice = &bytes[fed..end];
-            if matches!(scheme, Some(SchemeSequence::SyncEnd)) && parser.has_held_csi16() {
-                parser.flush_sync_with_csi16(handler, slice, || {
-                    self.emit_cell_size_reply(cell_size);
+            if matches!(scheme, Some(SchemeSequence::SyncEnd)) && parser.has_held_sync_actions() {
+                parser.flush_sync_with_actions(handler, slice, |action| {
+                    self.run_deferred_sync_action(action, cell_size);
                 });
                 fed = end;
                 continue;
             }
             if parser.would_overflow_sync(slice.len()) {
-                parser.flush_sync_with_csi16(handler, &[], || {
-                    self.emit_cell_size_reply(cell_size);
+                parser.flush_sync_with_actions(handler, &[], |action| {
+                    self.run_deferred_sync_action(action, cell_size);
                 });
             }
             parser.parse_text(handler, slice);
             fed = end;
-            match scheme {
-                Some(SchemeSequence::Subscribe) => {
-                    self.scheme.subscribed.store(true, Ordering::Relaxed)
-                }
-                Some(SchemeSequence::Unsubscribe) => {
-                    self.scheme.subscribed.store(false, Ordering::Relaxed)
-                }
-                Some(SchemeSequence::Query) => {
-                    let _ = self
-                        .events
-                        .send(ProxyEvent::Terminal(Event::PtyWrite(scheme_report(
-                            self.palette.lock().unwrap().theme,
-                        ))));
-                }
-                Some(SchemeSequence::CellSizeQuery) => {
-                    if parser.sync_deadline().is_some() {
-                        parser.record_held_csi16();
-                    } else {
-                        self.emit_cell_size_reply(cell_size);
-                    }
-                }
-                Some(SchemeSequence::SyncEnd) => {}
-                None => {
-                    let _ = self.events.send(ProxyEvent::Terminal(Event::PtyWrite(
-                        crate::program_status::PROBE_REPLY.into(),
-                    )));
+            let action = match scheme {
+                Some(SchemeSequence::Subscribe) => Some(DeferredSyncAction::SchemeSubscribe),
+                Some(SchemeSequence::Unsubscribe) => Some(DeferredSyncAction::SchemeUnsubscribe),
+                Some(SchemeSequence::Query) => Some(DeferredSyncAction::SchemeQuery),
+                Some(SchemeSequence::CellSizeQuery) => Some(DeferredSyncAction::CellSizeQuery),
+                Some(SchemeSequence::SyncEnd) => None,
+                None => Some(DeferredSyncAction::ProgramStatusProbe),
+            };
+            if let Some(action) = action {
+                if parser.sync_deadline().is_some() {
+                    parser.record_held_sync_action(action);
+                } else {
+                    self.run_deferred_sync_action(action, cell_size);
                 }
             }
         }
         let tail = &bytes[fed..];
         if parser.would_overflow_sync(tail.len()) {
-            parser.flush_sync_with_csi16(handler, &[], || {
-                self.emit_cell_size_reply(cell_size);
+            parser.flush_sync_with_actions(handler, &[], |action| {
+                self.run_deferred_sync_action(action, cell_size);
             });
         }
         parser.parse_text(handler, tail);
@@ -616,7 +629,7 @@ impl TerminalModel {
                                 let (saved_sync, _) = parser.prepare_for_graphics_command(
                                     &mut handler,
                                     |_| {},
-                                    || self.emit_cell_size_reply(cell_size),
+                                    |action| self.run_deferred_sync_action(action, cell_size),
                                 );
                                 if let Some(prepared) =
                                     crate::kitty::PreparedCommand::direct_only(&raw)
@@ -633,7 +646,7 @@ impl TerminalModel {
                                 let (saved_sync, _) = parser.prepare_for_graphics_command(
                                     &mut handler,
                                     |_| {},
-                                    || self.emit_cell_size_reply(cell_size),
+                                    |action| self.run_deferred_sync_action(action, cell_size),
                                 );
                                 parser.reopen_sync_after_graphics(&mut handler, saved_sync);
                             }
@@ -732,7 +745,7 @@ impl TerminalModel {
                         let (saved_sync, emitted_can) = parser.prepare_for_graphics_command(
                             &mut handler,
                             |_| {},
-                            || self.emit_cell_size_reply(cell_size),
+                            |action| self.run_deferred_sync_action(action, cell_size),
                         );
                         let result =
                             handler.execute_kitty(prepared, crate::kitty::ExecMode::Authoritative);
@@ -747,7 +760,7 @@ impl TerminalModel {
                         let (saved_sync, emitted_can) = parser.prepare_for_graphics_command(
                             &mut handler,
                             |_| {},
-                            || self.emit_cell_size_reply(cell_size),
+                            |action| self.run_deferred_sync_action(action, cell_size),
                         );
                         if emitted_can {
                             normalized_segments.push(vec![0x18]);
@@ -862,7 +875,9 @@ impl TerminalModel {
                 cell_size,
                 Some(&mut emit_reply),
             );
-            parser.finish_sync_timeout(&mut handler, || self.emit_cell_size_reply(cell_size));
+            parser.finish_sync_timeout(&mut handler, |action| {
+                self.run_deferred_sync_action(action, cell_size);
+            });
         }
         parser.flush_scheduled = false;
         let seq = active_output_seq(&sequence);
@@ -994,8 +1009,8 @@ impl TerminalModel {
                         cell_size,
                         Some(&mut emit_reply),
                     );
-                    parser.finish_sync_timeout(&mut handler, || {
-                        self.emit_cell_size_reply(cell_size);
+                    parser.finish_sync_timeout(&mut handler, |action| {
+                        self.run_deferred_sync_action(action, cell_size);
                     });
                 }
                 let seq = active_output_seq(&sequence);
@@ -1015,7 +1030,7 @@ impl TerminalModel {
             parser.sync_deadline = None;
             parser.last_vte_deadline = None;
             parser.sync_opening_preceding = None;
-            parser.held_csi16.clear();
+            parser.held_sync_actions.clear();
             let preceding = parser.processor.preceding_char();
             parser.processor.restore_preceding_char(preceding);
             parser.boundary = Default::default();

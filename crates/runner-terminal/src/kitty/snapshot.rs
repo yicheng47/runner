@@ -19,6 +19,9 @@ pub const MAX_SNAPSHOT_GRAPHICS_BYTES: usize = 48 * 1024 * 1024;
 /// Safety reserve kept below `wire::MAX_FRAME` when computing the graphics budget.
 pub const SNAPSHOT_FRAME_HEADROOM: usize = 1024 * 1024;
 
+/// Bytes written once per occupied row in `emit_row_placements`: `\x1b7` + `\x1b8`.
+const ROW_WRAPPER_BYTES: usize = 4;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ScreenKind {
     Primary,
@@ -106,10 +109,22 @@ impl SnapshotGraphicsPlan {
 
         let mut kept_primary = HashSet::new();
         let mut kept_alt = HashSet::new();
+        let mut occupied_rows: HashSet<(ScreenKind, i32)> = HashSet::new();
         let mut used = 0usize;
         for c in candidates {
-            if used.saturating_add(c.cost) <= budget {
-                used += c.cost;
+            let new_rows = c
+                .pin_rows
+                .iter()
+                .filter(|&&row| !occupied_rows.contains(&(c.screen, row)))
+                .count();
+            let delta = c
+                .base_cost
+                .saturating_add(new_rows.saturating_mul(ROW_WRAPPER_BYTES));
+            if used.saturating_add(delta) <= budget {
+                used += delta;
+                for row in c.pin_rows {
+                    occupied_rows.insert((c.screen, row));
+                }
                 match c.screen {
                     ScreenKind::Primary => {
                         kept_primary.insert(c.image_id);
@@ -201,6 +216,7 @@ fn collect_candidates(
 ) {
     let mut has_visible: HashSet<u32> = HashSet::new();
     let mut placement_bytes: HashMap<u32, usize> = HashMap::new();
+    let mut pin_rows: HashMap<u32, HashSet<i32>> = HashMap::new();
 
     for (&key, placement) in storage.placements() {
         let visible = match placement.location {
@@ -247,22 +263,33 @@ fn collect_candidates(
         }
 
         // Measure the exact serialized bytes of the placement that will actually
-        // be emitted (including clipped crop keys and per-row cursor wrappers).
-        let cost = match placement.location {
+        // be emitted (clipped crop keys + per-placement `\x1b[colG`). The shared
+        // `\x1b7` / `\x1b8` row wrapper is charged once per occupied row during
+        // candidate selection in `SnapshotGraphicsPlan::build`.
+        match placement.location {
             PlacementLocation::Pin(pin) => {
                 if i64::from(pin.line) >= screen_lines as i64 {
-                    None
-                } else {
+                    continue;
+                }
+                if let Some(adjusted) =
                     clipped_to_first_line(storage, key.image_id, *placement, first_line, cell)
-                        .map(|adjusted| exact_pin_placement_upper_bytes(key, &adjusted))
+                {
+                    let adjusted_line = match adjusted.location {
+                        PlacementLocation::Pin(p) => p.line,
+                        _ => unreachable!(),
+                    };
+                    pin_rows
+                        .entry(key.image_id)
+                        .or_default()
+                        .insert(adjusted_line);
+                    *placement_bytes.entry(key.image_id).or_default() +=
+                        exact_pin_placement_bytes(key, &adjusted);
                 }
             }
             PlacementLocation::Virtual | PlacementLocation::Relative(_) => {
-                Some(exact_placement_command_bytes(key, placement))
+                *placement_bytes.entry(key.image_id).or_default() +=
+                    exact_placement_command_bytes(key, placement);
             }
-        };
-        if let Some(bytes) = cost {
-            *placement_bytes.entry(key.image_id).or_default() += bytes;
         }
     }
 
@@ -276,12 +303,17 @@ fn collect_candidates(
         };
         let tx_cost = exact_transmission_bytes(img);
         let p_cost = placement_bytes.get(&img.id).copied().unwrap_or(0);
+        let rows = pin_rows
+            .remove(&img.id)
+            .map(|set| set.into_iter().collect())
+            .unwrap_or_default();
         out.push(Candidate {
             screen,
             image_id: img.id,
             tier,
             generation: img.generation,
-            cost: tx_cost.saturating_add(p_cost),
+            base_cost: tx_cost.saturating_add(p_cost),
+            pin_rows: rows,
         });
     }
 }
@@ -291,7 +323,8 @@ struct Candidate {
     image_id: u32,
     tier: u8,
     generation: u64,
-    cost: usize,
+    base_cost: usize,
+    pin_rows: Vec<i32>,
 }
 
 fn exact_transmission_bytes(img: &super::image::StoredImage) -> usize {
@@ -307,15 +340,14 @@ fn exact_transmission_bytes(img: &super::image::StoredImage) -> usize {
     )
 }
 
-fn exact_pin_placement_upper_bytes(key: PlacementKey, adjusted: &Placement) -> usize {
+fn exact_pin_placement_bytes(key: PlacementKey, adjusted: &Placement) -> usize {
     let mut tmp = String::new();
     let col = match adjusted.location {
         PlacementLocation::Pin(pin) => pin.column,
         _ => 0,
     };
-    let _ = write!(tmp, "\x1b7\x1b[{}G", col + 1);
+    let _ = write!(tmp, "\x1b[{}G", col + 1);
     emit_placement_command(&mut tmp, key, adjusted);
-    tmp.push_str("\x1b8");
     tmp.len()
 }
 

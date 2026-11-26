@@ -214,17 +214,13 @@ impl LoadingImage {
     /// Complete a normalized transmission on a mirror without inflating zlib or
     /// decoding PNG under the terminal lock. Authoritative `runnerd` always
     /// validates payloads and emits explicit `s=` / `v=` dimensions (even for
-    /// PNG); if a non-normalized PNG arrives without dimensions, fall back to
-    /// `complete`.
+    /// PNG), so missing dimensions are rejected without touching decoders.
     pub fn complete_normalized_mirror(
         self,
         max_decoded_bytes: usize,
     ) -> Result<StoredImage, ImageError> {
         if self.data.len() > MAX_TRANSMITTED_BYTES {
             return Err(ImageError::InvalidData);
-        }
-        if self.format == Format::Png && (self.width == 0 || self.height == 0) {
-            return self.complete(max_decoded_bytes);
         }
         if self.width == 0 || self.height == 0 {
             return Err(ImageError::DimensionsRequired);
@@ -512,6 +508,9 @@ pub fn decode_to_rgba(
             let decoder = png_decoder(png_bytes);
             let mut reader = decoder.read_info().map_err(|_| ImageError::InvalidData)?;
             let (w, h) = check_png_header(reader.info(), max_decoded_bytes)?;
+            if (width > 0 && w != width) || (height > 0 && h != height) {
+                return Err(ImageError::InvalidData);
+            }
             let buf_size = reader.output_buffer_size().ok_or(ImageError::OutOfMemory)?;
             if buf_size > max_decoded_bytes {
                 return Err(ImageError::OutOfMemory);
