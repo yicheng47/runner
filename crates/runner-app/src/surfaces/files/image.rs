@@ -152,13 +152,17 @@ fn halve_rgba(src: &RgbaImage) -> RgbaImage {
     RgbaImage::from_raw(dw, dh, dst).expect("halved RGBA buffer matches dimensions")
 }
 
+pub(crate) fn bgra_to_render_image(bgra: RgbaImage) -> Arc<RenderImage> {
+    Arc::new(RenderImage::new(SmallVec::from_const([image::Frame::new(
+        bgra,
+    )])))
+}
+
 pub(crate) fn rgba_to_render_image(mut rgba: RgbaImage) -> Arc<RenderImage> {
     for pixel in rgba.as_mut().as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
-    Arc::new(RenderImage::new(SmallVec::from_const([image::Frame::new(
-        rgba,
-    )])))
+    bgra_to_render_image(rgba)
 }
 
 pub(crate) fn clamp_frame_to_texture_limit(mut rgba: RgbaImage) -> RgbaImage {

@@ -49,11 +49,51 @@ impl MirrorCache {
         self.failed.clear();
         self.textures.drain().map(|(_, image)| image).collect()
     }
+
+    /// Evicts cached textures that are no longer live, except the single newest
+    /// cached generation for any live image ID whose replacement is currently
+    /// `in_flight` so overlapping paints do not flash blank before the
+    /// replacement publishes.
+    fn prune_stale_textures(&mut self) -> Vec<Arc<RenderImage>> {
+        let mut preserve_for_id: HashMap<u32, u64> = HashMap::new();
+        for &in_flight_key in &self.in_flight {
+            if !self.live_keys.contains(&in_flight_key) {
+                continue;
+            }
+            let id = in_flight_key.0;
+            if let Some(best_gen) = self
+                .textures
+                .keys()
+                .filter(|&&key| key.0 == id && !self.live_keys.contains(&key))
+                .map(|&(_, generation)| generation)
+                .max()
+            {
+                preserve_for_id.insert(id, best_gen);
+            }
+        }
+        let mut released = Vec::new();
+        self.textures.retain(|&key, image| {
+            let keep = self.live_keys.contains(&key)
+                || preserve_for_id.get(&key.0).copied() == Some(key.1);
+            if keep {
+                true
+            } else {
+                released.push(Arc::clone(image));
+                false
+            }
+        });
+        released
+    }
 }
+
+#[cfg(test)]
+type DecodeHook = Arc<dyn Fn(TextureKey) + Send + Sync>;
 
 pub(crate) struct TextureStore {
     mirrors: Mutex<HashMap<u64, MirrorCache>>,
     release_tx: mpsc::UnboundedSender<Vec<Arc<RenderImage>>>,
+    #[cfg(test)]
+    decode_hook: Mutex<Option<DecodeHook>>,
 }
 
 impl TextureStore {
@@ -61,7 +101,14 @@ impl TextureStore {
         Self {
             mirrors: Mutex::default(),
             release_tx,
+            #[cfg(test)]
+            decode_hook: Mutex::default(),
         }
+    }
+
+    #[cfg(test)]
+    fn set_decode_hook(&self, hook: Option<DecodeHook>) {
+        *self.decode_hook.lock().unwrap() = hook;
     }
 
     fn enqueue_release(&self, images: Vec<Arc<RenderImage>>) {
@@ -163,7 +210,29 @@ impl TextureStore {
             }
 
             let tex_key = (img.id, img.generation);
-            let cached = entry.and_then(|cache| cache.textures.get(&tex_key).cloned());
+            let full_source =
+                src.x == 0 && src.y == 0 && src.width == img.width && src.height == img.height;
+            let cached = entry.and_then(|cache| {
+                if let Some(exact) = cache.textures.get(&tex_key) {
+                    return Some(Arc::clone(exact));
+                }
+                if cache.in_flight.contains(&tex_key) {
+                    let fallback = cache
+                        .textures
+                        .iter()
+                        .filter(|(key, _)| key.0 == img.id && !cache.live_keys.contains(key))
+                        .max_by_key(|(key, _)| key.1)
+                        .map(|(_, image)| Arc::clone(image))?;
+                    let fallback_size = fallback.size(0);
+                    if full_source
+                        || (fallback_size.width.0 as u32 == img.width
+                            && fallback_size.height.0 as u32 == img.height)
+                    {
+                        return Some(fallback);
+                    }
+                }
+                None
+            });
             let Some(render_image) = cached else {
                 let already_pending = entry.is_some_and(|cache| {
                     cache.in_flight.contains(&tex_key) || cache.failed.contains(&tex_key)
@@ -176,23 +245,22 @@ impl TextureStore {
 
             let dest_bounds =
                 Bounds::new(point(px(dest_x), px(dest_y)), size(px(dest_w), px(dest_h)));
-            let image_bounds =
-                if src.x == 0 && src.y == 0 && src.width == img.width && src.height == img.height {
-                    dest_bounds
-                } else {
-                    let scale_x = dest_w / (src.width as f32);
-                    let scale_y = dest_h / (src.height as f32);
-                    Bounds::new(
-                        point(
-                            px(dest_x - (src.x as f32) * scale_x),
-                            px(dest_y - (src.y as f32) * scale_y),
-                        ),
-                        size(
-                            px((img.width as f32) * scale_x),
-                            px((img.height as f32) * scale_y),
-                        ),
-                    )
-                };
+            let image_bounds = if full_source {
+                dest_bounds
+            } else {
+                let scale_x = dest_w / (src.width as f32);
+                let scale_y = dest_h / (src.height as f32);
+                Bounds::new(
+                    point(
+                        px(dest_x - (src.x as f32) * scale_x),
+                        px(dest_y - (src.y as f32) * scale_y),
+                    ),
+                    size(
+                        px((img.width as f32) * scale_x),
+                        px((img.height as f32) * scale_y),
+                    ),
+                )
+            };
 
             let band_index = band_for_z(placement.z);
             let placement_order = match key.placement_id {
@@ -278,7 +346,7 @@ impl TextureStore {
             // stays strictly `term -> graphics -> store.mirrors`.
             let mirror_live: HashSet<TextureKey> = mirror.live_image_keys().into_iter().collect();
             let mut inserted_any = false;
-            {
+            let released = {
                 let mut mirrors = store.mirrors.lock().unwrap();
                 if let Some(entry) = mirrors.get_mut(&mirror_id) {
                     let has_viewers = mirror.viewer_count() > 0;
@@ -301,8 +369,17 @@ impl TextureStore {
                             }
                         }
                     }
+                    if has_viewers {
+                        entry.prune_stale_textures()
+                    } else {
+                        entry.live_keys.clear();
+                        entry.drain_textures()
+                    }
+                } else {
+                    Vec::new()
                 }
-            }
+            };
+            store.enqueue_release(released);
             // Respect the mirror's DECSET 2026 synchronized-update wake guard:
             // notifying `TerminalInteraction` wakes `TerminalViewport`, so only
             // notify when `wake_viewers_now()` actually permits a wake.
@@ -362,18 +439,9 @@ impl MirrorGraphicsObserver for TextureStore {
                 entry.live_keys.clear();
                 (entry.drain_textures(), Vec::new())
             } else {
-                let mut released = Vec::new();
-                entry.textures.retain(|key, image| {
-                    if live_set.contains(key) {
-                        true
-                    } else {
-                        released.push(Arc::clone(image));
-                        false
-                    }
-                });
-                entry.in_flight.retain(|key| live_set.contains(key));
-                entry.failed.retain(|key| live_set.contains(key));
                 entry.live_keys = live_set;
+                entry.in_flight.retain(|key| entry.live_keys.contains(key));
+                entry.failed.retain(|key| entry.live_keys.contains(key));
                 let mut missing = Vec::new();
                 for img in decode_candidates {
                     let key = (img.id, img.generation);
@@ -386,6 +454,7 @@ impl MirrorGraphicsObserver for TextureStore {
                         missing.push(img.clone());
                     }
                 }
+                let released = entry.prune_stale_textures();
                 (released, missing)
             }
         };
@@ -400,35 +469,44 @@ impl MirrorGraphicsObserver for TextureStore {
             .into_iter()
             .map(|img| {
                 let key = (img.id, img.generation);
+                #[cfg(test)]
+                {
+                    let hook = self.decode_hook.lock().unwrap().clone();
+                    if let Some(hook) = hook {
+                        hook(key);
+                    }
+                }
                 (key, decode_kitty_render_image(&img))
             })
             .collect();
 
-        let mut mirrors = self.mirrors.lock().unwrap();
-        let Some(entry) = mirrors.get_mut(&mirror_id) else {
-            return;
+        let released = {
+            let mut mirrors = self.mirrors.lock().unwrap();
+            let Some(entry) = mirrors.get_mut(&mirror_id) else {
+                return;
+            };
+            if viewers.load(Ordering::Acquire) == 0 {
+                entry.live_keys.clear();
+                entry.drain_textures()
+            } else {
+                for (key, maybe_image) in decoded {
+                    entry.in_flight.remove(&key);
+                    if !entry.live_keys.contains(&key) {
+                        continue;
+                    }
+                    match maybe_image {
+                        Some(render_image) => {
+                            entry.textures.entry(key).or_insert(render_image);
+                        }
+                        None => {
+                            entry.failed.insert(key);
+                        }
+                    }
+                }
+                entry.prune_stale_textures()
+            }
         };
-        if viewers.load(Ordering::Acquire) == 0 {
-            entry.live_keys.clear();
-            let released = entry.drain_textures();
-            drop(mirrors);
-            self.enqueue_release(released);
-            return;
-        }
-        for (key, maybe_image) in decoded {
-            entry.in_flight.remove(&key);
-            if !entry.live_keys.contains(&key) {
-                continue;
-            }
-            match maybe_image {
-                Some(render_image) => {
-                    entry.textures.entry(key).or_insert(render_image);
-                }
-                None => {
-                    entry.failed.insert(key);
-                }
-            }
-        }
+        self.enqueue_release(released);
     }
 
     fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>) {
@@ -517,10 +595,10 @@ pub(crate) fn band_for_z(z: i32) -> usize {
 }
 
 pub(crate) fn decode_kitty_render_image(img: &StoredImage) -> Option<Arc<RenderImage>> {
-    let rgba_bytes = img.decode_rgba(PER_SCREEN_LIMIT).ok()?;
-    let rgba = image::RgbaImage::from_raw(img.width, img.height, rgba_bytes)?;
-    let clamped = crate::surfaces::files::image::clamp_frame_to_texture_limit(rgba);
-    Some(crate::surfaces::files::image::rgba_to_render_image(clamped))
+    let bgra_bytes = img.decode_bgra(PER_SCREEN_LIMIT).ok()?;
+    let bgra = image::RgbaImage::from_raw(img.width, img.height, bgra_bytes)?;
+    let clamped = crate::surfaces::files::image::clamp_frame_to_texture_limit(bgra);
+    Some(crate::surfaces::files::image::bgra_to_render_image(clamped))
 }
 
 pub(crate) fn paint_band(band: &[PaintedImage], pane_bounds: Bounds<Pixels>, window: &mut Window) {
@@ -2174,5 +2252,386 @@ mod tests {
             quads_after_delete.is_empty(),
             "without a Band 0 image, matching-pane-RGB cells must not emit extra quads"
         );
+    }
+
+    #[test]
+    fn in_place_replacement_burst_paints_advancing_frames_without_blanking_and_releases_old() {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression as FlateLevel;
+        use std::io::Write as _;
+        use std::sync::Condvar;
+
+        let mut cx = TestAppContext::single();
+        let (_host, mirror, tx, ack) =
+            mirror_named("kitty-stream-burst", TerminalController::Desktop);
+        let store = cx.update(|cx| TerminalTextureCache::attach_mirror(&mirror, cx));
+        let _lease = mirror.view();
+
+        let interaction = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let window = cx.add_window(|_, cx| GraphicsPaneHost {
+            terminal: Some(Arc::clone(&mirror)),
+            interaction: Some(interaction.clone()),
+            input: Some(input.clone()),
+            focus: cx.focus_handle(),
+            font_size: 14.,
+            line_height_factor: 1.4,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(400.), px(260.)));
+        visual.update(|window, _| window.set_scale_factor(1.0));
+        visual.refresh().unwrap();
+
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let encode_rgb_zlib_cmd = |id: u32, w: u32, h: u32, rgb: [u8; 3]| -> Vec<u8> {
+            let mut raw = Vec::with_capacity((w * h * 3) as usize);
+            for _ in 0..(w * h) {
+                raw.extend_from_slice(&rgb);
+            }
+            let mut enc = ZlibEncoder::new(Vec::new(), FlateLevel::fast());
+            enc.write_all(&raw).unwrap();
+            let compressed = enc.finish().unwrap();
+            format!(
+                "\x1b[H\x1b_Ga=d,d=I,i={id},q=2\x1b\\\x1b_Ga=T,C=1,q=2,i={id},f=24,s={w},v={h},o=z,z=-9;{}\x1b\\",
+                b64.encode(&compressed),
+            )
+            .into_bytes()
+        };
+
+        let paint_band1_image = |visual: &mut VisualTestContext| -> Option<Arc<RenderImage>> {
+            let pane_bounds = visual.debug_bounds("GRAPHICS_PANE").unwrap();
+            visual.update(|window, _| {
+                let _term = mirror.term.lock();
+                let graphics = mirror.graphics().lock().unwrap();
+                let (bands, _) = store.prepare_paint_bands(
+                    mirror.mirror_id(),
+                    false,
+                    &graphics,
+                    0,
+                    pane_bounds,
+                    px(8.),
+                    px(16.),
+                    window.scale_factor(),
+                    mirror.cell_size(),
+                );
+                bands[1]
+                    .iter()
+                    .find(|item| item.image_id == 77)
+                    .map(|item| Arc::clone(&item.image))
+            })
+        };
+
+        // Upload image 77 (frame 1, red) and image 99 (companion image to be deleted in Part A).
+        let mut seq = 1u64;
+        let init_bytes = [
+            encode_rgb_zlib_cmd(77, 16, 16, [255, 0, 0]),
+            encode_rgb_zlib_cmd(99, 8, 8, [0, 0, 255]),
+        ]
+        .concat();
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: init_bytes.into(),
+            },
+        );
+        visual.update(|window, cx| {
+            cx.set_global(PaintTrace::default());
+            window.refresh();
+        });
+        visual.run_until_parked();
+
+        let key1 = live_key_for(&mirror, 77);
+        let key99 = live_key_for(&mirror, 99);
+        let img1 = store
+            .cached_image(mirror.mirror_id(), key1)
+            .expect("frame 1 decoded");
+        let img99 = store
+            .cached_image(mirror.mirror_id(), key99)
+            .expect("image 99 decoded");
+        assert!(visual.update(|window, _| window.has_image_atlas_entry(&img1)));
+        assert!(visual.update(|window, _| window.has_image_atlas_entry(&img99)));
+        assert!(Arc::ptr_eq(
+            &paint_band1_image(&mut visual).expect("frame 1 visible"),
+            &img1
+        ));
+
+        // Part A: Pause frame-worker decoding of frame 2 (green) while also deleting image 99.
+        // While frame 2 is in_flight:
+        // - deleted image 99 must already be evicted and dropped from the atlas;
+        // - overlapping paints for image 77 must keep rendering frame 1 (no blank gap).
+        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let gate_hook = Arc::clone(&gate);
+        store.set_decode_hook(Some(Arc::new(move |key| {
+            if key.0 == 77 {
+                let (lock, cv) = &*gate_hook;
+                let mut state = lock.lock().unwrap();
+                state.0 = true;
+                cv.notify_all();
+                while !state.1 {
+                    state = cv.wait(state).unwrap();
+                }
+            }
+        })));
+
+        seq += 1;
+        let frame2_and_delete99 = [
+            b"\x1b_Ga=d,d=I,i=99,q=2\x1b\\".to_vec(),
+            encode_rgb_zlib_cmd(77, 16, 16, [0, 255, 0]),
+        ]
+        .concat();
+        tx.send(TerminalFrame::Output {
+            seq,
+            bytes: frame2_and_delete99.into(),
+        })
+        .unwrap();
+
+        // Wait deterministically until the frame worker enters decode for frame 2.
+        {
+            let (lock, cv) = &*gate;
+            let mut state = lock.lock().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !state.0 {
+                let rem = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!rem.is_zero(), "timed out waiting for frame 2 decode hook");
+                let (s, _) = cv.wait_timeout(state, rem).unwrap();
+                state = s;
+            }
+        }
+
+        // Let release_task drain the Phase-1 eviction of deleted image 99 and
+        // run a real TerminalElement paint while frame 2 is mid-decode.
+        visual.update(|window, cx| {
+            cx.set_global(PaintTrace::default());
+            window.refresh();
+        });
+        visual.run_until_parked();
+        assert!(
+            store.cached_image(mirror.mirror_id(), key99).is_none(),
+            "deleted image 99 must be evicted before frame 2 finishes decoding"
+        );
+        assert!(
+            !visual.update(|window, _| window.has_image_atlas_entry(&img99)),
+            "deleted image 99 must be dropped from the GPU atlas immediately"
+        );
+        let mid_trace = visual.update(|_, cx| cx.global::<PaintTrace>().0.clone());
+        assert!(
+            mid_trace.iter().any(|e| matches!(
+                e,
+                PaintEvent::Image {
+                    band: 1,
+                    image_id: 77,
+                    ..
+                }
+            )),
+            "real TerminalElement paint during in-place replacement must not blank: {mid_trace:?}"
+        );
+        let mid_decode_painted = paint_band1_image(&mut visual)
+            .expect("overlapping paint during in-place replacement must not blank");
+        assert!(
+            Arc::ptr_eq(&mid_decode_painted, &img1),
+            "overlapping paint while frame 2 is in_flight must show frame 1"
+        );
+
+        // Release the decode barrier and wait for frame 2 to finish publishing and waking.
+        store.set_decode_hook(None);
+        {
+            let (lock, cv) = &*gate;
+            let mut state = lock.lock().unwrap();
+            state.1 = true;
+            cv.notify_all();
+        }
+        ack.recv_timeout(Duration::from_secs(5))
+            .expect("frame 2 wake");
+
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let key2 = live_key_for(&mirror, 77);
+        assert_ne!(key2, key1);
+        let img2 = store
+            .cached_image(mirror.mirror_id(), key2)
+            .expect("frame 2 decoded");
+        assert!(!Arc::ptr_eq(&img1, &img2));
+        assert_eq!(store.cached_count(mirror.mirror_id()), 1);
+        assert!(
+            !visual.update(|window, _| window.has_image_atlas_entry(&img1)),
+            "replaced frame 1 must be dropped from the GPU atlas once frame 2 publishes"
+        );
+        assert!(visual.update(|window, _| window.has_image_atlas_entry(&img2)));
+        assert!(Arc::ptr_eq(
+            &paint_band1_image(&mut visual).expect("frame 2 visible"),
+            &img2
+        ));
+
+        // Part B: Stream 8 more distinct replacements and verify viewers observe
+        // advancing frames (never blank and never stuck on frame 1) with old
+        // frames released on every replacement.
+        let mut seen_ids = vec![img1.id, img2.id];
+        let mut previous = img2;
+        for step in 3u8..=10u8 {
+            seq += 1;
+            send_and_wait(
+                &tx,
+                &ack,
+                TerminalFrame::Output {
+                    seq,
+                    bytes: encode_rgb_zlib_cmd(77, 16, 16, [step * 20, 255 - step * 20, step * 10])
+                        .into(),
+                },
+            );
+            visual.update(|window, cx| {
+                cx.set_global(PaintTrace::default());
+                window.refresh();
+            });
+            visual.run_until_parked();
+            let step_trace = visual.update(|_, cx| cx.global::<PaintTrace>().0.clone());
+            assert!(
+                step_trace.iter().any(|e| matches!(
+                    e,
+                    PaintEvent::Image {
+                        band: 1,
+                        image_id: 77,
+                        ..
+                    }
+                )),
+                "step {step} TerminalElement paint must include image 77"
+            );
+            let painted = paint_band1_image(&mut visual)
+                .expect("every frame in the burst must paint visibly");
+            assert!(
+                !Arc::ptr_eq(&painted, &previous),
+                "step {step} must advance to a newly decoded RenderImage"
+            );
+            assert!(
+                !visual.update(|window, _| window.has_image_atlas_entry(&previous)),
+                "step {step} must release the previous frame from the GPU atlas"
+            );
+            assert_eq!(store.cached_count(mirror.mirror_id()), 1);
+            seen_ids.push(painted.id);
+            previous = painted;
+        }
+        let unique: std::collections::HashSet<_> = seen_ids.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            10,
+            "viewer must see all 10 distinct advancing frames during the burst"
+        );
+
+        // Part C: A replacement whose decode fails must evict the prior frame
+        // rather than leaving stale pixels on screen.
+        seq += 1;
+        let corrupt_replace = format!(
+            "\x1b[H\x1b_Ga=d,d=I,i=77,q=2\x1b\\\x1b_Ga=T,C=1,q=2,i=77,f=24,s=16,v=16,o=z,z=-9;{}\x1b\\",
+            b64.encode(b"not-valid-zlib"),
+        );
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: corrupt_replace.into_bytes().into(),
+            },
+        );
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        assert_eq!(
+            store.cached_count(mirror.mirror_id()),
+            0,
+            "failed replacement must evict the previous texture"
+        );
+        assert!(
+            !visual.update(|window, _| window.has_image_atlas_entry(&previous)),
+            "failed replacement must drop the previous texture from the GPU atlas"
+        );
+        assert!(paint_band1_image(&mut visual).is_none());
+
+        // Part D: Cross-screen isolation — while primary holds a live image 77,
+        // entering the alt screen and uploading a brand-new image 77 must NOT
+        // borrow primary's live texture as a fallback while alt's upload decodes.
+        seq += 1;
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: encode_rgb_zlib_cmd(77, 16, 16, [255, 255, 0]).into(),
+            },
+        );
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let primary_key = live_key_for(&mirror, 77);
+        assert!(store
+            .cached_image(mirror.mirror_id(), primary_key)
+            .is_some());
+
+        let alt_gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let alt_gate_hook = Arc::clone(&alt_gate);
+        store.set_decode_hook(Some(Arc::new(move |key| {
+            if key.0 == 77 {
+                let (lock, cv) = &*alt_gate_hook;
+                let mut state = lock.lock().unwrap();
+                state.0 = true;
+                cv.notify_all();
+                while !state.1 {
+                    state = cv.wait(state).unwrap();
+                }
+            }
+        })));
+        seq += 1;
+        let alt_upload = [
+            b"\x1b[?1049h".to_vec(),
+            encode_rgb_zlib_cmd(77, 16, 16, [0, 255, 255]),
+        ]
+        .concat();
+        tx.send(TerminalFrame::Output {
+            seq,
+            bytes: alt_upload.into(),
+        })
+        .unwrap();
+        {
+            let (lock, cv) = &*alt_gate;
+            let mut state = lock.lock().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !state.0 {
+                let rem = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!rem.is_zero(), "timed out waiting for alt decode hook");
+                let (s, _) = cv.wait_timeout(state, rem).unwrap();
+                state = s;
+            }
+        }
+        let pane_bounds = visual.debug_bounds("GRAPHICS_PANE").unwrap();
+        let alt_mid_decode = visual.update(|window, _| {
+            let _term = mirror.term.lock();
+            let graphics = mirror.graphics().lock().unwrap();
+            let (bands, _) = store.prepare_paint_bands(
+                mirror.mirror_id(),
+                true,
+                &graphics,
+                0,
+                pane_bounds,
+                px(8.),
+                px(16.),
+                window.scale_factor(),
+                mirror.cell_size(),
+            );
+            bands[1].len()
+        });
+        assert_eq!(
+            alt_mid_decode, 0,
+            "alt screen upload must not borrow primary screen's live texture while in_flight"
+        );
+        store.set_decode_hook(None);
+        {
+            let (lock, cv) = &*alt_gate;
+            let mut state = lock.lock().unwrap();
+            state.1 = true;
+            cv.notify_all();
+        }
+        ack.recv_timeout(Duration::from_secs(5))
+            .expect("alt upload wake");
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        assert_eq!(store.cached_count(mirror.mirror_id()), 2);
     }
 }

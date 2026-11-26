@@ -114,14 +114,18 @@ impl StoredImage {
         )
     }
 
-    /// Decode the stored image into tight BGRA8 pixels (`width * height * 4`),
-    /// ready for GPUI `RenderImage`.
+    /// Decode the stored image directly into tight BGRA8 pixels
+    /// (`width * height * 4`), ready for GPUI `RenderImage` without an extra
+    /// full-frame channel-swap pass.
     pub fn decode_bgra(&self, max_decoded_bytes: usize) -> Result<Vec<u8>, ImageError> {
-        let mut pixels = self.decode_rgba(max_decoded_bytes)?;
-        for px in pixels.as_chunks_mut::<4>().0 {
-            px.swap(0, 2);
-        }
-        Ok(pixels)
+        decode_to_bgra(
+            self.wire_format,
+            self.compression,
+            self.width,
+            self.height,
+            &self.encoded_data,
+            max_decoded_bytes,
+        )
     }
 }
 
@@ -444,6 +448,104 @@ fn validate_png(png_bytes: &[u8], max_decoded_bytes: usize) -> Result<(u32, u32)
     Ok((width, height))
 }
 
+fn inflate_exact(compressed: &[u8], expected: usize) -> Result<Vec<u8>, ImageError> {
+    let mut decomp = Decompress::new(true);
+    let mut out = vec![0u8; expected];
+    let mut in_pos = 0usize;
+    let mut out_pos = 0usize;
+    let mut overflow = [0u8; 1];
+    loop {
+        let before_in = decomp.total_in();
+        let before_out = decomp.total_out();
+        let status = if out_pos < expected {
+            decomp.decompress(
+                &compressed[in_pos..],
+                &mut out[out_pos..],
+                FlushDecompress::Sync,
+            )
+        } else {
+            decomp.decompress(&compressed[in_pos..], &mut overflow, FlushDecompress::Sync)
+        }
+        .map_err(|_| ImageError::DecompressionFailed)?;
+        let consumed = (decomp.total_in() - before_in) as usize;
+        let produced = (decomp.total_out() - before_out) as usize;
+        in_pos += consumed;
+        if out_pos == expected && produced > 0 {
+            return Err(ImageError::InvalidData);
+        }
+        out_pos += produced;
+        match status {
+            Status::StreamEnd => {
+                return if out_pos == expected {
+                    Ok(out)
+                } else {
+                    Err(ImageError::InvalidData)
+                };
+            }
+            Status::Ok => {
+                if consumed == 0 && produced == 0 {
+                    return Err(ImageError::DecompressionFailed);
+                }
+            }
+            Status::BufError => return Err(ImageError::DecompressionFailed),
+        }
+    }
+}
+
+fn expand_rgb_to_4bpp(src: &[u8], pixels: usize, bgra: bool) -> Vec<u8> {
+    let mut out = vec![0u8; pixels * 4];
+    let (src_chunks, src_rem) = src.as_chunks::<24>();
+    let (dst_chunks, dst_rem) = out.as_chunks_mut::<32>();
+    if bgra {
+        for (s, d) in src_chunks.iter().zip(dst_chunks.iter_mut()) {
+            *d = [
+                s[2], s[1], s[0], 255, s[5], s[4], s[3], 255, s[8], s[7], s[6], 255, s[11], s[10],
+                s[9], 255, s[14], s[13], s[12], 255, s[17], s[16], s[15], 255, s[20], s[19], s[18],
+                255, s[23], s[22], s[21], 255,
+            ];
+        }
+        for (s, d) in src_rem
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(dst_rem.as_chunks_mut::<4>().0.iter_mut())
+        {
+            *d = [s[2], s[1], s[0], 255];
+        }
+    } else {
+        for (s, d) in src_chunks.iter().zip(dst_chunks.iter_mut()) {
+            *d = [
+                s[0], s[1], s[2], 255, s[3], s[4], s[5], 255, s[6], s[7], s[8], 255, s[9], s[10],
+                s[11], 255, s[12], s[13], s[14], 255, s[15], s[16], s[17], 255, s[18], s[19],
+                s[20], 255, s[21], s[22], s[23], 255,
+            ];
+        }
+        for (s, d) in src_rem
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(dst_rem.as_chunks_mut::<4>().0.iter_mut())
+        {
+            *d = [s[0], s[1], s[2], 255];
+        }
+    }
+    out
+}
+
+fn swap_rb_in_place(pixels: &mut [u8]) {
+    let (chunks, rem) = pixels.as_chunks_mut::<32>();
+    for c in chunks {
+        *c = [
+            c[2], c[1], c[0], c[3], c[6], c[5], c[4], c[7], c[10], c[9], c[8], c[11], c[14], c[13],
+            c[12], c[15], c[18], c[17], c[16], c[19], c[22], c[21], c[20], c[23], c[26], c[25],
+            c[24], c[27], c[30], c[29], c[28], c[31],
+        ];
+    }
+    for px in rem.as_chunks_mut::<4>().0 {
+        px.swap(0, 2);
+    }
+}
+
 pub fn decode_to_rgba(
     format: Format,
     compression: Compression,
@@ -451,6 +553,45 @@ pub fn decode_to_rgba(
     height: u32,
     data: &[u8],
     max_decoded_bytes: usize,
+) -> Result<Vec<u8>, ImageError> {
+    decode_to_4bpp(
+        format,
+        compression,
+        width,
+        height,
+        data,
+        max_decoded_bytes,
+        false,
+    )
+}
+
+pub fn decode_to_bgra(
+    format: Format,
+    compression: Compression,
+    width: u32,
+    height: u32,
+    data: &[u8],
+    max_decoded_bytes: usize,
+) -> Result<Vec<u8>, ImageError> {
+    decode_to_4bpp(
+        format,
+        compression,
+        width,
+        height,
+        data,
+        max_decoded_bytes,
+        true,
+    )
+}
+
+fn decode_to_4bpp(
+    format: Format,
+    compression: Compression,
+    width: u32,
+    height: u32,
+    data: &[u8],
+    max_decoded_bytes: usize,
+    bgra: bool,
 ) -> Result<Vec<u8>, ImageError> {
     match format {
         Format::Rgb | Format::Rgba => {
@@ -461,39 +602,42 @@ pub fn decode_to_rgba(
                 return Err(ImageError::DimensionsTooLarge);
             }
             let bpp = format.raw_bpp().unwrap();
-            let expected = (width as usize)
+            let pixels = (width as usize)
                 .checked_mul(height as usize)
-                .and_then(|p| p.checked_mul(bpp))
                 .ok_or(ImageError::OutOfMemory)?;
+            let expected = pixels.checked_mul(bpp).ok_or(ImageError::OutOfMemory)?;
             if expected > max_decoded_bytes {
                 return Err(ImageError::OutOfMemory);
             }
-            let inflated;
-            let raw = match compression {
-                Compression::None => {
+            match (format, compression) {
+                (Format::Rgba, Compression::None) => {
                     if data.len() != expected {
                         return Err(ImageError::InvalidData);
                     }
-                    data
+                    let mut out = data.to_vec();
+                    if bgra {
+                        swap_rb_in_place(&mut out);
+                    }
+                    Ok(out)
                 }
-                Compression::Zlib => {
-                    inflated = inflate_bounded(data, expected)?;
-                    if inflated.len() != expected {
+                (Format::Rgba, Compression::Zlib) => {
+                    let mut out = inflate_exact(data, expected)?;
+                    if bgra {
+                        swap_rb_in_place(&mut out);
+                    }
+                    Ok(out)
+                }
+                (Format::Rgb, Compression::None) => {
+                    if data.len() != expected {
                         return Err(ImageError::InvalidData);
                     }
-                    &inflated
+                    Ok(expand_rgb_to_4bpp(data, pixels, bgra))
                 }
-            };
-            match format {
-                Format::Rgba => Ok(raw.to_vec()),
-                Format::Rgb => {
-                    let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
-                    for px in raw.as_chunks::<3>().0 {
-                        rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
-                    }
-                    Ok(rgba)
+                (Format::Rgb, Compression::Zlib) => {
+                    let inflated = inflate_exact(data, expected)?;
+                    Ok(expand_rgb_to_4bpp(&inflated, pixels, bgra))
                 }
-                Format::Png => unreachable!(),
+                (Format::Png, _) => unreachable!(),
             }
         }
         Format::Png => {
@@ -524,28 +668,30 @@ pub fn decode_to_rgba(
             match output.color_type {
                 png::ColorType::Rgba => {
                     buf.truncate(pixels * 4);
+                    if bgra {
+                        swap_rb_in_place(&mut buf);
+                    }
                     Ok(buf)
                 }
-                png::ColorType::Rgb => {
-                    let mut rgba = Vec::with_capacity(pixels * 4);
-                    for px in src.as_chunks::<3>().0 {
-                        rgba.extend_from_slice(&[px[0], px[1], px[2], 255]);
-                    }
-                    Ok(rgba)
-                }
+                png::ColorType::Rgb => Ok(expand_rgb_to_4bpp(src, pixels, bgra)),
                 png::ColorType::GrayscaleAlpha => {
-                    let mut rgba = Vec::with_capacity(pixels * 4);
-                    for px in src.as_chunks::<2>().0 {
-                        rgba.extend_from_slice(&[px[0], px[0], px[0], px[1]]);
+                    let mut out = vec![0u8; pixels * 4];
+                    for (s, d) in src
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .zip(out.as_chunks_mut::<4>().0.iter_mut())
+                    {
+                        *d = [s[0], s[0], s[0], s[1]];
                     }
-                    Ok(rgba)
+                    Ok(out)
                 }
                 png::ColorType::Grayscale => {
-                    let mut rgba = Vec::with_capacity(pixels * 4);
-                    for &g in src {
-                        rgba.extend_from_slice(&[g, g, g, 255]);
+                    let mut out = vec![0u8; pixels * 4];
+                    for (&g, d) in src.iter().zip(out.as_chunks_mut::<4>().0.iter_mut()) {
+                        *d = [g, g, g, 255];
                     }
-                    Ok(rgba)
+                    Ok(out)
                 }
                 png::ColorType::Indexed => Err(ImageError::InvalidData),
             }
@@ -610,6 +756,89 @@ mod tests {
             )
             .unwrap(),
             vec![255, 0, 0, 255, 0, 255, 0, 255]
+        );
+        assert_eq!(
+            decode_to_bgra(
+                Format::Rgb,
+                Compression::Zlib,
+                2,
+                1,
+                &z_rgb,
+                PER_SCREEN_LIMIT
+            )
+            .unwrap(),
+            vec![0, 0, 255, 255, 0, 255, 0, 255]
+        );
+
+        // Exercise both the 8-pixel unrolled loop and the tail remainder for
+        // RGB, RGBA and PNG direct-to-BGRA decoding.
+        let (w_odd, h_odd) = (11u32, 3u32);
+        let rgb_odd: Vec<u8> = (0..(w_odd * h_odd))
+            .flat_map(|i| [(i * 7) as u8, (i * 13) as u8, (i * 29) as u8])
+            .collect();
+        let z_rgb_odd = zlib_compress(&rgb_odd);
+        let rgba_from_rgb = decode_to_rgba(
+            Format::Rgb,
+            Compression::Zlib,
+            w_odd,
+            h_odd,
+            &z_rgb_odd,
+            PER_SCREEN_LIMIT,
+        )
+        .unwrap();
+        let mut expected_bgra = rgba_from_rgb.clone();
+        for px in expected_bgra.as_chunks_mut::<4>().0 {
+            px.swap(0, 2);
+        }
+        assert_eq!(
+            decode_to_bgra(
+                Format::Rgb,
+                Compression::Zlib,
+                w_odd,
+                h_odd,
+                &z_rgb_odd,
+                PER_SCREEN_LIMIT
+            )
+            .unwrap(),
+            expected_bgra
+        );
+        assert_eq!(
+            decode_to_bgra(
+                Format::Rgba,
+                Compression::Zlib,
+                w_odd,
+                h_odd,
+                &zlib_compress(&rgba_from_rgb),
+                PER_SCREEN_LIMIT
+            )
+            .unwrap(),
+            expected_bgra
+        );
+        let png_rgb_odd = make_png(w_odd, h_odd, png::ColorType::Rgb, &rgb_odd);
+        assert_eq!(
+            decode_to_bgra(
+                Format::Png,
+                Compression::None,
+                0,
+                0,
+                &png_rgb_odd,
+                PER_SCREEN_LIMIT
+            )
+            .unwrap(),
+            expected_bgra
+        );
+        let png_rgba_odd = make_png(w_odd, h_odd, png::ColorType::Rgba, &rgba_from_rgb);
+        assert_eq!(
+            decode_to_bgra(
+                Format::Png,
+                Compression::None,
+                0,
+                0,
+                &png_rgba_odd,
+                PER_SCREEN_LIMIT
+            )
+            .unwrap(),
+            expected_bgra
         );
 
         let png_bytes = make_png(2, 1, png::ColorType::Rgba, &[1, 2, 3, 4, 5, 6, 7, 8]);

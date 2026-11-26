@@ -297,6 +297,50 @@ fn kitty_graphics_30fps_stream_profile() {
     let png_cmd_b =
         format!("\x1b_Ga=T,f=100,i=1,C=1,q=2;{}\x1b\\", b64.encode(&png_b)).into_bytes();
 
+    // QA-scale 1269x1550 zlib-compressed direct RGB stream (matches emit.py stream).
+    let (zw, zh) = (1269u32, 1550u32);
+    let make_checker_rgb_zlib = |shift: usize| {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression as FlateLevel;
+        let colors: [[u8; 3]; 6] = [
+            [245, 61, 53],
+            [23, 220, 116],
+            [40, 99, 255],
+            [249, 222, 65],
+            [0, 0, 0],
+            [255, 255, 255],
+        ];
+        let unit = (zw as usize) / (2 * colors.len());
+        let rows: Vec<Vec<u8>> = (0..colors.len())
+            .map(|phase| {
+                let mut row = Vec::with_capacity((zw as usize) * 3);
+                for x in 0..(zw as usize) {
+                    row.extend_from_slice(&colors[(x / unit + phase + shift) % colors.len()]);
+                }
+                row
+            })
+            .collect();
+        let mut raw = Vec::with_capacity((zw as usize) * (zh as usize) * 3);
+        for y in 0..(zh as usize) {
+            raw.extend_from_slice(&rows[(y / unit) % colors.len()]);
+        }
+        let mut enc = ZlibEncoder::new(Vec::new(), FlateLevel::fast());
+        enc.write_all(&raw).unwrap();
+        enc.finish().unwrap()
+    };
+    let zrgb_a = make_checker_rgb_zlib(0);
+    let zrgb_b = make_checker_rgb_zlib(1);
+    let zrgb_cmd_a = format!(
+        "\x1b[H\x1b_Ga=T,C=1,q=2,i=77,f=24,s={zw},v={zh},o=z,z=-9;{}\x1b\\",
+        b64.encode(&zrgb_a)
+    )
+    .into_bytes();
+    let zrgb_cmd_b = format!(
+        "\x1b[H\x1b_Ga=T,C=1,q=2,i=77,f=24,s={zw},v={zh},o=z,z=-9;{}\x1b\\",
+        b64.encode(&zrgb_b)
+    )
+    .into_bytes();
+
     // Measure pure clone overhead of TerminalFrame::Output across 2 local subscribers.
     let shared_frame = runner_core::protocol::terminal::TerminalFrame::Output {
         seq: 1,
@@ -423,5 +467,6 @@ fn kitty_graphics_30fps_stream_profile() {
         90,
     );
     run_pass("td_png_1280x720_2subs", &png_cmd_a, &png_cmd_b, 90);
+    run_pass("td_zlib_rgb_1269x1550_2subs", &zrgb_cmd_a, &zrgb_cmd_b, 90);
     core.sessions.drain_terminal_workers();
 }
