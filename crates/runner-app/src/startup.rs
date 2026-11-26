@@ -1,11 +1,72 @@
 use crate::*;
 
 #[cfg(target_os = "macos")]
+fn bundle_provides_app_icon(
+    bundle_path: &std::path::Path,
+    resource_dir: Option<&std::path::Path>,
+    icon_file: Option<&str>,
+    icon_name: Option<&str>,
+) -> bool {
+    if !bundle_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+    {
+        return false;
+    }
+    let Some(resources) = resource_dir else {
+        return false;
+    };
+    if icon_name
+        .map(str::trim)
+        .is_some_and(|name| !name.is_empty())
+        && resources.join("Assets.car").is_file()
+    {
+        return true;
+    }
+    let Some(file) = icon_file.map(str::trim).filter(|file| !file.is_empty()) else {
+        return false;
+    };
+    if resources.join(file).is_file() {
+        return true;
+    }
+    std::path::Path::new(file).extension().is_none()
+        && resources.join(format!("{file}.icns")).is_file()
+}
+
+/// Sets the Dock and About icon for unbundled dev binaries and iconless test
+/// wrappers. Bundled apps leave the icon to AppKit/IconServices: calling
+/// `setApplicationIconImage` with a raw PNG overrides `Runner.icns` and
+/// bypasses macOS Tahoe's Liquid Glass framing, making the running Dock tile
+/// look smaller and rimless.
+#[cfg(target_os = "macos")]
 #[cfg(not(test))]
 pub(crate) fn install_app_icon() {
     use objc2::{AnyThread, MainThreadMarker};
     use objc2_app_kit::{NSApplication, NSImage};
-    use objc2_foundation::NSData;
+    use objc2_foundation::{ns_string, NSBundle, NSData, NSString};
+
+    let bundle = NSBundle::mainBundle();
+    let bundle_path = PathBuf::from(bundle.bundlePath().to_string());
+    let resource_dir = bundle
+        .resourcePath()
+        .map(|path| PathBuf::from(path.to_string()));
+    let info_string = |key: &NSString| {
+        bundle
+            .objectForInfoDictionaryKey(key)
+            .and_then(|value| value.downcast::<NSString>().ok())
+            .map(|value| value.to_string())
+    };
+    let icon_file = info_string(ns_string!("CFBundleIconFile"));
+    let icon_name = info_string(ns_string!("CFBundleIconName"));
+    if bundle_provides_app_icon(
+        &bundle_path,
+        resource_dir.as_deref(),
+        icon_file.as_deref(),
+        icon_name.as_deref(),
+    ) {
+        return;
+    }
 
     let main_thread = MainThreadMarker::new().expect("Runner must start on the main thread");
     let data = NSData::with_bytes(include_bytes!("../../../assets/icon.png"));
@@ -600,4 +661,85 @@ pub(crate) fn show_startup_error(message: &str) {
         &[("message", message.to_string())],
     ));
     unsafe { MessageBoxW(None, &text, &HSTRING::from("Runner"), MB_OK | MB_ICONERROR) };
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use std::fs;
+
+    use super::bundle_provides_app_icon;
+
+    #[test]
+    fn bundled_app_with_icns_skips_runtime_icon_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("Runner.app");
+        let resources = app.join("Contents/Resources");
+        fs::create_dir_all(&resources).unwrap();
+        fs::write(resources.join("Runner.icns"), b"icns").unwrap();
+
+        assert!(bundle_provides_app_icon(
+            &app,
+            Some(&resources),
+            Some("Runner.icns"),
+            None,
+        ));
+        assert!(bundle_provides_app_icon(
+            &app,
+            Some(&resources),
+            Some("Runner"),
+            None,
+        ));
+    }
+
+    #[test]
+    fn bundled_app_with_asset_catalog_icon_skips_runtime_icon_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("Runner.app");
+        let resources = app.join("Contents/Resources");
+        fs::create_dir_all(&resources).unwrap();
+        fs::write(resources.join("Assets.car"), b"car").unwrap();
+
+        assert!(bundle_provides_app_icon(
+            &app,
+            Some(&resources),
+            None,
+            Some("Runner"),
+        ));
+    }
+
+    #[test]
+    fn unbundled_or_iconless_app_keeps_runtime_icon_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let unbundled = dir.path().join("target/debug");
+        fs::create_dir_all(&unbundled).unwrap();
+        fs::write(unbundled.join("Runner.icns"), b"icns").unwrap();
+        assert!(!bundle_provides_app_icon(
+            &unbundled,
+            Some(&unbundled),
+            Some("Runner.icns"),
+            None,
+        ));
+
+        let wrapper = dir.path().join("Runner Screenshot Dev.app");
+        let resources = wrapper.join("Contents/Resources");
+        fs::create_dir_all(&resources).unwrap();
+        assert!(!bundle_provides_app_icon(
+            &wrapper,
+            Some(&resources),
+            None,
+            None,
+        ));
+        assert!(!bundle_provides_app_icon(
+            &wrapper,
+            Some(&resources),
+            Some("Runner.icns"),
+            None,
+        ));
+        assert!(!bundle_provides_app_icon(
+            &wrapper,
+            Some(&resources),
+            None,
+            Some("Runner"),
+        ));
+    }
 }
