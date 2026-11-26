@@ -22,7 +22,8 @@ use self::seed::seed_defaults;
 use crate::error::Result;
 
 pub(crate) use self::app_state::{
-    app_state_get, app_state_set, mark_onboarding_completed_conn, onboarding_completed_at_conn,
+    app_state_delete, app_state_get, app_state_set, mark_onboarding_completed_conn,
+    onboarding_completed_at_conn,
 };
 pub use self::app_state::{
     files_recent_folders, is_onboarding_completed, login_shell_env_lkg, mark_onboarding_completed,

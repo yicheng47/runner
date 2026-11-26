@@ -400,6 +400,7 @@ fn restart_notification_failure_warns_without_failing_the_completed_restart() {
         runtime_shell_env: mgr.shell_env.clone(),
         runtime_discovery: mgr.discovery_state.clone(),
         usage: Arc::new(crate::usage::UsageService::default()),
+        telemetry: Arc::new(crate::telemetry::TelemetryService::without_network()),
         claude_accounts: Arc::new(
             crate::runtimes::claude_code::accounts::AccountService::without_authentication(),
         ),

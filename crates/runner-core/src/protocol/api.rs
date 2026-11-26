@@ -55,6 +55,9 @@ macro_rules! daemon_api {
         onboarding_complete() -> OnboardingStatus [false] => |core: &crate::AppCore| { crate::ops::onboarding::complete(core) };
         onboarding_starter_crew_proposal(args: CreateStarterCrewArgs => CreateStarterCrewArgs = { args }) -> StarterCrewProposal [false] => |core: &crate::AppCore, args: CreateStarterCrewArgs| { crate::ops::onboarding::starter_crew_proposal(core, args) };
         onboarding_create_starter_crew(args: CreateStarterCrewArgs => CreateStarterCrewArgs = { args }) -> Option<Crew> [false] => |core: &crate::AppCore, args: CreateStarterCrewArgs| { crate::ops::onboarding::create_starter_crew(core, args) };
+        telemetry_status() -> TelemetryStatus [false] => |core: &crate::AppCore| { core.telemetry.status(core) };
+        telemetry_set_enabled(enabled: bool => bool = { enabled }) -> TelemetryStatus [false] => |core: &crate::AppCore, enabled: bool| { core.telemetry.set_enabled(core, enabled) };
+        telemetry_reset_id() -> TelemetryStatus [false] => |core: &crate::AppCore| { core.telemetry.reset_id(core) };
         runtime_task_start(runtime: Runtime => Runtime = { runtime }) -> RuntimeUpdateTask [false] => |core: &crate::AppCore, runtime: Runtime| { crate::ops::runtime_tasks::start(core, runtime) };
         runtime_install_start(runtime: Runtime => Runtime = { runtime }) -> RuntimeUpdateTask [false] => |core: &crate::AppCore, runtime: Runtime| { crate::ops::runtime_tasks::start_install(core, runtime) };
         runtime_task_list() -> Vec<RuntimeUpdateTask> [false] => |core: &crate::AppCore| { Ok(crate::ops::runtime_tasks::list(core)) };

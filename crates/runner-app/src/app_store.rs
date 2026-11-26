@@ -46,6 +46,7 @@ pub(crate) enum StoreRefreshKind {
     Missions,
     Runtimes,
     Onboarding,
+    Telemetry,
     All,
 }
 
@@ -55,6 +56,7 @@ impl StoreRefreshKind {
             "window_focus_map" => Some(Self::Windows),
             "runtime/changed" => Some(Self::Runtimes),
             "onboarding/changed" => Some(Self::Onboarding),
+            "telemetry/changed" => Some(Self::Telemetry),
             "claude_accounts/changed" | "usage/updated" | "session/status" => Some(Self::Activity),
             "chat/tab-attention-changed" | "chat/layout-changed" => Some(Self::Nodes),
             "event/appended"
@@ -127,6 +129,7 @@ pub(crate) struct StoreRevisions {
     pub(crate) error: u64,
     pub(crate) restart: u64,
     pub(crate) onboarding: u64,
+    pub(crate) telemetry: u64,
     pub(crate) worktrees: u64,
 }
 
@@ -349,6 +352,7 @@ pub(crate) struct AppStore {
     pub(crate) claude_account_usage: BTreeMap<String, runner_core::protocol::RuntimeUsage>,
     pub(crate) file_link_environment: (String, std::collections::HashMap<String, bool>),
     pub(crate) onboarding: runner_core::protocol::OnboardingStatus,
+    pub(crate) telemetry: Option<runner_core::protocol::TelemetryStatus>,
     command_install_support: Option<CommandInstallSupport>,
     runner_command_status: Option<runner_core::command_install::RunnerCommandStatus>,
     command_install_requires_escalation: bool,
@@ -388,6 +392,7 @@ pub(crate) struct AppStore {
     command_reconcile_lock: Arc<Mutex<()>>,
     window_coordinator: window_sync::WindowCoordinator,
     refresh_in_flight: bool,
+    telemetry_refresh_pending: bool,
     pending_refresh: Option<(StoreRefreshKind, EntityRefreshKind)>,
     refresh_task: Option<Task<()>>,
     _tasks: [Task<()>; 5],
@@ -617,8 +622,12 @@ impl AppStore {
         });
         let events_fg_task = cx.spawn(async move |weak, cx| {
             while let Some((mut refresh, mut entity_refresh, event)) = event_rx.next().await {
+                let mut telemetry_changed = refresh == Some(StoreRefreshKind::Telemetry);
                 let mut daemon_events = event.into_iter().collect::<Vec<_>>();
                 while let Ok(next) = event_rx.try_recv() {
+                    if next.0 == Some(StoreRefreshKind::Telemetry) {
+                        telemetry_changed = true;
+                    }
                     refresh = match (refresh, next.0) {
                         (Some(a), Some(b)) => Some(a.merge(b)),
                         (Some(a), None) | (None, Some(a)) => Some(a),
@@ -633,6 +642,9 @@ impl AppStore {
                         let mut reconnected = false;
                         let mut lagged = false;
                         let mut files_roots = Vec::new();
+                        if telemetry_changed {
+                            this.telemetry_refresh_pending = true;
+                        }
                         for event in daemon_events {
                             match event {
                                 DaemonEvent::Disconnected(notice) => {
@@ -664,15 +676,24 @@ impl AppStore {
                                             ));
                                     }
                                     this.revisions.error = this.revisions.error.wrapping_add(1);
+                                    if this.telemetry.is_some() {
+                                        this.telemetry_refresh_pending = true;
+                                    }
                                 }
                                 DaemonEvent::Lagged => {
                                     lagged = true;
+                                    if this.telemetry.is_some() {
+                                        this.telemetry_refresh_pending = true;
+                                    }
                                 }
                                 DaemonEvent::Restarted(count) => {
                                     notify_for_daemon = true;
                                     reconnected = true;
                                     this.restarted_sessions = Some(count);
                                     this.revisions.restart = this.revisions.restart.wrapping_add(1);
+                                    if this.telemetry.is_some() {
+                                        this.telemetry_refresh_pending = true;
+                                    }
                                 }
                                 DaemonEvent::FilesRootChanged(root) => {
                                     files_roots.push(root);
@@ -826,6 +847,7 @@ impl AppStore {
             claude_account_usage: Default::default(),
             file_link_environment: Default::default(),
             onboarding: Default::default(),
+            telemetry: None,
             command_install_support,
             runner_command_status: None,
             command_install_requires_escalation: false,
@@ -864,6 +886,7 @@ impl AppStore {
             command_reconcile_lock: Arc::new(Mutex::new(())),
             window_coordinator: window_sync::WindowCoordinator::default(),
             refresh_in_flight: false,
+            telemetry_refresh_pending: false,
             pending_refresh: None,
             refresh_task: None,
             _tasks: [
@@ -921,6 +944,9 @@ impl AppStore {
         entity_refresh: EntityRefreshKind,
         cx: &mut Context<Self>,
     ) {
+        if refresh == StoreRefreshKind::Telemetry {
+            self.telemetry_refresh_pending = true;
+        }
         self.pending_refresh = Some(match self.pending_refresh.take() {
             Some((prev_store, prev_entity)) => {
                 (prev_store.merge(refresh), prev_entity.merge(entity_refresh))
@@ -937,6 +963,9 @@ impl AppStore {
         refresh: StoreRefreshKind,
         entity_refresh: EntityRefreshKind,
     ) {
+        if refresh == StoreRefreshKind::Telemetry {
+            self.telemetry_refresh_pending = true;
+        }
         self.pending_refresh = Some(match self.pending_refresh.take() {
             Some((prev_store, prev_entity)) => {
                 (prev_store.merge(refresh), prev_entity.merge(entity_refresh))
@@ -951,12 +980,37 @@ impl AppStore {
             return;
         };
         self.refresh_in_flight = true;
+        let fetch_telemetry =
+            refresh == StoreRefreshKind::Telemetry || self.telemetry_refresh_pending;
+        self.telemetry_refresh_pending = false;
         let started_revisions = self.revisions;
         let started_window_epoch = self.window_entries_epoch;
         let started_activity_epoch = self.session_activity_epoch;
         let client = self.client.clone();
 
-        if refresh == StoreRefreshKind::Windows && entity_refresh == EntityRefreshKind::None {
+        if refresh == StoreRefreshKind::Telemetry && entity_refresh == EntityRefreshKind::None {
+            let bg = cx.background_spawn(async move { client.telemetry_status().ok() });
+            self.refresh_task = Some(cx.spawn(async move |weak, cx| {
+                let next = bg.await;
+                let _ = weak.update(cx, |this, cx| {
+                    if let Some(next) = next {
+                        if this.telemetry.as_ref() != Some(&next) {
+                            this.telemetry = Some(next);
+                            this.revisions.telemetry = this.revisions.telemetry.wrapping_add(1);
+                            cx.notify();
+                        }
+                    }
+                    this.refresh_in_flight = false;
+                    this.start_next_refresh(cx);
+                });
+            }));
+            return;
+        }
+
+        if refresh == StoreRefreshKind::Windows
+            && entity_refresh == EntityRefreshKind::None
+            && !fetch_telemetry
+        {
             let bg =
                 cx.background_spawn(async move { client.window_snapshot().unwrap_or_default() });
             self.refresh_task = Some(cx.spawn(async move |weak, cx| {
@@ -996,7 +1050,13 @@ impl AppStore {
                 command_reconcile_lock: Arc::clone(&self.command_reconcile_lock),
             });
         let bg = cx.background_spawn(async move {
-            fetch_store_refresh(client, refresh, entity_refresh, runtime_inputs)
+            fetch_store_refresh(
+                client,
+                refresh,
+                entity_refresh,
+                fetch_telemetry,
+                runtime_inputs,
+            )
         });
         self.refresh_task = Some(cx.spawn(async move |weak, cx| {
             let fetched = bg.await;
@@ -1037,6 +1097,12 @@ impl AppStore {
             if self.onboarding != next {
                 self.onboarding = next;
                 self.revisions.onboarding = self.revisions.onboarding.wrapping_add(1);
+            }
+        }
+        if let Some(next) = fetched.telemetry {
+            if self.telemetry.as_ref() != Some(&next) {
+                self.telemetry = Some(next);
+                self.revisions.telemetry = self.revisions.telemetry.wrapping_add(1);
             }
         }
         if let Some(runtime_init) = fetched.runtime_init {
@@ -1432,6 +1498,18 @@ impl AppStore {
         }
     }
 
+    pub(crate) fn set_telemetry_status(
+        &mut self,
+        status: runner_core::protocol::TelemetryStatus,
+        cx: &mut Context<Self>,
+    ) {
+        if self.telemetry.as_ref() != Some(&status) {
+            self.telemetry = Some(status);
+            self.revisions.telemetry = self.revisions.telemetry.wrapping_add(1);
+            cx.notify();
+        }
+    }
+
     fn refresh_nodes_inner(&mut self) {
         match self.client.node_list() {
             Ok(nodes) => {
@@ -1621,6 +1699,7 @@ type MissionsRefreshResult = runner_core::protocol::ClientResult<(
 
 struct FetchedStoreRefresh {
     onboarding: Option<runner_core::protocol::OnboardingStatus>,
+    telemetry: Option<runner_core::protocol::TelemetryStatus>,
     runtime_init: Option<RuntimeInitSnapshot>,
     roles: Option<runner_core::protocol::ClientResult<Vec<Role>>>,
     crews: Option<runner_core::protocol::ClientResult<Vec<CrewListItem>>>,
@@ -1636,6 +1715,7 @@ fn fetch_store_refresh(
     client: DaemonClient,
     refresh: StoreRefreshKind,
     entity_refresh: EntityRefreshKind,
+    fetch_telemetry: bool,
     runtime_inputs: Option<RuntimeRefreshInputs>,
 ) -> FetchedStoreRefresh {
     let onboarding = if matches!(
@@ -1647,6 +1727,10 @@ fn fetch_store_refresh(
     } else {
         None
     };
+
+    let telemetry = fetch_telemetry
+        .then(|| client.telemetry_status().ok())
+        .flatten();
 
     let runtime_init = runtime_inputs.map(|inputs| {
         let mcp_completed = mcp_removal::compute_mcp_removal(
@@ -1718,6 +1802,7 @@ fn fetch_store_refresh(
 
     FetchedStoreRefresh {
         onboarding,
+        telemetry,
         runtime_init,
         roles,
         crews,
@@ -1810,12 +1895,21 @@ pub(crate) fn test_lifecycle_store(
     cx: &mut gpui::TestAppContext,
     root: &std::path::Path,
 ) -> gpui::Entity<crate::app_store::AppStore> {
+    test_lifecycle_store_with_telemetry(cx, root, None)
+}
+
+#[cfg(test)]
+pub(crate) fn test_lifecycle_store_with_telemetry(
+    cx: &mut gpui::TestAppContext,
+    root: &std::path::Path,
+    telemetry: Option<Arc<runner_daemon::telemetry::TelemetryService>>,
+) -> gpui::Entity<crate::app_store::AppStore> {
     use gpui::AppContext as _;
     use runner_daemon::{db, session, shell_path};
     use std::sync::RwLock;
     let env = Arc::new(RwLock::new(shell_path::LoginShellEnv::default()));
     let discovery = Arc::new(RwLock::new(shell_path::DiscoveryState::startup(None, None)));
-    let core = crate::test_support::core(
+    let mut core = crate::test_support::core(
         Arc::new(db::open_fixture_pool(&root.join("runner.db")).unwrap()),
         root.to_owned(),
         session::SessionManager::new(
@@ -1826,6 +1920,9 @@ pub(crate) fn test_lifecycle_store(
         env,
         discovery,
     );
+    if let Some(telemetry) = telemetry {
+        core.telemetry = telemetry;
+    }
     let store = cx.new(|cx| {
         crate::app_store::AppStore::new(
             core,

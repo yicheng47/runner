@@ -207,6 +207,7 @@ async fn serve_with_listener(
     core.usage.manage_client_lifetime(config.isolated);
     if !config.isolated {
         core.usage.start_scheduler(core.clone());
+        core.telemetry.start_scheduler(core.clone());
     }
     crate::ops::mission::report::Reports::start(core.clone());
     let (resume_tx, resume_rx) = tokio::sync::watch::channel(None);
@@ -271,6 +272,7 @@ async fn serve_with_listener(
     drop(listener);
     drop(sentinel);
     core.usage.set_polling_enabled(false);
+    core.telemetry.stop();
     cancel.cancel();
     core.remote.shutdown().await;
     let shutdown_core = core.clone();
@@ -406,6 +408,7 @@ async fn discard_sentinel_connection(accepted: std::io::Result<IpcStream>) {
 
 struct Connected {
     core: AppCore,
+    is_app: bool,
 }
 /// Connected app clients. Admission and a replacing app's takeover share one
 /// lock, so a takeover never disconnects an app it did not count.
@@ -446,6 +449,9 @@ impl Drop for AppClient {
 impl Drop for Connected {
     fn drop(&mut self) {
         self.core.usage.client_disconnected();
+        if self.is_app {
+            self.core.telemetry.app_client_disconnected();
+        }
     }
 }
 const MAX_CONNECTION_IN_FLIGHT_REQUESTS: usize = 8;
@@ -1061,8 +1067,15 @@ async fn connection_with_limits(
             }) => result?,
         };
     }
-    let _connected = Connected { core: core.clone() };
+    let is_app = _app.is_some();
+    let _connected = Connected {
+        core: core.clone(),
+        is_app,
+    };
     core.usage.client_connected(core.clone());
+    if is_app {
+        core.telemetry.app_client_connected();
+    }
     let local = CancellationToken::new();
     let attachments = Arc::new(Attachments {
         core: core.clone(),

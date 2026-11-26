@@ -25,6 +25,7 @@ pub(crate) fn core(
         runtime_shell_env,
         runtime_discovery,
         usage: Arc::new(runner_daemon::usage::UsageService::without_fetch()),
+        telemetry: Arc::new(runner_daemon::telemetry::TelemetryService::without_network()),
         claude_accounts: Arc::new(
             runner_daemon::runtimes::claude_code::accounts::AccountService::without_authentication(
             ),

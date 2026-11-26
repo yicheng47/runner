@@ -1,9 +1,11 @@
 use std::time::Duration;
 
+use futures::channel::oneshot;
+
 use gpui::prelude::*;
 use gpui::{
-    canvas, div, px, rems, svg, AnyElement, App, ClipboardItem, Context, Entity, FontWeight,
-    SharedString, Task, WeakEntity, Window,
+    canvas, div, px, rems, svg, AnyElement, App, ClipboardItem, Context, CursorStyle, Entity,
+    FontWeight, KeyDownEvent, SharedString, Task, WeakEntity, Window,
 };
 use runner_app::ui::button::spinner;
 use runner_app::ui::{
@@ -20,6 +22,7 @@ use runner_core::protocol::runtime::{
 };
 use runner_core::protocol::{
     runtime_metadata, Runtime, RuntimeTaskKind, RuntimeUpdateState, RuntimeUpdateTask,
+    TelemetryStatus,
 };
 
 use crate::app_settings::AppSettings;
@@ -28,10 +31,16 @@ use crate::chat_icon::ChatIcon;
 use crate::surfaces::AppRoute;
 use crate::{theme, NativeRoot};
 
+pub(crate) struct SetupFinishResult {
+    pub(crate) onboarding: Option<OnboardingStatus>,
+    pub(crate) telemetry: Option<TelemetryStatus>,
+}
+
 #[derive(Default)]
 pub(crate) struct SetupState {
     pub(crate) open: bool,
     pub(crate) create_starter_crew: Option<bool>,
+    pub(crate) telemetry_desired: Option<(u64, bool)>,
     pub(crate) more_agents: bool,
     pub(crate) rechecking: bool,
     pub(crate) loading: bool,
@@ -44,6 +53,11 @@ pub(crate) struct SetupState {
     pub(crate) agents_scroll: gpui::ScrollHandle,
     agents_scrollbar: Option<Entity<Scrollbar>>,
     copied_generation: u64,
+    telemetry_loading: bool,
+    telemetry_loaded_once: bool,
+    telemetry_rev: u64,
+    telemetry_write_in_flight: Option<(u64, bool)>,
+    telemetry_write_waiters: Vec<oneshot::Sender<()>>,
     generation: u64,
     loaded_once: bool,
 }
@@ -190,8 +204,9 @@ fn vocabulary_card(icon: &'static str, term: &'static str, definition: &'static 
         .min_w(px(0.))
         .flex()
         .flex_col()
-        .gap(rems(6. / 16.))
-        .p(rems(12. / 16.))
+        .gap(rems(4. / 16.))
+        .px(rems(12. / 16.))
+        .py(rems(10. / 16.))
         .rounded(rems(8. / 16.))
         .border_1()
         .border_color(theme::border())
@@ -243,7 +258,6 @@ fn render_setup_footer(
         .justify_between()
         .gap_x(rems(1.))
         .gap_y(rems(8. / 16.))
-        .pt(rems(4. / 16.))
         .child(
             div()
                 .flex_1()
@@ -316,6 +330,9 @@ impl SetupState {
     pub(crate) fn open_reset(&mut self) {
         self.open = true;
         self.create_starter_crew = None;
+        self.telemetry_desired = None;
+        self.telemetry_loading = false;
+        self.telemetry_loaded_once = false;
         self.more_agents = false;
         self.finishing = false;
         self.scroll.set_offset(gpui::point(px(0.), px(0.)));
@@ -334,6 +351,103 @@ impl SetupState {
     pub(crate) fn toggle_starter_crew(&mut self) {
         let current = self.create_starter_crew != Some(false);
         self.create_starter_crew = Some(!current);
+    }
+
+    pub(crate) fn telemetry_checked(&self, telemetry: Option<&TelemetryStatus>) -> bool {
+        if telemetry.is_some_and(|status| status.env_override.is_some()) {
+            return false;
+        }
+        self.telemetry_desired
+            .map(|(_, enabled)| enabled)
+            .unwrap_or_else(|| telemetry.is_none_or(|status| status.enabled))
+    }
+
+    pub(crate) fn set_telemetry_desired(&mut self, enabled: bool) {
+        self.telemetry_rev = self.telemetry_rev.wrapping_add(1);
+        self.telemetry_desired = Some((self.telemetry_rev, enabled));
+    }
+
+    pub(crate) fn toggle_telemetry(
+        &mut self,
+        store: &Entity<AppStore>,
+        cx: &mut Context<NativeRoot>,
+    ) {
+        if self.finishing {
+            return;
+        }
+        let Some(telemetry) = store.read(cx).telemetry.clone() else {
+            return;
+        };
+        if telemetry.env_override.is_some() {
+            return;
+        }
+        let next = !self.telemetry_checked(Some(&telemetry));
+        self.set_telemetry_desired(next);
+        cx.notify();
+        self.pump_telemetry_write(store, cx);
+    }
+
+    fn pump_telemetry_write(&mut self, store: &Entity<AppStore>, cx: &mut Context<NativeRoot>) {
+        if self.telemetry_write_in_flight.is_some() || self.finishing {
+            return;
+        }
+        let Some((rev, written)) = self.telemetry_desired else {
+            return;
+        };
+        self.telemetry_write_in_flight = Some((rev, written));
+        let core = store.read(cx).client.clone();
+        let bg = cx.background_spawn(async move { core.telemetry_set_enabled(written).ok() });
+        cx.spawn(async move |weak, cx| {
+            let updated = bg.await;
+            let _ = weak.update(cx, |root, cx| {
+                root.setup.telemetry_write_in_flight = None;
+                let waiters = std::mem::take(&mut root.setup.telemetry_write_waiters);
+                let matched_latest = root.setup.telemetry_desired == Some((rev, written));
+                if matched_latest {
+                    if let Some(status) = updated {
+                        root.app_store.update(cx, |store, store_cx| {
+                            store.set_telemetry_status(status, store_cx);
+                        });
+                        root.setup.telemetry_desired = None;
+                    }
+                }
+                for waiter in waiters {
+                    let _ = waiter.send(());
+                }
+                if !root.setup.finishing
+                    && root.setup.telemetry_desired.is_some()
+                    && !matched_latest
+                {
+                    let store = root.app_store.clone();
+                    root.setup.pump_telemetry_write(&store, cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn load_telemetry_async(&mut self, store: &Entity<AppStore>, cx: &mut Context<NativeRoot>) {
+        if self.telemetry_loading {
+            return;
+        }
+        self.telemetry_loading = true;
+        self.telemetry_loaded_once = true;
+        let core = store.read(cx).client.clone();
+        let bg = cx.background_spawn(async move { core.telemetry_status().ok() });
+        cx.spawn(async move |weak, cx| {
+            let telemetry = bg.await;
+            let _ = weak.update(cx, |root, cx| {
+                root.setup.telemetry_loading = false;
+                if let Some(telemetry) = telemetry {
+                    root.app_store.update(cx, |store, store_cx| {
+                        store.set_telemetry_status(telemetry, store_cx);
+                    });
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn can_start(&self, settings: &AppSettings) -> bool {
@@ -412,6 +526,7 @@ impl SetupState {
         let generation = self.generation;
         self.loading = true;
         self.loaded_once = true;
+        self.telemetry_loaded_once = true;
         let (core, args) = {
             let store = store.read(cx);
             (store.client.clone(), starter_crew_args(&store.settings))
@@ -420,15 +535,22 @@ impl SetupState {
             let status = core.runtime_status_list().ok();
             let catalog = core.runtime_catalog().unwrap_or_default();
             let proposal = core.onboarding_starter_crew_proposal(args).ok();
-            (status, catalog, proposal)
+            let telemetry = core.telemetry_status().ok();
+            (status, catalog, proposal, telemetry)
         });
         cx.spawn(async move |weak, cx| {
-            let (status, catalog, proposal) = task.await;
+            let (status, catalog, proposal, telemetry) = task.await;
             let _ = weak.update(cx, |root, cx| {
-                if root
+                let mut changed = root
                     .setup
-                    .apply_refresh_result(generation, status, catalog, proposal)
-                {
+                    .apply_refresh_result(generation, status, catalog, proposal);
+                if let Some(telemetry) = telemetry {
+                    root.app_store.update(cx, |store, store_cx| {
+                        store.set_telemetry_status(telemetry, store_cx);
+                    });
+                    changed = true;
+                }
+                if changed {
                     cx.notify();
                 }
             });
@@ -504,7 +626,7 @@ impl SetupState {
         already_completed: bool,
         store: &Entity<AppStore>,
         cx: &mut Context<NativeRoot>,
-    ) -> Option<(bool, Task<anyhow::Result<Option<OnboardingStatus>>>)> {
+    ) -> Option<(bool, Task<anyhow::Result<SetupFinishResult>>)> {
         if self.finishing {
             return None;
         }
@@ -527,19 +649,63 @@ impl SetupState {
             && !has_crews
             && proposal_has_slots
             && self.create_starter_crew != Some(false);
+        let in_flight_waiter = if self.telemetry_write_in_flight.is_some() {
+            let (tx, rx) = oneshot::channel();
+            self.telemetry_write_waiters.push(tx);
+            Some(rx)
+        } else {
+            None
+        };
         self.finishing = true;
         cx.notify();
-        let work = cx.background_spawn(async move {
-            if create_crew {
-                core.onboarding_create_starter_crew(args)?;
+        let background = cx.background_executor().clone();
+        let work = cx.spawn(async move |weak, cx| {
+            // Wait asynchronously (never blocking the GPUI thread) for any single
+            // in-flight checkbox write to finish before flushing pending intent and
+            // calling onboarding_complete(). If the owning window/SetupState drops
+            // while a write is pending, abort Finish rather than opening the
+            // onboarding gate ahead of an unacknowledged opt-out.
+            if let Some(rx) = in_flight_waiter {
+                if rx.await.is_err() {
+                    return Ok(SetupFinishResult {
+                        onboarding: None,
+                        telemetry: None,
+                    });
+                }
             }
-            if !already_completed {
-                Ok(Some(core.onboarding_complete()?))
-            } else if create_crew {
-                Ok(Some(core.onboarding_status()?))
-            } else {
-                Ok(None)
-            }
+            let Ok(flush_telemetry) = weak.read_with(cx, |root, _| {
+                // Only flush telemetry if there is genuinely pending intent that was
+                // not already persisted by the completed in-flight write.
+                root.setup.telemetry_desired.map(|(_, enabled)| enabled)
+            }) else {
+                return Ok(SetupFinishResult {
+                    onboarding: None,
+                    telemetry: None,
+                });
+            };
+            background
+                .spawn(async move {
+                    let telemetry = if let Some(enabled) = flush_telemetry {
+                        Some(core.telemetry_set_enabled(enabled)?)
+                    } else {
+                        None
+                    };
+                    if create_crew {
+                        core.onboarding_create_starter_crew(args)?;
+                    }
+                    let onboarding = if !already_completed {
+                        Some(core.onboarding_complete()?)
+                    } else if create_crew {
+                        Some(core.onboarding_status()?)
+                    } else {
+                        None
+                    };
+                    Ok(SetupFinishResult {
+                        onboarding,
+                        telemetry,
+                    })
+                })
+                .await
         });
         Some((create_crew, work))
     }
@@ -548,6 +714,7 @@ impl SetupState {
         self.finishing = false;
         self.open = false;
         self.create_starter_crew = None;
+        self.telemetry_desired = None;
         self.more_agents = false;
         self.agents_scroll.set_offset(gpui::point(px(0.), px(0.)));
     }
@@ -565,10 +732,19 @@ impl SetupState {
     ) -> AnyElement {
         if !self.loaded_once && !self.loading {
             self.refresh(store, cx);
+        } else if !self.telemetry_loaded_once
+            && !self.telemetry_loading
+            && store.read(cx).telemetry.is_none()
+        {
+            self.load_telemetry_async(store, cx);
         }
-        let (has_crews, can_start) = {
+        let (has_crews, can_start, telemetry) = {
             let store = store.read(cx);
-            (store.has_crews(), self.can_start(&store.settings))
+            (
+                store.has_crews(),
+                self.can_start(&store.settings),
+                store.telemetry.clone(),
+            )
         };
         let status = self.status.as_ref();
         let npm_available = status.is_some_and(|s| s.npm_available);
@@ -637,20 +813,20 @@ impl SetupState {
                             .flex_col()
                             .items_center()
                             .px(rems(24. / 16.))
-                            .pt(rems(24. / 16.))
-                            .pb(rems(if task_pill_visible { 76. } else { 24. } / 16.))
+                            .pt(rems(20. / 16.))
+                            .pb(rems(if task_pill_visible { 76. } else { 20. } / 16.))
                             .child(
                                 div()
                                     .debug_selector(|| "SETUP_BRAND".into())
                                     .flex()
                                     .flex_col()
                                     .items_center()
-                                    .gap(rems(12. / 16.))
-                                    .pb(rems(8. / 16.))
+                                    .gap(rems(6. / 16.))
+                                    .pb(rems(4. / 16.))
                                     .child(
                                         div()
                                             .w(rems(52. / 16.))
-                                            .h(rems(40. / 16.))
+                                            .h(rems(32. / 16.))
                                             .flex()
                                             .items_center()
                                             .justify_center()
@@ -677,7 +853,7 @@ impl SetupState {
                                     .max_w(rems(600. / 16.))
                                     .flex()
                                     .flex_col()
-                                    .gap(rems(20. / 16.))
+                                    .gap(rems(12. / 16.))
                                     .child(
                                         div()
                                             .whitespace_normal()
@@ -780,12 +956,24 @@ impl SetupState {
                                         show_starter_crew
                                             .then(|| self.render_starter_crew(cx.weak_entity())),
                                     )
-                                    .child(render_setup_footer(
-                                        finishing,
-                                        can_start,
-                                        reopened,
-                                        cx.weak_entity(),
-                                    )),
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .flex()
+                                            .flex_col()
+                                            .gap(rems(8. / 16.))
+                                            .child(self.render_telemetry_strip(
+                                                telemetry.as_ref(),
+                                                finishing,
+                                                cx.weak_entity(),
+                                            ))
+                                            .child(render_setup_footer(
+                                                finishing,
+                                                can_start,
+                                                reopened,
+                                                cx.weak_entity(),
+                                            )),
+                                    ),
                             ),
                     ),
             )
@@ -1431,7 +1619,7 @@ impl SetupState {
             .w_full()
             .flex()
             .flex_col()
-            .gap(rems(8. / 16.))
+            .gap(rems(6. / 16.))
             .child(
                 div()
                     .w_full()
@@ -1460,7 +1648,7 @@ impl SetupState {
                     .items_center()
                     .gap(rems(14. / 16.))
                     .px(rems(14. / 16.))
-                    .py(rems(12. / 16.))
+                    .py(rems(10. / 16.))
                     .rounded(rems(10. / 16.))
                     .border_1()
                     .border_color(theme::border())
@@ -1604,6 +1792,177 @@ impl SetupState {
             )
             .into_any_element()
     }
+
+    fn render_telemetry_strip(
+        &self,
+        telemetry: Option<&TelemetryStatus>,
+        finishing: bool,
+        root_weak: WeakEntity<NativeRoot>,
+    ) -> AnyElement {
+        let loaded = telemetry.is_some();
+        let env_override = telemetry.and_then(|status| status.env_override.clone());
+        let locked = env_override.is_some();
+        let disabled = !loaded || locked || finishing;
+        let checked = self.telemetry_checked(telemetry);
+        let guide_url = crate::surfaces::settings::privacy::privacy_guide_url();
+        let root_checkbox = root_weak.clone();
+        let root_key = root_weak.clone();
+        let root_label = root_weak;
+
+        let mut checkbox = div()
+            .id("setup-telemetry-checkbox")
+            .debug_selector(|| "SETUP_TELEMETRY_CHECKBOX".into())
+            .tab_index(0)
+            .tab_stop(!disabled)
+            .flex_none()
+            .mt(rems(1. / 16.))
+            .size(rems(1.))
+            .rounded(rems(4. / 16.))
+            .border_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor(if disabled {
+                CursorStyle::OperationNotAllowed
+            } else {
+                CursorStyle::PointingHand
+            })
+            .when(locked, |box_| {
+                box_.bg(theme::raised())
+                    .border_color(theme::border())
+                    .opacity(0.5)
+            })
+            .when(!locked && checked, |box_| {
+                box_.bg(theme::accent())
+                    .border_color(theme::accent())
+                    .child(
+                        svg()
+                            .flex_none()
+                            .path("check.svg")
+                            .size(rems(11. / 16.))
+                            .text_color(theme::accent_ink()),
+                    )
+            })
+            .when(!locked && !checked, |box_| {
+                box_.bg(theme::panel()).border_color(theme::border_strong())
+            });
+
+        if !disabled {
+            checkbox = checkbox
+                .on_click(move |_, _, cx| {
+                    let _ = root_checkbox.update(cx, |root, cx| {
+                        root.setup.toggle_telemetry(&root.app_store, cx);
+                    });
+                })
+                .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                        cx.stop_propagation();
+                        let _ = root_key.update(cx, |root, cx| {
+                            root.setup.toggle_telemetry(&root.app_store, cx);
+                        });
+                    }
+                });
+        }
+
+        let mut label = div()
+            .id("setup-telemetry-label")
+            .text_size(rems(12.5 / 16.))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(if locked {
+                theme::muted()
+            } else {
+                theme::text()
+            })
+            .child(crate::i18n::text("onboarding.telemetry_label"));
+        if !disabled {
+            label = label
+                .cursor(CursorStyle::PointingHand)
+                .on_click(move |_, _, cx| {
+                    let _ = root_label.update(cx, |root, cx| {
+                        root.setup.toggle_telemetry(&root.app_store, cx);
+                    });
+                });
+        }
+
+        let description = match env_override {
+            Some(var) => div()
+                .debug_selector(|| "SETUP_TELEMETRY_ENV_NOTICE".into())
+                .whitespace_normal()
+                .text_size(rems(11.5 / 16.))
+                .line_height(rems(1.))
+                .text_color(theme::warning())
+                .child(crate::i18n::tf(
+                    "onboarding.telemetry_env_disabled",
+                    &[("var", var)],
+                )),
+            None => div()
+                .whitespace_normal()
+                .text_size(rems(11.5 / 16.))
+                .line_height(rems(1.))
+                .text_color(theme::muted())
+                .child(crate::i18n::text("onboarding.telemetry_description")),
+        };
+
+        div()
+            .debug_selector(|| "SETUP_TELEMETRY_STRIP".into())
+            .w_full()
+            .pt(rems(8. / 16.))
+            .border_t_1()
+            .border_color(theme::border())
+            .flex()
+            .items_start()
+            .gap(rems(10. / 16.))
+            .child(checkbox)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .flex_col()
+                    .gap(rems(2. / 16.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap_x(rems(8. / 16.))
+                            .gap_y(rems(2. / 16.))
+                            .child(label)
+                            .child(
+                                div()
+                                    .id("setup-telemetry-link")
+                                    .debug_selector(|| "SETUP_TELEMETRY_LINK".into())
+                                    .tab_index(0)
+                                    .cursor(CursorStyle::PointingHand)
+                                    .flex()
+                                    .items_center()
+                                    .gap(rems(3. / 16.))
+                                    .text_size(rems(12. / 16.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(theme::accent())
+                                    .hover(|link| link.opacity(0.85))
+                                    .on_click(move |_, _, cx| cx.open_url(guide_url))
+                                    .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                                        if matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                        {
+                                            cx.stop_propagation();
+                                            cx.open_url(guide_url);
+                                        }
+                                    })
+                                    .child(crate::i18n::text("onboarding.telemetry_whats_sent"))
+                                    .child(
+                                        svg()
+                                            .flex_none()
+                                            .path("arrow-up-right.svg")
+                                            .size(rems(11. / 16.))
+                                            .text_color(theme::accent()),
+                                    ),
+                            ),
+                    )
+                    .child(description),
+            )
+            .into_any_element()
+    }
 }
 
 impl NativeRoot {
@@ -1655,12 +2014,18 @@ impl NativeRoot {
             let result = work.await;
             let _ = weak.update_in(cx, |root, window, cx| {
                 match result {
-                    Ok(status) => {
+                    Ok(SetupFinishResult {
+                        onboarding: status,
+                        telemetry,
+                    }) => {
                         root.setup.complete_finish();
                         root.app_store.update(cx, |store, cx| {
                             if let Some(status) = status {
                                 store.onboarding = status;
                                 store.revisions.onboarding += 1;
+                            }
+                            if let Some(telemetry) = telemetry {
+                                store.set_telemetry_status(telemetry, cx);
                             }
                             if create_crew {
                                 store.refresh_crews_inner();

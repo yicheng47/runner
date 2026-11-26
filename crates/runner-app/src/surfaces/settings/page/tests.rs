@@ -1853,7 +1853,7 @@ fn nav_search_filters_labels_and_removes_empty_groups() {
             all.iter().map(|(label, _)| *label).collect::<Vec<_>>(),
             ["App", "Side panel", "Integrations", "Cloud", "System"]
         );
-        assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 15);
+        assert_eq!(all.iter().map(|(_, panes)| panes.len()).sum::<usize>(), 16);
         assert_eq!(
             all[0],
             (

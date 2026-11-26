@@ -706,10 +706,26 @@ pub(crate) fn percent(value: Option<&Value>) -> Option<f64> {
 pub(crate) fn http_client(
     env: &LoginShellEnv,
 ) -> Result<reqwest::blocking::Client, reqwest::Error> {
+    http_client_builder(env, FETCH_TIMEOUT)?.build()
+}
+
+pub(crate) fn http_client_no_redirect(
+    env: &LoginShellEnv,
+    timeout: Duration,
+) -> Result<reqwest::blocking::Client, reqwest::Error> {
+    http_client_builder(env, timeout)?
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+}
+
+fn http_client_builder(
+    env: &LoginShellEnv,
+    timeout: Duration,
+) -> Result<reqwest::blocking::ClientBuilder, reqwest::Error> {
     let mut builder = reqwest::blocking::Client::builder()
         .user_agent(concat!("Runner/", env!("CARGO_PKG_VERSION")))
         .no_proxy()
-        .timeout(FETCH_TIMEOUT);
+        .timeout(timeout);
     let no_proxy = env
         .vars
         .get("NO_PROXY")
@@ -733,7 +749,7 @@ pub(crate) fn http_client(
             builder = builder.proxy(proxy.no_proxy(no_proxy.clone()));
         }
     }
-    builder.build()
+    Ok(builder)
 }
 
 #[cfg(test)]

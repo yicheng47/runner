@@ -497,13 +497,34 @@ fn diagnostics_left_the_nav_and_a_saved_pane_opens_about() {
     );
     assert_eq!(
         SYSTEM_PANES,
-        [SettingsPane::Updates, SettingsPane::About].as_slice()
+        [
+            SettingsPane::Privacy,
+            SettingsPane::Updates,
+            SettingsPane::About,
+        ]
+        .as_slice()
     );
     assert!(filtered_nav_groups("diagnostics").is_empty());
     assert_eq!(
         filtered_nav_groups("application logs"),
         vec![("System", vec![SettingsPane::About])]
     );
+    for query in ["privacy", "telemetry", "heartbeat", "do_not_track"] {
+        assert_eq!(
+            filtered_nav_groups(query),
+            vec![("System", vec![SettingsPane::Privacy])],
+            "query={query}"
+        );
+    }
+    with_locale(Locale::SimplifiedChinese, || {
+        for query in ["隐私", "遥测", "心跳"] {
+            assert_eq!(
+                filtered_nav_groups(query),
+                vec![("系统", vec![SettingsPane::Privacy])],
+                "zh query={query}"
+            );
+        }
+    });
 }
 
 #[test]

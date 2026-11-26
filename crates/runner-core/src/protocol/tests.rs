@@ -649,6 +649,16 @@ record!(OnboardingStatus {
     completed_at,
     has_crews
 });
+record!(TelemetryStatus {
+    enabled,
+    stored_enabled,
+    env_override,
+    dev_build,
+    install_id,
+    payload_preview,
+    endpoint,
+    last_sent_at
+});
 record!(StarterCrewSlotProposal {
     handle,
     display_name,

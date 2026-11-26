@@ -28,6 +28,8 @@ fn main() {
         unsafe { runner_core::daemon_process::clean_environment(data) };
         assert!(std::env::var_os("RUNNER_MISSION_ID").is_none());
         assert_eq!(std::env::var_os(RECORDING).unwrap(), "fixture-prefix");
+        assert_eq!(std::env::var_os("RUNNER_TELEMETRY").unwrap(), "0");
+        assert_eq!(std::env::var_os("DO_NOT_TRACK").unwrap(), "1");
         assert_eq!(
             std::env::var_os("PATH").unwrap(),
             std::env::join_paths([Path::new("kept")]).unwrap()
@@ -37,6 +39,8 @@ fn main() {
     let output = Command::new(std::env::current_exe().unwrap())
         .env(CHILD, "1")
         .env(RECORDING, "fixture-prefix")
+        .env("RUNNER_TELEMETRY", "0")
+        .env("DO_NOT_TRACK", "1")
         .env("RUNNER_MISSION_ID", "parent-mission")
         .env("PATH", path)
         .output()

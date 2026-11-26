@@ -6,6 +6,7 @@ mod integration_account;
 pub(crate) mod mcp;
 pub(crate) mod notifications;
 pub(crate) mod page;
+pub(crate) mod privacy;
 pub(crate) mod remote;
 pub(crate) mod skills;
 pub(crate) mod updates;

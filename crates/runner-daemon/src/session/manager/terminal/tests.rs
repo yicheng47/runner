@@ -305,6 +305,7 @@ fn test_core_with_runtime(root: &std::path::Path, runtime: Arc<dyn SessionRuntim
         runtime_shell_env,
         runtime_discovery,
         usage: Arc::new(crate::usage::UsageService::default()),
+        telemetry: Arc::new(crate::telemetry::TelemetryService::without_network()),
         claude_accounts: Arc::new(
             crate::runtimes::claude_code::accounts::AccountService::without_authentication(),
         ),

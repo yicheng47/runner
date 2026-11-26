@@ -99,6 +99,7 @@ fn boot_inner(
         runtime_shell_env: Arc::clone(&runtime_shell_env),
         runtime_discovery: Arc::clone(&runtime_discovery),
         usage: Arc::new(crate::usage::UsageService::default()),
+        telemetry: Arc::new(crate::telemetry::TelemetryService::default()),
         claude_accounts: Default::default(),
         buses: event_bus::BusRegistry::new(),
         routers: crate::router::RouterRegistry::new(),
@@ -172,6 +173,8 @@ fn boot_inner(
         );
         #[cfg(not(test))]
         core.usage.start_scheduler(core.clone());
+        #[cfg(not(test))]
+        core.telemetry.start_scheduler(core.clone());
         ops::mission::report::Reports::start(core.clone());
     }
     Ok(core)

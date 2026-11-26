@@ -72,6 +72,7 @@ pub(crate) fn test_core_in_with_runtime(
         runtime_shell_env,
         runtime_discovery,
         usage: Arc::new(crate::usage::UsageService::default()),
+        telemetry: Arc::new(crate::telemetry::TelemetryService::without_network()),
         claude_accounts: Arc::new(
             crate::runtimes::claude_code::accounts::AccountService::without_authentication(),
         ),

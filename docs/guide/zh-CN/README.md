@@ -20,6 +20,7 @@
   - [MCP 服务器与技能](guides/mcp-and-skills.md)
   - [外观](guides/appearance.md)
   - [远程访问](guides/remote-access.md)
+  - [隐私与遥测](guides/privacy.md)
   - [故障排查](guides/troubleshooting.md)
 - 参考
   - [CLI 参考](reference/cli.md)
