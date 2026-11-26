@@ -1573,10 +1573,12 @@ impl TerminalMirror {
         let mut graphics = self.graphics.lock().unwrap();
         let mut size = self.size.lock().unwrap();
         let mut current_cell = self.cell_size.lock().unwrap();
-        if incoming_cell.width > 0 && incoming_cell.height > 0 {
-            *current_cell = incoming_cell.clamped();
-        }
-        let cell_size = *current_cell;
+        let cell_size = if incoming_cell.width > 0 && incoming_cell.height > 0 {
+            incoming_cell.clamped()
+        } else {
+            crate::kitty::CellSize::ZERO
+        };
+        *current_cell = cell_size;
         let rows_changed = size.1 != rows;
         if *size != (cols, rows) {
             self.scroll_mark.lock().unwrap().rebuild();

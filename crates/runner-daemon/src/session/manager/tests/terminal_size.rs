@@ -1998,3 +1998,232 @@ fn install_handle_state_notifies_retained_subscribers_on_cell_change_and_failed_
     core.sessions.kill(&helper.id).unwrap();
     core.sessions.drain_terminal_workers();
 }
+
+#[test]
+fn failed_pty_resize_preserves_accepted_geometry_allows_retry_and_rolls_back_unknown_cells() {
+    use runner_core::protocol::terminal::TerminalFrame;
+    use runner_core::protocol::{
+        ClientError, DaemonClient, EventError, EventSubscription, Request, Response, Transport,
+    };
+    use runner_terminal::kitty::CellSize;
+    use runner_terminal::terminal::TerminalMirror;
+
+    struct ClosedEvents;
+    impl EventSubscription for ClosedEvents {
+        fn recv(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = std::result::Result<
+                            runner_core::protocol::ClientEvent,
+                            EventError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Err(EventError::Closed) })
+        }
+    }
+    struct DirectSessionsTransport(Arc<SessionManager>);
+    impl Transport for DirectSessionsTransport {
+        fn call(&self, _request: Request) -> std::result::Result<Response, ClientError> {
+            Err(ClientError::msg("unused"))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            Box::new(ClosedEvents)
+        }
+        fn attach(
+            &self,
+            session_id: &str,
+        ) -> std::result::Result<runner_core::protocol::terminal::TerminalAttachment, ClientError>
+        {
+            self.0
+                .attach_terminal(session_id)
+                .map_err(|e| ClientError::msg(e.to_string()))
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let fake = fake_runtime();
+    let core = crate::test_support::test_core_in_with_runtime(
+        temp.path().to_owned(),
+        Arc::clone(&fake) as Arc<dyn SessionRuntime>,
+    );
+    let mut role = role("/bin/sh", &[]);
+    role.id = ulid::Ulid::new().to_string();
+    role.handle = "fail-resize".into();
+    role.runtime = "trae".into();
+    insert_role_row(&core.db.get().unwrap(), &role);
+    let events: Arc<dyn SessionEvents> = capture();
+
+    // Part A: Fork with unknown (0x0) cell size, kill (retaining terminal), attach both a raw
+    // subscriber and a real TerminalMirror, inject a mid-fork resize to (110, 34, 20x40) whose
+    // runtime reconcile fails -> daemon and mirror MUST roll back to (80, 24, 0x0) and allow retry.
+    let spawned = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::clone(&events),
+        )
+        .unwrap();
+    let id = spawned.id.clone();
+    core.sessions.kill(&id).unwrap();
+
+    let mut raw_sub = core.sessions.attach_terminal(&id).unwrap();
+    let client = DaemonClient::new(Arc::new(DirectSessionsTransport(Arc::clone(
+        &core.sessions,
+    ))));
+    let mirror = TerminalMirror::attach(client, id.clone(), Arc::new(|| {})).unwrap();
+    assert_eq!(mirror.size(), (80, 24));
+    assert_eq!(mirror.cell_size(), CellSize::ZERO);
+
+    {
+        let sessions = Arc::clone(&core.sessions);
+        let pool = Arc::clone(&core.db);
+        let id = id.clone();
+        let fake_hook = Arc::clone(&fake);
+        *fake.spawn_hook.lock().unwrap() = Some(Box::new(move || {
+            sessions
+                .resize_with_cell_size(&id, 110, 34, 20, 40, &pool)
+                .unwrap();
+            *fake_hook.fail_next_resize.lock().unwrap() = true;
+        }));
+    }
+    core.sessions
+        .resume(
+            &id,
+            Some(80),
+            Some(24),
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::clone(&events),
+        )
+        .unwrap();
+    *fake.spawn_hook.lock().unwrap() = None;
+
+    let mid = raw_sub.frames.recv().unwrap();
+    let mid_seq = match mid {
+        TerminalFrame::Resized {
+            seq,
+            cols: 110,
+            rows: 34,
+            cell_width: 20,
+            cell_height: 40,
+            ..
+        } => seq,
+        other => panic!("expected mid-fork Resized(110,34,20,40), got {other:?}"),
+    };
+    let rollback = raw_sub.frames.recv().unwrap();
+    assert!(
+        matches!(
+            rollback,
+            TerminalFrame::Resized {
+                seq,
+                cols: 80,
+                rows: 24,
+                cell_width: 0,
+                cell_height: 0,
+                ..
+            } if seq == mid_seq + 1
+        ),
+        "failed mid-fork reconcile with unknown initial cells must roll back to 0x0, got {rollback:?}"
+    );
+    let model = core.sessions.terminal_model(&id).unwrap();
+    assert_eq!(model.size(), (80, 24));
+    assert_eq!(model.cell_size(), CellSize::ZERO);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while mirror.output_activity().last_seq < mid_seq + 1 {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for mirror to apply rollback seq {}",
+            mid_seq + 1
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(mirror.size(), (80, 24));
+    assert_eq!(
+        mirror.cell_size(),
+        CellSize::ZERO,
+        "mirror must adopt authoritative 0x0 cell rollback"
+    );
+
+    // Part B: Ordinary live cell-only resize where ioctl fails must preserve accepted geometry
+    // (0x0 -> establish 16x32 first, then fail 20x40), emit no bogus frame, and allow identical retry.
+    core.sessions
+        .resize_with_cell_size(&id, 80, 24, 16, 32, &core.db)
+        .unwrap();
+    assert!(matches!(
+        raw_sub.frames.recv().unwrap(),
+        TerminalFrame::Resized {
+            cols: 80,
+            rows: 24,
+            cell_width: 16,
+            cell_height: 32,
+            ..
+        }
+    ));
+    let seq_before_fail = core.sessions.terminal_output_sequence(&id);
+    fake.pixel_resizes.lock().unwrap().clear();
+    *fake.fail_next_resize.lock().unwrap() = true;
+    let err = core
+        .sessions
+        .resize_with_cell_size(&id, 80, 24, 20, 40, &core.db);
+    assert!(err.is_err(), "live cell-only ioctl failure must return Err");
+    assert_eq!(
+        model.cell_size(),
+        CellSize {
+            width: 16,
+            height: 32
+        },
+        "failed live resize must preserve last accepted cell size"
+    );
+    assert_eq!(
+        core.sessions.terminal_output_sequence(&id),
+        seq_before_fail,
+        "failed live resize must not advance output_seq or publish a bogus Resized frame"
+    );
+
+    // Identical retry must NOT be deduplicated — it must issue the ioctl and publish 20x40.
+    core.sessions
+        .resize_with_cell_size(&id, 80, 24, 20, 40, &core.db)
+        .unwrap();
+    assert_eq!(
+        fake.pixel_resizes.lock().unwrap().as_slice(),
+        &[(id.clone(), 80, 24, 80 * 20, 24 * 40)],
+        "identical retry after failed live resize must issue a real ioctl"
+    );
+    assert_eq!(
+        model.cell_size(),
+        CellSize {
+            width: 20,
+            height: 40
+        }
+    );
+    assert!(matches!(
+        raw_sub.frames.recv().unwrap(),
+        TerminalFrame::Resized {
+            seq,
+            cols: 80,
+            rows: 24,
+            cell_width: 20,
+            cell_height: 40,
+            ..
+        } if seq == seq_before_fail + 1
+    ));
+
+    drop(mirror);
+    drop(raw_sub);
+    core.sessions.kill(&id).unwrap();
+    core.sessions.drain_terminal_workers();
+}

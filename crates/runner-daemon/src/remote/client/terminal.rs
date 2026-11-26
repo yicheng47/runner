@@ -81,6 +81,7 @@ struct Stream {
     resync_pending: usize,
     closed: bool,
     scanner: runner_terminal::kitty::Scanner,
+    boundary: runner_terminal::snapshot::BoundaryScanner,
     listeners: BTreeMap<u64, Arc<Queue>>,
     waiting: Vec<oneshot::Sender<Result<TerminalAttachment>>>,
 }
@@ -118,6 +119,7 @@ impl Terminals {
                 resync_pending: 0,
                 closed: false,
                 scanner: runner_terminal::kitty::Scanner::new(),
+                boundary: runner_terminal::snapshot::BoundaryScanner::default(),
                 listeners: BTreeMap::new(),
                 waiting: Vec::new(),
             });
@@ -359,6 +361,7 @@ impl Terminals {
             stream.complete = false;
             stream.resync_pending = 0;
             stream.scanner.reset();
+            stream.boundary = runner_terminal::snapshot::BoundaryScanner::default();
             if !stream.closed {
                 stream.replay_valid = false;
             }
@@ -443,24 +446,40 @@ impl Terminals {
                     snapshot.cell_height = cell_height;
                     snapshot.controller = controller.clone();
                     // Strip any Kitty graphics commands from pre-Phase-1 hosts across both
-                    // the snapshot and subsequent Output chunks so remote panes stay text-only.
+                    // the snapshot and subsequent Output chunks so remote panes stay text-only,
+                    // preserving VT sequence cancellation boundaries.
                     stream.scanner.reset();
+                    stream.boundary = runner_terminal::snapshot::BoundaryScanner::default();
                     let split = snapshot.bytes.len() - snapshot.unfinished_len;
-                    let prefix = strip_remote_bytes(&mut stream.scanner, &snapshot.bytes[..split]);
-                    let suffix = if split < snapshot.bytes.len() {
-                        strip_remote_bytes(&mut stream.scanner, &snapshot.bytes[split..])
+                    if split == snapshot.bytes.len() {
+                        snapshot.bytes = strip_remote_bytes(
+                            &mut stream.scanner,
+                            &mut stream.boundary,
+                            snapshot.bytes,
+                        );
+                        snapshot.unfinished_len = 0;
                     } else {
-                        Vec::new()
-                    };
-                    snapshot.unfinished_len = suffix.len();
-                    snapshot.bytes = if suffix.is_empty() {
-                        prefix
-                    } else {
-                        let mut joined = Vec::with_capacity(prefix.len() + suffix.len());
-                        joined.extend_from_slice(&prefix);
-                        joined.extend_from_slice(&suffix);
-                        joined
-                    };
+                        let raw_suffix = snapshot.bytes.split_off(split);
+                        let prefix = strip_remote_bytes(
+                            &mut stream.scanner,
+                            &mut stream.boundary,
+                            snapshot.bytes,
+                        );
+                        let suffix = strip_remote_bytes(
+                            &mut stream.scanner,
+                            &mut stream.boundary,
+                            raw_suffix,
+                        );
+                        snapshot.unfinished_len = suffix.len();
+                        snapshot.bytes = if suffix.is_empty() {
+                            prefix
+                        } else {
+                            let mut joined = Vec::with_capacity(prefix.len() + suffix.len());
+                            joined.extend_from_slice(&prefix);
+                            joined.extend_from_slice(&suffix);
+                            joined
+                        };
+                    }
                     let resync_listeners = stream.listeners.len();
                     for queue in stream.listeners.values() {
                         queue.push(TerminalFrame::Resync);
@@ -510,7 +529,8 @@ impl Terminals {
                     return Err("Remote terminal output sequence changed".into());
                 }
                 stream.seq = output.seq;
-                let bytes = strip_remote_bytes(&mut stream.scanner, &output.data.0);
+                let bytes =
+                    strip_remote_bytes(&mut stream.scanner, &mut stream.boundary, output.data.0);
                 if !bytes.is_empty() {
                     stream.push(TerminalFrame::Output {
                         seq: output.seq,
@@ -601,20 +621,37 @@ impl Stream {
     }
 }
 
-fn strip_remote_bytes(scanner: &mut runner_terminal::kitty::Scanner, bytes: &[u8]) -> Vec<u8> {
+fn strip_remote_bytes(
+    scanner: &mut runner_terminal::kitty::Scanner,
+    boundary: &mut runner_terminal::snapshot::BoundaryScanner,
+    bytes: Vec<u8>,
+) -> Vec<u8> {
     use runner_terminal::kitty::{ScanItem, ScanOutput};
-    match scanner.scan(bytes) {
-        ScanOutput::Plain(text) => text.to_vec(),
-        ScanOutput::Items(items) => {
-            let mut out = Vec::new();
-            for item in items {
-                if let ScanItem::Text(text) = item {
-                    out.extend_from_slice(&text);
+    let items = match scanner.scan(&bytes) {
+        ScanOutput::Plain(_) => {
+            boundary.advance(&bytes, None);
+            return bytes;
+        }
+        ScanOutput::Items(items) => items,
+    };
+    let mut out = Vec::new();
+    for item in items {
+        match item {
+            ScanItem::Text(text) => {
+                boundary.advance(&text, None);
+                out.extend_from_slice(&text);
+            }
+            ScanItem::Command(_) | ScanItem::Discarded => {
+                // Removing an APC that interrupted an unfinished VT sequence would otherwise
+                // glue the surrounding fragments into a different sequence (e.g. `CSI 2` + `CY`).
+                if !boundary.unfinished().is_empty() {
+                    boundary.advance(&[0x18], None);
+                    out.push(0x18);
                 }
             }
-            out
         }
     }
+    out
 }
 
 fn controller(controller: c::Controller) -> TerminalController {

@@ -4300,3 +4300,679 @@ fn retained_terminal_exit_keeps_text_and_releases_both_screens_graphics_budget()
 
     core.sessions.drain_terminal_workers();
 }
+
+#[test]
+fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
+    use crate::session::manager::{ExitEvent, RoleActivityEvent, SessionManager};
+    use base64::Engine as _;
+    use runner_terminal::kitty::GlobalImageBudget;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct MultiLaunchRuntime {
+        /// Indexed by spawn ordinal (0 = launch 1, 1 = launch 2), both sharing the same session ID & runtime label.
+        spawns: Mutex<Vec<Option<std::sync::mpsc::Sender<RuntimeOutput>>>>,
+        writes: Mutex<Vec<Vec<u8>>>,
+        writes_cv: std::sync::Condvar,
+    }
+    impl MultiLaunchRuntime {
+        fn push_output(&self, launch: usize, bytes: &[u8]) {
+            self.spawns.lock().unwrap()[launch]
+                .as_ref()
+                .expect("launch stream open")
+                .send(RuntimeOutput::Stream(bytes.to_vec()))
+                .unwrap();
+        }
+        fn close_launch(&self, launch: usize) {
+            self.spawns.lock().unwrap()[launch] = None;
+        }
+        fn wait_writes_len(&self, expected: usize) -> Vec<Vec<u8>> {
+            let mut guard = self.writes.lock().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while guard.len() < expected {
+                let rem = deadline
+                    .checked_duration_since(std::time::Instant::now())
+                    .expect("timed out waiting for PTY replies");
+                let (next, _) = self.writes_cv.wait_timeout(guard, rem).unwrap();
+                guard = next;
+            }
+            guard.clone()
+        }
+        fn take_writes(&self) -> Vec<Vec<u8>> {
+            std::mem::take(&mut *self.writes.lock().unwrap())
+        }
+    }
+    impl SessionRuntime for MultiLaunchRuntime {
+        fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.spawns.lock().unwrap().push(Some(tx));
+            Ok((
+                RuntimeSession {
+                    runtime: "shared-label".into(),
+                    session_id: spec.session_id,
+                },
+                OutputStream::new(rx, Arc::new(AtomicBool::new(false))),
+            ))
+        }
+        fn stop(&self, _: &RuntimeSession) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn send_bytes(&self, _: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
+            self.writes.lock().unwrap().push(bytes.to_vec());
+            self.writes_cv.notify_all();
+            Ok(())
+        }
+        fn send_key(&self, _: &RuntimeSession, _: &str) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &RuntimeSession, _: u16, _: u16, _: u16, _: u16) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
+            Ok(Some(SessionStatus {
+                alive: false,
+                exit_code: Some(0),
+                ..Default::default()
+            }))
+        }
+    }
+
+    struct PausingEvents {
+        pause_tx: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        release_rx: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        exit_tx: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    }
+    impl SessionEvents for PausingEvents {
+        fn role_activity(&self, ev: &RoleActivityEvent) {
+            // Only pause the exiting forwarder's role_activity callback (after DB committed stopped),
+            // not the initial spawn's active_sessions == 1 callback.
+            if ev.active_sessions == 0 {
+                if let Some(tx) = self.pause_tx.lock().unwrap().take() {
+                    let _ = tx.send(());
+                    if let Some(rx) = self.release_rx.lock().unwrap().take() {
+                        let _ = rx.recv_timeout(std::time::Duration::from_secs(10));
+                    }
+                }
+            }
+        }
+        fn exit(&self, _ev: &ExitEvent) {
+            if let Some(tx) = self.exit_tx.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(MultiLaunchRuntime::default());
+    let budget = Arc::new(GlobalImageBudget::new(4 * 1024 * 1024));
+    let mut core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
+    core.sessions = SessionManager::new_with_image_budget(
+        Arc::clone(&core.runtime_shell_env),
+        Arc::clone(&core.runtime_discovery),
+        Arc::clone(&runtime) as _,
+        Arc::clone(&budget),
+    );
+    core.sessions.set_runtime_events(core.events.clone());
+
+    let role = {
+        let conn = core.db.get().unwrap();
+        crate::test_support::insert_test_role(&conn, "overlap", "overlap", "trae", "overlap");
+        crate::ops::role::get(&conn, "overlap").unwrap()
+    };
+    let (pause_tx, pause_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+    let launch1_events: Arc<dyn SessionEvents> = Arc::new(PausingEvents {
+        pause_tx: Mutex::new(Some(pause_tx)),
+        release_rx: Mutex::new(Some(release_rx)),
+        exit_tx: Mutex::new(Some(exit_tx)),
+    });
+    let spawned = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::clone(&launch1_events),
+        )
+        .unwrap();
+    let id = spawned.id.clone();
+
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let img = b64(&vec![5u8; 64 * 64 * 3]);
+    runtime.push_output(
+        0,
+        format!("\x1b_Ga=t,i=10,f=24,s=64,v=64;{img}\x1b\\").as_bytes(),
+    );
+    assert_eq!(
+        runtime.wait_writes_len(1),
+        vec![b"\x1b_Gi=10;OK\x1b\\".to_vec()]
+    );
+    runtime.take_writes();
+    assert_eq!(budget.used(), 64 * 64 * 3);
+
+    // Close Launch 1's stream and pause its forwarder at `emit_role_activity` AFTER DB committed `stopped`.
+    runtime.close_launch(0);
+    pause_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("launch 1 forwarder reached role_activity callback");
+    assert_eq!(
+        budget.used(),
+        0,
+        "launch 1 must already have released its graphics before committing stopped"
+    );
+
+    // Resume Launch 2 (same session ID and same runtime label) and store image i=75.
+    core.sessions
+        .resume(
+            &id,
+            Some(80),
+            Some(24),
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap();
+    runtime.push_output(
+        1,
+        format!("\x1b_Ga=t,i=75,f=24,s=64,v=64;{img}\x1b\\").as_bytes(),
+    );
+    assert_eq!(
+        runtime.wait_writes_len(1),
+        vec![b"\x1b_Gi=75;OK\x1b\\".to_vec()]
+    );
+    runtime.take_writes();
+    assert!(core
+        .sessions
+        .terminal_model(&id)
+        .unwrap()
+        .graphics()
+        .lock()
+        .unwrap()
+        .primary
+        .images()
+        .contains_key(&75));
+
+    // Release Launch 1's paused forwarder and wait for it to finish record_exit_status + forget_runtime_handle.
+    let _ = release_tx.send(());
+    exit_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("launch 1 forwarder completed exit");
+    // Give forget_runtime_handle_for_launch a clean synchronization point by verifying Launch 2
+    // still processes a query on its live handle + keeps image i=75 intact.
+    runtime.push_output(1, b"\x1b_Ga=q,i=76,f=24,s=1,v=1;AAAA\x1b\\");
+    assert_eq!(
+        runtime.wait_writes_len(1),
+        vec![b"\x1b_Gi=76;OK\x1b\\".to_vec()]
+    );
+    assert!(
+        core.sessions.live_runtime_session(&id).is_ok(),
+        "stale launch 1 forwarder must not forget launch 2's live handle"
+    );
+    assert!(
+        core.sessions
+            .terminal_model(&id)
+            .unwrap()
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .images()
+            .contains_key(&75),
+        "stale launch 1 forwarder must not erase launch 2's image 75"
+    );
+    assert_eq!(budget.used(), 64 * 64 * 3);
+
+    runtime.close_launch(1);
+    core.sessions.kill(&id).unwrap();
+    core.sessions.drain_terminal_workers();
+}
+
+#[test]
+fn stopping_or_retaining_exit_resyncs_local_mirrors_on_both_screens_while_preserving_text() {
+    use crate::session::manager::SessionManager;
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line, Point};
+    use base64::Engine as _;
+    use runner_core::protocol::terminal::TerminalFrame;
+    use runner_core::protocol::{
+        ClientError, DaemonClient, EventError, EventSubscription, Request, Response, Runtime,
+        RuntimeTaskKind, RuntimeUpdateState, RuntimeUpdateTask, Transport,
+    };
+    use runner_terminal::kitty::GlobalImageBudget;
+    use runner_terminal::terminal::TerminalMirror;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    struct ClosedEvents;
+    impl EventSubscription for ClosedEvents {
+        fn recv(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = std::result::Result<
+                            runner_core::protocol::ClientEvent,
+                            EventError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Err(EventError::Closed) })
+        }
+    }
+    struct LocalSessionsTransport(Arc<SessionManager>);
+    impl Transport for LocalSessionsTransport {
+        fn call(&self, _request: Request) -> std::result::Result<Response, ClientError> {
+            Err(ClientError::msg("unused"))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            Box::new(ClosedEvents)
+        }
+        fn attach(
+            &self,
+            session_id: &str,
+        ) -> std::result::Result<runner_core::protocol::terminal::TerminalAttachment, ClientError>
+        {
+            self.0
+                .attach_terminal(session_id)
+                .map_err(|e| ClientError::msg(e.to_string()))
+        }
+    }
+
+    #[derive(Default)]
+    struct MultiSessionCloseRuntime {
+        outputs: Mutex<HashMap<String, Vec<Option<std::sync::mpsc::Sender<RuntimeOutput>>>>>,
+        writes: Mutex<HashMap<String, Vec<Vec<u8>>>>,
+        writes_cv: std::sync::Condvar,
+    }
+    impl MultiSessionCloseRuntime {
+        fn push_latest(&self, id: &str, bytes: &[u8]) {
+            self.outputs.lock().unwrap()[id]
+                .last()
+                .and_then(Option::as_ref)
+                .expect("open output stream")
+                .send(RuntimeOutput::Stream(bytes.to_vec()))
+                .unwrap();
+        }
+        fn close_latest(&self, id: &str) {
+            if let Some(slot) = self
+                .outputs
+                .lock()
+                .unwrap()
+                .get_mut(id)
+                .and_then(|v| v.last_mut())
+            {
+                *slot = None;
+            }
+        }
+        fn wait_writes_len(&self, id: &str, expected: usize) -> Vec<Vec<u8>> {
+            let mut guard = self.writes.lock().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while guard.get(id).map_or(0, Vec::len) < expected {
+                let rem = deadline
+                    .checked_duration_since(std::time::Instant::now())
+                    .expect("timed out waiting for PTY replies");
+                let (next, _) = self.writes_cv.wait_timeout(guard, rem).unwrap();
+                guard = next;
+            }
+            guard.get(id).cloned().unwrap_or_default()
+        }
+        fn take_writes(&self, id: &str) {
+            if let Some(v) = self.writes.lock().unwrap().get_mut(id) {
+                v.clear();
+            }
+        }
+    }
+    impl SessionRuntime for MultiSessionCloseRuntime {
+        fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.outputs
+                .lock()
+                .unwrap()
+                .entry(spec.session_id.clone())
+                .or_default()
+                .push(Some(tx));
+            Ok((
+                RuntimeSession {
+                    runtime: "resync-kitty".into(),
+                    session_id: spec.session_id,
+                },
+                OutputStream::new(rx, Arc::new(AtomicBool::new(false))),
+            ))
+        }
+        fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
+            self.close_latest(&session.session_id);
+            Ok(())
+        }
+        fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
+            self.writes
+                .lock()
+                .unwrap()
+                .entry(session.session_id.clone())
+                .or_default()
+                .push(bytes.to_vec());
+            self.writes_cv.notify_all();
+            Ok(())
+        }
+        fn send_key(&self, _: &RuntimeSession, _: &str) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &RuntimeSession, _: u16, _: u16, _: u16, _: u16) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
+            Ok(Some(SessionStatus {
+                alive: false,
+                exit_code: Some(0),
+                ..Default::default()
+            }))
+        }
+    }
+
+    fn read_row0(m: &TerminalMirror) -> String {
+        let term = m.term.lock();
+        (0..term.columns())
+            .map(|c| term.grid()[Point::new(Line(0), Column(c))].c)
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    }
+    fn wait_until(pred: impl Fn() -> bool, msg: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !pred() {
+            assert!(std::time::Instant::now() < deadline, "{msg}");
+            std::thread::yield_now();
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(MultiSessionCloseRuntime::default());
+    let budget = Arc::new(GlobalImageBudget::new(4 * 1024 * 1024));
+    let mut core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
+    core.sessions = SessionManager::new_with_image_budget(
+        Arc::clone(&core.runtime_shell_env),
+        Arc::clone(&core.runtime_discovery),
+        Arc::clone(&runtime) as _,
+        Arc::clone(&budget),
+    );
+    core.sessions.set_runtime_events(core.events.clone());
+
+    let role = {
+        let conn = core.db.get().unwrap();
+        crate::test_support::insert_test_role(&conn, "resync-m", "resync-m", "trae", "resync-m");
+        crate::ops::role::get(&conn, "resync-m").unwrap()
+    };
+    let transport = DaemonClient::new(Arc::new(LocalSessionsTransport(Arc::clone(&core.sessions))));
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let img = b64(&vec![3u8; 32 * 32 * 3]);
+
+    // Part A: Stop/resume at unchanged geometry with both primary and alt screen images.
+    let s1 = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap()
+        .id;
+    let mut raw_sub = core.sessions.attach_terminal(&s1).unwrap();
+    let mirror1 = TerminalMirror::attach(transport.clone(), s1.clone(), Arc::new(|| {})).unwrap();
+
+    runtime.push_latest(
+        &s1,
+        format!(
+            "kept-before-stop\x1b_Ga=T,i=1,f=24,s=32,v=32;{img}\x1b\\\
+             \x1b[?1049h\x1b_Ga=T,i=2,f=24,s=32,v=32;{img}\x1b\\\x1b[?1049l"
+        )
+        .as_bytes(),
+    );
+    assert_eq!(runtime.wait_writes_len(&s1, 2).len(), 2);
+    runtime.take_writes(&s1);
+    wait_until(
+        || {
+            let g = mirror1.graphics().lock().unwrap();
+            g.primary.images().contains_key(&1) && g.alt.images().contains_key(&2)
+        },
+        "mirror1 must receive both primary and alt images",
+    );
+    // Drain raw_sub's initial image frame so we observe the stop frame cleanly.
+    let _ = raw_sub.frames.recv().unwrap();
+
+    crate::ops::session::session_stop(&core, &s1).unwrap();
+    assert_eq!(budget.used(), 0);
+    assert!(
+        matches!(raw_sub.frames.recv().unwrap(), TerminalFrame::Resync),
+        "stopping a session with graphics must deliver Resync to retained local subscribers"
+    );
+    wait_until(
+        || {
+            let g = mirror1.graphics().lock().unwrap();
+            g.primary.images().is_empty() && g.alt.images().is_empty()
+        },
+        "mirror1 must clear both primary and alt images after stop",
+    );
+    assert!(
+        read_row0(&mirror1).contains("kept-before-stop"),
+        "stop resync must preserve retained terminal text: {:?}",
+        read_row0(&mirror1)
+    );
+
+    // Resume at unchanged geometry: mirror1 receives the new process's text with zero stale images.
+    core.sessions
+        .resume(
+            &s1,
+            Some(80),
+            Some(24),
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap();
+    runtime.push_latest(&s1, b"\r\nnew-launch-text");
+    wait_until(
+        || {
+            let term = mirror1.term.lock();
+            (0..term.columns())
+                .map(|c| term.grid()[Point::new(Line(1), Column(c))].c)
+                .collect::<String>()
+                .contains("new-launch-text")
+        },
+        "mirror1 must receive resumed process text after resync",
+    );
+    {
+        let g = mirror1.graphics().lock().unwrap();
+        assert!(g.primary.images().is_empty());
+        assert!(g.alt.images().is_empty());
+    }
+    drop(mirror1);
+    drop(raw_sub);
+    crate::ops::session::session_stop(&core, &s1).unwrap();
+
+    // Part B: Agent-update `retain_terminal` natural exit with a live TerminalMirror attached.
+    let s2 = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap()
+        .id;
+    core.sessions
+        .runtime_updates
+        .lock()
+        .unwrap()
+        .tasks
+        .push(RuntimeUpdateTask {
+            id: s2.clone(),
+            runtime: Runtime::Codex,
+            kind: RuntimeTaskKind::Update,
+            from_version: None,
+            to_version: None,
+            state: RuntimeUpdateState::Running,
+            step: "Updating".into(),
+            message: None,
+            exit_code: None,
+            installed_version: None,
+            running_sessions: 0,
+        });
+    let mirror2 = TerminalMirror::attach(transport, s2.clone(), Arc::new(|| {})).unwrap();
+    runtime.push_latest(
+        &s2,
+        format!(
+            "update-output\x1b_Ga=T,i=10,f=24,s=32,v=32;{img}\x1b\\\
+             \x1b[?1049h\x1b_Ga=T,i=11,f=24,s=32,v=32;{img}\x1b\\\x1b[?1049l"
+        )
+        .as_bytes(),
+    );
+    assert_eq!(runtime.wait_writes_len(&s2, 2).len(), 2);
+    wait_until(
+        || {
+            let g = mirror2.graphics().lock().unwrap();
+            g.primary.images().contains_key(&10) && g.alt.images().contains_key(&11)
+        },
+        "mirror2 must receive both primary and alt images",
+    );
+
+    runtime.close_latest(&s2);
+    wait_until(
+        || core.sessions.live_runtime_session(&s2).is_err(),
+        "retain_terminal update session must finish exit",
+    );
+    assert_eq!(budget.used(), 0);
+    wait_until(
+        || {
+            let g = mirror2.graphics().lock().unwrap();
+            g.primary.images().is_empty() && g.alt.images().is_empty()
+        },
+        "agent-update mirror must clear both primary and alt images on retained exit",
+    );
+    assert!(
+        read_row0(&mirror2).contains("update-output"),
+        "agent-update mirror must preserve its retained text: {:?}",
+        read_row0(&mirror2)
+    );
+
+    drop(mirror2);
+    core.sessions.drain_terminal_workers();
+}
+
+#[test]
+fn burst_of_65_one_pixel_file_images_coalesces_without_queue_resync() {
+    use crate::session::manager::SessionManager;
+    use base64::Engine as _;
+    use runner_core::protocol::terminal::TerminalFrame;
+    use runner_terminal::kitty::GlobalImageBudget;
+
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(RecordingRuntime::default());
+    let budget = Arc::new(GlobalImageBudget::new(8 * 1024 * 1024));
+    let mut core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
+    core.sessions = SessionManager::new_with_image_budget(
+        Arc::clone(&core.runtime_shell_env),
+        Arc::clone(&core.runtime_discovery),
+        Arc::clone(&runtime) as _,
+        budget,
+    );
+    core.sessions.set_runtime_events(core.events.clone());
+
+    let role = {
+        let conn = core.db.get().unwrap();
+        crate::test_support::insert_test_role(&conn, "tiny65", "tiny65", "trae", "tiny65");
+        crate::ops::role::get(&conn, "tiny65").unwrap()
+    };
+    let id = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap()
+        .id;
+
+    // Attach an unread local subscriber before sending 65 1-pixel `t=f` images + 1 query in one read.
+    let mut sub = core.sessions.attach_terminal(&id).unwrap();
+    let seq_before = core.sessions.terminal_output_sequence(&id);
+
+    let px_file = temp.path().join("one-pixel.bin");
+    std::fs::write(&px_file, [0x11u8, 0x22, 0x33]).unwrap();
+    let path_b64 =
+        base64::engine::general_purpose::STANDARD.encode(px_file.to_string_lossy().as_bytes());
+    let mut burst = Vec::new();
+    for i in 1..=65u32 {
+        burst.extend_from_slice(
+            format!("\x1b_Ga=t,i={i},t=f,f=24,s=1,v=1;{path_b64}\x1b\\").as_bytes(),
+        );
+    }
+    burst.extend_from_slice(b"\x1b_Ga=q,i=999,f=24,s=1,v=1;AAAA\x1b\\");
+    runtime.push_output(&burst);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if runtime.writes.lock().unwrap().len() >= 66 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for 66 replies"
+        );
+        std::thread::yield_now();
+    }
+
+    assert_eq!(
+        core.sessions.terminal_output_sequence(&id),
+        seq_before + 1,
+        "65 one-pixel file images (195 raw bytes) + query must coalesce into 1 frame"
+    );
+    match sub.frames.recv().unwrap() {
+        TerminalFrame::Output { seq, bytes } => {
+            assert_eq!(seq, seq_before + 1);
+            assert!(bytes.len() <= 1024 * 1024);
+            let wire = String::from_utf8_lossy(&bytes);
+            assert!(wire.contains("i=1,"));
+            assert!(wire.contains("i=65,"));
+            assert!(!wire.contains("a=q"));
+        }
+        other => panic!("expected coalesced Output frame without Resync, got {other:?}"),
+    }
+    let model = core.sessions.terminal_model(&id).unwrap();
+    let g = model.graphics().lock().unwrap();
+    for i in 1..=65u32 {
+        assert!(g.primary.images().contains_key(&i), "missing image i={i}");
+    }
+    drop(g);
+    drop(sub);
+    core.sessions.kill(&id).unwrap();
+    core.sessions.drain_terminal_workers();
+}

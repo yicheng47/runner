@@ -393,6 +393,11 @@ impl SessionManager {
                 }
             }
 
+            // Retire the exiting launch's graphics before committing the stopped
+            // DB row so a concurrent resume cannot race with late cleanup and
+            // retained local mirrors resync before any new output or stream close.
+            manager_t.clear_terminal_graphics_for_launch(&session_id, &stop);
+
             // Channel closed — query the runtime for the final child
             // status to recover an exit code. `Ok(None)` means the
             // runtime session is gone; we still need to flip the DB
@@ -526,10 +531,11 @@ impl SessionManager {
             if emit_activity {
                 emit_role_activity(&pool, &role, events.as_ref());
             }
-            manager_t.record_exit_status(
+            manager_t.record_exit_status_for_launch(
                 &session_id,
                 exit_code,
                 final_status == crate::model::SessionStatus::Crashed,
+                Some(&stop),
             );
             let mut runtime_probe_cleared = false;
             if exit_code.is_some_and(|code| code != 0)
@@ -570,7 +576,8 @@ impl SessionManager {
                 exit_code,
                 success,
             });
-            let _ = manager_t.forget_runtime_handle(&session_id, &rt_session);
+            let _ =
+                manager_t.forget_runtime_handle_for_launch(&session_id, &rt_session, Some(&stop));
             if closed_shell {
                 manager_t.forget_session_state(&session_id);
             }
@@ -1129,6 +1136,31 @@ impl SessionManager {
             if !applied || !(size_changed || controller_changed) {
                 return Ok(());
             }
+
+            let mut ioctl_count = 0;
+            // On Windows, a change of cell size alone updates runnerd and the mirrors
+            // without resizing ConPTY, which repaints on any resize.
+            let skip_conpty_cell_only = cfg!(windows) && !grid_size_changed && cell_size_changed;
+            if !(session.killed || session.resuming || skip_conpty_cell_only) {
+                if let Some(rt_session) = session
+                    .handle
+                    .as_ref()
+                    .map(|handle| handle.runtime_session.clone())
+                {
+                    ioctl_count = 1;
+                    let (pixel_width, pixel_height) =
+                        super::super::runtime::pty_pixel_size(cols, rows, effective_cell);
+                    if let Err(error) =
+                        self.runtime
+                            .resize(&rt_session, cols, rows, pixel_width, pixel_height)
+                    {
+                        session.controller = previous_controller;
+                        control_state.record_session_controller(session_id, &session.controller);
+                        return Err(error.into());
+                    }
+                }
+            }
+
             let controller = session.controller.wire();
             if let Some(model) = &session.terminal {
                 let cell = effective_cell
@@ -1153,27 +1185,7 @@ impl SessionManager {
             session.last_requested_cell_size = effective_cell;
             session.last_requested_size_dirty = true;
             let stamp = session.bump_resize_stamp();
-
-            let mut ioctl_count = 0;
-            // On Windows, a change of cell size alone updates runnerd and the mirrors
-            // without resizing ConPTY, which repaints on any resize.
-            let skip_conpty_cell_only = cfg!(windows) && !grid_size_changed && cell_size_changed;
-            let resize_result = if session.killed || session.resuming || skip_conpty_cell_only {
-                Ok(())
-            } else if let Some(rt_session) = session
-                .handle
-                .as_ref()
-                .map(|handle| handle.runtime_session.clone())
-            {
-                ioctl_count = 1;
-                let (pixel_width, pixel_height) =
-                    super::super::runtime::pty_pixel_size(cols, rows, effective_cell);
-                self.runtime
-                    .resize(&rt_session, cols, rows, pixel_width, pixel_height)
-                    .map_err(Into::into)
-            } else {
-                Ok(())
-            };
+            let resize_result: Result<()> = Ok(());
 
             let settle_generation = match session.pending_resize.as_mut() {
                 Some(pending) => {
@@ -1430,24 +1442,36 @@ impl SessionManager {
                     return;
                 }
                 // Resolve local media (`t=f`, `t=t`, `t=s`) on the forwarder thread
-                // before acquiring the session state lock, flushing bounded batches so
-                // a burst with many images cannot stage unbounded file/payload memory.
+                // before acquiring the session state lock, keeping small images coalesced
+                // within the staging budget so bursts of tiny files do not inflate frame
+                // counts while large files stay bounded in memory.
+                const ITEM_OVERHEAD: usize = 64;
                 let staging_budget = self
                     .kitty_staging_budget_bytes
                     .load(Ordering::Relaxed)
                     .max(1);
+                let media_flush_threshold = (staging_budget / 2).max(1);
                 let mut staged = Vec::new();
                 let mut staged_bytes: usize = 0;
-                let flush_staged = |staged: &mut Vec<ForwardedItem>, staged_bytes: &mut usize| {
-                    if staged.is_empty() {
-                        return;
-                    }
-                    self.ingest_forwarded_for_launch(
-                        session_id, mission_id, staged, events, launch,
-                    );
-                    staged.clear();
-                    *staged_bytes = 0;
-                };
+                #[cfg(test)]
+                let mut staged_payload_bytes: usize = 0;
+                let flush_staged =
+                    |staged: &mut Vec<ForwardedItem>,
+                     staged_bytes: &mut usize,
+                     #[cfg(test)] staged_payload_bytes: &mut usize| {
+                        if staged.is_empty() {
+                            return;
+                        }
+                        self.ingest_forwarded_for_launch(
+                            session_id, mission_id, staged, events, launch,
+                        );
+                        staged.clear();
+                        *staged_bytes = 0;
+                        #[cfg(test)]
+                        {
+                            *staged_payload_bytes = 0;
+                        }
+                    };
                 for item in items {
                     if launch.is_some_and(|stop| stop.load(Ordering::Acquire)) {
                         return;
@@ -1455,39 +1479,80 @@ impl SessionManager {
                     match item {
                         ScanItem::Text(text) => {
                             let len = text.len();
+                            let weight = len.saturating_add(ITEM_OVERHEAD);
                             if !staged.is_empty()
-                                && staged_bytes.saturating_add(len) > staging_budget
+                                && staged_bytes.saturating_add(weight) > staging_budget
                             {
-                                flush_staged(&mut staged, &mut staged_bytes);
+                                flush_staged(
+                                    &mut staged,
+                                    &mut staged_bytes,
+                                    #[cfg(test)]
+                                    &mut staged_payload_bytes,
+                                );
                             }
-                            staged_bytes = staged_bytes.saturating_add(len);
+                            staged_bytes = staged_bytes.saturating_add(weight);
                             #[cfg(test)]
-                            self.max_staged_kitty_bytes
-                                .fetch_max(staged_bytes, Ordering::Relaxed);
+                            {
+                                staged_payload_bytes = staged_payload_bytes.saturating_add(len);
+                                self.max_staged_kitty_bytes
+                                    .fetch_max(staged_payload_bytes, Ordering::Relaxed);
+                            }
                             staged.push(ForwardedItem::Text(text));
                             if staged_bytes >= staging_budget {
-                                flush_staged(&mut staged, &mut staged_bytes);
+                                flush_staged(
+                                    &mut staged,
+                                    &mut staged_bytes,
+                                    #[cfg(test)]
+                                    &mut staged_payload_bytes,
+                                );
                             }
                         }
                         ScanItem::Command(raw) => match Command::parse(&raw) {
                             Ok(command) => {
                                 let reads_media = should_read_media(&command);
-                                let inline_len = command.data.len();
+                                let inline_weight =
+                                    command.data.len().saturating_add(ITEM_OVERHEAD);
                                 if !staged.is_empty()
-                                    && (reads_media
-                                        || staged_bytes.saturating_add(inline_len) > staging_budget)
+                                    && ((reads_media && staged_bytes >= media_flush_threshold)
+                                        || (!reads_media
+                                            && staged_bytes.saturating_add(inline_weight)
+                                                > staging_budget))
                                 {
-                                    flush_staged(&mut staged, &mut staged_bytes);
+                                    flush_staged(
+                                        &mut staged,
+                                        &mut staged_bytes,
+                                        #[cfg(test)]
+                                        &mut staged_payload_bytes,
+                                    );
                                 }
                                 let cmd = resolve_command_media(command, temp_dirs);
                                 let len = cmd.payload_bytes();
-                                staged_bytes = staged_bytes.saturating_add(len);
+                                let weight = len.saturating_add(ITEM_OVERHEAD);
+                                if !staged.is_empty()
+                                    && staged_bytes.saturating_add(weight) > staging_budget
+                                {
+                                    flush_staged(
+                                        &mut staged,
+                                        &mut staged_bytes,
+                                        #[cfg(test)]
+                                        &mut staged_payload_bytes,
+                                    );
+                                }
+                                staged_bytes = staged_bytes.saturating_add(weight);
                                 #[cfg(test)]
-                                self.max_staged_kitty_bytes
-                                    .fetch_max(staged_bytes, Ordering::Relaxed);
+                                {
+                                    staged_payload_bytes = staged_payload_bytes.saturating_add(len);
+                                    self.max_staged_kitty_bytes
+                                        .fetch_max(staged_payload_bytes, Ordering::Relaxed);
+                                }
                                 staged.push(ForwardedItem::Command(cmd));
-                                if reads_media || staged_bytes >= staging_budget {
-                                    flush_staged(&mut staged, &mut staged_bytes);
+                                if staged_bytes >= staging_budget {
+                                    flush_staged(
+                                        &mut staged,
+                                        &mut staged_bytes,
+                                        #[cfg(test)]
+                                        &mut staged_payload_bytes,
+                                    );
                                 }
                             }
                             Err(_) => staged.push(ForwardedItem::Discarded),
@@ -1495,7 +1560,12 @@ impl SessionManager {
                         ScanItem::Discarded => staged.push(ForwardedItem::Discarded),
                     }
                 }
-                flush_staged(&mut staged, &mut staged_bytes);
+                flush_staged(
+                    &mut staged,
+                    &mut staged_bytes,
+                    #[cfg(test)]
+                    &mut staged_payload_bytes,
+                );
             }
         }
     }

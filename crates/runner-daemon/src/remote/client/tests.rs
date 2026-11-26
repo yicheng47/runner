@@ -367,6 +367,7 @@ impl TestCore {
     ) -> crate::companion::core::Result<TerminalAttachment> {
         let fake = Arc::new(crate::companion::tests::Fake::default());
         *fake.bytes.lock().unwrap() = self.fake.bytes.lock().unwrap().clone();
+        *fake.continuation.lock().unwrap() = *self.fake.continuation.lock().unwrap();
         let mut terminal = fake.attach(target, history, 1)?.terminal;
         let (tx, rx) = std::sync::mpsc::channel();
         self.streams.lock().unwrap().push(tx.clone());
@@ -842,6 +843,212 @@ async fn remote_terminal_strips_kitty_graphics_from_pre_phase1_host_snapshot_and
         Point::new(Line(1), Column("beforeaftertail".len())),
         "stripped direct display commands must not advance the cursor"
     );
+    drop(mirror);
+}
+
+#[tokio::test]
+async fn remote_terminal_legacy_strip_preserves_vt_sequence_cancellation_boundaries() {
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line, Point};
+    use runner_core::protocol::{
+        ClientError, DaemonClient, EventError, EventSubscription, Request, Response, Transport,
+    };
+    use runner_terminal::terminal::TerminalMirror;
+
+    struct ClosedEvents;
+    impl EventSubscription for ClosedEvents {
+        fn recv(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = std::result::Result<
+                            runner_core::protocol::ClientEvent,
+                            EventError,
+                        >,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Err(EventError::Closed) })
+        }
+    }
+    struct SingleAttachment(StdMutex<Option<TerminalAttachment>>);
+    impl Transport for SingleAttachment {
+        fn call(&self, _request: Request) -> std::result::Result<Response, ClientError> {
+            Err(ClientError::msg("unused"))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            Box::new(ClosedEvents)
+        }
+        fn attach(&self, _id: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            self.0
+                .lock()
+                .unwrap()
+                .take()
+                .ok_or_else(|| ClientError::msg("already attached"))
+        }
+    }
+    fn read_row(m: &TerminalMirror, line: i32) -> (String, Point) {
+        let term = m.term.lock();
+        let row = (0..term.columns())
+            .map(|c| term.grid()[Point::new(Line(line), Column(c))].c)
+            .collect::<String>()
+            .trim_end()
+            .to_owned();
+        (row, term.grid().cursor.point)
+    }
+    fn wait_row(m: &TerminalMirror, rx: &std::sync::mpsc::Receiver<()>, line: i32, expected: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let (row, _) = read_row(m, line);
+            if row == expected {
+                break;
+            }
+            let rem = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or_else(|| {
+                    panic!("timed out waiting for row {line} == {expected:?}, got {row:?}")
+                });
+            let _ = rx.recv_timeout(rem);
+        }
+    }
+
+    let fixture = Fixture::new().await;
+    // Snapshot ends with unfinished `CSI 2` in `unfinished_len = 3` (row 0 has `X` + pending `\x1b[2`).
+    *fixture.core.fake.bytes.lock().unwrap() = b"X\x1b[2".to_vec();
+    *fixture.core.fake.continuation.lock().unwrap() = (Some('X'), 3);
+    fixture.pair().await;
+    let attachment = fixture
+        .client
+        .attach(RemoteTerminal {
+            computer: "2".into(),
+            session: "session".into(),
+            cols: 80,
+            rows: 24,
+            cell_width: 0,
+            cell_height: 0,
+            take_control: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(attachment.snapshot.bytes, b"X\x1b[2");
+    assert_eq!(attachment.snapshot.unfinished_len, 3);
+
+    let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
+    let client = DaemonClient::new(Arc::new(SingleAttachment(StdMutex::new(Some(attachment)))));
+    let mirror = TerminalMirror::attach_remote(
+        client,
+        "session".into(),
+        Arc::new(move || {
+            let _ = wake_tx.send(());
+        }),
+    )
+    .unwrap();
+    let _viewer = mirror.view();
+    let tx = fixture.core.streams.lock().unwrap()[0].clone();
+
+    // 1. Across snapshot unfinished suffix: legacy graphics cancels `CSI 2`, so `CY` prints literally -> `XCY` at col 3.
+    tx.send(TerminalFrame::Output {
+        seq: 1,
+        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\CY".to_vec(),
+    })
+    .unwrap();
+    let m = Arc::clone(&mirror);
+    let wake_rx = tokio::task::spawn_blocking(move || {
+        wait_row(&m, &wake_rx, 0, "XCY");
+        wake_rx
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        read_row(&mirror, 0),
+        ("XCY".into(), Point::new(Line(0), Column(3)))
+    );
+
+    // 2. Same chunk: `X` + unfinished `CSI 2` + direct image + `CY` on row 1 -> `XCY` at col 3.
+    tx.send(TerminalFrame::Output {
+        seq: 2,
+        bytes: b"\r\nX\x1b[2\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\CY".to_vec(),
+    })
+    .unwrap();
+    let m = Arc::clone(&mirror);
+    let wake_rx = tokio::task::spawn_blocking(move || {
+        wait_row(&m, &wake_rx, 1, "XCY");
+        wake_rx
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        read_row(&mirror, 1),
+        ("XCY".into(), Point::new(Line(1), Column(3)))
+    );
+
+    // 3. Split across chunks: `\r\nX\x1b[2`, then split APC across two chunks, then `CY` on row 2 -> `XCY` at col 3.
+    tx.send(TerminalFrame::Output {
+        seq: 3,
+        bytes: b"\r\nX\x1b[2".to_vec(),
+    })
+    .unwrap();
+    let m = Arc::clone(&mirror);
+    let wake_rx = tokio::task::spawn_blocking(move || {
+        wait_row(&m, &wake_rx, 2, "X");
+        wake_rx
+    })
+    .await
+    .unwrap();
+    tx.send(TerminalFrame::Output {
+        seq: 4,
+        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;".to_vec(),
+    })
+    .unwrap();
+    tx.send(TerminalFrame::Output {
+        seq: 5,
+        bytes: b"AAAA\x1b\\CY".to_vec(),
+    })
+    .unwrap();
+    let m = Arc::clone(&mirror);
+    let wake_rx = tokio::task::spawn_blocking(move || {
+        wait_row(&m, &wake_rx, 2, "XCY");
+        wake_rx
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        read_row(&mirror, 2),
+        ("XCY".into(), Point::new(Line(2), Column(3)))
+    );
+
+    // 4. Ordinary graphics-only output in Ground state remains suppressed (no extra frame or cursor move).
+    let seq_before = mirror.output_activity().last_output_seq;
+    tx.send(TerminalFrame::Output {
+        seq: 6,
+        bytes: b"\x1b_Ga=T,f=24,s=1,v=1;AAAA\x1b\\".to_vec(),
+    })
+    .unwrap();
+    tx.send(TerminalFrame::Output {
+        seq: 7,
+        bytes: b"Z".to_vec(),
+    })
+    .unwrap();
+    let m = Arc::clone(&mirror);
+    tokio::task::spawn_blocking(move || {
+        wait_row(&m, &wake_rx, 2, "XCYZ");
+    })
+    .await
+    .unwrap();
+    assert!(mirror.output_activity().last_output_seq > seq_before);
+    assert_eq!(
+        read_row(&mirror, 2),
+        ("XCYZ".into(), Point::new(Line(2), Column(4)))
+    );
+    assert!(mirror
+        .graphics()
+        .lock()
+        .unwrap()
+        .primary
+        .images()
+        .is_empty());
     drop(mirror);
 }
 

@@ -262,10 +262,15 @@ impl SessionManager {
                                  (pushed mid-fork)"
                             );
                         }
-                        Err(error) => log::warn!(
-                            "pty size reconcile after fork failed: session={session_id} \
-                             {cols}x{rows}: {error}"
-                        ),
+                        Err(error) => {
+                            log::warn!(
+                                "pty size reconcile after fork failed: session={session_id} \
+                                 {cols}x{rows}: {error}"
+                            );
+                            state_guard.last_requested_size = Some(initial_size);
+                            state_guard.last_requested_cell_size = initial_cell_size;
+                            state_guard.last_requested_size_dirty = false;
+                        }
                     }
                 }
             }
@@ -282,8 +287,10 @@ impl SessionManager {
                 let before_size = terminal.size();
                 let before_cell = terminal.cell_size();
                 let cell = terminal_cell
-                    .map(|(width, height)| runner_terminal::kitty::CellSize { width, height });
-                terminal.resize_with_cell_size(terminal_size.0, terminal_size.1, cell);
+                    .map_or(runner_terminal::kitty::CellSize::ZERO, |(width, height)| {
+                        runner_terminal::kitty::CellSize { width, height }
+                    });
+                terminal.set_authoritative_size(terminal_size.0, terminal_size.1, cell);
                 let after_size = terminal.size();
                 let after_cell = terminal.cell_size();
                 if after_size != before_size || after_cell != before_cell {

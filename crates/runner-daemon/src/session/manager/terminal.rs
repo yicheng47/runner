@@ -168,6 +168,17 @@ impl FrameQueue {
         self.state.lock().unwrap().closed = true;
         self.ready.notify_one();
     }
+    pub(super) fn resync(&self) {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return;
+        }
+        state.frames.clear();
+        state.bytes = 0;
+        state.frames.push_back(TerminalFrame::Resync);
+        state.closed = true;
+        self.ready.notify_one();
+    }
 }
 struct Frames(Arc<FrameQueue>);
 impl Drop for Frames {
@@ -1266,6 +1277,41 @@ impl SessionManager {
             })
             .expect("spawn terminal input thread");
         (input, worker)
+    }
+    pub(super) fn clear_terminal_graphics_locked(state: &mut SessionState) {
+        let cleared = state
+            .terminal
+            .as_ref()
+            .is_some_and(|terminal| terminal.clear_graphics());
+        if !cleared {
+            return;
+        }
+        // Resync retained local subscribers before any resumed output or stream close so they
+        // rebuild from the cleared text-only snapshot on both primary and alt screens.
+        state.subscribers.retain(|sub| {
+            if sub.companion {
+                !sub.queue.is_closed()
+            } else {
+                sub.queue.resync();
+                false
+            }
+        });
+    }
+    pub(super) fn clear_terminal_graphics_for_launch(
+        &self,
+        session_id: &str,
+        launch: &Arc<AtomicBool>,
+    ) {
+        if let Some(state) = self.session_state(session_id) {
+            let mut state = state.lock().unwrap();
+            if state
+                .handle
+                .as_ref()
+                .is_some_and(|handle| Arc::ptr_eq(&handle.stop, launch))
+            {
+                Self::clear_terminal_graphics_locked(&mut state);
+            }
+        }
     }
     pub(super) fn push_frame(state: &mut SessionState, frame: TerminalFrame) {
         Self::push_frame_inner(state, frame, true);

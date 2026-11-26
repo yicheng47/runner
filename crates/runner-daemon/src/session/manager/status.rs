@@ -398,19 +398,37 @@ impl SessionManager {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn record_exit_status(
         &self,
         session_id: &str,
         exit_code: Option<i32>,
         crashed: bool,
     ) {
+        self.record_exit_status_for_launch(session_id, exit_code, crashed, None);
+    }
+
+    pub(super) fn record_exit_status_for_launch(
+        &self,
+        session_id: &str,
+        exit_code: Option<i32>,
+        crashed: bool,
+        launch: Option<&Arc<AtomicBool>>,
+    ) {
         if let Some(session) = self.session_state(session_id) {
             let mut session = session.lock().unwrap();
+            if launch.is_some_and(|launch| {
+                session
+                    .handle
+                    .as_ref()
+                    .is_some_and(|handle| !Arc::ptr_eq(&handle.stop, launch))
+            }) {
+                return;
+            }
             session.optimistic_completion = None;
             session.finish_companion_terminals();
             if let Some(terminal) = &session.terminal {
                 terminal.clear_program_status();
-                terminal.clear_graphics();
             }
             session.model.apply(
                 SessionEvent::Exited {

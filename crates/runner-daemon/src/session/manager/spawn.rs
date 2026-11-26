@@ -89,7 +89,8 @@ impl SessionManager {
                 .and_then(|status| status.exit_code);
             let _ = manager.runtime.stop(&rt_session);
             manager.take_killed(&forwarder_id);
-            let _ = manager.forget_runtime_handle(&forwarder_id, &rt_session);
+            let _ =
+                manager.forget_runtime_handle_for_launch(&forwarder_id, &rt_session, Some(&stop));
             // Finished update tasks keep their terminal until dismissed.
             let retained = manager
                 .runtime_updates

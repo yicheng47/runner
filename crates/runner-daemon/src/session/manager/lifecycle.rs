@@ -88,6 +88,7 @@ impl SessionManager {
             let mut state = state.lock().unwrap();
             match state.handle.take() {
                 Some(mut h) => {
+                    h.stop.store(true, std::sync::atomic::Ordering::SeqCst);
                     delivery.generation = delivery.generation.wrapping_add(1);
                     delivery.in_flight = false;
                     delivery.next_ticket = 0;
@@ -97,6 +98,7 @@ impl SessionManager {
                     if let Some(terminal) = &state.terminal {
                         terminal.clear_program_status();
                     }
+                    Self::clear_terminal_graphics_locked(&mut state);
                     state.model.apply(
                         SessionEvent::Detached { stopped: true },
                         crate::session::clock::state_now(),
@@ -114,27 +116,13 @@ impl SessionManager {
         };
         self.notify_delivery_event(session_id, router::SessionDeliveryEvent::Exited);
 
-        // Flip the explicit cancellation flag so the consumer
-        // breaks out within ~500ms regardless of how the reader EOF
-        // and channel-disconnect path progresses.
-        stop.store(true, std::sync::atomic::Ordering::SeqCst);
-
         // Wait for the forwarder to drain + reconcile so the
         // caller (mission_stop) gets the no-live-sessions-after-
         // we-return contract.
         if let Some(h) = forwarder {
             let _ = h.join();
         }
-        // Release both screens' Kitty image storage now that the forwarder has
-        // stopped, even when the retained terminal model stays alive for resume.
-        {
-            let state = state.lock().unwrap();
-            if state.handle.is_none() {
-                if let Some(terminal) = &state.terminal {
-                    terminal.clear_graphics();
-                }
-            }
-        }
+        let _ = stop;
         self.clear_killed(session_id);
         Ok(())
     }
@@ -257,10 +245,20 @@ impl SessionManager {
             .map_err(|error| Error::msg(format!("failed to kill runner sessions: {error}")))
     }
 
+    #[cfg(test)]
     pub(super) fn forget_runtime_handle(
         &self,
         session_id: &str,
         runtime_session: &RuntimeSession,
+    ) -> Result<()> {
+        self.forget_runtime_handle_for_launch(session_id, runtime_session, None)
+    }
+
+    pub(super) fn forget_runtime_handle_for_launch(
+        &self,
+        session_id: &str,
+        runtime_session: &RuntimeSession,
+        launch: Option<&Arc<AtomicBool>>,
     ) -> Result<()> {
         let retain_terminal = {
             #[cfg(test)]
@@ -282,11 +280,10 @@ impl SessionManager {
             let gate = state.lock().unwrap().delivery_gate.clone();
             let mut delivery = gate.state.lock().unwrap();
             let mut state = state.lock().unwrap();
-            if state
-                .handle
-                .as_ref()
-                .is_some_and(|h| Self::runtime_session_matches(&h.runtime_session, runtime_session))
-            {
+            if state.handle.as_ref().is_some_and(|h| match launch {
+                Some(launch) => Arc::ptr_eq(&h.stop, launch),
+                None => Self::runtime_session_matches(&h.runtime_session, runtime_session),
+            }) {
                 delivery.generation = delivery.generation.wrapping_add(1);
                 delivery.in_flight = false;
                 delivery.next_ticket = 0;
@@ -296,9 +293,7 @@ impl SessionManager {
                 state.handle = None;
                 workers = if retain_terminal {
                     state.finish_companion_terminals();
-                    if let Some(terminal) = &state.terminal {
-                        terminal.clear_graphics();
-                    }
+                    Self::clear_terminal_graphics_locked(&mut state);
                     state.terminal_input = None;
                     for sub in state.subscribers.drain(..) {
                         sub.queue.close();

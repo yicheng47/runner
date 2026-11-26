@@ -29,7 +29,7 @@ pub struct Fake {
     request_order: Mutex<Vec<String>>,
     appended: Mutex<Vec<FeedEntry>>,
     pub bytes: Mutex<Vec<u8>>,
-    continuation: Mutex<(Option<char>, usize)>,
+    pub(crate) continuation: Mutex<(Option<char>, usize)>,
     frames: Mutex<Option<Box<dyn TerminalSubscription>>>,
     closed_reason: Mutex<ClosedReason>,
 }

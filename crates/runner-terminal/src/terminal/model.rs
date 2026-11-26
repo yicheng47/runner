@@ -991,8 +991,11 @@ impl TerminalModel {
     }
     /// Clear both screens' image storage and release their bytes from the
     /// shared global budget (used when a session ends while retaining text).
-    pub fn clear_graphics(&self) {
-        self.graphics.lock().unwrap().reset();
+    pub fn clear_graphics(&self) -> bool {
+        let mut graphics = self.graphics.lock().unwrap();
+        let had_graphics = !graphics.is_empty();
+        graphics.reset();
+        had_graphics
     }
     pub fn configure_named(&self, scrollback: usize, shape: &str) {
         let shape = match shape {
@@ -1198,6 +1201,32 @@ impl TerminalModel {
             }
         }
         let cell = *current_cell;
+        if *size != (cols, rows) {
+            if let Some(recorder) = &self.fixture_recorder {
+                recorder.record_resize(cols, rows);
+            }
+        }
+        *size = (cols, rows);
+        stream::resize_term_and_graphics(
+            &mut term,
+            &mut graphics,
+            cols as usize,
+            rows as usize,
+            cell,
+        );
+    }
+    pub fn set_authoritative_size(&self, cols: u16, rows: u16, cell_size: crate::kitty::CellSize) {
+        let _parser = self.parser.lock().unwrap();
+        let mut term = self.term.lock();
+        let mut graphics = self.graphics.lock().unwrap();
+        let mut size = self.size.lock().unwrap();
+        let mut current_cell = self.cell_size.lock().unwrap();
+        let cell = if cell_size.width > 0 && cell_size.height > 0 {
+            cell_size.clamped()
+        } else {
+            crate::kitty::CellSize::ZERO
+        };
+        *current_cell = cell;
         if *size != (cols, rows) {
             if let Some(recorder) = &self.fixture_recorder {
                 recorder.record_resize(cols, rows);
