@@ -421,7 +421,8 @@ fn a_refused_mission_keeps_its_request_for_explicit_update_recovery() {
                     }),
                 )));
         });
-        root.reset_launcher_page(cx);
+        let target = root.front_page_client(cx).target;
+        root.launchers.reset_page(&target, cx);
         root.open_launcher_page(ProjectScope::Root, Step::Start, false, window, cx);
         active_launcher(root, cx).update(cx, |launcher, cx| {
             launcher.open_step(Step::Goal(None), window, cx);

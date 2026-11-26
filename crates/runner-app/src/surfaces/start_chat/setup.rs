@@ -3,14 +3,16 @@ use std::time::Duration;
 use gpui::prelude::*;
 use gpui::{
     canvas, div, px, rems, svg, AnyElement, App, ClipboardItem, Context, Entity, FontWeight,
-    SharedString, WeakEntity, Window,
+    SharedString, Task, WeakEntity, Window,
 };
 use runner_app::ui::button::spinner;
 use runner_app::ui::{
     app_scrollbar_gutter, Button, ButtonSize, ButtonVariant, IconButton, IconButtonSize,
     RoleAvatar, Scrollbar,
 };
-use runner_core::protocol::onboarding::{CreateStarterCrewArgs, StarterCrewProposal};
+use runner_core::protocol::onboarding::{
+    CreateStarterCrewArgs, OnboardingStatus, StarterCrewProposal,
+};
 use runner_core::protocol::project::ProjectScope;
 use runner_core::protocol::runtime::{
     npm_install_command, RuntimeCatalogEntry, RuntimeExecutableStatus, RuntimeRowState,
@@ -20,6 +22,8 @@ use runner_core::protocol::{
     runtime_metadata, Runtime, RuntimeTaskKind, RuntimeUpdateState, RuntimeUpdateTask,
 };
 
+use crate::app_settings::AppSettings;
+use crate::app_store::AppStore;
 use crate::chat_icon::ChatIcon;
 use crate::surfaces::AppRoute;
 use crate::{theme, NativeRoot};
@@ -61,7 +65,7 @@ pub(crate) fn setup_row_installed(runtime: &RuntimeExecutableStatus) -> bool {
     )
 }
 
-fn enabled_chat_runtimes(settings: &crate::app_settings::AppSettings) -> Vec<Runtime> {
+fn enabled_chat_runtimes(settings: &AppSettings) -> Vec<Runtime> {
     Runtime::SETUP_ORDER
         .into_iter()
         .filter(|runtime| {
@@ -71,7 +75,7 @@ fn enabled_chat_runtimes(settings: &crate::app_settings::AppSettings) -> Vec<Run
         .collect()
 }
 
-fn starter_crew_args(settings: &crate::app_settings::AppSettings) -> CreateStarterCrewArgs {
+fn starter_crew_args(settings: &AppSettings) -> CreateStarterCrewArgs {
     CreateStarterCrewArgs {
         default_runtime: Runtime::parse(&settings.default_runtime),
         enabled_runtimes: Some(enabled_chat_runtimes(settings)),
@@ -173,7 +177,7 @@ fn setup_copy_button(
             .on_press(move |_, cx| {
                 let cmd = cmd.clone();
                 let _ = root_weak.update(cx, |root, cx| {
-                    root.copy_setup_command(name, cmd, cx);
+                    root.setup.copy_command(name, cmd, cx);
                 });
             }),
         )
@@ -222,47 +226,196 @@ fn vocabulary_card(icon: &'static str, term: &'static str, definition: &'static 
         .into_any_element()
 }
 
-impl NativeRoot {
-    pub(crate) fn setup_visible(&self, cx: &App) -> bool {
-        if self.remote_client.is_active()
-            || self.front_page_layout().is_some()
-            || self
-                .page_launcher(cx)
-                .is_some_and(|launcher| launcher.read(cx).has_update_retry())
-        {
+fn render_setup_footer(
+    finishing: bool,
+    can_start: bool,
+    reopened: bool,
+    root_weak: WeakEntity<NativeRoot>,
+) -> AnyElement {
+    let root_skip = root_weak.clone();
+    let root_start = root_weak;
+    div()
+        .w_full()
+        .min_w(px(0.))
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .justify_between()
+        .gap_x(rems(1.))
+        .gap_y(rems(8. / 16.))
+        .pt(rems(4. / 16.))
+        .child(
+            div()
+                .flex_1()
+                .min_w(rems(120. / 16.))
+                .max_w_full()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_x(rems(10. / 16.))
+                .gap_y(rems(4. / 16.))
+                .child(
+                    div().flex_none().child(
+                        Button::new("setup-skip", crate::i18n::text("onboarding.skip_setup"))
+                            .debug_selector("SETUP_SKIP")
+                            .size(ButtonSize::Sm)
+                            .variant(ButtonVariant::Secondary)
+                            .disabled(finishing)
+                            .on_press(move |window, cx| {
+                                let _ = root_skip.update(cx, |root, cx| {
+                                    root.finish_setup(false, window, cx);
+                                });
+                            }),
+                    ),
+                )
+                .when(!reopened, |left| {
+                    left.child(
+                        div()
+                            .min_w(px(0.))
+                            .max_w_full()
+                            .whitespace_normal()
+                            .text_size(rems(11. / 16.))
+                            .text_color(theme::muted())
+                            .child(crate::i18n::text("onboarding.reopen_hint")),
+                    )
+                }),
+        )
+        .child(
+            div().flex_none().max_w_full().child(
+                Button::new(
+                    "setup-start-chat",
+                    crate::i18n::text("onboarding.start_first_chat"),
+                )
+                .debug_selector("SETUP_START_CHAT")
+                .icon("corner-down-left.svg")
+                .size(ButtonSize::Md)
+                .variant(ButtonVariant::Primary)
+                .disabled(finishing || !can_start)
+                .on_press(move |window, cx| {
+                    let _ = root_start.update(cx, |root, cx| {
+                        root.finish_setup(true, window, cx);
+                    });
+                }),
+            ),
+        )
+        .into_any_element()
+}
+
+impl SetupState {
+    pub(crate) fn is_visible(
+        &self,
+        page_has_update_retry: bool,
+        onboarding_completed: bool,
+    ) -> bool {
+        if page_has_update_retry {
             return false;
         }
-        self.setup.open || !self.app_store.read(cx).onboarding_completed()
+        self.open || !onboarding_completed
     }
 
-    pub(crate) fn open_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            return;
-        }
-        self.setup.open = true;
-        self.setup.create_starter_crew = None;
-        self.setup.more_agents = false;
-        self.setup.finishing = false;
-        self.setup.scroll.set_offset(gpui::point(px(0.), px(0.)));
-        self.setup
-            .agents_scroll
-            .set_offset(gpui::point(px(0.), px(0.)));
-        self.set_route(AppRoute::Launcher, cx);
-        self.refresh_setup_data(cx);
-        self.chat_focus.focus(window, cx);
-        cx.notify();
+    pub(crate) fn open_reset(&mut self) {
+        self.open = true;
+        self.create_starter_crew = None;
+        self.more_agents = false;
+        self.finishing = false;
+        self.scroll.set_offset(gpui::point(px(0.), px(0.)));
+        self.agents_scroll.set_offset(gpui::point(px(0.), px(0.)));
     }
 
-    pub(crate) fn refresh_setup_data(&mut self, cx: &mut Context<Self>) {
-        if self.remote_client.is_active() {
-            return;
+    pub(crate) fn expand_more_agents(&mut self) {
+        self.more_agents = true;
+    }
+
+    pub(crate) fn collapse_more_agents(&mut self) {
+        self.more_agents = false;
+        self.agents_scroll.set_offset(gpui::point(px(0.), px(0.)));
+    }
+
+    pub(crate) fn toggle_starter_crew(&mut self) {
+        let current = self.create_starter_crew != Some(false);
+        self.create_starter_crew = Some(!current);
+    }
+
+    pub(crate) fn can_start(&self, settings: &AppSettings) -> bool {
+        if !self.loaded_once || self.loading || self.rechecking {
+            return false;
         }
-        self.setup.generation += 1;
-        let generation = self.setup.generation;
-        self.setup.loading = true;
-        self.setup.loaded_once = true;
-        let core = self.core(cx).clone();
-        let args = starter_crew_args(self.settings(cx));
+        let Some(status) = self.status.as_ref() else {
+            return false;
+        };
+        if status.shell.checking {
+            return false;
+        }
+        let Some(proposal) = self.proposal.as_ref() else {
+            return false;
+        };
+        if proposal.slots.is_empty() {
+            return false;
+        }
+        let enabled = enabled_chat_runtimes(settings);
+        status.runtimes.iter().any(|runtime| {
+            setup_row_installed(runtime)
+                && runtime.name != Runtime::Shell
+                && enabled.contains(&runtime.name)
+        })
+    }
+
+    fn apply_probe(
+        &mut self,
+        status: Option<RuntimeStatusResponse>,
+        catalog: Vec<RuntimeCatalogEntry>,
+        proposal: Option<StarterCrewProposal>,
+    ) {
+        if status.is_some() {
+            self.status = status;
+        }
+        if !catalog.is_empty() {
+            self.catalog = catalog;
+        }
+        if proposal.is_some() {
+            self.proposal = proposal;
+        }
+    }
+
+    fn apply_refresh_result(
+        &mut self,
+        generation: u64,
+        status: Option<RuntimeStatusResponse>,
+        catalog: Vec<RuntimeCatalogEntry>,
+        proposal: Option<StarterCrewProposal>,
+    ) -> bool {
+        if self.generation != generation {
+            return false;
+        }
+        self.loading = false;
+        self.apply_probe(status, catalog, proposal);
+        true
+    }
+
+    fn apply_recheck_result(
+        &mut self,
+        generation: u64,
+        status: Option<RuntimeStatusResponse>,
+        catalog: Vec<RuntimeCatalogEntry>,
+        proposal: Option<StarterCrewProposal>,
+    ) -> bool {
+        self.rechecking = false;
+        if self.generation != generation {
+            return false;
+        }
+        self.apply_probe(status, catalog, proposal);
+        true
+    }
+
+    pub(crate) fn refresh(&mut self, store: &Entity<AppStore>, cx: &mut Context<NativeRoot>) {
+        self.generation += 1;
+        let generation = self.generation;
+        self.loading = true;
+        self.loaded_once = true;
+        let (core, args) = {
+            let store = store.read(cx);
+            (store.client.clone(), starter_crew_args(&store.settings))
+        };
         let task = cx.background_spawn(async move {
             let status = core.runtime_status_list().ok();
             let catalog = core.runtime_catalog().unwrap_or_default();
@@ -272,36 +425,32 @@ impl NativeRoot {
         cx.spawn(async move |weak, cx| {
             let (status, catalog, proposal) = task.await;
             let _ = weak.update(cx, |root, cx| {
-                if root.setup.generation != generation {
-                    return;
+                if root
+                    .setup
+                    .apply_refresh_result(generation, status, catalog, proposal)
+                {
+                    cx.notify();
                 }
-                root.setup.loading = false;
-                if status.is_some() {
-                    root.setup.status = status;
-                }
-                if !catalog.is_empty() {
-                    root.setup.catalog = catalog;
-                }
-                if proposal.is_some() {
-                    root.setup.proposal = proposal;
-                }
-                cx.notify();
             });
         })
         .detach();
     }
 
-    pub(crate) fn recheck_setup(&mut self, cx: &mut Context<Self>) {
-        if self.setup.rechecking || self.remote_client.is_active() {
+    pub(crate) fn recheck(&mut self, store: &Entity<AppStore>, cx: &mut Context<NativeRoot>) {
+        if self.rechecking {
             return;
         }
-        self.setup.generation += 1;
-        let generation = self.setup.generation;
-        self.setup.rechecking = true;
-        let core = self.core(cx).clone();
-        let settings = self.settings(cx).clone();
-        let model_runtimes = settings.model_runtimes();
-        let args = starter_crew_args(&settings);
+        self.generation += 1;
+        let generation = self.generation;
+        self.rechecking = true;
+        let (core, model_runtimes, args) = {
+            let store = store.read(cx);
+            (
+                store.client.clone(),
+                store.settings.model_runtimes(),
+                starter_crew_args(&store.settings),
+            )
+        };
         let task = cx.background_spawn(async move {
             let status = core.runtime_refresh(&model_runtimes).ok();
             let catalog = core.runtime_catalog().unwrap_or_default();
@@ -311,31 +460,28 @@ impl NativeRoot {
         cx.spawn(async move |weak, cx| {
             let (status, catalog, proposal) = task.await;
             let _ = weak.update(cx, |root, cx| {
-                root.setup.rechecking = false;
-                if root.setup.generation != generation {
-                    return;
+                if root
+                    .setup
+                    .apply_recheck_result(generation, status, catalog, proposal)
+                {
+                    cx.notify();
                 }
-                if status.is_some() {
-                    root.setup.status = status;
-                }
-                if !catalog.is_empty() {
-                    root.setup.catalog = catalog;
-                }
-                if proposal.is_some() {
-                    root.setup.proposal = proposal;
-                }
-                cx.notify();
             });
         })
         .detach();
         cx.notify();
     }
 
-    fn copy_setup_command(&mut self, runtime: Runtime, command: String, cx: &mut Context<Self>) {
+    pub(crate) fn copy_command(
+        &mut self,
+        runtime: Runtime,
+        command: String,
+        cx: &mut Context<NativeRoot>,
+    ) {
         cx.write_to_clipboard(ClipboardItem::new_string(command));
-        self.setup.copied_runtime = Some(runtime);
-        self.setup.copied_generation += 1;
-        let generation = self.setup.copied_generation;
+        self.copied_runtime = Some(runtime);
+        self.copied_generation += 1;
+        let generation = self.copied_generation;
         cx.spawn(async move |weak, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(1500))
@@ -351,82 +497,37 @@ impl NativeRoot {
         cx.notify();
     }
 
-    fn open_setup_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let home =
-            runner_core::app_paths::home_dir().map(|path| path.to_string_lossy().into_owned());
-        self.new_terminal_tab_in(ProjectScope::Root, home, window, cx);
-    }
-
-    fn stop_setup_task(&mut self, task_id: String, cx: &mut Context<Self>) {
-        let core = self.core(cx).clone();
-        cx.background_spawn(async move {
-            let _ = core.runtime_task_stop(&task_id);
-        })
-        .detach();
-    }
-
-    pub(crate) fn skip_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.finish_setup(false, window, cx);
-    }
-
-    fn setup_can_start(&self, cx: &App) -> bool {
-        if !self.setup.loaded_once || self.setup.loading || self.setup.rechecking {
-            return false;
-        }
-        let Some(status) = self.setup.status.as_ref() else {
-            return false;
-        };
-        if status.shell.checking {
-            return false;
-        }
-        let Some(proposal) = self.setup.proposal.as_ref() else {
-            return false;
-        };
-        if proposal.slots.is_empty() {
-            return false;
-        }
-        let enabled = enabled_chat_runtimes(self.settings(cx));
-        status.runtimes.iter().any(|runtime| {
-            setup_row_installed(runtime)
-                && runtime.name != Runtime::Shell
-                && enabled.contains(&runtime.name)
-        })
-    }
-
-    pub(crate) fn complete_setup_and_open_launcher(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.setup_can_start(cx) {
-            return;
-        }
-        self.finish_setup(true, window, cx);
-    }
-
-    fn finish_setup(
+    pub(crate) fn begin_finish(
         &mut self,
         start_first_chat: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.setup.finishing || self.remote_client.is_active() {
-            return;
+        has_crews: bool,
+        already_completed: bool,
+        store: &Entity<AppStore>,
+        cx: &mut Context<NativeRoot>,
+    ) -> Option<(bool, Task<anyhow::Result<Option<OnboardingStatus>>>)> {
+        if self.finishing {
+            return None;
         }
-        let has_crews = self.app_store.read(cx).has_crews();
+        let (core, args, can_start) = {
+            let store = store.read(cx);
+            (
+                store.client.clone(),
+                starter_crew_args(&store.settings),
+                self.can_start(&store.settings),
+            )
+        };
+        if start_first_chat && !can_start {
+            return None;
+        }
         let proposal_has_slots = self
-            .setup
             .proposal
             .as_ref()
             .is_some_and(|proposal| !proposal.slots.is_empty());
         let create_crew = start_first_chat
             && !has_crews
             && proposal_has_slots
-            && self.setup.create_starter_crew != Some(false);
-        let already_completed = self.app_store.read(cx).onboarding_completed();
-        let core = self.core(cx).clone();
-        let args = starter_crew_args(self.settings(cx));
-        self.setup.finishing = true;
+            && self.create_starter_crew != Some(false);
+        self.finishing = true;
         cx.notify();
         let work = cx.background_spawn(async move {
             if create_crew {
@@ -440,68 +541,40 @@ impl NativeRoot {
                 Ok(None)
             }
         });
-        cx.spawn_in(window, async move |weak, cx| {
-            let result: anyhow::Result<
-                Option<runner_core::protocol::onboarding::OnboardingStatus>,
-            > = work.await;
-            let _ = weak.update_in(cx, |root, window, cx| {
-                root.setup.finishing = false;
-                match result {
-                    Ok(status) => {
-                        root.setup.open = false;
-                        root.setup.create_starter_crew = None;
-                        root.setup.more_agents = false;
-                        root.setup
-                            .agents_scroll
-                            .set_offset(gpui::point(px(0.), px(0.)));
-                        root.app_store.update(cx, |store, cx| {
-                            if let Some(status) = status {
-                                store.onboarding = status;
-                                store.revisions.onboarding += 1;
-                            }
-                            if create_crew {
-                                store.refresh_crews_inner();
-                                store.refresh_roles_inner();
-                            }
-                            cx.notify();
-                        });
-                        root.open_launcher_page(
-                            ProjectScope::Root,
-                            super::launcher::Step::Start,
-                            false,
-                            window,
-                            cx,
-                        );
-                        if start_first_chat {
-                            let launcher = root.render_launcher(None, true, window, cx);
-                            launcher.update(cx, |launcher, cx| {
-                                launcher.enable_sample_prompt(window, cx);
-                            });
-                        }
-                    }
-                    Err(error) => {
-                        root.error = Some(error.to_string().into());
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+        Some((create_crew, work))
     }
 
-    pub(crate) fn render_setup(
+    pub(crate) fn complete_finish(&mut self) {
+        self.finishing = false;
+        self.open = false;
+        self.create_starter_crew = None;
+        self.more_agents = false;
+        self.agents_scroll.set_offset(gpui::point(px(0.), px(0.)));
+    }
+
+    pub(crate) fn fail_finish(&mut self) {
+        self.finishing = false;
+    }
+
+    pub(crate) fn render(
         &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
+        store: &Entity<AppStore>,
+        tasks: &[RuntimeUpdateTask],
+        task_pill_visible: bool,
+        cx: &mut Context<NativeRoot>,
     ) -> AnyElement {
-        if !self.setup.loaded_once && !self.setup.loading {
-            self.refresh_setup_data(cx);
+        if !self.loaded_once && !self.loading {
+            self.refresh(store, cx);
         }
-        let status = self.setup.status.as_ref();
+        let (has_crews, can_start) = {
+            let store = store.read(cx);
+            (store.has_crews(), self.can_start(&store.settings))
+        };
+        let status = self.status.as_ref();
         let npm_available = status.is_some_and(|s| s.npm_available);
-        let checking = self.setup.rechecking
+        let checking = self.rechecking
             || status.is_some_and(|s| s.shell.checking)
-            || (self.setup.loading && status.is_none());
+            || (self.loading && status.is_none());
         let runtimes = status.map(|s| s.runtimes.as_slice()).unwrap_or(&[]);
         let installed_count = runtimes
             .iter()
@@ -516,21 +589,20 @@ impl NativeRoot {
             crate::i18n::text("onboarding.no_agents_found").into()
         };
         let (primary, overflow) = partition_setup_runtimes(runtimes);
-        let agent_card = self.render_setup_agents_card(
+        let agent_card = self.render_agents_card(
             &primary,
             &overflow,
             runtimes.is_empty(),
             npm_available,
             checking,
+            tasks,
             cx,
         );
 
-        let show_starter_crew = !(self.setup.open && self.app_store.read(cx).has_crews());
-        let task_pill_visible = !self.agent_tasks.hidden && !self.agent_tasks.tasks.is_empty();
+        let show_starter_crew = !(self.open && has_crews);
         let recheck_disabled = checking;
-        let finishing = self.setup.finishing;
-        let can_start = self.setup_can_start(cx);
-        let reopened = self.setup.open;
+        let finishing = self.finishing;
+        let reopened = self.open;
         let root_panel = cx.weak_entity();
         div()
             .debug_selector(|| "SETUP_SURFACE".into())
@@ -546,7 +618,7 @@ impl NativeRoot {
                 cx.listener(move |root, event: &gpui::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "escape" && root.setup.open {
                         cx.stop_propagation();
-                        root.skip_setup(window, cx);
+                        root.finish_setup(false, window, cx);
                     }
                 }),
             )
@@ -556,7 +628,7 @@ impl NativeRoot {
                     .w_full()
                     .max_h_full()
                     .overflow_y_scroll()
-                    .track_scroll(&self.setup.scroll)
+                    .track_scroll(&self.scroll)
                     .child(
                         div()
                             .debug_selector(|| "SETUP_CONTENT".into())
@@ -688,7 +760,15 @@ impl NativeRoot {
                                                             let _ = root_panel.update(
                                                                 cx,
                                                                 |root, cx| {
-                                                                    root.recheck_setup(cx);
+                                                                    if !root
+                                                                        .remote_client
+                                                                        .is_active()
+                                                                    {
+                                                                        root.setup.recheck(
+                                                                            &root.app_store,
+                                                                            cx,
+                                                                        );
+                                                                    }
                                                                 },
                                                             );
                                                         }),
@@ -698,10 +778,13 @@ impl NativeRoot {
                                     )
                                     .children(
                                         show_starter_crew
-                                            .then(|| self.render_setup_starter_crew(cx)),
+                                            .then(|| self.render_starter_crew(cx.weak_entity())),
                                     )
-                                    .child(self.render_setup_footer(
-                                        finishing, can_start, reopened, window, cx,
+                                    .child(render_setup_footer(
+                                        finishing,
+                                        can_start,
+                                        reopened,
+                                        cx.weak_entity(),
                                     )),
                             ),
                     ),
@@ -709,14 +792,16 @@ impl NativeRoot {
             .into_any_element()
     }
 
-    fn render_setup_agents_card(
+    #[allow(clippy::too_many_arguments)]
+    fn render_agents_card(
         &mut self,
         primary: &[RuntimeExecutableStatus],
         overflow: &[RuntimeExecutableStatus],
         runtimes_empty: bool,
         npm_available: bool,
         checking: bool,
-        cx: &mut Context<Self>,
+        tasks: &[RuntimeUpdateTask],
+        cx: &mut Context<NativeRoot>,
     ) -> AnyElement {
         let card = div()
             .debug_selector(|| "SETUP_AGENTS_CARD".into())
@@ -745,22 +830,25 @@ impl NativeRoot {
                 .into_any_element();
         }
 
+        let root_weak = cx.weak_entity();
         let overflow_count = overflow.len();
-        if self.setup.more_agents && overflow_count > 0 {
+        if self.more_agents && overflow_count > 0 {
             let rows: Vec<_> = primary
                 .iter()
                 .chain(overflow.iter())
-                .map(|runtime| self.render_setup_agent_row(runtime, npm_available, cx))
+                .map(|runtime| {
+                    let task = tasks.iter().find(|task| task.runtime == runtime.name);
+                    self.render_agent_row(runtime, npm_available, task, root_weak.clone())
+                })
                 .collect();
             let total_rows = primary.len() + overflow_count;
             let owner = cx.entity_id();
-            let agents_scroll = self.setup.agents_scroll.clone();
+            let agents_scroll = self.agents_scroll.clone();
             let scrollbar = self
-                .setup
                 .agents_scrollbar
                 .get_or_insert_with(|| cx.new(|_| Scrollbar::app(agents_scroll, owner)))
                 .clone();
-            let measured = self.setup.agents_scroll.clone();
+            let measured = self.agents_scroll.clone();
             let agents_scrolls = measured.max_offset().y >= px(1.);
             let scroll_more_count = total_rows.saturating_sub(5);
             let footer_meta = (agents_scrolls && scroll_more_count > 0).then(|| {
@@ -789,7 +877,7 @@ impl NativeRoot {
                                 .max_h(rems(216. / 16.))
                                 .overflow_y_scroll()
                                 .scrollbar_width(px(0.))
-                                .track_scroll(&self.setup.agents_scroll)
+                                .track_scroll(&self.agents_scroll)
                                 .flex()
                                 .flex_col()
                                 .p(rems(4. / 16.))
@@ -842,10 +930,7 @@ impl NativeRoot {
                         .cursor_pointer()
                         .hover(|row| row.bg(theme::sidebar_selected()))
                         .on_click(cx.listener(|root, _, _, cx| {
-                            root.setup.more_agents = false;
-                            root.setup
-                                .agents_scroll
-                                .set_offset(gpui::point(px(0.), px(0.)));
+                            root.setup.collapse_more_agents();
                             cx.notify();
                         }))
                         .child(
@@ -876,11 +961,12 @@ impl NativeRoot {
                 .into_any_element();
         }
 
-        let mut collapsed = card.p(rems(4. / 16.)).children(
-            primary
-                .iter()
-                .map(|runtime| self.render_setup_agent_row(runtime, npm_available, cx)),
-        );
+        let mut collapsed = card
+            .p(rems(4. / 16.))
+            .children(primary.iter().map(|runtime| {
+                let task = tasks.iter().find(|task| task.runtime == runtime.name);
+                self.render_agent_row(runtime, npm_available, task, root_weak.clone())
+            }));
         if overflow_count > 0 {
             let overflow_names = overflow
                 .iter()
@@ -910,7 +996,7 @@ impl NativeRoot {
                         .cursor_pointer()
                         .hover(|row| row.bg(theme::sidebar_selected()))
                         .on_click(cx.listener(|root, _, _, cx| {
-                            root.setup.more_agents = true;
+                            root.setup.expand_more_agents();
                             cx.notify();
                         }))
                         .child(
@@ -933,33 +1019,21 @@ impl NativeRoot {
         collapsed.into_any_element()
     }
 
-    fn render_setup_agent_row(
+    fn render_agent_row(
         &self,
         runtime: &RuntimeExecutableStatus,
         npm_available: bool,
-        cx: &mut Context<Self>,
+        task: Option<&RuntimeUpdateTask>,
+        root_weak: WeakEntity<NativeRoot>,
     ) -> AnyElement {
         let name = runtime.name;
         let installed = setup_row_installed(runtime);
-        let catalog = self
-            .setup
-            .catalog
-            .iter()
-            .find(|entry| entry.name == name)
-            .cloned();
-        let catalog_ref = catalog.as_ref();
+        let catalog = self.catalog.iter().find(|entry| entry.name == name);
         let npm_cmd = npm_install_command(name);
-        let task = self
-            .agent_tasks
-            .tasks
-            .iter()
-            .find(|task| task.runtime == name)
-            .cloned();
-        let copy_cmd = copy_text_for(runtime, catalog_ref, npm_available);
-        let copied = self.setup.copied_runtime == Some(name);
-        let root_weak = cx.weak_entity();
+        let copy_cmd = copy_text_for(runtime, catalog, npm_available);
+        let copied = self.copied_runtime == Some(name);
 
-        let install_task = active_setup_install_task(task.as_ref(), installed);
+        let install_task = active_setup_install_task(task, installed);
         let (dot_color, badge_text, badge_color, detail_text, detail_mono, right_actions): (
             Option<gpui::Hsla>,
             Option<String>,
@@ -1001,7 +1075,11 @@ impl NativeRoot {
                                     .on_press(move |_, cx| {
                                         let task_id = task_id.clone();
                                         let _ = root_stop.update(cx, |root, cx| {
-                                            root.stop_setup_task(task_id, cx);
+                                            let core = root.core(cx).clone();
+                                            cx.background_spawn(async move {
+                                                let _ = core.runtime_task_stop(&task_id);
+                                            })
+                                            .detach();
                                         });
                                     }),
                                 )
@@ -1113,7 +1191,9 @@ impl NativeRoot {
                         .variant(ButtonVariant::Secondary)
                         .on_press(move |window, cx| {
                             let _ = root_term.update(cx, |root, cx| {
-                                root.open_setup_terminal(window, cx);
+                                let home = runner_core::app_paths::home_dir()
+                                    .map(|path| path.to_string_lossy().into_owned());
+                                root.new_terminal_tab_in(ProjectScope::Root, home, window, cx);
                             });
                         })
                         .into_any_element()],
@@ -1183,7 +1263,7 @@ impl NativeRoot {
             if let Some(cmd) = copy_cmd {
                 actions.push(setup_copy_button(name, cmd, copied, root_weak.clone()));
             }
-            if let Some(url) = catalog_ref
+            if let Some(url) = catalog
                 .map(|entry| entry.install_url.clone())
                 .filter(|url| !url.is_empty())
                 .or_else(|| {
@@ -1205,7 +1285,7 @@ impl NativeRoot {
                     .into_any_element(),
                 );
             }
-            let detail = manual_install_detail(name, catalog_ref);
+            let detail = manual_install_detail(name, catalog);
             (
                 Some(theme::faint()),
                 Some(crate::i18n::text("onboarding.not_installed").into()),
@@ -1319,11 +1399,11 @@ impl NativeRoot {
             .into_any_element()
     }
 
-    fn render_setup_starter_crew(&self, cx: &mut Context<Self>) -> AnyElement {
-        let proposal = self.setup.proposal.as_ref();
+    fn render_starter_crew(&self, root_toggle: WeakEntity<NativeRoot>) -> AnyElement {
+        let proposal = self.proposal.as_ref();
         let slots = proposal.map(|p| p.slots.as_slice()).unwrap_or(&[]);
         let eligible = slots.len() >= 2;
-        let creating = eligible && self.setup.create_starter_crew != Some(false);
+        let creating = eligible && self.create_starter_crew != Some(false);
         let hint = if !eligible {
             crate::i18n::text("onboarding.starter_hint_needs_agent")
         } else if creating {
@@ -1346,7 +1426,6 @@ impl NativeRoot {
                 ],
             )
         };
-        let root_toggle = cx.weak_entity();
         div()
             .debug_selector(|| "SETUP_STARTER_CREW".into())
             .w_full()
@@ -1510,9 +1589,7 @@ impl NativeRoot {
                                         .text_color(theme::accent())
                                         .on_click(move |_, _, cx| {
                                             let _ = root_toggle.update(cx, |root, cx| {
-                                                let current =
-                                                    root.setup.create_starter_crew != Some(false);
-                                                root.setup.create_starter_crew = Some(!current);
+                                                root.setup.toggle_starter_crew();
                                                 cx.notify();
                                             });
                                         })
@@ -1527,82 +1604,93 @@ impl NativeRoot {
             )
             .into_any_element()
     }
+}
 
-    fn render_setup_footer(
-        &self,
-        finishing: bool,
-        can_start: bool,
-        reopened: bool,
-        _window: &mut Window,
+impl NativeRoot {
+    pub(crate) fn setup_visible(&self, cx: &App) -> bool {
+        if self.remote_client.is_active() || self.front_page_layout().is_some() {
+            return false;
+        }
+        let target = self.front_page_client(cx).target;
+        self.setup.is_visible(
+            self.launchers.page_has_update_retry(&target, cx),
+            self.app_store.read(cx).onboarding_completed(),
+        )
+    }
+
+    pub(crate) fn open_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.remote_client.is_active() {
+            return;
+        }
+        self.setup.open_reset();
+        self.set_route(AppRoute::Launcher, cx);
+        self.setup.refresh(&self.app_store, cx);
+        self.chat_focus.focus(window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn finish_setup(
+        &mut self,
+        start_first_chat: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let root_skip = cx.weak_entity();
-        let root_start = cx.weak_entity();
-        div()
-            .w_full()
-            .min_w(px(0.))
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .justify_between()
-            .gap_x(rems(1.))
-            .gap_y(rems(8. / 16.))
-            .pt(rems(4. / 16.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(rems(120. / 16.))
-                    .max_w_full()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_x(rems(10. / 16.))
-                    .gap_y(rems(4. / 16.))
-                    .child(
-                        div().flex_none().child(
-                            Button::new("setup-skip", crate::i18n::text("onboarding.skip_setup"))
-                                .debug_selector("SETUP_SKIP")
-                                .size(ButtonSize::Sm)
-                                .variant(ButtonVariant::Secondary)
-                                .disabled(finishing)
-                                .on_press(move |window, cx| {
-                                    let _ = root_skip.update(cx, |root, cx| {
-                                        root.skip_setup(window, cx);
-                                    });
-                                }),
-                        ),
-                    )
-                    .when(!reopened, |left| {
-                        left.child(
-                            div()
-                                .min_w(px(0.))
-                                .max_w_full()
-                                .whitespace_normal()
-                                .text_size(rems(11. / 16.))
-                                .text_color(theme::muted())
-                                .child(crate::i18n::text("onboarding.reopen_hint")),
-                        )
-                    }),
-            )
-            .child(
-                div().flex_none().max_w_full().child(
-                    Button::new(
-                        "setup-start-chat",
-                        crate::i18n::text("onboarding.start_first_chat"),
-                    )
-                    .debug_selector("SETUP_START_CHAT")
-                    .icon("corner-down-left.svg")
-                    .size(ButtonSize::Md)
-                    .variant(ButtonVariant::Primary)
-                    .disabled(finishing || !can_start)
-                    .on_press(move |window, cx| {
-                        let _ = root_start.update(cx, |root, cx| {
-                            root.complete_setup_and_open_launcher(window, cx);
+    ) {
+        if self.remote_client.is_active() {
+            return;
+        }
+        let (has_crews, already_completed) = {
+            let store = self.app_store.read(cx);
+            (store.has_crews(), store.onboarding_completed())
+        };
+        let Some((create_crew, work)) = self.setup.begin_finish(
+            start_first_chat,
+            has_crews,
+            already_completed,
+            &self.app_store,
+            cx,
+        ) else {
+            return;
+        };
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = work.await;
+            let _ = weak.update_in(cx, |root, window, cx| {
+                match result {
+                    Ok(status) => {
+                        root.setup.complete_finish();
+                        root.app_store.update(cx, |store, cx| {
+                            if let Some(status) = status {
+                                store.onboarding = status;
+                                store.revisions.onboarding += 1;
+                            }
+                            if create_crew {
+                                store.refresh_crews_inner();
+                                store.refresh_roles_inner();
+                            }
+                            cx.notify();
                         });
-                    }),
-                ),
-            )
-            .into_any_element()
+                        root.open_launcher_page(
+                            ProjectScope::Root,
+                            super::launcher::Step::Start,
+                            false,
+                            window,
+                            cx,
+                        );
+                        if start_first_chat {
+                            let launcher = root.render_launcher(None, true, window, cx);
+                            launcher.update(cx, |launcher, cx| {
+                                launcher.enable_sample_prompt(window, cx);
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        root.setup.fail_finish();
+                        root.error = Some(error.to_string().into());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 }
 

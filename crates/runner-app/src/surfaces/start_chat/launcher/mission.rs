@@ -641,7 +641,8 @@ impl NativeRoot {
                 {
                     self.tabs.activate(&tab);
                 } else {
-                    self.reset_launcher_page(cx);
+                    let target = self.front_page_client(cx).target;
+                    self.launchers.reset_page(&target, cx);
                 }
                 self.set_route(AppRoute::Chat, cx);
                 self.sync_active_project_from_active_tab(cx);
@@ -781,7 +782,7 @@ impl NativeRoot {
                         if reveal && root.front_page_client(cx).target == target {
                             root.reveal_started_scope(&scope, cx);
                         }
-                        root.launchers.retain(|_, cached| cached != &launcher);
+                        root.launchers.remove(&launcher);
                         if !reveal {
                             if remote_form.is_none() {
                                 root.refresh_store(StoreRefreshKind::All, cx);

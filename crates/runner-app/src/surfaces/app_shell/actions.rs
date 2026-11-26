@@ -168,7 +168,8 @@ impl NativeRoot {
                 route => route,
             };
             if self.launcher_is_empty_state() {
-                self.reset_launcher_page(cx);
+                let target = self.front_page_client(cx).target;
+                self.launchers.reset_page(&target, cx);
             }
             if let Some(workspace) = self.remote_client.remote_mission_workspace() {
                 self.root_focus.focus(window, cx);
@@ -244,7 +245,8 @@ impl NativeRoot {
         };
         self.land_on_recent_tab(cx);
         if self.remote_client.is_local() && self.tabs.active().is_none() {
-            self.reset_launcher_page(cx);
+            let target = self.front_page_client(cx).target;
+            self.launchers.reset_page(&target, cx);
         }
         self.set_route(route, cx);
         self.sync_active_project_from_active_tab(cx);

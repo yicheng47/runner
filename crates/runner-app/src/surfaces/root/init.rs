@@ -123,7 +123,9 @@ impl NativeRoot {
                             this.refresh_add_slot_runtimes(cx);
                             this.refresh_slot_override_runtimes(cx);
                             this.refresh_agents_pane(cx);
-                            this.refresh_setup_data(cx);
+                            if !this.remote_client.is_active() {
+                                this.setup.refresh(&this.app_store, cx);
+                            }
                             this.usage.installed =
                                 crate::surfaces::app_shell::usage_installed(this.core(cx));
                             let runtimes = this
@@ -332,7 +334,7 @@ impl NativeRoot {
             chat_focus,
             drawer_focus,
             sidebar,
-            launchers: HashMap::new(),
+            launchers: surfaces::start_chat::launcher::LauncherState::default(),
             start_chat_modal: None,
             project_modal: None,
             project_delete_confirm: None,

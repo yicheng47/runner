@@ -210,8 +210,7 @@ pub(crate) struct NativeRoot {
     pub(crate) chat_focus: FocusHandle,
     pub(crate) drawer_focus: FocusHandle,
     pub(crate) sidebar: Entity<Sidebar>,
-    pub(crate) launchers:
-        HashMap<String, Entity<crate::surfaces::start_chat::launcher::ChatLauncher>>,
+    pub(crate) launchers: surfaces::start_chat::launcher::LauncherState,
     pub(crate) start_chat_modal: Option<StartChatModal>,
     pub(crate) project_modal: Option<ProjectModal>,
     pub(crate) project_delete_confirm: Option<String>,
@@ -355,7 +354,8 @@ impl NativeRoot {
             && self.route != AppRoute::Launcher
             && self.remote_client.is_local()
         {
-            self.reset_launcher_page(cx);
+            self.launchers
+                .reset_page(&self.front_page_client(cx).target, cx);
         }
     }
 

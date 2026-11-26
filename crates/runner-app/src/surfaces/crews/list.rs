@@ -969,7 +969,7 @@ mod project_tests {
                     ProjectScope::or_root(chosen)
                 );
                 assert!(root.tabs.tabs().is_empty());
-                assert!(root.mission_launcher_open(cx));
+                assert!(root.launchers.any_mission_open(cx));
             });
         }
     }

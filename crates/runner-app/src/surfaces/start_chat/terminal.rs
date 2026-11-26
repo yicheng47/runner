@@ -28,8 +28,25 @@ impl NativeRoot {
         if !remote && self.create_modal_open() {
             return;
         }
-        if self.launcher_start_pending(cx) || self.start_launcher_terminal(window, cx) {
+        let target = self.front_page_client(cx).target;
+        if self
+            .launchers
+            .start_pending(&target, self.front_page_layout(), cx)
+        {
             return;
+        }
+        match self.launchers.begin_terminal_start(
+            &target,
+            self.front_page_is_chat(),
+            self.front_page_layout(),
+            cx,
+        ) {
+            launcher::TerminalStart::NoLauncher => {}
+            launcher::TerminalStart::Blocked => return,
+            launcher::TerminalStart::Ready(launcher, request) => {
+                self.launch_from_launcher(launcher, *request, false, window, cx);
+                return;
+            }
         }
         let pane = if remote {
             self.front_page_layout().and_then(new_terminal_empty_pane)

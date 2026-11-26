@@ -620,7 +620,15 @@ fn a_reconnect_does_not_bring_an_old_lock_back_into_a_new_page_or_the_empty_stat
     reconnect(&window, &mut cx);
     window
         .update(&mut cx, |root, window, cx| {
-            root.prune_launchers(cx);
+            let target = root.front_page_client(cx).target;
+            let active_layout = root.front_page_layout().cloned();
+            root.launchers.prune(
+                &target,
+                active_layout.as_ref(),
+                &root.tabs,
+                &root.remote_client,
+                cx,
+            );
             root.open_new_tab_modal(&NewTab, window, cx);
         })
         .unwrap();
@@ -765,7 +773,7 @@ fn a_host_crew_page_start_shows_the_launcher_page_on_that_crews_goal_step() {
                 root.remote_client.active_item(),
                 Some(RemoteItem::Launcher)
             ));
-            assert!(root.mission_launcher_open(cx));
+            assert!(root.launchers.any_mission_open(cx));
         })
         .unwrap();
     assert_eq!(action_trace(&fake, "layout").len(), 0);

@@ -1255,7 +1255,7 @@ fn mission_dialogs_do_not_survive_navigation_or_host_removal() {
             });
             window
                 .update(&mut cx, |root, window, cx| {
-                    assert!(root.launcher_search_focused(window, cx))
+                    assert!(root.launchers.any_search_focused(window, cx))
                 })
                 .unwrap();
             for kind in ["rename", "stopMission", "restart"] {
