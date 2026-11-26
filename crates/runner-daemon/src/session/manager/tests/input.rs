@@ -501,7 +501,7 @@ fn connection_compositions_clear_on_disconnect_and_terminal_handover() {
         );
         if browser {
             core.sessions
-                .browser_resize(id, 1, "Browser", 80, 24, true, false, &core.db)
+                .browser_resize(id, 1, "Browser", 80, 24, 0, 0, true, false, &core.db)
                 .unwrap();
         } else {
             core.sessions.clear_connection_compositions(1);
@@ -516,7 +516,7 @@ fn connection_compositions_clear_on_disconnect_and_terminal_handover() {
             router::DeliveryReadiness::Drafting
         ));
         core.sessions
-            .take_back_terminal(id, 80, 24, &core.db)
+            .take_back_terminal(id, 80, 24, 0, 0, &core.db)
             .unwrap();
         core.sessions
             .observe_terminal_input(id, 2, InputEvent::Composing { composing: true })
@@ -906,7 +906,7 @@ fn typing_beyond_the_input_limit_is_refused_at_once_from_desktop_and_browser() {
     let desktop = mgr.desktop_input(&id, &large).unwrap_err();
     assert!(desktop.to_string().contains("is full"), "{desktop}");
     let pool_arc = Arc::clone(&pool);
-    mgr.browser_resize(&id, 7, "Phone", 80, 24, true, false, &pool_arc)
+    mgr.browser_resize(&id, 7, "Phone", 80, 24, 0, 0, true, false, &pool_arc)
         .unwrap();
     let browser = mgr.browser_input(&id, 7, &large).unwrap_err();
     assert!(browser.to_string().contains("is full"), "{browser}");

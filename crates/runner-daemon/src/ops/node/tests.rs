@@ -22,11 +22,11 @@ fn overlapping_tab_upserts_reconcile_current_membership_and_input_owner() {
     let input = state.sessions.record_terminal_input("p");
     state
         .sessions
-        .browser_resize("a", 1, "First", 80, 24, true, false, &state.db)
+        .browser_resize("a", 1, "First", 80, 24, 0, 0, true, false, &state.db)
         .unwrap();
     state
         .sessions
-        .browser_resize("b", 2, "Second", 80, 24, true, false, &state.db)
+        .browser_resize("b", 2, "Second", 80, 24, 0, 0, true, false, &state.db)
         .unwrap();
     let committed = Arc::new(Barrier::new(2));
     let resume = Arc::new(Barrier::new(2));

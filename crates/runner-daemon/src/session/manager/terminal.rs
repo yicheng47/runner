@@ -13,8 +13,15 @@ use runner_terminal::terminal::{
 use super::*;
 
 const FRAME_CAPACITY: usize = 64;
+const FRAME_MAX_BYTES: usize = runner_core::protocol::terminal::TERMINAL_QUEUE_MAX_BYTES;
 // A closed stream can detach after its session state was pruned and recreated.
 static NEXT_SUBSCRIBER_ID: AtomicU64 = AtomicU64::new(1);
+
+pub(super) struct Subscriber {
+    pub(super) id: u64,
+    pub(super) companion: bool,
+    pub(super) queue: Arc<FrameQueue>,
+}
 
 #[derive(Clone, Default, PartialEq)]
 pub(super) enum Controller {
@@ -108,6 +115,7 @@ impl ResizeControl {
 #[derive(Default)]
 struct QueueState {
     frames: VecDeque<TerminalFrame>,
+    bytes: usize,
     closed: bool,
 }
 #[derive(Default)]
@@ -116,24 +124,40 @@ pub(super) struct FrameQueue {
     ready: Condvar,
 }
 impl FrameQueue {
+    fn frame_bytes(frame: &TerminalFrame) -> usize {
+        match frame {
+            TerminalFrame::Output { bytes, .. } => bytes.len(),
+            TerminalFrame::Resized { .. } | TerminalFrame::Resync => 0,
+        }
+    }
     fn push(&self, frame: TerminalFrame) -> bool {
         let mut state = self.state.lock().unwrap();
         if state.closed {
             return false;
         }
-        if state.frames.len() == FRAME_CAPACITY {
+        let size = Self::frame_bytes(&frame);
+        if state.frames.len() == FRAME_CAPACITY
+            || state.bytes.saturating_add(size) > FRAME_MAX_BYTES
+        {
             state.frames.clear();
+            state.bytes = 0;
             state.frames.push_back(TerminalFrame::Resync);
             state.closed = true;
         } else {
+            state.bytes += size;
             state.frames.push_back(frame);
         }
         self.ready.notify_one();
         !state.closed
     }
+    fn is_closed(&self) -> bool {
+        self.state.lock().unwrap().closed
+    }
     #[cfg(test)]
     pub(super) fn drain(&self) -> Vec<TerminalFrame> {
-        self.state.lock().unwrap().frames.drain(..).collect()
+        let mut state = self.state.lock().unwrap();
+        state.bytes = 0;
+        state.frames.drain(..).collect()
     }
     pub(super) fn close(&self) {
         self.state.lock().unwrap().closed = true;
@@ -155,6 +179,7 @@ impl TerminalSubscription for Frames {
         let mut state = self.0.state.lock().unwrap();
         loop {
             if let Some(frame) = state.frames.pop_front() {
+                state.bytes = state.bytes.saturating_sub(FrameQueue::frame_bytes(&frame));
                 return Ok(frame);
             }
             if state.closed {
@@ -212,7 +237,7 @@ impl CompanionTerminal {
         let state = state
             .as_mut()
             .ok_or_else(|| Error::msg("terminal released"))?;
-        SessionManager::attach_terminal_locked(state, self.history)
+        SessionManager::attach_terminal_locked(state, self.history, true)
     }
 }
 impl SessionState {
@@ -226,8 +251,8 @@ impl SessionState {
             .map(|model| model.stop_workers())
             .unwrap_or_default();
         workers.extend(self.terminal_input_worker.take());
-        for (_, queue) in self.subscribers.drain(..) {
-            queue.close();
+        for sub in self.subscribers.drain(..) {
+            sub.queue.close();
         }
         workers
     }
@@ -239,7 +264,8 @@ impl SessionState {
             .filter_map(|source| source.upgrade())
         {
             if let Some(model) = &self.terminal {
-                let mut snapshot = model.snapshot_with_history(self.output_seq, source.history);
+                let mut snapshot =
+                    model.snapshot_with_options(self.output_seq, source.history, false);
                 snapshot.controller = self.controller.wire();
                 *source.final_snapshot.lock().unwrap() = Some(snapshot);
             }
@@ -621,8 +647,15 @@ impl SessionManager {
         };
         #[cfg(test)]
         self.run_after_install_snapshot_hook(id);
-        let (model, started_at) =
-            self.create_terminal_from_binding(id, size.0, size.1, binding, pool, events)?;
+        let (model, started_at) = self.create_terminal_from_binding(
+            id,
+            size.0,
+            size.1,
+            self.last_desktop_cell_size(),
+            binding,
+            pool,
+            events,
+        )?;
         let (input, worker) = self.start_terminal_input(id, Arc::clone(&model), Arc::clone(events));
         let mut control = loop {
             let control = self.terminal_control.lock().unwrap();
@@ -638,8 +671,8 @@ impl SessionManager {
         let state = self.session_state_or_insert(id);
         let mut state = state.lock().unwrap();
         state.finish_companion_terminals();
-        for (_, queue) in state.subscribers.drain(..) {
-            queue.close();
+        for sub in state.subscribers.drain(..) {
+            sub.queue.close();
         }
         state.last_exit_was_killed = false;
         control.set_session_controller(id, &mut state, controller);
@@ -674,13 +707,23 @@ impl SessionManager {
             let conn = pool.get()?;
             session_terminal_binding(&conn, id)?
         };
-        self.create_terminal_from_binding(id, cols, rows, binding, pool, events)
+        self.create_terminal_from_binding(
+            id,
+            cols,
+            rows,
+            self.last_desktop_cell_size(),
+            binding,
+            pool,
+            events,
+        )
     }
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn create_terminal_from_binding(
         self: &Arc<Self>,
         id: &str,
         cols: u16,
         rows: u16,
+        initial_cell_size: Option<(u16, u16)>,
         binding: SessionTerminalBinding,
         pool: &DbPool,
         events: &Arc<dyn SessionEvents>,
@@ -734,7 +777,10 @@ impl SessionManager {
             started_at: Arc::clone(&started_at),
             model: OnceLock::new(),
         });
-        let model = TerminalModel::new(
+        let cell_size = initial_cell_size
+            .map(|(width, height)| runner_terminal::kitty::CellSize::from_wire(width, height))
+            .unwrap_or(runner_terminal::kitty::CellSize::ZERO);
+        let model = TerminalModel::with_graphics(
             Arc::clone(&host) as Arc<dyn TerminalHost>,
             id.to_owned(),
             cols,
@@ -744,6 +790,8 @@ impl SessionManager {
                 initial_title: binding.initial_title,
                 cwd: binding.cwd,
             },
+            cell_size,
+            Some(Arc::clone(&self.image_budget)),
         )
         .map_err(|error| Error::msg(error.to_string()))?;
         let _ = host.model.set(Arc::downgrade(&model));
@@ -994,7 +1042,7 @@ impl SessionManager {
             .session_state(id)
             .ok_or_else(|| Error::msg(format!("session not found: {id}")))?;
         let mut state = state.lock().unwrap();
-        Self::attach_terminal_locked(&mut state, history)
+        Self::attach_terminal_locked(&mut state, history, false)
     }
     pub fn attach_companion_terminal(
         &self,
@@ -1010,7 +1058,7 @@ impl SessionManager {
             final_snapshot: Mutex::new(None),
         });
         let mut state = state.lock().unwrap();
-        let attachment = Self::attach_terminal_locked(&mut state, source.history)?;
+        let attachment = Self::attach_terminal_locked(&mut state, source.history, true)?;
         state
             .companion_terminals
             .retain(|source| source.strong_count() != 0);
@@ -1020,16 +1068,21 @@ impl SessionManager {
     fn attach_terminal_locked(
         state: &mut SessionState,
         history: usize,
+        companion: bool,
     ) -> Result<TerminalAttachment> {
         let model = state
             .terminal
             .as_ref()
             .ok_or_else(|| Error::msg("terminal not found"))?;
-        let mut snapshot = model.snapshot_with_history(state.output_seq, history);
+        let mut snapshot = model.snapshot_with_options(state.output_seq, history, !companion);
         snapshot.controller = state.controller.wire();
         let subscriber_id = NEXT_SUBSCRIBER_ID.fetch_add(1, Ordering::Relaxed);
         let queue = Arc::new(FrameQueue::default());
-        state.subscribers.push((subscriber_id, Arc::clone(&queue)));
+        state.subscribers.push(Subscriber {
+            id: subscriber_id,
+            companion,
+            queue: Arc::clone(&queue),
+        });
         Ok(TerminalAttachment {
             subscriber_id,
             snapshot,
@@ -1038,9 +1091,9 @@ impl SessionManager {
     }
     pub fn detach_terminal(&self, id: &str, subscriber: u64) {
         if let Some(state) = self.session_state(id) {
-            state.lock().unwrap().subscribers.retain(|(found, queue)| {
-                if *found == subscriber {
-                    queue.close();
+            state.lock().unwrap().subscribers.retain(|sub| {
+                if sub.id == subscriber {
+                    sub.queue.close();
                     false
                 } else {
                     true
@@ -1196,20 +1249,58 @@ impl SessionManager {
         (input, worker)
     }
     pub(super) fn push_frame(state: &mut SessionState, frame: TerminalFrame) {
-        state
-            .subscribers
-            .retain(|(_, queue)| queue.push(frame.clone()));
+        Self::push_frame_inner(state, frame, true);
     }
+    pub(super) fn push_plain_frame(state: &mut SessionState, frame: TerminalFrame) {
+        Self::push_frame_inner(state, frame, false);
+    }
+    fn push_frame_inner(state: &mut SessionState, frame: TerminalFrame, may_have_graphics: bool) {
+        if state.subscribers.is_empty() {
+            return;
+        }
+        let companion_frame =
+            if may_have_graphics && state.subscribers.iter().any(|sub| sub.companion) {
+                match &frame {
+                    TerminalFrame::Output { seq, bytes } => {
+                        match runner_terminal::kitty::strip_graphics_commands(bytes) {
+                            Some(stripped) if stripped.is_empty() => Some(None),
+                            Some(stripped) => Some(Some(TerminalFrame::Output {
+                                seq: *seq,
+                                bytes: stripped,
+                            })),
+                            None => None,
+                        }
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+        state.subscribers.retain(|sub| {
+            if sub.companion {
+                match &companion_frame {
+                    Some(None) => !sub.queue.is_closed(),
+                    Some(Some(stripped)) => sub.queue.push(stripped.clone()),
+                    None => sub.queue.push(frame.clone()),
+                }
+            } else {
+                sub.queue.push(frame.clone())
+            }
+        });
+    }
+    #[allow(clippy::too_many_arguments)]
     pub fn resize_terminal(
         &self,
         id: &str,
         _origin: u64,
         cols: u16,
         rows: u16,
+        cell_width: u16,
+        cell_height: u16,
         pool: &Arc<DbPool>,
     ) -> Result<()> {
         // The sender also adopts the accepted size from the ordered frame stream.
-        self.resize(id, cols, rows, pool)
+        self.resize_with_cell_size(id, cols, rows, cell_width, cell_height, pool)
     }
     pub(super) fn control_group_on_conn(
         conn: &rusqlite::Connection,
@@ -1296,13 +1387,16 @@ impl SessionManager {
     fn push_controller(state: &mut SessionState) {
         if let Some(model) = &state.terminal {
             let (cols, rows) = model.size();
+            let cell = model.cell_size();
             state.output_seq += 1;
-            Self::push_frame(
+            Self::push_plain_frame(
                 state,
                 TerminalFrame::Resized {
                     seq: state.output_seq,
                     cols,
                     rows,
+                    cell_width: cell.width,
+                    cell_height: cell.height,
                     controller: state.controller.wire(),
                 },
             );
@@ -1418,13 +1512,24 @@ impl SessionManager {
         id: &str,
         cols: u16,
         rows: u16,
+        cell_width: u16,
+        cell_height: u16,
         pool: &Arc<DbPool>,
     ) -> Result<()> {
         let mut control = self.terminal_control.lock().unwrap();
         let (group, ids) = self.control_group(id, pool)?;
         control.groups.insert(group, Controller::Desktop);
         self.set_group_controller(&ids, id, &Controller::Desktop, &mut control);
-        self.resize_controlled(id, cols, rows, pool, ResizeControl::TakeBack, &mut control)
+        self.resize_controlled(
+            id,
+            cols,
+            rows,
+            cell_width,
+            cell_height,
+            pool,
+            ResizeControl::TakeBack,
+            &mut control,
+        )
     }
     #[allow(clippy::too_many_arguments)]
     pub fn browser_resize(
@@ -1434,6 +1539,8 @@ impl SessionManager {
         name: &str,
         cols: u16,
         rows: u16,
+        cell_width: u16,
+        cell_height: u16,
         take: bool,
         viewport: bool,
         pool: &Arc<DbPool>,
@@ -1487,6 +1594,8 @@ impl SessionManager {
             id,
             cols.clamp(20, 512),
             rows.clamp(8, 256),
+            cell_width,
+            cell_height,
             pool,
             ResizeControl::Browser {
                 channel,

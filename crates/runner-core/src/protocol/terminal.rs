@@ -5,6 +5,22 @@ use serde::{Deserialize, Serialize};
 use super::ClientError;
 
 pub const TERMINAL_QUEUE_CAPACITY: usize = 64;
+pub const TERMINAL_QUEUE_MAX_BYTES: usize = 128 * 1024 * 1024;
+pub const MAX_CELL_PIXEL_SIZE: u16 = 1024;
+
+/// Normalizes a client-reported cell size in device pixels.
+/// Zero on either axis means unknown (keep the session's current cell size);
+/// non-zero values clamp to `1..=1024` pixels per side.
+pub fn normalize_cell_size(width: u16, height: u16) -> Option<(u16, u16)> {
+    if width == 0 || height == 0 {
+        None
+    } else {
+        Some((
+            width.clamp(1, MAX_CELL_PIXEL_SIZE),
+            height.clamp(1, MAX_CELL_PIXEL_SIZE),
+        ))
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -56,6 +72,10 @@ pub enum TerminalFrame {
         seq: u64,
         cols: u16,
         rows: u16,
+        #[serde(default)]
+        cell_width: u16,
+        #[serde(default)]
+        cell_height: u16,
         controller: TerminalController,
     },
     Resync,
@@ -76,6 +96,10 @@ pub struct TerminalSnapshot {
     pub activity: Option<TerminalSnapshotActivity>,
     pub cols: u16,
     pub rows: u16,
+    #[serde(default)]
+    pub cell_width: u16,
+    #[serde(default)]
+    pub cell_height: u16,
     pub controller: TerminalController,
     pub bytes: Vec<u8>,
     pub unfinished_len: usize,

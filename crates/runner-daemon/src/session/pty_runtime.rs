@@ -87,6 +87,24 @@ impl PtyRuntime {
             readers: Mutex::new(Vec::new()),
         }
     }
+
+    #[cfg(all(test, unix))]
+    fn pty_size(&self, session: &RuntimeSession) -> RuntimeResult<PtySize> {
+        let handle = self
+            .sessions
+            .lock()
+            .expect("sessions lock poisoned")
+            .get(&session.session_id)
+            .cloned()
+            .ok_or_else(|| RuntimeError::Msg(format!("unknown session {}", session.session_id)))?;
+        let master = handle.master.lock().expect("master lock poisoned");
+        let master = master
+            .as_ref()
+            .ok_or_else(|| RuntimeError::Msg(format!("pty closed {}", session.session_id)))?;
+        master
+            .get_size()
+            .map_err(|e| RuntimeError::Msg(format!("get_size failed: {e}")))
+    }
 }
 
 impl Default for PtyRuntime {
@@ -215,12 +233,14 @@ impl PtyRuntime {
             });
         }
         let pty_system = native_pty_system();
+        let (pixel_width, pixel_height) =
+            super::runtime::pty_pixel_size(cols, rows, spec.initial_cell_size);
         let pair = pty_system
             .openpty(PtySize {
                 rows,
                 cols,
-                pixel_width: 0,
-                pixel_height: 0,
+                pixel_width,
+                pixel_height,
             })
             .map_err(|e| RuntimeError::Msg(format!("openpty: {e}")))?;
 
@@ -520,7 +540,14 @@ impl SessionRuntime for PtyRuntime {
         }))
     }
 
-    fn resize(&self, session: &RuntimeSession, cols: u16, rows: u16) -> RuntimeResult<()> {
+    fn resize(
+        &self,
+        session: &RuntimeSession,
+        cols: u16,
+        rows: u16,
+        pixel_width: u16,
+        pixel_height: u16,
+    ) -> RuntimeResult<()> {
         let handle = lookup(self, &session.session_id)?;
         {
             let master = handle.master.lock().expect("master poisoned");
@@ -531,8 +558,8 @@ impl SessionRuntime for PtyRuntime {
                 .resize(PtySize {
                     rows,
                     cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
+                    pixel_width,
+                    pixel_height,
                 })
                 .map_err(|e| RuntimeError::Msg(format!("MasterPty::resize: {e}")))?;
         }

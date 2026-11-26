@@ -90,6 +90,8 @@ impl Transport for RecordingHost {
                 activity: None,
                 cols: 80,
                 rows: 24,
+                cell_width: 0,
+                cell_height: 0,
                 controller: self.controller.lock().unwrap().clone(),
                 bytes: Vec::new(),
                 unfinished_len: 0,
@@ -102,7 +104,7 @@ impl Transport for RecordingHost {
         self.inputs.lock().unwrap().push(bytes.to_vec());
         Ok(())
     }
-    fn resize(&self, _: &str, _: u64, cols: u16, rows: u16) {
+    fn resize(&self, _: &str, _: u64, cols: u16, rows: u16, _: u16, _: u16) {
         self.sizes.lock().unwrap().push((cols, rows));
     }
 }
@@ -166,6 +168,8 @@ pub(crate) fn change(
         seq,
         cols: 91,
         rows: 31,
+        cell_width: 0,
+        cell_height: 0,
         controller,
     })
     .unwrap();
@@ -175,8 +179,8 @@ pub(crate) fn change(
 #[test]
 fn ordered_controller_gates_every_shared_size_and_input_path() {
     let (host, terminal, tx, ack) = mirror(TerminalController::Desktop);
-    terminal.resize(100, 40);
-    terminal.resize(110, 41);
+    terminal.resize(100, 40, 0, 0);
+    terminal.resize(110, 41, 0, 0);
     assert_eq!(*host.sizes.lock().unwrap(), [(100, 40), (110, 41)]);
     terminal.send_text("desktop").unwrap();
     assert_eq!(*host.inputs.lock().unwrap(), [b"desktop".to_vec()]);
@@ -195,7 +199,7 @@ fn ordered_controller_gates_every_shared_size_and_input_path() {
         if seq == 3 {
             change(&tx, &ack, seq, TerminalController::None);
         }
-        terminal.resize(200, 60);
+        terminal.resize(200, 60, 0, 0);
         terminal.write_user_bytes(b"mouse or key").unwrap();
         terminal
             .send_key("enter", false, false, false, None)
@@ -223,7 +227,7 @@ fn ordered_controller_gates_every_shared_size_and_input_path() {
         "stale frame cannot return control"
     );
     change(&tx, &ack, 4, TerminalController::Desktop);
-    terminal.resize(200, 60);
+    terminal.resize(200, 60, 0, 0);
     terminal.paste("here").unwrap();
     assert_eq!(*host.sizes.lock().unwrap(), [(200, 60)]);
     assert_eq!(*host.inputs.lock().unwrap(), [b"here".to_vec()]);
@@ -692,7 +696,7 @@ fn composition_started_before_takeover_clears_authoritative_drafting_on_desktop_
             "cancel stays local while covered"
         );
         change(&tx, &ack, 2, TerminalController::None);
-        terminal.take_back(120, 40).unwrap();
+        terminal.take_back(120, 40, 0, 0).unwrap();
         assert!(
             host.input_observation.lock().unwrap().unwrap().composing,
             "Take back must await Desktop acknowledgment"

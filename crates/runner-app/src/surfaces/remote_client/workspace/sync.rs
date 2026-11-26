@@ -717,6 +717,8 @@ impl RemoteClient {
                 session: id.clone(),
                 cols,
                 rows,
+                cell_width: 0,
+                cell_height: 0,
                 take_control,
             };
             let address = config.address();

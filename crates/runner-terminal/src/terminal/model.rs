@@ -925,6 +925,8 @@ impl TerminalModel {
             seq,
             cols: term.columns() as u16,
             rows: term.screen_lines() as u16,
+            cell_width: cell_size.width,
+            cell_height: cell_size.height,
             bytes: crate::snapshot::serialize_with_options(
                 &*term,
                 unfinished,

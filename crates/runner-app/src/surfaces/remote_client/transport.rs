@@ -71,8 +71,14 @@ impl RemoteTransport {
         let cols = cols.max(20);
         let rows = rows.max(8);
         let result = if self.connected.load(Ordering::Acquire) {
-            self.client
-                .remote_claim_control(config.computer, config.session, cols, rows)
+            self.client.remote_claim_control(
+                config.computer,
+                config.session,
+                cols,
+                rows,
+                config.cell_width,
+                config.cell_height,
+            )
         } else {
             Err(ClientError::msg("remote terminal is disconnected"))
         };
@@ -108,6 +114,8 @@ impl Transport for RemoteTransport {
                 session_id,
                 cols,
                 rows,
+                cell_width,
+                cell_height,
             } => {
                 let config = self.check(&session_id)?;
                 let result = if self.connected.load(Ordering::Acquire) {
@@ -116,6 +124,8 @@ impl Transport for RemoteTransport {
                         config.session,
                         cols.max(20),
                         rows.max(8),
+                        cell_width,
+                        cell_height,
                     )
                 } else {
                     Err(ClientError::msg("remote terminal is disconnected"))
@@ -124,6 +134,10 @@ impl Transport for RemoteTransport {
                     let mut config = self.config.lock().unwrap();
                     config.cols = cols.max(20);
                     config.rows = rows.max(8);
+                    if cell_width > 0 && cell_height > 0 {
+                        config.cell_width = cell_width;
+                        config.cell_height = cell_height;
+                    }
                 }
                 Ok(Response::terminal_take_back(result))
             }
@@ -167,7 +181,15 @@ impl Transport for RemoteTransport {
         }
         self.client.input(address, bytes)
     }
-    fn resize(&self, address: &str, subscriber: u64, cols: u16, rows: u16) {
+    fn resize(
+        &self,
+        address: &str,
+        subscriber: u64,
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+    ) {
         if self.check(address).is_err() || !self.connected.load(Ordering::Acquire) {
             return;
         }
@@ -176,7 +198,12 @@ impl Transport for RemoteTransport {
             let mut config = self.config.lock().unwrap();
             config.cols = cols;
             config.rows = rows;
+            if cell_width > 0 && cell_height > 0 {
+                config.cell_width = cell_width;
+                config.cell_height = cell_height;
+            }
         }
-        self.client.resize(address, subscriber, cols, rows);
+        self.client
+            .resize(address, subscriber, cols, rows, cell_width, cell_height);
     }
 }

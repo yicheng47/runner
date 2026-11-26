@@ -67,6 +67,22 @@ pub struct SpawnSpec {
     /// the right size before the first paint. `None` falls back to
     /// the runner config's `default-size`.
     pub initial_size: Option<(u16, u16)>,
+    /// Initial cell size in device pixels (width, height), remembered from the
+    /// last desktop pane that reported one. `None` opens the PTY with zero pixels.
+    pub initial_cell_size: Option<(u16, u16)>,
+}
+
+/// Computes the PTY's `(pixel_width, pixel_height)` from its grid size and
+/// cell size in device pixels, clamping each axis to `u16::MAX`.
+pub(crate) fn pty_pixel_size(cols: u16, rows: u16, cell_size: Option<(u16, u16)>) -> (u16, u16) {
+    let Some((cw, ch)) =
+        cell_size.and_then(|(w, h)| runner_core::protocol::terminal::normalize_cell_size(w, h))
+    else {
+        return (0, 0);
+    };
+    let pixel_width = (u32::from(cols) * u32::from(cw)).min(u32::from(u16::MAX)) as u16;
+    let pixel_height = (u32::from(rows) * u32::from(ch)).min(u32::from(u16::MAX)) as u16;
+    (pixel_width, pixel_height)
 }
 
 impl SpawnSpec {
@@ -329,7 +345,14 @@ pub trait SessionRuntime: Send + Sync {
 
     /// Frontend resize event. The runtime is expected to debounce
     /// internally if multiple `resize` calls land back-to-back.
-    fn resize(&self, session: &RuntimeSession, cols: u16, rows: u16) -> RuntimeResult<()>;
+    fn resize(
+        &self,
+        session: &RuntimeSession,
+        cols: u16,
+        rows: u16,
+        pixel_width: u16,
+        pixel_height: u16,
+    ) -> RuntimeResult<()>;
 
     /// Liveness probe used by the manager's exit reconciliation.
     /// `Ok(None)` means the runtime can't find the session — treat

@@ -390,7 +390,7 @@ fn take_back_targets(
     for (terminal, interaction) in targets {
         let size = interaction.read(cx).pane_size;
         let (cols, rows) = size.map_or_else(|| terminal.size(), |size| (size.cols, size.rows));
-        if let Err(error) = terminal.take_back(cols, rows) {
+        if let Err(error) = terminal.take_back(cols, rows, 0, 0) {
             if let Some(window) = cx
                 .active_window()
                 .and_then(|window| window.downcast::<NativeRoot>())

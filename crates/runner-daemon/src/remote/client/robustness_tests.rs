@@ -44,7 +44,7 @@ async fn live_route_needs_no_secrets_or_directory_even_when_both_fail() {
     let terminal = fixture.client.attach(terminal_config()).await.unwrap();
     fixture
         .client
-        .viewport("2".into(), "session".into(), 90, 30, true)
+        .viewport("2".into(), "session".into(), 90, 30, 0, 0, true)
         .await
         .unwrap();
     let request = c::ClientMessage::decode(

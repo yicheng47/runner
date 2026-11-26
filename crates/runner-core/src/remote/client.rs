@@ -27,6 +27,10 @@ pub struct RemoteTerminal {
     pub session: String,
     pub cols: u16,
     pub rows: u16,
+    #[serde(default)]
+    pub cell_width: u16,
+    #[serde(default)]
+    pub cell_height: u16,
     pub take_control: bool,
 }
 
@@ -60,6 +64,8 @@ mod tests {
             session: "session".into(),
             cols: 80,
             rows: 24,
+            cell_width: 16,
+            cell_height: 32,
             take_control: true,
         };
         assert_eq!(terminal_target(&config.address()), Some(("42", "session")));
@@ -89,6 +95,8 @@ fn client_debug_keeps_snapshot_output_and_overview_bodies_private() {
         activity: None,
         cols: 80,
         rows: 24,
+        cell_width: 0,
+        cell_height: 0,
         controller: TerminalController::Desktop,
         bytes: b"terminal-canary".to_vec(),
         unfinished_len: 0,

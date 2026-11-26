@@ -87,6 +87,21 @@ pub(super) fn agent_env(
     env
 }
 
+pub(super) fn session_tmpdir(env: &BTreeMap<String, String>) -> Option<PathBuf> {
+    #[cfg(windows)]
+    let value = env
+        .iter()
+        .find(|(key, _)| {
+            key.eq_ignore_ascii_case("TMPDIR")
+                || key.eq_ignore_ascii_case("TEMP")
+                || key.eq_ignore_ascii_case("TMP")
+        })
+        .map(|(_, value)| value.as_str());
+    #[cfg(not(windows))]
+    let value = env.get("TMPDIR").map(String::as_str);
+    value.filter(|value| !value.is_empty()).map(PathBuf::from)
+}
+
 impl SessionManager {
     pub(super) fn spawn_runtime(
         &self,
@@ -229,6 +244,7 @@ impl SessionManager {
             bundled_bin_dir,
             shell_path: shell_env.path,
             initial_size,
+            initial_cell_size: self.last_desktop_cell_size(),
         }
     }
 
@@ -262,6 +278,7 @@ impl SessionManager {
             bundled_bin_dir: None,
             shell_path: shell_env.path,
             initial_size: Some(initial_size),
+            initial_cell_size: self.last_desktop_cell_size(),
         }
     }
 

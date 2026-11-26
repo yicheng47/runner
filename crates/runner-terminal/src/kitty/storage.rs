@@ -41,6 +41,15 @@ impl CellSize {
             height: self.height.clamp(1, 1024),
         }
     }
+
+    /// Normalize a wire cell size: zero on either axis becomes `Self::ZERO`,
+    /// otherwise clamps each side to `1..=1024`.
+    pub fn from_wire(width: u16, height: u16) -> Self {
+        match runner_core::protocol::terminal::normalize_cell_size(width, height) {
+            Some((width, height)) => Self { width, height },
+            None => Self::ZERO,
+        }
+    }
 }
 
 /// Daemon-wide atomic byte budget shared across all authoritative session

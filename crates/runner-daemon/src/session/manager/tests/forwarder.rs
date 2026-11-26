@@ -25,7 +25,11 @@ impl ForwarderCapture {
             .lock()
             .unwrap()
             .subscribers
-            .push((1, Arc::clone(&self.1)));
+            .push(terminal::Subscriber {
+                id: 1,
+                companion: false,
+                queue: Arc::clone(&self.1),
+            });
     }
 }
 
@@ -79,6 +83,7 @@ fn forward_queued_output(items: Vec<RuntimeOutput>) -> Vec<ForwardedEvent> {
         false,
         None,
         app_data.path().to_path_buf(),
+        None,
     )
     .join()
     .unwrap();
@@ -138,6 +143,7 @@ fn codex_session_starts_rekey_current_running_row_for_direct_and_mission() {
                 false,
                 None,
                 app_data.path().to_path_buf(),
+                None,
             )
             .join()
             .unwrap();
@@ -224,6 +230,7 @@ fn codex_session_starts_cannot_rekey_older_or_stopped_rows() {
             false,
             None,
             app_data.path().to_path_buf(),
+            None,
         )
         .join()
         .unwrap();
@@ -291,6 +298,7 @@ fn forwarder_delivers_a_cursor_burst_without_waiting_for_eof() {
         false,
         None,
         app_data.path().to_path_buf(),
+        None,
     );
     let deadline = Instant::now() + Duration::from_secs(2);
     while {
@@ -485,6 +493,7 @@ fn early_resume_exit_clears_the_key_only_for_a_confirmed_missing_conversation() 
             false,
             None,
             app_data.path().to_path_buf(),
+            None,
         )
         .join()
         .unwrap();
@@ -558,6 +567,7 @@ fn only_an_early_failed_codex_config_exit_gets_startup_recovery() {
                 false,
                 None,
                 data.path().into(),
+                None,
             )
             .join()
             .unwrap();

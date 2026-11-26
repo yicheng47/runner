@@ -141,13 +141,19 @@ impl ClientMessage {
                 to: Vec<String> => "an array of strings", text: String => "a string"),
             "attach" => decode!(Attach, session: String => "a string",
                 cols: u16 => "an unsigned 16-bit integer", rows: u16 => "an unsigned 16-bit integer",
+                cellWidth: Option<u16> => "an unsigned 16-bit integer or null",
+                cellHeight: Option<u16> => "an unsigned 16-bit integer or null",
                 control: ControlMode => "a string", history: Option<u32> => "an unsigned 32-bit integer or null"),
             "input" => decode!(Input, session: String => "a string",
                 data: TerminalBytes => "standard padded base64"),
             "takeControl" => decode!(TakeControl, session: String => "a string",
-                cols: u16 => "an unsigned 16-bit integer", rows: u16 => "an unsigned 16-bit integer"),
+                cols: u16 => "an unsigned 16-bit integer", rows: u16 => "an unsigned 16-bit integer",
+                cellWidth: Option<u16> => "an unsigned 16-bit integer or null",
+                cellHeight: Option<u16> => "an unsigned 16-bit integer or null"),
             "viewport" => decode!(Viewport, session: String => "a string",
-                cols: u16 => "an unsigned 16-bit integer", rows: u16 => "an unsigned 16-bit integer"),
+                cols: u16 => "an unsigned 16-bit integer", rows: u16 => "an unsigned 16-bit integer",
+                cellWidth: Option<u16> => "an unsigned 16-bit integer or null",
+                cellHeight: Option<u16> => "an unsigned 16-bit integer or null"),
             "detach" => decode!(Detach, session: String => "a string"),
             "ping" => decode!(Ping),
             name if super::ActionRequest::NAMES.contains(&name) => {
@@ -325,6 +331,10 @@ pub struct AttachRequest {
     pub session: String,
     pub cols: u16,
     pub rows: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_width: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_height: Option<u16>,
     pub control: ControlMode,
     pub history: Option<u32>,
 }
@@ -336,6 +346,14 @@ impl AttachRequest {
 
     pub fn clamped_size(&self) -> (u16, u16) {
         (self.cols.clamp(20, 512), self.rows.clamp(8, 256))
+    }
+
+    pub fn clamped_cell_size(&self) -> (u16, u16) {
+        crate::protocol::terminal::normalize_cell_size(
+            self.cell_width.unwrap_or(0),
+            self.cell_height.unwrap_or(0),
+        )
+        .unwrap_or((0, 0))
     }
 }
 
@@ -354,11 +372,23 @@ pub struct ViewportRequest {
     pub session: String,
     pub cols: u16,
     pub rows: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_width: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cell_height: Option<u16>,
 }
 
 impl ViewportRequest {
     pub fn clamped_size(&self) -> (u16, u16) {
         (self.cols.clamp(20, 512), self.rows.clamp(8, 256))
+    }
+
+    pub fn clamped_cell_size(&self) -> (u16, u16) {
+        crate::protocol::terminal::normalize_cell_size(
+            self.cell_width.unwrap_or(0),
+            self.cell_height.unwrap_or(0),
+        )
+        .unwrap_or((0, 0))
     }
 }
 
@@ -482,6 +512,10 @@ pub struct Snapshot {
     pub seq: u64,
     pub cols: u16,
     pub rows: u16,
+    #[serde(default)]
+    pub cell_width: u16,
+    #[serde(default)]
+    pub cell_height: u16,
     pub data: TerminalBytes,
     pub more: bool,
     #[serde(default)]
@@ -505,6 +539,10 @@ pub struct Resized {
     pub seq: u64,
     pub cols: u16,
     pub rows: u16,
+    #[serde(default)]
+    pub cell_width: u16,
+    #[serde(default)]
+    pub cell_height: u16,
     pub controller: Controller,
 }
 

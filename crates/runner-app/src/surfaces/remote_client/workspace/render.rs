@@ -392,7 +392,7 @@ impl RemoteClient {
         let taking = terminal.clone();
         let task = cx.background_spawn(async move {
             if force_take {
-                taking.take_back(cols, rows)
+                taking.take_back(cols, rows, 0, 0)
             } else {
                 transport.claim_if_free(cols, rows)
             }

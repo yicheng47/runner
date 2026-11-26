@@ -448,6 +448,7 @@ fn headless_fork_rejects_nonzero_exit_and_kills_timed_out_process_group() {
         bundled_bin_dir: None,
         shell_path: None,
         initial_size: None,
+        initial_cell_size: None,
     };
     let error = crate::runtimes::codex::fork::materialize(&spec, &plan, Duration::from_secs(10))
         .unwrap_err();
@@ -475,6 +476,7 @@ fn headless_fork_rejects_nonzero_exit_and_kills_timed_out_process_group() {
         bundled_bin_dir: None,
         shell_path: None,
         initial_size: None,
+        initial_cell_size: None,
     };
     let codex_plan = crate::runtimes::adapter(Runtime::Codex)
         .fork_plan(&source_key, "Source")
@@ -621,6 +623,7 @@ fn headless_fork_timeout_kills_batch_descendant_and_closes_pipes() {
         bundled_bin_dir: None,
         shell_path: None,
         initial_size: None,
+        initial_cell_size: None,
     };
     let plan = router::runtime::ForkPlan::Headless {
         args: Vec::new(),

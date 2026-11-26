@@ -1158,7 +1158,7 @@ impl Element for TerminalElement {
                 // debug tracing is explicitly enabled.
                 if tracing::enabled!(tracing::Level::DEBUG) {
                     let started = Instant::now();
-                    self.session.resize(size.cols, size.rows);
+                    self.session.resize(size.cols, size.rows, 0, 0);
                     tracing::debug!(
                         "terminal resize prepaint: session={} size={}x{} push_us={}",
                         self.session.session_id(),
@@ -1167,7 +1167,7 @@ impl Element for TerminalElement {
                         started.elapsed().as_micros(),
                     );
                 } else {
-                    self.session.resize(size.cols, size.rows);
+                    self.session.resize(size.cols, size.rows, 0, 0);
                 }
             }
             SizePushVerdict::Unchanged | SizePushVerdict::SuppressedNonOwner => {}
@@ -1944,7 +1944,7 @@ mod tests {
             self.send_bytes(session, key.as_bytes())
         }
 
-        fn resize(&self, _: &RuntimeSession, _: u16, _: u16) -> RuntimeResult<()> {
+        fn resize(&self, _: &RuntimeSession, _: u16, _: u16, _: u16, _: u16) -> RuntimeResult<()> {
             Ok(())
         }
 

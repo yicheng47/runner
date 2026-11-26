@@ -144,11 +144,15 @@ impl Terminals {
             || (stream.replay_valid
                 && (stream.config.take_control || stream.controller != TerminalController::None))
         {
+            let (cell_width, cell_height) =
+                super::wire_cell_size(stream.config.cell_width, stream.config.cell_height);
             let viewport = c::ViewportRequest {
                 id: handle.next_id(),
                 session: target,
                 cols: stream.config.cols,
                 rows: stream.config.rows,
+                cell_width,
+                cell_height,
             };
             session.queue(if stream.config.take_control {
                 c::ClientMessage::TakeControl(viewport)
@@ -166,11 +170,15 @@ impl Terminals {
         stream.assembling = None;
         stream.complete = false;
         stream.resync_pending = 0;
+        let (cell_width, cell_height) =
+            super::wire_cell_size(stream.config.cell_width, stream.config.cell_height);
         session.queue(c::ClientMessage::Attach(c::AttachRequest {
             id: stream.request,
             session: target,
             cols: stream.config.cols,
             rows: stream.config.rows,
+            cell_width,
+            cell_height,
             control: if stream.config.take_control {
                 c::ControlMode::Take
             } else {
@@ -179,11 +187,14 @@ impl Terminals {
             history: None,
         }))
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn claim(
         &mut self,
         target: String,
         cols: u16,
         rows: u16,
+        cell_width: u16,
+        cell_height: u16,
         reply: oneshot::Sender<runner_core::protocol::ClientResult<serde_json::Value>>,
         session: &mut route::Session,
         handle: &route::Handle,
@@ -201,10 +212,20 @@ impl Terminals {
             session: String::new(),
             cols,
             rows,
+            cell_width: None,
+            cell_height: None,
         }
         .clamped_size();
         stream.config.cols = cols;
         stream.config.rows = rows;
+        if let Some((cw, ch)) =
+            runner_core::protocol::terminal::normalize_cell_size(cell_width, cell_height)
+        {
+            stream.config.cell_width = cw;
+            stream.config.cell_height = ch;
+        }
+        let (wire_cw, wire_ch) =
+            super::wire_cell_size(stream.config.cell_width, stream.config.cell_height);
         if stream.requested || stream.assembling.is_some() {
             let _ = reply.send(Ok(serde_json::Value::Null));
             return;
@@ -218,6 +239,8 @@ impl Terminals {
                         session: target,
                         cols,
                         rows,
+                        cell_width: wire_cw,
+                        cell_height: wire_ch,
                     }),
                     reply,
                 );
@@ -238,6 +261,8 @@ impl Terminals {
                 session: target,
                 cols,
                 rows,
+                cell_width: wire_cw,
+                cell_height: wire_ch,
                 control: c::ControlMode::IfFree,
                 history: None,
             }),
@@ -257,11 +282,15 @@ impl Terminals {
             stream.assembling = None;
             stream.complete = false;
             stream.resync_pending = 0;
+            let (cell_width, cell_height) =
+                super::wire_cell_size(stream.config.cell_width, stream.config.cell_height);
             session.queue(c::ClientMessage::Attach(c::AttachRequest {
                 id: stream.request,
                 session: target.clone(),
                 cols: stream.config.cols,
                 rows: stream.config.rows,
+                cell_width,
+                cell_height,
                 control: c::ControlMode::IfFree,
                 history: None,
             }))?;
@@ -274,6 +303,11 @@ impl Terminals {
         {
             if let Some(stream) = self.streams.get_mut(&viewport.session) {
                 (stream.config.cols, stream.config.rows) = viewport.clamped_size();
+                let (cw, ch) = viewport.clamped_cell_size();
+                if cw > 0 && ch > 0 {
+                    stream.config.cell_width = cw;
+                    stream.config.cell_height = ch;
+                }
             }
         }
     }
@@ -358,6 +392,8 @@ impl Terminals {
                         activity: None,
                         cols: chunk.cols,
                         rows: chunk.rows,
+                        cell_width: chunk.cell_width,
+                        cell_height: chunk.cell_height,
                         controller: TerminalController::None,
                         bytes: Vec::new(),
                         unfinished_len: chunk.unfinished_len,
@@ -368,6 +404,8 @@ impl Terminals {
                 if snapshot.seq != chunk.seq
                     || snapshot.cols != chunk.cols
                     || snapshot.rows != chunk.rows
+                    || snapshot.cell_width != chunk.cell_width
+                    || snapshot.cell_height != chunk.cell_height
                     || snapshot.preceding_char != chunk.preceding_char
                     || snapshot.unfinished_len != chunk.unfinished_len
                     || snapshot.bytes.len() + chunk.data.0.len() > 32 * 1024 * 1024
@@ -392,9 +430,19 @@ impl Terminals {
                     if snapshot.seq != resized.seq
                         || snapshot.cols != resized.cols
                         || snapshot.rows != resized.rows
+                        || snapshot.cell_width != resized.cell_width
+                        || snapshot.cell_height != resized.cell_height
                     {
                         return Err("Remote snapshot size does not match".into());
                     }
+                    let (cell_width, cell_height) =
+                        runner_core::protocol::terminal::normalize_cell_size(
+                            snapshot.cell_width,
+                            snapshot.cell_height,
+                        )
+                        .unwrap_or((0, 0));
+                    snapshot.cell_width = cell_width;
+                    snapshot.cell_height = cell_height;
                     snapshot.controller = controller.clone();
                     let resync_listeners = stream.listeners.len();
                     for queue in stream.listeners.values() {
@@ -416,12 +464,20 @@ impl Terminals {
                     if resized.seq != stream.seq + 1 {
                         return Err("Remote terminal resize sequence changed".into());
                     }
+                    let (cell_width, cell_height) =
+                        runner_core::protocol::terminal::normalize_cell_size(
+                            resized.cell_width,
+                            resized.cell_height,
+                        )
+                        .unwrap_or((0, 0));
                     stream.seq = resized.seq;
                     stream.controller = controller.clone();
                     stream.push(TerminalFrame::Resized {
                         seq: resized.seq,
                         cols: resized.cols,
                         rows: resized.rows,
+                        cell_width,
+                        cell_height,
                         controller,
                     });
                 }

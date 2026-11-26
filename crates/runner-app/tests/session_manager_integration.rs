@@ -69,7 +69,7 @@ fn direct_chat_flows_from_app_core_session_manager_into_terminal_grid() {
     .session;
     let terminal = bridge.attach(&spawned.id).unwrap();
     assert_eq!(terminal.size(), (80, 24));
-    terminal.resize(96, 32);
+    terminal.resize(96, 32, 0, 0);
 
     terminal.submit_text("manager-owned-pty").unwrap();
     let rendered = wait_for_text(&terminal, "manager-owned-pty");

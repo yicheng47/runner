@@ -90,7 +90,7 @@ impl SessionRuntime for Runtime {
     fn send_key(&self, _: &RuntimeSession, _: &str) -> RuntimeResult<()> {
         Ok(())
     }
-    fn resize(&self, _: &RuntimeSession, _: u16, _: u16) -> RuntimeResult<()> {
+    fn resize(&self, _: &RuntimeSession, _: u16, _: u16, _: u16, _: u16) -> RuntimeResult<()> {
         Ok(())
     }
     fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
@@ -594,6 +594,8 @@ async fn a_started_terminal_attaches_with_take_at_the_client_size_and_revocation
             session: session.clone(),
             cols: 123,
             rows: 45,
+            cell_width: 0,
+            cell_height: 0,
             take_control: true,
         })
         .await
@@ -1011,6 +1013,8 @@ async fn large_feed_pages_and_incremental_pushes_keep_the_shared_terminal_route_
             session: shell.clone(),
             cols: 80,
             rows: 24,
+            cell_width: 0,
+            cell_height: 0,
             take_control: true,
         })
         .await
@@ -1146,7 +1150,7 @@ async fn large_feed_pages_and_incremental_pushes_keep_the_shared_terminal_route_
     assert_eq!(paged, newest_first);
     host.fixture
         .client
-        .viewport("2".into(), shell.clone(), 91, 31, true)
+        .viewport("2".into(), shell.clone(), 91, 31, 0, 0, true)
         .await
         .unwrap();
     host.fixture
@@ -1891,6 +1895,8 @@ async fn claim_control_uses_if_free_and_never_steals_when_host_or_other_browser_
             session: session.clone(),
             cols: 80,
             rows: 24,
+            cell_width: 0,
+            cell_height: 0,
             take_control: true,
         })
         .await
@@ -1906,6 +1912,8 @@ async fn claim_control_uses_if_free_and_never_steals_when_host_or_other_browser_
                 "Transient",
                 90,
                 25,
+                0,
+                0,
                 true,
                 false,
                 &host.core.db,
@@ -1930,15 +1938,18 @@ async fn claim_control_uses_if_free_and_never_steals_when_host_or_other_browser_
         writer.blocked.store(true, Ordering::Release);
         let client = host.fixture.client.clone();
         let target = session.clone();
-        let claiming =
-            tokio::spawn(async move { client.claim_control("2".into(), target, 132, 43).await });
+        let claiming = tokio::spawn(async move {
+            client
+                .claim_control("2".into(), target, 132, 43, 0, 0)
+                .await
+        });
         writer.entered.notified().await;
 
         match winner {
             "desktop" => {
                 host.core
                     .sessions
-                    .take_back_terminal(&session, 100, 30, &host.core.db)
+                    .take_back_terminal(&session, 100, 30, 0, 0, &host.core.db)
                     .unwrap();
             }
             "browser" => {
@@ -1950,6 +1961,8 @@ async fn claim_control_uses_if_free_and_never_steals_when_host_or_other_browser_
                         "Other laptop",
                         104,
                         32,
+                        0,
+                        0,
                         true,
                         false,
                         &host.core.db,
@@ -1979,6 +1992,8 @@ async fn claim_control_uses_if_free_and_never_steals_when_host_or_other_browser_
                 session: session.clone(),
                 cols: 132,
                 rows: 43,
+                cell_width: 0,
+                cell_height: 0,
                 take_control: false,
             })
             .await
@@ -2194,4 +2209,148 @@ async fn remote_mission_role_add_remove_and_rejections_preserve_allowlisted_mess
         .await
         .unwrap_err();
     assert_eq!(stopped_error, "The mission is not running.");
+}
+
+#[tokio::test]
+async fn remote_terminal_attach_viewport_take_control_and_claim_carry_cell_size() {
+    use runner_terminal::kitty::CellSize;
+
+    let host = Host::new().await;
+    let session = host.start().await;
+    host.wait_live(&session).await;
+
+    // 1. Remote attach carries cell size to host model and back in snapshot.
+    let mut attachment = host
+        .fixture
+        .client
+        .attach(RemoteTerminal {
+            computer: "2".into(),
+            session: session.clone(),
+            cols: 100,
+            rows: 30,
+            cell_width: 18,
+            cell_height: 36,
+            take_control: true,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            attachment.snapshot.cols,
+            attachment.snapshot.rows,
+            attachment.snapshot.cell_width,
+            attachment.snapshot.cell_height
+        ),
+        (100, 30, 18, 36)
+    );
+    assert_eq!(
+        host.core
+            .sessions
+            .terminal_model(&session)
+            .unwrap()
+            .cell_size(),
+        CellSize {
+            width: 18,
+            height: 36
+        }
+    );
+
+    // 2. Remote viewport carries updated cell size and emits Resized with it.
+    host.fixture
+        .client
+        .viewport("2".into(), session.clone(), 110, 35, 20, 40, false)
+        .await
+        .unwrap();
+    let (next, frame) = receive_terminal(attachment).await;
+    attachment = next;
+    assert!(matches!(
+        frame,
+        TerminalFrame::Resized {
+            cols: 110,
+            rows: 35,
+            cell_width: 20,
+            cell_height: 40,
+            ..
+        }
+    ));
+    assert_eq!(
+        host.core
+            .sessions
+            .terminal_model(&session)
+            .unwrap()
+            .cell_size(),
+        CellSize {
+            width: 20,
+            height: 40
+        }
+    );
+
+    // 3. Remote take_control with zero cell size preserves current cell size; non-zero updates it.
+    host.fixture
+        .client
+        .viewport("2".into(), session.clone(), 112, 36, 0, 0, true)
+        .await
+        .unwrap();
+    let (next, frame) = receive_terminal(attachment).await;
+    attachment = next;
+    assert!(matches!(
+        frame,
+        TerminalFrame::Resized {
+            cols: 112,
+            rows: 36,
+            cell_width: 20,
+            cell_height: 40,
+            ..
+        }
+    ));
+
+    // 4. Remote claim_control carries cell size when reclaiming a free terminal.
+    host.core
+        .sessions
+        .browser_resize(
+            &session,
+            77,
+            "Transient",
+            90,
+            25,
+            14,
+            28,
+            true,
+            false,
+            &host.core.db,
+        )
+        .unwrap();
+    host.core.sessions.release_browser(&session, 77);
+    loop {
+        let (next, frame) = receive_terminal(attachment).await;
+        attachment = next;
+        if matches!(
+            frame,
+            TerminalFrame::Resized {
+                controller: TerminalController::None,
+                cell_width: 14,
+                cell_height: 28,
+                ..
+            }
+        ) {
+            break;
+        }
+    }
+    host.fixture
+        .client
+        .claim_control("2".into(), session.clone(), 120, 40, 22, 44)
+        .await
+        .unwrap();
+    assert_eq!(
+        host.core
+            .sessions
+            .terminal_model(&session)
+            .unwrap()
+            .cell_size(),
+        CellSize {
+            width: 22,
+            height: 44
+        }
+    );
+    drop(attachment);
 }

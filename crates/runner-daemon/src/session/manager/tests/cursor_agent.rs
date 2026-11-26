@@ -192,6 +192,7 @@ fn cursor_closed_conversation_clears_key_without_stopping_output_forwarder() {
         false,
         None,
         data.path().to_path_buf(),
+        None,
     )
     .join()
     .unwrap();

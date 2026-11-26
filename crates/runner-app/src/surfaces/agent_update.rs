@@ -589,7 +589,7 @@ fn start_update(
 ) -> anyhow::Result<Arc<TerminalMirror>> {
     let mut events = client.subscribe();
     let terminal = TerminalMirror::attach(client.clone(), id.clone(), Arc::clone(&waker))?;
-    terminal.resize(size.0, size.1);
+    terminal.resize(size.0, size.1, 0, 0);
     std::thread::spawn(move || {
         futures::executor::block_on(async move {
             use futures::FutureExt;

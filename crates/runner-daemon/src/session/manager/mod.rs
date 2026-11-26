@@ -279,11 +279,12 @@ struct SessionState {
     osc_title_tracker: Option<(String, Arc<Mutex<terminal::OscTitleTracker>>)>,
     terminal_input: Option<terminal::TerminalInput>,
     terminal_input_worker: Option<thread::JoinHandle<()>>,
-    subscribers: Vec<(u64, Arc<terminal::FrameQueue>)>,
+    subscribers: Vec<terminal::Subscriber>,
     companion_terminals: Vec<Weak<terminal::CompanionTerminal>>,
     /// Latest grid measurement, including pushes that arrive before a PTY
     /// handle exists. Spawn and resume reconcile this under the state lock.
     last_requested_size: Option<(u16, u16)>,
+    last_requested_cell_size: Option<(u16, u16)>,
     last_requested_size_dirty: bool,
     resize_stamp: Arc<AtomicU64>,
     resize_persist_gate: Arc<Mutex<u64>>,
@@ -406,6 +407,7 @@ impl SessionState {
             && self.mission_status_sink.is_none()
             && self.output_seq == 0
             && self.last_requested_size.is_none()
+            && self.last_requested_cell_size.is_none()
             && !self.last_requested_size_dirty
             && self.pending_resize.is_none()
             && !self.resuming
@@ -459,6 +461,8 @@ pub struct SessionManager {
     terminal_palette: Mutex<runner_terminal::palette::TerminalPalette>,
     terminal_control: Mutex<terminal::ControlState>,
     control_group_revision: AtomicU64,
+    last_desktop_cell_size: Mutex<Option<(u16, u16)>>,
+    image_budget: Arc<runner_terminal::kitty::GlobalImageBudget>,
     #[cfg(test)]
     wake_baseline_read: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     #[cfg(test)]
@@ -584,6 +588,30 @@ impl SessionManager {
         discovery_state: crate::runtime_status::SharedDiscoveryState,
         runtime: Arc<dyn SessionRuntime>,
     ) -> Arc<Self> {
+        Self::new_with_budget(
+            shell_env,
+            discovery_state,
+            runtime,
+            Arc::new(runner_terminal::kitty::GlobalImageBudget::default()),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_image_budget(
+        shell_env: crate::runtime_status::SharedShellEnv,
+        discovery_state: crate::runtime_status::SharedDiscoveryState,
+        runtime: Arc<dyn SessionRuntime>,
+        image_budget: Arc<runner_terminal::kitty::GlobalImageBudget>,
+    ) -> Arc<Self> {
+        Self::new_with_budget(shell_env, discovery_state, runtime, image_budget)
+    }
+
+    fn new_with_budget(
+        shell_env: crate::runtime_status::SharedShellEnv,
+        discovery_state: crate::runtime_status::SharedDiscoveryState,
+        runtime: Arc<dyn SessionRuntime>,
+        image_budget: Arc<runner_terminal::kitty::GlobalImageBudget>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             runtime_updates: Mutex::default(),
             sessions: Mutex::new(HashMap::new()),
@@ -604,6 +632,8 @@ impl SessionManager {
             terminal_palette: Mutex::new(runner_terminal::palette::RUNNER),
             terminal_control: Mutex::default(),
             control_group_revision: AtomicU64::new(0),
+            last_desktop_cell_size: Mutex::new(None),
+            image_budget,
             #[cfg(test)]
             wake_baseline_read: Mutex::default(),
             #[cfg(test)]

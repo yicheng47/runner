@@ -72,6 +72,8 @@ fn connection_cleanup_and_desktop_takeback_release_owned_compositions() {
             session_id: "preedit".into(),
             cols: 80,
             rows: 24,
+            cell_width: 0,
+            cell_height: 0,
         })
         .unwrap();
     assert!(
@@ -160,7 +162,18 @@ async fn desktop_transports_reject_stale_input_after_split_tab_takeover() {
         ];
         client_core
             .sessions
-            .browser_resize("left", 1, "Remote", 100, 30, true, false, &client_core.db)
+            .browser_resize(
+                "left",
+                1,
+                "Remote",
+                100,
+                30,
+                0,
+                0,
+                true,
+                false,
+                &client_core.db,
+            )
             .unwrap();
         let mut errors = client_core.events.subscribe();
         for ((id, queued), stale) in ["left", "right"].into_iter().zip(&queued).zip(&stale) {
@@ -192,7 +205,7 @@ async fn desktop_transports_reject_stale_input_after_split_tab_takeover() {
         }
         client_core
             .sessions
-            .take_back_terminal("left", 80, 24, &client_core.db)
+            .take_back_terminal("left", 80, 24, 0, 0, &client_core.db)
             .unwrap();
         for (id, queued) in ["left", "right"].into_iter().zip(&queued) {
             local.input(id, b"local in-process").unwrap();
@@ -1361,4 +1374,550 @@ async fn slow_stage_warnings_fire_past_two_seconds_for_initialize_status_and_dis
         !dispatch_warnings[0].contains("999999"),
         "slow dispatch logs must never include private request payload fields"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kitty_socket_single_reader_single_reply_normalized_stream_splitting_and_queue_resync() {
+    use base64::Engine as _;
+    use runner_core::protocol::socket::SocketTransport;
+    use runner_core::protocol::terminal::{TerminalFrame, TERMINAL_QUEUE_MAX_BYTES};
+    use runner_terminal::terminal::TerminalMirror;
+    use std::sync::Condvar;
+    use std::time::Instant;
+
+    #[derive(Default)]
+    struct SocketKittyRuntime {
+        outputs: Mutex<
+            std::collections::HashMap<
+                String,
+                std::sync::mpsc::Sender<crate::session::runtime::RuntimeOutput>,
+            >,
+        >,
+        writes: Mutex<Vec<Vec<u8>>>,
+        writes_cv: Condvar,
+    }
+    impl SocketKittyRuntime {
+        fn push_output(&self, session_id: &str, bytes: &[u8]) {
+            self.outputs
+                .lock()
+                .unwrap()
+                .get(session_id)
+                .expect("spawned session")
+                .send(crate::session::runtime::RuntimeOutput::Stream(
+                    bytes.to_vec(),
+                ))
+                .unwrap();
+        }
+        fn wait_writes_len(&self, expected: usize) -> Vec<Vec<u8>> {
+            let mut guard = self.writes.lock().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while guard.len() < expected {
+                let rem = deadline
+                    .checked_duration_since(Instant::now())
+                    .expect("timed out waiting for PTY replies");
+                let (next, _) = self.writes_cv.wait_timeout(guard, rem).unwrap();
+                guard = next;
+            }
+            guard.clone()
+        }
+        fn take_writes(&self) -> Vec<Vec<u8>> {
+            std::mem::take(&mut *self.writes.lock().unwrap())
+        }
+    }
+    impl crate::session::runtime::SessionRuntime for SocketKittyRuntime {
+        fn spawn(
+            &self,
+            spec: crate::session::runtime::SpawnSpec,
+        ) -> crate::session::runtime::RuntimeResult<(
+            crate::session::runtime::RuntimeSession,
+            crate::session::runtime::OutputStream,
+        )> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.outputs
+                .lock()
+                .unwrap()
+                .insert(spec.session_id.clone(), tx);
+            Ok((
+                crate::session::runtime::RuntimeSession {
+                    runtime: "socket-kitty".into(),
+                    session_id: spec.session_id,
+                },
+                crate::session::runtime::OutputStream::new(
+                    rx,
+                    Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                ),
+            ))
+        }
+        fn stop(
+            &self,
+            session: &crate::session::runtime::RuntimeSession,
+        ) -> crate::session::runtime::RuntimeResult<()> {
+            self.outputs.lock().unwrap().remove(&session.session_id);
+            Ok(())
+        }
+        fn send_bytes(
+            &self,
+            _: &crate::session::runtime::RuntimeSession,
+            bytes: &[u8],
+        ) -> crate::session::runtime::RuntimeResult<()> {
+            self.writes.lock().unwrap().push(bytes.to_vec());
+            self.writes_cv.notify_all();
+            Ok(())
+        }
+        fn send_key(
+            &self,
+            _: &crate::session::runtime::RuntimeSession,
+            _: &str,
+        ) -> crate::session::runtime::RuntimeResult<()> {
+            Ok(())
+        }
+        fn resize(
+            &self,
+            _: &crate::session::runtime::RuntimeSession,
+            _: u16,
+            _: u16,
+            _: u16,
+            _: u16,
+        ) -> crate::session::runtime::RuntimeResult<()> {
+            Ok(())
+        }
+        fn status(
+            &self,
+            _: &crate::session::runtime::RuntimeSession,
+        ) -> crate::session::runtime::RuntimeResult<Option<crate::session::runtime::SessionStatus>>
+        {
+            Ok(Some(crate::session::runtime::SessionStatus {
+                alive: true,
+                ..Default::default()
+            }))
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(SocketKittyRuntime::default());
+    let core = crate::test_support::test_core_in_with_runtime(
+        root.path().to_owned(),
+        Arc::clone(&runtime) as _,
+    );
+    let role = {
+        let conn = core.db.get().unwrap();
+        crate::test_support::insert_test_role(
+            &conn,
+            "kitty-sock",
+            "kitty-sock",
+            "trae",
+            "kitty-sock",
+        );
+        crate::ops::role::get(&conn, "kitty-sock").unwrap()
+    };
+    let session_tmp = tempfile::Builder::new()
+        .prefix("runner-kitty-sock-")
+        .tempdir_in(std::env::temp_dir())
+        .unwrap();
+    let spawned = core
+        .sessions
+        .spawn_direct(
+            &role,
+            crate::session::manager::DirectLaunch {
+                cwd: Some(root.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap();
+    let id = spawned.id.clone();
+
+    #[cfg(unix)]
+    let endpoint = IpcEndpoint(root.path().join("kitty-runnerd.sock"));
+    #[cfg(windows)]
+    let endpoint = IpcEndpoint(std::path::PathBuf::from(format!(
+        r"\\.\pipe\runner-kitty-sock-test-{}",
+        root.path().file_name().unwrap().to_string_lossy()
+    )));
+    let mut listener = IpcListener::bind(&endpoint).unwrap();
+    let shutdown = CancellationToken::new();
+    let accept_shutdown = shutdown.clone();
+    let server_core = core.clone();
+    let server = tokio::spawn(async move {
+        let mut conns = Vec::new();
+        let mut next_id = 1u64;
+        loop {
+            tokio::select! {
+                _ = accept_shutdown.cancelled() => break,
+                accepted = listener.accept() => {
+                    let Ok(stream) = accepted else { break };
+                    let conn_core = server_core.clone();
+                    let conn_shutdown = accept_shutdown.clone();
+                    let conn_id = next_id;
+                    next_id += 1;
+                    conns.push(tokio::spawn(async move {
+                        let windows = Arc::new(ConnectionWindows {
+                            core: conn_core.clone(),
+                            owners: Arc::new(Mutex::default()),
+                            id: conn_id,
+                            closed: CancellationToken::new(),
+                        });
+                        let (_report, resume_report) = tokio::sync::watch::channel(None);
+                        let _ = connection(
+                            stream,
+                            conn_core,
+                            wire::Welcome {
+                                exe_sha256: "hash".into(),
+                                pid: 1,
+                                started_at: "now".into(),
+                                app_clients: 0,
+                            },
+                            Default::default(),
+                            conn_shutdown,
+                            true,
+                            windows,
+                            resume_report,
+                        )
+                        .await;
+                    }));
+                }
+            }
+        }
+        for handle in conns {
+            let _ = handle.await;
+        }
+    });
+
+    let runtime_t = Arc::clone(&runtime);
+    let core_t = core.clone();
+    let id_t = id.clone();
+    let tmp_dir_path = session_tmp.path().to_path_buf();
+    let endpoint_t = endpoint.clone();
+    let shutdown_t = shutdown.clone();
+    tokio::task::spawn_blocking(move || {
+        let connect = || {
+            SocketTransport::connect(
+                &endpoint_t,
+                wire::Hello {
+                    exe_sha256: "hash".into(),
+                    client: "kitty-test".into(),
+                },
+            )
+            .unwrap()
+        };
+        let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+        let write_temp = |tag: &str, data: &[u8]| -> std::path::PathBuf {
+            let path = tmp_dir_path.join(format!("tty-graphics-protocol-{tag}.bin"));
+            std::fs::write(&path, data).unwrap();
+            path
+        };
+        let wait_mirror_has = |mirror: &TerminalMirror, image_id: u32, expected: bool| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let present = mirror
+                    .graphics()
+                    .lock()
+                    .unwrap()
+                    .primary
+                    .images()
+                    .contains_key(&image_id);
+                if present == expected {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for mirror image {image_id} present={expected}"
+                );
+                std::thread::yield_now();
+            }
+        };
+
+        // 1. 0, 1, and 2 real socket mirrors: exactly one PTY reply per query/transmission,
+        // `t=t` file read and deleted once, mirrors show image and never see forbidden wire tokens.
+        let mut mirrors: Vec<(Arc<SocketTransport>, Arc<TerminalMirror>)> = Vec::new();
+        let raw_transport = connect();
+        let mut raw_sub = raw_transport.client().attach(&id_t).unwrap();
+
+        for viewer_count in 0..=2usize {
+            while mirrors.len() < viewer_count {
+                let transport = connect();
+                let mirror =
+                    TerminalMirror::attach(transport.client(), id_t.clone(), Arc::new(|| {}))
+                        .unwrap();
+                mirrors.push((transport, mirror));
+            }
+            let q_id = 100 + viewer_count as u32;
+            let img_id = 200 + viewer_count as u32;
+            let q_file = write_temp(&format!("q-{viewer_count}"), &[1u8; 12]);
+            let t_file = write_temp(&format!("t-{viewer_count}"), &[2u8; 12]);
+            let q_cmd = format!(
+                "\x1b_Ga=q,i={q_id},t=t,f=24,s=2,v=2;{}\x1b\\",
+                b64(q_file.to_string_lossy().as_bytes())
+            );
+            let t_cmd = format!(
+                "\x1b_Ga=T,i={img_id},t=t,f=24,s=2,v=2;{}\x1b\\",
+                b64(t_file.to_string_lossy().as_bytes())
+            );
+            runtime_t.push_output(&id_t, q_cmd.as_bytes());
+            let q_writes = runtime_t.wait_writes_len(1);
+            assert_eq!(
+                q_writes,
+                vec![format!("\x1b_Gi={q_id};OK\x1b\\").into_bytes()],
+                "viewer_count={viewer_count}: query must produce exactly one reply"
+            );
+            assert!(!q_file.exists(), "t=t query file must be deleted once");
+            runtime_t.take_writes();
+
+            runtime_t.push_output(&id_t, t_cmd.as_bytes());
+            let t_writes = runtime_t.wait_writes_len(1);
+            assert_eq!(
+                t_writes,
+                vec![format!("\x1b_Gi={img_id};OK\x1b\\").into_bytes()],
+                "viewer_count={viewer_count}: transmission must produce exactly one reply"
+            );
+            assert!(
+                !t_file.exists(),
+                "t=t transmission file must be deleted once"
+            );
+            runtime_t.take_writes();
+
+            let frame = raw_sub.frames.recv().unwrap();
+            let TerminalFrame::Output { bytes, .. } = frame else {
+                panic!("expected normalized output frame, got {frame:?}");
+            };
+            let wire_str = String::from_utf8_lossy(&bytes);
+            assert!(
+                !wire_str.contains("a=q"),
+                "mirror received query: {wire_str}"
+            );
+            assert!(!wire_str.contains("t=t"), "mirror received t=t: {wire_str}");
+            assert!(!wire_str.contains("t=f"), "mirror received t=f: {wire_str}");
+            assert!(!wire_str.contains("t=s"), "mirror received t=s: {wire_str}");
+            assert!(
+                !wire_str.contains("I="),
+                "mirror received image number: {wire_str}"
+            );
+            assert!(
+                !wire_str.contains("m=1"),
+                "mirror received continuation chunk: {wire_str}"
+            );
+            assert!(
+                wire_str.contains(&format!("i={img_id}")),
+                "normalized frame missing image id {img_id}: {wire_str}"
+            );
+            for (_, mirror) in &mirrors {
+                wait_mirror_has(mirror, img_id, true);
+            }
+        }
+
+        // Chunked I= transmission reaches mirrors with assigned i=, no I=, and no m=1.
+        let chunk_payload = b64(&[9u8; 12]);
+        let chunked = format!(
+            "\x1b_Ga=T,I=77,f=24,s=2,v=2,m=1;{}\x1b\\\x1b_Gm=0;{}\x1b\\",
+            &chunk_payload[..8],
+            &chunk_payload[8..]
+        );
+        runtime_t.push_output(&id_t, chunked.as_bytes());
+        let chunk_writes = runtime_t.wait_writes_len(1);
+        assert!(String::from_utf8_lossy(&chunk_writes[0]).contains("I=77;OK"));
+        runtime_t.take_writes();
+        let TerminalFrame::Output { bytes, .. } = raw_sub.frames.recv().unwrap() else {
+            panic!("expected normalized chunked frame");
+        };
+        let wire_str = String::from_utf8_lossy(&bytes);
+        assert!(!wire_str.contains("I="), "mirror received I=: {wire_str}");
+        assert!(!wire_str.contains("m=1"), "mirror received m=1: {wire_str}");
+        assert!(
+            wire_str.contains("q=2"),
+            "normalized frame must carry q=2: {wire_str}"
+        );
+
+        // Retransmitting existing i=202 with invalid data deletes old i=202 as `a=d,d=I,i=202,q=2`.
+        runtime_t.push_output(&id_t, b"\x1b_Ga=t,i=202,f=24,s=2,v=2;AA==\x1b\\");
+        let err_writes = runtime_t.wait_writes_len(1);
+        assert_eq!(
+            err_writes,
+            vec![b"\x1b_Gi=202;EINVAL: invalid data\x1b\\".to_vec()]
+        );
+        runtime_t.take_writes();
+        let TerminalFrame::Output { bytes, .. } = raw_sub.frames.recv().unwrap() else {
+            panic!("expected delete frame for failed retransmission");
+        };
+        assert_eq!(bytes, b"\x1b_Ga=d,d=I,i=202,q=2\x1b\\");
+        for (_, mirror) in &mirrors {
+            wait_mirror_has(mirror, 202, false);
+        }
+
+        // 2. Empty normalized burst (query only) publishes nothing and snapshot seq still matches.
+        let seq_before_query = core_t.sessions.terminal_output_sequence(&id_t);
+        runtime_t.push_output(&id_t, b"\x1b_Ga=q,i=999,f=24,s=1,v=1;AAAA\x1b\\");
+        let q_only_writes = runtime_t.wait_writes_len(1);
+        assert_eq!(q_only_writes, vec![b"\x1b_Gi=999;OK\x1b\\".to_vec()]);
+        runtime_t.take_writes();
+        let seq_after_query = core_t.sessions.terminal_output_sequence(&id_t);
+        assert_eq!(seq_after_query, seq_before_query + 1);
+        let snap_after_query = raw_transport.client().attach(&id_t).unwrap().snapshot;
+        assert_eq!(snap_after_query.seq, seq_after_query);
+        runtime_t.push_output(&id_t, b"after-query-gap");
+        let TerminalFrame::Output { seq, bytes } = raw_sub.frames.recv().unwrap() else {
+            panic!("expected text frame after query gap");
+        };
+        assert_eq!(seq, seq_after_query + 1);
+        assert_eq!(bytes, b"after-query-gap");
+
+        // 3. Single >1 MiB transmission travels alone between surrounding text segments.
+        let big_raw = vec![0x5Au8; 600 * 600 * 3]; // 1.08 MB raw -> ~1.44 MB normalized (> 1 MiB)
+        let big_file = tmp_dir_path.join("big-single.bin");
+        std::fs::write(&big_file, &big_raw).unwrap();
+        let big_burst = format!(
+            "before-big\x1b_Ga=T,i=300,t=f,f=24,s=600,v=600;{}\x1b\\after-big",
+            b64(big_file.to_string_lossy().as_bytes())
+        );
+        runtime_t.push_output(&id_t, big_burst.as_bytes());
+        let big_writes = runtime_t.wait_writes_len(1);
+        assert_eq!(big_writes, vec![b"\x1b_Gi=300;OK\x1b\\".to_vec()]);
+        runtime_t.take_writes();
+        let TerminalFrame::Output { bytes: f1, .. } = raw_sub.frames.recv().unwrap() else {
+            panic!("expected leading text frame");
+        };
+        let TerminalFrame::Output { bytes: f2, .. } = raw_sub.frames.recv().unwrap() else {
+            panic!("expected isolated large image frame");
+        };
+        let TerminalFrame::Output { bytes: f3, .. } = raw_sub.frames.recv().unwrap() else {
+            panic!("expected trailing text frame");
+        };
+        assert_eq!(f1, b"before-big");
+        assert!(f2.len() > 1024 * 1024);
+        assert!(f2.starts_with(b"\x1b_G") && f2.ends_with(b"\x1b\\"));
+        assert_eq!(f3, b"after-big");
+        for (_, mirror) in &mirrors {
+            wait_mirror_has(mirror, 300, true);
+        }
+
+        // 4. Burst of 73 sub-1 MiB `t=f` transmissions totalling > 64 MiB splits into <= 1 MiB frames
+        // and never drops the daemon socket with "output too large".
+        let sub_raw = vec![0x33u8; 500 * 466 * 3]; // 699,000 B raw -> ~932 KB normalized (< 1 MiB)
+        let sub_file = tmp_dir_path.join("sub-1mib.bin");
+        std::fs::write(&sub_file, &sub_raw).unwrap();
+        let sub_b64 = b64(sub_file.to_string_lossy().as_bytes());
+        let mut burst_64m = Vec::new();
+        for n in 1..=73u32 {
+            let id_n = 400 + n;
+            burst_64m.extend_from_slice(
+                format!("\x1b_Ga=t,i={id_n},t=f,f=24,s=500,v=466,q=1;{sub_b64}\x1b\\").as_bytes(),
+            );
+        }
+        burst_64m.extend_from_slice(b"\x1b_Ga=q,i=998,f=24,s=1,v=1;AAAA\x1b\\");
+
+        // Drain raw_sub concurrently on a background thread while the burst pushes so the socket
+        // carries every frame without stalling, verifying none exceed 1 MiB.
+        let mut drain_sub = raw_sub;
+        let reader = std::thread::spawn(move || {
+            let mut count = 0usize;
+            let mut total_bytes = 0usize;
+            let mut max_frame = 0usize;
+            let mut saw_resync = false;
+            loop {
+                match drain_sub.frames.recv() {
+                    Ok(TerminalFrame::Output { bytes, .. }) => {
+                        if bytes == b"burst-done-sentinel" {
+                            break;
+                        }
+                        max_frame = max_frame.max(bytes.len());
+                        total_bytes += bytes.len();
+                        count += 1;
+                    }
+                    Ok(TerminalFrame::Resync) => {
+                        saw_resync = true;
+                        break;
+                    }
+                    Ok(TerminalFrame::Resized { .. }) => {}
+                    Err(error) => panic!("socket dropped during >64 MiB burst: {error}"),
+                }
+            }
+            (count, total_bytes, max_frame, saw_resync)
+        });
+        runtime_t.push_output(&id_t, &burst_64m);
+        let sentinel_writes = runtime_t.wait_writes_len(1);
+        assert_eq!(sentinel_writes, vec![b"\x1b_Gi=998;OK\x1b\\".to_vec()]);
+        runtime_t.take_writes();
+        runtime_t.push_output(&id_t, b"burst-done-sentinel");
+        let (count, total_bytes, max_frame, saw_resync) = reader.join().unwrap();
+        assert!(
+            max_frame <= 1024 * 1024,
+            "normalized burst frame exceeded 1 MiB: {max_frame}"
+        );
+        if !saw_resync {
+            assert_eq!(count, 73);
+            assert!(
+                total_bytes > 64 * 1024 * 1024,
+                "expected >64 MiB total across frames, got {total_bytes}"
+            );
+        }
+        // The socket transport itself is still alive and serves a fresh attach cleanly.
+        let post_burst = raw_transport.client().attach(&id_t).unwrap();
+        assert_eq!(
+            post_burst.snapshot.seq,
+            core_t.sessions.terminal_output_sequence(&id_t)
+        );
+        assert!(core_t
+            .sessions
+            .terminal_model(&id_t)
+            .unwrap()
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .images()
+            .contains_key(&473));
+
+        // 5. Queueing > 128 MiB of frames (well below 64 frames) triggers Resync over the real
+        // daemon socket. Reuse one 30 MiB `t=f` image (~40 MiB normalized frame) 7 times under the
+        // same image ID (`i=500`) so model storage stays at 30 MiB while 7 * ~40 MiB = ~280 MiB
+        // (14 frames << 64) are pushed unread: exceeding daemon FrameQueue (128 MiB) + client
+        // socket::Frames (128 MiB) by pigeonhole with zero sleeps or timing assumptions.
+        let overflow_transport = connect();
+        let mut overflow_sub = overflow_transport.client().attach(&id_t).unwrap();
+        drop(mirrors);
+        let raw_30m = vec![0x2Au8; 3200 * 3276 * 3]; // 31,449,600 B -> ~41.93 MB normalized
+        let file_30m = tmp_dir_path.join("overflow-30mib.bin");
+        std::fs::write(&file_30m, &raw_30m).unwrap();
+        let file_30m_b64 = b64(file_30m.to_string_lossy().as_bytes());
+        let cmd_30m = format!("\x1b_Ga=t,i=500,t=f,f=24,s=3200,v=3276;{file_30m_b64}\x1b\\");
+        assert!(4 * (raw_30m.len() * 4 / 3) > TERMINAL_QUEUE_MAX_BYTES);
+        for _ in 0..7 {
+            runtime_t.push_output(&id_t, cmd_30m.as_bytes());
+        }
+        let overflow_writes = runtime_t.wait_writes_len(7);
+        assert!(overflow_writes.iter().all(|w| w == b"\x1b_Gi=500;OK\x1b\\"));
+        runtime_t.take_writes();
+        let mut got_resync = false;
+        for _ in 0..16 {
+            match overflow_sub.frames.recv() {
+                Ok(TerminalFrame::Resync) => {
+                    got_resync = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        assert!(
+            got_resync,
+            "queueing >128 MiB must trigger TerminalFrame::Resync"
+        );
+
+        drop(post_burst);
+        drop(overflow_sub);
+        drop(raw_transport);
+        drop(overflow_transport);
+        core_t.sessions.kill(&id_t).unwrap();
+        core_t.sessions.drain_terminal_workers();
+        shutdown_t.cancel();
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), server)
+        .await
+        .unwrap()
+        .unwrap();
 }

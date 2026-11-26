@@ -1136,6 +1136,8 @@ async fn connection_with_limits(
                     let origin = binary.u64()?;
                     let cols = binary.u16()?;
                     let rows = binary.u16()?;
+                    let cell_width = binary.u16()?;
+                    let cell_height = binary.u16()?;
                     if let Some((computer, target)) = runner_core::remote::terminal_target(&session)
                     {
                         super::block_on(input_core.remote.remote_resize(
@@ -1143,6 +1145,8 @@ async fn connection_with_limits(
                             target.into(),
                             cols,
                             rows,
+                            cell_width,
+                            cell_height,
                         ))
                         .map_err(anyhow::Error::msg)?;
                     } else {
@@ -1151,6 +1155,8 @@ async fn connection_with_limits(
                             origin,
                             cols,
                             rows,
+                            cell_width,
+                            cell_height,
                             &input_core.db,
                         )?;
                     }
@@ -1353,12 +1359,16 @@ fn forward_terminal(
                 seq,
                 cols,
                 rows,
+                cell_width,
+                cell_height,
                 controller,
             }) => {
                 let mut frame = wire::numbered(wire::RESIZED, id);
                 frame.payload.extend_from_slice(&seq.to_le_bytes());
                 frame.payload.extend_from_slice(&cols.to_le_bytes());
                 frame.payload.extend_from_slice(&rows.to_le_bytes());
+                frame.payload.extend_from_slice(&cell_width.to_le_bytes());
+                frame.payload.extend_from_slice(&cell_height.to_le_bytes());
                 frame.payload.extend(serde_json::to_vec(&controller)?);
                 frame
             }

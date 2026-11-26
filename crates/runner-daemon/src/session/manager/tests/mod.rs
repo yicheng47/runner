@@ -102,7 +102,7 @@ impl SessionRuntime for InertRuntime {
             "InertRuntime: send_key unsupported".into(),
         ))
     }
-    fn resize(&self, _: &RuntimeSession, _: u16, _: u16) -> RuntimeResult<()> {
+    fn resize(&self, _: &RuntimeSession, _: u16, _: u16, _: u16, _: u16) -> RuntimeResult<()> {
         Err(RuntimeError::Msg("InertRuntime: resize unsupported".into()))
     }
     fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
@@ -135,6 +135,8 @@ fn manager_with_runtime(
 /// spawn, output delivery, kill semantics, first-prompt
 /// scheduling, agent_session_key resume preservation — run
 /// without forking a real PTY.
+type PixelResizeRecord = (String, u16, u16, u16, u16);
+
 #[derive(Default)]
 struct FakeRuntime {
     spawns: std::sync::Mutex<Vec<FakeSpawn>>,
@@ -143,6 +145,7 @@ struct FakeRuntime {
     stops: std::sync::Mutex<Vec<String>>,
     stop_failures: std::sync::Mutex<HashSet<String>>,
     resizes: std::sync::Mutex<Vec<(String, u16, u16)>>,
+    pixel_resizes: std::sync::Mutex<Vec<PixelResizeRecord>>,
     /// Runs inside `spawn` once the fork is recorded — lets a test land
     /// work (a resize) between the fork and the handle install.
     spawn_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
@@ -382,11 +385,25 @@ impl SessionRuntime for FakeRuntime {
         Ok(())
     }
 
-    fn resize(&self, session: &RuntimeSession, cols: u16, rows: u16) -> RuntimeResult<()> {
+    fn resize(
+        &self,
+        session: &RuntimeSession,
+        cols: u16,
+        rows: u16,
+        pixel_width: u16,
+        pixel_height: u16,
+    ) -> RuntimeResult<()> {
         self.resizes
             .lock()
             .unwrap()
             .push((session.session_id.clone(), cols, rows));
+        self.pixel_resizes.lock().unwrap().push((
+            session.session_id.clone(),
+            cols,
+            rows,
+            pixel_width,
+            pixel_height,
+        ));
         Ok(())
     }
 

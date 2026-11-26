@@ -1420,7 +1420,7 @@ async fn a_pty_that_stops_reading_its_input_stalls_only_that_sessions_input_1377
             Ok(())
         }
 
-        fn resize(&self, _: &RuntimeSession, _: u16, _: u16) -> RuntimeResult<()> {
+        fn resize(&self, _: &RuntimeSession, _: u16, _: u16, _: u16, _: u16) -> RuntimeResult<()> {
             Ok(())
         }
 
@@ -1778,6 +1778,8 @@ impl crate::companion::core::Core for GatedCore {
                 seq: 1,
                 cols: 80,
                 rows: 24,
+                cell_width: 0,
+                cell_height: 0,
                 bytes: b"ready".to_vec(),
                 preceding_char: None,
                 unfinished_len: 0,
@@ -1836,6 +1838,7 @@ impl crate::companion::core::Core for GatedCore {
         _channel: u64,
         _name: &str,
         size: (u16, u16),
+        _cell_size: (u16, u16),
         control: crate::companion::core::Control,
     ) -> crate::companion::core::Result<()> {
         self.resize_gate.enter();

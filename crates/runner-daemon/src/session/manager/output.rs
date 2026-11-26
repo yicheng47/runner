@@ -141,6 +141,7 @@ impl SessionManager {
         emit_activity: bool,
         emit_ctx: Option<ForwarderEmitCtx>,
         app_data_dir: PathBuf,
+        session_tmpdir: Option<PathBuf>,
     ) -> thread::JoinHandle<()> {
         let manager_t: Arc<SessionManager> = Arc::clone(self);
         let started_at = std::time::Instant::now();
@@ -166,6 +167,9 @@ impl SessionManager {
             let mut pending = None;
             let mut startup_tail = Vec::new();
             let mut turn_started = false;
+            let mut kitty_scanner = runner_terminal::kitty::Scanner::new();
+            let temp_dirs =
+                runner_terminal::kitty::TempDirs::with_session_tmpdir(session_tmpdir.as_deref());
             #[cfg(windows)]
             let mut first_turn_pending = true;
             loop {
@@ -224,10 +228,12 @@ impl SessionManager {
                             &bytes,
                             super::super::clock::now(),
                         );
-                        manager_t.ingest_output_for_launch(
+                        manager_t.forward_stream_bytes(
                             &session_id,
                             mission_id.as_deref(),
                             &bytes,
+                            &mut kitty_scanner,
+                            &temp_dirs,
                             events.as_ref(),
                             Some(&stop),
                         );
@@ -1036,25 +1042,52 @@ impl SessionManager {
     /// the spawn-time grid regardless of how big the visible grid
     /// is.
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16, pool: &Arc<DbPool>) -> Result<()> {
+        self.resize_with_cell_size(session_id, cols, rows, 0, 0, pool)
+    }
+
+    pub fn resize_with_cell_size(
+        &self,
+        session_id: &str,
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+        pool: &Arc<DbPool>,
+    ) -> Result<()> {
         let mut control = self.terminal_control.lock().unwrap();
         self.resize_controlled(
             session_id,
             cols,
             rows,
+            cell_width,
+            cell_height,
             pool,
             terminal::ResizeControl::Desktop,
             &mut control,
         )
     }
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn resize_controlled(
         &self,
         session_id: &str,
         cols: u16,
         rows: u16,
+        cell_width: u16,
+        cell_height: u16,
         pool: &Arc<DbPool>,
         control: terminal::ResizeControl,
         control_state: &mut terminal::ControlState,
     ) -> Result<()> {
+        let incoming_cell =
+            runner_core::protocol::terminal::normalize_cell_size(cell_width, cell_height);
+        if matches!(
+            control,
+            terminal::ResizeControl::Desktop | terminal::ResizeControl::TakeBack
+        ) {
+            if let Some(cell) = incoming_cell {
+                self.remember_desktop_cell_size(cell);
+            }
+        }
         let state = self.session_state_or_insert(session_id);
         let settle_ms = self
             .resize_settle_ms
@@ -1067,14 +1100,26 @@ impl SessionManager {
                 .as_ref()
                 .map(|model| model.size())
                 .or(session.last_requested_size);
+            let previous_cell = session
+                .terminal
+                .as_ref()
+                .map(|model| model.cell_size())
+                .filter(|cell| cell.width > 0 && cell.height > 0)
+                .map(|cell| (cell.width, cell.height))
+                .or(session.last_requested_cell_size);
+            let effective_cell = incoming_cell.or(previous_cell);
             let applied = control.apply(&mut session.controller);
             control_state.record_session_controller(session_id, &session.controller);
-            let size_changed = previous_size != Some((cols, rows));
+            let grid_size_changed = previous_size != Some((cols, rows));
+            let cell_size_changed = effective_cell != previous_cell;
+            let size_changed = grid_size_changed || cell_size_changed;
             let controller_changed = session.controller != previous_controller;
             log::debug!(
                 "resize request: session={session_id} {} -> {cols}x{rows} \
-                 size_changed={size_changed} controller={:?} -> {:?} applied={applied}",
+                 cell={:?} -> {:?} size_changed={size_changed} controller={:?} -> {:?} applied={applied}",
                 previous_size.map_or_else(|| "none".into(), |(c, r)| format!("{c}x{r}")),
+                previous_cell,
+                effective_cell,
                 previous_controller.wire(),
                 session.controller.wire(),
             );
@@ -1086,25 +1131,34 @@ impl SessionManager {
             }
             let controller = session.controller.wire();
             if let Some(model) = &session.terminal {
-                model.resize(cols, rows);
+                let cell = effective_cell
+                    .map(|(width, height)| runner_terminal::kitty::CellSize { width, height });
+                model.resize_with_cell_size(cols, rows, cell);
             }
+            let (out_cell_w, out_cell_h) = effective_cell.unwrap_or((0, 0));
             session.output_seq += 1;
             let seq = session.output_seq;
-            Self::push_frame(
+            Self::push_plain_frame(
                 &mut session,
                 runner_core::protocol::terminal::TerminalFrame::Resized {
                     seq,
                     cols,
                     rows,
+                    cell_width: out_cell_w,
+                    cell_height: out_cell_h,
                     controller,
                 },
             );
             session.last_requested_size = Some((cols, rows));
+            session.last_requested_cell_size = effective_cell;
             session.last_requested_size_dirty = true;
             let stamp = session.bump_resize_stamp();
 
             let mut ioctl_count = 0;
-            let resize_result = if session.killed || session.resuming {
+            // On Windows, a change of cell size alone updates runnerd and the mirrors
+            // without resizing ConPTY, which repaints on any resize.
+            let skip_conpty_cell_only = cfg!(windows) && !grid_size_changed && cell_size_changed;
+            let resize_result = if session.killed || session.resuming || skip_conpty_cell_only {
                 Ok(())
             } else if let Some(rt_session) = session
                 .handle
@@ -1112,8 +1166,10 @@ impl SessionManager {
                 .map(|handle| handle.runtime_session.clone())
             {
                 ioctl_count = 1;
+                let (pixel_width, pixel_height) =
+                    super::super::runtime::pty_pixel_size(cols, rows, effective_cell);
                 self.runtime
-                    .resize(&rt_session, cols, rows)
+                    .resize(&rt_session, cols, rows, pixel_width, pixel_height)
                     .map_err(Into::into)
             } else {
                 Ok(())
@@ -1308,6 +1364,7 @@ impl SessionManager {
             let workers = state.release_terminal();
             state.output_seq = 0;
             state.last_requested_size = None;
+            state.last_requested_cell_size = None;
             state.last_requested_size_dirty = false;
             state.bump_resize_stamp();
             state.pending_resize = None;
@@ -1321,6 +1378,93 @@ impl SessionManager {
         self.prune_empty_session_state(session_id);
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn forward_stream_bytes(
+        &self,
+        session_id: &str,
+        mission_id: Option<&str>,
+        bytes: &[u8],
+        scanner: &mut runner_terminal::kitty::Scanner,
+        temp_dirs: &runner_terminal::kitty::TempDirs,
+        events: &dyn SessionEvents,
+        launch: Option<&Arc<AtomicBool>>,
+    ) {
+        use runner_terminal::kitty::{prepare_command, ForwardedItem, ScanItem, ScanOutput};
+
+        match scanner.scan(bytes) {
+            ScanOutput::Plain(text) => {
+                self.ingest_plain_output_for_launch(session_id, mission_id, text, events, launch);
+            }
+            ScanOutput::Items(items) => {
+                if items.is_empty() {
+                    self.note_buffered_output_for_launch(session_id, launch);
+                    return;
+                }
+                if items.iter().all(|item| matches!(item, ScanItem::Text(_))) {
+                    let text = if items.len() == 1 {
+                        match items.into_iter().next().unwrap() {
+                            ScanItem::Text(text) => text,
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        let total = items
+                            .iter()
+                            .map(|item| match item {
+                                ScanItem::Text(text) => text.len(),
+                                _ => 0,
+                            })
+                            .sum();
+                        let mut joined = Vec::with_capacity(total);
+                        for item in items {
+                            if let ScanItem::Text(text) = item {
+                                joined.extend_from_slice(&text);
+                            }
+                        }
+                        joined
+                    };
+                    self.ingest_plain_output_for_launch(
+                        session_id, mission_id, &text, events, launch,
+                    );
+                    return;
+                }
+                // Resolve local media (`t=f`, `t=t`, `t=s`) on the forwarder thread
+                // before acquiring the session state lock.
+                let mut prepared = Vec::with_capacity(items.len());
+                for item in items {
+                    if launch.is_some_and(|stop| stop.load(Ordering::Acquire)) {
+                        return;
+                    }
+                    match item {
+                        ScanItem::Text(text) => prepared.push(ForwardedItem::Text(text)),
+                        ScanItem::Command(raw) => match prepare_command(&raw, temp_dirs) {
+                            Some(cmd) => prepared.push(ForwardedItem::Command(cmd)),
+                            None => prepared.push(ForwardedItem::Discarded),
+                        },
+                        ScanItem::Discarded => prepared.push(ForwardedItem::Discarded),
+                    }
+                }
+                self.ingest_forwarded_for_launch(session_id, mission_id, &prepared, events, launch);
+            }
+        }
+    }
+
+    fn note_buffered_output_for_launch(&self, session_id: &str, launch: Option<&Arc<AtomicBool>>) {
+        let state = self.session_state_or_insert(session_id);
+        let mut state = state.lock().unwrap();
+        if launch.is_some_and(|launch| {
+            launch.load(Ordering::Acquire)
+                || state
+                    .handle
+                    .as_ref()
+                    .is_some_and(|handle| !Arc::ptr_eq(launch, &handle.stop))
+        }) {
+            return;
+        }
+        state
+            .model
+            .apply(SessionEvent::Output, crate::session::clock::state_now());
+    }
+
     pub(super) fn ingest_output_chunk(
         &self,
         session_id: &str,
@@ -1328,10 +1472,22 @@ impl SessionManager {
         bytes: &[u8],
         events: &dyn SessionEvents,
     ) {
-        self.ingest_output_for_launch(session_id, mission_id, bytes, events, None);
+        self.ingest_plain_output_for_launch(session_id, mission_id, bytes, events, None);
     }
 
+    #[cfg(test)]
     pub(super) fn ingest_output_for_launch(
+        &self,
+        session_id: &str,
+        mission_id: Option<&str>,
+        bytes: &[u8],
+        events: &dyn SessionEvents,
+        launch: Option<&Arc<AtomicBool>>,
+    ) {
+        self.ingest_plain_output_for_launch(session_id, mission_id, bytes, events, launch);
+    }
+
+    pub(super) fn ingest_plain_output_for_launch(
         &self,
         session_id: &str,
         mission_id: Option<&str>,
@@ -1357,7 +1513,7 @@ impl SessionManager {
             state
                 .model
                 .apply(SessionEvent::Output, crate::session::clock::state_now());
-            Self::push_frame(
+            Self::push_plain_frame(
                 &mut state,
                 runner_core::protocol::terminal::TerminalFrame::Output {
                     seq,
@@ -1367,7 +1523,7 @@ impl SessionManager {
             let model = state.terminal.clone();
             let observation = model
                 .as_ref()
-                .and_then(|model| model.feed_output(seq, bytes));
+                .and_then(|model| model.feed_plain_text(seq, bytes));
             let program_statuses = model
                 .as_ref()
                 .map(|model| model.take_program_statuses())
@@ -1375,6 +1531,94 @@ impl SessionManager {
             let launch = state.handle.as_ref().map(|handle| handle.stop.clone());
             (model, observation, program_statuses, launch)
         };
+        self.finish_ingested_output(
+            session_id,
+            model,
+            observation,
+            program_statuses,
+            launch,
+            events,
+        );
+    }
+
+    pub(super) fn ingest_forwarded_for_launch(
+        &self,
+        session_id: &str,
+        mission_id: Option<&str>,
+        items: &[runner_terminal::kitty::ForwardedItem],
+        events: &dyn SessionEvents,
+        launch: Option<&Arc<AtomicBool>>,
+    ) {
+        let _ = mission_id;
+        let state = self.session_state_or_insert(session_id);
+        let (model, observation, program_statuses, launch) = {
+            let mut state = state.lock().unwrap();
+            if launch.is_some_and(|launch| {
+                launch.load(Ordering::Acquire)
+                    || state
+                        .handle
+                        .as_ref()
+                        .is_some_and(|handle| !Arc::ptr_eq(launch, &handle.stop))
+            }) {
+                return;
+            }
+            let first_seq = state.output_seq + 1;
+            state
+                .model
+                .apply(SessionEvent::Output, crate::session::clock::state_now());
+            let model = state.terminal.clone();
+            let (observation, program_statuses) = if let Some(model) = model.as_ref() {
+                let (observation, frames, last_seq) = model.feed_forwarded(first_seq, items);
+                state.output_seq = state.output_seq.max(last_seq);
+                for (offset, bytes) in frames.into_iter().enumerate() {
+                    let seq = first_seq + offset as u64;
+                    Self::push_frame(
+                        &mut state,
+                        runner_core::protocol::terminal::TerminalFrame::Output { seq, bytes },
+                    );
+                }
+                (observation, model.take_program_statuses())
+            } else {
+                state.output_seq = first_seq;
+                let mut text = Vec::new();
+                for item in items {
+                    if let runner_terminal::kitty::ForwardedItem::Text(bytes) = item {
+                        text.extend_from_slice(bytes);
+                    }
+                }
+                if !text.is_empty() {
+                    Self::push_plain_frame(
+                        &mut state,
+                        runner_core::protocol::terminal::TerminalFrame::Output {
+                            seq: first_seq,
+                            bytes: text,
+                        },
+                    );
+                }
+                (None, Vec::new())
+            };
+            let launch = state.handle.as_ref().map(|handle| handle.stop.clone());
+            (model, observation, program_statuses, launch)
+        };
+        self.finish_ingested_output(
+            session_id,
+            model,
+            observation,
+            program_statuses,
+            launch,
+            events,
+        );
+    }
+
+    fn finish_ingested_output(
+        &self,
+        session_id: &str,
+        model: Option<Arc<runner_terminal::terminal::TerminalModel>>,
+        observation: Option<InputObservation>,
+        program_statuses: Vec<(u64, runner_terminal::program_status::Update)>,
+        launch: Option<Arc<AtomicBool>>,
+        events: &dyn SessionEvents,
+    ) {
         if let Some(model) = model {
             model.publish_input(observation);
         }

@@ -622,6 +622,14 @@ impl SessionManager {
             return Err(Error::msg("runnerd is stopping"));
         }
         let status_hooks_enabled = crate::runtimes::status_hooks_enabled(&spec.env);
+        if let Some(cell) = self
+            .latest_requested_cell_size(session_id)
+            .or_else(|| self.last_desktop_cell_size())
+        {
+            spec.initial_cell_size = Some(cell);
+        }
+        let initial_cell_size = spec.initial_cell_size;
+        let session_tmpdir = super::spawn_spec::session_tmpdir(&spec.env);
         let (rt_session, output) = match self.spawn_runtime(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -746,6 +754,7 @@ impl SessionManager {
             },
             resume_emit_ctx.clone(),
             Some(initial_size),
+            initial_cell_size,
             &pool,
             &events,
         );
@@ -795,6 +804,7 @@ impl SessionManager {
             snap.role_id.is_some(),
             resume_emit_ctx,
             app_data_dir.to_path_buf(),
+            session_tmpdir,
         );
         self.install_forwarder(session_id, forwarder);
 

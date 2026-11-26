@@ -504,31 +504,38 @@ impl Client {
         route.input(generation, session, bytes).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn queue_viewport(
         &self,
         computer: String,
         target: String,
         cols: u16,
         rows: u16,
+        cell_width: u16,
+        cell_height: u16,
     ) -> Result<()> {
         let routes = self.0.routes.lock().await;
         let route = routes
             .values()
             .find(|r| r.computer == computer && r.ready.load(std::sync::atomic::Ordering::Acquire))
             .ok_or("Remote computer is reconnecting; viewport was discarded.")?;
-        route.viewport(target, cols, rows);
+        route.viewport(target, cols, rows, cell_width, cell_height);
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn viewport(
         &self,
         computer: String,
         session: String,
         cols: u16,
         rows: u16,
+        cell_width: u16,
+        cell_height: u16,
         take: bool,
     ) -> Result<()> {
         let route = self.route(&computer).await?;
+        let (cell_width, cell_height) = wire_cell_size(cell_width, cell_height);
         route
             .request(move |id| {
                 let viewport = c::ViewportRequest {
@@ -536,6 +543,8 @@ impl Client {
                     session,
                     cols,
                     rows,
+                    cell_width,
+                    cell_height,
                 };
                 if take {
                     c::ClientMessage::TakeControl(viewport)
@@ -548,12 +557,15 @@ impl Client {
             .map_err(|error| error.message)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn claim_control(
         &self,
         computer: String,
         session: String,
         cols: u16,
         rows: u16,
+        cell_width: u16,
+        cell_height: u16,
     ) -> Result<()> {
         let route = self.route(&computer).await?;
         let (reply, receive) = oneshot::channel();
@@ -563,6 +575,8 @@ impl Client {
                 session,
                 cols,
                 rows,
+                cell_width,
+                cell_height,
                 reply,
             })
             .await?;
@@ -573,6 +587,10 @@ impl Client {
             .map(|_| ())
             .map_err(|error| error.message)
     }
+}
+pub(super) fn wire_cell_size(width: u16, height: u16) -> (Option<u16>, Option<u16>) {
+    runner_core::protocol::terminal::normalize_cell_size(width, height)
+        .map_or((None, None), |(w, h)| (Some(w), Some(h)))
 }
 fn pairing_label(name: &str) -> &str {
     let mut end = name.len().min(64);

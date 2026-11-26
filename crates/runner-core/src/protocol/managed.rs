@@ -301,8 +301,17 @@ impl Transport for ManagedTransport {
     fn input(&self, id: &str, bytes: &[u8]) -> Result<(), ClientError> {
         self.connected()?.input(id, bytes)
     }
-    fn resize(&self, id: &str, origin: u64, cols: u16, rows: u16) {
-        self.active().resize(id, origin, cols, rows);
+    fn resize(
+        &self,
+        id: &str,
+        origin: u64,
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+    ) {
+        self.active()
+            .resize(id, origin, cols, rows, cell_width, cell_height);
     }
     fn observe_terminals(&self, observer: Weak<dyn TerminalLifecycle>) {
         *self.observer.lock().unwrap() = Some(observer);

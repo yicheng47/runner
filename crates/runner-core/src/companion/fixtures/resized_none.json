@@ -4,6 +4,8 @@
   "seq": 11,
   "cols": 100,
   "rows": 30,
+  "cellWidth": 0,
+  "cellHeight": 0,
   "controller": {
     "kind": "none"
   }

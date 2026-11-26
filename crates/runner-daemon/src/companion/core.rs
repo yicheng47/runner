@@ -75,6 +75,7 @@ pub trait Core: Send + Sync {
         channel: u64,
         name: &str,
         size: (u16, u16),
+        cell_size: (u16, u16),
         control: Control,
     ) -> Result<()>;
     fn input(&self, session: &str, channel: u64, bytes: &[u8]) -> Result<()>;
@@ -217,6 +218,7 @@ impl Core for DaemonCore {
         channel: u64,
         name: &str,
         size: (u16, u16),
+        cell_size: (u16, u16),
         control: Control,
     ) -> Result<()> {
         let core = self.terminal(session)?;
@@ -227,6 +229,8 @@ impl Core for DaemonCore {
                 name,
                 size.0,
                 size.1,
+                cell_size.0,
+                cell_size.1,
                 matches!(control, Control::Take),
                 matches!(control, Control::Viewport),
                 &core.db,
@@ -1231,7 +1235,7 @@ mod tests {
             .prepare_unlisted_terminal("s1", (80, 24), &core.db, &events_iface)
             .unwrap();
         core.sessions
-            .browser_resize("s1", 1, "Runner", 80, 24, true, false, &core.db)
+            .browser_resize("s1", 1, "Runner", 80, 24, 0, 0, true, false, &core.db)
             .unwrap();
         core.sessions.test_attach_live("s1", "");
         let input_rx = core.sessions.record_terminal_input("s1");

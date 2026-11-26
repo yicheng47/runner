@@ -285,6 +285,8 @@ impl SessionManager {
             return Err(Error::msg("runnerd is stopping"));
         }
         let status_hooks_enabled = crate::runtimes::status_hooks_enabled(&spec.env);
+        let initial_cell_size = spec.initial_cell_size;
+        let session_tmpdir = super::spawn_spec::session_tmpdir(&spec.env);
         let (rt_session, output) = match self.spawn_runtime(spec) {
             Ok(p) => p,
             Err(e) => {
@@ -382,6 +384,7 @@ impl SessionManager {
             },
             None,
             initial_size,
+            initial_cell_size,
             &pool,
             &events,
         );
@@ -417,6 +420,7 @@ impl SessionManager {
             emit_activity,
             None, // direct chats are off-bus — no log to append session_status to
             app_data_dir.to_path_buf(),
+            session_tmpdir,
         );
         self.install_forwarder(&session_id, forwarder);
 

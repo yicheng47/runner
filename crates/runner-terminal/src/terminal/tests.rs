@@ -316,6 +316,8 @@ fn reconnect_cancels_an_idle_subscription_replaced_by_resync() {
                     seq: 0,
                     cols: 80,
                     rows: 24,
+                    cell_width: 0,
+                    cell_height: 0,
                     bytes: Vec::new(),
                     unfinished_len: 0,
                     preceding_char: None,
@@ -527,6 +529,8 @@ impl runner_core::protocol::Transport for ScriptedHost {
                 seq: 0,
                 cols: 80,
                 rows: 24,
+                cell_width: 0,
+                cell_height: 0,
                 bytes: Vec::new(),
                 unfinished_len: 0,
                 preceding_char: None,
@@ -776,6 +780,8 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
                     seq: 0,
                     cols: 20,
                     rows: 5,
+                    cell_width: 0,
+                    cell_height: 0,
                     bytes: Vec::new(),
                     unfinished_len: 0,
                     preceding_char: None,
@@ -816,7 +822,7 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
     assert_eq!(mirror.scroll_state().display_offset, 0);
     assert_eq!(start.moved_since(mirror.scroll_mark()), Some(13));
 
-    mirror.resize_local(20, 5);
+    mirror.resize_local(20, 5, crate::kitty::CellSize::ZERO);
     assert_eq!(start.moved_since(mirror.scroll_mark()), Some(13));
 
     // A tab that wraps a full bottom row scrolls a held viewport too.
@@ -859,6 +865,8 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
             seq: 11,
             cols: 24,
             rows: 5,
+            cell_width: 0,
+            cell_height: 0,
             controller: Default::default(),
         })
         .unwrap();
@@ -1565,6 +1573,8 @@ fn snapshot_mirror(seq: u64, chunks: &[&[u8]]) -> Arc<TerminalMirror> {
         seq,
         cols: 80,
         rows: 24,
+        cell_width: 0,
+        cell_height: 0,
         bytes: crate::snapshot::serialize(&term, unfinished),
         unfinished_len: unfinished.len(),
         preceding_char: parser.processor.preceding_char(),
@@ -3420,6 +3430,8 @@ fn mirror_restore_preserves_graphics_and_mode_1016() {
         seq: 1,
         cols: 20,
         rows: 5,
+        cell_width: 0,
+        cell_height: 0,
         bytes,
         unfinished_len: 0,
         preceding_char: None,

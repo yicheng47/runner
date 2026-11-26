@@ -21,12 +21,17 @@ impl SessionManager {
     /// any live session until the process exits.
     pub fn spawn_unlisted(
         self: &Arc<Self>,
-        spec: SpawnSpec,
+        mut spec: SpawnSpec,
         pool: &DbPool,
         events: Arc<dyn SessionEvents>,
     ) -> Result<std::sync::mpsc::Receiver<Option<i32>>> {
         let session_id = spec.session_id.clone();
         let initial_size = spec.initial_size;
+        if spec.initial_cell_size.is_none() {
+            spec.initial_cell_size = self.last_desktop_cell_size();
+        }
+        let initial_cell_size = spec.initial_cell_size;
+        let session_tmpdir = super::spawn_spec::session_tmpdir(&spec.env);
         let spawning = self.shutdown.read().unwrap();
         if *spawning {
             return Err(Error::msg("runnerd is stopping"));
@@ -50,6 +55,7 @@ impl SessionManager {
             },
             None,
             initial_size,
+            initial_cell_size,
             pool,
             &events,
         );
@@ -57,12 +63,17 @@ impl SessionManager {
         let manager = Arc::clone(self);
         let forwarder_id = session_id.clone();
         let forwarder = thread::spawn(move || {
+            let mut kitty_scanner = runner_terminal::kitty::Scanner::new();
+            let temp_dirs =
+                runner_terminal::kitty::TempDirs::with_session_tmpdir(session_tmpdir.as_deref());
             while !stop.load(Ordering::Relaxed) {
                 match output.recv_timeout(Duration::from_millis(500)) {
-                    Ok(RuntimeOutput::Stream(bytes)) => manager.ingest_output_for_launch(
+                    Ok(RuntimeOutput::Stream(bytes)) => manager.forward_stream_bytes(
                         &forwarder_id,
                         None,
                         &bytes,
+                        &mut kitty_scanner,
+                        &temp_dirs,
                         events.as_ref(),
                         Some(&stop),
                     ),

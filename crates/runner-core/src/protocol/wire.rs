@@ -195,6 +195,12 @@ pub fn snapshot_header(id: u64, subscriber: u64, snapshot: &TerminalSnapshot) ->
         .extend_from_slice(&snapshot.rows.to_le_bytes());
     frame
         .payload
+        .extend_from_slice(&snapshot.cell_width.to_le_bytes());
+    frame
+        .payload
+        .extend_from_slice(&snapshot.cell_height.to_le_bytes());
+    frame
+        .payload
         .extend_from_slice(&(snapshot.unfinished_len as u64).to_le_bytes());
     frame.payload.extend_from_slice(
         &snapshot

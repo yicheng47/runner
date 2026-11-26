@@ -36,7 +36,14 @@ impl SessionRuntime for InertRuntime {
         Err(RuntimeError::Msg("unused test runtime".into()))
     }
 
-    fn resize(&self, _session: &RuntimeSession, _cols: u16, _rows: u16) -> RuntimeResult<()> {
+    fn resize(
+        &self,
+        _session: &RuntimeSession,
+        _cols: u16,
+        _rows: u16,
+        _pixel_width: u16,
+        _pixel_height: u16,
+    ) -> RuntimeResult<()> {
         Err(RuntimeError::Msg("unused test runtime".into()))
     }
 

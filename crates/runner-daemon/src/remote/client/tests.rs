@@ -499,10 +499,11 @@ impl crate::companion::core::Core for TestCore {
         channel: u64,
         name: &str,
         size: (u16, u16),
+        cell_size: (u16, u16),
         control: crate::companion::core::Control,
     ) -> crate::companion::core::Result<()> {
         if let Some(core) = self.backend.get() {
-            return core.resize(session, channel, name, size, control);
+            return core.resize(session, channel, name, size, cell_size, control);
         }
         let mode = match control {
             crate::companion::core::Control::Take => "take",
@@ -592,6 +593,8 @@ async fn terminal_attachment_maps_snapshot_output_resize_input_and_control() {
         session: "session".into(),
         cols: 100,
         rows: 40,
+        cell_width: 0,
+        cell_height: 0,
         take_control: true,
     };
     let mut attachment = fixture.client.attach(config).await.unwrap();
@@ -610,6 +613,8 @@ async fn terminal_attachment_maps_snapshot_output_resize_input_and_control() {
         seq: 2,
         cols: 120,
         rows: 50,
+        cell_width: 0,
+        cell_height: 0,
         controller: TerminalController::None,
     })
     .unwrap();
@@ -648,12 +653,12 @@ async fn terminal_attachment_maps_snapshot_output_resize_input_and_control() {
         .unwrap();
     fixture
         .client
-        .viewport("2".into(), "session".into(), 110, 45, true)
+        .viewport("2".into(), "session".into(), 110, 45, 0, 0, true)
         .await
         .unwrap();
     fixture
         .client
-        .viewport("2".into(), "session".into(), 90, 30, false)
+        .viewport("2".into(), "session".into(), 90, 30, 0, 0, false)
         .await
         .unwrap();
     assert_eq!(
@@ -1234,6 +1239,8 @@ async fn a_client_without_credit_does_not_stall_a_second_client() {
                 session: "session".into(),
                 cols: 80,
                 rows: 24,
+                cell_width: None,
+                cell_height: None,
                 control: c::ControlMode::IfFree,
                 history: None,
             }))
@@ -1267,6 +1274,8 @@ async fn dropped_terminal_reconnects_with_snapshot_and_does_not_replay_input() {
         session: "session".into(),
         cols: 80,
         rows: 24,
+        cell_width: 0,
+        cell_height: 0,
         take_control: true,
     };
     let mut attachment = fixture.client.attach(config.clone()).await.unwrap();
@@ -1277,7 +1286,7 @@ async fn dropped_terminal_reconnects_with_snapshot_and_does_not_replay_input() {
         .unwrap();
     fixture
         .client
-        .viewport("2".into(), "session".into(), 80, 24, false)
+        .viewport("2".into(), "session".into(), 80, 24, 0, 0, false)
         .await
         .unwrap();
     let mut events = fixture.client.0.events.subscribe();
@@ -1589,6 +1598,8 @@ fn terminal_config() -> RemoteTerminal {
         session: "session".into(),
         cols: 80,
         rows: 24,
+        cell_width: 0,
+        cell_height: 0,
         take_control: true,
     }
 }
@@ -1609,6 +1620,8 @@ async fn a_joining_subscriber_replays_snapshot_output_and_resize_without_invalid
         seq: 2,
         cols: 120,
         rows: 50,
+        cell_width: 0,
+        cell_height: 0,
         controller: TerminalController::None,
     })
     .unwrap();
@@ -1703,13 +1716,13 @@ async fn reconnect_uses_the_latest_viewport_from_ipc_resize_and_take_control() {
         if take {
             fixture
                 .client
-                .viewport("2".into(), "session".into(), 120, 50, true)
+                .viewport("2".into(), "session".into(), 120, 50, 0, 0, true)
                 .await
                 .unwrap();
         } else {
             fixture
                 .client
-                .queue_viewport("2".into(), "session".into(), 120, 50)
+                .queue_viewport("2".into(), "session".into(), 120, 50, 0, 0)
                 .await
                 .unwrap();
         }
@@ -2135,6 +2148,8 @@ async fn ipc_recovery_after_more_than_64_tiny_frames_settles_and_preserves_conte
                     seq: index + 1,
                     cols: 80,
                     rows: 24,
+                    cell_width: 0,
+                    cell_height: 0,
                     controller: TerminalController::Desktop,
                 }
             };

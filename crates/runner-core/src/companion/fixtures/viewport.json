@@ -3,5 +3,7 @@
   "id": 22,
   "session": "01M60000000000000000000000",
   "cols": 100,
-  "rows": 30
+  "rows": 30,
+  "cellWidth": 16,
+  "cellHeight": 32
 }

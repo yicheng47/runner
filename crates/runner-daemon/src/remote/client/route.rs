@@ -100,6 +100,8 @@ pub(super) enum Command {
         session: String,
         cols: u16,
         rows: u16,
+        cell_width: u16,
+        cell_height: u16,
         reply: oneshot::Sender<runner_core::protocol::ClientResult<serde_json::Value>>,
     },
     Follow(u64, bool),
@@ -124,7 +126,15 @@ pub(super) struct Handle {
     events: crate::events::EventChannel,
 }
 impl Handle {
-    pub fn viewport(&self, session: String, cols: u16, rows: u16) {
+    pub fn viewport(
+        &self,
+        session: String,
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+    ) {
+        let (cell_width, cell_height) = super::wire_cell_size(cell_width, cell_height);
         self.viewports.lock().unwrap().insert(
             session.clone(),
             c::ViewportRequest {
@@ -132,6 +142,8 @@ impl Handle {
                 session,
                 cols,
                 rows,
+                cell_width,
+                cell_height,
             },
         );
         self.viewport_ready.notify_one();
@@ -959,8 +971,24 @@ async fn run(
                         last_use = Instant::now();
                         match command.ok_or("Remote channel closed")? {
                             Command::Request(message, reply) => { terminals.viewport(&message); session.request(message, reply); },
-                            Command::Claim { session: target, cols, rows, reply } => {
-                                terminals.claim(target, cols, rows, reply, &mut session, &handle);
+                            Command::Claim {
+                                session: target,
+                                cols,
+                                rows,
+                                cell_width,
+                                cell_height,
+                                reply,
+                            } => {
+                                terminals.claim(
+                                    target,
+                                    cols,
+                                    rows,
+                                    cell_width,
+                                    cell_height,
+                                    reply,
+                                    &mut session,
+                                    &handle,
+                                );
                             }
                             Command::Follow(owner, follow) => {
                                 if follow {
@@ -1235,6 +1263,8 @@ mod tests {
                     session: "session".into(),
                     cols: 80,
                     rows: 24,
+                    cell_width: 0,
+                    cell_height: 0,
                     take_control: true,
                 },
                 reply,
@@ -1258,9 +1288,9 @@ mod tests {
         let (_, commands) = mpsc::channel(32);
         let mut terminals = terminal::Terminals::default();
         for cols in 80..1000 {
-            handle.viewport("terminal".into(), cols, 30);
+            handle.viewport("terminal".into(), cols, 30, 0, 0);
         }
-        handle.viewport("other".into(), 100, 40);
+        handle.viewport("other".into(), 100, 40, 0, 0);
         assert_eq!(handle.viewports.lock().unwrap().len(), 2);
         assert_eq!(handle.viewports.lock().unwrap()["terminal"].cols, 999);
         session
@@ -1269,6 +1299,8 @@ mod tests {
                 session: "terminal".into(),
                 cols: 80,
                 rows: 24,
+                cell_width: None,
+                cell_height: None,
             }))
             .unwrap();
         session
@@ -1277,6 +1309,8 @@ mod tests {
                 session: "terminal".into(),
                 cols: 81,
                 rows: 25,
+                cell_width: None,
+                cell_height: None,
             }))
             .unwrap();
         session
@@ -1327,6 +1361,8 @@ mod tests {
                     session: "terminal".into(),
                     cols: 80,
                     rows: 24,
+                    cell_width: 0,
+                    cell_height: 0,
                     take_control: true,
                 },
                 reply,
@@ -1338,7 +1374,7 @@ mod tests {
         old.records.queue(vec![42; c::MAX_MESSAGE_SIZE]).unwrap();
         old.records.next_frame().unwrap().unwrap();
         assert!(old.records.sending());
-        handle.viewport("terminal".into(), 120, 50);
+        handle.viewport("terminal".into(), 120, 50, 0, 0);
         old.viewport(&handle, &mut terminals, &commands).unwrap();
         assert_eq!(handle.viewports.lock().unwrap().len(), 1);
         terminals.disconnected("test route loss");
@@ -1374,6 +1410,8 @@ mod tests {
                             session: "terminal".into(),
                             cols: 80,
                             rows: 24,
+                            cell_width: 0,
+                            cell_height: 0,
                             take_control: true,
                         },
                         reply,
@@ -1389,13 +1427,15 @@ mod tests {
                             session: "terminal".into(),
                             cols: 80,
                             rows: 24,
+                            cell_width: None,
+                            cell_height: None,
                         }),
                         reply,
                     ))
                     .await
                     .unwrap();
             }
-            handle.viewport("terminal".into(), 120, 50);
+            handle.viewport("terminal".into(), 120, 50, 0, 0);
             session
                 .viewport(&handle, &mut terminals, &commands)
                 .unwrap();
@@ -1626,5 +1666,115 @@ mod tests {
             assert!(error.contains(&code.to_string()));
             assert!(!error.contains("private-body-canary"));
         }
+    }
+
+    #[tokio::test]
+    async fn snapshot_assembly_and_initial_resize_reject_mismatched_cell_sizes() {
+        // 1. Continuation chunk with different cell size is rejected.
+        let (mut first_session, handle) = session().await;
+        let mut terminals = terminal::Terminals::default();
+        let (reply, _) = oneshot::channel();
+        terminals
+            .attach(
+                RemoteTerminal {
+                    computer: "2".into(),
+                    session: "s".into(),
+                    cols: 80,
+                    rows: 24,
+                    cell_width: 16,
+                    cell_height: 32,
+                    take_control: true,
+                },
+                reply,
+                &mut first_session,
+                &handle,
+            )
+            .unwrap();
+        terminals
+            .message(
+                c::HostMessage::Snapshot(c::Snapshot {
+                    session: "s".into(),
+                    seq: 1,
+                    cols: 80,
+                    rows: 24,
+                    cell_width: 16,
+                    cell_height: 32,
+                    data: c::TerminalBytes(b"part1".to_vec()),
+                    more: true,
+                    preceding_char: None,
+                    unfinished_len: 0,
+                }),
+                &handle,
+            )
+            .unwrap();
+        assert!(terminals
+            .message(
+                c::HostMessage::Snapshot(c::Snapshot {
+                    session: "s".into(),
+                    seq: 1,
+                    cols: 80,
+                    rows: 24,
+                    cell_width: 18,
+                    cell_height: 32,
+                    data: c::TerminalBytes(b"part2".to_vec()),
+                    more: false,
+                    preceding_char: None,
+                    unfinished_len: 0,
+                }),
+                &handle,
+            )
+            .is_err());
+
+        // 2. Initial Resized with different cell size from assembled Snapshot is rejected.
+        let (mut second_session, handle) = session().await;
+        let mut terminals = terminal::Terminals::default();
+        let (reply, _) = oneshot::channel();
+        terminals
+            .attach(
+                RemoteTerminal {
+                    computer: "2".into(),
+                    session: "s".into(),
+                    cols: 80,
+                    rows: 24,
+                    cell_width: 16,
+                    cell_height: 32,
+                    take_control: true,
+                },
+                reply,
+                &mut second_session,
+                &handle,
+            )
+            .unwrap();
+        terminals
+            .message(
+                c::HostMessage::Snapshot(c::Snapshot {
+                    session: "s".into(),
+                    seq: 1,
+                    cols: 80,
+                    rows: 24,
+                    cell_width: 16,
+                    cell_height: 32,
+                    data: c::TerminalBytes(b"all".to_vec()),
+                    more: false,
+                    preceding_char: None,
+                    unfinished_len: 0,
+                }),
+                &handle,
+            )
+            .unwrap();
+        assert!(terminals
+            .message(
+                c::HostMessage::Resized(c::Resized {
+                    session: "s".into(),
+                    seq: 1,
+                    cols: 80,
+                    rows: 24,
+                    cell_width: 16,
+                    cell_height: 30,
+                    controller: c::Controller::You,
+                }),
+                &handle,
+            )
+            .is_err());
     }
 }

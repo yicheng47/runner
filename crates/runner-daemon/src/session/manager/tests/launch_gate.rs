@@ -124,6 +124,7 @@ fn custom_claude_settings_do_not_prepare_a_status_watcher() {
             bundled_bin_dir: None,
             shell_path: None,
             initial_size: Some((80, 24)),
+            initial_cell_size: None,
         };
         mgr_with_fake(None, fake_runtime()).apply_runtime_args(
             &mut spec,
@@ -162,6 +163,7 @@ fn spawn_argv_injects_runtime_settings_for_fresh_and_resume() {
             bundled_bin_dir: None,
             shell_path: None,
             initial_size: Some((80, 24)),
+            initial_cell_size: None,
         };
         mgr_with_fake(None, fake_runtime()).apply_runtime_args(
             &mut spec,

@@ -176,6 +176,7 @@ struct PendingAttach {
 #[derive(Default)]
 struct FrameState {
     frames: VecDeque<TerminalFrame>,
+    bytes: usize,
     closed: bool,
     output: Vec<u8>,
 }
@@ -185,17 +186,28 @@ struct Frames {
     ready: Condvar,
 }
 impl Frames {
+    fn frame_bytes(frame: &TerminalFrame) -> usize {
+        match frame {
+            TerminalFrame::Output { bytes, .. } => bytes.len(),
+            TerminalFrame::Resized { .. } | TerminalFrame::Resync => 0,
+        }
+    }
     fn push(&self, frame: TerminalFrame) {
         let mut state = self.state.lock().unwrap();
         if state.closed {
             return;
         }
-        if state.frames.len() == TERMINAL_QUEUE_CAPACITY {
+        let size = Self::frame_bytes(&frame);
+        if state.frames.len() == TERMINAL_QUEUE_CAPACITY
+            || state.bytes.saturating_add(size) > TERMINAL_QUEUE_MAX_BYTES
+        {
             state.frames.clear();
+            state.bytes = 0;
             state.output.clear();
             state.frames.push_back(TerminalFrame::Resync);
             state.closed = true;
         } else {
+            state.bytes += size;
             state.frames.push_back(frame);
         }
         self.ready.notify_all();
@@ -228,6 +240,7 @@ impl TerminalSubscription for Subscription {
         let mut state = self.queue.state.lock().unwrap();
         loop {
             if let Some(frame) = state.frames.pop_front() {
+                state.bytes = state.bytes.saturating_sub(Frames::frame_bytes(&frame));
                 return Ok(frame);
             }
             if state.closed {
@@ -520,6 +533,8 @@ impl SocketTransport {
                 };
                 let cols = binary.u16()?;
                 let rows = binary.u16()?;
+                let cell_width = binary.u16()?;
+                let cell_height = binary.u16()?;
                 let unfinished_len = binary.u64()? as usize;
                 let preceding_char = char::from_u32(binary.u32()?);
                 let controller = serde_json::from_slice(binary.0)?;
@@ -530,6 +545,8 @@ impl SocketTransport {
                         activity,
                         cols,
                         rows,
+                        cell_width,
+                        cell_height,
                         bytes: Vec::new(),
                         unfinished_len,
                         preceding_char,
@@ -588,6 +605,8 @@ impl SocketTransport {
                                 seq: binary.u64()?,
                                 cols: binary.u16()?,
                                 rows: binary.u16()?,
+                                cell_width: binary.u16()?,
+                                cell_height: binary.u16()?,
                                 controller: serde_json::from_slice(binary.0)?,
                             });
                         }
@@ -665,12 +684,22 @@ impl Transport for SocketTransport {
         }
         Ok(())
     }
-    fn resize(&self, session_id: &str, subscriber: u64, cols: u16, rows: u16) {
+    fn resize(
+        &self,
+        session_id: &str,
+        subscriber: u64,
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+    ) {
         let _ordered = self.one_way.lock().unwrap();
         if let Ok(mut payload) = wire::session_payload(session_id) {
             payload.extend_from_slice(&subscriber.to_le_bytes());
             payload.extend_from_slice(&cols.to_le_bytes());
             payload.extend_from_slice(&rows.to_le_bytes());
+            payload.extend_from_slice(&cell_width.to_le_bytes());
+            payload.extend_from_slice(&cell_height.to_le_bytes());
             if let Err(error) = self.send(Frame {
                 kind: wire::RESIZE,
                 payload,
@@ -1025,6 +1054,34 @@ mod tests {
     }
 
     #[test]
+    fn client_terminal_byte_overflow_requests_resync() {
+        let queue = Frames::default();
+        // 3 * 44 MiB = 132 MiB > 128 MiB cap, well below 64 frames.
+        let chunk = 44 * 1024 * 1024;
+        queue.push(TerminalFrame::Output {
+            seq: 1,
+            bytes: vec![0; chunk],
+        });
+        queue.push(TerminalFrame::Output {
+            seq: 2,
+            bytes: vec![0; chunk],
+        });
+        assert!(!queue.state.lock().unwrap().closed);
+        queue.push(TerminalFrame::Output {
+            seq: 3,
+            bytes: vec![0; chunk],
+        });
+        let mut state = queue.state.lock().unwrap();
+        assert!(state.closed);
+        assert_eq!(state.bytes, 0);
+        assert_eq!(state.frames.len(), 1);
+        assert!(matches!(
+            state.frames.pop_front(),
+            Some(TerminalFrame::Resync)
+        ));
+    }
+
+    #[test]
     fn snapshot_header_round_trips_activity_provenance() {
         for activity in [
             Some(crate::protocol::terminal::TerminalSnapshotActivity {
@@ -1042,6 +1099,8 @@ mod tests {
                 seq: 55,
                 cols: 100,
                 rows: 32,
+                cell_width: 18,
+                cell_height: 36,
                 bytes: b"hello".to_vec(),
                 unfinished_len: 0,
                 preceding_char: Some('o'),
@@ -1091,6 +1150,8 @@ mod tests {
             assert_eq!(attachment.snapshot.seq, expected.seq);
             assert_eq!(attachment.snapshot.cols, expected.cols);
             assert_eq!(attachment.snapshot.rows, expected.rows);
+            assert_eq!(attachment.snapshot.cell_width, expected.cell_width);
+            assert_eq!(attachment.snapshot.cell_height, expected.cell_height);
             assert_eq!(attachment.snapshot.bytes, expected.bytes);
             assert_eq!(attachment.snapshot.unfinished_len, expected.unfinished_len);
             assert_eq!(attachment.snapshot.preceding_char, expected.preceding_char);
@@ -1209,6 +1270,8 @@ mod remote_deadline_tests {
                 session: "session".into(),
                 cols: 80,
                 rows: 24,
+                cell_width: 0,
+                cell_height: 0,
             },
         ] {
             assert_eq!(

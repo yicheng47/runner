@@ -69,20 +69,35 @@ impl Transport for InProcessTransport {
             .desktop_input(id, bytes)
             .map_err(|error| ClientError::msg(error.to_string()))
     }
-    fn resize(&self, id: &str, origin: u64, cols: u16, rows: u16) {
+    fn resize(
+        &self,
+        id: &str,
+        origin: u64,
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+    ) {
         if let Some((computer, session)) = runner_core::remote::terminal_target(id) {
             let _ = block_on(self.0.remote.remote_resize(
                 computer.into(),
                 session.into(),
                 cols,
                 rows,
+                cell_width,
+                cell_height,
             ));
             return;
         }
-        let _ = self
-            .0
-            .sessions
-            .resize_terminal(id, origin, cols, rows, &self.0.db);
+        let _ = self.0.sessions.resize_terminal(
+            id,
+            origin,
+            cols,
+            rows,
+            cell_width,
+            cell_height,
+            &self.0.db,
+        );
     }
     fn subscribe(&self) -> Box<dyn EventSubscription> {
         Box::new(InProcessEvents(self.0.events.subscribe()))

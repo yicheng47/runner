@@ -705,6 +705,8 @@ fn terminal_history_and_viewport_defaults() {
         session: "s".into(),
         cols: 1,
         rows: 1,
+        cell_width: None,
+        cell_height: None,
     };
     assert_eq!(request.clamped_size(), (20, 8));
     assert_eq!(
@@ -874,6 +876,8 @@ fn browser_sizes_clamp_both_axes_to_the_approved_bounds() {
             session: "test".into(),
             cols,
             rows,
+            cell_width: None,
+            cell_height: None,
             control: ControlMode::Take,
             history: None,
         };
@@ -882,9 +886,74 @@ fn browser_sizes_clamp_both_axes_to_the_approved_bounds() {
             session: "test".into(),
             cols,
             rows,
+            cell_width: None,
+            cell_height: None,
         };
         assert_eq!(attach.clamped_size(), expected);
         assert_eq!(viewport.clamped_size(), expected);
+    }
+}
+
+#[test]
+fn cell_size_fields_round_trip_clamp_and_decode_when_absent() {
+    for name in ["attach", "take_control", "viewport"] {
+        let mut without = fixture(name);
+        without.as_object_mut().unwrap().remove("cellWidth");
+        without.as_object_mut().unwrap().remove("cellHeight");
+        let message = ClientMessage::decode(&serde_json::to_vec(&without).unwrap()).unwrap();
+        match message {
+            ClientMessage::Attach(request) => {
+                assert_eq!(request.cell_width, None);
+                assert_eq!(request.cell_height, None);
+                assert_eq!(request.clamped_cell_size(), (0, 0));
+            }
+            ClientMessage::TakeControl(request) | ClientMessage::Viewport(request) => {
+                assert_eq!(request.cell_width, None);
+                assert_eq!(request.cell_height, None);
+                assert_eq!(request.clamped_cell_size(), (0, 0));
+            }
+            _ => panic!("unexpected variant for {name}"),
+        }
+        let mut bad = fixture(name);
+        bad["cellWidth"] = json!("private-cell-canary");
+        let error = ClientMessage::decode(&serde_json::to_vec(&bad).unwrap()).unwrap_err();
+        assert_eq!(error.code, ErrorCode::BadRequest);
+        assert!(!error.message.contains("private-cell-canary"));
+        assert!(error.message.contains("field cellWidth must be"));
+    }
+
+    for name in ["snapshot", "resized"] {
+        let mut without = fixture(name);
+        without.as_object_mut().unwrap().remove("cellWidth");
+        without.as_object_mut().unwrap().remove("cellHeight");
+        let message: HostMessage = serde_json::from_value(without).unwrap();
+        match message {
+            HostMessage::Snapshot(snapshot) => {
+                assert_eq!((snapshot.cell_width, snapshot.cell_height), (0, 0));
+            }
+            HostMessage::Resized(resized) => {
+                assert_eq!((resized.cell_width, resized.cell_height), (0, 0));
+            }
+            _ => panic!("unexpected variant for {name}"),
+        }
+    }
+
+    for (w, h, expected) in [
+        (None, None, (0, 0)),
+        (Some(0), Some(32), (0, 0)),
+        (Some(16), Some(0), (0, 0)),
+        (Some(16), Some(32), (16, 32)),
+        (Some(2000), Some(5000), (1024, 1024)),
+    ] {
+        let req = ViewportRequest {
+            id: 1,
+            session: "s".into(),
+            cols: 80,
+            rows: 24,
+            cell_width: w,
+            cell_height: h,
+        };
+        assert_eq!(req.clamped_cell_size(), expected);
     }
 }
 

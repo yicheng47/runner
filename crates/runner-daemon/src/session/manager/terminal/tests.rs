@@ -857,7 +857,7 @@ impl SessionRuntime for RecordingRuntime {
         Ok(())
     }
 
-    fn resize(&self, _: &RuntimeSession, _: u16, _: u16) -> RuntimeResult<()> {
+    fn resize(&self, _: &RuntimeSession, _: u16, _: u16, _: u16, _: u16) -> RuntimeResult<()> {
         Ok(())
     }
 
@@ -1540,7 +1540,7 @@ fn user_input_vertical_resize_and_mouse_mode_clear_selection() {
     assert!(terminal.selection_text().is_none());
 
     select();
-    terminal.resize(8, 4);
+    terminal.resize(8, 4, 0, 0);
     assert!(wait_until(Duration::from_secs(2), || terminal.size() == (8, 4)));
     assert!(terminal.selection_text().is_none());
 
@@ -1681,7 +1681,7 @@ fn resizes_neither_release_a_held_update_early_nor_lose_it() {
     let deadline = sync_deadline(&terminal).expect("the redraw is held");
 
     for (cols, rows) in [(30, 6), (12, 3), (24, 5)] {
-        terminal.resize(cols, rows);
+        terminal.resize(cols, rows, 0, 0);
     }
     let resized = screen(&terminal);
     let held_bytes = terminal.sync_state().1;
@@ -1975,11 +1975,22 @@ fn desktop_resize_keeps_the_mirror_at_the_browser_size() {
     let mirror = TerminalMirror::attach(client, "mirror-size".into(), Arc::new(|| {})).unwrap();
     let model = core.sessions.terminal_model("mirror-size").unwrap();
     core.sessions
-        .browser_resize("mirror-size", 1, "Chrome", 37, 29, true, false, &core.db)
+        .browser_resize(
+            "mirror-size",
+            1,
+            "Chrome",
+            37,
+            29,
+            0,
+            0,
+            true,
+            false,
+            &core.db,
+        )
         .unwrap();
     assert!(wait_until(Duration::from_secs(2), || mirror.size() == (37, 29)));
 
-    mirror.resize(96, 32);
+    mirror.resize(96, 32, 0, 0);
     assert_eq!(mirror.size(), (37, 29));
     assert_eq!(model.size(), (37, 29));
     core.sessions
@@ -1998,7 +2009,7 @@ fn desktop_resize_keeps_the_mirror_at_the_browser_size() {
         .output_activity()
         .last_seq
         == 3));
-    mirror.resize(120, 35);
+    mirror.resize(120, 35, 0, 0);
     assert_eq!(mirror.size(), (37, 29));
     mirror.reattach().unwrap();
     assert_eq!(mirror.size(), model.size());
@@ -2018,7 +2029,7 @@ fn desktop_resize_updates_the_origin_mirror_in_frame_order() {
     let model = core.sessions.terminal_model("desktop-size").unwrap();
 
     for (index, (cols, rows)) in [(96, 32), (40, 12), (120, 35)].into_iter().enumerate() {
-        mirror.resize(cols, rows);
+        mirror.resize(cols, rows, 0, 0);
         core.sessions.ingest_output_chunk(
             "desktop-size",
             None,
@@ -2049,7 +2060,7 @@ fn resize_is_broadcast_to_every_subscriber_including_its_origin() {
     let client = crate::daemon::InProcessTransport::client(core.clone());
     let mut origin = client.attach("resize").unwrap();
     let mut other = client.attach("resize").unwrap();
-    client.resize("resize", origin.subscriber_id, 96, 32);
+    client.resize("resize", origin.subscriber_id, 96, 32, 0, 0);
     for attachment in [&mut origin, &mut other] {
         assert!(matches!(
             attachment.frames.recv().unwrap(),
@@ -2128,7 +2139,7 @@ fn browser_controller_follows_the_terminal_size_table() {
         (90, 30)
     );
     core.sessions
-        .browser_resize("control", 1, "First", 10, 2, true, false, &core.db)
+        .browser_resize("control", 1, "First", 10, 2, 0, 0, true, false, &core.db)
         .unwrap();
     assert_eq!(
         core.sessions.terminal_model("control").unwrap().size(),
@@ -2153,17 +2164,17 @@ fn browser_controller_follows_the_terminal_size_table() {
         (20, 8)
     );
     core.sessions
-        .browser_resize("control", 1, "First", 70, 20, false, true, &core.db)
+        .browser_resize("control", 1, "First", 70, 20, 0, 0, false, true, &core.db)
         .unwrap();
     core.sessions
-        .browser_resize("control", 2, "Second", 80, 25, false, true, &core.db)
+        .browser_resize("control", 2, "Second", 80, 25, 0, 0, false, true, &core.db)
         .unwrap();
     assert_eq!(
         core.sessions.terminal_model("control").unwrap().size(),
         (70, 20)
     );
     core.sessions
-        .browser_resize("control", 2, "Second", 80, 25, true, false, &core.db)
+        .browser_resize("control", 2, "Second", 80, 25, 0, 0, true, false, &core.db)
         .unwrap();
     core.sessions.release_browser("control", 1);
     assert_eq!(
@@ -2171,7 +2182,7 @@ fn browser_controller_follows_the_terminal_size_table() {
         runner_core::companion::Controller::You
     );
     core.sessions
-        .browser_resize("control", 1, "First", 50, 10, false, false, &core.db)
+        .browser_resize("control", 1, "First", 50, 10, 0, 0, false, false, &core.db)
         .unwrap();
     assert_eq!(
         core.sessions.terminal_model("control").unwrap().size(),
@@ -2192,17 +2203,17 @@ fn browser_controller_follows_the_terminal_size_table() {
         (80, 25)
     );
     core.sessions
-        .browser_resize("control", 1, "First", 50, 10, false, false, &core.db)
+        .browser_resize("control", 1, "First", 50, 10, 0, 0, false, false, &core.db)
         .unwrap();
     assert_eq!(
         core.sessions.terminal_model("control").unwrap().size(),
         (50, 10)
     );
     core.sessions
-        .take_back_terminal("control", 120, 35, &core.db)
+        .take_back_terminal("control", 120, 35, 0, 0, &core.db)
         .unwrap();
     core.sessions
-        .browser_resize("control", 2, "Second", 80, 25, false, false, &core.db)
+        .browser_resize("control", 2, "Second", 80, 25, 0, 0, false, false, &core.db)
         .unwrap();
     assert_eq!(
         core.sessions.terminal_model("control").unwrap().size(),
@@ -2272,6 +2283,8 @@ fn browser_viewports_clamp_to_the_approved_bounds_without_changing_desktop_sizes
                 "Browser",
                 u16::MAX,
                 u16::MAX,
+                0,
+                0,
                 take,
                 viewport,
                 &core.db,
@@ -2282,7 +2295,7 @@ fn browser_viewports_clamp_to_the_approved_bounds_without_changing_desktop_sizes
             (512, 256)
         );
         core.sessions
-            .browser_resize("bounds", 1, "Browser", 1, 1, false, true, &core.db)
+            .browser_resize("bounds", 1, "Browser", 1, 1, 0, 0, false, true, &core.db)
             .unwrap();
         assert_eq!(
             core.sessions.terminal_model("bounds").unwrap().size(),
@@ -2290,7 +2303,7 @@ fn browser_viewports_clamp_to_the_approved_bounds_without_changing_desktop_sizes
         );
     }
     core.sessions
-        .take_back_terminal("bounds", 10, 4, &core.db)
+        .take_back_terminal("bounds", 10, 4, 0, 0, &core.db)
         .unwrap();
     assert_eq!(
         core.sessions.terminal_model("bounds").unwrap().size(),
@@ -2356,7 +2369,18 @@ fn browser_input_uses_the_terminal_queue_and_the_desktop_input_observation() {
     let model = core.sessions.terminal_model(&spawned.id).unwrap();
     let backend = DaemonCore(Arc::downgrade(&core));
     core.sessions
-        .browser_resize(&spawned.id, 1, "Client", 80, 24, true, false, &core.db)
+        .browser_resize(
+            &spawned.id,
+            1,
+            "Client",
+            80,
+            24,
+            0,
+            0,
+            true,
+            false,
+            &core.db,
+        )
         .unwrap();
     model.publish_input(model.feed_output(1, "\x1b[2;1H❯ Try a task".as_bytes()));
     let before = model.input_reset_guard();
@@ -2445,6 +2469,8 @@ fn companion_snapshot_rep_continuation_fixtures_match_host() {
             seq: snapshot.seq,
             cols: snapshot.cols,
             rows: snapshot.rows,
+            cell_width: snapshot.cell_width,
+            cell_height: snapshot.cell_height,
             data: TerminalBytes(snapshot.bytes),
             more: false,
             preceding_char: snapshot.preceding_char,
@@ -2524,6 +2550,8 @@ async fn companion_backlog_sends_final_snapshot_after_exit_for_both_queue_limits
                 session: spawned.id.clone(),
                 cols: 80,
                 rows: 24,
+                cell_width: None,
+                cell_height: None,
                 control: ControlMode::Take,
                 history: Some(0),
             }))
@@ -2567,7 +2595,7 @@ async fn companion_backlog_sends_final_snapshot_after_exit_for_both_queue_limits
             }
         }
         core.sessions
-            .take_back_terminal(&spawned.id, 512, 100, &core.db)
+            .take_back_terminal(&spawned.id, 512, 100, 0, 0, &core.db)
             .unwrap();
         core.sessions.ingest_output_chunk(
             &spawned.id,
@@ -2701,7 +2729,7 @@ fn split_tab_transfers_all_panes_and_drawer_without_sharing_viewport_sizes() {
     prepare_control_tab(&core, &["other"], &[]);
     let all = ["left", "right", "drawer"];
     core.sessions
-        .browser_resize("left", 1, "First", 100, 30, true, false, &core.db)
+        .browser_resize("left", 1, "First", 100, 30, 0, 0, true, false, &core.db)
         .unwrap();
     for id in all {
         assert_eq!(core.sessions.browser_controller(id, 1), Controller::You);
@@ -2715,20 +2743,20 @@ fn split_tab_transfers_all_panes_and_drawer_without_sharing_viewport_sizes() {
         (80, 24)
     );
     core.sessions
-        .browser_resize("right", 1, "First", 65, 40, false, true, &core.db)
+        .browser_resize("right", 1, "First", 65, 40, 0, 0, false, true, &core.db)
         .unwrap();
     assert_eq!(
         core.sessions.terminal_model("left").unwrap().size(),
         (100, 30)
     );
     core.sessions
-        .browser_resize("right", 2, "Second", 70, 35, true, false, &core.db)
+        .browser_resize("right", 2, "Second", 70, 35, 0, 0, true, false, &core.db)
         .unwrap();
     for id in all {
         assert_eq!(core.sessions.browser_controller(id, 2), Controller::You);
         assert!(core.sessions.browser_input(id, 1, b"stale").is_err());
         core.sessions
-            .browser_resize(id, 1, "First", 200, 60, false, true, &core.db)
+            .browser_resize(id, 1, "First", 200, 60, 0, 0, false, true, &core.db)
             .unwrap();
     }
     assert_eq!(
@@ -2740,7 +2768,7 @@ fn split_tab_transfers_all_panes_and_drawer_without_sharing_viewport_sizes() {
         (70, 35)
     );
     core.sessions
-        .take_back_terminal("left", 110, 42, &core.db)
+        .take_back_terminal("left", 110, 42, 0, 0, &core.db)
         .unwrap();
     for id in all {
         assert_eq!(core.sessions.browser_controller(id, 2), Controller::Desktop);
@@ -2775,10 +2803,10 @@ fn split_tab_detach_tracks_group_streams_and_ignores_stale_owner_cleanup() {
             .unwrap();
     }
     core.sessions
-        .browser_resize("left", 1, "First", 100, 30, true, false, &core.db)
+        .browser_resize("left", 1, "First", 100, 30, 0, 0, true, false, &core.db)
         .unwrap();
     core.sessions
-        .browser_resize("other", 1, "First", 90, 25, true, false, &core.db)
+        .browser_resize("other", 1, "First", 90, 25, 0, 0, true, false, &core.db)
         .unwrap();
     core.sessions
         .browser_attached("drawer", 5, 1, &core.db)
@@ -2827,7 +2855,7 @@ fn split_tab_detach_tracks_group_streams_and_ignores_stale_owner_cleanup() {
         Controller::You
     );
     core.sessions
-        .browser_resize("drawer", 2, "Second", 70, 35, true, false, &core.db)
+        .browser_resize("drawer", 2, "Second", 70, 35, 0, 0, true, false, &core.db)
         .unwrap();
     core.sessions
         .browser_attached("drawer", 6, 2, &core.db)
@@ -2862,7 +2890,7 @@ fn restarted_and_new_split_panes_inherit_the_destination_tab_controller() {
     let tab = prepare_control_tab(&core, &["left", "right"], &[]);
     let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
     core.sessions
-        .browser_resize("left", 1, "First", 100, 30, true, false, &core.db)
+        .browser_resize("left", 1, "First", 100, 30, 0, 0, true, false, &core.db)
         .unwrap();
     let old = core.sessions.attach_terminal("right").unwrap();
     core.sessions
@@ -2908,7 +2936,7 @@ fn restarted_and_new_split_panes_inherit_the_destination_tab_controller() {
         (50, 15)
     );
     core.sessions
-        .browser_resize("left", 2, "Second", 80, 24, true, false, &core.db)
+        .browser_resize("left", 2, "Second", 80, 24, 0, 0, true, false, &core.db)
         .unwrap();
     core.sessions
         .browser_attached("right", replacement.subscriber_id, 2, &core.db)
@@ -2932,7 +2960,7 @@ fn restarted_and_new_split_panes_inherit_the_destination_tab_controller() {
         Controller::None
     );
     core.sessions
-        .take_back_terminal("left", 110, 42, &core.db)
+        .take_back_terminal("left", 110, 42, 0, 0, &core.db)
         .unwrap();
     core.sessions
         .prepare_unlisted_terminal("right", (65, 25), &core.db, &events)
@@ -2953,7 +2981,7 @@ fn moving_a_pane_adopts_its_destination_without_old_tab_teardown_releasing_it() 
         let source = prepare_control_tab(&core, &["left", "moving"], &[]);
         let destination = prepare_control_tab(&core, &["other"], &[]);
         core.sessions
-            .browser_resize("left", 1, "Source", 100, 30, true, false, &core.db)
+            .browser_resize("left", 1, "Source", 100, 30, 0, 0, true, false, &core.db)
             .unwrap();
         core.sessions
             .browser_resize(
@@ -2962,6 +2990,8 @@ fn moving_a_pane_adopts_its_destination_without_old_tab_teardown_releasing_it() 
                 "Destination",
                 70,
                 25,
+                0,
+                0,
                 true,
                 false,
                 &core.db,
@@ -3055,7 +3085,7 @@ fn split_tab_if_free_claims_and_resizes_free_or_same_channel_panes_without_steal
     let core = test_core(temp.path());
     prepare_control_tab(&core, &["left", "right"], &[]);
     core.sessions
-        .browser_resize("left", 1, "First", 90, 28, true, false, &core.db)
+        .browser_resize("left", 1, "First", 90, 28, 0, 0, true, false, &core.db)
         .unwrap();
     core.sessions.release_browser_channel(1);
     assert_eq!(
@@ -3069,10 +3099,32 @@ fn split_tab_if_free_claims_and_resizes_free_or_same_channel_panes_without_steal
 
     // Reconnecting with IfFree claims the free split tab and resizes every pane.
     core.sessions
-        .browser_resize("left", 2, "Reconnected", 104, 31, false, false, &core.db)
+        .browser_resize(
+            "left",
+            2,
+            "Reconnected",
+            104,
+            31,
+            0,
+            0,
+            false,
+            false,
+            &core.db,
+        )
         .unwrap();
     core.sessions
-        .browser_resize("right", 2, "Reconnected", 72, 39, false, false, &core.db)
+        .browser_resize(
+            "right",
+            2,
+            "Reconnected",
+            72,
+            39,
+            0,
+            0,
+            false,
+            false,
+            &core.db,
+        )
         .unwrap();
     assert_eq!(core.sessions.browser_controller("left", 2), Controller::You);
     assert_eq!(
@@ -3096,7 +3148,7 @@ fn split_tab_if_free_claims_and_resizes_free_or_same_channel_panes_without_steal
         Controller::None
     );
     core.sessions
-        .browser_resize("right", 3, "Other", 60, 20, false, false, &core.db)
+        .browser_resize("right", 3, "Other", 60, 20, 0, 0, false, false, &core.db)
         .unwrap();
     assert_eq!(
         core.sessions.browser_controller("right", 2),
@@ -3105,7 +3157,18 @@ fn split_tab_if_free_claims_and_resizes_free_or_same_channel_panes_without_steal
     assert_eq!(core.sessions.browser_controller("left", 2), Controller::You);
 
     core.sessions
-        .browser_resize("right", 2, "Reconnected", 76, 41, false, false, &core.db)
+        .browser_resize(
+            "right",
+            2,
+            "Reconnected",
+            76,
+            41,
+            0,
+            0,
+            false,
+            false,
+            &core.db,
+        )
         .unwrap();
     assert_eq!(
         core.sessions.browser_controller("right", 2),
@@ -3117,10 +3180,21 @@ fn split_tab_if_free_claims_and_resizes_free_or_same_channel_panes_without_steal
     );
 
     core.sessions
-        .take_back_terminal("left", 110, 42, &core.db)
+        .take_back_terminal("left", 110, 42, 0, 0, &core.db)
         .unwrap();
     core.sessions
-        .browser_resize("right", 2, "Reconnected", 60, 20, false, false, &core.db)
+        .browser_resize(
+            "right",
+            2,
+            "Reconnected",
+            60,
+            20,
+            0,
+            0,
+            false,
+            false,
+            &core.db,
+        )
         .unwrap();
     assert_eq!(
         core.sessions.browser_controller("left", 2),
@@ -3143,7 +3217,18 @@ fn split_tab_if_free_claims_and_resizes_free_or_same_channel_panes_without_steal
         .prepare_unlisted_terminal("split-client-owned", (80, 24), &core.db, &events)
         .unwrap();
     core.sessions
-        .browser_resize("left", 2, "Reconnected", 104, 31, true, false, &core.db)
+        .browser_resize(
+            "left",
+            2,
+            "Reconnected",
+            104,
+            31,
+            0,
+            0,
+            true,
+            false,
+            &core.db,
+        )
         .unwrap();
     crate::ops::node::node_tab_upsert(
         &core,
@@ -3163,6 +3248,8 @@ fn split_tab_if_free_claims_and_resizes_free_or_same_channel_panes_without_steal
             "Reconnected",
             88,
             34,
+            0,
+            0,
             false,
             false,
             &core.db,
@@ -3181,7 +3268,7 @@ fn split_tab_if_free_claims_and_resizes_free_or_same_channel_panes_without_steal
     );
 
     core.sessions
-        .take_back_terminal("left", 112, 40, &core.db)
+        .take_back_terminal("left", 112, 40, 0, 0, &core.db)
         .unwrap();
     core.sessions
         .prepare_unlisted_terminal("split-desktop-owned", (96, 28), &core.db, &events)
@@ -3206,6 +3293,8 @@ fn split_tab_if_free_claims_and_resizes_free_or_same_channel_panes_without_steal
             "Reconnected",
             64,
             22,
+            0,
+            0,
             false,
             false,
             &core.db,
@@ -3240,10 +3329,21 @@ fn release_browser_channel_touches_only_sessions_owned_by_that_channel_1377() {
             .unwrap();
     }
     core.sessions
-        .browser_resize("ch1-owned", 1, "Phone", 80, 24, true, false, &core.db)
+        .browser_resize("ch1-owned", 1, "Phone", 80, 24, 0, 0, true, false, &core.db)
         .unwrap();
     core.sessions
-        .browser_resize("ch2-owned", 2, "Tablet", 80, 24, true, false, &core.db)
+        .browser_resize(
+            "ch2-owned",
+            2,
+            "Tablet",
+            80,
+            24,
+            0,
+            0,
+            true,
+            false,
+            &core.db,
+        )
         .unwrap();
 
     // Hold `wedged`'s SessionState lock on another thread for the entire channel release check.
@@ -3280,4 +3380,598 @@ fn release_browser_channel_touches_only_sessions_owned_by_that_channel_1377() {
     let _ = unlock_tx.send(());
     holder.join().unwrap();
     core.sessions.drain_terminal_workers();
+}
+
+#[test]
+fn daemon_global_image_budget_enforces_limit_across_concurrent_sessions_without_cross_eviction() {
+    use crate::session::SessionManager;
+    use base64::Engine as _;
+    use runner_terminal::kitty::{GlobalImageBudget, DEFAULT_GLOBAL_BUDGET};
+    use std::collections::HashMap;
+    use std::sync::{mpsc, Barrier, Condvar, Mutex};
+
+    let default_temp = tempfile::tempdir().unwrap();
+    let default_core = test_core(default_temp.path());
+    assert_eq!(
+        default_core.sessions.image_budget().limit(),
+        DEFAULT_GLOBAL_BUDGET
+    );
+    assert_eq!(DEFAULT_GLOBAL_BUDGET, 1024 * 1024 * 1024);
+
+    #[derive(Default)]
+    struct MultiSessionRuntime {
+        outputs: Mutex<HashMap<String, mpsc::Sender<RuntimeOutput>>>,
+        writes: Mutex<HashMap<String, Vec<Vec<u8>>>>,
+        writes_cv: Condvar,
+    }
+    impl MultiSessionRuntime {
+        fn push_output(&self, session_id: &str, bytes: &[u8]) {
+            self.outputs
+                .lock()
+                .unwrap()
+                .get(session_id)
+                .expect("spawned")
+                .send(RuntimeOutput::Stream(bytes.to_vec()))
+                .unwrap();
+        }
+        fn wait_writes_len(&self, session_id: &str, expected: usize) -> Vec<Vec<u8>> {
+            let mut guard = self.writes.lock().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while guard.get(session_id).map_or(0, Vec::len) < expected {
+                let rem = deadline
+                    .checked_duration_since(Instant::now())
+                    .expect("timed out waiting for PTY replies");
+                let (next, _) = self.writes_cv.wait_timeout(guard, rem).unwrap();
+                guard = next;
+            }
+            guard.get(session_id).cloned().unwrap_or_default()
+        }
+        fn take_writes(&self, session_id: &str) -> Vec<Vec<u8>> {
+            self.writes
+                .lock()
+                .unwrap()
+                .remove(session_id)
+                .unwrap_or_default()
+        }
+    }
+    impl SessionRuntime for MultiSessionRuntime {
+        fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
+            let (tx, rx) = mpsc::channel();
+            self.outputs
+                .lock()
+                .unwrap()
+                .insert(spec.session_id.clone(), tx);
+            Ok((
+                RuntimeSession {
+                    runtime: "multi-kitty".into(),
+                    session_id: spec.session_id,
+                },
+                OutputStream::new(rx, Arc::new(AtomicBool::new(false))),
+            ))
+        }
+        fn stop(&self, session: &RuntimeSession) -> RuntimeResult<()> {
+            self.outputs.lock().unwrap().remove(&session.session_id);
+            Ok(())
+        }
+        fn send_bytes(&self, session: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
+            self.writes
+                .lock()
+                .unwrap()
+                .entry(session.session_id.clone())
+                .or_default()
+                .push(bytes.to_vec());
+            self.writes_cv.notify_all();
+            Ok(())
+        }
+        fn send_key(&self, _: &RuntimeSession, _: &str) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &RuntimeSession, _: u16, _: u16, _: u16, _: u16) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
+            Ok(Some(SessionStatus {
+                alive: true,
+                ..Default::default()
+            }))
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(MultiSessionRuntime::default());
+    let limit = 4 * 1024 * 1024; // 4 MiB shared daemon cap for fast deterministic stress runs
+    let budget = Arc::new(GlobalImageBudget::new(limit));
+    let mut core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
+    core.sessions = SessionManager::new_with_image_budget(
+        Arc::clone(&core.runtime_shell_env),
+        Arc::clone(&core.runtime_discovery),
+        Arc::clone(&runtime) as _,
+        Arc::clone(&budget),
+    );
+    core.sessions.set_runtime_events(core.events.clone());
+
+    let role = {
+        let conn = core.db.get().unwrap();
+        crate::test_support::insert_test_role(&conn, "budget", "budget", "trae", "budget");
+        crate::ops::role::get(&conn, "budget").unwrap()
+    };
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    let spawn_one = || {
+        core.sessions
+            .spawn_direct(
+                &role,
+                DirectLaunch {
+                    cwd: Some(temp.path().to_str().unwrap().into()),
+                    cols: Some(80),
+                    rows: Some(24),
+                    ..Default::default()
+                },
+                &core.app_data_dir,
+                core.db.clone(),
+                Arc::clone(&events),
+            )
+            .unwrap()
+            .id
+    };
+    let a = spawn_one();
+    let b = spawn_one();
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+
+    // 1. Place a 500 KiB image on A's alt screen, then return to primary.
+    // Primary overflow must never evict A's inactive alt screen.
+    let img_500k = b64(&vec![1u8; 400 * 425 * 3]); // 510,000 B
+    runtime.push_output(
+        &a,
+        format!("\x1b[?1049h\x1b_Ga=t,i=900,f=24,s=400,v=425;{img_500k}\x1b\\\x1b[?1049l")
+            .as_bytes(),
+    );
+    let _ = runtime.wait_writes_len(&a, 1);
+    runtime.take_writes(&a);
+    assert!(core
+        .sessions
+        .terminal_model(&a)
+        .unwrap()
+        .graphics()
+        .lock()
+        .unwrap()
+        .alt
+        .images()
+        .contains_key(&900));
+
+    // 2. Stream images concurrently on A and B past the shared 4 MiB limit.
+    let mut a_sub = core.sessions.attach_terminal(&a).unwrap();
+    let img_600k = b64(&vec![2u8; 500 * 400 * 3]); // 600,000 B
+    let start = Arc::new(Barrier::new(2));
+    let workers: Vec<_> = [(a.clone(), 1u32), (b.clone(), 100u32)]
+        .into_iter()
+        .map(|(sid, base_id)| {
+            let rt = Arc::clone(&runtime);
+            let bgt = Arc::clone(&budget);
+            let payload = img_600k.clone();
+            let bar = Arc::clone(&start);
+            std::thread::spawn(move || {
+                bar.wait();
+                for idx in 0..8u32 {
+                    let img_id = base_id + idx;
+                    rt.push_output(
+                        &sid,
+                        format!("\x1b_Ga=t,i={img_id},f=24,s=500,v=400;{payload}\x1b\\").as_bytes(),
+                    );
+                    let _ = rt.wait_writes_len(&sid, (idx + 1) as usize);
+                    assert!(
+                        bgt.used() <= limit,
+                        "global budget exceeded: {} > {}",
+                        bgt.used(),
+                        limit
+                    );
+                }
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    runtime.take_writes(&a);
+    runtime.take_writes(&b);
+    assert!(budget.used() <= limit);
+    assert!(
+        core.sessions
+            .terminal_model(&a)
+            .unwrap()
+            .graphics()
+            .lock()
+            .unwrap()
+            .alt
+            .images()
+            .contains_key(&900),
+        "overflow on primary must never evict inactive alt screen"
+    );
+
+    // 3. Clear both primary screens (ED 2 frees all unplaced images), fill A to 3.51 MiB, put one
+    // 200 KiB image on B, then ask B for a 1.2 MiB image that its active screen cannot cover ->
+    // ENOMEM & B keeps its image. Also verify eviction on A emits `a=d,d=I,i=<id>,q=2` to mirrors.
+    runtime.push_output(&a, b"\x1b[2J\x1b_Ga=q,i=990,f=24,s=1,v=1;AAAA\x1b\\");
+    runtime.push_output(&b, b"\x1b[2J\x1b_Ga=q,i=991,f=24,s=1,v=1;AAAA\x1b\\");
+    let _ = runtime.wait_writes_len(&a, 1);
+    let _ = runtime.wait_writes_len(&b, 1);
+    runtime.take_writes(&a);
+    runtime.take_writes(&b);
+    assert_eq!(budget.used(), 510_000);
+
+    for i in 1..=7u32 {
+        runtime.push_output(
+            &a,
+            format!("\x1b_Ga=t,i={i},f=24,s=500,v=400;{img_600k}\x1b\\").as_bytes(),
+        );
+    }
+    let a_fill = runtime.wait_writes_len(&a, 7);
+    assert!(
+        a_fill.iter().all(|reply| reply.ends_with(b";OK\x1b\\")),
+        "expected all 7 A images to fit by evicting A's own oldest primary image: {a_fill:?}"
+    );
+    runtime.take_writes(&a);
+    // Drain A's subscriber and confirm eviction reached it as `a=d,d=I,i=<id>,q=2`.
+    runtime.push_output(&a, b"eviction-check-sentinel");
+    let mut saw_eviction_delete = false;
+    loop {
+        match a_sub.frames.recv().unwrap() {
+            runner_core::protocol::terminal::TerminalFrame::Output { bytes, .. } => {
+                if bytes == b"eviction-check-sentinel" {
+                    break;
+                }
+                if String::from_utf8_lossy(&bytes).contains("\x1b_Ga=d,d=I,i=") {
+                    saw_eviction_delete = true;
+                }
+            }
+            runner_core::protocol::terminal::TerminalFrame::Resync => {
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        saw_eviction_delete,
+        "evicting an image must emit a=d,d=I,i=<id>,q=2 to mirrors"
+    );
+    drop(a_sub);
+    // A now holds 510 KiB (alt) + 6 * 600 KiB (i=2..=7) = 4,110,000 B.
+    // Delete i=7 to leave 3,510,000 B (~684 KiB free).
+    runtime.push_output(
+        &a,
+        b"\x1b_Ga=d,d=I,i=7,q=2\x1b\\\x1b_Ga=q,i=992,f=24,s=1,v=1;AAAA\x1b\\",
+    );
+    let _ = runtime.wait_writes_len(&a, 1);
+    runtime.take_writes(&a);
+    assert_eq!(budget.used(), 510_000 + 5 * 600_000);
+    let img_200k = b64(&vec![3u8; 256 * 260 * 3]); // 199,680 B
+    runtime.push_output(
+        &b,
+        format!("\x1b_Ga=t,i=50,f=24,s=256,v=260;{img_200k}\x1b\\").as_bytes(),
+    );
+    let b_ok = runtime.wait_writes_len(&b, 1);
+    assert_eq!(b_ok, vec![b"\x1b_Gi=50;OK\x1b\\".to_vec()]);
+    runtime.take_writes(&b);
+
+    let img_1_2m = b64(&vec![4u8; 640 * 640 * 3]); // 1,228,800 B (> free + B's 199,680 B)
+    runtime.push_output(
+        &b,
+        format!("\x1b_Ga=t,i=51,f=24,s=640,v=640;{img_1_2m}\x1b\\").as_bytes(),
+    );
+    let b_oom = runtime.wait_writes_len(&b, 1);
+    assert_eq!(
+        b_oom,
+        vec![b"\x1b_Gi=51;ENOMEM: out of memory\x1b\\".to_vec()]
+    );
+    runtime.take_writes(&b);
+    assert!(
+        core.sessions
+            .terminal_model(&b)
+            .unwrap()
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .images()
+            .contains_key(&50),
+        "ENOMEM must preserve the session's existing images"
+    );
+    assert!(!core
+        .sessions
+        .terminal_model(&b)
+        .unwrap()
+        .graphics()
+        .lock()
+        .unwrap()
+        .primary
+        .images()
+        .contains_key(&51));
+
+    // 4. Ending session A frees its bytes immediately so B's 1.2 MiB image now succeeds.
+    core.sessions.kill(&a).unwrap();
+    core.sessions.forget_session_state(&a);
+    assert!(budget.used() < 300_000, "ending A must free A's bytes");
+
+    runtime.push_output(
+        &b,
+        format!("\x1b_Ga=t,i=52,f=24,s=640,v=640;{img_1_2m}\x1b\\").as_bytes(),
+    );
+    let b_retry = runtime.wait_writes_len(&b, 1);
+    assert_eq!(b_retry, vec![b"\x1b_Gi=52;OK\x1b\\".to_vec()]);
+
+    core.sessions.kill(&b).unwrap();
+    core.sessions.forget_session_state(&b);
+    assert_eq!(
+        budget.used(),
+        0,
+        "ending all sessions must free budget to 0"
+    );
+    core.sessions.drain_terminal_workers();
+}
+
+#[tokio::test]
+async fn companion_filters_30mib_graphics_omits_snapshot_graphics_and_carries_cell_size() {
+    use crate::companion::core::DaemonCore;
+    use base64::Engine as _;
+    use runner_core::companion::*;
+    use runner_terminal::kitty::CellSize;
+
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(RecordingRuntime::default());
+    let core = Arc::new(test_core_with_runtime(
+        temp.path(),
+        Arc::clone(&runtime) as _,
+    ));
+    let role = {
+        let conn = core.db.get().unwrap();
+        crate::test_support::insert_test_role(
+            &conn,
+            "comp-kitty",
+            "comp-kitty",
+            "trae",
+            "comp-kitty",
+        );
+        crate::ops::role::get(&conn, "comp-kitty").unwrap()
+    };
+    let spawned = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::new(core.session_events()),
+        )
+        .unwrap();
+    let id = spawned.id.clone();
+
+    // Attach a local subscriber and a companion Adapter (carrying cellWidth/cellHeight).
+    let mut local_sub = core.sessions.attach_terminal(&id).unwrap();
+    let backend = Arc::new(DaemonCore(Arc::downgrade(&core)));
+    let mut adapter = crate::companion::Adapter::new(backend, 88, "iPad".into()).unwrap();
+    adapter
+        .request(ClientMessage::Attach(AttachRequest {
+            id: 1,
+            session: id.clone(),
+            cols: 90,
+            rows: 30,
+            cell_width: Some(16),
+            cell_height: Some(32),
+            control: ControlMode::Take,
+            history: Some(100),
+        }))
+        .await
+        .unwrap();
+    assert!(matches!(
+        companion_next(&mut adapter).await,
+        HostMessage::Result(_)
+    ));
+    let HostMessage::Snapshot(initial_snap) = companion_next(&mut adapter).await else {
+        panic!("expected initial companion snapshot");
+    };
+    assert_eq!(
+        (initial_snap.cell_width, initial_snap.cell_height),
+        (16, 32)
+    );
+    assert!(!initial_snap.data.0.windows(3).any(|w| w == b"\x1b_G"));
+    let HostMessage::Resized(initial_resized) = companion_next(&mut adapter).await else {
+        panic!("expected initial companion resized");
+    };
+    assert_eq!(
+        (initial_resized.cell_width, initial_resized.cell_height),
+        (16, 32)
+    );
+    assert_eq!(
+        core.sessions.terminal_model(&id).unwrap().cell_size(),
+        CellSize {
+            width: 16,
+            height: 32
+        }
+    );
+    // Drain the Resized frame on local_sub caused by companion attach.
+    assert!(matches!(
+        local_sub.frames.recv().unwrap(),
+        runner_core::protocol::terminal::TerminalFrame::Resized {
+            cols: 90,
+            rows: 30,
+            cell_width: 16,
+            cell_height: 32,
+            ..
+        }
+    ));
+
+    // Companion Viewport without cellWidth/cellHeight preserves (16, 32); with (20, 40) updates it.
+    adapter
+        .request(ClientMessage::Viewport(ViewportRequest {
+            id: 2,
+            session: id.clone(),
+            cols: 92,
+            rows: 30,
+            cell_width: None,
+            cell_height: None,
+        }))
+        .await
+        .unwrap();
+    let mut saw_preserved = false;
+    while !saw_preserved {
+        if let HostMessage::Resized(r) = companion_next(&mut adapter).await {
+            assert_eq!(
+                (r.cols, r.rows, r.cell_width, r.cell_height),
+                (92, 30, 16, 32)
+            );
+            saw_preserved = true;
+        }
+    }
+    let _ = local_sub.frames.recv().unwrap();
+
+    adapter
+        .request(ClientMessage::TakeControl(ViewportRequest {
+            id: 3,
+            session: id.clone(),
+            cols: 92,
+            rows: 30,
+            cell_width: Some(20),
+            cell_height: Some(40),
+        }))
+        .await
+        .unwrap();
+    let mut saw_updated = false;
+    while !saw_updated {
+        if let HostMessage::Resized(r) = companion_next(&mut adapter).await {
+            assert_eq!(
+                (r.cols, r.rows, r.cell_width, r.cell_height),
+                (92, 30, 20, 40)
+            );
+            saw_updated = true;
+        }
+    }
+    let _ = local_sub.frames.recv().unwrap();
+
+    // Stream a 30 MiB image transmission (`t=f`) surrounded by text.
+    let raw_30m = vec![0x42u8; 3200 * 3280 * 3]; // 31,488,000 bytes (~30.03 MiB)
+    let file_30m = temp.path().join("companion-30mib.bin");
+    std::fs::write(&file_30m, &raw_30m).unwrap();
+    let path_b64 =
+        base64::engine::general_purpose::STANDARD.encode(file_30m.to_string_lossy().as_bytes());
+    let burst = format!("before-30m\x1b_Ga=T,i=1,t=f,f=24,s=3200,v=3280;{path_b64}\x1b\\after-30m");
+    runtime.push_output(&burst.into_bytes());
+
+    // Local subscriber receives leading text, the ~40 MiB normalized image frame, and trailing text.
+    let mut local_saw_graphics = false;
+    let mut local_frames = 0usize;
+    while local_frames < 3 {
+        let frame = local_sub.frames.recv().unwrap();
+        if let runner_core::protocol::terminal::TerminalFrame::Output { bytes, .. } = frame {
+            if bytes.windows(3).any(|w| w == b"\x1b_G") {
+                local_saw_graphics = true;
+            }
+            local_frames += 1;
+        }
+    }
+    assert!(
+        local_saw_graphics,
+        "local subscriber must receive the 30 MiB image"
+    );
+
+    // Companion client receives ONLY the surrounding text — no graphics, no empty output, no resync!
+    let mut companion_text = Vec::new();
+    let mut companion_seq = initial_resized.seq;
+    while !companion_text.ends_with(b"after-30m") {
+        match companion_next(&mut adapter).await {
+            HostMessage::Output(out) => {
+                assert!(
+                    !out.data.0.is_empty(),
+                    "companion must never receive an empty output message"
+                );
+                assert!(
+                    !out.data.0.windows(3).any(|w| w == b"\x1b_G"),
+                    "companion must never receive Kitty graphics commands"
+                );
+                assert!(out.seq > companion_seq);
+                companion_seq = out.seq;
+                companion_text.extend_from_slice(&out.data.0);
+            }
+            HostMessage::Snapshot(_) => {
+                panic!("30 MiB image transmission must not trigger a companion resync");
+            }
+            HostMessage::Result(_) => {}
+            other => panic!("unexpected companion message during 30 MiB burst: {other:?}"),
+        }
+    }
+    assert_eq!(companion_text, b"before-30mafter-30m");
+
+    // Local snapshot includes graphics; companion attach, re-attach, and final snapshots omit them.
+    let local_snap = core.sessions.attach_terminal(&id).unwrap().snapshot;
+    assert!(local_snap.bytes.windows(3).any(|w| w == b"\x1b_G"));
+
+    let (comp_attach, comp_source) = core.sessions.attach_companion_terminal(&id, 100).unwrap();
+    assert!(!comp_attach
+        .snapshot
+        .bytes
+        .windows(3)
+        .any(|w| w == b"\x1b_G"));
+    assert_eq!(
+        (
+            comp_attach.snapshot.cell_width,
+            comp_attach.snapshot.cell_height
+        ),
+        (20, 40)
+    );
+
+    let comp_reattach = comp_source.attach().unwrap();
+    assert!(!comp_reattach
+        .snapshot
+        .bytes
+        .windows(3)
+        .any(|w| w == b"\x1b_G"));
+
+    // Trigger final companion snapshot (session exit path) and verify it also omits graphics.
+    core.sessions
+        .session_state(&id)
+        .unwrap()
+        .lock()
+        .unwrap()
+        .finish_companion_terminals();
+    let comp_final = comp_source.attach().unwrap();
+    assert!(!comp_final.snapshot.bytes.windows(3).any(|w| w == b"\x1b_G"));
+    assert_eq!(
+        (
+            comp_final.snapshot.cell_width,
+            comp_final.snapshot.cell_height
+        ),
+        (20, 40)
+    );
+
+    drop(adapter);
+    core.sessions.kill(&id).unwrap();
+    core.sessions.drain_terminal_workers();
+}
+
+#[test]
+fn daemon_frame_queue_resyncs_above_128_mib_below_frame_count_cap() {
+    use runner_core::protocol::terminal::{TerminalFrame, TERMINAL_QUEUE_MAX_BYTES};
+
+    let queue = super::FrameQueue::default();
+    let chunk = vec![b'a'; 45 * 1024 * 1024]; // 3 * 45 MiB = 135 MiB > 128 MiB, 3 << 64
+    assert!(3 * chunk.len() > TERMINAL_QUEUE_MAX_BYTES);
+    assert!(queue.push(TerminalFrame::Output {
+        seq: 1,
+        bytes: chunk.clone(),
+    }));
+    assert!(queue.push(TerminalFrame::Output {
+        seq: 2,
+        bytes: chunk.clone(),
+    }));
+    assert!(!queue.push(TerminalFrame::Output {
+        seq: 3,
+        bytes: chunk,
+    }));
+    let drained = queue.drain();
+    assert_eq!(drained.len(), 1);
+    assert!(matches!(drained[0], TerminalFrame::Resync));
+    assert!(queue.is_closed());
 }

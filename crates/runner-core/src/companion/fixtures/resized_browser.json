@@ -4,6 +4,8 @@
   "seq": 11,
   "cols": 100,
   "rows": 30,
+  "cellWidth": 16,
+  "cellHeight": 32,
   "controller": {
     "kind": "browser",
     "name": "Chrome on Windows"

@@ -125,6 +125,8 @@ mod tests {
                     activity: None,
                     cols: 10,
                     rows: 2,
+                    cell_width: 0,
+                    cell_height: 0,
                     controller: self
                         .controller
                         .lock()

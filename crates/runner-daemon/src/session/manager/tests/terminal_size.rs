@@ -832,7 +832,7 @@ fn unchanged_resize_reaches_neither_the_runtime_nor_the_mirrors() {
     core.sessions.resize(id, 100, 30, &core.db).unwrap();
     core.sessions.resize(id, 100, 30, &core.db).unwrap();
     core.sessions
-        .take_back_terminal(id, 100, 30, &core.db)
+        .take_back_terminal(id, 100, 30, 0, 0, &core.db)
         .unwrap();
 
     assert_eq!(
@@ -854,7 +854,9 @@ fn alternating_remote_takes_resize_only_on_a_real_change() {
     let request = |channel: u64, (cols, rows): (u16, u16), take: bool, viewport: bool| {
         let name = if channel == 1 { "First" } else { "Second" };
         core.sessions
-            .browser_resize(id, channel, name, cols, rows, take, viewport, &core.db)
+            .browser_resize(
+                id, channel, name, cols, rows, 0, 0, take, viewport, &core.db,
+            )
             .unwrap();
     };
 
@@ -1083,6 +1085,7 @@ fn install_handle_stalled_pool_checkout_keeps_terminal_control_free_1377() {
             handle,
             None,
             Some((120, 30)),
+            None,
             &install_pool,
             &install_events,
         );
@@ -1311,11 +1314,13 @@ fn install_handle_and_prepare_unlisted_revalidate_control_group_after_tab_move_1
         .unwrap();
     state
         .sessions
-        .browser_resize("anchor-a", 1, "First", 80, 24, true, false, &state.db)
+        .browser_resize("anchor-a", 1, "First", 80, 24, 0, 0, true, false, &state.db)
         .unwrap();
     state
         .sessions
-        .browser_resize("anchor-b", 2, "Second", 80, 24, true, false, &state.db)
+        .browser_resize(
+            "anchor-b", 2, "Second", 80, 24, 0, 0, true, false, &state.db,
+        )
         .unwrap();
 
     // 1. install_handle snapshots moving-install in tab A (channel 1), pauses at barrier while
@@ -1357,6 +1362,7 @@ fn install_handle_and_prepare_unlisted_revalidate_control_group_after_tab_move_1
             handle,
             None,
             Some((80, 24)),
+            None,
             &install_pool,
             &install_events,
         );
@@ -1460,4 +1466,324 @@ fn install_handle_and_prepare_unlisted_revalidate_control_group_after_tab_move_1
     state.sessions.forget_session_state("anchor-b");
     state.sessions.forget_session_state("moving-unlisted");
     state.sessions.drain_terminal_workers();
+}
+
+#[test]
+fn cell_size_propagates_to_pty_csi_14_16_new_spawns_take_back_push_controller_and_install_handle() {
+    use runner_core::protocol::terminal::{TerminalController, TerminalFrame};
+    use runner_terminal::kitty::CellSize;
+
+    let temp = tempfile::tempdir().unwrap();
+    let fake = fake_runtime();
+    let core = crate::test_support::test_core_in_with_runtime(
+        temp.path().to_owned(),
+        Arc::clone(&fake) as _,
+    );
+    let role = {
+        let conn = core.db.get().unwrap();
+        crate::test_support::insert_test_role(&conn, "cell-role", "cell-role", "trae", "cell-role");
+        crate::ops::role::get(&conn, "cell-role").unwrap()
+    };
+    let events: Arc<dyn SessionEvents> = Arc::new(core.session_events());
+    let first = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::clone(&events),
+        )
+        .unwrap();
+    let id = first.id.clone();
+    assert_eq!(fake.spawns.lock().unwrap()[0].spec.initial_cell_size, None);
+
+    // Before a cell size is known, CSI 14 t and CSI 16 t answer zero.
+    let mut attachment = core.sessions.attach_terminal(&id).unwrap();
+    assert_eq!(
+        (
+            attachment.snapshot.cell_width,
+            attachment.snapshot.cell_height
+        ),
+        (0, 0)
+    );
+    let model = core.sessions.terminal_model(&id).unwrap();
+    model.feed_plain_text(1, b"\x1b[14t\x1b[16t");
+    model.flush_events();
+    let replies = |fake: &FakeRuntime, target: &str| -> Vec<u8> {
+        fake.inputs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|input| match input {
+                FakeInput::Bytes { session_id, bytes } if session_id == target => {
+                    Some(bytes.as_slice())
+                }
+                _ => None,
+            })
+            .flatten()
+            .copied()
+            .collect()
+    };
+    assert_eq!(replies(&fake, &id), b"\x1b[4;0;0t\x1b[6;0;0t");
+    fake.inputs.lock().unwrap().clear();
+
+    // Desktop resize with cell size propagates to PTY pixels, Resized frame, model, and CSI 14/16.
+    core.sessions
+        .resize_with_cell_size(&id, 100, 30, 16, 32, &core.db)
+        .unwrap();
+    assert_eq!(
+        fake.pixel_resizes.lock().unwrap().as_slice(),
+        &[(id.clone(), 100, 30, 1600, 960)]
+    );
+    assert_eq!(
+        model.cell_size(),
+        CellSize {
+            width: 16,
+            height: 32
+        }
+    );
+    assert!(matches!(
+        attachment.frames.recv().unwrap(),
+        TerminalFrame::Resized {
+            cols: 100,
+            rows: 30,
+            cell_width: 16,
+            cell_height: 32,
+            controller: TerminalController::Desktop,
+            ..
+        }
+    ));
+    model.feed_plain_text(2, b"\x1b[14t\x1b[16t");
+    model.flush_events();
+    assert_eq!(replies(&fake, &id), b"\x1b[4;960;1600t\x1b[6;32;16t");
+    fake.inputs.lock().unwrap().clear();
+
+    // Zero or partial-zero cell size keeps the current one.
+    fake.pixel_resizes.lock().unwrap().clear();
+    core.sessions
+        .resize_with_cell_size(&id, 100, 30, 0, 0, &core.db)
+        .unwrap();
+    core.sessions
+        .resize_with_cell_size(&id, 100, 30, 16, 0, &core.db)
+        .unwrap();
+    assert!(fake.pixel_resizes.lock().unwrap().is_empty());
+    assert_eq!(
+        model.cell_size(),
+        CellSize {
+            width: 16,
+            height: 32
+        }
+    );
+
+    // Out-of-range cell size clamps to 1024; PTY pixels clamp to u16::MAX while CSI 14 t uses u32.
+    core.sessions
+        .resize_with_cell_size(&id, 100, 30, 2000, 5000, &core.db)
+        .unwrap();
+    assert_eq!(
+        model.cell_size(),
+        CellSize {
+            width: 1024,
+            height: 1024
+        }
+    );
+    assert!(matches!(
+        attachment.frames.recv().unwrap(),
+        TerminalFrame::Resized {
+            cols: 100,
+            rows: 30,
+            cell_width: 1024,
+            cell_height: 1024,
+            ..
+        }
+    ));
+    #[cfg(not(windows))]
+    assert_eq!(
+        fake.pixel_resizes.lock().unwrap().as_slice(),
+        &[(id.clone(), 100, 30, u16::MAX, 30 * 1024)]
+    );
+    #[cfg(windows)]
+    assert!(
+        fake.pixel_resizes.lock().unwrap().is_empty(),
+        "Windows must not resize ConPTY when only the cell size changed"
+    );
+    model.feed_plain_text(3, b"\x1b[14t\x1b[16t");
+    model.flush_events();
+    assert_eq!(
+        replies(&fake, &id),
+        b"\x1b[4;30720;102400t\x1b[6;1024;1024t"
+    );
+    fake.inputs.lock().unwrap().clear();
+
+    // Scale-only change (same cols/rows) updates model, emits Resized, and resizes PTY on Unix.
+    fake.pixel_resizes.lock().unwrap().clear();
+    core.sessions
+        .resize_with_cell_size(&id, 100, 30, 32, 64, &core.db)
+        .unwrap();
+    assert_eq!(
+        model.cell_size(),
+        CellSize {
+            width: 32,
+            height: 64
+        }
+    );
+    assert!(matches!(
+        attachment.frames.recv().unwrap(),
+        TerminalFrame::Resized {
+            cols: 100,
+            rows: 30,
+            cell_width: 32,
+            cell_height: 64,
+            ..
+        }
+    ));
+    #[cfg(not(windows))]
+    assert_eq!(
+        fake.pixel_resizes.lock().unwrap().as_slice(),
+        &[(id.clone(), 100, 30, 3200, 1920)]
+    );
+
+    // runnerd remembers the last desktop cell size and opens new PTYs with it.
+    let second = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::clone(&events),
+        )
+        .unwrap();
+    assert_eq!(
+        fake.spawns.lock().unwrap()[1].spec.initial_cell_size,
+        Some((32, 64))
+    );
+    assert_eq!(
+        core.sessions
+            .terminal_model(&second.id)
+            .unwrap()
+            .cell_size(),
+        CellSize {
+            width: 32,
+            height: 64
+        }
+    );
+
+    // Put both sessions in a split tab: browser takeover on `second` pushes controller on `first`
+    // while keeping `first`'s cell size; Take back on `first` carries a new cell size.
+    crate::repo::node::create_tab(
+        &core.db.get().unwrap(),
+        None,
+        "Split",
+        0,
+        &serde_json::json!({"slots": [&id, &second.id]}).to_string(),
+    )
+    .unwrap();
+    core.sessions.note_control_layout_changed();
+    core.sessions
+        .browser_resize(
+            &second.id, 7, "Remote", 90, 25, 14, 28, true, false, &core.db,
+        )
+        .unwrap();
+    assert!(matches!(
+        attachment.frames.recv().unwrap(),
+        TerminalFrame::Resized {
+            cols: 100,
+            rows: 30,
+            cell_width: 32,
+            cell_height: 64,
+            controller: TerminalController::Browser { channel: 7, .. },
+            ..
+        }
+    ));
+    core.sessions
+        .take_back_terminal(&id, 110, 34, 18, 36, &core.db)
+        .unwrap();
+    assert!(matches!(
+        attachment.frames.recv().unwrap(),
+        TerminalFrame::Resized {
+            cols: 110,
+            rows: 34,
+            cell_width: 18,
+            cell_height: 36,
+            controller: TerminalController::Desktop,
+            ..
+        }
+    ));
+    assert_eq!(
+        model.cell_size(),
+        CellSize {
+            width: 18,
+            height: 36
+        }
+    );
+
+    // A mid-fork resize carrying a new cell size is applied by install_handle_state.
+    let hook_sessions = Arc::clone(&core.sessions);
+    let hook_pool = Arc::clone(&core.db);
+    let mid_fork_id = Arc::new(std::sync::Mutex::new(String::new()));
+    let hook_id = Arc::clone(&mid_fork_id);
+    *fake.spawn_hook.lock().unwrap() = Some(Box::new({
+        let fake_for_hook = Arc::clone(&fake);
+        move || {
+            let spawned_id = fake_for_hook
+                .spawns
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .spec
+                .session_id
+                .clone();
+            *hook_id.lock().unwrap() = spawned_id.clone();
+            hook_sessions
+                .resize_with_cell_size(&spawned_id, 95, 29, 20, 40, &hook_pool)
+                .unwrap();
+        }
+    }));
+    fake.pixel_resizes.lock().unwrap().clear();
+    let third = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::clone(&events),
+        )
+        .unwrap();
+    assert_eq!(third.id, *mid_fork_id.lock().unwrap());
+    assert_eq!(
+        fake.pixel_resizes.lock().unwrap().as_slice(),
+        &[(third.id.clone(), 95, 29, 95 * 20, 29 * 40)]
+    );
+    let third_model = core.sessions.terminal_model(&third.id).unwrap();
+    assert_eq!(third_model.size(), (95, 29));
+    assert_eq!(
+        third_model.cell_size(),
+        CellSize {
+            width: 20,
+            height: 40
+        }
+    );
+
+    for sid in [&id, &second.id, &third.id] {
+        core.sessions.kill(sid).unwrap();
+    }
+    core.sessions.drain_terminal_workers();
 }

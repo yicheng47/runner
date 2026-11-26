@@ -224,7 +224,7 @@ struct Stream {
     last_output: Option<Instant>,
     clipboard: VecDeque<(String, String, usize)>,
     seq: u64,
-    initial_size: Option<(u16, u16, TerminalController)>,
+    initial_size: Option<(u16, u16, u16, u16, TerminalController)>,
     core: Arc<dyn Core>,
     lease: Option<Arc<Lease>>,
     channel: u64,
@@ -293,7 +293,13 @@ impl Stream {
             cancel,
             queue,
             seq: snapshot.seq,
-            initial_size: Some((snapshot.cols, snapshot.rows, snapshot.controller.clone())),
+            initial_size: Some((
+                snapshot.cols,
+                snapshot.rows,
+                snapshot.cell_width,
+                snapshot.cell_height,
+                snapshot.controller.clone(),
+            )),
             snapshot: Some((snapshot, 0)),
             output: None,
             last_output: None,
@@ -327,6 +333,8 @@ impl Stream {
                 seq: self.seq,
                 cols: snapshot.cols,
                 rows: snapshot.rows,
+                cell_width: snapshot.cell_width,
+                cell_height: snapshot.cell_height,
                 data: TerminalBytes(snapshot.bytes[*offset..end].to_vec()),
                 more: end < snapshot.bytes.len(),
                 preceding_char: snapshot.preceding_char,
@@ -338,12 +346,14 @@ impl Stream {
             }
             return Some(message);
         }
-        if let Some((cols, rows, controller)) = self.initial_size.take() {
+        if let Some((cols, rows, cell_width, cell_height, controller)) = self.initial_size.take() {
             return Some(HostMessage::Resized(Resized {
                 session: self.session.clone(),
                 seq: self.seq,
                 cols,
                 rows,
+                cell_width,
+                cell_height,
                 controller: self.controller(controller),
             }));
         }
@@ -394,11 +404,15 @@ impl Stream {
             };
             match frame {
                 TerminalFrame::Output { bytes, .. } => {
-                    self.output = Some((bytes, 0));
+                    if !bytes.is_empty() {
+                        self.output = Some((bytes, 0));
+                    }
                 }
                 TerminalFrame::Resized {
                     cols,
                     rows,
+                    cell_width,
+                    cell_height,
                     controller,
                     ..
                 } => {
@@ -408,6 +422,8 @@ impl Stream {
                         seq: self.seq,
                         cols,
                         rows,
+                        cell_width,
+                        cell_height,
                         controller: self.controller(controller),
                     }));
                 }
@@ -1039,13 +1055,21 @@ impl Adapter {
                             TerminalJob::Attach(request) => {
                                 let history = request.history_lines() as usize;
                                 let size = request.clamped_size();
+                                let cell_size = request.clamped_cell_size();
                                 let control = if request.control.effective() == ControlMode::Take {
                                     Control::Take
                                 } else {
                                     Control::IfFree
                                 };
                                 let result = (|| {
-                                    core.resize(&work_session, channel, &name, size, control)?;
+                                    core.resize(
+                                        &work_session,
+                                        channel,
+                                        &name,
+                                        size,
+                                        cell_size,
+                                        control,
+                                    )?;
                                     let attachment = match core.clone().attach(
                                         &work_session,
                                         history,
@@ -1076,11 +1100,13 @@ impl Adapter {
                             TerminalJob::Viewport { request, take } => {
                                 let _lease = lease;
                                 let size = request.clamped_size();
+                                let cell_size = request.clamped_cell_size();
                                 TerminalOutcome::Unit(core.resize(
                                     &request.session,
                                     channel,
                                     &name,
                                     size,
+                                    cell_size,
                                     if take {
                                         Control::Take
                                     } else {

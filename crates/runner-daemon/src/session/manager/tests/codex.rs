@@ -28,6 +28,7 @@ fn codex_speed_follows_role_args_for_direct_and_mission_spawns() {
                     bundled_bin_dir: None,
                     shell_path: None,
                     initial_size: None,
+                    initial_cell_size: None,
                 };
                 mgr_with_fake(None, fake_runtime()).apply_runtime_args(
                     &mut spec,
@@ -90,6 +91,7 @@ fn codex_spawn_composes_hooks_without_changing_user_home_and_respects_overrides(
                 bundled_bin_dir: None,
                 shell_path: None,
                 initial_size: None,
+                initial_cell_size: None,
             };
             mgr_with_fake(None, fake_runtime()).apply_runtime_args(
                 &mut spec,
@@ -1270,6 +1272,7 @@ fn codex_native_forwarder_publishes_without_a_mounted_client_for_chats_and_missi
                 false,
                 sink,
                 root.path().to_path_buf(),
+                None,
             )
             .join()
             .unwrap();
@@ -1965,6 +1968,7 @@ fn codex_mixed_ready_or_title_idle_with_blocked_installs_wait_before_heuristic_t
             false,
             None,
             root.path().to_path_buf(),
+            None,
         );
         fence_rx
             .recv_timeout(Duration::from_secs(5))

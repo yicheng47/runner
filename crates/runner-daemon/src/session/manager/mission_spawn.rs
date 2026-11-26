@@ -315,7 +315,15 @@ impl SessionManager {
                 size_source = "latest-measured-size";
             }
         }
+        let latest_cell = self
+            .latest_requested_cell_size(&session_id)
+            .or_else(|| self.last_desktop_cell_size());
+        if latest_cell.is_some() {
+            spec.initial_cell_size = latest_cell;
+        }
         let initial_size = spec.initial_size;
+        let initial_cell_size = spec.initial_cell_size;
+        let session_tmpdir = super::spawn_spec::session_tmpdir(&spec.env);
         self.seed_runtime_project_trust(
             &session_id,
             &role.runtime,
@@ -450,6 +458,7 @@ impl SessionManager {
             },
             spawn_emit_ctx.clone(),
             initial_size,
+            initial_cell_size,
             &pool,
             &events,
         );
@@ -485,6 +494,7 @@ impl SessionManager {
             true,
             spawn_emit_ctx,
             app_data_dir.clone(),
+            session_tmpdir,
         );
         self.install_forwarder(&session_id, forwarder);
 

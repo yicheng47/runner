@@ -4,6 +4,8 @@
   "seq": 10,
   "cols": 100,
   "rows": 30,
+  "cellWidth": 16,
+  "cellHeight": 32,
   "data": "G1sySg==",
   "more": true,
   "precedingChar": null,

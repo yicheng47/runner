@@ -237,6 +237,8 @@ impl Core for Fake {
                 activity: None,
                 cols: 80,
                 rows: 24,
+                cell_width: 0,
+                cell_height: 0,
                 controller: TerminalController::Desktop,
                 bytes: self.bytes.lock().unwrap().clone(),
                 unfinished_len,
@@ -259,7 +261,15 @@ impl Core for Fake {
             }),
         })
     }
-    fn resize(&self, _: &str, _: u64, _: &str, _: (u16, u16), _: Control) -> core::Result<()> {
+    fn resize(
+        &self,
+        _: &str,
+        _: u64,
+        _: &str,
+        _: (u16, u16),
+        _: (u16, u16),
+        _: Control,
+    ) -> core::Result<()> {
         Ok(())
     }
     fn input(&self, session: &str, _: u64, bytes: &[u8]) -> core::Result<()> {
@@ -1283,6 +1293,8 @@ fn push_resize(adapter: &Adapter, session: &str) {
             seq: 0,
             cols: 100,
             rows: 40,
+            cell_width: 0,
+            cell_height: 0,
             controller: TerminalController::Desktop,
         });
 }
@@ -1598,6 +1610,8 @@ fn input_classification_and_queue_bound() {
         seq: 2,
         cols: 80,
         rows: 24,
+        cell_width: 0,
+        cell_height: 0,
         controller: TerminalController::Desktop
     }));
     assert!(queue.resync);
@@ -1638,6 +1652,8 @@ async fn empty_snapshot_input_resize_and_close_preserve_per_terminal_order() {
             seq: 12,
             cols: 100,
             rows: 40,
+            cell_width: 0,
+            cell_height: 0,
             controller: TerminalController::Browser {
                 channel: 8,
                 name: "same".into(),
@@ -1651,6 +1667,8 @@ async fn empty_snapshot_input_resize_and_close_preserve_per_terminal_order() {
             seq: 14,
             cols: 90,
             rows: 30,
+            cell_width: 0,
+            cell_height: 0,
             controller: TerminalController::Browser {
                 channel: 9,
                 name: "other".into(),
@@ -3102,9 +3120,11 @@ async fn disconnect_during_delayed_overview_watch_registration_releases_all_watc
             channel: u64,
             name: &str,
             size: (u16, u16),
+            cell_size: (u16, u16),
             control: Control,
         ) -> core::Result<()> {
-            self.inner.resize(session, channel, name, size, control)
+            self.inner
+                .resize(session, channel, name, size, cell_size, control)
         }
         fn input(&self, session: &str, channel: u64, bytes: &[u8]) -> core::Result<()> {
             self.inner.input(session, channel, bytes)
@@ -3391,6 +3411,7 @@ async fn replacement_stream_delayed_cleanup_after_detach_releases_control_1377()
             channel: u64,
             name: &str,
             size: (u16, u16),
+            cell_size: (u16, u16),
             control: Control,
         ) -> core::Result<()> {
             self.app
@@ -3401,6 +3422,8 @@ async fn replacement_stream_delayed_cleanup_after_detach_releases_control_1377()
                     name,
                     size.0,
                     size.1,
+                    cell_size.0,
+                    cell_size.1,
                     matches!(control, Control::Take),
                     matches!(control, Control::Viewport),
                     &self.app.db,

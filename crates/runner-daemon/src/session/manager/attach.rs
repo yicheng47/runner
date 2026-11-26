@@ -1,16 +1,20 @@
 use super::*;
 
 impl SessionManager {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn install_handle(
         self: &Arc<Self>,
         session_id: &str,
         handle: SessionHandle,
         mission_status_sink: Option<ForwarderEmitCtx>,
         initial_size: Option<(u16, u16)>,
+        initial_cell_size: Option<(u16, u16)>,
         pool: &DbPool,
         events: &Arc<dyn SessionEvents>,
     ) {
         let (cols, rows) = initial_size.expect("spawn size must be resolved before handle install");
+        let initial_cell_size = initial_cell_size
+            .and_then(|(w, h)| runner_core::protocol::terminal::normalize_cell_size(w, h));
         let mut rev = self
             .control_group_revision
             .load(std::sync::atomic::Ordering::Acquire);
@@ -69,7 +73,15 @@ impl SessionManager {
                 (terminal, started_at)
             }
             None => self
-                .create_terminal_from_binding(session_id, cols, rows, binding, pool, events)
+                .create_terminal_from_binding(
+                    session_id,
+                    cols,
+                    rows,
+                    initial_cell_size,
+                    binding,
+                    pool,
+                    events,
+                )
                 .expect("create session terminal model"),
         };
         let previous_worker = {
@@ -83,8 +95,8 @@ impl SessionManager {
                 .is_some_and(|current| !Arc::ptr_eq(current, &terminal))
             {
                 state.finish_companion_terminals();
-                for (_, queue) in state.subscribers.drain(..) {
-                    queue.close();
+                for sub in state.subscribers.drain(..) {
+                    sub.queue.close();
                 }
             }
             state.last_exit_was_killed = false;
@@ -106,8 +118,13 @@ impl SessionManager {
         if let Some(worker) = previous_worker {
             let _ = worker.join();
         }
-        let (spawned, pending_persist) =
-            self.install_handle_state(session_id, handle, mission_status_sink, initial_size);
+        let (spawned, pending_persist) = self.install_handle_state(
+            session_id,
+            handle,
+            mission_status_sink,
+            initial_size,
+            initial_cell_size,
+        );
         drop(control);
         if let Some(work) = pending_persist {
             work.run(|cols, rows, is_current| match pool.get() {
@@ -144,7 +161,7 @@ impl SessionManager {
     ) {
         let control = self.terminal_control.lock().unwrap();
         let (spawned, pending_persist) =
-            self.install_handle_state(session_id, handle, mission_status_sink, initial_size);
+            self.install_handle_state(session_id, handle, mission_status_sink, initial_size, None);
         drop(control);
         if let Some(work) = pending_persist {
             work.run(|cols, rows, _| persist_size(cols, rows));
@@ -152,16 +169,20 @@ impl SessionManager {
         self.publish_handle_install(&spawned, events);
     }
 
-    fn install_handle_state(
+    pub(super) fn install_handle_state(
         &self,
         session_id: &str,
         handle: SessionHandle,
         mission_status_sink: Option<ForwarderEmitCtx>,
         initial_size: Option<(u16, u16)>,
+        initial_cell_size: Option<(u16, u16)>,
     ) -> (SessionSpawnedEvent, Option<PendingResizePersist>) {
         let initial_size = initial_size.expect("spawn size must be resolved before handle install");
+        let initial_cell_size = initial_cell_size
+            .and_then(|(w, h)| runner_core::protocol::terminal::normalize_cell_size(w, h));
         let mission_id = handle.mission_id.clone();
         let mut terminal_size = initial_size;
+        let mut terminal_cell = initial_cell_size;
         let state = self.session_state_or_insert(session_id);
         let gate = state.lock().unwrap().delivery_gate.clone();
         let (output_seq, pending_persist) = {
@@ -212,25 +233,40 @@ impl SessionManager {
             state_guard.killed = false;
 
             let requested_size = state_guard.last_requested_size;
-            if let Some((cols, rows)) = requested_size.filter(|size| *size != initial_size) {
-                let rt_session = state_guard
-                    .handle
-                    .as_ref()
-                    .expect("handle was just installed")
-                    .runtime_session
-                    .clone();
-                match self.runtime.resize(&rt_session, cols, rows) {
-                    Ok(()) => {
-                        terminal_size = (cols, rows);
-                        log::info!(
-                            "pty size reconciled after fork: session={session_id} {cols}x{rows} \
-                             (pushed mid-fork)"
-                        );
+            let requested_cell = state_guard.last_requested_cell_size;
+            let grid_differs = requested_size.is_some_and(|size| size != initial_size);
+            let cell_differs = requested_cell.is_some() && requested_cell != initial_cell_size;
+            if grid_differs || cell_differs {
+                let (cols, rows) = requested_size.unwrap_or(initial_size);
+                let target_cell = requested_cell.or(initial_cell_size);
+                if cfg!(windows) && !grid_differs {
+                    terminal_cell = target_cell;
+                } else {
+                    let rt_session = state_guard
+                        .handle
+                        .as_ref()
+                        .expect("handle was just installed")
+                        .runtime_session
+                        .clone();
+                    let (pixel_width, pixel_height) =
+                        super::super::runtime::pty_pixel_size(cols, rows, target_cell);
+                    match self
+                        .runtime
+                        .resize(&rt_session, cols, rows, pixel_width, pixel_height)
+                    {
+                        Ok(()) => {
+                            terminal_size = (cols, rows);
+                            terminal_cell = target_cell;
+                            log::info!(
+                                "pty size reconciled after fork: session={session_id} {cols}x{rows} \
+                                 (pushed mid-fork)"
+                            );
+                        }
+                        Err(error) => log::warn!(
+                            "pty size reconcile after fork failed: session={session_id} \
+                             {cols}x{rows}: {error}"
+                        ),
                     }
-                    Err(error) => log::warn!(
-                        "pty size reconcile after fork failed: session={session_id} \
-                         {cols}x{rows}: {error}"
-                    ),
                 }
             }
             let stamp = state_guard.bump_resize_stamp();
@@ -243,7 +279,9 @@ impl SessionManager {
             };
             state_guard.pending_resize = None;
             if let Some(terminal) = &state_guard.terminal {
-                terminal.resize(terminal_size.0, terminal_size.1);
+                let cell = terminal_cell
+                    .map(|(width, height)| runner_terminal::kitty::CellSize { width, height });
+                terminal.resize_with_cell_size(terminal_size.0, terminal_size.1, cell);
             }
             (state_guard.output_seq, pending_persist)
         };

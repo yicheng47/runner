@@ -376,6 +376,7 @@ impl Transport for Fake {
                 session,
                 cols,
                 rows,
+                ..
             } => {
                 self.takes
                     .lock()
@@ -392,6 +393,7 @@ impl Transport for Fake {
                 session,
                 cols,
                 rows,
+                ..
             } => {
                 self.claims
                     .lock()
@@ -419,6 +421,8 @@ impl Transport for Fake {
                         seq,
                         cols,
                         rows,
+                        cell_width: 0,
+                        cell_height: 0,
                         controller,
                     }));
                 }
@@ -472,6 +476,8 @@ impl Transport for Fake {
                 activity: None,
                 cols,
                 rows,
+                cell_width: 0,
+                cell_height: 0,
                 controller: self.controller.lock().unwrap().clone(),
                 bytes: self.snapshot.lock().unwrap().clone(),
                 unfinished_len: 0,
@@ -496,7 +502,7 @@ impl Transport for Fake {
             Ok(())
         }
     }
-    fn resize(&self, address: &str, _: u64, cols: u16, rows: u16) {
+    fn resize(&self, address: &str, _: u64, cols: u16, rows: u16, _: u16, _: u16) {
         self.sizes
             .lock()
             .unwrap()
@@ -915,6 +921,8 @@ fn remote_terminal_uses_remote_address_discards_disconnected_input_and_cancels_o
         session: "s".into(),
         cols: 90,
         rows: 30,
+        cell_width: 0,
+        cell_height: 0,
         take_control: true,
     };
     let address = config.address();
@@ -930,12 +938,12 @@ fn remote_terminal_uses_remote_address_discards_disconnected_input_and_cancels_o
     client.input(&address, b"before").unwrap();
     connected.store(false, Ordering::SeqCst);
     client.input(&address, b"dropped").unwrap();
-    client.resize(&address, 17, 50, 20);
+    client.resize(&address, 17, 50, 20, 0, 0);
     connected.store(true, Ordering::SeqCst);
     client.input(&address, b"after").unwrap();
-    client.resize(&address, 17, 2, 2);
+    client.resize(&address, 17, 2, 2, 0, 0);
     let second = client.attach(&address).unwrap();
-    client.terminal_take_back(&address, 100, 40).unwrap();
+    client.terminal_take_back(&address, 100, 40, 0, 0).unwrap();
     assert_eq!(
         *fake.input.lock().unwrap(),
         vec![
@@ -5235,6 +5243,8 @@ fn switching_remote_tabs_keeps_hidden_chats_attached_until_they_close_stop_or_di
                     seq,
                     cols,
                     rows,
+                    cell_width: 0,
+                    cell_height: 0,
                     controller: TerminalController::Desktop,
                 }))
                 .unwrap();
@@ -10360,6 +10370,8 @@ fn free_remote_terminal_auto_takes_once_per_uncontrolled_episode_and_never_steal
             seq: fake.next_seq(),
             cols,
             rows,
+            cell_width: 0,
+            cell_height: 0,
             controller: TerminalController::Desktop,
         }))
         .unwrap();
@@ -10398,6 +10410,8 @@ fn free_remote_terminal_auto_takes_once_per_uncontrolled_episode_and_never_steal
                 seq: fake.next_seq(),
                 cols,
                 rows,
+                cell_width: 0,
+                cell_height: 0,
                 controller: TerminalController::None,
             }))
             .unwrap();
@@ -10431,6 +10445,8 @@ fn free_remote_terminal_auto_takes_once_per_uncontrolled_episode_and_never_steal
             seq: fake.next_seq(),
             cols,
             rows,
+            cell_width: 0,
+            cell_height: 0,
             controller: TerminalController::None,
         }))
         .unwrap();
@@ -10784,6 +10800,8 @@ fn host_split_after_take_back_attaches_new_panes_with_if_free_and_preserves_host
             seq: fake.next_seq(),
             cols,
             rows,
+            cell_width: 0,
+            cell_height: 0,
             controller: host_owner.clone(),
         }))
         .unwrap();
@@ -10813,6 +10831,8 @@ fn host_split_after_take_back_attaches_new_panes_with_if_free_and_preserves_host
             seq: fake.next_seq(),
             cols,
             rows,
+            cell_width: 0,
+            cell_height: 0,
             controller: TerminalController::Desktop,
         }))
         .unwrap();

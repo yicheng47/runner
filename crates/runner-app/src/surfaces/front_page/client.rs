@@ -213,6 +213,8 @@ impl FrontPageClient {
             session: id.into(),
             cols: 80,
             rows: 24,
+            cell_width: 0,
+            cell_height: 0,
             take_control: true,
         };
         let address = config.address();

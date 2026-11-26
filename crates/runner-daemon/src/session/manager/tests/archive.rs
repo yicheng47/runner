@@ -606,6 +606,7 @@ fn forget_cannot_split_terminal_and_live_handle_installation() {
             },
             None,
             Some((80, 24)),
+            None,
             &pool,
             &events,
         );

@@ -118,38 +118,47 @@ impl RemoteHandle {
     ) -> Result<(), String> {
         self.client()?.input(computer, session, bytes).await
     }
+    #[allow(clippy::too_many_arguments)]
     pub async fn remote_resize(
         &self,
         computer: String,
         session: String,
         cols: u16,
         rows: u16,
+        cell_width: u16,
+        cell_height: u16,
     ) -> Result<(), String> {
         self.client()?
-            .queue_viewport(computer, session, cols, rows)
+            .queue_viewport(computer, session, cols, rows, cell_width, cell_height)
             .await
     }
+    #[allow(clippy::too_many_arguments)]
     pub async fn remote_viewport(
         &self,
         computer: String,
         session: String,
         cols: u16,
         rows: u16,
+        cell_width: u16,
+        cell_height: u16,
         take: bool,
     ) -> Result<(), String> {
         self.client()?
-            .viewport(computer, session, cols, rows, take)
+            .viewport(computer, session, cols, rows, cell_width, cell_height, take)
             .await
     }
+    #[allow(clippy::too_many_arguments)]
     pub async fn remote_claim_control(
         &self,
         computer: String,
         session: String,
         cols: u16,
         rows: u16,
+        cell_width: u16,
+        cell_height: u16,
     ) -> Result<(), String> {
         self.client()?
-            .claim_control(computer, session, cols, rows)
+            .claim_control(computer, session, cols, rows, cell_width, cell_height)
             .await
     }
     pub fn set_companion_core(&self, core: Arc<dyn crate::companion::core::Core>) {

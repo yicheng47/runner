@@ -300,6 +300,7 @@ fn spec(session_id: &str, command: &str, args: &[&str]) -> SpawnSpec {
         bundled_bin_dir: None,
         shell_path: None,
         initial_size: Some((80, 24)),
+        initial_cell_size: None,
     }
 }
 
@@ -1923,7 +1924,42 @@ fn resize_succeeds_on_live_session() {
     let (sess, _stream) = rt
         .spawn(spec("test-resize", "/bin/sh", &["-c", "sleep 5"]))
         .unwrap();
-    rt.resize(&sess, 120, 40).expect("resize should succeed");
+    rt.resize(&sess, 120, 40, 0, 0)
+        .expect("resize should succeed");
+    rt.stop(&sess).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn pty_spawn_and_resize_apply_pixel_geometry_and_clamp() {
+    let rt = PtyRuntime::new();
+    let mut spawn_spec = spec("test-pixel-size", "/bin/sh", &["-c", "sleep 5"]);
+    spawn_spec.initial_size = Some((80, 24));
+    spawn_spec.initial_cell_size = Some((16, 32));
+    let (sess, _stream) = rt.spawn(spawn_spec).unwrap();
+    let initial = rt.pty_size(&sess).unwrap();
+    assert_eq!(initial.cols, 80);
+    assert_eq!(initial.rows, 24);
+    assert_eq!(initial.pixel_width, 80 * 16);
+    assert_eq!(initial.pixel_height, 24 * 32);
+
+    let (pw, ph) = crate::session::runtime::pty_pixel_size(100, 30, Some((20, 40)));
+    assert_eq!((pw, ph), (2000, 1200));
+    rt.resize(&sess, 100, 30, pw, ph).unwrap();
+    let resized = rt.pty_size(&sess).unwrap();
+    assert_eq!(resized.cols, 100);
+    assert_eq!(resized.rows, 30);
+    assert_eq!(resized.pixel_width, 2000);
+    assert_eq!(resized.pixel_height, 1200);
+
+    let (clamped_w, clamped_h) =
+        crate::session::runtime::pty_pixel_size(200, 100, Some((1024, 1024)));
+    assert_eq!((clamped_w, clamped_h), (u16::MAX, u16::MAX));
+    rt.resize(&sess, 200, 100, clamped_w, clamped_h).unwrap();
+    let clamped = rt.pty_size(&sess).unwrap();
+    assert_eq!(clamped.pixel_width, u16::MAX);
+    assert_eq!(clamped.pixel_height, u16::MAX);
+
     rt.stop(&sess).unwrap();
 }
 

@@ -69,6 +69,8 @@ impl crate::session::runtime::SessionRuntime for TrackingRuntime {
         _session: &crate::session::runtime::RuntimeSession,
         _cols: u16,
         _rows: u16,
+        _pixel_width: u16,
+        _pixel_height: u16,
     ) -> crate::session::runtime::RuntimeResult<()> {
         Ok(())
     }

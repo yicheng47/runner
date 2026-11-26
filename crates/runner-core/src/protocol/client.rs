@@ -74,7 +74,16 @@ pub trait Transport: Send + Sync {
         _observer: std::sync::Weak<dyn super::terminal::TerminalLifecycle>,
     ) {
     }
-    fn resize(&self, _session_id: &str, _subscriber_id: u64, _cols: u16, _rows: u16) {}
+    fn resize(
+        &self,
+        _session_id: &str,
+        _subscriber_id: u64,
+        _cols: u16,
+        _rows: u16,
+        _cell_width: u16,
+        _cell_height: u16,
+    ) {
+    }
 }
 #[derive(Clone)]
 pub struct DaemonClient {
@@ -111,8 +120,23 @@ impl DaemonClient {
     ) {
         self.transport.observe_terminals(observer);
     }
-    pub fn resize(&self, session_id: &str, subscriber_id: u64, cols: u16, rows: u16) {
-        self.transport.resize(session_id, subscriber_id, cols, rows);
+    pub fn resize(
+        &self,
+        session_id: &str,
+        subscriber_id: u64,
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+    ) {
+        self.transport.resize(
+            session_id,
+            subscriber_id,
+            cols,
+            rows,
+            cell_width,
+            cell_height,
+        );
     }
 }
 

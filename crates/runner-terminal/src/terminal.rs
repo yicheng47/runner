@@ -776,6 +776,8 @@ impl TerminalMirror {
                             seq,
                             cols,
                             rows,
+                            cell_width,
+                            cell_height,
                             controller,
                         } => {
                             let mut sequence = mirror.sequence.lock().unwrap();
@@ -785,7 +787,11 @@ impl TerminalMirror {
                                     &mut sequence,
                                     &mut mirror.parser.lock().unwrap(),
                                 );
-                                mirror.resize_local(cols, rows);
+                                mirror.resize_local(
+                                    cols,
+                                    rows,
+                                    crate::kitty::CellSize::from_wire(cell_width, cell_height),
+                                );
                                 let changed = mirror.apply_controller(controller);
                                 if changed {
                                     (mirror.waker)();
@@ -894,7 +900,10 @@ impl TerminalMirror {
             sync_flush,
             sequence: Mutex::default(),
             size: Mutex::new((attachment.snapshot.cols, attachment.snapshot.rows)),
-            cell_size: Mutex::new(crate::kitty::CellSize::ZERO),
+            cell_size: Mutex::new(crate::kitty::CellSize::from_wire(
+                attachment.snapshot.cell_width,
+                attachment.snapshot.cell_height,
+            )),
             metadata: Mutex::default(),
             control: Mutex::default(),
             composition_clear_pending: Mutex::new(false),
@@ -943,7 +952,11 @@ impl TerminalMirror {
         let mut parser = self.parser.lock().unwrap();
         let mut term = self.term.lock();
         let mut graphics = self.graphics.lock().unwrap();
-        let cell_size = *self.cell_size.lock().unwrap();
+        let cell_size = crate::kitty::CellSize::from_wire(
+            attachment.snapshot.cell_width,
+            attachment.snapshot.cell_height,
+        );
+        *self.cell_size.lock().unwrap() = cell_size;
         let was_tui_ready = sequence.last > 0
             && attachment.snapshot.seq >= sequence.last
             && term_indicates_tui_ready(&term, &parser);
@@ -1517,31 +1530,53 @@ impl TerminalMirror {
         self.control.lock().unwrap().clone()
     }
 
-    pub fn take_back(&self, cols: u16, rows: u16) -> std::result::Result<(), ClientError> {
-        self.client.terminal_take_back(&self.session_id, cols, rows)
+    pub fn take_back(
+        &self,
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+    ) -> std::result::Result<(), ClientError> {
+        let (cell_width, cell_height) =
+            runner_core::protocol::terminal::normalize_cell_size(cell_width, cell_height)
+                .unwrap_or((0, 0));
+        self.client
+            .terminal_take_back(&self.session_id, cols, rows, cell_width, cell_height)
     }
 
-    pub fn resize(&self, cols: u16, rows: u16) {
+    pub fn resize(&self, cols: u16, rows: u16, cell_width: u16, cell_height: u16) {
         if !self.control().desktop() {
             return;
         }
         let (cols, rows) = (cols.max(2), rows.max(2));
-        if self.size() == (cols, rows) {
+        let incoming_cell =
+            runner_core::protocol::terminal::normalize_cell_size(cell_width, cell_height);
+        let current_cell = self.cell_size();
+        let cell_changed =
+            incoming_cell.is_some_and(|(w, h)| current_cell.width != w || current_cell.height != h);
+        if self.size() == (cols, rows) && !cell_changed {
             return;
         }
+        let (cell_width, cell_height) = incoming_cell.unwrap_or((0, 0));
         self.client.resize(
             &self.session_id,
             self.subscriber_id.load(Ordering::Relaxed),
             cols,
             rows,
+            cell_width,
+            cell_height,
         );
     }
-    fn resize_local(&self, cols: u16, rows: u16) {
+    fn resize_local(&self, cols: u16, rows: u16, incoming_cell: crate::kitty::CellSize) {
         let _parser = self.parser.lock().unwrap();
         let mut term = self.term.lock();
         let mut graphics = self.graphics.lock().unwrap();
         let mut size = self.size.lock().unwrap();
-        let cell_size = *self.cell_size.lock().unwrap();
+        let mut current_cell = self.cell_size.lock().unwrap();
+        if incoming_cell.width > 0 && incoming_cell.height > 0 {
+            *current_cell = incoming_cell.clamped();
+        }
+        let cell_size = *current_cell;
         let rows_changed = size.1 != rows;
         if *size != (cols, rows) {
             self.scroll_mark.lock().unwrap().rebuild();

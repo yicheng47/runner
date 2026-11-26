@@ -166,6 +166,31 @@ impl SessionManager {
             .and_then(|state| state.lock().unwrap().last_requested_size)
     }
 
+    pub(super) fn latest_requested_cell_size(&self, session_id: &str) -> Option<(u16, u16)> {
+        self.session_state(session_id).and_then(|state| {
+            let state = state.lock().unwrap();
+            state.last_requested_cell_size.or_else(|| {
+                state.terminal.as_ref().and_then(|model| {
+                    let cell = model.cell_size();
+                    (cell.width > 0 && cell.height > 0).then_some((cell.width, cell.height))
+                })
+            })
+        })
+    }
+
+    pub(super) fn last_desktop_cell_size(&self) -> Option<(u16, u16)> {
+        *self.last_desktop_cell_size.lock().unwrap()
+    }
+
+    pub(super) fn remember_desktop_cell_size(&self, cell: (u16, u16)) {
+        *self.last_desktop_cell_size.lock().unwrap() = Some(cell);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn image_budget(&self) -> &Arc<runner_terminal::kitty::GlobalImageBudget> {
+        &self.image_budget
+    }
+
     pub fn register_delivery_listener(
         &self,
         session_id: &str,

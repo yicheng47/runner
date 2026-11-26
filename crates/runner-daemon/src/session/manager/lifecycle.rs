@@ -103,6 +103,7 @@ impl SessionManager {
                     );
                     state.mission_status_sink = None;
                     state.last_requested_size = None;
+                    state.last_requested_cell_size = None;
                     state.last_requested_size_dirty = false;
                     state.bump_resize_stamp();
                     state.pending_resize = None;
@@ -286,8 +287,8 @@ impl SessionManager {
                 workers = if retain_terminal {
                     state.finish_companion_terminals();
                     state.terminal_input = None;
-                    for (_, queue) in state.subscribers.drain(..) {
-                        queue.close();
+                    for sub in state.subscribers.drain(..) {
+                        sub.queue.close();
                     }
                     state.terminal_input_worker.take().into_iter().collect()
                 } else {
