@@ -372,10 +372,20 @@ impl SessionManager {
         Ok(still_current)
     }
 
-    /// Publishes `session/exit` serialized with `session/spawned` for the same session id,
-    /// rechecking launch currency under `lifecycle_publish` so a launch whose exit raced past
-    /// a resumed launch (e.g. while paused in worker joins or delivery listeners) never drops
-    /// the replacement launch's mirror.
+    pub(super) fn lifecycle_publish_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.lifecycle_publish.lock().unwrap();
+        if let Some(lock) = locks.get(session_id).and_then(Weak::upgrade) {
+            return lock;
+        }
+        locks.retain(|_, lock| lock.strong_count() > 0);
+        let lock = Arc::new(Mutex::new(()));
+        locks.insert(session_id.to_owned(), Arc::downgrade(&lock));
+        lock
+    }
+
+    /// Publishes `session/exit` serialized with `session/spawned` for the same session id across
+    /// state removal/recreation (such as archive + restore + resume), rechecking launch currency
+    /// under `lifecycle_publish` and finishing same-launch state cleanup before notifying observers.
     pub(super) fn publish_launch_exit(
         &self,
         session_id: &str,
@@ -385,10 +395,8 @@ impl SessionManager {
         event: &ExitEvent,
         events: &dyn SessionEvents,
     ) {
-        let publish_lock = self
-            .session_state(session_id)
-            .map(|state| Arc::clone(&state.lock().unwrap().lifecycle_publish));
-        let _publish = publish_lock.as_ref().map(|lock| lock.lock().unwrap());
+        let publish_lock = self.lifecycle_publish_lock(session_id);
+        let _publish = publish_lock.lock().unwrap();
         let still_current = record_still_current
             && match (launch, self.session_state(session_id)) {
                 (Some(launch), Some(state)) => state
@@ -399,15 +407,14 @@ impl SessionManager {
                     .is_none_or(|cur| Arc::ptr_eq(cur, launch)),
                 _ => true,
             };
-        if still_current {
-            events.exit(event);
-            if forget_state {
-                self.forget_session_state(session_id);
-            }
+        if !still_current {
+            return;
         }
-        drop(_publish);
-        if still_current {
+        if forget_state {
+            self.forget_session_state(session_id);
+        } else {
             self.prune_empty_session_state(session_id);
         }
+        events.exit(event);
     }
 }

@@ -289,7 +289,45 @@ fn unlisted_pty_reports_only_to_its_listener_and_leaves_no_trace() {
     let spec = mgr.update_spawn_spec("/bin/codex".into(), vec!["update".into()], None, (80, 24));
     let session_id = spec.session_id.clone();
     let listener = capture_for(&mgr);
-    mgr.spawn_unlisted(spec, &pool, Arc::clone(&listener) as Arc<dyn SessionEvents>)
+    let exit_observations: Arc<Mutex<Vec<(bool, bool, bool)>>> = Arc::new(Mutex::new(Vec::new()));
+    struct ObservingExit {
+        inner: Arc<dyn SessionEvents>,
+        mgr: Arc<SessionManager>,
+        observations: Arc<Mutex<Vec<(bool, bool, bool)>>>,
+    }
+    impl SessionEvents for ObservingExit {
+        fn status(&self, ev: &SessionActivityEvent) {
+            self.inner.status(ev);
+        }
+        fn role_activity(&self, ev: &RoleActivityEvent) {
+            self.inner.role_activity(ev);
+        }
+        fn warning(&self, ev: &WarningEvent) {
+            self.inner.warning(ev);
+        }
+        fn spawned(&self, ev: &SessionSpawnedEvent) {
+            self.inner.spawned(ev);
+        }
+        fn updated(&self, ev: &SessionUpdatedEvent) {
+            self.inner.updated(ev);
+        }
+        fn exit(&self, ev: &ExitEvent) {
+            // Same-launch cleanup for a non-retained unlisted PTY must already be complete
+            // before observers receive `session/exit`.
+            self.observations.lock().unwrap().push((
+                self.mgr.live_session_ids().is_empty(),
+                !self.mgr.status_snapshot().contains_key(&ev.session_id),
+                !self.mgr.activity_snapshot().contains_key(&ev.session_id),
+            ));
+            self.inner.exit(ev);
+        }
+    }
+    let observer = Arc::new(ObservingExit {
+        inner: Arc::clone(&listener) as Arc<dyn SessionEvents>,
+        mgr: Arc::clone(&mgr),
+        observations: Arc::clone(&exit_observations),
+    });
+    mgr.spawn_unlisted(spec, &pool, observer as Arc<dyn SessionEvents>)
         .unwrap();
 
     assert_eq!(fake.spawn_count(), 1);
@@ -323,6 +361,11 @@ fn unlisted_pty_reports_only_to_its_listener_and_leaves_no_trace() {
     assert!(mgr.live_session_ids().is_empty());
     assert!(!mgr.status_snapshot().contains_key(&session_id));
     assert!(!mgr.activity_snapshot().contains_key(&session_id));
+    assert_eq!(
+        *exit_observations.lock().unwrap(),
+        vec![(true, true, true)],
+        "exit observer itself must see the unlisted session already cleaned up"
+    );
     let conn = pool.get().unwrap();
     assert!(crate::repo::session::get_row(&conn, &session_id)
         .unwrap()

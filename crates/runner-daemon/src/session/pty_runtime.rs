@@ -435,6 +435,12 @@ fn stop_handle(session_id: &str, handle: &Arc<SessionHandle>) -> RuntimeResult<(
     }
     let mut killer = handle.killer.lock().expect("killer poisoned");
     let child = handle.child.lock().expect("child slot poisoned").take();
+    // If the original child was already reaped (by the reader thread or an earlier
+    // stop), return before touching the process tree: on macOS descendant lookup
+    // uses plain PIDs, so a reused PID could otherwise signal unrelated processes.
+    if child.is_none() && reaped_exit_status(handle).is_some() {
+        return Ok(());
+    }
     // Snapshot before SIGHUP: once the agent is gone its children are
     // reparented outside its tree and ancestry no longer identifies them.
     let descendants = handle
@@ -480,6 +486,9 @@ fn stop_handle(session_id: &str, handle: &Arc<SessionHandle>) -> RuntimeResult<(
         retirement.retire();
     }
     let child = handle.child.lock().expect("child slot poisoned").take();
+    if child.is_none() && handle.exit_code.load(Ordering::Acquire) != EXIT_UNSET {
+        return Ok(());
+    }
     match child {
         Some(mut child) => {
             match stop_and_reap_child(session_id, handle.process_tree.as_ref(), child.as_mut()) {

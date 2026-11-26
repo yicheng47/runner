@@ -4918,6 +4918,379 @@ fn exiting_forwarder_cannot_clear_resumed_process_images_or_handle() {
 }
 
 #[test]
+fn archive_restore_resume_preserves_exit_spawn_order_across_pruned_state() {
+    use crate::session::manager::{ExitEvent, SessionManager, SessionSpawnedEvent};
+    use base64::Engine as _;
+    use runner_core::protocol::{
+        ClientError, ClientEvent, DaemonClient, EventError, EventSubscription, Request, Response,
+        Transport,
+    };
+    use runner_terminal::kitty::GlobalImageBudget;
+    use runner_terminal::terminal::TerminalBridge;
+    use std::sync::Mutex;
+
+    struct ClosedEvents;
+    impl EventSubscription for ClosedEvents {
+        fn recv(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = std::result::Result<ClientEvent, EventError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            Box::pin(async { Err(EventError::Closed) })
+        }
+    }
+    struct LocalSessionsTransport(Arc<SessionManager>);
+    impl Transport for LocalSessionsTransport {
+        fn call(&self, _request: Request) -> std::result::Result<Response, ClientError> {
+            Err(ClientError::msg("unused"))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            Box::new(ClosedEvents)
+        }
+        fn attach(
+            &self,
+            session_id: &str,
+        ) -> std::result::Result<runner_core::protocol::terminal::TerminalAttachment, ClientError>
+        {
+            self.0
+                .attach_terminal(session_id)
+                .map_err(|e| ClientError::msg(e.to_string()))
+        }
+    }
+
+    #[derive(Default)]
+    struct MultiLaunchRuntime {
+        spawns: Mutex<Vec<Option<std::sync::mpsc::Sender<RuntimeOutput>>>>,
+        writes: Mutex<Vec<Vec<u8>>>,
+        writes_cv: std::sync::Condvar,
+    }
+    impl MultiLaunchRuntime {
+        fn push_output(&self, launch: usize, bytes: &[u8]) {
+            self.spawns.lock().unwrap()[launch]
+                .as_ref()
+                .expect("launch open")
+                .send(RuntimeOutput::Stream(bytes.to_vec()))
+                .unwrap();
+        }
+        fn close_launch(&self, launch: usize) {
+            self.spawns.lock().unwrap()[launch] = None;
+        }
+        fn wait_writes_len(&self, expected: usize) -> Vec<Vec<u8>> {
+            let mut guard = self.writes.lock().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while guard.len() < expected {
+                let rem = deadline
+                    .checked_duration_since(std::time::Instant::now())
+                    .expect("timed out waiting for PTY replies");
+                let (next, _) = self.writes_cv.wait_timeout(guard, rem).unwrap();
+                guard = next;
+            }
+            guard.clone()
+        }
+        fn take_writes(&self) {
+            self.writes.lock().unwrap().clear();
+        }
+    }
+    impl SessionRuntime for MultiLaunchRuntime {
+        fn spawn(&self, spec: SpawnSpec) -> RuntimeResult<(RuntimeSession, OutputStream)> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.spawns.lock().unwrap().push(Some(tx));
+            Ok((
+                RuntimeSession {
+                    runtime: "archive-resume".into(),
+                    session_id: spec.session_id,
+                },
+                OutputStream::new(rx, Arc::new(AtomicBool::new(false))),
+            ))
+        }
+        fn stop(&self, _: &RuntimeSession) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn send_bytes(&self, _: &RuntimeSession, bytes: &[u8]) -> RuntimeResult<()> {
+            self.writes.lock().unwrap().push(bytes.to_vec());
+            self.writes_cv.notify_all();
+            Ok(())
+        }
+        fn send_key(&self, _: &RuntimeSession, _: &str) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &RuntimeSession, _: u16, _: u16, _: u16, _: u16) -> RuntimeResult<()> {
+            Ok(())
+        }
+        fn status(&self, _: &RuntimeSession) -> RuntimeResult<Option<SessionStatus>> {
+            Ok(Some(SessionStatus {
+                alive: false,
+                exit_code: Some(0),
+                ..Default::default()
+            }))
+        }
+    }
+
+    struct GatedExitEvents {
+        exit_pause_tx: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        exit_release_rx: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        log: Arc<Mutex<Vec<&'static str>>>,
+        bridge: Arc<TerminalBridge>,
+    }
+    impl SessionEvents for GatedExitEvents {
+        fn spawned(&self, ev: &SessionSpawnedEvent) {
+            self.log.lock().unwrap().push("session/spawned");
+            self.bridge.handle_event(&ClientEvent {
+                name: "session/spawned".into(),
+                payload: serde_json::json!({ "session_id": ev.session_id }),
+            });
+        }
+        fn exit(&self, ev: &ExitEvent) {
+            let tx = self.exit_pause_tx.lock().unwrap().take();
+            if let Some(tx) = tx {
+                let _ = tx.send(());
+                let rx = self.exit_release_rx.lock().unwrap().take();
+                if let Some(rx) = rx {
+                    rx.recv_timeout(std::time::Duration::from_secs(10))
+                        .expect("exit gate released");
+                }
+            }
+            self.log.lock().unwrap().push("session/exit");
+            self.bridge.handle_event(&ClientEvent {
+                name: "session/exit".into(),
+                payload: serde_json::json!({ "session_id": ev.session_id }),
+            });
+        }
+    }
+
+    struct PausingExitedListener {
+        pause_tx: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        release_rx: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    }
+    impl crate::router::SessionDeliveryListener for PausingExitedListener {
+        fn session_delivery_event(
+            &self,
+            _session_id: &str,
+            event: crate::router::SessionDeliveryEvent,
+        ) {
+            if event == crate::router::SessionDeliveryEvent::Exited {
+                let tx = self.pause_tx.lock().unwrap().take();
+                if let Some(tx) = tx {
+                    let _ = tx.send(());
+                    let rx = self.release_rx.lock().unwrap().take();
+                    if let Some(rx) = rx {
+                        rx.recv_timeout(std::time::Duration::from_secs(10))
+                            .expect("delivery exit gate released");
+                    }
+                }
+            }
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = Arc::new(MultiLaunchRuntime::default());
+    let budget = Arc::new(GlobalImageBudget::new(4 * 1024 * 1024));
+    let mut core = test_core_with_runtime(temp.path(), Arc::clone(&runtime) as _);
+    core.sessions = SessionManager::new_with_image_budget(
+        Arc::clone(&core.runtime_shell_env),
+        Arc::clone(&core.runtime_discovery),
+        Arc::clone(&runtime) as _,
+        budget,
+    );
+    core.sessions.set_runtime_events(core.events.clone());
+
+    let client = DaemonClient::new(Arc::new(LocalSessionsTransport(Arc::clone(&core.sessions))));
+    let bridge = TerminalBridge::new(client, Arc::new(|| {})).unwrap();
+    let events_log = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+
+    let role = {
+        let conn = core.db.get().unwrap();
+        crate::test_support::insert_test_role(&conn, "arch-res", "arch-res", "trae", "arch-res");
+        crate::ops::role::get(&conn, "arch-res").unwrap()
+    };
+    let (exit_pause_tx, exit_pause_rx) = std::sync::mpsc::channel();
+    let (exit_release_tx, exit_release_rx) = std::sync::mpsc::channel();
+    let events: Arc<dyn SessionEvents> = Arc::new(GatedExitEvents {
+        exit_pause_tx: Mutex::new(Some(exit_pause_tx)),
+        exit_release_rx: Mutex::new(Some(exit_release_rx)),
+        log: Arc::clone(&events_log),
+        bridge: Arc::clone(&bridge),
+    });
+
+    // Launch 1
+    let id = core
+        .sessions
+        .spawn_direct(
+            &role,
+            DirectLaunch {
+                cwd: Some(temp.path().to_str().unwrap().into()),
+                cols: Some(80),
+                rows: Some(24),
+                ..Default::default()
+            },
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::clone(&events),
+        )
+        .unwrap()
+        .id;
+
+    // Case 1: Gate Launch 1 inside `events.exit` (holding per-ID `lifecycle_publish_lock`).
+    // Archive DB row + `forget_session_state` (pruning `SessionState`), restore DB row, and
+    // start Launch 2's resume on another thread. Launch 2 must install its new handle/state and
+    // then wait on the SAME per-ID publication lock until Launch 1's exit completes, so events
+    // arrive strictly as `[spawned, exit, spawned]` and Launch 2's mirror stays alive.
+    let launch1_done = core.sessions.watch_forwarder_exit(&id);
+    runtime.close_launch(0);
+    exit_pause_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("launch 1 paused inside events.exit");
+
+    {
+        let conn = core.db.get().unwrap();
+        crate::repo::session::archive(&conn, &id, chrono::Utc::now()).unwrap();
+    }
+    core.sessions.forget_session_state(&id);
+    {
+        let conn = core.db.get().unwrap();
+        crate::repo::session::unarchive_direct(&conn, &id).unwrap();
+    }
+
+    let sessions_r2 = Arc::clone(&core.sessions);
+    let id_r2 = id.clone();
+    let app_data_r2 = core.app_data_dir.clone();
+    let db_r2 = core.db.clone();
+    let events_r2 = Arc::clone(&events);
+    let resume2 = std::thread::spawn(move || {
+        sessions_r2
+            .resume(&id_r2, Some(80), Some(24), &app_data_r2, db_r2, events_r2)
+            .unwrap()
+    });
+
+    // Wait until Launch 2 has installed its brand-new `SessionState` and handle, proving
+    // `publish_handle_install` is now serialized behind Launch 1's in-flight exit lock.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while core.sessions.live_runtime_session(&id).is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for Launch 2 to install its handle"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        *events_log.lock().unwrap(),
+        vec!["session/spawned"],
+        "Launch 2 must not publish session/spawned ahead of Launch 1's in-flight exit across state pruning"
+    );
+
+    // Release Launch 1's exit callback; Launch 1 emits exit first, then Launch 2 emits spawned.
+    exit_release_tx.send(()).unwrap();
+    launch1_done
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("launch 1 forwarder finished");
+    resume2.join().unwrap();
+    assert_eq!(
+        *events_log.lock().unwrap(),
+        vec!["session/spawned", "session/exit", "session/spawned"],
+        "archive+restore+resume across pruned SessionState must strictly order exit before spawned"
+    );
+    let mirror_launch2 = bridge
+        .session(&id)
+        .expect("TerminalBridge must hold Launch 2's mirror after archive/restore/resume");
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let img = b64(&vec![7u8; 32 * 32 * 3]);
+    runtime.push_output(
+        1,
+        format!("\x1b_Ga=t,i=55,f=24,s=32,v=32;{img}\x1b\\").as_bytes(),
+    );
+    assert_eq!(
+        runtime.wait_writes_len(1),
+        vec![b"\x1b_Gi=55;OK\x1b\\".to_vec()]
+    );
+    runtime.take_writes();
+
+    // Case 2: Pause Launch 2 BEFORE `publish_launch_exit` (in `Exited` delivery listener), run
+    // archive + `forget_session_state` + restore + resume (Launch 3 receives image OK), then
+    // release Launch 2: Launch 2 must see Launch 3's `last_launch` and suppress its stale exit.
+    let (dl_pause_tx, dl_pause_rx) = std::sync::mpsc::channel();
+    let (dl_release_tx, dl_release_rx) = std::sync::mpsc::channel();
+    let dl = Arc::new(PausingExitedListener {
+        pause_tx: Mutex::new(Some(dl_pause_tx)),
+        release_rx: Mutex::new(Some(dl_release_rx)),
+    });
+    let dl_dyn: Arc<dyn crate::router::SessionDeliveryListener> = Arc::clone(&dl) as _;
+    core.sessions
+        .register_delivery_listener(&id, Arc::downgrade(&dl_dyn));
+
+    runtime.close_launch(1);
+    dl_pause_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("launch 2 paused in Exited delivery listener");
+
+    {
+        let conn = core.db.get().unwrap();
+        crate::repo::session::archive(&conn, &id, chrono::Utc::now()).unwrap();
+    }
+    core.sessions.forget_session_state(&id);
+    {
+        let conn = core.db.get().unwrap();
+        crate::repo::session::unarchive_direct(&conn, &id).unwrap();
+    }
+    core.sessions
+        .resume(
+            &id,
+            Some(80),
+            Some(24),
+            &core.app_data_dir,
+            core.db.clone(),
+            Arc::clone(&events),
+        )
+        .unwrap();
+    let mirror_launch3 = bridge
+        .session(&id)
+        .expect("TerminalBridge must attach Launch 3's mirror");
+    runtime.push_output(
+        2,
+        format!("\x1b_Ga=t,i=66,f=24,s=32,v=32;{img}\x1b\\").as_bytes(),
+    );
+    assert_eq!(
+        runtime.wait_writes_len(1),
+        vec![b"\x1b_Gi=66;OK\x1b\\".to_vec()]
+    );
+    runtime.take_writes();
+
+    let launch2_done = core.sessions.watch_forwarder_exit(&id);
+    dl_release_tx.send(()).unwrap();
+    launch2_done
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("launch 2 forwarder finished");
+    assert_eq!(
+        *events_log.lock().unwrap(),
+        vec![
+            "session/spawned",
+            "session/exit",
+            "session/spawned",
+            "session/spawned"
+        ],
+        "stale launch 2 exit after archive/restore/resume must be suppressed"
+    );
+    assert!(
+        bridge
+            .session(&id)
+            .is_some_and(|m| Arc::ptr_eq(&m, &mirror_launch3)),
+        "TerminalBridge must keep Launch 3's mirror after launch 2 finishes"
+    );
+
+    drop(dl_dyn);
+    drop(dl);
+    drop(mirror_launch2);
+    drop(mirror_launch3);
+    drop(bridge);
+    runtime.close_launch(2);
+    core.sessions.kill(&id).unwrap();
+    core.sessions.drain_terminal_workers();
+}
+
+#[test]
 fn stopping_or_retaining_exit_resyncs_local_mirrors_on_both_screens_while_preserving_text() {
     use crate::session::manager::SessionManager;
     use alacritty_terminal::grid::Dimensions;

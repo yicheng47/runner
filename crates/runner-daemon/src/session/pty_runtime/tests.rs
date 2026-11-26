@@ -3179,6 +3179,13 @@ fn bound_stop_from_prior_launch_never_stops_replacement_pty_or_hooks() {
     launch1.agent_runtime = Some(crate::model::Runtime::Codex);
     launch1.env.insert(GENERATION_ENV.into(), "gen-1".into());
     let (_sess1, stream1) = rt.spawn(launch1).unwrap();
+    let handle1 = rt
+        .sessions
+        .lock()
+        .unwrap()
+        .get(session_id)
+        .cloned()
+        .expect("launch 1 registered");
     let stop1 = stream1
         .bound_stop()
         .expect("PtyRuntime must attach a launch-bound stop handle");
@@ -3196,6 +3203,19 @@ fn bound_stop_from_prior_launch_never_stops_replacement_pty_or_hooks() {
         }
     }
     drop(stream1);
+    assert!(
+        reaped_exit_status(&handle1).is_some(),
+        "reader thread must have reaped launch 1 before delayed stop runs"
+    );
+    assert_eq!(
+        handle1
+            .process_tree
+            .as_ref()
+            .expect("launch 1 process tree")
+            .op_count(),
+        0,
+        "natural exit must not have run process-tree ops"
+    );
 
     // Spawn Launch 2 under the same session_id with a live child and its own hook generation.
     let mut launch2 = spec(session_id, "/bin/sh", &["-c", "exec sleep 30"]);
@@ -3206,8 +3226,18 @@ fn bound_stop_from_prior_launch_never_stops_replacement_pty_or_hooks() {
         .bound_stop()
         .expect("launch 2 must carry its own launch-bound stop handle");
 
-    // Invoking Launch 1's stale bound stopper must neither kill Launch 2's PTY nor retire Launch 2's hooks.
+    // Invoking Launch 1's stale bound stopper must return before enumerating descendants or
+    // touching the process tree, and must neither kill Launch 2's PTY nor retire Launch 2's hooks.
     stop1().expect("stale bound stop is a no-op once launch 1 is gone");
+    assert_eq!(
+        handle1
+            .process_tree
+            .as_ref()
+            .expect("launch 1 process tree")
+            .op_count(),
+        0,
+        "already-reaped bound stop must perform zero process-tree operations"
+    );
     let status2 = rt
         .status(&sess2)
         .unwrap()
@@ -3228,6 +3258,70 @@ fn bound_stop_from_prior_launch_never_stops_replacement_pty_or_hooks() {
     };
     rt.admit_hook(report)
         .expect("stale launch 1 bound stop must not retire launch 2's hook route");
+
+    // Also verify an already-reaped handle whose hook receiver is still live retires its own
+    // hook route while still performing zero process-tree operations.
+    let reaped_session = "bound-stop-reaped-hooks";
+    let mut launch3 = spec(reaped_session, "/bin/sh", &["-c", "exit 0"]);
+    launch3.agent_runtime = Some(crate::model::Runtime::Codex);
+    let (_sess3, stream3) = rt.spawn(launch3).unwrap();
+    let handle3 = rt
+        .sessions
+        .lock()
+        .unwrap()
+        .get(reaped_session)
+        .cloned()
+        .expect("launch 3 registered");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let rem = deadline
+            .checked_duration_since(Instant::now())
+            .expect("launch 3 did not exit");
+        match stream3.recv_timeout(rem) {
+            Ok(_) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!("launch 3 did not disconnect"),
+        }
+    }
+    let receiver3 = rt.hooks.register(
+        runner_core::protocol::Runtime::Codex,
+        reaped_session.into(),
+        "gen-3".into(),
+    );
+    let pair = native_pty_system()
+        .openpty(PtySize::default())
+        .expect("openpty");
+    let mut c = CommandBuilder::new("/bin/sh");
+    c.args(["-c", "exit 0"]);
+    let mut dummy_child = pair.slave.spawn_command(c).expect("spawn dummy");
+    let dummy_killer = dummy_child.clone_killer();
+    let _ = dummy_child.wait();
+    let handle3_with_hook = Arc::new(SessionHandle {
+        master: Mutex::new(None),
+        writer: Mutex::new(None),
+        killer: Mutex::new(dummy_killer),
+        child: Arc::new(Mutex::new(None)),
+        exit_code: AtomicI32::new(0),
+        alive: AtomicBool::new(false),
+        last_resize: Mutex::new(None),
+        idle_detector: Arc::clone(&handle3.idle_detector),
+        hook_retirement: Some(receiver3.retirement()),
+        pid: handle3.pid,
+        process_tree: Some(ProcessTree::adopt(std::process::id()).unwrap()),
+        command: handle3.command.clone(),
+    });
+    stop_handle(reaped_session, &handle3_with_hook).unwrap();
+    assert!(
+        receiver3.is_retired(),
+        "already-reaped stop must still retire its own hook route"
+    );
+    assert_eq!(
+        handle3_with_hook.process_tree.as_ref().unwrap().op_count(),
+        0,
+        "already-reaped stop with live hook route must perform zero process-tree operations"
+    );
+    drop(receiver3);
+    drop(stream3);
 
     stop2().unwrap();
     drop(stream2);

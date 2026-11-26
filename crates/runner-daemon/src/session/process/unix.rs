@@ -110,6 +110,8 @@ pub(crate) struct ProcessTree {
     root: Descendant,
     #[cfg(target_os = "linux")]
     root_identity: ProcIdentity,
+    #[cfg(test)]
+    op_count: std::sync::atomic::AtomicUsize,
 }
 
 impl ProcessTree {
@@ -134,7 +136,14 @@ impl ProcessTree {
             root,
             #[cfg(target_os = "linux")]
             root_identity,
+            #[cfg(test)]
+            op_count: std::sync::atomic::AtomicUsize::new(0),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn op_count(&self) -> usize {
+        self.op_count.load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub(crate) fn attach_pty(&mut self, master: &dyn MasterPty) {
@@ -142,6 +151,9 @@ impl ProcessTree {
     }
 
     pub(crate) fn snapshot_descendants(&self) -> Vec<Descendant> {
+        #[cfg(test)]
+        self.op_count
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         #[cfg(target_os = "linux")]
         {
             if !self.root.alive() {
@@ -164,6 +176,9 @@ impl ProcessTree {
     }
 
     pub(crate) fn terminate(&self) -> io::Result<()> {
+        #[cfg(test)]
+        self.op_count
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         signal_process_group(self.pid, libc::SIGKILL)
     }
 

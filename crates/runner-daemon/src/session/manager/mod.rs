@@ -271,9 +271,6 @@ struct SessionState {
     delivery_prompted: bool,
     handle: Option<SessionHandle>,
     last_launch: Option<Arc<AtomicBool>>,
-    /// Serializes `session/spawned` and `session/exit` emission for this session so an older
-    /// launch's exit can never be delivered after a replacement launch's spawn.
-    lifecycle_publish: Arc<Mutex<()>>,
     model: SessionModel,
     optimistic_completion: Option<OptimisticCompletion>,
     delivery_gate: Arc<DeliveryGate>,
@@ -429,6 +426,10 @@ pub struct SessionManager {
     /// other sessions. Never lock a SessionState while holding this map;
     /// pruning and revealing pre-attachment state lock the state before the map.
     sessions: Mutex<HashMap<String, Arc<Mutex<SessionState>>>>,
+    /// Per-session-id publication mutexes held across `session/spawned` and `session/exit`
+    /// emission (and cleanup). Keyed on `SessionManager` rather than `SessionState` so archive
+    /// cleanup (`forget_session_state`) + restore + resume still serialize against an in-flight exit.
+    lifecycle_publish: Mutex<HashMap<String, Weak<Mutex<()>>>>,
     delivery_listeners: Mutex<HashMap<String, Vec<Weak<dyn router::SessionDeliveryListener>>>>,
     /// User's current login-shell env snapshot. Discovery swaps this
     /// handle after a successful background probe; spawns clone one
@@ -626,6 +627,7 @@ impl SessionManager {
         Arc::new(Self {
             runtime_updates: Mutex::default(),
             sessions: Mutex::new(HashMap::new()),
+            lifecycle_publish: Mutex::new(HashMap::new()),
             delivery_listeners: Mutex::new(HashMap::new()),
             shell_env,
             discovery_state,
