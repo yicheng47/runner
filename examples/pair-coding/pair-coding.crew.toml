@@ -4,6 +4,7 @@ kind = "crew"
 [meta]
 description = "Two-role coder and reviewer implementation loop with working-tree diff reviews."
 author = "Runner"
+category = "dev"
 tags = ["coding", "review", "starter"]
 
 [crew]

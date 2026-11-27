@@ -4,6 +4,7 @@ kind = "crew"
 [meta]
 description = "Two players sharing one role plus a neutral referee playing Tic-Tac-Toe."
 author = "Runner"
+category = "fun"
 tags = ["game", "multiplayer"]
 
 [crew]

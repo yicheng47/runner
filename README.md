@@ -125,7 +125,7 @@ Features and platform support vary by agent.
 
 Fresh installations include **Pair coding crew**: a coder implements and a reviewer checks the diff until the review is clean. Both use Codex by default; you can choose a different agent for either role.
 
-Ready-to-import `.crew.toml` templates live in [`examples/`](./examples/) (including pair coding, Codex trio, dev crew, docs crew and more). Drop any `.crew.toml` file into **Crews → Import…** (or run `runner crew import <file>`) to preview its prompts and switch any missing runtime to an installed agent; standalone `.role.toml` files import the same way under **Roles → Import…** or `runner role import <file>`.
+Ready-to-import `.crew.toml` templates live in [`examples/`](./examples/) across Dev (`neon-trio`, `claude-duo`, `brainstorm-crew`, `review-panel`, `pair-coding`), Social Media (`x-promotion`), Video (`release-video`), and Fun (`tic-tac-toe`). Drop any `.crew.toml` file into **Crews → Import…** to preview its prompts and switch any missing runtime before creating anything, or import from the CLI with `runner crew import <file>` (pass `--dry-run` first to inspect the plan without writing); standalone `.role.toml` files import the same way under **Roles → Import…** or `runner role import <file>`.
 
 [Build a crew and explore example templates →](./docs/guide/guides/build-a-crew.md)
 
