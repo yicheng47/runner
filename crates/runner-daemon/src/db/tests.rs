@@ -844,8 +844,8 @@ fn seeded_personas_contain_no_bus_verbs() {
         "ask_human",
     ];
     for (name, md) in [
-        ("coder.md", SEED_CODER_PROMPT),
-        ("reviewer.md", SEED_REVIEWER_PROMPT),
+        ("coder", SEED_CODER_PROMPT.as_str()),
+        ("reviewer", SEED_REVIEWER_PROMPT.as_str()),
     ] {
         for needle in banned_substrings {
             assert!(

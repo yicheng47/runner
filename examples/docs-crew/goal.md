@@ -6,18 +6,20 @@ more) writers work modules in parallel; one editor harmonizes the result.
 
 ## Roles
 
+Import [`docs-crew.crew.toml`](docs-crew.crew.toml) for all roles and slots:
+
 - **@architect** (lead) — surveys the repo, decides the doc structure
   (per-module pages + an index), dispatches writers with concrete file
   scopes, then assembles the index and cross-links. Stays out of the
-  prose. See `architect.md`.
+  prose.
 - **@writer-a**, **@writer-b** — pick up one module at a time, read the
   code carefully, write the module doc. Same persona template, different
-  slot handles so the architect can dispatch to them independently. See
-  `writer.md`. Add `@writer-c`, `@writer-d`, etc. by adding more slots
-  pointing at the same `writer` runner template.
+  slot handles so the architect can dispatch to them independently. Add
+  `@writer-c`, `@writer-d`, etc. by adding more slots pointing at the
+  same `writer` runner template.
 - **@editor** — once writers land their drafts, reads the full doc set
   against the code, finds gaps, broken cross-refs, voice drift, and
-  claims that don't match what the code actually does. See `editor.md`.
+  claims that don't match what the code actually does.
 
 ## Goal (replace this)
 

@@ -33,6 +33,7 @@ pub mod runtime;
 pub mod session;
 pub mod skills;
 pub mod slot;
+pub mod template;
 pub mod window;
 
 #[cfg(test)]
