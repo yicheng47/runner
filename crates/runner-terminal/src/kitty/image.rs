@@ -85,9 +85,12 @@ pub struct StoredImage {
     pub placement_count: u32,
     pub generation: u64,
     pub transmission: u64,
-    /// Monotonic lineage token of the screen storage (`primary` or `alt`) when
-    /// this image was inserted. Bumped on screen reset/clear-all so fallback
-    /// textures never cross screens or survive a cleared screen.
+    /// Monotonic per-image continuity token minted when a new image is stored
+    /// and inherited only by in-place replacements of the same image ID (live
+    /// overwrite or mirror-side `a=d,d=I,i=<id>` -> `a=T,i=<id>` within one
+    /// chunk, broken by screen reset/clear-all or chunk end). Keeps fallback
+    /// textures scoped to the same replaced image and never across screens or
+    /// cleared images.
     pub screen_lineage: u64,
 }
 

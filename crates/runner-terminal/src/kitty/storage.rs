@@ -431,9 +431,11 @@ pub struct ImageStorage {
     /// Mirror mode applies stream deletes and only evicts at the safety cap
     /// (`2 * PER_SCREEN_LIMIT`).
     mirror_mode: bool,
-    /// Per-ID lineage tokens preserved across an explicit `a=d,d=I,i=<id>` ->
-    /// `a=T,i=<id>` in-place replacement within the same chunk, and cleared on
-    /// any screen clear/reset boundary (`reset`, `ED2`, `a=d,d=A`) or chunk end.
+    /// Mirror-only per-ID lineage tokens preserved across an explicit
+    /// `a=d,d=I,i=<id>` -> `a=T,i=<id>` in-place replacement within the same
+    /// chunk, and cleared on any screen clear/reset boundary (`reset`, `ED2`,
+    /// `a=d,d=A`) or chunk end. Authoritative (`runnerd`) storage leaves this
+    /// empty.
     replaced_lineage: HashMap<u32, u64>,
 }
 
@@ -669,8 +671,10 @@ impl ImageStorage {
             self.total_bytes -= old.storage_bytes();
             self.encoded_bytes -= old.encoded_bytes();
             Some(old.screen_lineage)
-        } else {
+        } else if self.mirror_mode {
             self.replaced_lineage.remove(&image.id)
+        } else {
+            None
         };
 
         self.mark_mutated();
@@ -1133,7 +1137,7 @@ impl ImageStorage {
                 image_id,
                 placement_id,
             } => {
-                let prior_lineage = (delete_images && placement_id == 0)
+                let prior_lineage = (self.mirror_mode && delete_images && placement_id == 0)
                     .then(|| self.images.get(&image_id).map(|img| img.screen_lineage))
                     .flatten();
                 self.delete_by_id(image_id, placement_id, delete_images);
@@ -1690,5 +1694,124 @@ impl TerminalGraphics {
 
     pub fn is_empty(&self) -> bool {
         self.primary.is_empty() && self.alt.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kitty::command::{Compression, Format};
+    use crate::kitty::image::DecodedFormat;
+
+    fn tiny_image(id: u32) -> StoredImage {
+        StoredImage {
+            id,
+            number: 0,
+            width: 1,
+            height: 1,
+            wire_format: Format::Rgba,
+            compression: Compression::None,
+            decoded_format: DecodedFormat::Rgba,
+            encoded_data: Arc::from([255u8, 0, 0, 255]),
+            transient: false,
+            implicit_id: false,
+            placement_count: 0,
+            generation: 0,
+            transmission: 0,
+            screen_lineage: 0,
+        }
+    }
+
+    #[test]
+    fn authoritative_delete_discards_replaced_lineage_while_mirror_tracks_within_chunk() {
+        let mut auth = ImageStorage::authoritative(None);
+        for id in 1..=16 {
+            auth.add_image(tiny_image(id)).unwrap();
+            let before_lineage = auth.image_by_id(id).unwrap().screen_lineage;
+            auth.delete(
+                DeleteAction::Id {
+                    delete_images: true,
+                    image_id: id,
+                    placement_id: 0,
+                },
+                (0, 0),
+                24,
+                80,
+                CellSize {
+                    width: 8,
+                    height: 16,
+                },
+            );
+            assert!(
+                auth.replaced_lineage.is_empty(),
+                "authoritative storage must not retain replaced_lineage metadata after delete"
+            );
+            if id == 1 {
+                auth.add_image(tiny_image(id)).unwrap();
+                let after_lineage = auth.image_by_id(id).unwrap().screen_lineage;
+                assert_ne!(after_lineage, before_lineage);
+                auth.delete(
+                    DeleteAction::Id {
+                        delete_images: true,
+                        image_id: id,
+                        placement_id: 0,
+                    },
+                    (0, 0),
+                    24,
+                    80,
+                    CellSize {
+                        width: 8,
+                        height: 16,
+                    },
+                );
+                assert!(auth.replaced_lineage.is_empty());
+            }
+        }
+        assert!(auth.is_empty());
+        assert_eq!(auth.encoded_bytes(), 0);
+        assert!(auth.replaced_lineage.is_empty());
+
+        let mut mirror = ImageStorage::mirror();
+        mirror.add_image(tiny_image(77)).unwrap();
+        let initial_lineage = mirror.image_by_id(77).unwrap().screen_lineage;
+        mirror.delete(
+            DeleteAction::Id {
+                delete_images: true,
+                image_id: 77,
+                placement_id: 0,
+            },
+            (0, 0),
+            24,
+            80,
+            CellSize {
+                width: 8,
+                height: 16,
+            },
+        );
+        assert_eq!(mirror.replaced_lineage.get(&77), Some(&initial_lineage));
+        mirror.add_image(tiny_image(77)).unwrap();
+        assert_eq!(
+            mirror.image_by_id(77).unwrap().screen_lineage,
+            initial_lineage
+        );
+        assert!(mirror.replaced_lineage.is_empty());
+
+        mirror.delete(
+            DeleteAction::Id {
+                delete_images: true,
+                image_id: 77,
+                placement_id: 0,
+            },
+            (0, 0),
+            24,
+            80,
+            CellSize {
+                width: 8,
+                height: 16,
+            },
+        );
+        assert_eq!(mirror.replaced_lineage.len(), 1);
+        mirror.clear_replaced_lineages();
+        assert!(mirror.replaced_lineage.is_empty());
     }
 }
