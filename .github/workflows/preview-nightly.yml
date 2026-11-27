@@ -5,7 +5,7 @@ on:
     # Umbrella branches cut as preview-nightly. nightly.yml's prepare job reads this list too.
     # no-umbrella-branch is a placeholder that matches nothing while no umbrella is running.
     branches:
-      - no-umbrella-branch
+      - feat/1508-libghostty-vt
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
