@@ -81,24 +81,32 @@ impl MirrorCache {
 
     /// Evicts cached textures that are no longer live in linear time, except
     /// the single newest stale generation matching any live `in_flight`
-    /// `(screen_lineage, image_id)` so same-screen replacements do not flash
-    /// blank before the new generation publishes.
-    fn prune_stale_textures(&mut self) -> Vec<Arc<RenderImage>> {
-        let mut in_flight_lineages: HashSet<LineageId> =
-            HashSet::with_capacity(self.in_flight.len());
+    /// `(screen_lineage, image_id)` (or, when `preserve_undecoded_live` is set
+    /// for a foreground metadata-only sync such as `configure`, any live
+    /// undecoded non-failed `(screen_lineage, image_id)`) so same-lineage
+    /// replacements do not flash blank before their decode publishes.
+    fn prune_stale_textures(&mut self, preserve_undecoded_live: bool) -> Vec<Arc<RenderImage>> {
+        let mut pending_lineages: HashSet<LineageId> = HashSet::with_capacity(self.in_flight.len());
         for key in &self.in_flight {
             if let Some(&lineage) = self.live_keys.get(key) {
-                in_flight_lineages.insert((lineage, key.0));
+                pending_lineages.insert((lineage, key.0));
+            }
+        }
+        if preserve_undecoded_live {
+            for (&key, &lineage) in &self.live_keys {
+                if !self.textures.contains_key(&key) && !self.failed.contains(&key) {
+                    pending_lineages.insert((lineage, key.0));
+                }
             }
         }
 
         let mut preserve_for_lineage: HashMap<LineageId, u64> =
-            HashMap::with_capacity(in_flight_lineages.len());
-        if !in_flight_lineages.is_empty() {
+            HashMap::with_capacity(pending_lineages.len());
+        if !pending_lineages.is_empty() {
             for (&(id, generation), cached) in &self.textures {
                 let lineage_id = (cached.screen_lineage, id);
                 if !self.live_keys.contains_key(&(id, generation))
-                    && in_flight_lineages.contains(&lineage_id)
+                    && pending_lineages.contains(&lineage_id)
                 {
                     preserve_for_lineage
                         .entry(lineage_id)
@@ -434,7 +442,7 @@ impl TextureStore {
                         }
                     }
                     if has_viewers {
-                        entry.prune_stale_textures()
+                        entry.prune_stale_textures(false)
                     } else {
                         entry.live_keys.clear();
                         entry.drain_textures()
@@ -499,18 +507,14 @@ impl MirrorGraphicsObserver for TextureStore {
             let mut mirrors = self.mirrors.lock().unwrap();
             let entry = mirrors.entry(mirror_id).or_default();
             if sync_seq <= entry.last_sync_seq {
-                return;
-            }
-            entry.last_sync_seq = sync_seq;
-            if viewers.load(Ordering::Acquire) == 0 || live_map.is_empty() {
-                entry.live_keys.clear();
-                (entry.drain_textures(), Vec::new())
-            } else {
-                entry.live_keys = live_map;
-                entry
-                    .in_flight
-                    .retain(|key| entry.live_keys.contains_key(key));
-                entry.failed.retain(|key| entry.live_keys.contains_key(key));
+                // A newer snapshot (e.g. foreground `configure` with no decode
+                // candidates) already reconciled `live_keys`. Keep the newer
+                // live set intact so deleted images are never resurrected, but
+                // preserve the frame worker's decode responsibility for any
+                // candidates still live in that newer snapshot.
+                if viewers.load(Ordering::Acquire) == 0 || decode_candidates.is_empty() {
+                    return;
+                }
                 let mut missing = Vec::new();
                 for img in decode_candidates {
                     let key = (img.id, img.generation);
@@ -523,8 +527,33 @@ impl MirrorGraphicsObserver for TextureStore {
                         missing.push(img.clone());
                     }
                 }
-                let released = entry.prune_stale_textures();
-                (released, missing)
+                (Vec::new(), missing)
+            } else {
+                entry.last_sync_seq = sync_seq;
+                if viewers.load(Ordering::Acquire) == 0 || live_map.is_empty() {
+                    entry.live_keys.clear();
+                    (entry.drain_textures(), Vec::new())
+                } else {
+                    entry.live_keys = live_map;
+                    entry
+                        .in_flight
+                        .retain(|key| entry.live_keys.contains_key(key));
+                    entry.failed.retain(|key| entry.live_keys.contains_key(key));
+                    let mut missing = Vec::new();
+                    for img in decode_candidates {
+                        let key = (img.id, img.generation);
+                        if entry.live_keys.contains_key(&key)
+                            && !entry.textures.contains_key(&key)
+                            && !entry.in_flight.contains(&key)
+                            && !entry.failed.contains(&key)
+                        {
+                            entry.in_flight.insert(key);
+                            missing.push(img.clone());
+                        }
+                    }
+                    let released = entry.prune_stale_textures(decode_candidates.is_empty());
+                    (released, missing)
+                }
             }
         };
 
@@ -586,7 +615,7 @@ impl MirrorGraphicsObserver for TextureStore {
                         }
                     }
                 }
-                entry.prune_stale_textures()
+                entry.prune_stale_textures(false)
             }
         };
         self.enqueue_release(released);
@@ -3423,7 +3452,7 @@ mod tests {
             },
         );
 
-        let released = cache.prune_stale_textures();
+        let released = cache.prune_stale_textures(false);
         assert_eq!(
             released.len(),
             2,
@@ -3437,5 +3466,503 @@ mod tests {
         store.mirrors.lock().unwrap().insert(mirror_id, cache);
         store.on_mirror_dropped(mirror_id);
         cx.run_until_parked();
+    }
+
+    #[test]
+    fn partial_clear_preserves_history_continuity_and_empty_ed2_invalidates_deleted_id() {
+        use std::sync::Condvar;
+
+        let mut cx = TestAppContext::single();
+        let (_host, mirror, tx, ack) =
+            mirror_named("partial-clear-ed2", TerminalController::Desktop);
+        let store = cx.update(|cx| TerminalTextureCache::attach_mirror(&mirror, cx));
+        let _lease = mirror.view();
+
+        let interaction = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let window = cx.add_window(|_, cx| GraphicsPaneHost {
+            terminal: Some(Arc::clone(&mirror)),
+            interaction: Some(interaction.clone()),
+            input: Some(input.clone()),
+            focus: cx.focus_handle(),
+            font_size: 14.,
+            line_height_factor: 1.4,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(400.), px(260.)));
+        visual.update(|window, _| window.set_scale_factor(1.0));
+        visual.refresh().unwrap();
+
+        let pane_bounds = visual.debug_bounds("GRAPHICS_PANE").unwrap();
+        let paint_id77 = |visual: &mut VisualTestContext| -> (Option<Arc<RenderImage>>, usize) {
+            visual.update(|window, _| {
+                let _term = mirror.term.lock();
+                let graphics = mirror.graphics().lock().unwrap();
+                let (bands, missing) = store.prepare_paint_bands(
+                    mirror.mirror_id(),
+                    false,
+                    &graphics,
+                    0,
+                    pane_bounds,
+                    px(8.),
+                    px(16.),
+                    window.scale_factor(),
+                    mirror.cell_size(),
+                    mirror.frame_worker_sync_pending(),
+                );
+                (
+                    bands[1]
+                        .iter()
+                        .find(|item| item.image_id == 77)
+                        .map(|item| Arc::clone(&item.image)),
+                    missing.len(),
+                )
+            })
+        };
+
+        // Case (b): Place i=77, scroll it into history, place i=81 on screen,
+        // send `a=d,d=A` (deletes 81, 77 survives), redisplay 77 at home, then
+        // replace 77 in place. Continuity must survive the partial clear.
+        let mut seq = 1u64;
+        let setup = [
+            b"\x1b[H".to_vec(),
+            kitty_rgba_command(
+                "a=T,f=32,s=8,v=8,i=77,C=1,q=2,z=-9",
+                &solid_rgba(8, 8, [255, 0, 0, 255]),
+            ),
+            "\r\n".repeat(28).into_bytes(),
+            kitty_rgba_command(
+                "a=T,f=32,s=8,v=8,i=81,C=1,q=2,z=-9",
+                &solid_rgba(8, 8, [0, 0, 255, 255]),
+            ),
+        ]
+        .concat();
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: setup.into(),
+            },
+        );
+        seq += 1;
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: b"\x1b_Ga=d,d=A,q=2;\x1b\\".into(),
+            },
+        );
+        {
+            let gfx = mirror.graphics().lock().unwrap();
+            assert!(gfx.primary.image_by_id(77).is_some());
+            assert!(gfx.primary.image_by_id(81).is_none());
+        }
+        seq += 1;
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: b"\x1b[H\x1b_Ga=p,i=77,C=1,z=-9,q=2;\x1b\\".into(),
+            },
+        );
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let (img77_before, missing_before) = paint_id77(&mut visual);
+        let img77_before = img77_before.expect("redisplayed history image 77 visible");
+        assert_eq!(missing_before, 0);
+        let lineage_before = mirror
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .image_by_id(77)
+            .unwrap()
+            .screen_lineage;
+
+        let gate1 = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let gate1_hook = Arc::clone(&gate1);
+        store.set_decode_hook(Some(Arc::new(move |key| {
+            if key.0 == 77 {
+                let (lock, cv) = &*gate1_hook;
+                let mut state = lock.lock().unwrap();
+                state.0 = true;
+                cv.notify_all();
+                while !state.1 {
+                    state = cv.wait(state).unwrap();
+                }
+            }
+        })));
+        seq += 1;
+        let replace77 = [
+            b"\x1b[H\x1b_Ga=d,d=I,i=77,q=2;\x1b\\".to_vec(),
+            kitty_rgba_command(
+                "a=T,f=32,s=8,v=8,i=77,C=1,q=2,z=-9",
+                &solid_rgba(8, 8, [0, 255, 0, 255]),
+            ),
+        ]
+        .concat();
+        tx.send(TerminalFrame::Output {
+            seq,
+            bytes: replace77.into(),
+        })
+        .unwrap();
+        {
+            let (lock, cv) = &*gate1;
+            let mut state = lock.lock().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !state.0 {
+                let rem = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!rem.is_zero());
+                let (s, _) = cv.wait_timeout(state, rem).unwrap();
+                state = s;
+            }
+        }
+        let lineage_after_replace = mirror
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .image_by_id(77)
+            .unwrap()
+            .screen_lineage;
+        assert_eq!(
+            lineage_after_replace, lineage_before,
+            "surviving history ID 77 must keep continuity across an unrelated partial clear"
+        );
+        let (mid_replace, mid_missing) = paint_id77(&mut visual);
+        assert_eq!(mid_missing, 0);
+        assert!(
+            Arc::ptr_eq(
+                &mid_replace.expect("in-place replacement after partial clear must not blank"),
+                &img77_before
+            ),
+            "mid-decode replacement must paint prior surviving image 77"
+        );
+        store.set_decode_hook(None);
+        {
+            let (lock, cv) = &*gate1;
+            let mut state = lock.lock().unwrap();
+            state.1 = true;
+            cv.notify_all();
+        }
+        ack.recv_timeout(Duration::from_secs(5))
+            .expect("replace 77 wake");
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let (img77_replaced, _) = paint_id77(&mut visual);
+        let img77_replaced = img77_replaced.expect("replaced image 77 visible");
+        assert!(!Arc::ptr_eq(&img77_before, &img77_replaced));
+
+        // Case (a): Delete the last ID 77, then ED2 (`\x1b[2J`, clearing an
+        // already-empty storage), then upload a fresh 77 in ONE output frame.
+        // The pre-clear deleted texture must NOT be painted while decoding.
+        let gate2 = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let gate2_hook = Arc::clone(&gate2);
+        store.set_decode_hook(Some(Arc::new(move |key| {
+            if key.0 == 77 {
+                let (lock, cv) = &*gate2_hook;
+                let mut state = lock.lock().unwrap();
+                state.0 = true;
+                cv.notify_all();
+                while !state.1 {
+                    state = cv.wait(state).unwrap();
+                }
+            }
+        })));
+        seq += 1;
+        let delete_ed2_upload = [
+            b"\x1b[H\x1b_Ga=d,d=I,i=77,q=2;\x1b\\\x1b[2J\x1b[H".to_vec(),
+            kitty_rgba_command(
+                "a=T,f=32,s=8,v=8,i=77,C=1,q=2,z=-9",
+                &solid_rgba(8, 8, [0, 0, 255, 255]),
+            ),
+        ]
+        .concat();
+        tx.send(TerminalFrame::Output {
+            seq,
+            bytes: delete_ed2_upload.into(),
+        })
+        .unwrap();
+        {
+            let (lock, cv) = &*gate2;
+            let mut state = lock.lock().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !state.0 {
+                let rem = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!rem.is_zero());
+                let (s, _) = cv.wait_timeout(state, rem).unwrap();
+                state = s;
+            }
+        }
+        let lineage_post_ed2 = mirror
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .image_by_id(77)
+            .unwrap()
+            .screen_lineage;
+        assert_ne!(
+            lineage_post_ed2, lineage_after_replace,
+            "ED2 on an already-empty storage must still break replacement continuity"
+        );
+        let (mid_ed2, mid_ed2_missing) = paint_id77(&mut visual);
+        assert!(
+            mid_ed2.is_none(),
+            "post-ED2 upload must not paint deleted pre-clear texture while decoding"
+        );
+        assert_eq!(mid_ed2_missing, 0);
+
+        store.set_decode_hook(None);
+        {
+            let (lock, cv) = &*gate2;
+            let mut state = lock.lock().unwrap();
+            state.1 = true;
+            cv.notify_all();
+        }
+        ack.recv_timeout(Duration::from_secs(5))
+            .expect("post-ED2 upload wake");
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let (img77_post_ed2, _) = paint_id77(&mut visual);
+        let img77_post_ed2 = img77_post_ed2.expect("post-ED2 image 77 visible");
+        assert!(!Arc::ptr_eq(&img77_replaced, &img77_post_ed2));
+    }
+
+    #[test]
+    fn configure_trimming_history_during_paused_replacement_keeps_fallback_and_worker_decode() {
+        use alacritty_terminal::vte::ansi::CursorShape;
+        use std::sync::Condvar;
+
+        struct PauseWorkerObserver {
+            inner: Arc<TextureStore>,
+            main_thread: std::thread::ThreadId,
+            gate: Arc<(Mutex<(bool, bool)>, Condvar)>,
+            pause_next_worker: std::sync::atomic::AtomicBool,
+            main_decode_counts: Mutex<Vec<usize>>,
+        }
+        impl MirrorGraphicsObserver for PauseWorkerObserver {
+            fn on_graphics_updated(
+                &self,
+                mirror_id: u64,
+                sync_seq: u64,
+                viewers: &Arc<AtomicUsize>,
+                live_keys: &[LiveImageKey],
+                decode_candidates: &[StoredImage],
+            ) {
+                if std::thread::current().id() == self.main_thread {
+                    self.main_decode_counts
+                        .lock()
+                        .unwrap()
+                        .push(decode_candidates.len());
+                } else if self.pause_next_worker.swap(false, Ordering::AcqRel) {
+                    let (lock, cv) = &*self.gate;
+                    let mut state = lock.lock().unwrap();
+                    state.0 = true;
+                    cv.notify_all();
+                    while !state.1 {
+                        state = cv.wait(state).unwrap();
+                    }
+                }
+                self.inner.on_graphics_updated(
+                    mirror_id,
+                    sync_seq,
+                    viewers,
+                    live_keys,
+                    decode_candidates,
+                );
+            }
+            fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>) {
+                self.inner.on_last_viewer_dropped(mirror_id, viewers);
+            }
+            fn on_mirror_dropped(&self, mirror_id: u64) {
+                self.inner.on_mirror_dropped(mirror_id);
+            }
+        }
+
+        let mut cx = TestAppContext::single();
+        let (_host, mirror, tx, ack) =
+            mirror_named("configure-during-replace", TerminalController::Desktop);
+        let store = cx.update(|cx| TerminalTextureCache::attach_mirror(&mirror, cx));
+        let _lease = mirror.view();
+
+        let interaction = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let window = cx.add_window(|_, cx| GraphicsPaneHost {
+            terminal: Some(Arc::clone(&mirror)),
+            interaction: Some(interaction.clone()),
+            input: Some(input.clone()),
+            focus: cx.focus_handle(),
+            font_size: 14.,
+            line_height_factor: 1.4,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(400.), px(260.)));
+        visual.update(|window, _| window.set_scale_factor(1.0));
+        visual.refresh().unwrap();
+
+        let pane_bounds = visual.debug_bounds("GRAPHICS_PANE").unwrap();
+        let paint_id77 = |visual: &mut VisualTestContext| -> (Option<Arc<RenderImage>>, usize) {
+            visual.update(|window, _| {
+                let _term = mirror.term.lock();
+                let graphics = mirror.graphics().lock().unwrap();
+                let (bands, missing) = store.prepare_paint_bands(
+                    mirror.mirror_id(),
+                    false,
+                    &graphics,
+                    0,
+                    pane_bounds,
+                    px(8.),
+                    px(16.),
+                    window.scale_factor(),
+                    mirror.cell_size(),
+                    mirror.frame_worker_sync_pending(),
+                );
+                (
+                    bands[1]
+                        .iter()
+                        .find(|item| item.image_id == 77)
+                        .map(|item| Arc::clone(&item.image)),
+                    missing.len(),
+                )
+            })
+        };
+
+        // Put unrelated image 82 in scrollback history and visible image 77 at home.
+        let init = [
+            b"\x1b[H".to_vec(),
+            kitty_rgba_command(
+                "a=T,f=32,s=8,v=8,i=82,C=1,q=2,z=-9",
+                &solid_rgba(8, 8, [0, 0, 255, 255]),
+            ),
+            "\r\n".repeat(28).into_bytes(),
+            b"\x1b[H".to_vec(),
+            kitty_rgba_command(
+                "a=T,f=32,s=8,v=8,i=77,C=1,q=2,z=-9",
+                &solid_rgba(8, 8, [255, 0, 0, 255]),
+            ),
+        ]
+        .concat();
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: 1,
+                bytes: init.into(),
+            },
+        );
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+        let key82 = live_key_for(&mirror, 82);
+        let key77_old = live_key_for(&mirror, 77);
+        assert!(store.cached_image(mirror.mirror_id(), key82).is_some());
+        let (img77_old, missing0) = paint_id77(&mut visual);
+        let img77_old = img77_old.expect("initial visible image 77 painted");
+        assert_eq!(missing0, 0);
+
+        // Install wrapper observer to pause the frame worker just before
+        // TextureStore::on_graphics_updated on frame 2's replacement of 77.
+        let gate = Arc::new((Mutex::new((false, false)), Condvar::new()));
+        let observer = Arc::new(PauseWorkerObserver {
+            inner: Arc::clone(&store),
+            main_thread: std::thread::current().id(),
+            gate: Arc::clone(&gate),
+            pause_next_worker: std::sync::atomic::AtomicBool::new(true),
+            main_decode_counts: Mutex::new(Vec::new()),
+        });
+        mirror.set_graphics_observer(observer.clone());
+
+        let replace = [
+            b"\x1b[H\x1b_Ga=d,d=I,i=77,q=2;\x1b\\".to_vec(),
+            kitty_rgba_command(
+                "a=T,f=32,s=8,v=8,i=77,C=1,q=2,z=-9",
+                &solid_rgba(8, 8, [0, 255, 0, 255]),
+            ),
+        ]
+        .concat();
+        tx.send(TerminalFrame::Output {
+            seq: 2,
+            bytes: replace.into(),
+        })
+        .unwrap();
+        {
+            let (lock, cv) = &*gate;
+            let mut state = lock.lock().unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !state.0 {
+                let rem = deadline.saturating_duration_since(std::time::Instant::now());
+                assert!(!rem.is_zero());
+                let (s, _) = cv.wait_timeout(state, rem).unwrap();
+                state = s;
+            }
+        }
+        let (pre_cfg_img, pre_cfg_missing) = paint_id77(&mut visual);
+        assert!(Arc::ptr_eq(&pre_cfg_img.unwrap(), &img77_old));
+        assert_eq!(pre_cfg_missing, 0);
+
+        // Lower scrollback on the UI thread while the worker is paused:
+        // trims history image 82 and publishes a newer live snapshot with 0 decode candidates.
+        mirror.configure(0, CursorShape::Block, false);
+        visual.run_until_parked();
+
+        assert_eq!(
+            *observer.main_decode_counts.lock().unwrap(),
+            vec![0],
+            "foreground configure must pass zero decode candidates"
+        );
+        assert!(
+            mirror
+                .graphics()
+                .lock()
+                .unwrap()
+                .primary
+                .placements()
+                .keys()
+                .all(|k| k.image_id != 82),
+            "configure(0) must prune history placement 82 and publish a newer snapshot"
+        );
+        let (after_cfg_img, after_cfg_missing) = paint_id77(&mut visual);
+        assert!(
+            Arc::ptr_eq(
+                &after_cfg_img.expect("previous image 77 must stay visible after configure while worker is paused"),
+                &img77_old
+            ),
+            "configure must not discard the previous replacement texture while worker decode is pending"
+        );
+        assert_eq!(after_cfg_missing, 0);
+
+        // Resume the paused frame worker: it must decode the still-live
+        // replacement 77 and evict old 77.
+        {
+            let (lock, cv) = &*gate;
+            let mut state = lock.lock().unwrap();
+            state.1 = true;
+            cv.notify_all();
+        }
+        ack.recv_timeout(Duration::from_secs(5))
+            .expect("worker replacement wake");
+        visual.update(|window, _| window.refresh());
+        visual.run_until_parked();
+
+        let key77_new = live_key_for(&mirror, 77);
+        assert_ne!(key77_new, key77_old);
+        let (after_worker_img, after_worker_missing) = paint_id77(&mut visual);
+        let after_worker_img =
+            after_worker_img.expect("frame worker must decode replacement 77 after configure");
+        assert_eq!(
+            after_worker_missing, 0,
+            "replacement must be decoded by frame worker with zero lazy-decode requests"
+        );
+        assert!(!Arc::ptr_eq(&after_worker_img, &img77_old));
+        assert_eq!(store.cached_count(mirror.mirror_id()), 2);
+        assert!(store.cached_image(mirror.mirror_id(), key82).is_some());
+        assert!(
+            !visual.update(|window, _| window.has_image_atlas_entry(&img77_old)),
+            "old image 77 must drop from GPU atlas once worker publishes new image 77"
+        );
+        assert!(visual.update(|window, _| window.has_image_atlas_entry(&after_worker_img)));
     }
 }

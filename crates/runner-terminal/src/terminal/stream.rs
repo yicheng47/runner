@@ -570,6 +570,10 @@ impl<T: EventListener> Handler for StreamHandler<'_, T> {
 
     #[inline]
     fn clear_screen(&mut self, mode: ClearMode) {
+        if matches!(mode, ClearMode::All) {
+            let is_alt = self.term.mode().contains(TermMode::ALT_SCREEN);
+            self.graphics.active_mut(is_alt).clear_replaced_lineages();
+        }
         if self.graphics.is_empty() {
             if !self.track_find_scroll {
                 <Term<T> as Handler>::clear_screen(self.term, mode);
@@ -638,12 +642,15 @@ impl<T: EventListener> Handler for StreamHandler<'_, T> {
 
         <Term<T> as Handler>::set_private_mode(self.term, mode);
 
-        if entering_alt && !self.graphics.alt.is_empty() {
-            let screen_lines = self.term.screen_lines();
-            let screen_cols = self.term.columns();
-            self.graphics
-                .alt
-                .clear_screen(screen_lines, screen_cols, self.cell_size);
+        if entering_alt {
+            self.graphics.alt.clear_replaced_lineages();
+            if !self.graphics.alt.is_empty() {
+                let screen_lines = self.term.screen_lines();
+                let screen_cols = self.term.columns();
+                self.graphics
+                    .alt
+                    .clear_screen(screen_lines, screen_cols, self.cell_size);
+            }
         }
     }
 

@@ -431,9 +431,10 @@ pub struct ImageStorage {
     /// Mirror mode applies stream deletes and only evicts at the safety cap
     /// (`2 * PER_SCREEN_LIMIT`).
     mirror_mode: bool,
-    /// Monotonic lineage token for this screen, bumped on `reset()`,
-    /// `clear_screen()` image deletion, and `a=d,d=A` image deletion.
-    lineage: u64,
+    /// Per-ID lineage tokens preserved across an explicit `a=d,d=I,i=<id>` ->
+    /// `a=T,i=<id>` in-place replacement within the same chunk, and cleared on
+    /// any screen clear/reset boundary (`reset`, `ED2`, `a=d,d=A`) or chunk end.
+    replaced_lineage: HashMap<u32, u64>,
 }
 
 impl Drop for ImageStorage {
@@ -461,7 +462,7 @@ impl ImageStorage {
             total_limit,
             budget,
             mirror_mode: false,
-            lineage: next_generation(),
+            replaced_lineage: HashMap::new(),
         }
     }
 
@@ -539,7 +540,7 @@ impl ImageStorage {
 
     pub fn reset(&mut self) {
         self.loading = None;
-        self.lineage = next_generation();
+        self.replaced_lineage.clear();
         let had = !self.images.is_empty() || !self.placements.is_empty();
         self.placements.clear();
         self.images.clear();
@@ -551,6 +552,11 @@ impl ImageStorage {
         if had {
             self.mark_mutated();
         }
+    }
+
+    /// Drops pending per-ID replacement continuity tokens at chunk boundaries.
+    pub fn clear_replaced_lineages(&mut self) {
+        self.replaced_lineage.clear();
     }
 
     pub fn next_image_id(&mut self, implicit: bool) -> u32 {
@@ -657,18 +663,21 @@ impl ImageStorage {
             });
         }
 
-        if let Some(old) = self.images.remove(&image.id) {
+        let inherited_lineage = if let Some(old) = self.images.remove(&image.id) {
             self.remove_placements_by_image_id(image.id);
             self.remove_orphans(false);
             self.total_bytes -= old.storage_bytes();
             self.encoded_bytes -= old.encoded_bytes();
-        }
+            Some(old.screen_lineage)
+        } else {
+            self.replaced_lineage.remove(&image.id)
+        };
 
         self.mark_mutated();
         image.placement_count = 0;
         image.generation = self.generation;
         image.transmission = self.generation;
-        image.screen_lineage = self.lineage;
+        image.screen_lineage = inherited_lineage.unwrap_or_else(next_generation);
         self.total_bytes += new_decoded;
         self.encoded_bytes += new_encoded;
         self.images.insert(image.id, image);
@@ -1071,9 +1080,10 @@ impl ImageStorage {
             self.delete_if_unused(id);
         }
 
-        if self.images.len() < images_before {
-            self.lineage = next_generation();
-        }
+        // Any screen clear breaks continuity for already-deleted IDs even when
+        // storage was already empty, while surviving history images keep their
+        // own `screen_lineage` tokens.
+        self.replaced_lineage.clear();
         if self.placements.len() != placements_before || self.images.len() != images_before {
             self.mark_mutated();
         }
@@ -1114,8 +1124,8 @@ impl ImageStorage {
         match action {
             DeleteAction::All { delete_images } => {
                 self.delete_visible_placements(screen_lines, screen_cols, cell, delete_images);
-                if delete_images && self.images.len() < images_before {
-                    self.lineage = next_generation();
+                if delete_images {
+                    self.replaced_lineage.clear();
                 }
             }
             DeleteAction::Id {
@@ -1123,7 +1133,15 @@ impl ImageStorage {
                 image_id,
                 placement_id,
             } => {
+                let prior_lineage = (delete_images && placement_id == 0)
+                    .then(|| self.images.get(&image_id).map(|img| img.screen_lineage))
+                    .flatten();
                 self.delete_by_id(image_id, placement_id, delete_images);
+                if let Some(lineage) = prior_lineage {
+                    if !self.images.contains_key(&image_id) {
+                        self.replaced_lineage.insert(image_id, lineage);
+                    }
+                }
             }
             DeleteAction::Newest {
                 delete_images,
@@ -1658,6 +1676,11 @@ impl TerminalGraphics {
     pub fn reset(&mut self) {
         self.primary.reset();
         self.alt.reset();
+    }
+
+    pub fn clear_replaced_lineages(&mut self) {
+        self.primary.clear_replaced_lineages();
+        self.alt.clear_replaced_lineages();
     }
 
     pub fn abort_loading(&mut self) {

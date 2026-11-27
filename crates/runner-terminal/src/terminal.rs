@@ -672,7 +672,11 @@ pub struct TerminalMirror {
     pub term: Arc<FairMutex<Term<EventProxy>>>,
     graphics: Arc<Mutex<crate::kitty::TerminalGraphics>>,
     graphics_observer: Arc<Mutex<Option<Arc<dyn MirrorGraphicsObserver>>>>,
-    last_graphics_gen: Mutex<(u64, u64)>,
+    /// `(primary_gen, alt_gen, decode_synced)` of the last observer handoff.
+    /// Foreground metadata-only syncs (`allow_sync_decode = false`) leave
+    /// `decode_synced = false` when live images exist so a pending frame-worker
+    /// pass still decodes them instead of skipping on equal generation.
+    last_graphics_gen: Mutex<(u64, u64, bool)>,
     graphics_sync_seq: AtomicU64,
     frame_worker_sync_pending: AtomicUsize,
     sgr_pixels: Arc<AtomicBool>,
@@ -995,7 +999,7 @@ impl TerminalMirror {
             term,
             graphics: Arc::new(Mutex::new(crate::kitty::TerminalGraphics::mirror())),
             graphics_observer: Arc::new(Mutex::new(None)),
-            last_graphics_gen: Mutex::new((0, 0)),
+            last_graphics_gen: Mutex::new((0, 0, true)),
             graphics_sync_seq: AtomicU64::new(0),
             frame_worker_sync_pending: AtomicUsize::new(0),
             sgr_pixels: Arc::new(AtomicBool::new(false)),
@@ -1121,6 +1125,7 @@ impl TerminalMirror {
             cell_size,
             &attachment.snapshot.bytes[split..],
         );
+        graphics.clear_replaced_lineages();
         self.sync_open
             .store(parser.sync_deadline().is_some(), Ordering::Release);
         sequence.last = attachment.snapshot.seq;
@@ -1254,13 +1259,24 @@ impl TerminalMirror {
         let (sync_seq, live_keys, decode_candidates) = {
             let graphics = self.graphics.lock().unwrap();
             let current_gen = (graphics.primary.generation, graphics.alt.generation);
+            let has_viewers = self.viewers.load(Ordering::Acquire) > 0;
+            let has_images =
+                !graphics.primary.images().is_empty() || !graphics.alt.images().is_empty();
+            let needs_decode_sync = allow_sync_decode && has_viewers && has_images;
             let mut last_gen = self.last_graphics_gen.lock().unwrap();
-            if !force && *last_gen == current_gen {
+            let (prev_p, prev_a, prev_decoded) = *last_gen;
+            if !force && (prev_p, prev_a) == current_gen && (!needs_decode_sync || prev_decoded) {
                 return;
             }
-            *last_gen = current_gen;
+            let next_decoded = if !has_images {
+                true
+            } else if (prev_p, prev_a) == current_gen {
+                prev_decoded || needs_decode_sync
+            } else {
+                needs_decode_sync
+            };
+            *last_gen = (current_gen.0, current_gen.1, next_decoded);
             let sync_seq = self.graphics_sync_seq.fetch_add(1, Ordering::AcqRel) + 1;
-            let has_viewers = self.viewers.load(Ordering::Acquire) > 0;
             let mut live_keys =
                 Vec::with_capacity(graphics.primary.images().len() + graphics.alt.images().len());
             let mut decode_candidates = Vec::new();
@@ -1417,6 +1433,7 @@ impl TerminalMirror {
         let display_offset = term.grid().display_offset();
         parser.processor.begin_paint_tracking();
         let moved = self.parse_mirror_bytes(parser, &mut term, &mut graphics, cell_size, bytes);
+        graphics.clear_replaced_lineages();
         self.apply_scroll_tracking(&mut term, display_offset, moved);
         self.sync_open
             .store(parser.sync_deadline().is_some(), Ordering::Release);
@@ -1505,6 +1522,7 @@ impl TerminalMirror {
                 parser.finish_sync_timeout(&mut handler, |_| {});
                 handler.finish()
             };
+            graphics.clear_replaced_lineages();
             self.apply_scroll_tracking(&mut term, display_offset, moved);
             self.sync_open.store(false, Ordering::Release);
             let seq = active_output_seq(&sequence);
