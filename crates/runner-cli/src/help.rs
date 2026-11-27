@@ -14,8 +14,8 @@ USAGE
   runner status
   runner daemon status|stop
   runner project list|show|create|rename|delete
-  runner role list|show|create|update|delete
-  runner crew list|show|create|update|delete|add|set|remove|order
+  runner role list|show|create|update|delete|export|import
+  runner crew list|show|create|update|delete|add|set|remove|order|export|import
   runner mission list|show|start|stop|resume|archive|unarchive|rename|pin|unpin|move|link|unlink|feed|answer
   runner chat start
   runner session list|show|stop|archive|resume|restart

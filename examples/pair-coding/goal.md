@@ -4,12 +4,14 @@ A two-role coder/reviewer loop for a single implementation task. The coder ships
 
 ## Roles
 
-- **@coder** — implements on a task-specific feature branch, runs the checks, fixes review findings. See `coder.md`.
-- **@reviewer** — reads the working-tree diff after the coder's handoff, reports must-fix issues with file:line pointers, never edits code. See `reviewer.md`.
+Import [`pair-coding.crew.toml`](pair-coding.crew.toml) for both roles and the team conventions:
+
+- **@coder** — implements on a task-specific feature branch, runs the checks, fixes review findings.
+- **@reviewer** — reads the working-tree diff after the coder's handoff, reports must-fix issues with file:line pointers, never edits code.
 
 ## Team conventions
 
-Use the contents of [`team-conventions.md`](team-conventions.md) as the Crew's team-conventions prompt.
+Included in [`pair-coding.crew.toml`](pair-coding.crew.toml) as the Crew's team-conventions prompt.
 
 ## Goal (replace this)
 

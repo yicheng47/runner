@@ -861,15 +861,18 @@ impl RenderOnce for PaginatedListPage {
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .items_center()
                             .justify_between()
-                            .gap_4()
+                            .gap_x_4()
+                            .gap_y_3()
                             .child(
-                                // Shrinks and wraps its description so the
-                                // action keeps its place on a narrow window.
+                                // Keeps a readable column on narrow zoomed windows
+                                // so multi-button action rows wrap below instead of
+                                // crushing the subtitle into a tall narrow strip.
                                 div()
                                     .flex_1()
-                                    .min_w(px(0.))
+                                    .min_w(rems(180. / 16.))
                                     .flex()
                                     .flex_col()
                                     .gap_1()

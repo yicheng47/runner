@@ -245,6 +245,27 @@ pub(super) enum RoleCommand {
     },
     /// Delete a role.
     Delete { handle: String },
+    /// Export a role to a `.role.toml` template.
+    Export {
+        role: String,
+        /// Write the template atomically to this file instead of stdout.
+        #[arg(short = 'o', long = "output")]
+        output: Option<PathBuf>,
+    },
+    /// Import a standalone `.role.toml` template offline.
+    Import {
+        /// Path to a local `.role.toml` file, or `-` for stdin.
+        file: PathBuf,
+        /// Override the imported role handle.
+        #[arg(long)]
+        handle: Option<String>,
+        /// Replace the template runtime; resets model, effort, and speed when changed.
+        #[arg(long)]
+        runtime: Option<String>,
+        /// Print the import plan without creating anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Args, Debug, Default)]
@@ -331,6 +352,27 @@ pub(super) enum CrewCommand {
         crew: String,
         #[arg(required = true, num_args = 1..)]
         handles: Vec<String>,
+    },
+    /// Export a crew and its referenced roles to a `.crew.toml` template.
+    Export {
+        crew: String,
+        /// Write the template atomically to this file instead of stdout.
+        #[arg(short = 'o', long = "output")]
+        output: Option<PathBuf>,
+    },
+    /// Import a `.crew.toml` template offline, creating all roles fresh.
+    Import {
+        /// Path to a local `.crew.toml` file, or `-` for stdin.
+        file: PathBuf,
+        /// Override the imported crew name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Map a runtime (<from>=<to>); repeat as needed.
+        #[arg(long = "map-runtime", value_name = "FROM=TO")]
+        map_runtime: Vec<String>,
+        /// Print the import plan without creating anything.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 

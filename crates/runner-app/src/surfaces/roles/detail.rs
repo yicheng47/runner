@@ -16,7 +16,9 @@ use gpui::{
     div, px, rems, svg, AnyElement, Context, Div, Entity, FontWeight, KeyDownEvent, SharedString,
     Window,
 };
-use runner_app::ui::{focus_ring, Button, ButtonVariant, RoleAvatar, WorkingDirField};
+use runner_app::ui::{
+    focus_ring, Button, ButtonVariant, IconButton, IconButtonSize, RoleAvatar, WorkingDirField,
+};
 use runner_core::protocol::model::CodexSpeed;
 use runner_core::protocol::model::Role;
 use runner_core::protocol::role::RoleActivity;
@@ -236,9 +238,12 @@ impl NativeRoot {
         let root = cx.entity();
         let chat_root = root.clone();
         let edit_root = root.clone();
+        let more_root = root;
         let pending = self.role_surfaces.chat_pending.as_deref() == Some(role.id.as_str());
         let chat_role = role.clone();
         let edit_role = role.clone();
+        let more_role_id = role.id.clone();
+        let more_role_handle = role.handle.clone();
         let (model, model_default) = role_setting_label(role.model.as_deref());
         let (effort, effort_default) =
             crate::surfaces::roles::logic::role_effort_label(role.effort.as_deref());
@@ -306,7 +311,32 @@ impl NativeRoot {
                                 edit_root
                                     .update(cx, |this, cx| this.open_role_edit(role, window, cx));
                             }),
-                    ),
+                    )
+                    .when(self.remote_client.is_local(), |actions| {
+                        actions.child(
+                            div()
+                                .when(cfg!(test), |el| {
+                                    el.debug_selector(|| "ROLE_DETAIL_MORE".into())
+                                })
+                                .child(
+                                    IconButton::new("role-detail-more", "more-horizontal.svg")
+                                        .size(IconButtonSize::Md)
+                                        .tooltip(crate::i18n::text("ui.more_actions"))
+                                        .on_press(move |window, cx| {
+                                            let position = window.mouse_position();
+                                            let id = more_role_id.clone();
+                                            let handle = more_role_handle.clone();
+                                            more_root.update(cx, |this, cx| {
+                                                if this.remote_client.is_local() {
+                                                    this.open_role_detail_menu(
+                                                        id, handle, position, window, cx,
+                                                    );
+                                                }
+                                            });
+                                        }),
+                                ),
+                        )
+                    }),
             );
         let setup = section()
             .when(cfg!(test), |setup| {

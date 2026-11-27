@@ -32,31 +32,37 @@ Start the mission with a specific outcome, the working directory, checks to run,
 
 Each mission shares one directory across its members. To isolate a run from your main checkout, select an existing Git worktree or choose **New worktree…** in the launcher’s **Checkout** control (or `--worktree` in the CLI) rather than setting up a worktree by hand; inside a shared checkout, still avoid assigning overlapping edits to several workers without a clear owner.
 
+## Share or import a template
+
+Export an existing crew to a `.crew.toml` file from its row `⋯` menu, from the crew page `⋯` menu, or with `runner crew export <crew> -o team.crew.toml`. Exported files contain the crew's name, team conventions, slots, and referenced roles without local working directories, environment variables, custom commands, or IDs.
+
+Import a downloaded or shared `.crew.toml` file from **Crews → Import…** (drag-and-drop or file picker) to read every prompt and the team conventions in Source or Rendered view, switch any missing runtime to an installed agent, and confirm before anything is created. In the terminal, `runner crew import team.crew.toml` writes the crew and fresh roles immediately without overwriting existing roles; pass `--dry-run` first to inspect the plan without writing.
+
 ## Use the examples
 
 ### Starter pair-coding crew
 
 Fresh installations no longer seed a crew blindly before any agent is installed. Instead, first-run **Setup** offers **Pair coding**, a two-role loop that pairs two distinct eligible runtimes when possible (preferring your default and signed-in agents) or falls back to one runtime for both slots. Switch either slot to another installed agent at any time in **Crews**, or reopen **Open setup** from **Settings → Agents** when no crews exist.
 
-| Role | Responsibility | System prompt |
+| Role | Responsibility | Template |
 | --- | --- | --- |
-| **@coder** | Creates the task branch, implements the change, runs checks, hands the diff to the reviewer and fixes findings. | [coder.md](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/coder.md) |
-| **@reviewer** | Reviews the working-tree diff and reports must-fix issues with file and line references, without editing code. | [reviewer.md](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/reviewer.md) |
+| **@coder** | Creates the task branch, implements the change, runs checks, hands the diff to the reviewer and fixes findings. | [pair-coding.crew.toml](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/pair-coding.crew.toml) |
+| **@reviewer** | Reviews the working-tree diff and reports must-fix issues with file and line references, without editing code. | [pair-coding.crew.toml](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/pair-coding.crew.toml) |
 
-The [team conventions](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/team-conventions.md) require a task branch and a clean review before committing. Changes stay uncommitted unless the mission goal explicitly authorizes Git actions; merging always requires the person's instruction.
+The team conventions in [pair-coding.crew.toml](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/pair-coding.crew.toml) require a task branch and a clean review before committing. Changes stay uncommitted unless the mission goal explicitly authorizes Git actions; merging always requires the person's instruction.
 
 ### More crews
 
-The repository includes ready-to-copy prompts and conventions:
+The repository includes ready-to-import `.crew.toml` templates alongside example `goal.md` starting points:
 
-- [Pair coding](https://github.com/yicheng47/runner/tree/main/examples/pair-coding): the seeded coder/reviewer loop.
-- [Codex trio](https://github.com/yicheng47/runner/tree/main/examples/codex-trio): coder, reviewer and QA; QA builds the reviewed revision and tests it in the live app.
-- [Development crew](https://github.com/yicheng47/runner/tree/main/examples/dev-crew): architect, implementer and reviewer.
-- [Documentation crew](https://github.com/yicheng47/runner/tree/main/examples/docs-crew): architect, writers and editor.
-- [Tic-tac-toe](https://github.com/yicheng47/runner/tree/main/examples/tic-tac-toe): two players and a referee.
-- [Werewolf](https://github.com/yicheng47/runner/tree/main/examples/werewolf): six players and a moderator.
-- [Tomb raid](https://github.com/yicheng47/runner/tree/main/examples/tomb-raid): a four-person heist crew run by a game master.
+- [Pair coding](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/pair-coding.crew.toml): the seeded coder/reviewer loop.
+- [Codex trio](https://github.com/yicheng47/runner/blob/main/examples/codex-trio/codex-trio.crew.toml): coder, reviewer and QA; QA builds the reviewed revision and tests it in the live app.
+- [Development crew](https://github.com/yicheng47/runner/blob/main/examples/dev-crew/dev-crew.crew.toml): architect, implementer and reviewer.
+- [Documentation crew](https://github.com/yicheng47/runner/blob/main/examples/docs-crew/docs-crew.crew.toml): architect, writers and editor.
+- [Tic-tac-toe](https://github.com/yicheng47/runner/blob/main/examples/tic-tac-toe/tic-tac-toe.crew.toml): two players and a referee.
+- [Werewolf](https://github.com/yicheng47/runner/blob/main/examples/werewolf/werewolf.crew.toml): six players and a moderator.
+- [Tomb raid](https://github.com/yicheng47/runner/blob/main/examples/tomb-raid/tomb-raid.crew.toml): a four-person heist crew run by a game master.
 
-Copy the role prompts into roles and the conventions into the crew. The example goals are starting points to replace with your task. The links above show the current examples on `main`; use the repository's tag selector for examples matching an older release.
+Download any `.crew.toml` file and drop it into **Crews → Import…**, or import it with `runner crew import <file>`. The example `goal.md` files are starting points to replace with your task. The links above show the current examples on `main`; use the repository's tag selector for examples matching an older release.
 
 See [Your first mission](../getting-started/first-mission.md) to launch and follow the team.

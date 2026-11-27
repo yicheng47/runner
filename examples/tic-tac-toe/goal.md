@@ -2,8 +2,8 @@
 
 This mission: **2 players** play one game of Tic-Tac-Toe.
 
-- **Referee**: hosts per `referee.md` — assigns X (first) and O (second) publicly, maintains the board, validates moves, declares the result.
-- **Players**: play X or O per `player.md`; goal is to get three in a row (horizontal, vertical, or diagonal) before the opponent does.
+- **Referee**: hosts per `tic-tac-toe.crew.toml` — assigns X (first) and O (second) publicly, maintains the board, validates moves, declares the result.
+- **Players**: play X or O per `tic-tac-toe.crew.toml`; goal is to get three in a row (horizontal, vertical, or diagonal) before the opponent does.
 
 Board uses numpad-style numbering:
 

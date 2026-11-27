@@ -32,31 +32,37 @@
 
 每次任务的成员仍共享同一个目录。如需把某次运行与主检出隔离，直接在启动器的 **检出（Checkout）** 控件中选择现有 Git 工作树或 **新建工作树…（New worktree…）**（或在 CLI 中使用 `--worktree`），无需手动创建工作树；在同一检出内协作时，仍应避免在没有明确负责人的情况下让多名成员重叠编辑同一文件。
 
+## 分享或导入模板
+
+可以通过小队列表行末的 `⋯` 菜单、小队详情页的 `⋯` 菜单或 `runner crew export <crew> -o team.crew.toml` 将现有小队导出为 `.crew.toml` 文件。导出的文件包含小队名称、团队约定、槽位与引用角色，不包含本机工作目录、环境变量、自定义命令或内部 ID。
+
+通过 **小队 → 导入…**（支持拖放或文件选择器）导入下载或分享的 `.crew.toml` 文件时，预览弹窗允许先以源码或渲染视图阅读每段提示词与团队约定，将缺失的运行时切换为本机已安装的智能体，确认后再创建。在终端中运行 `runner crew import team.crew.toml` 会直接创建小队与全新角色而不会覆盖已有角色；如需先查看计划而不写入，请加上 `--dry-run`。
+
 ## 使用示例
 
 ### 结对编程起步小队
 
 全新安装不再在尚未安装任何智能体前预置小队。首次 **设置引导** 会在检测到可用智能体时提议创建 **Pair coding**，这是一个双角色审查流程，并尽可能为两个槽位分配不同的可用运行时（优先默认与已登录的智能体），或在一个可用时共用同一运行时。随时可在 **小队（Crews）** 中切换任一槽位的智能体，或在尚无小队时从 **设置 → 智能体** 点击 **打开引导**。
 
-| 角色 | 职责 | 系统提示词 |
+| 角色 | 职责 | 模板 |
 | --- | --- | --- |
-| **@coder** | 创建任务分支，实现修改，运行检查，将差异交给 reviewer，并修复问题。 | [coder.md](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/coder.md) |
-| **@reviewer** | 检查工作区差异，以文件与行号报告必须修复的问题，不编辑代码。 | [reviewer.md](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/reviewer.md) |
+| **@coder** | 创建任务分支，实现修改，运行检查，将差异交给 reviewer，并修复问题。 | [pair-coding.crew.toml](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/pair-coding.crew.toml) |
+| **@reviewer** | 检查工作区差异，以文件与行号报告必须修复的问题，不编辑代码。 | [pair-coding.crew.toml](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/pair-coding.crew.toml) |
 
-[团队约定](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/team-conventions.md)要求在任务分支工作，并在提交前通过审查。除非任务目标明确授权 Git 操作，否则修改保持未提交；合并始终需要操作者指令。
+[pair-coding.crew.toml](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/pair-coding.crew.toml) 中的团队约定要求在任务分支工作，并在提交前通过审查。除非任务目标明确授权 Git 操作，否则修改保持未提交；合并始终需要操作者指令。
 
 ### 更多小队
 
-仓库提供可直接复制的提示词与约定：
+仓库提供可直接导入的 `.crew.toml` 模板以及示例 `goal.md` 起点：
 
-- [Pair coding](https://github.com/yicheng47/runner/tree/main/examples/pair-coding)：预置的 coder/reviewer 流程。
-- [Codex trio](https://github.com/yicheng47/runner/tree/main/examples/codex-trio)：coder、reviewer 和 QA；QA 构建已审查版本，并在运行的应用中验证。
-- [Development crew](https://github.com/yicheng47/runner/tree/main/examples/dev-crew)：架构师、实现者和审查者。
-- [Documentation crew](https://github.com/yicheng47/runner/tree/main/examples/docs-crew)：架构师、作者与编辑。
-- [Tic-tac-toe](https://github.com/yicheng47/runner/tree/main/examples/tic-tac-toe)：两位玩家和一位裁判。
-- [Werewolf](https://github.com/yicheng47/runner/tree/main/examples/werewolf)：六位玩家和一位主持人。
-- [Tomb raid](https://github.com/yicheng47/runner/tree/main/examples/tomb-raid)：由游戏主持人带领的四人夺宝小队。
+- [Pair coding](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/pair-coding.crew.toml)：预置的 coder/reviewer 流程。
+- [Codex trio](https://github.com/yicheng47/runner/blob/main/examples/codex-trio/codex-trio.crew.toml)：coder、reviewer 和 QA；QA 构建已审查版本，并在运行的应用中验证。
+- [Development crew](https://github.com/yicheng47/runner/blob/main/examples/dev-crew/dev-crew.crew.toml)：架构师、实现者和审查者。
+- [Documentation crew](https://github.com/yicheng47/runner/blob/main/examples/docs-crew/docs-crew.crew.toml)：架构师、作者与编辑。
+- [Tic-tac-toe](https://github.com/yicheng47/runner/blob/main/examples/tic-tac-toe/tic-tac-toe.crew.toml)：两位玩家和一位裁判。
+- [Werewolf](https://github.com/yicheng47/runner/blob/main/examples/werewolf/werewolf.crew.toml)：六位玩家和一位主持人。
+- [Tomb raid](https://github.com/yicheng47/runner/blob/main/examples/tomb-raid/tomb-raid.crew.toml)：由游戏主持人带领的四人夺宝小队。
 
-将角色提示词复制到角色中，将约定复制到小队中。示例目标只是起点，请替换为自己的任务。以上链接显示 `main` 上的当前示例；旧版本示例请使用仓库的标签选择器。
+下载任意 `.crew.toml` 文件并拖入 **小队 → 导入…**，或使用 `runner crew import <file>` 导入。示例 `goal.md` 文件只是起点，请替换为自己的任务。以上链接显示 `main` 上的当前示例；旧版本示例请使用仓库的标签选择器。
 
 [第一个任务](../getting-started/first-mission.md)介绍如何启动并跟进团队。

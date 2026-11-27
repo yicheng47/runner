@@ -280,6 +280,9 @@ impl RemoteClient {
                         if let Purpose::Open { new_window } = purpose {
                             let mut computer = computer;
                             computer.paired = true;
+                            if !new_window {
+                                root.clear_template_import_modal();
+                            }
                             root.remote_client.open_computer(computer, new_window, cx);
                         }
                     }

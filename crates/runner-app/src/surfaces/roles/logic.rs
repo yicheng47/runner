@@ -269,7 +269,7 @@ pub(super) fn permission_modes(runtime: &str) -> &'static [PermissionMode] {
 
 pub(super) use runner_core::protocol::role::role_permission_mode;
 
-pub(super) fn validate_role_handle(handle: &str) -> Option<&'static str> {
+pub(crate) fn validate_role_handle(handle: &str) -> Option<&'static str> {
     if handle.is_empty() {
         return None;
     }

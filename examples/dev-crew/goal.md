@@ -5,11 +5,13 @@ feature end-to-end. One decomposes, one builds, one audits.
 
 ## Roles
 
+Import [`dev-crew.crew.toml`](dev-crew.crew.toml) for all three roles:
+
 - **@architect** (lead) — reads the goal, decomposes into tasks, dispatches
-  the rest. Stays out of the editor. See `architect.md`.
-- **@impl** — picks up tasks, writes the code, runs the tests. See `impl.md`.
+  the rest. Stays out of the editor.
+- **@impl** — picks up tasks, writes the code, runs the tests.
 - **@reviewer** — reads the diff once `@impl` lands a PR, finds regressions
-  and missing edge cases, reports back. See `reviewer.md`.
+  and missing edge cases, reports back.
 
 ## Goal (replace this)
 

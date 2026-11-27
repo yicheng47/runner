@@ -4,23 +4,19 @@ A three-role coder → reviewer → QA pipeline for changes whose proof needs a 
 
 ## Roles
 
-- **@coder** (lead) — implements on a task-specific feature branch, runs the checks, fixes review and QA findings, and owns every commit. See `coder.md`.
-- **@reviewer** — reads the working-tree diff after the coder's handoff, reports must-fix issues with file:line pointers, never edits code or runs the tests. See `reviewer.md`.
-- **@qa** — verifies the frozen candidate it was handed, runs the required checks against the live app, and writes the result record. Never edits source and never commits. See `qa.md`.
+Import [`codex-trio.crew.toml`](codex-trio.crew.toml) for all three roles and team conventions:
+
+- **@coder** (lead) — implements on a task-specific feature branch, runs the checks, fixes review and QA findings, and owns every commit.
+- **@reviewer** — reads the working-tree diff after the coder's handoff, reports must-fix issues with file:line pointers, never edits code or runs the tests.
+- **@qa** — verifies the frozen candidate it was handed, runs the required checks against the live app, and writes the result record. Never edits source and never commits.
 
 ## Slot settings
 
-All three slots run `codex` with `--ask-for-approval on-request --sandbox workspace-write`.
-
-| Slot | Model | Effort | Speed |
-| --- | --- | --- | --- |
-| @coder | `gpt-6.2-sol` | `xhigh` | fast |
-| @reviewer | `gpt-6.2-astra` | `xhigh` | standard |
-| @qa | `gpt-6.2-sol` | `xhigh` | fast |
+All three slots in [`codex-trio.crew.toml`](codex-trio.crew.toml) default to `codex` and omit model, effort, and speed so they follow your Codex defaults. Missions in Runner launch every member with broad access (see the Missions guide for permission behavior). If you want per-slot tuning, customize the model, effort, or Codex speed on the crew or role page after importing.
 
 ## Team conventions
 
-Use the contents of [`team-conventions.md`](team-conventions.md) as the Crew's team-conventions prompt.
+Included in [`codex-trio.crew.toml`](codex-trio.crew.toml) as the Crew's team-conventions prompt.
 
 ## Goal (replace this)
 

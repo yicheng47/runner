@@ -40,6 +40,7 @@ struct RoleDetailState {
 #[derive(Clone)]
 enum RoleMenuAction {
     Edit(Box<Role>),
+    Export { id: String },
     Delete { id: String, handle: String },
 }
 
@@ -185,7 +186,7 @@ pub(crate) struct RoleSurfaces {
     detail: RoleDetailState,
     create: Option<CreateRoleForm>,
     edit: Option<RoleEditForm>,
-    context_menu: Option<Entity<ContextMenu>>,
+    pub(crate) context_menu: Option<Entity<ContextMenu>>,
     delete_confirm: Option<RoleDeleteConfirm>,
     delete_busy: bool,
     chat_pending: Option<String>,

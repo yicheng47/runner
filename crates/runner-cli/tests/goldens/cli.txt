@@ -220,6 +220,45 @@ $ runner role delete unused --json
 exit 0
 {"deleted":true,"id":"role-unused"}
 
+$ runner role export coder
+exit 0
+version = 1
+kind = "role"
+
+[role]
+handle = "coder"
+display_name = "Coder"
+runtime = "codex"
+model = "fixture-model"
+effort = "high"
+codex_speed = "fast"
+system_prompt = "Fixture prompt"
+
+$ runner role export coder --json
+exit 0
+{"filename":"coder.role.toml","toml":"version = 1\nkind = \"role\"\n\n[role]\nhandle = \"coder\"\ndisplay_name = \"Coder\"\nruntime = \"codex\"\nmodel = \"fixture-model\"\neffort = \"high\"\ncodex_speed = \"fast\"\nsystem_prompt = \"Fixture prompt\"\n"}
+
+$ runner role import sample.role.toml
+exit 0
+HANDLE   planner
+NAME     Planner
+RUNTIME  codex
+MODEL    gpt-5
+EFFORT   high
+SPEED    inherit (Codex config)
+ID       <ULID_1>
+
+PROMPT
+Plan carefully.
+[stderr]
+warning: runtime(s) not installed on this machine: codex
+
+$ runner role import sample.role.toml --json
+exit 0
+{"kind":"role","roles":[{"id":"<ULID_1>","handle":"planner","display_name":"Planner","runtime":"codex","command":"codex","args":[],"working_dir":null,"system_prompt":"Plan carefully.\n","env":{},"model":"gpt-5","effort":"high","codex_speed":null,"created_at":"<TIMESTAMP>","updated_at":"<TIMESTAMP>"}],"uninstalled_runtimes":["codex"]}
+[stderr]
+warning: runtime(s) not installed on this machine: codex
+
 $ runner crew list
 exit 0
 NAME   ID            SLOTS
@@ -318,6 +357,61 @@ Updated crew slots slot-reviewer, slot-coder
 $ runner crew order Peer reviewer coder --json
 exit 0
 [{"id":"slot-reviewer","crew_id":"crew-fixture","role_id":"role-reviewer","slot_handle":"reviewer","position":0,"lead":false,"runtime_override":null,"model_override":null,"effort_override":null,"codex_speed_override":null,"added_at":"2026-09-18T10:20:30Z","role":{"id":"role-reviewer","handle":"reviewer","display_name":"Reviewer","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"fixture-model","effort":"high","codex_speed":"fast","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"}},{"id":"slot-coder","crew_id":"crew-fixture","role_id":"role-coder","slot_handle":"coder","position":1,"lead":false,"runtime_override":null,"model_override":null,"effort_override":null,"codex_speed_override":null,"added_at":"2026-09-18T10:20:30Z","role":{"id":"role-coder","handle":"coder","display_name":"Coder","runtime":"codex","command":"missing-fixture-agent","args":[],"working_dir":null,"system_prompt":"Fixture prompt","env":{},"model":"fixture-model","effort":"high","codex_speed":"fast","created_at":"2026-09-18T10:20:30Z","updated_at":"2026-09-18T10:20:30Z"}}]
+
+$ runner crew export Peer
+exit 0
+version = 1
+kind = "crew"
+
+[crew]
+name = "Peer"
+conventions = "Fixture crew conventions"
+
+[[slots]]
+handle = "coder"
+role = "coder"
+
+[[slots]]
+handle = "reviewer"
+role = "reviewer"
+
+[[roles]]
+handle = "coder"
+display_name = "Coder"
+runtime = "codex"
+model = "fixture-model"
+effort = "high"
+codex_speed = "fast"
+system_prompt = "Fixture prompt"
+
+[[roles]]
+handle = "reviewer"
+display_name = "Reviewer"
+runtime = "codex"
+model = "fixture-model"
+effort = "high"
+codex_speed = "fast"
+system_prompt = "Fixture prompt"
+
+$ runner crew export Peer --json
+exit 0
+{"filename":"peer.crew.toml","toml":"version = 1\nkind = \"crew\"\n\n[crew]\nname = \"Peer\"\nconventions = \"Fixture crew conventions\"\n\n[[slots]]\nhandle = \"coder\"\nrole = \"coder\"\n\n[[slots]]\nhandle = \"reviewer\"\nrole = \"reviewer\"\n\n[[roles]]\nhandle = \"coder\"\ndisplay_name = \"Coder\"\nruntime = \"codex\"\nmodel = \"fixture-model\"\neffort = \"high\"\ncodex_speed = \"fast\"\nsystem_prompt = \"Fixture prompt\"\n\n[[roles]]\nhandle = \"reviewer\"\ndisplay_name = \"Reviewer\"\nruntime = \"codex\"\nmodel = \"fixture-model\"\neffort = \"high\"\ncodex_speed = \"fast\"\nsystem_prompt = \"Fixture prompt\"\n"}
+
+$ runner crew import sample.crew.toml
+exit 0
+NAME  Starter
+ID    <ULID_1>
+
+HANDLE  ROLE     RUNTIME  MODEL  EFFORT  SPEED
+coder   coder-2  codex    -      -       inherit (Codex config)
+[stderr]
+warning: runtime(s) not installed on this machine: codex
+
+$ runner crew import sample.crew.toml --json
+exit 0
+{"kind":"crew","crew":{"id":"<ULID_1>","name":"Starter","system_prompt_addendum":"Keep changes small.\n","created_at":"<TIMESTAMP>","updated_at":"<TIMESTAMP>"},"roles":[{"id":"<ULID_2>","handle":"coder-2","display_name":"Coder","runtime":"codex","command":"codex","args":[],"working_dir":null,"system_prompt":"Write code.\n","env":{},"model":null,"effort":null,"codex_speed":null,"created_at":"<TIMESTAMP>","updated_at":"<TIMESTAMP>"}],"slots":[{"id":"<ULID_3>","crew_id":"<ULID_1>","role_id":"<ULID_2>","slot_handle":"coder","position":0,"lead":false,"runtime_override":null,"model_override":null,"effort_override":null,"codex_speed_override":null,"added_at":"<TIMESTAMP>"}],"uninstalled_runtimes":["codex"]}
+[stderr]
+warning: runtime(s) not installed on this machine: codex
 
 $ runner mission list --crew Peer
 exit 0
@@ -1178,8 +1272,8 @@ USAGE
   runner status
   runner daemon status|stop
   runner project list|show|create|rename|delete
-  runner role list|show|create|update|delete
-  runner crew list|show|create|update|delete|add|set|remove|order
+  runner role list|show|create|update|delete|export|import
+  runner crew list|show|create|update|delete|add|set|remove|order|export|import
   runner mission list|show|start|stop|resume|archive|unarchive|rename|pin|unpin|move|link|unlink|feed|answer
   runner chat start
   runner session list|show|stop|archive|resume|restart
@@ -1621,6 +1715,8 @@ Commands:
   create  Create a role
   update  Update a role
   delete  Delete a role
+  export  Export a role to a `.role.toml` template
+  import  Import a standalone `.role.toml` template offline
 
 Options:
       --json  Print the tool result as exact JSON
@@ -1644,6 +1740,8 @@ Commands:
   set     Update one crew slot by handle
   remove  Remove a slot from a crew
   order   Reorder every crew slot by handle
+  export  Export a crew and its referenced roles to a `.crew.toml` template
+  import  Import a `.crew.toml` template offline, creating all roles fresh
 
 Options:
       --json  Print the tool result as exact JSON
@@ -1996,6 +2094,40 @@ Options:
   -h, --help  Print help
 
 # context: not running
+$ runner role export --help
+exit 0
+Export a role to a `.role.toml` template
+
+Usage: runner role export [OPTIONS] <ROLE>
+
+Arguments:
+  <ROLE>  
+
+Options:
+      --json             Print the tool result as exact JSON
+  -o, --output <OUTPUT>  Write the template atomically to this file instead of stdout
+  -q                     Print only result IDs
+  -h, --help             Print help
+
+# context: not running
+$ runner role import --help
+exit 0
+Import a standalone `.role.toml` template offline
+
+Usage: runner role import [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  Path to a local `.role.toml` file, or `-` for stdin
+
+Options:
+      --handle <HANDLE>    Override the imported role handle
+      --json               Print the tool result as exact JSON
+  -q                       Print only result IDs
+      --runtime <RUNTIME>  Replace the template runtime; resets model, effort, and speed when changed
+      --dry-run            Print the import plan without creating anything
+  -h, --help               Print help
+
+# context: not running
 $ runner crew list --help
 exit 0
 List crews
@@ -2153,6 +2285,40 @@ Options:
       --json  Print the tool result as exact JSON
   -q          Print only result IDs
   -h, --help  Print help
+
+# context: not running
+$ runner crew export --help
+exit 0
+Export a crew and its referenced roles to a `.crew.toml` template
+
+Usage: runner crew export [OPTIONS] <CREW>
+
+Arguments:
+  <CREW>  
+
+Options:
+      --json             Print the tool result as exact JSON
+  -o, --output <OUTPUT>  Write the template atomically to this file instead of stdout
+  -q                     Print only result IDs
+  -h, --help             Print help
+
+# context: not running
+$ runner crew import --help
+exit 0
+Import a `.crew.toml` template offline, creating all roles fresh
+
+Usage: runner crew import [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  Path to a local `.crew.toml` file, or `-` for stdin
+
+Options:
+      --json                   Print the tool result as exact JSON
+      --name <NAME>            Override the imported crew name
+      --map-runtime <FROM=TO>  Map a runtime (<from>=<to>); repeat as needed
+  -q                           Print only result IDs
+      --dry-run                Print the import plan without creating anything
+  -h, --help                   Print help
 
 # context: not running
 $ runner mission list --help

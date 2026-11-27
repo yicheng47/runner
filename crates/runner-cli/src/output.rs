@@ -15,9 +15,13 @@ pub enum View {
     WorktreeRemove,
     RoleList,
     Role,
+    RoleImport,
     CrewList,
     Crew,
     CrewShow,
+    CrewImport,
+    TemplateExport { to_file: bool },
+    TemplateImportDryRun,
     MissionList,
     Mission,
     MissionShow,
@@ -36,6 +40,12 @@ pub fn print(response: &ToolResponse, json: bool, quiet: bool, view: View) {
             println!("{line}");
         }
         return;
+    }
+    if matches!(view, View::TemplateExport { to_file: false }) {
+        if let Some(toml) = response.value.get("toml").and_then(Value::as_str) {
+            print!("{toml}");
+            return;
+        }
     }
     for line in render_default(view, &response.value) {
         println!("{line}");
@@ -64,6 +74,22 @@ fn machine_lines(
                 .iter()
                 .filter_map(|row| row.get("path").and_then(Value::as_str).map(str::to_owned))
                 .collect(),
+            View::TemplateExport { to_file: true } => vec![response.value["path"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()],
+            View::TemplateExport { to_file: false } => vec![response.value["filename"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()],
+            View::CrewImport => ids(response.value.get("crew").unwrap_or(&Value::Null)),
+            View::RoleImport => ids(response.value.get("roles").unwrap_or(&Value::Null)),
+            View::TemplateImportDryRun => {
+                array(response.value.get("roles").unwrap_or(&Value::Null))
+                    .iter()
+                    .filter_map(|row| row.get("handle").and_then(Value::as_str).map(str::to_owned))
+                    .collect()
+            }
             _ => ids(&response.value),
         })
     } else {
@@ -100,9 +126,15 @@ fn render_default(view: View, value: &Value) -> Vec<String> {
         View::WorktreeRemove => vec![format!("Removed worktree {}", text(value.get("path")))],
         View::RoleList => render_role_list(value),
         View::Role => render_role(value),
+        View::RoleImport => render_role_import(value),
         View::CrewList => render_crew_list(value),
         View::Crew => render_crew(value),
-        View::CrewShow => render_crew_show(value),
+        View::CrewShow | View::CrewImport => render_crew_show(value),
+        View::TemplateExport { to_file: true } => {
+            vec![format!("Exported template to {}", text(value.get("path")))]
+        }
+        View::TemplateExport { to_file: false } => vec![text(value.get("toml"))],
+        View::TemplateImportDryRun => render_template_import_dry_run(value),
         View::MissionList => render_mission_list(value),
         View::Mission => render_mission(value),
         View::MissionShow => render_mission_show(value),
@@ -228,6 +260,79 @@ fn render_role(value: &Value) -> Vec<String> {
     lines
 }
 
+fn render_role_import(value: &Value) -> Vec<String> {
+    value
+        .get("roles")
+        .and_then(Value::as_array)
+        .and_then(|roles| roles.first())
+        .map(render_role)
+        .unwrap_or_default()
+}
+
+fn render_template_import_dry_run(value: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let kind = value
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("template");
+    if kind == "crew" {
+        lines.extend(key_values(&[
+            ("DRY RUN", Some(&Value::String("crew".into()))),
+            ("CREW", value.get("crew_name")),
+        ]));
+    } else {
+        lines.extend(key_values(&[(
+            "DRY RUN",
+            Some(&Value::String("role".into())),
+        )]));
+    }
+    let role_rows = array(value.get("roles").unwrap_or(&Value::Null))
+        .iter()
+        .map(|row| {
+            vec![
+                cell(row.get("handle")),
+                cell(row.get("display_name")),
+                cell(row.get("runtime")),
+                cell(row.get("model")),
+                cell(row.get("effort")),
+            ]
+        })
+        .collect::<Vec<_>>();
+    if !role_rows.is_empty() {
+        lines.push(String::new());
+        lines.extend(table(
+            &["ROLE HANDLE", "NAME", "RUNTIME", "MODEL", "EFFORT"],
+            role_rows,
+        ));
+    }
+    let slot_rows = array(value.get("slots").unwrap_or(&Value::Null))
+        .iter()
+        .map(|row| {
+            vec![
+                cell(row.get("slot_handle")),
+                cell(row.get("role_handle")),
+                cell(row.get("runtime")),
+                cell(row.get("model_override")),
+                cell(row.get("effort_override")),
+            ]
+        })
+        .collect::<Vec<_>>();
+    if !slot_rows.is_empty() {
+        lines.push(String::new());
+        lines.extend(table(
+            &[
+                "SLOT",
+                "ROLE",
+                "RUNTIME",
+                "MODEL OVERRIDE",
+                "EFFORT OVERRIDE",
+            ],
+            slot_rows,
+        ));
+    }
+    lines
+}
+
 fn render_crew_list(value: &Value) -> Vec<String> {
     let rows = array(value)
         .iter()
@@ -261,6 +366,16 @@ fn render_crew(value: &Value) -> Vec<String> {
 fn render_crew_show(value: &Value) -> Vec<String> {
     let crew = value.get("crew").unwrap_or(&Value::Null);
     let mut lines = render_crew(crew);
+    let roles_by_id: std::collections::HashMap<&str, &Value> = value
+        .get("roles")
+        .and_then(Value::as_array)
+        .map(|roles| {
+            roles
+                .iter()
+                .filter_map(|role| role.get("id").and_then(Value::as_str).map(|id| (id, role)))
+                .collect()
+        })
+        .unwrap_or_default();
     let rows = value
         .get("slots")
         .and_then(Value::as_array)
@@ -268,7 +383,14 @@ fn render_crew_show(value: &Value) -> Vec<String> {
             slots
                 .iter()
                 .map(|slot| {
-                    let role = slot.get("role").unwrap_or(&Value::Null);
+                    let role = slot
+                        .get("role")
+                        .or_else(|| {
+                            slot.get("role_id")
+                                .and_then(Value::as_str)
+                                .and_then(|id| roles_by_id.get(id).copied())
+                        })
+                        .unwrap_or(&Value::Null);
                     let runtime = effective_slot_value(slot, role, "runtime_override", "runtime");
                     let runtime_changed = slot
                         .get("runtime_override")

@@ -319,6 +319,7 @@ impl NativeRoot {
     ) -> AnyElement {
         let root = cx.entity();
         let create_root = root.clone();
+        let import_root = root.clone();
         let empty_create_root = root.clone();
         let clear_root = root.clone();
         let page_root = root.clone();
@@ -418,16 +419,48 @@ impl NativeRoot {
                 })
                 .when(!remote, |entry| {
                     entry
-                        .when(cfg!(test), |entry| {
-                            entry.debug_selector(|| "NEW_ROLE".into())
-                        })
+                        .flex()
+                        .items_center()
+                        .gap_2()
                         .child(
-                            Button::new("new-role", crate::i18n::text("ui.new_role_inline_action"))
-                                .variant(ButtonVariant::Primary)
-                                .on_press(move |window, cx| {
-                                    create_root
-                                        .update(cx, |this, cx| this.open_create_role(window, cx));
-                                }),
+                            div()
+                                .when(cfg!(test), |entry| {
+                                    entry.debug_selector(|| "ROLES_IMPORT".into())
+                                })
+                                .child(
+                                    Button::new(
+                                        "import-role-template",
+                                        crate::i18n::text("template.import_action"),
+                                    )
+                                    .icon("download.svg")
+                                    .on_press(
+                                        move |window, cx| {
+                                            import_root.update(cx, |this, cx| {
+                                                this.open_template_import_modal(window, cx)
+                                            });
+                                        },
+                                    ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .when(cfg!(test), |entry| {
+                                    entry.debug_selector(|| "NEW_ROLE".into())
+                                })
+                                .child(
+                                    Button::new(
+                                        "new-role",
+                                        crate::i18n::text("ui.new_role_inline_action"),
+                                    )
+                                    .variant(ButtonVariant::Primary)
+                                    .on_press(
+                                        move |window, cx| {
+                                            create_root.update(cx, |this, cx| {
+                                                this.open_create_role(window, cx)
+                                            });
+                                        },
+                                    ),
+                                ),
                         )
                 }),
             crate::i18n::text("noun.roles"),

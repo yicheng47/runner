@@ -275,6 +275,35 @@ fn validate_remote_with(
             validate_permission(fields.permission.as_deref())?;
             Ok(())
         }
+        Command::Role {
+            command: RoleCommand::Import {
+                runtime, handle, ..
+            },
+        } => {
+            if let Some(runtime) = runtime.as_deref() {
+                parse_agent_runtime(runtime)?;
+            }
+            if let Some(handle) = handle.as_deref() {
+                let clean = handle.trim().strip_prefix('@').unwrap_or(handle.trim());
+                if clean.is_empty() {
+                    return Err(CliError::usage(
+                        "runner role import: --handle must not be empty",
+                    ));
+                }
+                if let Some(reason) = runner_core::slot_handle::validate_slot_handle(clean) {
+                    return Err(CliError::usage(format!(
+                        "runner role import: invalid --handle {handle:?}: {reason}"
+                    )));
+                }
+            }
+            Ok(())
+        }
+        Command::Crew {
+            command: CrewCommand::Import { map_runtime, .. },
+        } => {
+            parse_runtime_mappings(map_runtime)?;
+            Ok(())
+        }
         Command::Crew {
             command: CrewCommand::Add { runtime, .. },
         } => {

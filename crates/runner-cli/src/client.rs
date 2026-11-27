@@ -298,6 +298,16 @@ pub fn call_daemon(
                     .map(|()| json!({"deleted": true, "id": id})),
             )
         }
+        "template_export_crew" => {
+            response(client.template_export_crew(&argument::<String>(&args, "id")?))
+        }
+        "template_export_role" => {
+            response(client.template_export_role(&argument::<String>(&args, "id")?))
+        }
+        "template_preview" => {
+            response(client.template_preview(&argument::<String>(&args, "toml")?))
+        }
+        "template_import" => response(client.template_import(parse(args)?)),
         "role_list" => response(client.role_list()),
         "role_get" => response(client.role_get(&argument::<String>(&args, "id")?)),
         "role_create" => response(client.role_create(parse(args)?)),

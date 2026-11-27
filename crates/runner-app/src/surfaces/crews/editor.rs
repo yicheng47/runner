@@ -12,7 +12,7 @@ use gpui::prelude::*;
 use gpui::{
     div, px, rems, AnyElement, App, Context, FontWeight, KeyDownEvent, SharedString, Window,
 };
-use runner_app::ui::{Button, ButtonVariant, TextField};
+use runner_app::ui::{Button, ButtonVariant, IconButton, IconButtonSize, TextField};
 use runner_core::protocol::crew::UpdateCrewInput;
 use runner_core::protocol::model::{Crew, SlotWithRole};
 
@@ -341,7 +341,10 @@ impl NativeRoot {
                 let crew = crew.expect("view crew");
                 let start_root = root.clone();
                 let start_crew_id = crew.id.clone();
-                let edit_root = root;
+                let edit_root = root.clone();
+                let more_root = root;
+                let more_crew_id = crew.id.clone();
+                let more_crew_name = crew.name.clone();
                 profile
                     .child(
                         div()
@@ -405,7 +408,32 @@ impl NativeRoot {
                                                 });
                                             }),
                                     ),
-                            ),
+                            )
+                            .when(self.remote_client.is_local(), |actions| {
+                                actions.child(
+                                    div()
+                                        .when(cfg!(test), |el| {
+                                            el.debug_selector(|| "CREW_DETAIL_MORE".into())
+                                        })
+                                        .child(
+                                            IconButton::new("crew-detail-more", "more-horizontal.svg")
+                                                .size(IconButtonSize::Md)
+                                                .tooltip(crate::i18n::text("ui.more_actions"))
+                                                .on_press(move |window, cx| {
+                                                    let position = window.mouse_position();
+                                                    let id = more_crew_id.clone();
+                                                    let name = more_crew_name.clone();
+                                                    more_root.update(cx, |this, cx| {
+                                                        if this.remote_client.is_local() {
+                                                            this.open_crew_detail_menu(
+                                                                id, name, position, window, cx,
+                                                            );
+                                                        }
+                                                    });
+                                                }),
+                                        ),
+                                )
+                            }),
                     )
                     .into_any_element()
             }

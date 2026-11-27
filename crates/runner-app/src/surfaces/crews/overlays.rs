@@ -64,6 +64,7 @@ impl NativeRoot {
         }
         self.crew_surfaces.delete_busy = true;
         let id = confirm.id.clone();
+        let deleted_id = id.clone();
         let name = confirm.name.clone();
         let core = self.core(cx).clone();
         let task =
@@ -77,6 +78,9 @@ impl NativeRoot {
                 this.crew_surfaces.delete_confirm = None;
                 match result {
                     Ok(()) => {
+                        if matches!(&this.route, AppRoute::CrewEditor(active) if active == &deleted_id) {
+                            this.set_route(AppRoute::Crews, cx);
+                        }
                         this.load_crew_page(cx);
                         this.show_toast(
                             crate::i18n::messagef(

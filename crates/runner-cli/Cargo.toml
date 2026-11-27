@@ -30,6 +30,7 @@ chrono = { workspace = true }
 ulid = { workspace = true }
 tokio = { version = "1", features = ["macros", "net", "rt", "time", "io-util", "io-std", "signal"] }
 rpassword = "7"
+tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_System_Threading"] }
@@ -38,7 +39,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 regex = "1"
 runner-daemon = { path = "../runner-daemon", features = ["test-support"] }
 runner-terminal = { path = "../runner-terminal" }
-tempfile = "3"
 toml_edit = "0.25"
 
 [target.'cfg(unix)'.dev-dependencies]

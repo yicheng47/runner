@@ -18,6 +18,12 @@ Team conventions are shared instructions appended for every member in a mission.
 
 For example, the default pair asks the coder to implement on a feature branch, the reviewer to inspect the working-tree diff, and both to repeat until review is clean. The default conventions leave changes uncommitted unless the goal explicitly authorizes Git actions.
 
+## Templates
+
+Export any local crew to a portable `.crew.toml` file from its row `⋯` menu, from the crew page `⋯` menu, or with `runner crew export <crew>`. Exports carry the crew's name, team conventions, slots, and referenced roles (runtime, model, effort, Codex speed, and system prompt) while excluding local paths, environment variables, custom commands, and IDs.
+
+Import a `.crew.toml` file from **Crews → Import…** (drag-and-drop or file picker) to preview every slot, read each system prompt and the team conventions in Source or Rendered view, and reassign missing runtimes before creating anything. From the terminal, `runner crew import <file>` creates the crew and fresh roles immediately (auto-suffixing colliding role handles with `-2`, `-3`, …); pass `--dry-run` to inspect the plan without writing or `--map-runtime <from>=<to>` to reassign runtimes (resetting model and effort to defaults).
+
 ## Crew versus mission
 
 The crew is the reusable starting configuration. The [mission](missions.md) owns the live work, goal, feed and membership. Adding or removing a member from a mission does not edit the saved crew. A mission can also start as an **Empty mission**, then receive members one at a time.

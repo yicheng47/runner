@@ -26,4 +26,10 @@ A [crew slot](crews.md) references a role and gives it an in-crew handle. The sa
 
 Editing a role does not type instructions into an already-running terminal. Use a message for an immediate instruction, and review the launch settings when starting new work.
 
+## Templates
+
+Export a standalone role to a `.role.toml` file from its row `⋯` menu, from the role page `⋯` menu, or with `runner role export <role>`. Exports include the role's handle, display name, runtime, model, effort, Codex speed, and system prompt, and exclude local working directories, environment variables, custom commands, arguments, and IDs.
+
+Import a `.role.toml` file from **Roles → Import…** (or **Crews → Import…**) to inspect the full prompt in the preview modal, adjust the display name, handle, or missing runtime, and create a fresh role without touching existing ones. From the terminal, `runner role import <file>` creates the new role immediately (pass `--dry-run` to preview the plan without writing, `--handle` to choose a handle, or `--runtime` to reassign the runtime).
+
 See [Build a crew](../guides/build-a-crew.md) for a complete coder/reviewer example and [CLI reference](../reference/cli.md#runner-role) for role commands.

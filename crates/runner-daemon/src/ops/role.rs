@@ -51,7 +51,7 @@ fn now() -> Timestamp {
 /// composed body well under that ceiling so spawn-time argv
 /// delivery is guaranteed to fit. See
 /// `docs/impls/archive/0007-spawn-time-prompt-delivery.md`.
-pub const MAX_SYSTEM_PROMPT_BYTES: usize = 16 * 1024;
+pub use runner_core::MAX_SYSTEM_PROMPT_BYTES;
 
 /// Reject `system_prompt` payloads that would exceed the
 /// `first_turn_argv` budget once wrapped in the composed launch /
