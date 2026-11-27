@@ -1,36 +1,38 @@
 # 804 — Crew and role template import and export
 
 > Tracking issue: [#804](https://github.com/yicheng47/runner/issues/804) (folds [#1334](https://github.com/yicheng47/runner/issues/1334) in-app Export/Import; supersedes [#1002](https://github.com/yicheng47/runner/issues/1002) offline export). Related: [#1333](https://github.com/yicheng47/runner/issues/1333) (curated crew samples page on `runnersh.dev`). Platforms: macOS, Windows and Linux.
-> Status: draft spec — TOML v1 template format agreed on 2026-11-24; desktop Import Preview layout and policy choices below await Jason's canvas sign-off before implementation begins.
-> Design: `runner/desktop/specs/804-crew-role-templates.pen` in `yeelinks_design`, revision `e937105`. Boards: `KUm7t` (Board 1 — Entry points across Crews/Roles lists, empty states, and detail-page menus), `vIBqb` (Board 2 — Import Preview Option A centered modal `T91Gr` vs Option B two-column review page `j9Xj0`), and `g8ycMu` (Board 3 — Standalone role import `yauFl`, external URL / Bypass permission / missing runtime warnings `Loy8J`, fetching and validation error states `a3Eb2`, and Runner Light check `sY6Y6`).
+> Status: signed off by Jason on 2026-11-27 (local `.toml` Stage 1, drag-and-drop upload modal, fresh role recreation, and interactive missing-runtime reassignment).
+> Design: `runner/desktop/specs/804-crew-role-templates.pen` in `yeelinks_design`, revision `cd7c9f6`. Every screen is a full Runner window across three boards: `KUm7t` (entry points: Crews list `k7Ns4`, Roles list `nT1t8`, Crews empty state `FmDW8`, Crew page `IPZyP`, Role page `jpcxC`), `vIBqb` (complete 3-step import flow: Upload/Drop `T1xukv` → Import Preview `T91Gr` → Prompt Reader `J2DG3F`), and `g8ycMu` (edge states & Light mode: drag-over `yZWKa`, bulk + per-slot missing-runtime picker `ATvjj`, standalone role import `zLtkO`, recoverable validation error `yPEtJ`, and Runner Light preview `BgdON` & reader `Wlswz`).
 
 ## Motivation
 
-Crews, roles, and slots currently live only in Runner's local SQLite database, so users cannot back up a setup, share a working crew with a teammate offline, or start from curated multi-agent crews without recreating every role and prompt by hand. First-run onboarding (#1171) detects agents cleanly, but stops short of giving a new user a ready-to-run crew.
+Crews, roles and slots live only in Runner's local SQLite database, so people cannot back up a setup, share a working crew with a teammate offline, or start from a curated crew without recreating every role and prompt by hand. First-run setup (#1171) already offers one starter crew built from the detected agents; templates cover everything beyond that pair.
 
-A versioned, self-contained template file solves local backup and offline sharing immediately and gives `runnersh.dev` (#1333) — and later a catalog on `runner_server` — a single canonical format for one-click crew and role imports. The prompt folders under `examples/` become real template files that users can import directly.
+A versioned, self-contained template file solves local backup and offline sharing, and gives `runnersh.dev` (#1333) — and later a catalog on `runner_server` — one canonical format for downloadable crew and role templates. The prompt folders under `examples/` become real template files.
 
-## Decisions and open sign-off items
+## Decisions
 
 Settled with Jason on 2026-11-24:
 
-1. **TOML v1 format.** Templates use a single self-contained `.toml` file (`version = 1`, `kind = "crew" | "role"`), with suggested filenames `<slug>.crew.toml` and `<slug>.role.toml`. Multiline Markdown prompts stay readable and git-diffable without escaping, and `toml`/`toml_edit` plus tree-sitter TOML highlighting already live in the workspace.
-2. **Stage split.** Stage 1 owns the template format, CLI, and desktop import/export UI (including `runner://` handoff readiness); Stage 2 publishes sample crews on `runnersh.dev` (#1333) that import into Runner through this flow.
-3. **Never overwrite existing roles; strip machine-local state.** Export omits IDs, timestamps, `working_dir`, `env`, `command`, raw `args`, and retired `lead`. Import never overwrites an existing role handle and never starts a mission automatically.
+1. **TOML v1 format.** A template is one self-contained `.toml` file (`version = 1`, `kind = "crew" | "role"`), named `<slug>.crew.toml` or `<slug>.role.toml`. Multiline Markdown prompts stay readable and diffable.
+2. **Stage split.** Stage 1 (this spec) owns the template format, offline local-file CLI and desktop UI, an in-app link to downloadable sample crews on `runnersh.dev`, and converting `examples/` to `.crew.toml`. Stage 2 (#1333) publishes downloadable sample `.toml` templates on `runnersh.dev`. `runner://` deep links can layer on later without changing the format or preview.
+3. **Never overwrite existing roles; leave out machine-local state.** Export omits ids, timestamps, `working_dir`, `env`, `command`, raw `args` and the retired `lead`. Import never overwrites an existing role and never starts a mission.
 
-Open items awaiting sign-off from `runner/desktop/specs/804-crew-role-templates.pen` before implementation starts:
+Settled on 2026-11-25 and revised with Jason on 2026-11-27:
 
-1. **Import Preview surface (Board 2 `vIBqb`):** **Option A (`T91Gr`, recommended)** — centered 640 px modal dialog that leaves active chats and missions undisturbed when a `runner://` link wakes Runner, vs **Option B (`j9Xj0`)** — full-page two-column review screen (`Crews › Import crew`) matching the `New crew` page with wider Markdown prompt reading.
-2. **`runner://import?url=…` host policy:** Allow **any public HTTPS URL** (recommended — blocks loopback/private IPs and marks `runnersh.dev` as verified vs other hosts as `External · <host>` so GitHub gists and team links work), vs restricting strictly to an **allowlist** (`runnersh.dev` and future Runner marketplace hosts).
-3. **`permission_mode = "bypass"` on import (Board 3 `Loy8J`):** Show an amber warning banner with a default-checked **"Clamp Bypass permissions to Auto on import"** toggle for external templates (recommended), vs stripping `bypass` unconditionally on export or import.
+4. **One centered modal for the whole import flow** (`vIBqb`): clicking **Import…** opens Step 1 (drag-and-drop `.crew.toml` / `.role.toml` zone + **Choose file…** + link to `runnersh.dev/crews`), transitions in place to Step 2 (Import Preview), and swaps the modal body for Step 3 (Prompt Reader, `J2DG3F`).
+5. **Local files only in Stage 1; defer `runner://` links and URL fetching (2026-11-27).** People download `.crew.toml` or `.role.toml` files (from `runnersh.dev` or a teammate) and drop or pick them offline. Runner links to `https://runnersh.dev/crews` from the Crews page, empty state, and Step 1 upload modal. Dropping `runner://` and HTTP fetching removes OS URL-scheme registration, Windows single-instance pipe changes, and all network code in Stage 1, giving macOS, Windows and Linux full parity.
+6. **Always recreate imported roles; no conflict/reuse detection (2026-11-27).** Every imported role is created fresh — Runner never compares against or reuses existing local roles. Because role handles are globally unique in SQLite (`roles.handle UNIQUE`), a handle that already exists locally simply auto-suffixes to the next free `<handle>-2`, `-3`, … (editable on standalone role import). This removes conflict toggles, role-equality matching and changed-plan races completely.
+7. **Check runtime availability and let the user pick an installed runtime (2026-11-27).** The only environment check during import is whether each suggested runtime is installed on this machine. When a template suggests a runtime the user does not have installed, the preview highlights it and offers a picker of their installed runtimes (plus a bulk switch when 2+ roles share the same missing runtime, and a **Keep \<runtime\> (not installed)** escape hatch). Switching a role or slot to a different runtime clears its template `model`, `effort` and `codex_speed` so the chosen runtime starts with its own defaults.
+8. **Templates carry no permission mode.** A role's stored permission flags never reach a launch: chats strip them (`session/manager/direct_spawn.rs`) and missions replace them with broad access (`session/manager/mission_spawn.rs`; see [Missions](../guide/concepts/missions.md#permissions)). A Bypass warning or clamp on import would promise a protection Runner does not give. The preview says **Missions run with broad access** instead.
 
 ## Scope
 
 ### 1. Template format (`version = 1`, TOML)
 
-Every template is a UTF-8 TOML document with a top-level `version = 1` integer and `kind = "crew"` or `kind = "role"`. Because `kind` is explicit, any import entry point (Crews page, Roles page, CLI, or `runner://`) identifies whether the document describes a crew or a standalone role without relying on the filename.
+Every template is a UTF-8 TOML document with a top-level `version = 1` integer and `kind = "crew"` or `kind = "role"`, so every import entry point knows what it holds without relying on the filename. Both formats share the exact same role table schema (`RoleTemplate`): a standalone role puts one table under `[role]`, while a crew puts one or more identical role tables under `[[roles]]` and adds `[crew]` plus `[[slots]]`.
 
-Optional `[meta]` metadata (`description`, `author`, `tags`, `homepage`) is displayed in the Import Preview and consumed directly by `runnersh.dev` (#1333) and future catalog surfaces. Runner's SQLite schema needs no migration: `[meta]` is not stored on local `crews` or `roles` rows in v1.
+Optional `[meta]` (`description`, `author`, `tags`, `homepage`) is shown in the Import Preview and used by `runnersh.dev` (#1333). It is not stored on `crews` or `roles` rows, so the schema needs no migration and a re-export has no `[meta]`.
 
 #### Crew template (`kind = "crew"`)
 
@@ -62,11 +64,6 @@ role = "impl-codex"
 handle = "reviewer"
 role = "review-codex"
 
-[[slots]]
-handle = "qa"
-role = "qa-codex"
-effort = "high"
-
 [[roles]]
 handle = "impl-codex"
 display_name = "Implementer (Codex)"
@@ -74,7 +71,6 @@ runtime = "codex"
 model = "gpt-6.2-astra"
 effort = "xhigh"
 # codex_speed = "fast"        # Codex only: "standard" | "fast"
-permission_mode = "auto"      # "default" | "accept_edits" | "auto" | "bypass"
 system_prompt = """
 You are an implementer...
 """
@@ -85,7 +81,6 @@ display_name = "Reviewer (Codex)"
 runtime = "codex"
 model = "gpt-6.2-astra"
 effort = "xhigh"
-permission_mode = "auto"
 system_prompt = """
 You own critique only...
 """
@@ -108,156 +103,154 @@ display_name = "Reviewer (Codex)"
 runtime = "codex"
 model = "gpt-6.2-astra"
 effort = "xhigh"
-permission_mode = "auto"
 system_prompt = """
 You own critique only...
 """
 ```
 
-#### Serialization and validation contract
+#### Serialization and validation
 
-- **Excluded fields:** Export never writes `id`, `created_at`, `updated_at`, `added_at`, `working_dir`, `env`, `command`, raw `args`, or `lead`. Import ignores nothing silently on security-sensitive fields: presence of `command`, `args`, `env`, or `working_dir` on a role or slot is rejected with a clear validation error so a hand-edited template cannot appear to inject executables or secrets.
-- **Readable multiline formatting:** Export uses `toml_edit` (already in the workspace) to emit multiline `system_prompt` and `conventions` values as multiline TOML strings (`"""..."""` or literal `'''...'''` where valid), omits `None`/empty optional fields, and sorts `[[roles]]` in first-referenced slot order for clean diffs.
-- **Version gating:** `version` must equal `1`; unknown or newer versions fail cleanly with `"Unsupported template version <n>; update Runner to import this file."`
-- **Structural checks:**
-  - `kind = "crew"` requires non-empty `crew.name`, forbids `[role]`, and allows an empty `[[slots]]` list (with empty `[[roles]]`) so an exported empty crew round-trips cleanly. Every `slots[].role` must match a unique `roles[].handle`, every `roles[]` entry must be referenced by at least one slot, and `slots[].handle` must be unique within the crew.
-  - `kind = "role"` requires `[role]` and forbids `[crew]`, `[[slots]]`, and `[[roles]]`.
-  - Handles follow Runner's existing `validate_role_handle` and `slot_handle_error` rules (lowercase ASCII slug).
-- **Runtime and capability checks:**
-  - Every `role.runtime` and `slot.runtime` must resolve to a known built-in agent runtime in `runner_core::protocol::runtime_metadata` (`shell` and unknown keys are rejected with a clear message naming the offending role/slot, and nothing is created).
-  - `codex_speed` is accepted only when the effective runtime supports Codex Speed (`codex`).
-  - `permission_mode` defaults to `"default"` when omitted on import; export writes the role's inferred `role_permission_mode(&role)` when the runtime supports permission modes. On import, `command` comes from the runtime registry and `args` are generated exclusively through `apply_permission_mode`.
-  - A known runtime that is not installed on the current machine does **not** block import; preview marks that role/slot with a non-blocking **Not installed** hint (`Install in Settings → Agents before starting a mission`).
+- **Unknown keys are rejected** everywhere except inside `[meta]`, where they are ignored. A typo such as `effrot` fails instead of being dropped, and so do `id`, timestamps, `working_dir`, `env`, `command`, `args`, `lead` and `permission_mode`; the message names the key and its role or slot.
+- **Export validates its own output** with the import validator and refuses with the offending handle or field, so every exported file imports. This covers older rows, such as a slot handle saved before handles were checked: the daemon's slot create and update only trim them today.
+- **Readable output.** Multiline `system_prompt` and `conventions` are written as multiline TOML strings, empty optional fields are omitted, and `[[roles]]` follows first-referenced slot order.
+- **Version.** Any `version` other than `1` fails with `Unsupported template version <n>; update Runner to import this file.`
+- **Size.** A template file is at most 256 KiB, and each `system_prompt` at most `MAX_SYSTEM_PROMPT_BYTES` (16 KiB, the limit role create enforces). The prompt limit moves from `runner-daemon` to `runner-core` so both use one constant.
+- **Structure.**
+  - `kind = "crew"` requires a non-empty `crew.name`, forbids `[role]`, and allows no slots and no roles so an empty crew round-trips. Every `slots[].role` matches one `roles[].handle`, every role is used by a slot, and slot handles are unique.
+  - `kind = "role"` requires `[role]` and forbids `[crew]`, `[[slots]]` and `[[roles]]`.
+  - Role and slot handles follow `runner_core::slot_handle::validate_slot_handle` and may not be empty; `display_name` may not be empty.
+- **Runtimes.** Every role and slot `runtime` must be a built-in agent runtime; `shell` and unknown names are rejected with the role or slot named. `codex_speed` is accepted only when the effective runtime supports it. `model` and `effort` are free text, as in the role form, and are not checked against a catalog. Import takes `command` from the runtime registry and creates every role with `PermissionMode::Default`, as the New role page does.
 
-### 2. Collision resolution and atomic import (`runner-core` and `runnerd`)
+### 2. Fresh role creation, runtime reassignment and atomic import
 
-Role handles are globally unique in SQLite (`roles.handle UNIQUE`), whereas crew names are non-unique display labels (`crews.name`).
+Role handles are globally unique (`roles.handle UNIQUE`); crew names are not.
 
-- **Portable role equality:** Two roles are considered identical when `(display_name.trim(), runtime, model, effort, codex_speed, effective_permission_mode, normalized_prompt)` all match, where `normalized_prompt` normalizes CRLF to LF and trims trailing whitespace/newlines. Local-only columns (`working_dir`, `env`, IDs, timestamps) do not break reuse detection.
-- **Crew import role resolution (per referenced role in `[[roles]]`):**
-  1. **No local role with that handle:** Plan is `Create { handle }` (`New @<handle>`).
-  2. **Existing local role is identical:** Plan defaults to `ReuseExisting { handle }` (`Reuses @<handle>`), avoiding duplicate role clutter when importing multiple crews that share a role.
-  3. **Existing local role differs:** Plan defaults to `CreateRenamed { original, target }` where `target` is the first unused `<handle>-2`, `<handle>-3`, … suffix. Never overwrites the local role. In the preview (and via CLI options), the user can switch a conflicting role to `ReuseExisting { handle }` (pointing the imported crew's slot at their existing local role) or keep `CreateRenamed`.
-- **Standalone role import resolution:**
-  - If `@<handle>` does not exist, creates `@<handle>`.
-  - If `@<handle>` already exists (identical or differing), defaults to auto-renamed `<handle>-2` (editable inline in the preview or via `--handle <new-handle>` in the CLI), with an explicit note that the existing role is untouched.
-- **Crew name collisions:** If a local crew already has the same name, the preview pre-fills `<name> (2)` (editable before confirming) so the user can distinguish the new crew immediately.
-- **Atomic writes:** `template_import` runs inside a single SQLite transaction in `runnerd`. Any validation or DB failure rolls back completely so zero orphan roles, crews, or slots remain. Importing creates database records only and never spawns a session or mission.
+- **Always create fresh roles:** importing a crew or standalone role never reuses or overwrites any existing local role.
+- **Auto-suffixed handles:** for each imported role, if `@<handle>` is free, use it; otherwise pick the first free `<handle>-2`, `-3`, … (shortening the base so the result stays within 32 characters). The search covers both local roles and other roles in the same template. For standalone role import, the user can also edit the handle before confirming (validated for uniqueness).
+- **Crew names:** when a local crew already has the same name, the preview pre-fills `<name> (2)`, editable before confirming; the CLI does the same unless `--name` is given.
+- **Runtime availability check & reassignment:**
+  - The preview checks each slot's effective runtime (`slot.runtime` if set, otherwise its `role.runtime`) and standalone role's `runtime` against the installed built-in runtimes detected on this machine.
+  - If that effective runtime is installed, the slot's optional `runtime`, `model`, `effort` and `codex_speed` overrides import as written for lossless round-trips.
+  - If that effective runtime is not installed, the user can choose any installed built-in runtime for that slot/role (or switch all slots sharing that missing runtime at once in the UI, or keep the template's runtime to install later).
+  - When the user switches a slot or role to a different runtime, `model`, `effort` and `codex_speed` overrides on that slot (and on its role if the role's runtime changed) are cleared to `None` so the chosen runtime uses its own defaults. If multiple slots share one role and pick different runtimes, the created role takes the first chosen runtime and differing slots store a `runtime_override` with cleared model, effort and speed.
+- **Atomic writes:** `template_import` runs in one immediate SQLite transaction, following `ops/onboarding.rs`'s starter crew. If a handle became taken between preview and confirm on a crew import, the transaction advances to the next free suffix automatically so the import still succeeds cleanly. Any failure rolls back, so no role, crew or slot is left behind.
 
-### 3. Daemon protocol and CLI (`runner-core`, `runner-daemon`, `runner-cli`)
+### 3. Core, daemon and CLI
 
-Template parsing, validation, serialization, and portable-equality logic live in `runner-core` (`crates/runner-core/src/template/`) so the daemon, CLI, and app share one canonical implementation.
+Parsing, validation, serialization, handle allocation and runtime-override normalization live in `crates/runner-core/src/template/`, which gains a `toml_edit` dependency (already used by the daemon and the CLI). Neither `runner-core`, `runner-daemon` nor `runner-cli` makes any network requests for templates.
 
-#### Daemon RPC (`crates/runner-daemon/src/ops/`)
+#### Daemon requests
 
-- `template_export_crew { id }` → `{ filename, toml }`
-- `template_export_role { id }` → `{ filename, toml }`
-- `template_preview { toml, source? }` → structured `TemplatePreview` containing normalized template summary, per-role resolution plan (`Create | ReuseExisting | CreateRenamed`), runtime installation status from the local catalog, `bypass` permission warnings, crew name suggestion, and any validation error with field/line context.
-- `template_import { toml, crew_name?, role_decisions, clamp_bypass }` → atomically creates the crew/slots/roles according to the confirmed plan and returns the created `Crew` (with slots) or `Role` plus a summary of created vs reused role handles.
-- `template_fetch_url { url }` (daemon-side or shared `reqwest` helper behind the HTTPS/size/IP guards below) → `{ toml, source_host, verified_official }`.
+- `template_export_crew { id }` and `template_export_role { id }` return `{ filename, toml }`.
+- `template_preview { toml }` returns the normalized template, the crew name suggestion, the fresh handle planned for each role, runtime install status per role/slot, the list of installed built-in agent runtimes on this machine, and any validation error with its line when known.
+- `template_import { toml, crew_name?, role_handle?, runtime_overrides }` creates the crew and/or roles fresh in one transaction, applying any chosen `runtime_overrides` (clearing `model`/`effort`/`codex_speed` where the runtime changed), and returns the created crew/roles. It emits `role/changed`, `crew/changed` and `slot/changed` after commit, as the existing create requests do, so every window refreshes.
 
-#### CLI (`crates/runner-cli/src/command/crew.rs`, `role.rs`)
+These requests change the client protocol, so Phase 1 takes `core-review`.
 
-- `runner crew export <crew> [-o <path>] [--json]` — Resolves `<crew>` by name or ID. Prints TOML to stdout by default, or writes atomically to `<path>` when `-o` is passed. With `--json`, returns `{ "filename": "...", "toml": "..." }` (or `{ "path": "..." }` when `-o` is set).
-- `runner crew import <file|url> [--name <name>] [--on-conflict rename|reuse|fail] [--allow-bypass] [--dry-run] [--json]` — Reads a local path (works offline with zero network calls) or fetches an HTTPS URL (applying the same URL safety checks). Defaults to `--on-conflict rename` (reusing identical roles, renaming differing ones) and clamps `bypass` to `auto`/`default` unless `--allow-bypass` is passed. `--dry-run` prints the preview plan without writing.
-- `runner role export <role> [-o <path>] [--json]` — Resolves `<role>` by handle or ID; same output rules.
-- `runner role import <file|url> [--handle <handle>] [--allow-bypass] [--dry-run] [--json]` — Same offline/URL and safety rules for standalone roles.
-- Regenerate `docs/guide/reference/cli.md` with `make guide-cli`.
+#### CLI
 
-### 4. Desktop app UI (`crates/runner-app/src/surfaces/`)
+- `runner crew export <crew> [-o <path>] [--json]` prints TOML, or writes it atomically to `<path>`. `--json` returns `{ filename, toml }`, or `{ path }` with `-o`.
+- `runner crew import <file> [--name <name>] [--map-runtime <from>=<to>]... [--dry-run] [--json]` reads a local file offline, creates all roles fresh (auto-suffixing handles if taken), and maps any specified runtimes (resetting `model`/`effort`/`codex_speed` on mapped roles/slots). Prints a warning if any resulting runtime is not installed. `--dry-run` prints the plan and writes nothing.
+- `runner role export <role> [-o <path>] [--json]` and `runner role import <file> [--handle <handle>] [--runtime <runtime>] [--dry-run] [--json]` follow the same rules for one role (when `--runtime` differs from the template's runtime, resets `model`/`effort`/`codex_speed`).
+- Regenerate the CLI reference with `make guide-cli`.
 
-Visual source of truth: `runner/desktop/specs/804-crew-role-templates.pen` in `yeelinks_design` (`e937105`). All UI strings go through `crates/runner-app/i18n/` (`en.toml` and `zh-hans.toml`).
+### 4. Desktop app UI
 
-#### Entry points (Board 1 `KUm7t`)
+Visual source of truth: the canvas above. All strings go through `crates/runner-app/i18n/` (`en.toml` and `zh-hans.toml`).
 
-- **Crews list (`surfaces/crews/list.rs`):** Add a secondary **`Import…`** button (`download` icon) left of **`+ New crew`** in the page header and beside **`+ New crew`** in the `No crews yet` empty state, plus a quiet external link `Browse sample crews on runnersh.dev ↗` under the empty-state buttons. Hidden when viewing a remote host (preserving the existing read-only remote rule).
-- **Crews row menu & Crew detail page (`surfaces/crews/list.rs`, `editor.rs`):** Add **`Export…`** (`upload` icon) to the list row `⋯` context menu above a divider before `Delete`. Add a compact 32×32 `⋯` button at the end of the Crew detail page's 272 px action row (`[ ▶ Start mission ] [ ✎ Edit ] [ ⋯ ]`) opening `Export…` and `Delete crew`.
-- **Roles list & Role detail page (`surfaces/roles/list.rs`, `menu.rs`, `detail.rs`):** Mirror Crews exactly: secondary **`Import…`** button left of **`+ New role`** in header and empty state, **`Export…`** in row `⋯` menu, and `[ 💬 Chat now ] [ ✎ Edit ] [ ⋯ ]` (`Export…`, `Delete role`) on the Role detail page.
-- **Native file dialogs:** `Export…` opens `cx.prompt_for_new_path` pre-filled with `<slug>.crew.toml` or `<slug>.role.toml` and shows a success toast on write. `Import…` opens `cx.prompt_for_paths` filtering `.toml` files, reads the file offline, calls `template_preview`, and opens the Import Preview (accepting either `kind = "crew"` or `kind = "role"` from either page).
+#### Entry points (`KUm7t`)
 
-#### Import Preview (Board 2 `vIBqb` & Board 3 `g8ycMu`)
+- **Crews list (`1A`, `k7Ns4`):** a secondary **Import…** button left of **New crew** in the header, and a quiet **Browse sample crews ↗** link in the subtitle row opening `https://runnersh.dev/crews` in the default browser. Both are hidden while viewing a remote host.
+- **Crews empty state (`1C`, `FmDW8`):** **Import…** beside **+ New crew**, with **Browse sample crews on runnersh.dev ↗** below the buttons.
+- **Crew row menu (`1A`) and Crew page (`1D`, `IPZyP`):** **Export…** in the row `⋯` menu above a divider before **Delete**. The Crew page's action row gains a `⋯` button with **Export…** and **Delete crew**.
+- **Roles list (`1B`, `nT1t8`), row menu and Role page (`1E`, `jpcxC`):** the same **Import…** header button and **Export…** / **Delete role** menus.
+- **Export file dialog:** Export uses `cx.prompt_for_new_path` with the suggested filename (`<slug>.crew.toml` or `<slug>.role.toml`) and shows a toast once written.
 
-- **Layout:** Follows whichever option Jason signs off on Board 2 (`T91Gr` Option A centered 640 px modal — recommended — or `j9Xj0` Option B full-page two-column review screen). Both present the exact same controls and data:
-  - Header with crew pixel mosaic (or role pixel avatar), `Import crew` / `Import role` title, source badge (`Local file · offline`, green `runnersh.dev` verified badge, or amber `External · <host>` badge), template filename/version/author metadata, and dismiss control.
-  - Editable Crew name field (or Role display name + editable `@handle` field for standalone roles) and `[meta].description`.
-  - Non-blocking warning banner when any role requests `permission_mode = "bypass"` (with the default-checked clamp checkbox if approved) and inline **Not installed** badges for known uninstalled runtimes.
-  - Ordered **Slots & Roles** list showing pixel avatar, `@slot`, role display name, runtime mark, `Runtime · model · effort · permission` (with Runner's amber override cue when a slot overrides its role), collision status badge (`New @handle`, `Reuses @handle`, or `@handle differs`), inline segmented conflict toggle (`Create @<handle>-2` | `Use existing @<handle>`), and Markdown prompt inspection rendered via the unified renderer (`crates/runner-app/src/ui/markdown/`).
-  - **Team conventions** prompt preview (when non-empty).
-  - Footer summarizing exact writes (`Creates 1 crew, 2 roles · reuses 1 role · no env or paths`) beside **`Cancel`** and primary **`Import crew`** / **`Import role`**.
-- **Fetching and error states (Board 3 `a3Eb2`):** Opening a `runner://` URL shows a cancellable loading dialog (`Fetching template from <host>…` with the exact URL) before transitioning into the preview. Malformed TOML, unsupported versions, forbidden fields (`env`/`command`/`args`/`working_dir`), unknown runtimes, or fetch failures show a clear danger banner stating what failed (with line number when available) and confirming `Nothing was created.`
-- **Post-import navigation:** On confirm, shows a toast (`Imported crew "Codex Trio"` / `Imported role "@review-codex-2"`), refreshes Crews/Roles lists, and opens the newly imported Crew or Role detail page so the user can inspect or immediately click **Start mission** / **Chat now**.
-- **Themes:** Verified against both Dark and Runner Light tokens (`3D` `sY6Y6`).
+#### Step 1 — Upload / Drop modal (`2A`, `T1xukv`; drag-over `3A`)
 
-### 5. `runner://` URL scheme (macOS, Windows, Linux)
+- Clicking **Import…** on either the Crews or Roles page opens the centered **Import template** modal on Step 1.
+- **Drop zone:** accepts dragged `.crew.toml` or `.role.toml` files from Finder/Explorer (`ExternalPaths`, using the same `$accent` drag-over highlight as `ui/file_drop.rs`) and has a **Choose file…** button (`cx.prompt_for_paths`). Either entry point accepts either template kind.
+- **Samples callout:** a quiet row below the drop zone links to `runnersh.dev/crews` so users who clicked **Import…** first can download starter templates right away.
+- Dropping or picking a file validates it locally via `template_preview` and transitions inside the same modal to Step 2 (or the recoverable error state if invalid).
 
-Supports one-click web import from `runnersh.dev` (#1333) and future catalog links via:
+#### Step 2 — Import Preview & Runtime Check (`2B`, `T91Gr`; bulk picker `3B`; standalone role `3C`)
 
-```text
-runner://import?url=https%3A%2F%2Frunnersh.dev%2Fcrews%2Fcodex-trio.crew.toml
-```
+- **Header:** crew mosaic or role avatar, title (`Import crew` or `Import role`), filename, template version, author (when present), a **Change file** button (re-opens file picker / Step 1), and close button.
+- **Identity:** crew name, or role display name and `@handle` (auto-suffixed if taken), editable; `[meta].description` below. `homepage` shows as plain text.
+- **Slots and roles, in order:**
+  - Every role is created fresh, showing its planned handle (`New @coder`, `New @reviewer-2`), runtime mark, `Runtime · model · effort` (with amber dot for slot overrides), prompt size, and chevron. Opening any row opens its full prompt in Step 3.
+  - **Missing runtime check:** when a role or slot requests a runtime that is not installed on this machine, that row shows an amber indicator (`<runtime> not installed`) and an inline runtime picker populated with the user's **installed runtimes** (plus **Keep \<runtime\> (not installed)** at the bottom). When 2+ roles share the same missing runtime, an amber banner above the list offers **Switch all \<n\> to \[runtime ▾\]** (`3B`). Switching a runtime clears that role's `model`, `effort` and `codex_speed` to defaults and notes this clearly.
+  - If no agent runtimes are installed on the machine at all, the picker shows that none are installed yet and lets the user keep the template runtime and install later in **Settings → Agents**.
+- **Team conventions,** when not empty, opens in the reader too.
+- **Access note:** `Missions run with broad access. Read each prompt before you import.`
+- **Footer:** `Creates 1 crew, 3 new roles` (or `Creates 1 new role`) beside **Cancel** and **Import crew** / **Import role**.
+- **Standalone roles (`3C`):** display name + editable handle, runtime check card (with inline runtime picker when uninstalled), prompt excerpt with **Read full prompt ›**, broad access note, and footer.
 
-- **Why URL fetch instead of inline payloads:** Real multi-role crews (`examples/codex-trio/`) are ~15 KB of Markdown prompts, which exceed safe Windows registry/command-line URL limits and produce unreadable browser consent prompts.
-- **Fetch security boundaries:**
-  - Scheme must be `https://` (`http://`, `file://`, `data:`, and credentials in URL are rejected).
-  - Enforces a 256 KiB response body cap, 10 s total timeout, and at most 3 redirects (each redirect target re-checked against scheme and IP rules).
-  - Resolves target IP addresses before connecting and refuses loopback, link-local, RFC 1918 private, and CGNAT ranges to prevent local-network SSRF.
-  - Host allowlist vs open public HTTPS follows Jason's sign-off on Open Item 2; in open-HTTPS mode, `runnersh.dev` receives the verified green source badge while all other hosts display the amber `External · <host>` warning badge.
-  - **Never auto-imports:** Every `runner://import?...` link always stops at the Import Preview for explicit confirmation.
-- **Window routing:** Focuses an existing **local** Runner window (or opens a new local window if every open window is connected to a remote host — matching #1413's rule so a web link never disconnects an active remote session) and opens the Import Preview there.
-- **Platform registration & cold/warm launch:**
-  - **macOS:** Register `CFBundleURLTypes` (`CFBundleURLSchemes: ["runner"]`) in `script/bundle-mac` (`Info.plist`), and wire `application.on_open_urls(...)` in `crates/runner-app/src/startup.rs` (queuing URLs received before the first window opens so cold launch works identically to warm launch).
-  - **Windows:** Register `HKCU\Software\Classes\runner` (`URL Protocol`, shell open command `"Runner.exe" "%1"`) in `script/windows/runner.iss`, parse `runner://` from startup argv in `startup.rs`, and extend `crates/runner-app/src/single_instance.rs` to forward the `runner://` URL payload over the existing named pipe when an instance is already running.
-  - **Linux:** Add `MimeType=x-scheme-handler/runner;` and `%u` to `Exec=` in `packaging/linux/runner.desktop` (preserving `script/linux/install.sh`'s path-rewriting logic), parse `runner://` from argv on launch, and forward or handle cleanly.
+#### Step 3 — Prompt reader (`2C`, `J2DG3F`; Light `3F`)
 
-### 6. Example crews conversion (`examples/`)
+- Takes over the modal body: back arrow, role identity, **Source | Rendered**, line count and size, the scrolling text, and **Previous**, **Next** and **Back to import**, which step through every role and the conventions. Esc returns to Step 2; a second Esc closes the modal.
+- **Source is the default** and shows the text exactly as it will be stored, with line numbers. Invisible and bidirectional control characters are drawn as visible markers. Rendered uses the unified Markdown renderer in its Compact look, which turns images into alt text and never loads them.
 
-Convert the existing prompt folders under `examples/` (`codex-trio`, `dev-crew`, `docs-crew`, `pair-coding`, `tic-tac-toe`, `tomb-raid`, `werewolf`) into valid `.crew.toml` template files (retaining sample `goal.md` notes where helpful, since a crew carries no default goal). Add an automated test that parses and validates every `examples/**/*.crew.toml` file through `runner-core`'s template validator so shipped examples never drift from the v1 schema. These files become the initial seed set for `runnersh.dev` (#1333).
+#### Validation error & post-import (`3D`)
+
+- Malformed TOML, a non-template file, an unsupported version, an unknown or excluded key, an unknown runtime, or a file over the size limit stays inside the modal showing what failed, the filename and line when known, that nothing was created, an inline drop retry hint, and **Choose another file…** beside **Close**.
+- After confirming import: closes the modal, shows a success toast, refreshes lists, and navigates directly to the newly created Crew or Role page.
+
+### 5. Example crews (`examples/`)
+
+Convert all seven folders under `examples/` (`codex-trio`, `dev-crew`, `docs-crew`, `pair-coding`, `tic-tac-toe`, `tomb-raid`, `werewolf`) from loose Markdown prompts to real template files: each folder becomes `examples/<slug>/<slug>.crew.toml` (replacing the per-role `.md` files and `team-conventions.md`) alongside its existing `examples/<slug>/goal.md`, since a crew template carries no mission goal. Multi-player crews (`tic-tac-toe`, `werewolf`, `tomb-raid`) define one shared role in `[[roles]]` and instantiate multiple `[[slots]]` referencing it (for example `player-1`, `player-2`).
+
+A `runner-core` test validates every `examples/**/*.crew.toml`, and Phase 3 updates the `examples/` links in `docs/guide/guides/build-a-crew.md` and `docs/guide/zh-CN/guides/build-a-crew.md` to point to the `.crew.toml` files.
+
+The Markdown holds prompts only, so Phase 3 chooses a default runtime for each role: Codex for every role in `codex-trio`; elsewhere Claude Code for the roles that produce work and Codex for the roles that review it. Examples omit `model` and `effort` so they do not age.
 
 ## Non-goals
 
-- Publishing, hosting, ratings, search, or authentication for a crew marketplace on `runner_server` (separate future track).
-- The `runnersh.dev` crew samples web page itself (tracked in #1333, built in Stage 2 after this feature lands).
-- Editing role prompts, runtimes, or slot overrides inside the Import Preview (users edit freely on the Crew/Role detail page right after import).
-- Exporting or importing machine-local or secret fields (`env`, `working_dir`, custom `command`, raw `args`).
-- Remote-host crew or role import/export (Crews and Roles stay read-only when viewing a remote computer).
-- Auto-starting a mission or auto-installing missing agent CLIs on import.
+- `runner://` URL scheme registration, OS single-instance URL forwarding, and remote URL fetching in the app or CLI (deferred to a follow-up after #1333 is live).
+- Role conflict detection, role-equality matching, or reusing existing local roles on import (every imported role is recreated fresh).
+- Publishing, hosting, ratings, search or accounts for a marketplace on `runner_server`.
+- The samples page itself on `runnersh.dev` (#1333).
+- Permission settings in templates, or any change to how chats and missions choose permissions.
+- Editing prompts or per-slot overrides beyond missing-runtime reassignment inside the preview; people edit on the Crew or Role page after import.
+- Exporting or importing `env`, `working_dir`, custom `command` or raw `args`.
+- Import or export on a remote host.
+- Starting a mission or installing an agent CLI on import.
 
 ## Implementation phases
 
-Three focused pull requests to `main`, matching the phases on #804 (the spec and active index entry land with Phase 1):
+Three pull requests to `main`; this spec and its index entry land with Phase 1.
 
-1. **Phase 1 — Template format, daemon ops, and CLI (`runner-core`, `runner-daemon`, `runner-cli`):** Implement `template` v1 TOML parser/serializer, validation, portable role equality, collision planner, atomic SQLite import transaction, URL fetch guard helper, daemon RPCs, `runner crew/role export|import` commands, `make guide-cli`, and comprehensive unit/integration tests.
-2. **Phase 2 — Desktop UI and `runner://` URL scheme (`runner-app`, `script/bundle-mac`, `script/windows/runner.iss`, `packaging/linux/runner.desktop`, `docs/guide/`):** Add `Import…` and `Export…` entry points across Crews and Roles lists/detail pages/empty states, build the signed-off Import Preview (with unified Markdown prompt inspection, conflict toggles, warnings, fetching/error states, Dark/Light themes, and EN/zh-CN i18n), wire `runner://` registration and cold/warm launch handling across macOS/Windows/Linux, and update the user guides.
-3. **Phase 3 — Convert `examples/` templates:** Convert the crews in `examples/` into validated `.crew.toml` files with an automated CI validation test, ready for Stage 2's `runnersh.dev` crew samples page (#1333).
+1. **Format, daemon requests and CLI** (`runner-core`, `runner-daemon`, `runner-cli`): the `template` module, handle allocator, runtime-override normalization, transaction, protocol requests, CLI commands, CLI reference and tests. `core-review`.
+2. **Desktop UI and guides** (`runner-app`, `docs/guide/`): entry points and `runnersh.dev` sample-crews links, Step 1 drag-and-drop upload modal, Step 2 preview with missing-runtime picker & bulk switch, Step 3 prompt reader, recoverable error state, i18n, and guide pages.
+3. **Examples:** convert `examples/` with the validation test, ready for downloadable sample templates on `runnersh.dev` (#1333).
 
 ## Guide pages
 
-Update the English and `zh-CN` pages in Phase 2 (and regenerate the CLI reference in Phase 1 with `make guide-cli`):
+English and `zh-CN`, in Phase 2 (the CLI reference in Phase 1):
 
-- [Crews](../guide/concepts/crews.md) (exporting and importing crew templates)
-- [Roles](../guide/concepts/roles.md) (exporting and importing standalone role templates)
-- [Build a crew](../guide/guides/build-a-crew.md) (starting from a template file or `runner://` link and sharing a crew)
-- [CLI reference](../guide/reference/cli.md) (`runner crew export|import`, `runner role export|import`)
+- [Crews](../guide/concepts/crews.md): exporting and importing crews.
+- [Roles](../guide/concepts/roles.md): exporting and importing one role.
+- [Build a crew](../guide/guides/build-a-crew.md): starting from a downloaded or shared template file, and sharing a crew.
+- [CLI reference](../guide/reference/cli.md).
 
 ## Verification
 
 ### Automated tests
 
-- **Format & round-trip (`runner-core`):** Crew and standalone role export → import round-trip preserving slot order, overrides, runtime, model, effort, Codex speed, permission mode, conventions, and multiline Markdown prompts; golden TOML snapshots verifying readable multiline serialization and omission of empty optional fields.
-- **Security & validation (`runner-core`):** Rejects `version != 1`, mismatched `kind` sections, duplicate slot handles, dangling slot role references, unknown runtimes, `shell` runtime, and forbidden fields (`env`, `working_dir`, `command`, `args`); confirms exported files never contain local paths, env vars, IDs, or timestamps.
-- **Collision & atomicity (`runner-daemon`):** Verifies new role creation, identical-role auto-reuse (including CRLF/whitespace normalization and differing local `working_dir`/`env`), differing-role auto-rename (`-2`, `-3`), crew conflict override to `ReuseExisting`, standalone role handle rename, crew name suffix suggestion, and transactional rollback leaving zero rows on mid-import error.
-- **URL fetch guard (`runner-core` / `runner-daemon`):** Unit tests rejecting `http://`, `file://`, embedded credentials, loopback/private/link-local IPs, bodies over 256 KiB, redirect to disallowed host/IP, and verifying `runnersh.dev` vs external host classification.
-- **CLI (`runner-cli`):** End-to-end daemon tests for `crew/role export` (stdout, `-o`, `--json`) and `crew/role import` (offline local file, `--dry-run`, `--on-conflict`, `--allow-bypass`, exit codes).
-- **App UI (`runner-app`):** GPUI harness tests for `Import…` / `Export…` visibility on local vs remote hosts, crew/role row and detail-page menus, Import Preview states (new, reuse, conflict toggle, standalone role rename, Bypass warning + clamp toggle, uninstalled runtime hint, fetching, error, Dark/Light), local-window selection on `runner://` while a remote window is active, and `examples/*.crew.toml` validation. Any async/daemon-backed app test passes 20 consecutive runs via `cargo nextest run -p runner-app --stress-count 20 -E '<filter>'`.
+- **Format (`runner-core`):** crew and role round-trips preserve order, overrides, runtime, model, effort, Codex speed, conventions and prompts; golden TOML snapshots; an exported file holds no ids, timestamps, env values or paths.
+- **Validation (`runner-core`):** rejects other versions, mismatched sections, unknown keys (including every excluded field and `permission_mode`), duplicate or invalid handles, dangling or unused roles, unknown runtimes and `shell`, Codex speed on another runtime, and oversized files and prompts. Unknown `[meta]` keys pass. Export refuses a row that would not import.
+- **Import & runtime mapping (`runner-daemon`):** always creates fresh roles even when an identical local role exists; auto-suffixes colliding handles (including 32-character handles and two template roles competing for one suffix); crew name `(2)` suffix; runtime reassignment clears `model`, `effort` and `codex_speed` on switched roles/slots; rollback leaves no rows; emits `role/changed`, `crew/changed` and `slot/changed`.
+- **CLI (`runner-cli`):** export to stdout, `-o` and `--json`; import from a local file, `--dry-run`, `--map-runtime`, `--runtime`, `--name`, `--handle` and exit codes, against a real daemon with no network access.
+- **App (`runner-app`):** entry points and sample-crews links on local hosts and hidden on remote hosts; Step 1 modal file drop (`ExternalPaths`) and **Choose file…** picker; Step 2 fresh-role creation badges, missing-runtime inline picker, bulk switch banner, and model/effort reset display; Step 3 reader navigation and Source default with control characters marked; recoverable validation error with **Choose another file…**; post-import navigation. Tests that run daemon work wait with `h.wait(…)` and pass 20 runs with `cargo nextest run -p runner-app --stress-count 20 -E '<filter>'`.
 
 ### Live checks
 
-Phase 1 changes no UI screens; its CLI export/import round-trip against the development daemon is checked alongside `CLI-READ-01`. Phase 2 changes the Crews/Roles UI and adds OS URL-scheme handling, so `@qa` runs these checks on the macOS development app (using `script/qa-lock` and disposable roles/crews cleaned up afterward):
+Phases 1 and 3 have no app UI to operate and need none. Phase 2 needs these, on the development app with `script/qa-lock` and disposable roles and crews:
 
-1. **Crew export → offline import round-trip (new & reuse):** Create a disposable two-slot crew with overrides and conventions, export via the row `⋯` menu (`Export…`), delete the crew (keeping one role, deleting the other), disconnect network or import locally via Crews `Import…`, verify preview shows 1 `New` role and 1 `Reuses` role plus conventions/prompt Markdown, confirm import, and verify the restored crew matches and opens cleanly. Reason: exercises export dialog, TOML round-trip, offline import, and reuse detection.
-2. **Role handle conflict & standalone role export/import:** Edit the kept role's prompt so it differs from the exported template, re-import the crew, verify preview flags `@<handle> differs` with `Create @<handle>-2` selected by default (and switching to `Use existing` updates the footer count), confirm import, and verify the original local role is untouched. Repeat export/import on a single role from the Roles page and verify standalone auto-rename. Reason: verifies the non-overwrite guarantee and standalone role flow.
-3. **Detail-page `⋯` menu, remote read-only guard, and Dark/Light check:** Open a Crew page and Role page to confirm `[ ⋯ ]` exposes `Export…` without crowding `Start mission`/`Chat now` or `Edit`, verify Dark and Runner Light contrast in the Import Preview, and confirm `Import…`/`Export…` stay hidden when viewing a remote host (or verify via automated test if no relay fixture is in scope). Reason: covers new UI surfaces on detail pages and remote boundary.
-4. **Warnings & validation rejection:** Import a local fixture requesting `permission_mode = "bypass"` and an uninstalled built-in runtime (verify amber warning, safe clamp toggle, and non-blocking `Not installed` hint), then import a malformed fixture with an unknown runtime (verify error banner and zero created rows). Reason: covers security/validation UX.
-5. **`runner://` URL handoff (warm & cold launch):** Trigger `open "runner://import?url=..."` against a local test fixture / HTTPS template URL (or `runner://` handler test on a bundled candidate `.app`) while Runner is running and after quitting Runner; verify Runner comes forward into a local window, opens the Import Preview with source badge, and creates nothing on Cancel. Reason: verifies macOS `CFBundleURLTypes` + `on_open_urls` registration; Windows Inno Setup registry/pipe forwarding and Linux `.desktop` `x-scheme-handler/runner` require native Windows/Linux verification (recorded explicitly as platform gaps if untested on macOS QA).
+1. **Upload, drag-and-drop and crew round-trip.** Export a two-slot crew with an override and conventions, then click **Import…** to open Step 1: test both dragging the `.crew.toml` file onto the drop zone (verifying the active drop highlight) and picking it via **Choose file…**. Confirm all roles are created fresh (auto-suffixed if the original roles still exist) and the imported crew matches.
+2. **Missing runtime reassignment (crew & standalone role).** Import a crew template and a standalone `.role.toml` targeting a runtime not installed on the test machine: verify the amber missing-runtime indicator, bulk switch banner (when 2+ slots share the missing runtime), per-row dropdown listing installed runtimes, model/effort reset to defaults on switch, and clean import onto the new Crew/Role page.
+3. **Reader.** Open each prompt and the conventions in Step 3, switch Source and Rendered, step with Previous and Next, and return with Esc. A fixture prompt with a masked link, an image and a zero-width character shows all three in Source and loads no image.
+4. **Menus, sample-crews links and themes.** Verify `⋯` menus on the Crew and Role pages, **Browse sample crews** links on the Crews list, empty state, and Step 1 upload modal, and visual clarity of Step 1–3 in Dark and Runner Light. Remote hiding is covered by the automated test.
+5. **Recoverable rejected files.** Drop or pick a template with an unknown runtime, one with `env` or `permission_mode`, and a non-TOML file: each shows the in-modal error with filename/line, creates nothing, and recovers cleanly via **Choose another file…** or dropping a valid template.
 
-Selected regression cases: `MIS-CREW-01` (creating/editing a crew and starting a bounded mission from an imported crew still works end-to-end) and `CLI-READ-01` (CLI crew/role readback agrees with imported DB state).
+Selected regression cases: `MIS-CREW-01` (a mission starts from an imported crew) and `CLI-READ-01` (CLI readback agrees with the imported rows).
