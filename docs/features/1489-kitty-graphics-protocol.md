@@ -124,7 +124,7 @@ Either way, a mirror that cannot read a handoff asks for a resync rather than di
 
 ### Phase 2
 
-A client lists `kittyGraphics` in a new `features` field of the companion `Hello`, additive like the fields above. The host then forwards relayed graphics to it, with pixels inline under a per-client budget, and coalesces frames under backpressure. The iPhone app's Ghostty draws them.
+A client lists `kittyGraphics` in a new `features` field of the companion `Hello`, additive like the fields above. The host then forwards relayed graphics to it, with pixels inline under a per-client budget, and coalesces frames under backpressure. The iPhone app draws them.
 
 ## Reused from the Alacritty implementation
 
