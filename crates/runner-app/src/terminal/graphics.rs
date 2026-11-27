@@ -5369,4 +5369,417 @@ mod tests {
             let _ = worker.join();
         }
     }
+
+    #[test]
+    fn daemon_to_mirror_over_1mib_replacement_with_evictions_paints_without_blank() {
+        use runner_terminal::kitty::{
+            prepare_command, ScanItem, ScanOutput, Scanner, TempDirs, MAX_NORMALIZED_FRAME_BYTES,
+        };
+
+        struct SiblingView(usize);
+        impl Render for SiblingView {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(32.)).h_full().child(format!("s{}", self.0))
+            }
+        }
+
+        struct CachedHost {
+            sibling: Entity<SiblingView>,
+            terminal: Arc<TerminalMirror>,
+            interaction: Entity<TerminalInteraction>,
+            input: Entity<TerminalInput>,
+            focus: gpui::FocusHandle,
+        }
+        impl Render for CachedHost {
+            fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let style = TerminalStyle {
+                    palette: runner_terminal::palette::RUNNER,
+                    font: crate::app_settings::AppSettings::default()
+                        .terminal_font_family
+                        .font(cx),
+                    font_size: 14.,
+                    app_zoom: 1.,
+                    line_height_factor: 1.4,
+                    copy_on_select: false,
+                };
+                div().flex().size_full().child(self.sibling.clone()).child(
+                    div().flex_1().h_full().child(
+                        TerminalElement::new(
+                            Arc::clone(&self.terminal),
+                            self.interaction.clone(),
+                            self.input.clone(),
+                            self.focus.clone(),
+                            true,
+                            true,
+                            style,
+                        )
+                        .cached(),
+                    ),
+                )
+            }
+        }
+
+        let scan_forwarded = |scanner: &mut Scanner, bytes: &[u8]| -> Vec<ForwardedItem> {
+            let temp = TempDirs::default();
+            match scanner.scan(bytes) {
+                ScanOutput::Plain(text) => vec![ForwardedItem::Text(text.to_vec())],
+                ScanOutput::Items(items) => items
+                    .into_iter()
+                    .map(|item| match item {
+                        ScanItem::Text(t) => ForwardedItem::Text(t),
+                        ScanItem::Command(raw) => match prepare_command(&raw, &temp) {
+                            Some(prepared) => ForwardedItem::Command(prepared),
+                            None => ForwardedItem::Discarded,
+                        },
+                        ScanItem::Discarded => ForwardedItem::Discarded,
+                    })
+                    .collect(),
+            }
+        };
+        let solid_rgb = |w: usize, h: usize, rgb: [u8; 3]| -> Vec<u8> {
+            rgb.into_iter().cycle().take(w * h * 3).collect()
+        };
+        let lineage_for = |mirror: &TerminalMirror, id: u32| -> u64 {
+            mirror
+                .graphics()
+                .lock()
+                .unwrap()
+                .primary
+                .image_by_id(id)
+                .unwrap()
+                .screen_lineage
+        };
+
+        let cell = CellSize {
+            width: 10,
+            height: 20,
+        };
+        let mut cx = TestAppContext::single();
+        let (_host, mirror, tx, ack) =
+            mirror_named("daemon-evict-handoff", TerminalController::Desktop);
+        let mirror_id = mirror.mirror_id();
+        let store = cx.update(|cx| TerminalTextureCache::attach_mirror(&mirror, cx));
+        let _lease1 = mirror.view();
+        let _lease2 = mirror.view();
+
+        let sibling = cx.new(|_| SiblingView(0));
+        let interaction1 = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input1 = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let win_cached = cx.add_window(|_, cx| CachedHost {
+            sibling: sibling.clone(),
+            terminal: Arc::clone(&mirror),
+            interaction: interaction1.clone(),
+            input: input1.clone(),
+            focus: cx.focus_handle(),
+        });
+        let mut visual_cached = VisualTestContext::from_window(win_cached.into(), &cx);
+        visual_cached.simulate_resize(gpui::size(px(440.), px(260.)));
+
+        let interaction2 = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input2 = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let win_direct = cx.add_window(|_, cx| GraphicsPaneHost {
+            terminal: Some(Arc::clone(&mirror)),
+            interaction: Some(interaction2.clone()),
+            input: Some(input2.clone()),
+            focus: cx.focus_handle(),
+            font_size: 14.,
+            line_height_factor: 1.4,
+        });
+        let mut visual_direct = VisualTestContext::from_window(win_direct.into(), &cx);
+        visual_direct.simulate_resize(gpui::size(px(400.), px(260.)));
+
+        let model = TerminalModel::with_graphics(
+            Arc::new(NullHost),
+            "daemon-evict-handoff".into(),
+            80,
+            24,
+            ModelOptions::default(),
+            cell,
+            None,
+        )
+        .unwrap();
+        let mut scanner = Scanner::new();
+        let mut next_seq = 1u64;
+
+        // --- Sub-case 1: > 1 MiB replacement of i=77 (with sole relative child i=99)
+        //     that evicts an unrelated unplaced 1x1 image i=88. ---
+        let w1 = 1024usize;
+        let w2 = 1025usize;
+        let h = 350usize;
+        let mut setup1 = kitty_rgba_command(
+            &format!("a=T,f=24,s={w1},v={h},i=77,p=1,z=-9,C=1,q=2"),
+            &solid_rgb(w1, h, [220, 40, 40]),
+        );
+        setup1.extend_from_slice(&kitty_rgba_command(
+            "a=t,f=24,s=1,v=1,i=99,q=2",
+            &[0, 255, 0],
+        ));
+        setup1.extend_from_slice(b"\x1b_Ga=p,i=99,p=1,P=77,Q=1,C=1,q=2\x1b\\");
+        setup1.extend_from_slice(&kitty_rgba_command(
+            "a=t,f=24,s=1,v=1,i=88,q=2",
+            &[0, 0, 255],
+        ));
+        let (_, setup1_frames, last) =
+            model.feed_forwarded(next_seq, &scan_forwarded(&mut scanner, &setup1));
+        for (idx, frame) in setup1_frames.into_iter().enumerate() {
+            send_and_wait(
+                &tx,
+                &ack,
+                TerminalFrame::Output {
+                    seq: next_seq + idx as u64,
+                    bytes: frame.into(),
+                },
+            );
+        }
+        next_seq = last + 1;
+        visual_cached.update(|window, _| window.refresh());
+        visual_direct.update(|window, _| window.refresh());
+        visual_cached.refresh().unwrap();
+        visual_direct.refresh().unwrap();
+        cx.run_until_parked();
+
+        let lineage1 = lineage_for(&mirror, 77);
+        let img1 = store
+            .cached_image(mirror_id, live_key_for(&mirror, 77))
+            .expect("initial 77 cached");
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img1)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img1)));
+
+        model
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .set_limit(w2 * h * 3);
+        let rep1_cmd = kitty_rgba_command(
+            &format!("a=T,f=24,s={w2},v={h},i=77,p=1,z=-9,C=1,q=2"),
+            &solid_rgb(w2, h, [40, 200, 60]),
+        );
+        let (_, rep1_frames, last) =
+            model.feed_forwarded(next_seq, &scan_forwarded(&mut scanner, &rep1_cmd));
+        assert_eq!(rep1_frames.len(), 2);
+        assert_eq!(rep1_frames[0], b"\x1b_Ga=d,d=I,i=88,q=2\x1b\\");
+        assert!(rep1_frames[1].len() > MAX_NORMALIZED_FRAME_BYTES);
+
+        let mut rep1_iter = rep1_frames.into_iter();
+        let rep1_evict = rep1_iter.next().unwrap();
+        let rep1_upload = rep1_iter.next().unwrap();
+
+        // Deliver ONLY the eviction frame first and repaint both windows: i=77 must stay painted!
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: next_seq,
+                bytes: rep1_evict.into(),
+            },
+        );
+        cx.run_until_parked();
+        sibling.update(&mut cx, |s, cx| {
+            s.0 += 1;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        visual_direct.update(|window, cx| {
+            cx.set_global(PaintTrace::default());
+            window.refresh();
+        });
+        visual_direct.refresh().unwrap();
+        let trace1 = visual_direct.update(|_, cx| cx.global::<PaintTrace>().0.clone());
+        assert!(
+            trace1.iter().any(|e| matches!(e, PaintEvent::Image { .. })),
+            "unrelated eviction frame must keep old i=77 painted (zero blank): {trace1:?}"
+        );
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img1)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img1)));
+
+        // Deliver the > 1 MiB replacement frame -> direct swap [img1 -> img2], 88 & 99 gone.
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: next_seq + 1,
+                bytes: rep1_upload.into(),
+            },
+        );
+        next_seq = last + 1;
+        cx.run_until_parked();
+        assert_eq!(lineage_for(&mirror, 77), lineage1);
+        assert!(!mirror.graphics().lock().unwrap().primary.contains_image(88));
+        assert!(!mirror.graphics().lock().unwrap().primary.contains_image(99));
+        let img2 = store
+            .cached_image(mirror_id, live_key_for(&mirror, 77))
+            .expect("replaced 77 cached");
+        assert!(!Arc::ptr_eq(&img1, &img2));
+        assert!(!visual_cached.update(|window, _| window.has_image_atlas_entry(&img1)));
+        assert!(!visual_direct.update(|window, _| window.has_image_atlas_entry(&img1)));
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img2)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img2)));
+
+        // --- Sub-case 2: large > 1 MiB genuinely order-dependent replacement ---
+        // Add parent i=88 and child i=99 placed on BOTH i=77 (p=1) and i=88 (p=2).
+        // Replace i=77 with a new > 1 MiB image large enough to evict i=88 while
+        // retaining i=99: Frame 0 strips i=99's placements lowercase and evicts i=88
+        // (leaving i=77 painted with zero blank!), Frame 1 swaps i=77 atomically, and
+        // subsequent `a=p,i=99,p=3,C=1` paints retained i=99 into both windows.
+        model
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .set_limit(64 * 1024 * 1024);
+        let mut setup2 = kitty_rgba_command("a=T,f=24,s=1,v=1,i=88,p=1,C=1,q=2", &[0, 0, 255]);
+        setup2.extend_from_slice(&kitty_rgba_command(
+            "a=t,f=24,s=2,v=2,i=99,q=2",
+            &solid_rgb(2, 2, [255, 220, 0]),
+        ));
+        setup2.extend_from_slice(b"\x1b_Ga=p,i=99,p=1,P=77,Q=1,C=1,q=2\x1b\\");
+        setup2.extend_from_slice(b"\x1b_Ga=p,i=99,p=2,P=88,Q=1,C=1,q=2\x1b\\");
+        let (_, setup2_frames, last) =
+            model.feed_forwarded(next_seq, &scan_forwarded(&mut scanner, &setup2));
+        for (idx, frame) in setup2_frames.into_iter().enumerate() {
+            send_and_wait(
+                &tx,
+                &ack,
+                TerminalFrame::Output {
+                    seq: next_seq + idx as u64,
+                    bytes: frame.into(),
+                },
+            );
+        }
+        next_seq = last + 1;
+        cx.run_until_parked();
+
+        // Limit = new 77 (w2*h*3) + 99 (12 B), so adding new 77 evicts 88 (3 B)
+        // while keeping 99 (12 B) + new 77.
+        model
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .set_limit(w2 * h * 3 + 12);
+        let rep2_cmd = kitty_rgba_command(
+            &format!("a=T,f=24,s={w2},v={h},i=77,p=1,z=-9,C=1,q=2"),
+            &solid_rgb(w2, h, [40, 80, 240]),
+        );
+        let (_, rep2_frames, last) =
+            model.feed_forwarded(next_seq, &scan_forwarded(&mut scanner, &rep2_cmd));
+        assert_eq!(rep2_frames.len(), 2);
+        let rep2_f0_str = String::from_utf8_lossy(&rep2_frames[0]);
+        assert!(
+            !rep2_f0_str.contains("a=d,d=I,i=77"),
+            "order-dependent eviction frame must not self-delete i=77: {rep2_f0_str}"
+        );
+        assert!(rep2_f0_str.contains("a=d,d=i,i=99,q=2"));
+        assert!(rep2_f0_str.contains("a=d,d=i,i=88,q=2"));
+        assert!(rep2_f0_str.contains("a=d,d=I,i=88,q=2"));
+        assert!(rep2_frames[1].len() > MAX_NORMALIZED_FRAME_BYTES);
+
+        let mut rep2_iter = rep2_frames.into_iter();
+        let rep2_f0 = rep2_iter.next().unwrap();
+        let rep2_f1 = rep2_iter.next().unwrap();
+
+        // Deliver ONLY Frame 0 and repaint while Frame 1 (> 1 MiB) is in flight:
+        // old i=77 (img2) must remain painted in BOTH windows with zero blank!
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: next_seq,
+                bytes: rep2_f0.into(),
+            },
+        );
+        cx.run_until_parked();
+        sibling.update(&mut cx, |s, cx| {
+            s.0 += 1;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        visual_direct.update(|window, cx| {
+            cx.set_global(PaintTrace::default());
+            window.refresh();
+        });
+        visual_direct.refresh().unwrap();
+        let trace2 = visual_direct.update(|_, cx| cx.global::<PaintTrace>().0.clone());
+        assert!(
+            trace2.iter().any(|e| matches!(e, PaintEvent::Image { .. })),
+            "order-dependent eviction frame must keep old i=77 painted (zero blank): {trace2:?}"
+        );
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img2)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img2)));
+
+        // Deliver Frame 1 -> direct swap [img2 -> img3], i=99 retained with 0 placements.
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: next_seq + 1,
+                bytes: rep2_f1.into(),
+            },
+        );
+        next_seq = last + 1;
+        cx.run_until_parked();
+        assert_eq!(lineage_for(&mirror, 77), lineage1);
+        let img3 = store
+            .cached_image(mirror_id, live_key_for(&mirror, 77))
+            .expect("second > 1 MiB replacement cached");
+        assert!(!Arc::ptr_eq(&img2, &img3));
+        assert!(!visual_cached.update(|window, _| window.has_image_atlas_entry(&img2)));
+        assert!(!visual_direct.update(|window, _| window.has_image_atlas_entry(&img2)));
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img3)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img3)));
+        assert_eq!(
+            mirror
+                .graphics()
+                .lock()
+                .unwrap()
+                .primary
+                .image_by_id(99)
+                .map(|i| i.placement_count),
+            Some(0)
+        );
+
+        // Subsequent redisplay `a=p,i=99,p=3,C=1` must paint retained i=99 in both windows!
+        let (_, redisplay_frames, _) = model.feed_forwarded(
+            next_seq,
+            &scan_forwarded(&mut scanner, b"\x1b_Ga=p,i=99,p=3,C=1,q=2\x1b\\"),
+        );
+        assert_eq!(redisplay_frames.len(), 1);
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: next_seq,
+                bytes: redisplay_frames.into_iter().next().unwrap().into(),
+            },
+        );
+        visual_cached.update(|window, _| window.refresh());
+        visual_direct.update(|window, _| window.refresh());
+        visual_cached.refresh().unwrap();
+        visual_direct.refresh().unwrap();
+        cx.run_until_parked();
+        assert_eq!(
+            mirror
+                .graphics()
+                .lock()
+                .unwrap()
+                .primary
+                .image_by_id(99)
+                .map(|i| i.placement_count),
+            Some(1)
+        );
+        let img99 = store
+            .cached_image(mirror_id, live_key_for(&mirror, 99))
+            .expect("retained child i=99 must decode and paint on redisplay");
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img99)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img99)));
+
+        for worker in model.stop_workers() {
+            let _ = worker.join();
+        }
+    }
 }

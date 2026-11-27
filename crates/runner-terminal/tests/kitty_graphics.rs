@@ -3421,17 +3421,22 @@ fn replacement_with_eviction_preserves_authoritative_relative_orphan_outcomes_on
             &dirs,
         ),
     );
-    // Replacement + eviction fit in one <= 1 MiB frame via push_group, with
-    // `a=d,d=I,i=77` ordered before `a=d,d=i,i=88` / `a=d,d=I,i=88`.
+    // Replacement + eviction fit in one <= 1 MiB frame via push_group, with NO
+    // self pre-delete for i=77; child 99's placements are stripped lowercase
+    // (`a=d,d=i,i=99,q=2`) before eviction of 88 so mirror retains 99.
     assert_eq!(replacement.len(), 1);
     let rep_str = String::from_utf8_lossy(&replacement[0]);
-    let pos_del_77 = rep_str
-        .find("a=d,d=I,i=77,q=2")
-        .expect("relative-interacting eviction must emit pre-delete for i=77");
+    assert!(
+        !rep_str.contains("a=d,d=I,i=77,q=2"),
+        "succeeding single-command replacement must omit self pre-delete: {rep_str}"
+    );
+    let pos_strip_99 = rep_str
+        .find("a=d,d=i,i=99,q=2")
+        .expect("retained zero-placed child 99 must emit lowercase d=i before eviction");
     let pos_evict_88 = rep_str
         .find("a=d,d=i,i=88,q=2")
         .expect("eviction of parent 88 must emit lowercase d=i before d=I");
-    assert!(pos_del_77 < pos_evict_88);
+    assert!(pos_strip_99 < pos_evict_88);
     stream.extend(replacement);
 
     let chunks: Vec<&[u8]> = stream.iter().map(Vec::as_slice).collect();
@@ -3519,6 +3524,10 @@ fn replacement_with_eviction_preserves_authoritative_relative_orphan_outcomes_on
             &dirs,
         ),
     );
+    assert!(
+        !String::from_utf8_lossy(&rep2[0]).contains("a=d,d=I,i=77,q=2"),
+        "dual chain must also omit self pre-delete for i=77"
+    );
     stream2.extend(rep2);
     flush_model_events(&model2);
     let _ = host2.take_replies();
@@ -3558,4 +3567,136 @@ fn replacement_with_eviction_preserves_authoritative_relative_orphan_outcomes_on
     );
     drop(auth2);
     shutdown_model(&model2);
+
+    // Case C (parent 77 pinned, 88 has p=1 under 77 + p=2 pinned, 99 under (88,p=1),
+    // 66 under (88,p=2); replacing 77 evicts 88):
+    // runnerd deletes 99 during D(77) and retains 66 during E(88). Mirror must match
+    // without emitting self pre-delete for i=77.
+    let (model3, host3) = new_model(80, 24, cell, None);
+    let mut sc3 = Scanner::new();
+    let mut setup3 = Vec::new();
+    for cmd in [
+        "a=T,f=24,s=1,v=1,i=77,p=1,C=1;AP8A",
+        "a=t,f=24,s=1,v=1,i=88;/wAA",
+        "a=p,i=88,p=1,P=77,Q=1,C=1",
+        "a=p,i=88,p=2,C=1",
+        "a=t,f=24,s=1,v=1,i=99;AAD/",
+        "a=p,i=99,p=1,P=88,Q=1,C=1",
+        "a=t,f=24,s=1,v=1,i=66;//8A",
+        "a=p,i=66,p=1,P=88,Q=2,C=1",
+    ] {
+        setup3.extend(apc(cmd));
+    }
+    let (_, mut stream3, seq3) =
+        model3.feed_forwarded(1, &scan_to_forwarded(&mut sc3, &setup3, &dirs));
+    model3.graphics().lock().unwrap().primary.set_limit(9);
+    let (_, rep3, last3) = model3.feed_forwarded(
+        seq3 + 1,
+        &scan_to_forwarded(
+            &mut sc3,
+            &apc("a=T,f=24,s=2,v=1,i=77,p=1,C=1;AQIDBAUG"),
+            &dirs,
+        ),
+    );
+    assert!(!String::from_utf8_lossy(&rep3[0]).contains("a=d,d=I,i=77,q=2"));
+    stream3.extend(rep3);
+    flush_model_events(&model3);
+    let _ = host3.take_replies();
+    let (_, redisplay3, _) = model3.feed_forwarded(
+        last3 + 1,
+        &scan_to_forwarded(
+            &mut sc3,
+            &[apc("a=p,i=66,p=2,C=1"), apc("a=p,i=99,p=2,C=1")].concat(),
+            &dirs,
+        ),
+    );
+    flush_model_events(&model3);
+    assert_eq!(
+        host3.take_replies(),
+        vec![
+            "\x1b_Gi=66,p=2;OK\x1b\\",
+            "\x1b_Gi=99,p=2;ENOENT: image not found\x1b\\",
+        ]
+    );
+    stream3.extend(redisplay3);
+    let chunks3: Vec<&[u8]> = stream3.iter().map(Vec::as_slice).collect();
+    let (_, mirror3, _) = replay_mirror(80, 24, 32, cell, &chunks3);
+    let auth3 = model3.graphics().lock().unwrap();
+    assert!(!auth3.primary.contains_image(99));
+    assert!(!mirror3.primary.contains_image(99));
+    assert_eq!(
+        auth3.primary.image_by_id(66).map(|img| img.placement_count),
+        Some(1)
+    );
+    assert_eq!(
+        mirror3
+            .primary
+            .image_by_id(66)
+            .map(|img| img.placement_count),
+        Some(1)
+    );
+    drop(auth3);
+    shutdown_model(&model3);
+
+    // Case D (over-1-MiB replacement of 77 with sole relative child 99 evicting an
+    // unrelated unplaced 1x1 image 88): Frame 0 must contain ONLY the eviction of 88
+    // (zero self pre-delete for 77!), Frame 1 must carry > 1 MiB a=T,i=77 alone, and
+    // replaying both frames must match runnerd (77 replaced, 88 and 99 removed).
+    let (model4, _) = new_model(80, 24, cell, None);
+    let mut sc4 = Scanner::new();
+    let w1 = 1024usize;
+    let w2 = 1025usize;
+    let h = 350usize;
+    let img77_old = BASE64.encode(vec![0x11u8; w1 * h * 3]);
+    let img77_new = BASE64.encode(vec![0x22u8; w2 * h * 3]);
+    assert!(img77_new.len() > MAX_NORMALIZED_FRAME_BYTES);
+    let mut setup4 = Vec::new();
+    setup4.extend(apc(&format!(
+        "a=T,f=24,s={w1},v={h},i=77,p=1,C=1;{img77_old}"
+    )));
+    setup4.extend(apc("a=t,f=24,s=1,v=1,i=99;AAD/"));
+    setup4.extend(apc("a=p,i=99,p=1,P=77,Q=1,C=1"));
+    setup4.extend(apc("a=t,f=24,s=1,v=1,i=88;/wAA"));
+    let (_, mut stream4, seq4) =
+        model4.feed_forwarded(1, &scan_to_forwarded(&mut sc4, &setup4, &dirs));
+    // Exact limit = new 77 bytes -> replacing 77 deletes old 77 + 99 and evicts unrelated 88.
+    model4
+        .graphics()
+        .lock()
+        .unwrap()
+        .primary
+        .set_limit(w2 * h * 3);
+    let (_, rep4, _) = model4.feed_forwarded(
+        seq4 + 1,
+        &scan_to_forwarded(
+            &mut sc4,
+            &apc(&format!("a=T,f=24,s={w2},v={h},i=77,p=1,C=1;{img77_new}")),
+            &dirs,
+        ),
+    );
+    assert_eq!(rep4.len(), 2);
+    assert_eq!(
+        rep4[0], b"\x1b_Ga=d,d=I,i=88,q=2\x1b\\",
+        "frame 0 must only evict unrelated i=88 without self pre-delete for i=77"
+    );
+    assert!(rep4[1].len() > MAX_NORMALIZED_FRAME_BYTES);
+    assert!(!String::from_utf8_lossy(&rep4[1]).contains("a=d,d=I,i=77"));
+    stream4.extend(rep4);
+    let chunks4: Vec<&[u8]> = stream4.iter().map(Vec::as_slice).collect();
+    let (_, mirror4, _) = replay_mirror(80, 24, 32, cell, &chunks4);
+    let auth4 = model4.graphics().lock().unwrap();
+    assert!(!auth4.primary.contains_image(88));
+    assert!(!mirror4.primary.contains_image(88));
+    assert!(!auth4.primary.contains_image(99));
+    assert!(!mirror4.primary.contains_image(99));
+    assert_eq!(
+        auth4.primary.image_by_id(77).map(|i| (i.width, i.height)),
+        Some((w2 as u32, h as u32))
+    );
+    assert_eq!(
+        mirror4.primary.image_by_id(77).map(|i| (i.width, i.height)),
+        Some((w2 as u32, h as u32))
+    );
+    drop(auth4);
+    shutdown_model(&model4);
 }

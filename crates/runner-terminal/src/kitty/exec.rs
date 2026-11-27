@@ -245,7 +245,7 @@ fn execute_transmit<H: ExecuteHost>(
         }
     };
 
-    let (stored, display_opt) = match load_and_add_image(host, cell, prepared, mode, normalized) {
+    let (stored, display_opt) = match load_and_add_image(host, prepared, mode, normalized) {
         Ok(LoadOutcome::More) => return None,
         Ok(LoadOutcome::Complete { image, display }) => (image, display),
         Err(err) => {
@@ -315,20 +315,17 @@ enum LoadOutcome {
 
 fn load_and_add_image<H: ExecuteHost>(
     host: &mut H,
-    cell: CellSize,
     prepared: &PreparedCommand,
     mode: ExecMode,
     normalized: &mut Vec<Vec<u8>>,
 ) -> Result<LoadOutcome, ImageError> {
     let cmd = &prepared.command;
     let t = cmd.control.transmission().unwrap();
-    let cursor = host.term_cursor();
-    let rows = host.term_rows();
-    let cols = host.term_cols();
     let storage = host.storage_mut();
 
     let mut deleted_existing: Option<u32> = None;
-    let mut self_affected_relatives = false;
+    let mut self_deleted_other = Vec::new();
+    let mut self_survived_other = Vec::new();
     let mut loading = if let Some(mut loading) = storage.loading.take() {
         loading.add_data(&cmd.data)?;
         if t.more_chunks {
@@ -339,28 +336,17 @@ fn load_and_add_image<H: ExecuteHost>(
     } else {
         // Reusing an explicit image ID deletes the old image and all its
         // placements when the new transmission begins, before it completes or fails.
-        // Succeeding single-command replacements omit a separate normalized
-        // `a=d,d=I` because the mirror's own replacement deletes the old image
-        // atomically; failed replacements, chunked starts (`m=1`), and
-        // replacements that both trigger evictions and interact with relative
-        // placements still emit it so mirror orphan cleanup matches runnerd.
+        // Succeeding single-command replacements never emit a separate
+        // `a=d,d=I,i=<self>` because the mirror's own replacement deletes the
+        // old image atomically; failed replacements and chunked starts (`m=1`)
+        // still emit it.
         if t.image_id > 0 {
             let had_existing = storage.contains_image(t.image_id);
-            let self_had_relative = storage.has_relative_placement(t.image_id);
-            let self_orphaned_other = storage.delete(
-                DeleteAction::Id {
-                    delete_images: true,
-                    image_id: t.image_id,
-                    placement_id: 0,
-                },
-                cursor,
-                rows,
-                cols,
-                cell,
-            );
+            let (deleted_other, survived_other) = storage.delete_image_for_replacement(t.image_id);
             if mode == ExecMode::Authoritative && had_existing {
                 deleted_existing = Some(t.image_id);
-                self_affected_relatives = self_had_relative || self_orphaned_other;
+                self_deleted_other = deleted_other;
+                self_survived_other = survived_other;
             }
         }
 
@@ -408,15 +394,40 @@ fn load_and_add_image<H: ExecuteHost>(
             ExecMode::Mirror => loading.complete_normalized_mirror(storage.total_limit())?,
         };
         let evicted = storage.add_image(image.clone())?;
-        if mode == ExecMode::Authoritative {
-            if !evicted.is_empty() && self_affected_relatives {
-                if let Some(id) = deleted_existing {
+        if mode == ExecMode::Authoritative && !evicted.is_empty() {
+            // Preserve authoritative orphan-image outcomes without ever
+            // emitting a self pre-delete for `t.image_id`:
+            // 1. Any child image that survived the replacement delete only
+            //    because of placements under an evicted parent (and now sits
+            //    retained with 0 placements) has its placements stripped
+            //    lowercase first so the mirror's later replacement delete
+            //    cannot free its image bytes.
+            let retained_zero_placed: Vec<u32> = self_survived_other
+                .into_iter()
+                .filter(|&id| {
+                    storage
+                        .image_by_id(id)
+                        .is_some_and(|img| img.placement_count == 0)
+                })
+                .collect();
+            for &id in &retained_zero_placed {
+                let mut lower = Vec::new();
+                encode_delete_placements_by_id(&mut lower, id);
+                normalized.push(lower);
+            }
+            emit_evictions(&evicted, normalized);
+            // 2. If any lowercase delete above could orphan placements of a
+            //    child image that runnerd already freed during the replacement
+            //    delete, free that child image explicitly so the mirror does
+            //    not retain it.
+            if !retained_zero_placed.is_empty() || evicted.iter().any(|ev| ev.orphaned_other_image)
+            {
+                for id in self_deleted_other {
                     let mut buf = Vec::new();
                     encode_delete_image_by_id(&mut buf, id);
                     normalized.push(buf);
                 }
             }
-            emit_evictions(&evicted, normalized);
         }
         Ok(LoadOutcome::Complete { image, display })
     })();

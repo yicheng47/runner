@@ -531,12 +531,6 @@ impl ImageStorage {
         self.images.contains_key(&id)
     }
 
-    pub fn has_relative_placement(&self, image_id: u32) -> bool {
-        self.placements.iter().any(|(key, p)| {
-            key.image_id == image_id && matches!(p.location, PlacementLocation::Relative(_))
-        })
-    }
-
     pub fn mark_dirty(&mut self) {
         self.dirty = self.dirty.wrapping_add(1);
     }
@@ -1119,8 +1113,73 @@ impl ImageStorage {
         self.mark_mutated();
     }
 
-    /// Execute a protocol delete action (`a=d`). Returns `true` when deleting
-    /// also orphaned at least one relative placement belonging to another image.
+    /// Deletes `image_id` and its placements when a replacement transmission
+    /// begins (`a=d,d=I,i=<id>`), returning distinct other image IDs whose
+    /// relative placements were orphaned, partitioned into
+    /// `(deleted_other_ids, survived_other_ids)` in deterministic ascending order.
+    pub fn delete_image_for_replacement(&mut self, image_id: u32) -> (Vec<u32>, Vec<u32>) {
+        let placements_before = self.placements.len();
+        let images_before = self.images.len();
+
+        let prior_lineage = self
+            .mirror_mode
+            .then(|| self.images.get(&image_id).map(|img| img.screen_lineage))
+            .flatten();
+        self.delete_by_id(image_id, 0, true);
+        if let Some(lineage) = prior_lineage {
+            if !self.images.contains_key(&image_id) {
+                self.replaced_lineage.insert(image_id, lineage);
+            }
+        }
+
+        let mut orphaned_other = Vec::new();
+        loop {
+            let orphans: Vec<PlacementKey> = self
+                .placements
+                .iter()
+                .filter_map(|(&key, p)| match p.location {
+                    PlacementLocation::Relative(rel)
+                        if !self.placements.contains_key(&rel.parent) =>
+                    {
+                        Some(key)
+                    }
+                    _ => None,
+                })
+                .collect();
+            if orphans.is_empty() {
+                break;
+            }
+            for key in orphans {
+                self.remove_placement_by_key(key);
+                if key.image_id != image_id {
+                    orphaned_other.push(key.image_id);
+                }
+                self.delete_if_unused(key.image_id);
+            }
+        }
+
+        if self.placements.len() != placements_before || self.images.len() != images_before {
+            self.mark_mutated();
+        }
+
+        if orphaned_other.is_empty() {
+            return (Vec::new(), Vec::new());
+        }
+        orphaned_other.sort_unstable();
+        orphaned_other.dedup();
+        let mut deleted_other = Vec::new();
+        let mut survived_other = Vec::new();
+        for id in orphaned_other {
+            if self.images.contains_key(&id) {
+                survived_other.push(id);
+            } else {
+                deleted_other.push(id);
+            }
+        }
+        (deleted_other, survived_other)
+    }
+
+    /// Execute a protocol delete action (`a=d`).
     pub fn delete(
         &mut self,
         action: DeleteAction,
@@ -1128,7 +1187,7 @@ impl ImageStorage {
         screen_lines: usize,
         screen_cols: usize,
         cell: CellSize,
-    ) -> bool {
+    ) {
         let placements_before = self.placements.len();
         let images_before = self.images.len();
 
@@ -1308,16 +1367,11 @@ impl ImageStorage {
             }
         }
 
-        let source_id = match action {
-            DeleteAction::Id { image_id, .. } => image_id,
-            _ => 0,
-        };
-        let orphaned_other = self.remove_orphans_tracking_other(source_id, action.delete_images());
+        self.remove_orphans(action.delete_images());
 
         if self.placements.len() != placements_before || self.images.len() != images_before {
             self.mark_mutated();
         }
-        orphaned_other
     }
 
     fn delete_by_id(&mut self, image_id: u32, placement_id: u32, delete_unused: bool) {
