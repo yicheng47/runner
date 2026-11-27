@@ -42,11 +42,28 @@ fn plist_bool(plist: &str, key: &str) -> bool {
     }
 }
 
+fn plist_integer(plist: &str, key: &str) -> u64 {
+    let marker = format!("<key>{key}</key>");
+    let value = plist.split_once(&marker).unwrap().1.trim_start();
+    value
+        .strip_prefix("<integer>")
+        .unwrap_or_else(|| panic!("{key} is not a plist integer"))
+        .split_once("</integer>")
+        .unwrap()
+        .0
+        .parse()
+        .unwrap()
+}
+
 fn assert_update_preferences(plist: &str) {
     assert!(!plist_bool(plist, "SUAllowsAutomaticUpdates"));
     assert!(!plist_bool(plist, "SUAutomaticallyUpdate"));
     assert!(plist_bool(plist, "SUEnableAutomaticChecks"));
     assert!(!plist_bool(plist, "SUEnableSystemProfiling"));
+    assert_eq!(
+        plist_integer(plist, "SUScheduledCheckInterval"),
+        6 * 60 * 60
+    );
 }
 
 #[test]

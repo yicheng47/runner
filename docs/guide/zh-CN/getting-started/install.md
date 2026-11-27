@@ -51,6 +51,8 @@ runner help
 
 ## 更新
 
+打包构建会在启动时检查更新，并在 Runner 运行期间每 6 小时检查一次。在 macOS 上，检查由 **自动检查更新（Automatically check for updates）** 设置控制。
+
 Runner 原位更新，并保留设置、聊天和任务。有可用更新时，侧边栏 Runner 名称旁会出现一个图标。点击它即可下载更新，图标上的圆环显示下载进度。更新就绪后，点击图标会打开一个小弹窗，其中有 **重启以更新（Restart to update）** 、 **新功能（What's new）** 和 **稍后（Later）** ；如果下载是你发起的，弹窗会自动打开，并且不会移动键盘焦点。在下载、校验或安装期间，点击图标不会有任何反应，其工具提示会显示进度。如果下载失败或该更新只能手动下载，点击图标会打开 **设置 → 更新（Settings → Updates）** 。该页面在每个阶段都显示相同的状态，并提供 **取消（Cancel）** 、 **重试（Retry）** 、 **跳过此版本（Skip this version）** 和 **查看下载（View downloads）** 。在命令面板中， **显示 Runner 更新（Show Runner update）** 会在更新就绪时打开弹窗，其他情况下打开“设置 → 更新”，它不会开始下载。 **Runner → 检查更新（Check for Updates）** 会打开“设置 → 更新”并开始检查。
 
 在 macOS 上，Runner 在后台检查，点击图标或“设置 → 更新”中的 **下载（Download）** 之前不会下载任何内容。每个 Mac 版本只会更新到相同架构；要在 Apple Silicon 和 Intel 版本之间切换，请手动安装另一个 DMG。仍在 Runner 0.6.0 或 0.6.1 的 Intel Mac 不会收到后续更新，需要手动安装一次 x64 DMG。在 Windows 和 Linux 上， **自动下载更新（Automatically download updates）** 默认开启；关闭后只通知你。 “设置 → 更新”中的 **跳过此版本（Skip this version）** 会隐藏该版本的图标，直到你下次手动检查。
