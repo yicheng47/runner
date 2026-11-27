@@ -40,6 +40,8 @@
 - [runner role create](#runner-role-create)
 - [runner role update](#runner-role-update)
 - [runner role delete](#runner-role-delete)
+- [runner role export](#runner-role-export)
+- [runner role import](#runner-role-import)
 - [runner crew](#runner-crew)
 - [runner crew list](#runner-crew-list)
 - [runner crew show](#runner-crew-show)
@@ -50,6 +52,8 @@
 - [runner crew set](#runner-crew-set)
 - [runner crew remove](#runner-crew-remove)
 - [runner crew order](#runner-crew-order)
+- [runner crew export](#runner-crew-export)
+- [runner crew import](#runner-crew-import)
 - [runner mission](#runner-mission)
 - [runner mission list](#runner-mission-list)
 - [runner mission show](#runner-mission-show)
@@ -94,8 +98,8 @@ USAGE
   runner status
   runner daemon status|stop
   runner project list|show|create|rename|delete
-  runner role list|show|create|update|delete
-  runner crew list|show|create|update|delete|add|set|remove|order
+  runner role list|show|create|update|delete|export|import
+  runner crew list|show|create|update|delete|add|set|remove|order|export|import
   runner mission list|show|start|stop|resume|archive|unarchive|rename|pin|unpin|move|link|unlink|feed|answer
   runner chat start
   runner session list|show|stop|archive|resume|restart
@@ -676,6 +680,8 @@ Commands:
   create  Create a role
   update  Update a role
   delete  Delete a role
+  export  Export a role to a `.role.toml` template
+  import  Import a standalone `.role.toml` template offline
 
 Options:
       --json  Print the tool result as exact JSON
@@ -780,6 +786,42 @@ Options:
   -h, --help  Print help
 ```
 
+## runner role export
+
+```text
+Export a role to a `.role.toml` template
+
+Usage: runner role export [OPTIONS] <ROLE>
+
+Arguments:
+  <ROLE>
+
+Options:
+      --json             Print the tool result as exact JSON
+  -o, --output <OUTPUT>  Write the template atomically to this file instead of stdout
+  -q                     Print only result IDs
+  -h, --help             Print help
+```
+
+## runner role import
+
+```text
+Import a standalone `.role.toml` template offline
+
+Usage: runner role import [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  Path to a local `.role.toml` file, or `-` for stdin
+
+Options:
+      --handle <HANDLE>    Override the imported role handle
+      --json               Print the tool result as exact JSON
+  -q                       Print only result IDs
+      --runtime <RUNTIME>  Replace the template runtime; resets model, effort, and speed when changed
+      --dry-run            Print the import plan without creating anything
+  -h, --help               Print help
+```
+
 ## runner crew
 
 ```text
@@ -797,6 +839,8 @@ Commands:
   set     Update one crew slot by handle
   remove  Remove a slot from a crew
   order   Reorder every crew slot by handle
+  export  Export a crew and its referenced roles to a `.crew.toml` template
+  import  Import a `.crew.toml` template offline, creating all roles fresh
 
 Options:
       --json  Print the tool result as exact JSON
@@ -960,6 +1004,42 @@ Options:
       --json  Print the tool result as exact JSON
   -q          Print only result IDs
   -h, --help  Print help
+```
+
+## runner crew export
+
+```text
+Export a crew and its referenced roles to a `.crew.toml` template
+
+Usage: runner crew export [OPTIONS] <CREW>
+
+Arguments:
+  <CREW>
+
+Options:
+      --json             Print the tool result as exact JSON
+  -o, --output <OUTPUT>  Write the template atomically to this file instead of stdout
+  -q                     Print only result IDs
+  -h, --help             Print help
+```
+
+## runner crew import
+
+```text
+Import a `.crew.toml` template offline, creating all roles fresh
+
+Usage: runner crew import [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  Path to a local `.crew.toml` file, or `-` for stdin
+
+Options:
+      --json                   Print the tool result as exact JSON
+      --name <NAME>            Override the imported crew name
+      --map-runtime <FROM=TO>  Map a runtime (<from>=<to>); repeat as needed
+  -q                           Print only result IDs
+      --dry-run                Print the import plan without creating anything
+  -h, --help                   Print help
 ```
 
 ## runner mission

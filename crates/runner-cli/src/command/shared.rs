@@ -83,6 +83,11 @@ pub(super) fn output_view(command: &Command) -> output::View {
                 View::Role
             }
             RoleCommand::Delete { .. } => View::Confirmation("Deleted role"),
+            RoleCommand::Export { output, .. } => View::TemplateExport {
+                to_file: output.is_some(),
+            },
+            RoleCommand::Import { dry_run: true, .. } => View::TemplateImportDryRun,
+            RoleCommand::Import { dry_run: false, .. } => View::RoleImport,
         },
         Command::Crew { command } => match command {
             CrewCommand::List => View::CrewList,
@@ -93,6 +98,11 @@ pub(super) fn output_view(command: &Command) -> output::View {
             | CrewCommand::Set { .. }
             | CrewCommand::Remove { .. }
             | CrewCommand::Order { .. } => View::Confirmation("Updated crew slots"),
+            CrewCommand::Export { output, .. } => View::TemplateExport {
+                to_file: output.is_some(),
+            },
+            CrewCommand::Import { dry_run: true, .. } => View::TemplateImportDryRun,
+            CrewCommand::Import { dry_run: false, .. } => View::CrewImport,
         },
         Command::Mission { command } => match command {
             MissionCommand::List { .. } => View::MissionList,
@@ -370,6 +380,74 @@ pub(super) fn runtime_command(runtime: &str) -> Result<&'static str, CliError> {
     )))
 }
 
+pub(super) fn parse_agent_runtime(runtime: &str) -> Result<runner_core::Runtime, CliError> {
+    runner_core::Runtime::parse(runtime)
+        .filter(|rt| runner_core::protocol::runtime_metadata::catalog_for(*rt).is_some())
+        .ok_or_else(|| {
+            CliError::usage(format!(
+                "unknown agent runtime {runtime:?}; expected a built-in agent runtime"
+            ))
+        })
+}
+
+pub(super) fn parse_runtime_mappings(
+    values: &[String],
+) -> Result<std::collections::HashMap<runner_core::Runtime, runner_core::Runtime>, CliError> {
+    let mut map = std::collections::HashMap::new();
+    for entry in values {
+        let Some((from, to)) = entry.split_once('=') else {
+            return Err(CliError::usage(format!(
+                "invalid --map-runtime {entry:?}; expected <from>=<to>"
+            )));
+        };
+        let from_rt = parse_agent_runtime(from.trim())?;
+        let to_rt = parse_agent_runtime(to.trim())?;
+        map.insert(from_rt, to_rt);
+    }
+    Ok(map)
+}
+
+pub(super) fn write_file_atomic(path: &Path, content: &str) -> Result<String, CliError> {
+    use std::io::Write as _;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|error| CliError {
+        code: 1,
+        message: format!(
+            "failed to create temporary file near {}: {error}",
+            path.display()
+        ),
+    })?;
+    tmp.write_all(content.as_bytes())
+        .map_err(|error| CliError {
+            code: 1,
+            message: format!("failed to write {}: {error}", path.display()),
+        })?;
+    tmp.flush().map_err(|error| CliError {
+        code: 1,
+        message: format!("failed to flush {}: {error}", path.display()),
+    })?;
+    tmp.persist(path).map_err(|error| CliError {
+        code: 1,
+        message: format!("failed to persist {}: {}", path.display(), error.error),
+    })?;
+    Ok(path.display().to_string())
+}
+
+pub(super) fn warn_uninstalled_runtimes(runtimes: &[runner_core::Runtime]) {
+    if runtimes.is_empty() {
+        return;
+    }
+    let names = runtimes
+        .iter()
+        .map(|rt| rt.key())
+        .collect::<Vec<_>>()
+        .join(", ");
+    eprintln!("warning: runtime(s) not installed on this machine: {names}");
+}
+
 pub(super) fn validate_permission(permission: Option<&str>) -> Result<(), CliError> {
     match permission {
         None | Some("default" | "accept_edits" | "auto" | "bypass") => Ok(()),
@@ -405,6 +483,34 @@ pub(super) fn read_text(
         read_file(path, label).map(Some)
     } else {
         Ok(None)
+    }
+}
+
+pub(super) fn read_template_file(path: &Path) -> Result<String, CliError> {
+    if path == Path::new("-") {
+        runner_core::template::read_template_bounded(std::io::stdin().lock()).map_err(|error| {
+            CliError {
+                code: 1,
+                message: error.to_string(),
+            }
+        })
+    } else {
+        let file = std::fs::File::open(path).map_err(|error| {
+            CliError::usage(format!(
+                "failed to read template file {}: {error}",
+                path.display()
+            ))
+        })?;
+        if file.metadata().is_ok_and(|meta| meta.is_dir()) {
+            return Err(CliError::usage(format!(
+                "template path {} is a directory",
+                path.display()
+            )));
+        }
+        runner_core::template::read_template_bounded(file).map_err(|error| CliError {
+            code: 1,
+            message: error.to_string(),
+        })
     }
 }
 

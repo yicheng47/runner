@@ -84,6 +84,43 @@ impl Caller for RecordingClient {
                 json!({"id": "object-id"})
             }
             "project_get" => json!({"id": "project-id", "cwd": "/tmp/project"}),
+            "template_export_crew" => json!({
+                "filename": "peer.crew.toml",
+                "toml": "version = 1\nkind = \"crew\"\n"
+            }),
+            "template_export_role" => json!({
+                "filename": "coder.role.toml",
+                "toml": "version = 1\nkind = \"role\"\n"
+            }),
+            "template_preview" => {
+                let toml = self
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .and_then(|(_, args)| args.get("toml").and_then(Value::as_str))
+                    .unwrap_or("")
+                    .to_owned();
+                let parsed = runner_core::template::parse_template(&toml).unwrap();
+                let preview = runner_core::template::TemplatePreview::Valid(Box::new(
+                    runner_core::template::build_preview(
+                        parsed,
+                        &[],
+                        &std::collections::HashSet::new(),
+                        &[
+                            runner_core::Runtime::Codex,
+                            runner_core::Runtime::ClaudeCode,
+                        ],
+                    ),
+                ));
+                serde_json::to_value(preview).unwrap()
+            }
+            "template_import" => json!({
+                "kind": "role",
+                "roles": [],
+                "slots": [],
+                "uninstalled_runtimes": []
+            }),
             _ => json!({"id": "changed-id"}),
         };
         response(value)
@@ -1676,6 +1713,15 @@ async fn every_remote_command_builds_the_expected_tool_calls_without_a_socket() 
     const MISSION_SESSION_ID: &str = "01X00000000000000000000000";
     let cwd = absolute_path(Path::new(".")).unwrap();
     let nested_cwd = absolute_path(Path::new("./x/../y")).unwrap();
+    let template_dir = tempfile::tempdir().unwrap();
+    let role_template_path = template_dir.path().join("coder.role.toml");
+    let role_template_toml = "version = 1\nkind = \"role\"\n[role]\nhandle = \"coder\"\ndisplay_name = \"Coder\"\nruntime = \"codex\"\n";
+    std::fs::write(&role_template_path, role_template_toml).unwrap();
+    let crew_template_path = template_dir.path().join("peer.crew.toml");
+    let crew_template_toml = "version = 1\nkind = \"crew\"\n[crew]\nname = \"Peer\"\n[[slots]]\nhandle = \"coder\"\nrole = \"coder\"\n[[roles]]\nhandle = \"coder\"\ndisplay_name = \"Coder\"\nruntime = \"codex\"\n";
+    std::fs::write(&crew_template_path, crew_template_toml).unwrap();
+    let role_template_arg = role_template_path.to_str().unwrap();
+    let crew_template_arg = crew_template_path.to_str().unwrap();
     let cases = vec![
         (vec!["project", "list"], vec!["project_list"], json!({})),
         (
@@ -1748,6 +1794,28 @@ async fn every_remote_command_builds_the_expected_tool_calls_without_a_socket() 
             vec!["role_list", "role_delete"],
             json!({"id": "role-id"}),
         ),
+        (
+            vec!["role", "export", "coder"],
+            vec!["role_list", "template_export_role"],
+            json!({"id": "role-id"}),
+        ),
+        (
+            vec![
+                "role",
+                "import",
+                role_template_arg,
+                "--handle",
+                "coder-2",
+                "--runtime",
+                "claude-code",
+            ],
+            vec!["template_preview", "template_import"],
+            json!({
+                "toml": role_template_toml,
+                "role_handle": "coder-2",
+                "runtime_overrides": {"coder": "claude-code"},
+            }),
+        ),
         (vec!["crew", "list"], vec!["crew_list"], json!({})),
         (
             vec!["crew", "show", "Peer"],
@@ -1792,6 +1860,28 @@ async fn every_remote_command_builds_the_expected_tool_calls_without_a_socket() 
             json!({
                 "crew_id": "crew-id",
                 "ordered_slot_ids": ["slot-lead", "slot-impl"]
+            }),
+        ),
+        (
+            vec!["crew", "export", "Peer"],
+            vec!["crew_list", "template_export_crew"],
+            json!({"id": "crew-id"}),
+        ),
+        (
+            vec![
+                "crew",
+                "import",
+                crew_template_arg,
+                "--name",
+                "Peer 2",
+                "--map-runtime",
+                "codex=claude-code",
+            ],
+            vec!["template_preview", "template_import"],
+            json!({
+                "toml": crew_template_toml,
+                "crew_name": "Peer 2",
+                "runtime_overrides": {"coder": "claude-code"},
             }),
         ),
         (
@@ -2167,6 +2257,10 @@ async fn every_remote_command_builds_the_expected_tool_calls_without_a_socket() 
         "crew_create",
         "crew_update",
         "crew_delete",
+        "template_export_crew",
+        "template_export_role",
+        "template_preview",
+        "template_import",
         "role_list",
         "role_get",
         "role_get_by_handle",
@@ -2237,6 +2331,8 @@ fn every_command_leaf_parses_without_a_socket() {
         &["role", "create", "coder", "--runtime", "codex"],
         &["role", "update", "coder", "--model", "gpt"],
         &["role", "delete", "coder"],
+        &["role", "export", "coder"],
+        &["role", "import", "coder.role.toml", "--dry-run"],
         &["crew", "list"],
         &["crew", "show", "Peer"],
         &["crew", "create", "Peer"],
@@ -2246,6 +2342,8 @@ fn every_command_leaf_parses_without_a_socket() {
         &["crew", "set", "Peer", "impl", "--effort", "high"],
         &["crew", "remove", "Peer", "impl"],
         &["crew", "order", "Peer", "lead", "impl"],
+        &["crew", "export", "Peer"],
+        &["crew", "import", "peer.crew.toml", "--dry-run"],
         &["mission", "list", "--crew", "Peer"],
         &["mission", "show", "01M"],
         &[

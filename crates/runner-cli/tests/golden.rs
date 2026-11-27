@@ -193,6 +193,40 @@ impl Fixture {
         let question = serde_json::json!({"id":EVENTS[1],"ts":STAMP,"crew_id":CREW,"mission_id":"mission-running","kind":"signal","from":"human","type":"human_question","payload":{"prompt":"Ship?","choices":["yes","no"],"on_behalf_of":"coder"}});
         std::fs::write(active.join("events.ndjson"), format!("{question}\n")).unwrap();
         std::fs::write(self.data.join("ui-settings.json"), r#"{"resumeOnLaunch":false,"disabledAgents":["codex","claude-code","antigravity","pi","copilot","trae"]}"#).unwrap();
+        std::fs::write(
+            self.directory.join("sample.role.toml"),
+            concat!(
+                "version = 1\n",
+                "kind = \"role\"\n\n",
+                "[role]\n",
+                "handle = \"planner\"\n",
+                "display_name = \"Planner\"\n",
+                "runtime = \"codex\"\n",
+                "model = \"gpt-5\"\n",
+                "effort = \"high\"\n",
+                "system_prompt = \"\"\"\nPlan carefully.\n\"\"\"\n",
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            self.directory.join("sample.crew.toml"),
+            concat!(
+                "version = 1\n",
+                "kind = \"crew\"\n\n",
+                "[crew]\n",
+                "name = \"Starter\"\n",
+                "conventions = \"\"\"\nKeep changes small.\n\"\"\"\n\n",
+                "[[roles]]\n",
+                "handle = \"coder\"\n",
+                "display_name = \"Coder\"\n",
+                "runtime = \"codex\"\n",
+                "system_prompt = \"\"\"\nWrite code.\n\"\"\"\n\n",
+                "[[slots]]\n",
+                "handle = \"coder\"\n",
+                "role = \"coder\"\n",
+            ),
+        )
+        .unwrap();
     }
 
     fn start(&mut self) {
@@ -456,6 +490,8 @@ cli_cases! {
     role_create => vec!["role", "create", "new", "--runtime", "codex"],
     role_update => vec!["role", "update", "coder", "--model", "updated", "--speed", "standard"],
     role_delete => vec!["role", "delete", "unused"],
+    role_export => vec!["role", "export", "coder"],
+    role_import => vec!["role", "import", "sample.role.toml"],
     crew_list => vec!["crew", "list"],
     crew_show => vec!["crew", "show", "Peer"],
     crew_create => vec!["crew", "create", "New"],
@@ -466,6 +502,8 @@ cli_cases! {
     crew_remove => vec!["crew", "remove", "Peer", "reviewer"],
     crew_lead => vec!["crew", "lead", "Peer", "reviewer"],
     crew_order => vec!["crew", "order", "Peer", "reviewer", "coder"],
+    crew_export => vec!["crew", "export", "Peer"],
+    crew_import => vec!["crew", "import", "sample.crew.toml"],
     mission_list => vec!["mission", "list", "--crew", "Peer"],
     mission_show => vec!["mission", "show", MISSION],
     mission_start => vec!["mission", "start", "--crew", "Peer", "--title", "ship", "--goal", "ship", "--cwd", "not-a-directory"],
@@ -780,6 +818,8 @@ offline_goldens! {
     role_create => vec!["role", "create", "--help"],
     role_update => vec!["role", "update", "--help"],
     role_delete => vec!["role", "delete", "--help"],
+    role_export => vec!["role", "export", "--help"],
+    role_import => vec!["role", "import", "--help"],
     crew_list => vec!["crew", "list", "--help"],
     crew_show => vec!["crew", "show", "--help"],
     crew_create => vec!["crew", "create", "--help"],
@@ -790,6 +830,8 @@ offline_goldens! {
     crew_remove => vec!["crew", "remove", "--help"],
     crew_lead => vec!["crew", "lead", "--help"],
     crew_order => vec!["crew", "order", "--help"],
+    crew_export => vec!["crew", "export", "--help"],
+    crew_import => vec!["crew", "import", "--help"],
     mission_list => vec!["mission", "list", "--help"],
     mission_show => vec!["mission", "show", "--help"],
     mission_start => vec!["mission", "start", "--help"],
