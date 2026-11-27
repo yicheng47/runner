@@ -18,7 +18,6 @@ path = "src/main.rs"
 updater = []
 
 [dependencies]
-alacritty_terminal = "0.26"
 anyhow = "1"
 base64 = "0.22"
 chrono = { workspace = true }

@@ -5455,7 +5455,6 @@ dependencies = [
 name = "runner-app"
 version = "0.20.4"
 dependencies = [
- "alacritty_terminal",
  "anyhow",
  "base64",
  "block2 0.6.2",
@@ -5580,7 +5579,6 @@ dependencies = [
 name = "runner-daemon"
 version = "0.20.4"
 dependencies = [
- "alacritty_terminal",
  "anyhow",
  "base64",
  "chrono",
@@ -5616,7 +5614,6 @@ dependencies = [
  "ulid",
  "unicode-normalization",
  "uuid",
- "vte",
  "windows-sys 0.61.2",
  "zed-reqwest",
 ]

@@ -92,7 +92,7 @@ fn color_probe(
 
 #[test]
 fn archive_restore_resumes_first_chunk_with_fresh_terminal_and_color_replies() {
-    use alacritty_terminal::term::TermMode;
+    use runner_terminal::TerminalModeFlags as TermMode;
 
     let data = tempfile::tempdir().unwrap();
     let fake = fake_runtime();
@@ -162,8 +162,6 @@ fn archive_restore_resumes_first_chunk_with_fresh_terminal_and_color_replies() {
         let fresh = core.sessions.terminal_model(&id).unwrap();
         assert!(!Arc::ptr_eq(&old, &fresh));
         assert!(!fresh
-            .term
-            .lock()
             .mode()
             .intersects(TermMode::ALT_SCREEN | TermMode::BRACKETED_PASTE));
         attachment = core.sessions.attach_terminal(&id).unwrap();

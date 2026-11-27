@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use runner_daemon::daemon::boot::{boot_core, NativePaths};
 use runner_daemon::model::Role;
-use runner_terminal::replay::visible_lines;
 use runner_terminal::terminal::{TerminalBridge, TerminalMirror};
 
 #[derive(Default)]
@@ -43,9 +42,7 @@ impl Wake {
 }
 
 fn contains(terminal: &TerminalMirror, text: &str) -> bool {
-    visible_lines(&*terminal.term.lock())
-        .join("\n")
-        .contains(text)
+    terminal.visible_lines().join("\n").contains(text)
 }
 
 fn spawn_cat(
@@ -127,13 +124,14 @@ fn terminal_benchmark() {
             echo.output_activity().last_seq > before
         });
         samples.push(start.elapsed().as_secs_f64() * 1_000.0);
-        let term = echo.term.lock();
-        let cursor = &term.grid().cursor;
-        let mut point = cursor.point;
-        if !cursor.input_needs_wrap {
-            point.column.0 -= 1;
-        }
-        assert_eq!(term.grid()[point].c, character, "cat echo {i}");
+        echo.with_screen(|screen| {
+            let view = screen.view();
+            let mut point = view.raw_cursor_point();
+            if !view.cursor_input_needs_wrap() {
+                point.column.0 -= 1;
+            }
+            assert_eq!(view.cell(point).unwrap().c(), character, "cat echo {i}");
+        });
     }
     samples.sort_by(f64::total_cmp);
 

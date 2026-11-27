@@ -1,10 +1,10 @@
-use alacritty_terminal::grid::Dimensions;
+use std::path::Path;
+
 use runner_terminal::delivery_probe::{InputProbe, ProbeState};
 use runner_terminal::fixtures::{decode_chunk, Fixture, FixtureEvent, FixtureInput};
 use runner_terminal::input_state::InputEvent;
 use runner_terminal::mappings::InputKind;
-use runner_terminal::replay::{feed, new_term, row_cells};
-use std::path::Path;
+use runner_terminal::replay::{feed, new_term, row_cells, Terminal};
 
 #[test]
 fn recorded_composers_confirm_even_with_transcript_echoes() {
@@ -22,12 +22,11 @@ fn recorded_composers_confirm_even_with_transcript_echoes() {
         )
         .unwrap();
         let mut term = new_term(fixture.header.cols, fixture.header.rows);
-        let rows =
-            |term: &alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>| {
-                (0..term.screen_lines())
-                    .map(|row| row_cells(term, row as i32))
-                    .collect::<Vec<_>>()
-            };
+        let rows = |term: &Terminal| {
+            (0..term.rows())
+                .map(|row| row_cells(term, row as i32))
+                .collect::<Vec<_>>()
+        };
         let mut before = None;
         let mut typed = String::new();
         let mut probe = None;

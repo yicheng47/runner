@@ -615,8 +615,8 @@ mod real_shells {
 
     #[cfg(target_os = "macos")]
     fn option_arrows_move_over_an_unsent_draft(command: &str) {
-        use alacritty_terminal::term::TermMode;
         use runner_terminal::mappings::encode_key;
+        use runner_terminal::TerminalModeFlags as TermMode;
 
         for integration in [true, false] {
             for mode in [TermMode::empty(), TermMode::APP_CURSOR] {

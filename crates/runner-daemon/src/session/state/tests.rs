@@ -163,8 +163,6 @@ fn rejected_return_keeps_the_observed_drafts_keystroke_for_the_cap() {
 
 #[test]
 fn recorded_drafts_keep_delivery_held_after_recent_input_expires() {
-    use alacritty_terminal::term::test::TermSize;
-    use alacritty_terminal::vte::ansi::Processor;
     use runner_terminal::fixtures::{decode_chunk, Fixture, FixtureEvent, FixtureInput};
     use runner_terminal::input_state::InputTracker;
     use runner_terminal::replay::new_term;
@@ -181,7 +179,6 @@ fn recorded_drafts_keep_delivery_held_after_recent_input_expires() {
         .unwrap();
         let start = now();
         let mut term = new_term(fixture.header.cols, fixture.header.rows);
-        let mut parser: Processor = Processor::new();
         let mut tracker = InputTracker::new(start.monotonic);
         let mut model = SessionModel::default();
         model.apply(
@@ -194,10 +191,13 @@ fn recorded_drafts_keep_delivery_held_after_recent_input_expires() {
         for event in fixture.events {
             let (ms, observation) = match event {
                 FixtureEvent::Data { ms, data } => {
-                    parser.advance(&mut term, &decode_chunk(&data).unwrap());
+                    term.advance(&decode_chunk(&data).unwrap());
                     (
                         ms,
-                        tracker.observe_output(start.monotonic + Duration::from_millis(ms), &term),
+                        tracker.observe_output(
+                            start.monotonic + Duration::from_millis(ms),
+                            &term.screen(),
+                        ),
                     )
                 }
                 FixtureEvent::Input {
@@ -230,12 +230,12 @@ fn recorded_drafts_keep_delivery_held_after_recent_input_expires() {
                         tracker.observe_input(
                             &input,
                             start.monotonic + Duration::from_millis(ms),
-                            &term,
+                            &term.screen(),
                         ),
                     )
                 }
                 FixtureEvent::Resize { cols, rows, .. } => {
-                    term.resize(TermSize::new(cols as usize, rows as usize));
+                    term.resize(cols, rows);
                     continue;
                 }
                 _ => panic!("unexpected event in the unsent draft fixture"),

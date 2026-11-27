@@ -9,5 +9,16 @@ pub mod mappings;
 pub mod palette;
 pub mod program_status;
 pub mod replay;
+pub mod screen;
 pub mod snapshot;
 pub mod terminal;
+pub mod title_parser;
+pub mod types;
+
+pub use palette::{Color, NamedColor, Rgb, TerminalPalette};
+pub use screen::{CellView, ScreenGuard, ScreenView, ViewportCell, VisibleCells};
+pub use types::{
+    point_to_viewport, viewport_to_point, CellFlags, Column, CursorShape, CursorStyle, FindMatch,
+    GridPoint, Hyperlink, Line, RenderCursor, SelectionKind, SelectionRange, Side,
+    TerminalModeFlags, ViewportPoint,
+};

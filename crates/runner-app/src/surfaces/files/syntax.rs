@@ -384,13 +384,13 @@ mod tests {
         );
 
         let mut imported = palette::RUNNER;
-        imported.background = alacritty_terminal::vte::ansi::Rgb { r: 0, g: 0, b: 0 };
-        imported.ansi[5] = alacritty_terminal::vte::ansi::Rgb {
+        imported.background = palette::Rgb { r: 0, g: 0, b: 0 };
+        imported.ansi[5] = palette::Rgb {
             r: 0x12,
             g: 0x34,
             b: 0x56,
         };
-        imported.ansi[2] = alacritty_terminal::vte::ansi::Rgb {
+        imported.ansi[2] = palette::Rgb {
             r: 0x0a,
             g: 0xb0,
             b: 0x0c,

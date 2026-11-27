@@ -49,7 +49,7 @@ pub struct ModelOptions {
 pub struct TerminalModel {
     workers: Mutex<Vec<thread::JoinHandle<()>>>,
     stopped: Arc<AtomicBool>,
-    pub term: Arc<FairMutex<Term<EventProxy>>>,
+    pub(crate) term: Arc<FairMutex<Term<EventProxy>>>,
     host: Arc<dyn TerminalHost>,
     session_id: String,
     parser: Mutex<ParserState>,
@@ -71,10 +71,29 @@ pub struct TerminalModel {
 }
 
 impl TerminalModel {
+    pub fn with_screen<R>(&self, f: impl FnOnce(&ScreenGuard<'_>) -> R) -> R {
+        let term = self.term.lock();
+        let screen = ScreenGuard::new(&term);
+        f(&screen)
+    }
+
+    pub fn mode(&self) -> TerminalModeFlags {
+        TerminalModeFlags::from_alacritty(*self.term.lock_unfair().mode())
+    }
+
+    pub fn cursor_point(&self) -> GridPoint {
+        GridPoint::from_alacritty(self.term.lock().grid().cursor.point)
+    }
+
+    pub fn visible_lines(&self) -> Vec<String> {
+        self.with_screen(|screen| screen.view().visible_lines())
+    }
+
     pub fn input_rows(&self) -> Vec<String> {
         let term = self.term.lock();
-        (0..term.screen_lines())
-            .map(|row| crate::replay::row_cells(&term, row as i32))
+        let view = ScreenView::from_term_grid(&term);
+        (0..view.rows())
+            .map(|row| view.row_cells(crate::types::Line(row as i32)))
             .collect()
     }
 
@@ -89,13 +108,13 @@ impl TerminalModel {
         let mut tracker = self.input_tracker.lock().unwrap();
         if tracker.reset_guard() != revision
             || (probe.state(&self.input_rows()) != crate::delivery_probe::ProbeState::Present
-                && !tracker.unsent_notice(&self.term.lock_unfair()))
+                && !tracker.unsent_notice(&ScreenView::from_term_grid(&self.term.lock_unfair())))
         {
             return None;
         }
         let result = write()?;
         let term = self.term.lock_unfair();
-        tracker.track_delivery_submit(Instant::now(), &term);
+        tracker.track_delivery_submit(Instant::now(), &ScreenView::from_term_grid(&term));
         Some(result)
     }
 
@@ -226,8 +245,9 @@ impl TerminalModel {
                             let rgb = term_for_events
                                 .upgrade()
                                 .map(|term| {
+                                    let term = term.lock_unfair();
                                     query_color_for(
-                                        &*term.lock_unfair(),
+                                        &ScreenView::from_term_grid(&term),
                                         index,
                                         &palette.base,
                                         palette.theme,
@@ -240,7 +260,7 @@ impl TerminalModel {
                                         palette.theme,
                                     )
                                 });
-                            write(format(rgb).as_bytes());
+                            write(format(rgb.to_alacritty()).as_bytes());
                         }
                         Event::TextAreaSizeRequest(format) => {
                             let (cols, rows) = *size.lock().unwrap();
@@ -519,7 +539,7 @@ impl TerminalModel {
             seq,
             cols: term.columns() as u16,
             rows: term.screen_lines() as u16,
-            bytes: crate::snapshot::serialize_with_history(&*term, unfinished, history),
+            bytes: crate::snapshot::serialize_term_with_history(&*term, unfinished, history),
             unfinished_len: unfinished.len(),
             preceding_char: parser.processor.preceding_char(),
             activity: Some(TerminalSnapshotActivity {
@@ -642,8 +662,8 @@ impl TerminalModel {
         self.term.lock().set_options(Config {
             scrolling_history: scrollback,
             semantic_escape_chars: XTERM_WORD_SEPARATORS.to_owned(),
-            default_cursor_style: CursorStyle {
-                shape: cursor_shape,
+            default_cursor_style: AlacrittyCursorStyle {
+                shape: cursor_shape.to_alacritty(),
                 blinking: true,
             },
             ..term_config()
@@ -656,7 +676,7 @@ impl TerminalModel {
         let observation = {
             let mut tracker = self.input_tracker.lock().unwrap();
             let term = self.term.lock_unfair();
-            tracker.observe_input(input, Instant::now(), &term)
+            tracker.observe_input(input, Instant::now(), &ScreenView::from_term_grid(&term))
         };
         self.publish_input(observation);
     }
@@ -664,12 +684,12 @@ impl TerminalModel {
     pub fn track_delivery_input(&self, text: &str) {
         let mut tracker = self.input_tracker.lock().unwrap();
         let term = self.term.lock_unfair();
-        tracker.track_delivery_input(text, Instant::now(), &term);
+        tracker.track_delivery_input(text, Instant::now(), &ScreenView::from_term_grid(&term));
     }
     pub fn track_delivery_submit(&self) {
         let mut tracker = self.input_tracker.lock().unwrap();
         let term = self.term.lock_unfair();
-        tracker.track_delivery_submit(Instant::now(), &term);
+        tracker.track_delivery_submit(Instant::now(), &ScreenView::from_term_grid(&term));
     }
     pub fn confirm_delivery(&self, revision: u64) -> Option<InputObservation> {
         self.input_tracker
@@ -681,7 +701,7 @@ impl TerminalModel {
         let observation = {
             let mut tracker = self.input_tracker.lock().unwrap();
             let term = self.term.lock_unfair();
-            tracker.recheck_delivery(Instant::now(), &term)
+            tracker.recheck_delivery(Instant::now(), &ScreenView::from_term_grid(&term))
         };
         self.publish_input(observation);
     }
@@ -1197,11 +1217,10 @@ mod delivery_tests {
         model.observe_input(&InputEvent::Key {
             kind: crate::mappings::InputKind::Navigate,
         });
-        assert!(model
-            .input_tracker
-            .lock()
-            .unwrap()
-            .unsent_notice(&model.term.lock()));
+        assert!({
+            let tracker = model.input_tracker.lock().unwrap();
+            model.with_screen(|screen| tracker.unsent_notice(&screen.view()))
+        });
         assert_eq!(
             model.with_unchanged_input(revision, &blind, || Some(())),
             None

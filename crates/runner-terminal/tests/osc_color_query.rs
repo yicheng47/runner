@@ -1,54 +1,36 @@
 //! Regression for the review finding: OSC 10/11/12 color queries hit
-//! alacritty's named color-table slots (256 Foreground, 257
-//! Background, 258 Cursor), which must not be clamped into the 0-255
-//! palette — and must prefer runtime OSC overrides stored in
-//! `Term::colors()` over the static defaults. Replies are produced
-//! through the production `query_color` path against real terminal
-//! state. Also pins the DA query path (`Event::PtyWrite`).
-
-use std::sync::mpsc::{channel, Receiver, Sender};
-
-use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::term::test::TermSize;
-use alacritty_terminal::term::{Config, Term};
-use alacritty_terminal::vte::ansi::Processor;
+//! named color-table slots (256 Foreground, 257 Background, 258 Cursor),
+//! which must not be clamped into the 0-255 palette — and must prefer
+//! runtime OSC overrides stored in the terminal over the static defaults.
+//! Replies are produced through the production `query_color_for` path
+//! against real terminal state. Also pins the DA query path (`PtyWrite`).
 
 use runner_terminal::palette;
-use runner_terminal::terminal::query_color;
+use runner_terminal::replay::{new_term, Terminal, TerminalReply};
 
-struct Proxy(Sender<Event>);
-
-impl EventListener for Proxy {
-    fn send_event(&self, event: Event) {
-        let _ = self.0.send(event);
-    }
-}
-
-fn feed(bytes: &[u8]) -> (Term<Proxy>, Receiver<Event>) {
-    let (tx, rx) = channel();
-    let mut term = Term::new(Config::default(), &TermSize::new(80, 24), Proxy(tx));
-    let mut parser: Processor = Processor::new();
-    parser.advance(&mut term, bytes);
-    (term, rx)
+fn feed(bytes: &[u8]) -> Terminal {
+    let mut term = new_term(80, 24);
+    term.feed(bytes);
+    term
 }
 
 /// Resolve the first ColorRequest the way the event pump does: the
-/// production `query_color` against the live Term.
-fn color_reply(term: &Term<Proxy>, rx: &Receiver<Event>, expected_index: usize) -> String {
-    for event in rx.try_iter() {
-        if let Event::ColorRequest(index, format) = event {
+/// production `query_color_for` against the live terminal.
+fn color_reply(term: &Terminal, expected_index: usize) -> String {
+    let base = palette::base_palette();
+    for event in term.drain_replies(&base, palette::RUNNER) {
+        if let TerminalReply::ColorQuery { index, reply } = event {
             assert_eq!(index, expected_index, "unexpected color-table index");
-            let base = palette::base_palette();
-            return format(query_color(term, index, &base));
+            return reply;
         }
     }
-    panic!("no ColorRequest event for index {expected_index}");
+    panic!("no ColorQuery reply for index {expected_index}");
 }
 
 #[test]
 fn osc10_reports_runner_foreground() {
-    let (term, rx) = feed(b"\x1b]10;?\x07");
-    let reply = color_reply(&term, &rx, 256);
+    let term = feed(b"\x1b]10;?\x07");
+    let reply = color_reply(&term, 256);
     assert!(
         reply.contains("dcdc/dcdc/e0e0"),
         "OSC 10 should report the Runner foreground, got {reply:?}"
@@ -57,8 +39,8 @@ fn osc10_reports_runner_foreground() {
 
 #[test]
 fn osc11_reports_runner_background() {
-    let (term, rx) = feed(b"\x1b]11;?\x07");
-    let reply = color_reply(&term, &rx, 257);
+    let term = feed(b"\x1b]11;?\x07");
+    let reply = color_reply(&term, 257);
     assert!(
         reply.contains("1515/1616/1b1b"),
         "OSC 11 should report the Runner background, got {reply:?}"
@@ -67,8 +49,8 @@ fn osc11_reports_runner_background() {
 
 #[test]
 fn osc12_reports_cursor_color() {
-    let (term, rx) = feed(b"\x1b]12;?\x07");
-    let reply = color_reply(&term, &rx, 258);
+    let term = feed(b"\x1b]12;?\x07");
+    let reply = color_reply(&term, 258);
     assert!(
         reply.contains("0000/ffff/9c9c"),
         "OSC 12 should report the cursor color, got {reply:?}"
@@ -78,8 +60,8 @@ fn osc12_reports_cursor_color() {
 #[test]
 fn osc4_reports_palette_slot() {
     // Slot 1 = Runner ANSI red (#ff4d6d).
-    let (term, rx) = feed(b"\x1b]4;1;?\x07");
-    let reply = color_reply(&term, &rx, 1);
+    let term = feed(b"\x1b]4;1;?\x07");
+    let reply = color_reply(&term, 1);
     assert!(
         reply.contains("ffff/4d4d/6d6d"),
         "OSC 4;1 should report ANSI red, got {reply:?}"
@@ -90,8 +72,8 @@ fn osc4_reports_palette_slot() {
 fn osc10_set_then_query_reports_override() {
     // A program sets the foreground via OSC 10, then queries it: the
     // reply must be the runtime override, not the static default.
-    let (term, rx) = feed(b"\x1b]10;#ff8800\x07\x1b]10;?\x07");
-    let reply = color_reply(&term, &rx, 256);
+    let term = feed(b"\x1b]10;#ff8800\x07\x1b]10;?\x07");
+    let reply = color_reply(&term, 256);
     assert!(
         reply.contains("ffff/8888/0000"),
         "OSC 10 query after set should report the override, got {reply:?}"
@@ -100,8 +82,8 @@ fn osc10_set_then_query_reports_override() {
 
 #[test]
 fn osc4_set_then_query_reports_override() {
-    let (term, rx) = feed(b"\x1b]4;1;#102030\x07\x1b]4;1;?\x07");
-    let reply = color_reply(&term, &rx, 1);
+    let term = feed(b"\x1b]4;1;#102030\x07\x1b]4;1;?\x07");
+    let reply = color_reply(&term, 1);
     assert!(
         reply.contains("1010/2020/3030"),
         "OSC 4;1 query after set should report the override, got {reply:?}"
@@ -111,8 +93,8 @@ fn osc4_set_then_query_reports_override() {
 #[test]
 fn osc104_reset_restores_default() {
     // Set slot 1, reset it (OSC 104), query again: back to defaults.
-    let (term, rx) = feed(b"\x1b]4;1;#102030\x07\x1b]104;1\x07\x1b]4;1;?\x07");
-    let reply = color_reply(&term, &rx, 1);
+    let term = feed(b"\x1b]4;1;#102030\x07\x1b]104;1\x07\x1b]4;1;?\x07");
+    let reply = color_reply(&term, 1);
     assert!(
         reply.contains("ffff/4d4d/6d6d"),
         "OSC 4;1 after reset should report the default, got {reply:?}"
@@ -130,11 +112,13 @@ fn resolve_index_named_slots() {
 
 #[test]
 fn primary_da_query_emits_pty_write() {
-    let (_term, rx) = feed(b"\x1b[c");
-    let reply = rx
-        .try_iter()
+    let term = feed(b"\x1b[c");
+    let base = palette::base_palette();
+    let reply = term
+        .drain_replies(&base, palette::RUNNER)
+        .into_iter()
         .find_map(|event| match event {
-            Event::PtyWrite(s) => Some(s),
+            TerminalReply::PtyWrite(s) => Some(s),
             _ => None,
         })
         .expect("DA query should produce a PtyWrite reply");

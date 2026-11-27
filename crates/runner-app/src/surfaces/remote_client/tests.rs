@@ -4136,13 +4136,13 @@ fn obsolete_remote_attach_results_cannot_replace_a_resumed_terminal() {
                     .clone()
             })
             .unwrap();
-        let text = terminal
-            .term
-            .lock()
-            .grid()
-            .display_iter()
-            .map(|cell| cell.cell.c)
-            .collect::<String>();
+        let text = terminal.with_screen(|screen| {
+            screen
+                .view()
+                .visible_cells()
+                .map(|cell| cell.c())
+                .collect::<String>()
+        });
         assert!(text.contains("resumed terminal"));
         assert!(!text.contains("previous terminal"));
         let mut visual = VisualTestContext::from_window(window.into(), &cx);
@@ -4200,13 +4200,13 @@ fn daemon_recovery_replaces_closed_remote_stream_without_taking_control_and_retr
         }))
         .unwrap();
     fake.frame_entries.lock().unwrap()[1].recv().unwrap();
-    let text = recovered
-        .term
-        .lock()
-        .grid()
-        .display_iter()
-        .map(|cell| cell.cell.c)
-        .collect::<String>();
+    let text = recovered.with_screen(|screen| {
+        screen
+            .view()
+            .visible_cells()
+            .map(|cell| cell.c())
+            .collect::<String>()
+    });
     assert!(text.contains("fresh snapshot"));
     assert!(text.contains("recovered output"));
     cx.run_until_parked();
@@ -7860,7 +7860,7 @@ fn remote_libraries_fit_narrow_zoomed_windows_in_both_languages() {
 #[test]
 fn remote_terminals_follow_the_viewer_cursor_and_selection_settings() {
     use crate::app_settings::TerminalCursorStyle;
-    use alacritty_terminal::vte::ansi::CursorShape;
+    use runner_terminal::CursorShape;
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();
     let mut cx = TestAppContext::single();
@@ -7885,14 +7885,12 @@ fn remote_terminals_follow_the_viewer_cursor_and_selection_settings() {
     let terminal = |cx: &TestAppContext| {
         window
             .read_with(cx, |root, _| {
-                let term = root.remote_client.workspace().unwrap().terminals["s"]
+                let terminal = &root.remote_client.workspace().unwrap().terminals["s"]
                     .attachment
-                    .terminal
-                    .term
-                    .lock();
+                    .terminal;
                 (
-                    term.cursor_style().shape,
-                    term.semantic_escape_chars().to_owned(),
+                    terminal.cursor_style().shape,
+                    terminal.test_semantic_escape_chars(),
                 )
             })
             .unwrap()
@@ -7948,10 +7946,7 @@ fn remote_terminals_draw_with_the_host_palette_and_fall_back_to_the_viewer() {
 
 #[test]
 fn remote_terminal_keyboard_copy_interrupt_and_paste_follow_platform_bindings() {
-    use alacritty_terminal::{
-        index::{Column, Line, Point, Side},
-        selection::SelectionType,
-    };
+    use runner_terminal::{Column, GridPoint as Point, Line, SelectionKind as SelectionType, Side};
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();
     let mut cx = TestAppContext::single();

@@ -1,9 +1,7 @@
-use alacritty_terminal::grid::Dimensions as _;
-use alacritty_terminal::index::{Column, Line, Point, Side};
-use alacritty_terminal::selection::SelectionType;
-use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::TermMode;
-use alacritty_terminal::vte::ansi::CursorShape;
+use runner_terminal::{
+    Column, CursorShape, GridPoint as Point, Line, SelectionKind as SelectionType, Side,
+    TerminalModeFlags as TermMode,
+};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -385,12 +383,7 @@ fn terminal_url_detection_follows_soft_wraps_but_not_hard_line_breaks() {
     assert_eq!(wrapped.start, Point::new(Line(0), Column(2)));
     assert_eq!(wrapped.end, Point::new(Line(1), Column(11)));
 
-    {
-        let mut term = terminal.term.lock();
-        term.grid_mut()[Line(0)][Column(13)]
-            .flags
-            .remove(Flags::WRAPLINE);
-    }
+    terminal.test_set_wrapline(Point::new(Line(0), Column(13)), false);
     assert_eq!(
         terminal
             .link_at(Point::new(Line(0), Column(3)))
@@ -1261,10 +1254,7 @@ fn registry_creates_on_first_output_and_survives_view_drop() {
 
     events.output(&output(2, "second-marker"));
     let reopened = bridge.session("replay-race").unwrap();
-    let rendered = {
-        let term = reopened.term.lock();
-        visible_lines(&*term).join("\n")
-    };
+    let rendered = reopened.visible_lines().join("\n");
     assert!(rendered.contains("first-markersecond-marker"));
 }
 
@@ -1360,7 +1350,7 @@ fn registry_replaces_terminal_on_respawn_and_resets_first_paint() {
     assert_eq!(activity.last_seq, 2);
     assert_eq!(activity.tui_ready_seq, 2);
     assert_eq!(activity.first_paint_seq, 2);
-    let rendered = visible_lines(&*fresh.term.lock()).join("\n");
+    let rendered = fresh.visible_lines().join("\n");
     assert!(rendered.contains("new-child"));
     assert!(!rendered.contains("old-child"));
 }
@@ -1433,9 +1423,11 @@ fn terminal_configuration_applies_scrollback_and_cursor_shape() {
         .feed_output(&output(1, &"configured line\r\n".repeat(20)))
         .unwrap();
 
-    let term = terminal.term.lock();
-    assert_eq!(term.history_size(), 3);
-    assert_eq!(term.renderable_content().cursor.shape, CursorShape::Beam);
+    terminal.with_screen(|screen| {
+        let view = screen.view();
+        assert_eq!(view.history_size(), 3);
+        assert_eq!(view.cursor().shape, CursorShape::Beam);
+    });
 }
 
 #[test]
@@ -1471,21 +1463,10 @@ fn terminal_selection_matches_xterm_words_wraps_and_line_copy() {
     .unwrap();
     terminal.configure(100, CursorShape::Block, true);
     assert!(terminal.cell_is_whitespace(Point::new(Line(100), Column(100))));
-    {
-        let mut term = terminal.term.lock();
-        for (column, character) in "foo/bar,".chars().enumerate() {
-            term.grid_mut()[Line(0)][Column(column)].c = character;
-        }
-        for (column, character) in "abcdefgh".chars().enumerate() {
-            term.grid_mut()[Line(1)][Column(column)].c = character;
-        }
-        term.grid_mut()[Line(1)][Column(7)]
-            .flags
-            .insert(Flags::WRAPLINE);
-        for (column, character) in "ijk".chars().enumerate() {
-            term.grid_mut()[Line(2)][Column(column)].c = character;
-        }
-    }
+    terminal.test_set_row_text(Line(0), "foo/bar,");
+    terminal.test_set_row_text(Line(1), "abcdefgh");
+    terminal.test_set_wrapline(Point::new(Line(1), Column(7)), true);
+    terminal.test_set_row_text(Line(2), "ijk");
 
     terminal.start_selection(
         SelectionType::Semantic,
@@ -1617,7 +1598,7 @@ fn bytes_output(seq: u64, bytes: &[u8]) -> OutputEvent {
 }
 
 fn screen(terminal: &TerminalSession) -> Vec<String> {
-    visible_lines(&*terminal.term.lock())
+    terminal.visible_lines()
 }
 
 fn sync_deadline(terminal: &TerminalSession) -> Option<Instant> {
@@ -1661,12 +1642,12 @@ fn a_synchronized_update_without_its_end_marker_flushes_at_its_deadline() {
 
     assert!(wait_until(Duration::from_secs(2), || screen(&terminal)[0] == "redrawn"));
     assert!(Instant::now() >= deadline);
-    {
-        let term = terminal.term.lock();
-        assert_eq!(visible_lines(&*term)[..2], ["redrawn", ">"]);
-        assert!(term.mode().contains(TermMode::SHOW_CURSOR));
-        assert_eq!(term.grid().cursor.point, Point::new(Line(1), Column(2)));
-    }
+    terminal.with_screen(|screen| {
+        let view = screen.view();
+        assert_eq!(view.visible_lines()[..2], ["redrawn", ">"]);
+        assert!(view.mode().contains(TermMode::SHOW_CURSOR));
+        assert_eq!(view.raw_cursor_point(), Point::new(Line(1), Column(2)));
+    });
     assert_eq!(sync_deadline(&terminal), None);
 
     terminal.feed_output(&output(3, "\x1b[?2026l")).unwrap();
@@ -1748,7 +1729,7 @@ fn a_flush_scheduled_for_a_dropped_session_does_nothing() {
     let terminal = populated_terminal(test_core(temp.path()));
     terminal.feed_output(&output(2, HELD_REDRAW)).unwrap();
     let deadline = sync_deadline(&terminal).expect("the redraw is held");
-    let term = Arc::clone(&terminal.term);
+    let observer = terminal.test_grid_observer();
     let session = Arc::downgrade(&terminal);
 
     drop(terminal);
@@ -1758,10 +1739,7 @@ fn a_flush_scheduled_for_a_dropped_session_does_nothing() {
     std::thread::sleep(
         deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(100),
     );
-    assert_eq!(
-        visible_lines(&*term.lock())[..2],
-        ["old prompt", "old output"]
-    );
+    assert_eq!(observer.visible_lines()[..2], ["old prompt", "old output"]);
 }
 
 #[test]
@@ -1928,13 +1906,9 @@ fn attach_and_output_share_the_sequence_parse_lock() {
         let mut attachment = crate::daemon::InProcessTransport::client(core.clone())
             .attach("frames")
             .unwrap();
-        let mut restored = runner_terminal::replay::replay_bytes(
-            attachment.snapshot.cols,
-            attachment.snapshot.rows,
-            &attachment.snapshot.bytes,
-        );
-        let mut parser: alacritty_terminal::vte::ansi::Processor =
-            alacritty_terminal::vte::ansi::Processor::new();
+        let mut restored =
+            runner_terminal::replay::new_term(attachment.snapshot.cols, attachment.snapshot.rows);
+        restored.advance(&attachment.snapshot.bytes);
         let mut seq = attachment.snapshot.seq;
         writer.join().unwrap();
         while seq < 32 {
@@ -1944,21 +1918,21 @@ fn attach_and_output_share_the_sequence_parse_lock() {
             };
             assert_eq!(next, seq + 1);
             seq = next;
-            parser.advance(&mut restored, &bytes);
+            restored.advance(&bytes);
         }
         let model = core.sessions.terminal_model("frames").unwrap();
-        let original = model.term.lock();
-        assert_eq!(restored.history_size(), original.history_size());
-        assert_eq!(restored.grid().cursor, original.grid().cursor);
-        for line in -(original.history_size() as i32)..original.screen_lines() as i32 {
-            for column in 0..original.columns() {
-                assert_eq!(
-                    restored.grid()[Line(line)][Column(column)],
-                    original.grid()[Line(line)][Column(column)]
-                );
-            }
-        }
-        assert_eq!(restored.mode(), original.mode());
+        let original = model.with_screen(|screen| screen.snapshot_state());
+        let restored_state = restored.snapshot_state();
+        assert_eq!(
+            restored_state.active_grid.history_size,
+            original.active_grid.history_size
+        );
+        assert_eq!(
+            restored_state.active_grid.cursor,
+            original.active_grid.cursor
+        );
+        assert_eq!(restored_state.active_grid.rows, original.active_grid.rows);
+        assert_eq!(restored_state.mode, original.mode);
     }
 }
 
@@ -1988,10 +1962,7 @@ fn desktop_resize_keeps_the_mirror_at_the_browser_size() {
         .output_activity()
         .last_seq
         == 2));
-    assert_eq!(
-        visible_lines(&mirror.term.lock()),
-        visible_lines(&model.term.lock())
-    );
+    assert_eq!(mirror.visible_lines(), model.visible_lines());
 
     core.sessions.release_browser("mirror-size", 1);
     assert!(wait_until(Duration::from_secs(2), || mirror
@@ -2030,10 +2001,7 @@ fn desktop_resize_updates_the_origin_mirror_in_frame_order() {
             .last_seq
             == (index as u64 + 1) * 2));
         assert_eq!(mirror.size(), (cols, rows));
-        assert_eq!(
-            visible_lines(&mirror.term.lock()),
-            visible_lines(&model.term.lock())
-        );
+        assert_eq!(mirror.visible_lines(), model.visible_lines());
     }
 }
 
@@ -2084,26 +2052,31 @@ fn mirror_attach_preserves_rep_after_cursor_and_charset_changes() {
     let client = crate::daemon::InProcessTransport::client(core.clone());
     let mirror = TerminalMirror::attach(client, "rep".into(), Arc::new(|| {})).unwrap();
     let model = core.sessions.terminal_model("rep").unwrap();
-    assert_eq!(
-        visible_lines(&mirror.term.lock()),
-        visible_lines(&model.term.lock())
-    );
+    assert_eq!(mirror.visible_lines(), model.visible_lines());
     core.sessions
         .ingest_output_chunk("rep", None, b"\x1b[3b", events.as_ref());
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let original = model.term.lock();
-        let restored = mirror.term.lock();
-        if visible_lines(&restored) == visible_lines(&original) {
-            assert_eq!(restored.grid().cursor, original.grid().cursor);
+        let matched = model.with_screen(|original| {
+            mirror.with_screen(|restored| {
+                if restored.view().visible_lines() == original.view().visible_lines() {
+                    assert_eq!(
+                        restored.snapshot_state().active_grid.cursor,
+                        original.snapshot_state().active_grid.cursor
+                    );
+                    true
+                } else {
+                    false
+                }
+            })
+        });
+        if matched {
             break;
         }
         assert!(
             Instant::now() < deadline,
             "mirror lost REP continuation state"
         );
-        drop(restored);
-        drop(original);
         std::thread::yield_now();
     }
 }
@@ -2360,17 +2333,18 @@ fn browser_input_uses_the_terminal_queue_and_the_desktop_input_observation() {
         .unwrap();
     model.publish_input(model.feed_output(1, "\x1b[2;1H❯ Try a task".as_bytes()));
     let before = model.input_reset_guard();
-    let terminal = model.term.lock();
     let (start, started) = std::sync::mpsc::channel();
     let input_core = Arc::downgrade(&core);
     let session = spawned.id.clone();
-    let input_thread = std::thread::spawn(move || {
-        start.send(()).unwrap();
-        DaemonCore(input_core).input(&session, 1, b"h").unwrap();
+    let (input_thread, premature) = model.with_screen(|_| {
+        let input_thread = std::thread::spawn(move || {
+            start.send(()).unwrap();
+            DaemonCore(input_core).input(&session, 1, b"h").unwrap();
+        });
+        started.recv_timeout(Duration::from_secs(2)).unwrap();
+        let premature = queued.recv_timeout(Duration::from_millis(250));
+        (input_thread, premature)
     });
-    started.recv_timeout(Duration::from_secs(2)).unwrap();
-    let premature = queued.recv_timeout(Duration::from_millis(250));
-    drop(terminal);
     assert!(
         matches!(premature, Err(std::sync::mpsc::RecvTimeoutError::Timeout)),
         "input became available before its observation could read the pre-echo grid"
@@ -2459,7 +2433,7 @@ fn companion_snapshot_rep_continuation_fixtures_match_host() {
         core.sessions
             .ingest_output_chunk("rep", None, output, events.as_ref());
         let model = core.sessions.terminal_model("rep").unwrap();
-        assert_eq!(visible_lines(&model.term.lock())[0], "abcccc");
+        assert_eq!(model.visible_lines()[0], "abcccc");
     }
 }
 
@@ -2671,10 +2645,8 @@ async fn companion_final_snapshot_outlives_registry_without_retaining_the_termin
         .any(|w| w == b"FINAL-MARKER"));
     assert!(source.attach().is_err(), "final state is consumed once");
     let mut term = runner_terminal::replay::new_term(20, 8);
-    let mut parser: alacritty_terminal::vte::ansi::Processor =
-        alacritty_terminal::vte::ansi::Processor::new();
-    parser.advance(&mut term, &final_attachment.snapshot.bytes);
-    assert!(term.grid().history_size() <= 2);
+    term.advance(&final_attachment.snapshot.bytes);
+    assert!(term.history_size() <= 2);
 }
 
 fn prepare_control_tab(
