@@ -26,6 +26,7 @@ fs2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+toml_edit = "0.25"
 ulid = { workspace = true }
 uuid = { workspace = true }
 anyhow = "1"

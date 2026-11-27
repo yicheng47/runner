@@ -855,6 +855,71 @@ impl Sample for MissionRoleChange {
         }
     }
 }
+impl Sample for ExportedTemplate {
+    fn sample() -> Self {
+        Self {
+            filename: "codex-trio.crew.toml".into(),
+            toml: "version = 1\nkind = \"crew\"\n".into(),
+        }
+    }
+}
+impl Sample for TemplatePreview {
+    fn sample() -> Self {
+        Self::Valid(Box::new(TemplatePreviewPlan {
+            version: 1,
+            template: Template::Role(crate::template::StandaloneRoleTemplate {
+                meta: TemplateMeta::default(),
+                role: crate::template::RoleTemplate {
+                    handle: "coder".into(),
+                    display_name: "Coder".into(),
+                    runtime: Runtime::Codex,
+                    model: Some("gpt-6.2-astra".into()),
+                    effort: Some("high".into()),
+                    codex_speed: Some(CodexSpeed::Fast),
+                    system_prompt: Some("Write code.".into()),
+                },
+            }),
+            suggested_crew_name: None,
+            planned_roles: vec![PlannedRole {
+                template_handle: "coder".into(),
+                planned_handle: "coder-2".into(),
+                auto_suffixed: true,
+                display_name: "Coder".into(),
+                runtime: Runtime::Codex,
+                runtime_installed: true,
+                model: Some("gpt-6.2-astra".into()),
+                effort: Some("high".into()),
+                codex_speed: Some(CodexSpeed::Fast),
+                prompt_bytes: 11,
+                prompt_lines: 1,
+            }],
+            planned_slots: Vec::new(),
+            installed_runtimes: vec![Runtime::Codex, Runtime::ClaudeCode],
+        }))
+    }
+}
+impl Sample for TemplateImportInput {
+    fn sample() -> Self {
+        Self {
+            toml: "version = 1\nkind = \"role\"\n".into(),
+            crew_name: Some("My Crew".into()),
+            role_display_name: Some("Coder".into()),
+            role_handle: Some("coder-2".into()),
+            runtime_overrides: BTreeMap::from([("coder".into(), Runtime::ClaudeCode)]),
+        }
+    }
+}
+impl Sample for TemplateImportResult {
+    fn sample() -> Self {
+        Self {
+            kind: TemplateKind::Crew,
+            crew: Some(Crew::sample()),
+            roles: vec![Role::sample()],
+            slots: vec![Slot::sample()],
+            uninstalled_runtimes: vec![Runtime::Pi],
+        }
+    }
+}
 
 macro_rules! round_trip_api {
     ($( $name:ident($( $arg:ident: $client_ty:ty => $wire_ty:ty = $convert:block ),*) -> $out:ty [$fast:literal] => $handler:expr_2021; )*) => {

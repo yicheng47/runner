@@ -15,7 +15,12 @@ pub mod mission_roster;
 pub mod model;
 pub mod runtime;
 pub mod slot_handle;
+pub mod template;
 pub use runtime::Runtime;
+
+/// Cap on a role's `system_prompt` byte length (16 KiB). Shared by role
+/// persistence in `runner-daemon` and template validation in `runner-core`.
+pub const MAX_SYSTEM_PROMPT_BYTES: usize = 16 * 1024;
 
 pub use error::{Error, Result};
 pub use event_log::{EventLog, EVENTS_FILENAME};
