@@ -3238,7 +3238,7 @@ fn snapshot_priority_treats_negative_column_overlapping_relative_placement_as_vi
 }
 
 #[test]
-fn normalized_frame_splitter_respects_1mib_cap_and_keeps_sub_cap_replacements_atomic() {
+fn normalized_frame_splitter_respects_1mib_cap_and_omits_redundant_single_command_pre_delete() {
     let cell = CellSize {
         width: 10,
         height: 20,
@@ -3261,9 +3261,9 @@ fn normalized_frame_splitter_respects_1mib_cap_and_keeps_sub_cap_replacements_at
     assert_eq!(frames1.len(), 1);
     assert!(frames1[0].len() <= MAX_NORMALIZED_FRAME_BYTES);
 
-    // Case 1: sub-1 MiB replacement right under the 1 MiB cap (393×667 RGB:
-    // normalized upload is 1,048,563 B <= 1,048,576 B, while delete + upload
-    // totals 1,048,584 B > 1,048,576 B). Both frames must respect the 1 MiB cap.
+    // Case 1: single-command replacement right under the 1 MiB cap (393×667 RGB:
+    // normalized upload is 1,048,563 B <= 1,048,576 B). Omitting the redundant
+    // pre-delete keeps it in a single <= 1 MiB frame.
     let edge_px = vec![0x44u8; 393 * 667 * 3];
     let items_edge = scan_to_forwarded(
         &mut sc,
@@ -3276,45 +3276,35 @@ fn normalized_frame_splitter_respects_1mib_cap_and_keeps_sub_cap_replacements_at
     let (_, frames_edge, seq_edge) = model.feed_forwarded(seq1 + 1, &items_edge);
     assert_eq!(
         frames_edge.len(),
-        2,
-        "sub-1 MiB replacement whose delete+transmit crosses 1 MiB must split into two <= 1 MiB frames"
+        1,
+        "succeeding single-command 393x667 replacement must travel in one <= 1 MiB frame"
     );
-    for (idx, frame) in frames_edge.iter().enumerate() {
-        assert!(
-            frame.len() <= MAX_NORMALIZED_FRAME_BYTES,
-            "frame {idx} length {} exceeded MAX_NORMALIZED_FRAME_BYTES ({MAX_NORMALIZED_FRAME_BYTES})",
-            frame.len()
-        );
-    }
-    assert!(String::from_utf8_lossy(&frames_edge[0]).contains("a=d,d=I,i=77"));
-    assert!(String::from_utf8_lossy(&frames_edge[1]).contains("i=77,f=24,s=393,v=667"));
+    assert!(frames_edge[0].len() <= MAX_NORMALIZED_FRAME_BYTES);
+    let edge_str = String::from_utf8_lossy(&frames_edge[0]);
+    assert!(!edge_str.contains("a=d,d=I,i=77"));
+    assert!(edge_str.contains("i=77,f=24,s=393,v=667"));
 
-    // Case 2: > 1 MiB replacement (~1.2 MiB base64) must travel alone in its
-    // own frame while the preceding 21-byte delete stays in its own <= 1 MiB frame.
+    // Case 2: > 1 MiB single-command replacement (640×500 raw RGB, ~1.2 MiB)
+    // preceded by cursor-home (`\x1b[1;1H`): text goes in frame 0 (no pre-delete)
+    // and the > 1 MiB transmission travels alone in frame 1.
     let big_px = vec![0x55u8; 640 * 500 * 3];
     let big_b64 = BASE64.encode(&big_px);
     assert!(big_b64.len() > MAX_NORMALIZED_FRAME_BYTES);
-    let items2 = scan_to_forwarded(
-        &mut sc,
-        &apc(&format!("a=T,f=24,s=640,v=500,i=77,C=1,q=2;{big_b64}")),
-        &temp,
-    );
+    let mut big_burst = b"\x1b[1;1H".to_vec();
+    big_burst.extend_from_slice(&apc(&format!(
+        "a=T,f=24,s=640,v=500,i=77,C=1,q=2;{big_b64}"
+    )));
+    let items2 = scan_to_forwarded(&mut sc, &big_burst, &temp);
     let (_, frames2, seq2) = model.feed_forwarded(seq_edge + 1, &items2);
-    assert_eq!(
-        frames2.len(),
-        2,
-        "> 1 MiB transmission must travel alone without concatenating the pre-delete"
-    );
-    assert!(frames2[0].len() <= MAX_NORMALIZED_FRAME_BYTES);
-    assert!(String::from_utf8_lossy(&frames2[0]).contains("a=d,d=I,i=77"));
+    assert_eq!(frames2.len(), 2);
+    assert_eq!(frames2[0], b"\x1b[1;1H");
     let frame2_1 = String::from_utf8_lossy(&frames2[1]);
     assert!(!frame2_1.contains("a=d,d=I,i=77"));
     assert!(frame2_1.contains("i=77,f=24,s=640,v=500"));
 
     // Case 3: sub-1 MiB replacement near MAX_NORMALIZED_FRAME_BYTES within one
-    // burst (~980 KiB text + ~128 KiB replacement) flushes the text into
-    // frame 0 and keeps both `a=d,d=I,i=77` and `a=T,i=77` together in frame 1,
-    // with both frames strictly <= 1 MiB.
+    // burst (~980 KiB text + ~128 KiB replacement) flushes text into frame 0
+    // and emits the replacement in frame 1, both strictly <= 1 MiB, with no pre-delete.
     let med_px = vec![0x33u8; 200 * 160 * 3];
     let mut burst = vec![b'x'; MAX_NORMALIZED_FRAME_BYTES - 4096];
     burst.extend_from_slice(&apc(&format!(
@@ -3322,17 +3312,71 @@ fn normalized_frame_splitter_respects_1mib_cap_and_keeps_sub_cap_replacements_at
         BASE64.encode(&med_px)
     )));
     let items3 = scan_to_forwarded(&mut sc, &burst, &temp);
-    let (_, frames3, _) = model.feed_forwarded(seq2 + 1, &items3);
+    let (_, frames3, seq3) = model.feed_forwarded(seq2 + 1, &items3);
     assert_eq!(frames3.len(), 2);
     assert!(frames3[0].len() <= MAX_NORMALIZED_FRAME_BYTES);
     assert!(frames3[1].len() <= MAX_NORMALIZED_FRAME_BYTES);
-    assert!(
-        !String::from_utf8_lossy(&frames3[0]).contains("a=d,d=I,i=77"),
-        "pre-delete must not be stranded at the tail of frame 0"
-    );
+    assert!(!String::from_utf8_lossy(&frames3[0]).contains("a=d,d=I,i=77"));
     let frame3_1 = String::from_utf8_lossy(&frames3[1]);
-    assert!(frame3_1.contains("a=d,d=I,i=77"));
+    assert!(!frame3_1.contains("a=d,d=I,i=77"));
     assert!(frame3_1.contains("i=77,f=24,s=200,v=160"));
+
+    // Case 4: failed single-command replacement on existing i=77 MUST still emit
+    // `a=d,d=I,i=77,q=2` so mirrors delete the old image immediately.
+    let items_fail = scan_to_forwarded(&mut sc, &apc("a=t,f=24,s=4,v=4,i=77;AAAA"), &temp);
+    let (_, frames_fail, seq4) = model.feed_forwarded(seq3 + 1, &items_fail);
+    assert_eq!(frames_fail, vec![b"\x1b_Ga=d,d=I,i=77,q=2\x1b\\".to_vec()]);
+    assert!(!model.graphics().lock().unwrap().primary.contains_image(77));
+
+    // Case 5: chunked replacement start (`m=1`) reusing existing i=77 MUST still
+    // emit `a=d,d=I,i=77,q=2` on chunk 1 and emit only the completed transmission
+    // (no duplicate delete) on chunk 2 (`m=0`).
+    let (_, _, seq5) = model.feed_forwarded(seq4 + 1, &items1);
+    assert!(model.graphics().lock().unwrap().primary.contains_image(77));
+    let chunk_b64 = BASE64.encode(&small_px);
+    let (part1, part2) = chunk_b64.split_at(chunk_b64.len() / 2);
+    let items_c1 = scan_to_forwarded(
+        &mut sc,
+        &apc(&format!("a=T,f=24,s=4,v=4,i=77,C=1,m=1;{part1}")),
+        &temp,
+    );
+    let (_, frames_c1, seq6) = model.feed_forwarded(seq5 + 1, &items_c1);
+    assert_eq!(frames_c1, vec![b"\x1b_Ga=d,d=I,i=77,q=2\x1b\\".to_vec()]);
+    let items_c2 = scan_to_forwarded(&mut sc, &apc(&format!("m=0;{part2}")), &temp);
+    let (_, frames_c2, seq7) = model.feed_forwarded(seq6 + 1, &items_c2);
+    assert_eq!(frames_c2.len(), 1);
+    let c2_str = String::from_utf8_lossy(&frames_c2[0]);
+    assert!(!c2_str.contains("a=d,d=I,i=77"));
+    assert!(c2_str.contains("i=77,f=24,s=4,v=4"));
+
+    // Case 6: replacement that evicts another image STILL emits `a=d,d=I` for the
+    // evicted image before the replacement, omitting only the self pre-delete.
+    let small_px_2 = vec![0xBBu8; 4 * 4 * 3]; // 48 B decoded
+    let items_other = scan_to_forwarded(
+        &mut sc,
+        &apc(&format!(
+            "a=t,f=24,s=4,v=4,i=88,q=2;{}",
+            BASE64.encode(&small_px_2)
+        )),
+        &temp,
+    );
+    let (_, _, seq8) = model.feed_forwarded(seq7 + 1, &items_other);
+    model.graphics().lock().unwrap().primary.set_limit(100);
+    let bigger_px = vec![0xCCu8; 5 * 5 * 3]; // 75 B decoded -> evicts unused i=88 (48 B)
+    let items_evict = scan_to_forwarded(
+        &mut sc,
+        &apc(&format!(
+            "a=T,f=24,s=5,v=5,i=77,C=1,q=2;{}",
+            BASE64.encode(&bigger_px)
+        )),
+        &temp,
+    );
+    let (_, frames_evict, _) = model.feed_forwarded(seq8 + 1, &items_evict);
+    assert_eq!(frames_evict.len(), 1);
+    let evict_str = String::from_utf8_lossy(&frames_evict[0]);
+    assert!(evict_str.contains("a=d,d=I,i=88,q=2"));
+    assert!(!evict_str.contains("a=d,d=I,i=77,q=2"));
+    assert!(evict_str.contains("i=77,f=24,s=5,v=5"));
 
     shutdown_model(&model);
 }

@@ -67,6 +67,8 @@ struct MirrorCache {
     live_keys: HashMap<TextureKey, u64>,
     in_flight: HashSet<TextureKey>,
     failed: HashSet<TextureKey>,
+    viewers: Option<Arc<AtomicUsize>>,
+    sync_open: Option<Arc<AtomicBool>>,
     /// Presented textures whose atlas drop and view invalidation are deferred
     /// until an open DECSET 2026 synchronized update closes (DECRST or timeout).
     deferred_release: Vec<Arc<RenderImage>>,
@@ -220,6 +222,41 @@ impl TextureStore {
         if !images.is_empty() {
             let _ = self.release_tx.unbounded_send((mirror_id, images));
         }
+    }
+
+    /// Re-checks each mirror's live DECSET 2026 synchronized-update state on
+    /// the UI thread before invalidating views or dropping GPU atlas entries.
+    /// If a new synchronized update opened after an earlier close enqueued its
+    /// release, re-defer those presented textures until the newer update ends.
+    fn filter_releasable_batches(
+        &self,
+        batches: HashMap<u64, Vec<Arc<RenderImage>>>,
+    ) -> (Vec<u64>, Vec<Arc<RenderImage>>) {
+        let mut mirror_ids = Vec::new();
+        let mut images = Vec::new();
+        let mut mirrors = self.mirrors.lock().unwrap();
+        for (mirror_id, batch) in batches {
+            if batch.is_empty() {
+                continue;
+            }
+            if let Some(entry) = mirrors.get_mut(&mirror_id) {
+                let has_viewers = entry
+                    .viewers
+                    .as_ref()
+                    .is_some_and(|v| v.load(Ordering::Acquire) > 0);
+                let in_sync = entry
+                    .sync_open
+                    .as_ref()
+                    .is_some_and(|s| s.load(Ordering::Acquire));
+                if has_viewers && in_sync {
+                    entry.deferred_release.extend(batch);
+                    continue;
+                }
+            }
+            mirror_ids.push(mirror_id);
+            images.extend(batch);
+        }
+        (mirror_ids, images)
     }
 
     /// Computes the three sorted paint bands for the active screen and returns
@@ -559,6 +596,12 @@ impl MirrorGraphicsObserver for TextureStore {
         let (to_release, unpresented, to_decode) = {
             let mut mirrors = self.mirrors.lock().unwrap();
             let entry = mirrors.entry(mirror_id).or_default();
+            if entry.viewers.is_none() {
+                entry.viewers = Some(Arc::clone(viewers));
+            }
+            if entry.sync_open.is_none() {
+                entry.sync_open = Some(Arc::clone(sync_open));
+            }
             if sync_seq <= entry.last_sync_seq {
                 // A newer snapshot (e.g. foreground `configure` with no decode
                 // candidates) already reconciled `live_keys`. Keep the newer
@@ -690,7 +733,21 @@ impl MirrorGraphicsObserver for TextureStore {
             let mut mirrors = self.mirrors.lock().unwrap();
             mirrors
                 .get_mut(&mirror_id)
-                .map(|entry| std::mem::take(&mut entry.deferred_release))
+                .map(|entry| {
+                    let has_viewers = entry
+                        .viewers
+                        .as_ref()
+                        .is_some_and(|v| v.load(Ordering::Acquire) > 0);
+                    let in_sync = entry
+                        .sync_open
+                        .as_ref()
+                        .is_some_and(|s| s.load(Ordering::Acquire));
+                    if has_viewers && in_sync {
+                        Vec::new()
+                    } else {
+                        std::mem::take(&mut entry.deferred_release)
+                    }
+                })
                 .unwrap_or_default()
         };
         self.enqueue_release(mirror_id, released);
@@ -767,14 +824,31 @@ impl TerminalTextureCache {
         let subscribed_viewports: Arc<Mutex<HashSet<EntityId>>> = Arc::default();
         let invalidations_for_task = invalidations.clone();
         let direct_windows_for_task = Arc::clone(&direct_painted_windows);
+        let weak_store = Arc::downgrade(&store);
         let release_task = cx.spawn(async move |cx| {
             while let Some((first_mirror, first_images)) = release_rx.next().await {
-                let mut mirror_ids = HashSet::from([first_mirror]);
-                let mut batch = first_images;
+                let mut per_mirror: HashMap<u64, Vec<Arc<RenderImage>>> = HashMap::new();
+                per_mirror
+                    .entry(first_mirror)
+                    .or_default()
+                    .extend(first_images);
                 while let Ok((mirror_id, more)) = release_rx.try_recv() {
-                    mirror_ids.insert(mirror_id);
-                    batch.extend(more);
+                    per_mirror.entry(mirror_id).or_default().extend(more);
                 }
+                let (mirror_ids, batch) = match weak_store.upgrade() {
+                    Some(store) => store.filter_releasable_batches(per_mirror),
+                    None => {
+                        let mut mirror_ids = Vec::with_capacity(per_mirror.len());
+                        let mut batch = Vec::new();
+                        for (mirror_id, images) in per_mirror {
+                            if !images.is_empty() {
+                                mirror_ids.push(mirror_id);
+                                batch.extend(images);
+                            }
+                        }
+                        (mirror_ids, batch)
+                    }
+                };
                 if batch.is_empty() {
                     continue;
                 }
@@ -4803,5 +4877,496 @@ mod tests {
         cx.run_until_parked();
         assert!(!visual_cached.update(|window, _| window.has_image_atlas_entry(&img4)));
         assert!(!visual_direct.update(|window, _| window.has_image_atlas_entry(&img4)));
+
+        // --- Sub-case D: back-to-back DECSET 2026 updates with delayed UI consumption ---
+        // Paint red, replace red -> green inside sync 1, close sync 1 (queueing red's
+        // release on release_rx), then BEFORE GPUI runs release_task open sync 2 and
+        // replace green -> blue. Draining release_task while sync 2 is open must re-defer
+        // red, emit zero invalidations, keep red in both atlases, and never present blue
+        // until sync 2 closes.
+        seq += 1;
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: kitty_rgba_command(
+                    "a=T,f=32,s=4,v=4,i=77,z=-9,C=1,q=2",
+                    &solid_rgba(4, 4, [240, 20, 20, 255]),
+                )
+                .into(),
+            },
+        );
+        seq += 1;
+        visual_cached.update(|window, _| window.refresh());
+        visual_direct.update(|window, _| window.refresh());
+        visual_cached.refresh().unwrap();
+        visual_direct.refresh().unwrap();
+        cx.run_until_parked();
+        while wake_rx.try_recv().is_ok() {}
+        let img_red = store
+            .cached_image(mirror_id, live_key_for(&mirror, 77))
+            .expect("red cached");
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img_red)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img_red)));
+
+        reset_counters(&render_counts, &invalidation_count);
+        // Sync 1: open 2026, replace red -> green, close 2026 — WITHOUT running UI executor yet.
+        let mut sync1_green = b"\x1b[?2026h\x1b[1;1H\x1b_Ga=d,d=I,i=77,q=2\x1b\\".to_vec();
+        sync1_green.extend_from_slice(&kitty_rgba_command(
+            "a=T,f=32,s=4,v=4,i=77,z=-9,C=1,q=2",
+            &solid_rgba(4, 4, [20, 220, 40, 255]),
+        ));
+        sync1_green.extend_from_slice(b"\x1b[?2026l");
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: sync1_green.into(),
+            },
+        );
+        seq += 1;
+
+        // Immediately open sync 2 and replace green -> blue before GPUI drains release_rx.
+        let mut sync2_blue = b"\x1b[?2026h\x1b[1;1H\x1b_Ga=d,d=I,i=77,q=2\x1b\\".to_vec();
+        sync2_blue.extend_from_slice(&kitty_rgba_command(
+            "a=T,f=32,s=4,v=4,i=77,z=-9,C=1,q=2",
+            &solid_rgba(4, 4, [20, 60, 240, 255]),
+        ));
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: sync2_blue.into(),
+            },
+        );
+        seq += 1;
+        assert!(mirror.is_sync_open());
+        let img_blue = store
+            .cached_image(mirror_id, live_key_for(&mirror, 77))
+            .expect("blue decoded during sync 2");
+
+        // Now let GPUI drain release_task while sync 2 is still open.
+        cx.run_until_parked();
+        sibling.update(&mut cx, |s, cx| {
+            s.0 += 1;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            invalidation_count.load(Ordering::SeqCst),
+            0,
+            "queued release from sync 1 must re-defer while sync 2 is open"
+        );
+        assert_eq!(
+            render_count(&render_counts),
+            0,
+            "neither cached nor direct host may present blue while sync 2 is open"
+        );
+        assert!(
+            visual_cached.update(|window, _| window.has_image_atlas_entry(&img_red)),
+            "cached host must retain red in atlas until sync 2 closes"
+        );
+        assert!(
+            visual_direct.update(|window, _| window.has_image_atlas_entry(&img_red)),
+            "direct host must retain red in atlas until sync 2 closes"
+        );
+        assert!(!visual_cached.update(|window, _| window.has_image_atlas_entry(&img_blue)));
+        assert!(!visual_direct.update(|window, _| window.has_image_atlas_entry(&img_blue)));
+
+        // Close sync 2 -> invalidates both hosts, retires red, presents blue.
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: b"\x1b[?2026l".to_vec().into(),
+            },
+        );
+        assert!(!mirror.is_sync_open());
+        cx.run_until_parked();
+        assert!(invalidation_count.load(Ordering::SeqCst) >= 1);
+        assert!(!visual_cached.update(|window, _| window.has_image_atlas_entry(&img_red)));
+        assert!(!visual_direct.update(|window, _| window.has_image_atlas_entry(&img_red)));
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img_blue)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img_blue)));
+    }
+
+    #[test]
+    fn daemon_to_mirror_single_command_over_1mib_replacement_paints_without_blank() {
+        use runner_terminal::kitty::{
+            prepare_command, ScanItem, ScanOutput, Scanner, TempDirs, MAX_NORMALIZED_FRAME_BYTES,
+        };
+
+        struct SiblingView(usize);
+        impl Render for SiblingView {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(32.)).h_full().child(format!("s{}", self.0))
+            }
+        }
+
+        struct CachedHost {
+            sibling: Entity<SiblingView>,
+            terminal: Arc<TerminalMirror>,
+            interaction: Entity<TerminalInteraction>,
+            input: Entity<TerminalInput>,
+            focus: gpui::FocusHandle,
+        }
+        impl Render for CachedHost {
+            fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let style = TerminalStyle {
+                    palette: runner_terminal::palette::RUNNER,
+                    font: crate::app_settings::AppSettings::default()
+                        .terminal_font_family
+                        .font(cx),
+                    font_size: 14.,
+                    app_zoom: 1.,
+                    line_height_factor: 1.4,
+                    copy_on_select: false,
+                };
+                div().flex().size_full().child(self.sibling.clone()).child(
+                    div().flex_1().h_full().child(
+                        TerminalElement::new(
+                            Arc::clone(&self.terminal),
+                            self.interaction.clone(),
+                            self.input.clone(),
+                            self.focus.clone(),
+                            true,
+                            true,
+                            style,
+                        )
+                        .cached(),
+                    ),
+                )
+            }
+        }
+
+        let scan_forwarded = |scanner: &mut Scanner, bytes: &[u8]| -> Vec<ForwardedItem> {
+            let temp = TempDirs::default();
+            match scanner.scan(bytes) {
+                ScanOutput::Plain(text) => vec![ForwardedItem::Text(text.to_vec())],
+                ScanOutput::Items(items) => items
+                    .into_iter()
+                    .map(|item| match item {
+                        ScanItem::Text(t) => ForwardedItem::Text(t),
+                        ScanItem::Command(raw) => match prepare_command(&raw, &temp) {
+                            Some(prepared) => ForwardedItem::Command(prepared),
+                            None => ForwardedItem::Discarded,
+                        },
+                        ScanItem::Discarded => ForwardedItem::Discarded,
+                    })
+                    .collect(),
+            }
+        };
+
+        let solid_rgb = |w: usize, h: usize, rgb: [u8; 3]| -> Vec<u8> {
+            rgb.into_iter().cycle().take(w * h * 3).collect()
+        };
+        let lineage_for = |mirror: &TerminalMirror, id: u32| -> u64 {
+            mirror
+                .graphics()
+                .lock()
+                .unwrap()
+                .primary
+                .image_by_id(id)
+                .unwrap()
+                .screen_lineage
+        };
+
+        let cell = CellSize {
+            width: 10,
+            height: 20,
+        };
+        let model = TerminalModel::with_graphics(
+            Arc::new(NullHost),
+            "daemon-handoff".into(),
+            80,
+            24,
+            ModelOptions::default(),
+            cell,
+            None,
+        )
+        .unwrap();
+        let mut scanner = Scanner::new();
+
+        let mut cx = TestAppContext::single();
+        let (_host, mirror, tx, ack) = mirror_named("daemon-handoff", TerminalController::Desktop);
+        let mirror_id = mirror.mirror_id();
+        let store = cx.update(|cx| TerminalTextureCache::attach_mirror(&mirror, cx));
+        let _lease1 = mirror.view();
+        let _lease2 = mirror.view();
+
+        let sibling = cx.new(|_| SiblingView(0));
+        let interaction1 = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input1 = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let win_cached = cx.add_window(|_, cx| CachedHost {
+            sibling: sibling.clone(),
+            terminal: Arc::clone(&mirror),
+            interaction: interaction1.clone(),
+            input: input1.clone(),
+            focus: cx.focus_handle(),
+        });
+        let mut visual_cached = VisualTestContext::from_window(win_cached.into(), &cx);
+        visual_cached.simulate_resize(gpui::size(px(440.), px(260.)));
+
+        let interaction2 = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input2 = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let win_direct = cx.add_window(|_, cx| GraphicsPaneHost {
+            terminal: Some(Arc::clone(&mirror)),
+            interaction: Some(interaction2.clone()),
+            input: Some(input2.clone()),
+            focus: cx.focus_handle(),
+            font_size: 14.,
+            line_height_factor: 1.4,
+        });
+        let mut visual_direct = VisualTestContext::from_window(win_direct.into(), &cx);
+        visual_direct.simulate_resize(gpui::size(px(400.), px(260.)));
+
+        // Step 1: seed initial i=77 through authoritative TerminalModel -> mirror.
+        let mut next_seq = 1u64;
+        let init_cmd = kitty_rgba_command(
+            "a=T,f=24,s=4,v=4,i=77,z=-9,C=1,q=2",
+            &solid_rgb(4, 4, [240, 30, 30]),
+        );
+        let (_, init_frames, last) =
+            model.feed_forwarded(next_seq, &scan_forwarded(&mut scanner, &init_cmd));
+        assert_eq!(init_frames.len(), 1);
+        for (idx, frame) in init_frames.into_iter().enumerate() {
+            send_and_wait(
+                &tx,
+                &ack,
+                TerminalFrame::Output {
+                    seq: next_seq + idx as u64,
+                    bytes: frame.into(),
+                },
+            );
+        }
+        next_seq = last + 1;
+        visual_cached.update(|window, _| window.refresh());
+        visual_direct.update(|window, _| window.refresh());
+        visual_cached.refresh().unwrap();
+        visual_direct.refresh().unwrap();
+        cx.run_until_parked();
+
+        let key1 = live_key_for(&mirror, 77);
+        let lineage1 = lineage_for(&mirror, 77);
+        let img1 = store
+            .cached_image(mirror_id, key1)
+            .expect("initial image cached");
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img1)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img1)));
+
+        // Step 2: 393×667 raw RGB replacement right under 1 MiB (1,048,563 B normalized).
+        // Must emit one <= 1 MiB frame (no pre-delete) and swap cleanly without blanking.
+        let edge_cmd = kitty_rgba_command(
+            "a=T,f=24,s=393,v=667,i=77,z=-9,C=1,q=2",
+            &solid_rgb(393, 667, [30, 210, 50]),
+        );
+        let (_, edge_frames, last) =
+            model.feed_forwarded(next_seq, &scan_forwarded(&mut scanner, &edge_cmd));
+        assert_eq!(edge_frames.len(), 1);
+        assert!(edge_frames[0].len() <= MAX_NORMALIZED_FRAME_BYTES);
+        assert!(!String::from_utf8_lossy(&edge_frames[0]).contains("a=d,d=I,i=77"));
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: next_seq,
+                bytes: edge_frames.into_iter().next().unwrap().into(),
+            },
+        );
+        next_seq = last + 1;
+        cx.run_until_parked();
+
+        let key2 = live_key_for(&mirror, 77);
+        assert_eq!(lineage_for(&mirror, 77), lineage1);
+        let img2 = store
+            .cached_image(mirror_id, key2)
+            .expect("393x667 replacement cached");
+        assert!(!Arc::ptr_eq(&img1, &img2));
+        assert!(!visual_cached.update(|window, _| window.has_image_atlas_entry(&img1)));
+        assert!(!visual_direct.update(|window, _| window.has_image_atlas_entry(&img1)));
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img2)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img2)));
+
+        // Step 3: single-command > 1 MiB replacement (1025×350 raw RGB, ~1.43 MiB
+        // normalized, also > 1024 px wide) preceded by cursor-home (`\x1b[1;1H`),
+        // matching real streaming emitters. Daemon emits two transport frames:
+        // Frame 1 (`\x1b[1;1H`, no pre-delete) and Frame 2 (`a=T,i=77` alone).
+        // Deliver Frame 1 FIRST and paint both windows while Frame 2 is still in
+        // flight: img2 MUST remain painted (zero blank between transport frames!).
+        let mut big_burst = b"\x1b[1;1H".to_vec();
+        big_burst.extend_from_slice(&kitty_rgba_command(
+            "a=T,f=24,s=1025,v=350,i=77,z=-9,C=1,q=2",
+            &solid_rgb(1025, 350, [40, 80, 240]),
+        ));
+        let (_, big_frames, last) =
+            model.feed_forwarded(next_seq, &scan_forwarded(&mut scanner, &big_burst));
+        assert_eq!(big_frames.len(), 2);
+        assert_eq!(big_frames[0], b"\x1b[1;1H");
+        assert!(big_frames[1].len() > MAX_NORMALIZED_FRAME_BYTES);
+        assert!(!String::from_utf8_lossy(&big_frames[1]).contains("a=d,d=I,i=77"));
+
+        let mut big_iter = big_frames.into_iter();
+        let frame_cursor = big_iter.next().unwrap();
+        let frame_image = big_iter.next().unwrap();
+
+        // Deliver only Frame 1 (simulating socket transit gap before 1.43 MiB Frame 2).
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: next_seq,
+                bytes: frame_cursor.into(),
+            },
+        );
+        cx.run_until_parked();
+        sibling.update(&mut cx, |s, cx| {
+            s.0 += 1;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        visual_direct.update(|window, cx| {
+            cx.set_global(PaintTrace::default());
+            window.refresh();
+        });
+        visual_direct.refresh().unwrap();
+        let between_trace = visual_direct.update(|_, cx| cx.global::<PaintTrace>().0.clone());
+        assert!(
+            between_trace
+                .iter()
+                .any(|e| matches!(e, PaintEvent::Image { .. })),
+            "paint between transport frames must still paint previous image (no blank): {between_trace:?}"
+        );
+        assert!(
+            visual_cached.update(|window, _| window.has_image_atlas_entry(&img2)),
+            "cached host must retain img2 while > 1 MiB replacement frame is in transit"
+        );
+        assert!(
+            visual_direct.update(|window, _| window.has_image_atlas_entry(&img2)),
+            "direct host must retain img2 while > 1 MiB replacement frame is in transit"
+        );
+
+        // Now deliver Frame 2 (`a=T,i=77` alone) -> direct transition [img2 -> img3].
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: next_seq + 1,
+                bytes: frame_image.into(),
+            },
+        );
+        next_seq = last + 1;
+        cx.run_until_parked();
+        sibling.update(&mut cx, |s, cx| {
+            s.0 += 1;
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let key3 = live_key_for(&mirror, 77);
+        assert_eq!(lineage_for(&mirror, 77), lineage1);
+        let img3 = store
+            .cached_image(mirror_id, key3)
+            .expect("> 1 MiB replacement cached");
+        assert!(!Arc::ptr_eq(&img2, &img3));
+        assert!(!visual_cached.update(|window, _| window.has_image_atlas_entry(&img2)));
+        assert!(!visual_direct.update(|window, _| window.has_image_atlas_entry(&img2)));
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img3)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img3)));
+
+        // Step 4: failed single-command replacement MUST still delete old i=77 on mirror.
+        let fail_cmd = b"\x1b_Ga=t,f=24,s=4,v=4,i=77;AAAA\x1b\\";
+        let (_, fail_frames, last) =
+            model.feed_forwarded(next_seq, &scan_forwarded(&mut scanner, fail_cmd));
+        assert_eq!(fail_frames, vec![b"\x1b_Ga=d,d=I,i=77,q=2\x1b\\".to_vec()]);
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: next_seq,
+                bytes: fail_frames.into_iter().next().unwrap().into(),
+            },
+        );
+        next_seq = last + 1;
+        cx.run_until_parked();
+        assert!(!mirror.graphics().lock().unwrap().primary.contains_image(77));
+        assert!(!visual_cached.update(|window, _| window.has_image_atlas_entry(&img3)));
+        assert!(!visual_direct.update(|window, _| window.has_image_atlas_entry(&img3)));
+
+        // Step 5: chunked replacement start (`m=1`) MUST still delete old i=77 immediately.
+        let (_, reseed_frames, last) =
+            model.feed_forwarded(next_seq, &scan_forwarded(&mut scanner, &init_cmd));
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: next_seq,
+                bytes: reseed_frames.into_iter().next().unwrap().into(),
+            },
+        );
+        next_seq = last + 1;
+        visual_cached.update(|window, _| window.refresh());
+        visual_direct.update(|window, _| window.refresh());
+        visual_cached.refresh().unwrap();
+        visual_direct.refresh().unwrap();
+        cx.run_until_parked();
+        let img4 = store
+            .cached_image(mirror_id, live_key_for(&mirror, 77))
+            .expect("reseeded image cached");
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img4)));
+
+        let chunk_b64 =
+            base64::engine::general_purpose::STANDARD.encode(solid_rgb(4, 4, [200, 200, 10]));
+        let (p1, p2) = chunk_b64.split_at(chunk_b64.len() / 2);
+        let c1 = format!("\x1b_Ga=T,f=24,s=4,v=4,i=77,z=-9,C=1,m=1;{p1}\x1b\\").into_bytes();
+        let (_, c1_frames, last) =
+            model.feed_forwarded(next_seq, &scan_forwarded(&mut scanner, &c1));
+        assert_eq!(c1_frames, vec![b"\x1b_Ga=d,d=I,i=77,q=2\x1b\\".to_vec()]);
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: next_seq,
+                bytes: c1_frames.into_iter().next().unwrap().into(),
+            },
+        );
+        next_seq = last + 1;
+        cx.run_until_parked();
+        assert!(!mirror.graphics().lock().unwrap().primary.contains_image(77));
+        assert!(!visual_cached.update(|window, _| window.has_image_atlas_entry(&img4)));
+
+        let c2 = format!("\x1b_Gm=0;{p2}\x1b\\").into_bytes();
+        let (_, c2_frames, _) = model.feed_forwarded(next_seq, &scan_forwarded(&mut scanner, &c2));
+        assert_eq!(c2_frames.len(), 1);
+        assert!(!String::from_utf8_lossy(&c2_frames[0]).contains("a=d,d=I,i=77"));
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: next_seq,
+                bytes: c2_frames.into_iter().next().unwrap().into(),
+            },
+        );
+        visual_cached.update(|window, _| window.refresh());
+        visual_direct.update(|window, _| window.refresh());
+        visual_cached.refresh().unwrap();
+        visual_direct.refresh().unwrap();
+        cx.run_until_parked();
+        let img5 = store
+            .cached_image(mirror_id, live_key_for(&mirror, 77))
+            .expect("chunked replacement cached");
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img5)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img5)));
+
+        for worker in model.stop_workers() {
+            let _ = worker.join();
+        }
     }
 }

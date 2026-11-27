@@ -60,11 +60,11 @@ impl NormalizedFrameSplitter {
 
     /// Appends one command's normalized segments together when the whole group
     /// fits within `MAX_NORMALIZED_FRAME_BYTES`, flushing any prior buffered
-    /// bytes first so sub-1 MiB in-place replacements keep their pre-delete and
-    /// transmission in one frame. Whenever the combined group exceeds
-    /// `MAX_NORMALIZED_FRAME_BYTES`, falls back to per-segment packing so every
-    /// sub-1 MiB segment respects the 1 MiB cap and any larger transmission
-    /// travels alone.
+    /// bytes first so multi-segment commands (such as evictions preceding a
+    /// sub-1 MiB transmission) stay in one frame. Whenever the combined group
+    /// exceeds `MAX_NORMALIZED_FRAME_BYTES`, falls back to per-segment packing
+    /// so every sub-1 MiB segment respects the 1 MiB cap and any larger
+    /// transmission travels alone.
     pub fn push_group(&mut self, segments: Vec<Vec<u8>>, emit: &mut impl FnMut(Vec<u8>)) {
         if segments.len() <= 1 {
             if let Some(seg) = segments.into_iter().next() {

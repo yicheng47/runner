@@ -327,6 +327,7 @@ fn load_and_add_image<H: ExecuteHost>(
     let cols = host.term_cols();
     let storage = host.storage_mut();
 
+    let mut deleted_existing: Option<u32> = None;
     let mut loading = if let Some(mut loading) = storage.loading.take() {
         loading.add_data(&cmd.data)?;
         if t.more_chunks {
@@ -337,6 +338,9 @@ fn load_and_add_image<H: ExecuteHost>(
     } else {
         // Reusing an explicit image ID deletes the old image and all its
         // placements when the new transmission begins, before it completes or fails.
+        // Succeeding single-command replacements omit a separate normalized
+        // `a=d,d=I` because the mirror's own replacement deletes the old image
+        // atomically; failed replacements and chunked starts (`m=1`) still emit it.
         if t.image_id > 0 {
             let had_existing = storage.contains_image(t.image_id);
             storage.delete(
@@ -351,39 +355,68 @@ fn load_and_add_image<H: ExecuteHost>(
                 cell,
             );
             if mode == ExecMode::Authoritative && had_existing {
-                let mut buf = Vec::new();
-                encode_delete_image_by_id(&mut buf, t.image_id);
-                normalized.push(buf);
+                deleted_existing = Some(t.image_id);
             }
         }
 
-        let payload = resolve_initial_payload(cmd, prepared.media.as_ref())?;
-        let mut loading = LoadingImage::new(cmd, payload)?;
-        if loading.id == 0 {
-            if loading.number > 0 {
-                loading.id = storage.next_image_id(false);
-            } else {
-                loading.id = storage.next_image_id(true);
-                loading.implicit_id = true;
+        let start = (|| -> Result<LoadingImage, ImageError> {
+            let payload = resolve_initial_payload(cmd, prepared.media.as_ref())?;
+            let mut loading = LoadingImage::new(cmd, payload)?;
+            if loading.id == 0 {
+                if loading.number > 0 {
+                    loading.id = storage.next_image_id(false);
+                } else {
+                    loading.id = storage.next_image_id(true);
+                    loading.implicit_id = true;
+                }
             }
-        }
+            Ok(loading)
+        })();
+        let loading = match start {
+            Ok(loading) => loading,
+            Err(err) => {
+                if let Some(id) = deleted_existing {
+                    let mut buf = Vec::new();
+                    encode_delete_image_by_id(&mut buf, id);
+                    normalized.push(buf);
+                }
+                return Err(err);
+            }
+        };
+
         if t.more_chunks {
+            if let Some(id) = deleted_existing {
+                let mut buf = Vec::new();
+                encode_delete_image_by_id(&mut buf, id);
+                normalized.push(buf);
+            }
             storage.loading = Some(loading);
             return Ok(LoadOutcome::More);
         }
         loading
     };
 
-    let display = loading.display.take();
-    let image = match mode {
-        ExecMode::Authoritative => loading.complete(storage.total_limit())?,
-        ExecMode::Mirror => loading.complete_normalized_mirror(storage.total_limit())?,
-    };
-    let evicted = storage.add_image(image.clone())?;
-    if mode == ExecMode::Authoritative {
-        emit_evictions(&evicted, normalized);
+    let finish = (|| -> Result<LoadOutcome, ImageError> {
+        let display = loading.display.take();
+        let image = match mode {
+            ExecMode::Authoritative => loading.complete(storage.total_limit())?,
+            ExecMode::Mirror => loading.complete_normalized_mirror(storage.total_limit())?,
+        };
+        let evicted = storage.add_image(image.clone())?;
+        if mode == ExecMode::Authoritative {
+            emit_evictions(&evicted, normalized);
+        }
+        Ok(LoadOutcome::Complete { image, display })
+    })();
+
+    if finish.is_err() {
+        if let Some(id) = deleted_existing {
+            let mut buf = Vec::new();
+            encode_delete_image_by_id(&mut buf, id);
+            normalized.push(buf);
+        }
     }
-    Ok(LoadOutcome::Complete { image, display })
+    finish
 }
 
 fn emit_evictions(evicted: &[EvictedImage], normalized: &mut Vec<Vec<u8>>) {
