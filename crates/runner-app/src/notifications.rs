@@ -330,25 +330,26 @@ fn visible(cx: &mut App) -> Visible {
             continue;
         };
         if let Ok(Some(visible)) = window.update(cx, |root, window, cx| {
-            window.is_window_active().then(|| Visible {
-                app_active: root.remote_client.is_local(),
-                chats: if root.remote_client.is_local() && root.route == AppRoute::Chat {
-                    root.tabs
-                        .active()
-                        .map(|tab| tab.session_ids())
-                        .unwrap_or_default()
-                } else {
-                    Vec::new()
-                },
-                mission: match &root.route {
-                    AppRoute::Mission(id) if root.remote_client.is_local() => root
-                        .mission_workspace
-                        .read(cx)
-                        .notification_tab(id)
-                        .map(|tab| (id.clone(), tab.clone())),
-                    _ => None,
-                },
-            })
+            (window.is_window_active() && window.visibility() == gpui::WindowVisibility::Visible)
+                .then(|| Visible {
+                    app_active: root.remote_client.is_local(),
+                    chats: if root.remote_client.is_local() && root.route == AppRoute::Chat {
+                        root.tabs
+                            .active()
+                            .map(|tab| tab.session_ids())
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    },
+                    mission: match &root.route {
+                        AppRoute::Mission(id) if root.remote_client.is_local() => root
+                            .mission_workspace
+                            .read(cx)
+                            .notification_tab(id)
+                            .map(|tab| (id.clone(), tab.clone())),
+                        _ => None,
+                    },
+                })
         }) {
             return visible;
         }
@@ -469,6 +470,8 @@ struct NotificationController {
     ask_order: VecDeque<String>,
     pending_questions: BTreeMap<String, Event>,
     permission: Permission,
+    permission_refresh_in_flight: bool,
+    permission_refresh_queued: bool,
     _subscription: Subscription,
     _pairing_subscription: Subscription,
     _listener: Task<()>,
@@ -488,6 +491,46 @@ fn pairing_content(pairing: &crate::app_store::RemotePairing) -> SystemNotificat
 }
 
 impl NotificationController {
+    fn request_permission_refresh(&mut self, cx: &mut Context<Self>) {
+        self.request_permission_refresh_with(permission::query, cx);
+    }
+
+    fn request_permission_refresh_with(
+        &mut self,
+        query: impl Fn(&gpui::BackgroundExecutor) -> futures::channel::oneshot::Receiver<Permission>
+            + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        if self.permission_refresh_in_flight {
+            self.permission_refresh_queued = true;
+            return;
+        }
+        self.permission_refresh_in_flight = true;
+        let mut answer = query(cx.background_executor());
+        cx.spawn(async move |this, cx| loop {
+            let permission = answer.await.ok();
+            let next = this.update(cx, |this, cx| {
+                if let Some(permission) = permission {
+                    if this.permission != permission {
+                        this.permission = permission;
+                        cx.refresh_windows();
+                    }
+                }
+                if std::mem::take(&mut this.permission_refresh_queued) {
+                    Some(query(cx.background_executor()))
+                } else {
+                    this.permission_refresh_in_flight = false;
+                    None
+                }
+            });
+            match next {
+                Ok(Some(receiver)) => answer = receiver,
+                _ => break,
+            }
+        })
+        .detach();
+    }
+
     fn track_dismissal(&mut self, task: Task<()>, cx: &mut Context<Self>) {
         let task = task.shared();
         let seq = self.next_dismissal;
@@ -833,6 +876,8 @@ pub(crate) fn install(cx: &mut App) {
             ask_order: VecDeque::new(),
             pending_questions: BTreeMap::new(),
             permission: Permission::Unknown,
+            permission_refresh_in_flight: false,
+            permission_refresh_queued: false,
             _subscription: cx.observe(&store, |this, _, cx| this.refresh(cx)),
             _pairing_subscription: cx.subscribe(
                 &store,
@@ -864,21 +909,7 @@ pub(crate) fn refresh_permission(cx: &mut App) {
     else {
         return;
     };
-    let answer = permission::query();
-    controller.update(cx, |_, cx| {
-        cx.spawn(async move |this, cx| {
-            let Ok(permission) = answer.await else {
-                return;
-            };
-            let _ = this.update(cx, |this, cx| {
-                if this.permission != permission {
-                    this.permission = permission;
-                    cx.refresh_windows();
-                }
-            });
-        })
-        .detach();
-    });
+    controller.update(cx, |this, cx| this.request_permission_refresh(cx));
 }
 
 fn request_permission(cx: &mut App) {
