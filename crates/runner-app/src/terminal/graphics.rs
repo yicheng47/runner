@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use futures::channel::mpsc;
 use futures::StreamExt as _;
 use gpui::{
-    point, px, size, App, AppContext as _, Bounds, ContentMask, Corners, Entity, Global, Pixels,
-    RenderImage, Task, Window,
+    point, px, size, AnyWindowHandle, App, AppContext as _, Bounds, ContentMask, Corners, Entity,
+    EntityId, EventEmitter, Global, Pixels, RenderImage, Task, Window,
 };
 use runner_app::terminal_resize::device_cell_size;
 use runner_terminal::kitty::{
@@ -150,16 +150,21 @@ type DecodeHook = Arc<dyn Fn(TextureKey) + Send + Sync>;
 
 pub(crate) struct TextureStore {
     mirrors: Mutex<HashMap<u64, MirrorCache>>,
-    release_tx: mpsc::UnboundedSender<Vec<Arc<RenderImage>>>,
+    release_tx: mpsc::UnboundedSender<(u64, Vec<Arc<RenderImage>>)>,
+    direct_painted_windows: Arc<Mutex<HashMap<u64, HashSet<AnyWindowHandle>>>>,
     #[cfg(test)]
     decode_hook: Mutex<Option<DecodeHook>>,
 }
 
 impl TextureStore {
-    fn new(release_tx: mpsc::UnboundedSender<Vec<Arc<RenderImage>>>) -> Self {
+    fn new(
+        release_tx: mpsc::UnboundedSender<(u64, Vec<Arc<RenderImage>>)>,
+        direct_painted_windows: Arc<Mutex<HashMap<u64, HashSet<AnyWindowHandle>>>>,
+    ) -> Self {
         Self {
             mirrors: Mutex::default(),
             release_tx,
+            direct_painted_windows,
             #[cfg(test)]
             decode_hook: Mutex::default(),
         }
@@ -170,9 +175,9 @@ impl TextureStore {
         *self.decode_hook.lock().unwrap() = hook;
     }
 
-    fn enqueue_release(&self, images: Vec<Arc<RenderImage>>) {
+    fn enqueue_release(&self, mirror_id: u64, images: Vec<Arc<RenderImage>>) {
         if !images.is_empty() {
-            let _ = self.release_tx.unbounded_send(images);
+            let _ = self.release_tx.unbounded_send((mirror_id, images));
         }
     }
 
@@ -451,7 +456,7 @@ impl TextureStore {
                     Vec::new()
                 }
             };
-            store.enqueue_release(released);
+            store.enqueue_release(mirror_id, released);
             // Respect the mirror's DECSET 2026 synchronized-update wake guard:
             // notifying `TerminalInteraction` wakes `TerminalViewport`, so only
             // notify when `wake_viewers_now()` actually permits a wake.
@@ -557,7 +562,7 @@ impl MirrorGraphicsObserver for TextureStore {
             }
         };
 
-        self.enqueue_release(to_release);
+        self.enqueue_release(mirror_id, to_release);
 
         if to_decode.is_empty() {
             return;
@@ -618,7 +623,7 @@ impl MirrorGraphicsObserver for TextureStore {
                 entry.prune_stale_textures(false)
             }
         };
-        self.enqueue_release(released);
+        self.enqueue_release(mirror_id, released);
     }
 
     fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>) {
@@ -635,7 +640,7 @@ impl MirrorGraphicsObserver for TextureStore {
                 })
                 .unwrap_or_default()
         };
-        self.enqueue_release(released);
+        self.enqueue_release(mirror_id, released);
     }
 
     fn on_mirror_dropped(&self, mirror_id: u64) {
@@ -646,42 +651,152 @@ impl MirrorGraphicsObserver for TextureStore {
                 .map(|mut entry| entry.drain_textures())
                 .unwrap_or_default()
         };
-        self.enqueue_release(released);
+        if released.is_empty() {
+            self.direct_painted_windows
+                .lock()
+                .unwrap()
+                .remove(&mirror_id);
+        } else {
+            self.enqueue_release(mirror_id, released);
+        }
     }
 }
 
+pub(crate) struct GraphicsInvalidations;
+
+impl EventEmitter<u64> for GraphicsInvalidations {}
+
 pub(crate) struct TerminalTextureCache {
     store: Arc<TextureStore>,
+    invalidations: Entity<GraphicsInvalidations>,
+    subscribed_viewports: Arc<Mutex<HashSet<EntityId>>>,
     _release_task: Task<()>,
 }
 
 impl Global for TerminalTextureCache {}
 
 impl TerminalTextureCache {
-    pub(crate) fn store(cx: &mut App) -> Arc<TextureStore> {
-        if let Some(cache) = cx.try_global::<Self>() {
-            return Arc::clone(&cache.store);
+    fn ensure(cx: &mut App) {
+        if cx.try_global::<Self>().is_some() {
+            return;
         }
-        let (release_tx, mut release_rx) = mpsc::unbounded::<Vec<Arc<RenderImage>>>();
-        let store = Arc::new(TextureStore::new(release_tx));
+        let (release_tx, mut release_rx) = mpsc::unbounded::<(u64, Vec<Arc<RenderImage>>)>();
+        let direct_painted_windows: Arc<Mutex<HashMap<u64, HashSet<AnyWindowHandle>>>> =
+            Arc::default();
+        let store = Arc::new(TextureStore::new(
+            release_tx,
+            Arc::clone(&direct_painted_windows),
+        ));
+        let invalidations = cx.new(|_| GraphicsInvalidations);
+        let subscribed_viewports: Arc<Mutex<HashSet<EntityId>>> = Arc::default();
+        let invalidations_for_task = invalidations.clone();
+        let direct_windows_for_task = Arc::clone(&direct_painted_windows);
         let release_task = cx.spawn(async move |cx| {
-            while let Some(mut batch) = release_rx.next().await {
-                while let Ok(more) = release_rx.try_recv() {
+            while let Some((first_mirror, first_images)) = release_rx.next().await {
+                let mut mirror_ids = HashSet::from([first_mirror]);
+                let mut batch = first_images;
+                while let Ok((mirror_id, more)) = release_rx.try_recv() {
+                    mirror_ids.insert(mirror_id);
                     batch.extend(more);
                 }
                 if batch.is_empty() {
                     continue;
                 }
+                // Invalidate every subscribed `TerminalViewport` before dropping
+                // textures from GPUI's sprite atlas. `AsyncApp::update` flushes
+                // effects before returning, so every viewport's `cx.notify()` has
+                // already marked its window dirty and added it to `dirty_views`
+                // before the next block drops the atlas entries — preventing both
+                // cached `TerminalViewport` paint reuse and `needs_present`
+                // animation re-presents from drawing a frame whose `MetalAtlas`
+                // texture was already removed.
                 cx.update(|cx| {
+                    for &mirror_id in &mirror_ids {
+                        invalidations_for_task.update(cx, |_, cx| cx.emit(mirror_id));
+                    }
+                });
+                cx.update(|cx| {
+                    let direct_windows: HashSet<AnyWindowHandle> = {
+                        let mut map = direct_windows_for_task.lock().unwrap();
+                        let mut handles = HashSet::new();
+                        for &mirror_id in &mirror_ids {
+                            if let Some(windows) = map.remove(&mirror_id) {
+                                handles.extend(windows);
+                            }
+                        }
+                        handles
+                    };
+                    for handle in direct_windows {
+                        let _ = handle.update(cx, |_, window, _| window.refresh());
+                    }
                     crate::surfaces::files::image::release_render_images(batch, None, cx);
                 });
             }
         });
         cx.set_global(Self {
-            store: Arc::clone(&store),
+            store,
+            invalidations,
+            subscribed_viewports,
             _release_task: release_task,
         });
-        store
+    }
+
+    pub(crate) fn store(cx: &mut App) -> Arc<TextureStore> {
+        Self::ensure(cx);
+        Arc::clone(&cx.global::<Self>().store)
+    }
+
+    pub(crate) fn invalidations(cx: &mut App) -> Entity<GraphicsInvalidations> {
+        Self::ensure(cx);
+        cx.global::<Self>().invalidations.clone()
+    }
+
+    pub(crate) fn register_viewport(viewport_id: EntityId, cx: &mut App) {
+        Self::ensure(cx);
+        cx.global::<Self>()
+            .subscribed_viewports
+            .lock()
+            .unwrap()
+            .insert(viewport_id);
+    }
+
+    pub(crate) fn unregister_viewport(viewport_id: EntityId, cx: &mut App) {
+        if let Some(cache) = cx.try_global::<Self>() {
+            cache
+                .subscribed_viewports
+                .lock()
+                .unwrap()
+                .remove(&viewport_id);
+        }
+    }
+
+    pub(crate) fn record_paint_window(
+        mirror_id: u64,
+        window: &Window,
+        painted_images: bool,
+        cx: &App,
+    ) {
+        let Some(cache) = cx.try_global::<Self>() else {
+            return;
+        };
+        if cache
+            .subscribed_viewports
+            .lock()
+            .unwrap()
+            .contains(&window.current_view())
+        {
+            return;
+        }
+        let handle = window.window_handle();
+        let mut map = cache.store.direct_painted_windows.lock().unwrap();
+        if painted_images {
+            map.entry(mirror_id).or_default().insert(handle);
+        } else if let Some(windows) = map.get_mut(&mirror_id) {
+            windows.remove(&handle);
+            if windows.is_empty() {
+                map.remove(&mirror_id);
+            }
+        }
     }
 
     pub(crate) fn observer(cx: &mut App) -> Arc<dyn MirrorGraphicsObserver> {
@@ -3964,5 +4079,272 @@ mod tests {
             "old image 77 must drop from GPU atlas once worker publishes new image 77"
         );
         assert!(visual.update(|window, _| window.has_image_atlas_entry(&after_worker_img)));
+    }
+
+    #[test]
+    fn texture_release_invalidates_cached_viewports_and_direct_hosts_before_dropping_atlas_entries()
+    {
+        use gpui::StyleRefinement;
+
+        struct NestedCachedRegion {
+            terminal: Arc<TerminalMirror>,
+            interaction: Entity<TerminalInteraction>,
+            input: Entity<TerminalInput>,
+            focus: gpui::FocusHandle,
+        }
+
+        impl Render for NestedCachedRegion {
+            fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let style = TerminalStyle {
+                    palette: runner_terminal::palette::RUNNER,
+                    font: crate::app_settings::AppSettings::default()
+                        .terminal_font_family
+                        .font(cx),
+                    font_size: 14.,
+                    app_zoom: 1.,
+                    line_height_factor: 1.4,
+                    copy_on_select: false,
+                };
+                div().size_full().child(
+                    TerminalElement::new(
+                        Arc::clone(&self.terminal),
+                        self.interaction.clone(),
+                        self.input.clone(),
+                        self.focus.clone(),
+                        true,
+                        true,
+                        style,
+                    )
+                    .cached(),
+                )
+            }
+        }
+
+        struct SiblingSpinner {
+            tick: usize,
+        }
+
+        impl Render for SiblingSpinner {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(40.)).h_full().child(format!("t{}", self.tick))
+            }
+        }
+
+        struct SplitCachedHost {
+            sibling: Entity<SiblingSpinner>,
+            cached_pane: Entity<NestedCachedRegion>,
+        }
+
+        impl Render for SplitCachedHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().flex().size_full().child(self.sibling.clone()).child(
+                    div().flex_1().h_full().child(
+                        self.cached_pane
+                            .clone()
+                            .cached(StyleRefinement::default().size_full()),
+                    ),
+                )
+            }
+        }
+
+        struct CachedViewportOnlyHost {
+            terminal: Arc<TerminalMirror>,
+            interaction: Entity<TerminalInteraction>,
+            input: Entity<TerminalInput>,
+            focus: gpui::FocusHandle,
+        }
+
+        impl Render for CachedViewportOnlyHost {
+            fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let style = TerminalStyle {
+                    palette: runner_terminal::palette::RUNNER,
+                    font: crate::app_settings::AppSettings::default()
+                        .terminal_font_family
+                        .font(cx),
+                    font_size: 14.,
+                    app_zoom: 1.,
+                    line_height_factor: 1.4,
+                    copy_on_select: false,
+                };
+                div().size_full().child(
+                    TerminalElement::new(
+                        Arc::clone(&self.terminal),
+                        self.interaction.clone(),
+                        self.input.clone(),
+                        self.focus.clone(),
+                        true,
+                        false,
+                        style,
+                    )
+                    .cached(),
+                )
+            }
+        }
+
+        let mut cx = TestAppContext::single();
+        let (_host, mirror, tx, ack) =
+            mirror_named("release-invalidates-cached", TerminalController::Desktop);
+        let mirror_id = mirror.mirror_id();
+        let store = cx.update(|cx| TerminalTextureCache::attach_mirror(&mirror, cx));
+        let _lease1 = mirror.view();
+        let _lease2 = mirror.view();
+        let _lease3 = mirror.view();
+
+        let interaction1 = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input1 = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let sibling = cx.new(|_| SiblingSpinner { tick: 0 });
+        let win1 = cx.add_window(|_, cx| {
+            let cached_pane = cx.new(|cx| NestedCachedRegion {
+                terminal: Arc::clone(&mirror),
+                interaction: interaction1.clone(),
+                input: input1.clone(),
+                focus: cx.focus_handle(),
+            });
+            SplitCachedHost {
+                sibling: sibling.clone(),
+                cached_pane,
+            }
+        });
+        let mut visual1 = VisualTestContext::from_window(win1.into(), &cx);
+        visual1.simulate_resize(gpui::size(px(440.), px(260.)));
+
+        let interaction2 = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input2 = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let win2 = cx.add_window(|_, cx| CachedViewportOnlyHost {
+            terminal: Arc::clone(&mirror),
+            interaction: interaction2.clone(),
+            input: input2.clone(),
+            focus: cx.focus_handle(),
+        });
+        let mut visual2 = VisualTestContext::from_window(win2.into(), &cx);
+        visual2.simulate_resize(gpui::size(px(400.), px(260.)));
+
+        let interaction3 = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input3 = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let win3 = cx.add_window(|_, cx| GraphicsPaneHost {
+            terminal: Some(Arc::clone(&mirror)),
+            interaction: Some(interaction3.clone()),
+            input: Some(input3.clone()),
+            focus: cx.focus_handle(),
+            font_size: 14.,
+            line_height_factor: 1.4,
+        });
+        let mut visual3 = VisualTestContext::from_window(win3.into(), &cx);
+        visual3.simulate_resize(gpui::size(px(400.), px(260.)));
+
+        // Send initial frame 1 and render all 3 windows (notice GlobalAppStore
+        // terminal_updates is NOT mounted, matching the pre-wake_task window).
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq: 1,
+                bytes: kitty_rgba_command(
+                    "a=T,f=32,s=4,v=4,i=77,z=-9,C=1,q=2",
+                    &solid_rgba(4, 4, [240, 40, 40, 255]),
+                )
+                .into(),
+            },
+        );
+        visual1.update(|window, _| window.refresh());
+        visual2.update(|window, _| window.refresh());
+        visual3.update(|window, _| window.refresh());
+        visual1.refresh().unwrap();
+        visual2.refresh().unwrap();
+        visual3.refresh().unwrap();
+        cx.run_until_parked();
+
+        let key1 = live_key_for(&mirror, 77);
+        let mut prev_img = store.cached_image(mirror_id, key1).expect("frame 1 cached");
+        assert!(visual1.update(|window, _| window.has_image_atlas_entry(&prev_img)));
+        assert!(visual2.update(|window, _| window.has_image_atlas_entry(&prev_img)));
+        assert!(visual3.update(|window, _| window.has_image_atlas_entry(&prev_img)));
+
+        // Replace image 77 across 8 frames without terminal_updates or manual
+        // window.refresh(). After each replacement, also nudge an unrelated
+        // sibling view in Window 1 (like the sidebar Working spinner). Every
+        // window must invalidate its cached TerminalViewport / direct host
+        // before dropping the old texture and paint the new texture cleanly.
+        let mut seq = 2u64;
+        for step in 0u8..8 {
+            let mut payload = b"\x1b[1;1H\x1b_Ga=d,d=I,i=77,q=2\x1b\\".to_vec();
+            payload.extend_from_slice(&kitty_rgba_command(
+                "a=T,f=32,s=4,v=4,i=77,z=-9,C=1,q=2",
+                &solid_rgba(4, 4, [step.wrapping_mul(29), 180, 255 - step * 20, 255]),
+            ));
+            send_and_wait(
+                &tx,
+                &ack,
+                TerminalFrame::Output {
+                    seq,
+                    bytes: payload.into(),
+                },
+            );
+            seq += 1;
+
+            // Drain release_task and let GPUI redraw any invalidated windows.
+            cx.run_until_parked();
+
+            // Simulate an unrelated sibling repaint (sidebar spinner tick) on Window 1.
+            sibling.update(&mut cx, |s, cx| {
+                s.tick += 1;
+                cx.notify();
+            });
+            cx.run_until_parked();
+
+            let next_key = live_key_for(&mirror, 77);
+            let next_img = store
+                .cached_image(mirror_id, next_key)
+                .expect("replacement frame cached");
+            assert!(!Arc::ptr_eq(&prev_img, &next_img));
+
+            assert!(
+                !visual1.update(|window, _| window.has_image_atlas_entry(&prev_img)),
+                "step {step}: window 1 must drop replaced texture"
+            );
+            assert!(
+                !visual2.update(|window, _| window.has_image_atlas_entry(&prev_img)),
+                "step {step}: window 2 must drop replaced texture"
+            );
+            assert!(
+                !visual3.update(|window, _| window.has_image_atlas_entry(&prev_img)),
+                "step {step}: window 3 must drop replaced texture"
+            );
+            assert!(
+                visual1.update(|window, _| window.has_image_atlas_entry(&next_img)),
+                "step {step}: nested cached TerminalViewport in window 1 must invalidate and paint replacement"
+            );
+            assert!(
+                visual2.update(|window, _| window.has_image_atlas_entry(&next_img)),
+                "step {step}: TerminalViewport in window 2 must invalidate and paint replacement"
+            );
+            assert!(
+                visual3.update(|window, _| window.has_image_atlas_entry(&next_img)),
+                "step {step}: direct TerminalElement host in window 3 must refresh and paint replacement"
+            );
+            prev_img = next_img;
+        }
+
+        // Delete all images: all three windows must drop the final texture cleanly.
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: b"\x1b_Ga=d,d=A,q=2\x1b\\".to_vec().into(),
+            },
+        );
+        cx.run_until_parked();
+        assert!(!visual1.update(|window, _| window.has_image_atlas_entry(&prev_img)));
+        assert!(!visual2.update(|window, _| window.has_image_atlas_entry(&prev_img)));
+        assert!(!visual3.update(|window, _| window.has_image_atlas_entry(&prev_img)));
     }
 }

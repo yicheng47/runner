@@ -31,6 +31,11 @@ pub use storage::{
 /// alone in its own frame (at most ~44 MiB for a 32 MiB transmission).
 pub const MAX_NORMALIZED_FRAME_BYTES: usize = 1024 * 1024;
 
+/// Maximum combined size of a single command's normalized segments kept atomic
+/// in one frame (`[delete/evictions..., transmit]`), leaving headroom below
+/// `runner_core::protocol::wire::MAX_FRAME` (64 MiB).
+const MAX_ATOMIC_GROUP_BYTES: usize = 48 * 1024 * 1024;
+
 /// Incremental normalized-frame packer that emits completed frames as soon as
 /// a segment would cross `MAX_NORMALIZED_FRAME_BYTES`, avoiding buffering an
 /// entire burst's normalized frames before publishing.
@@ -55,6 +60,42 @@ impl NormalizedFrameSplitter {
             emit(seg);
         } else {
             self.current.extend_from_slice(&seg);
+        }
+    }
+
+    /// Appends one command's normalized segments without splitting between its
+    /// pre-delete/evictions and replacement transmission, so mirrors never see
+    /// an intermediate deleted-but-not-yet-replaced frame.
+    pub fn push_group(&mut self, segments: Vec<Vec<u8>>, emit: &mut impl FnMut(Vec<u8>)) {
+        if segments.len() <= 1 {
+            if let Some(seg) = segments.into_iter().next() {
+                self.push(seg, emit);
+            }
+            return;
+        }
+        let total_len: usize = segments.iter().map(Vec::len).sum();
+        if total_len == 0 {
+            return;
+        }
+        if total_len > MAX_ATOMIC_GROUP_BYTES {
+            for seg in segments {
+                self.push(seg, emit);
+            }
+            return;
+        }
+        if !self.current.is_empty() && self.current.len() + total_len > MAX_NORMALIZED_FRAME_BYTES {
+            emit(std::mem::take(&mut self.current));
+        }
+        if total_len > MAX_NORMALIZED_FRAME_BYTES {
+            let mut frame = Vec::with_capacity(total_len);
+            for seg in segments {
+                frame.extend_from_slice(&seg);
+            }
+            emit(frame);
+        } else {
+            for seg in segments {
+                self.current.extend_from_slice(&seg);
+            }
         }
     }
 

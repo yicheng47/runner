@@ -3236,3 +3236,69 @@ fn snapshot_priority_treats_negative_column_overlapping_relative_placement_as_vi
         "fully off-screen relative child (image 3) must be dropped before visible image 2"
     );
 }
+
+#[test]
+fn normalized_frame_splitter_keeps_in_place_replacement_delete_and_transmit_atomic() {
+    let cell = CellSize {
+        width: 10,
+        height: 20,
+    };
+    let (model, _host) = new_model(40, 10, cell, None);
+    let mut sc = Scanner::new();
+    let temp = TempDirs::default();
+
+    // Upload initial image 77.
+    let small_px = vec![0xAAu8; 4 * 4 * 3];
+    let items1 = scan_to_forwarded(
+        &mut sc,
+        &apc(&format!(
+            "a=T,f=24,s=4,v=4,i=77,C=1,q=2;{}",
+            BASE64.encode(&small_px)
+        )),
+        &temp,
+    );
+    let (_, frames1, seq1) = model.feed_forwarded(1, &items1);
+    assert_eq!(frames1.len(), 1);
+
+    // Case 1: replace i=77 with a > MAX_NORMALIZED_FRAME_BYTES payload (~1.2 MiB base64).
+    // Pre-delete `a=d,d=I,i=77` and replacement `a=T,i=77` must travel in ONE frame.
+    let big_px = vec![0x55u8; 640 * 500 * 3];
+    let big_b64 = BASE64.encode(&big_px);
+    assert!(big_b64.len() > MAX_NORMALIZED_FRAME_BYTES);
+    let items2 = scan_to_forwarded(
+        &mut sc,
+        &apc(&format!("a=T,f=24,s=640,v=500,i=77,C=1,q=2;{big_b64}")),
+        &temp,
+    );
+    let (_, frames2, seq2) = model.feed_forwarded(seq1 + 1, &items2);
+    assert_eq!(
+        frames2.len(),
+        1,
+        "large replacement must not split a=d,d=I,i=77 and a=T,i=77 into separate frames"
+    );
+    let frame2_text = String::from_utf8_lossy(&frames2[0]);
+    assert!(frame2_text.contains("a=d,d=I,i=77"));
+    assert!(frame2_text.contains("i=77,f=24,s=640,v=500"));
+
+    // Case 2: near MAX_NORMALIZED_FRAME_BYTES boundary within one burst:
+    // ~980 KiB of text followed by a ~120 KiB replacement of i=77 must flush the text
+    // into frame 0 and keep both `a=d,d=I,i=77` and `a=T,i=77` together in frame 1.
+    let med_px = vec![0x33u8; 200 * 160 * 3];
+    let mut burst = vec![b'x'; MAX_NORMALIZED_FRAME_BYTES - 4096];
+    burst.extend_from_slice(&apc(&format!(
+        "a=T,f=24,s=200,v=160,i=77,C=1,q=2;{}",
+        BASE64.encode(&med_px)
+    )));
+    let items3 = scan_to_forwarded(&mut sc, &burst, &temp);
+    let (_, frames3, _) = model.feed_forwarded(seq2 + 1, &items3);
+    assert_eq!(frames3.len(), 2);
+    assert!(
+        !String::from_utf8_lossy(&frames3[0]).contains("a=d,d=I,i=77"),
+        "pre-delete must not be stranded at the tail of frame 0"
+    );
+    let frame3_1 = String::from_utf8_lossy(&frames3[1]);
+    assert!(frame3_1.contains("a=d,d=I,i=77"));
+    assert!(frame3_1.contains("i=77,f=24,s=200,v=160"));
+
+    shutdown_model(&model);
+}

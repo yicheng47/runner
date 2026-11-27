@@ -1964,6 +1964,15 @@ impl Element for TerminalElement {
         paint_band(&prepaint.image_bands[2], bounds, window);
         #[cfg(test)]
         super::graphics::record_paint_band(2, &prepaint.image_bands[2], cx);
+        let painted_images = !prepaint.image_bands[0].is_empty()
+            || !prepaint.image_bands[1].is_empty()
+            || !prepaint.image_bands[2].is_empty();
+        TerminalTextureCache::record_paint_window(
+            self.session.mirror_id(),
+            window,
+            painted_images,
+            cx,
+        );
         if let Some((cursor_bounds, line, background)) = &prepaint.marked_text {
             #[cfg(test)]
             super::graphics::record_paint_event(super::graphics::PaintEvent::CursorOrIme, cx);

@@ -12,6 +12,7 @@ struct TerminalViewport {
     last_link_root: Option<PathBuf>,
     last_scale_factor: f32,
     _subscriptions: Vec<Subscription>,
+    _release_subscription: Subscription,
 }
 
 impl TerminalViewport {
@@ -23,6 +24,15 @@ impl TerminalViewport {
         if let Some(find) = &element.find {
             subscriptions.push(cx.observe(find, |_, _, cx| cx.notify()));
         }
+        let graphics_invalidations = super::graphics::TerminalTextureCache::invalidations(cx);
+        subscriptions.push(cx.subscribe(
+            &graphics_invalidations,
+            |this, _, &mirror_id: &u64, cx| {
+                if mirror_id == this.element.session.mirror_id() {
+                    cx.notify();
+                }
+            },
+        ));
         if let Some(updates) = cx
             .try_global::<crate::app_store::GlobalAppStore>()
             .map(|store| store.0.read(cx).terminal_updates.clone())
@@ -84,12 +94,21 @@ impl Element for TerminalViewportElement {
                     let element = self.element.clone();
                     let last_link_root = next_link_root.clone();
                     cx.new(|cx| {
+                        let viewport_id = cx.entity_id();
+                        super::graphics::TerminalTextureCache::register_viewport(viewport_id, cx);
+                        let release_subscription = cx.on_release(move |_, cx| {
+                            super::graphics::TerminalTextureCache::unregister_viewport(
+                                viewport_id,
+                                cx,
+                            );
+                        });
                         let subscriptions = TerminalViewport::subscriptions(&element, cx);
                         TerminalViewport {
                             element,
                             last_link_root,
                             last_scale_factor: scale_factor,
                             _subscriptions: subscriptions,
+                            _release_subscription: release_subscription,
                         }
                     })
                 });

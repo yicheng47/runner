@@ -770,9 +770,7 @@ impl TerminalModel {
                         if emitted_can {
                             splitter.push_slice(&[0x18], &mut push_frame);
                         }
-                        for seg in result.normalized {
-                            splitter.push(seg, &mut push_frame);
-                        }
+                        splitter.push_group(result.normalized, &mut push_frame);
                         parser.reopen_sync_after_graphics(&mut handler, saved_sync);
                     }
                     crate::kitty::ForwardedItem::Discarded => {
