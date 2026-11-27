@@ -1,4 +1,4 @@
-pub(crate) use logic::{crew_picture, slot_setup};
+pub(crate) use logic::{crew_picture, crew_summary, slot_setup};
 mod add_slot;
 mod create;
 mod editor;
@@ -163,6 +163,7 @@ struct AddSlotForm {
 #[derive(Clone)]
 enum CrewMenuAction {
     Open(String),
+    Export { id: String },
     Delete { id: String, name: String },
 }
 

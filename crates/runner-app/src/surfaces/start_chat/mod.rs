@@ -260,7 +260,7 @@ enum ResetKind {
 
 impl NativeRoot {
     pub(crate) fn create_modal_open(&self) -> bool {
-        self.start_chat_modal.is_some()
+        self.start_chat_modal.is_some() || self.template_import_modal.is_some()
     }
     fn confirm_start_chat(
         &mut self,

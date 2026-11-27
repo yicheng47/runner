@@ -229,7 +229,9 @@ impl NativeRoot {
     ) -> AnyElement {
         let root = cx.entity();
         let create_root = root.clone();
+        let import_root = root.clone();
         let empty_create_root = root.clone();
+        let empty_import_root = root.clone();
         let clear_root = root.clone();
         let page_root = root;
         let query = self.crew_page_surfaces().list.query.clone();
@@ -287,49 +289,177 @@ impl NativeRoot {
             crate::i18n::text(if remote {
                 "client.crews_read_only"
             } else {
-                "ui.a_crew_is_a_team_of_roles"
+                "template.crews_empty_desc"
             }),
             div().when(!remote, |entry| {
                 entry
-                    .when(cfg!(test), |entry| {
-                        entry.debug_selector(|| "EMPTY_NEW_CREW".into())
-                    })
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap_3()
                     .child(
-                        Button::new(
-                            "empty-new-crew",
-                            crate::i18n::text("ui.new_crew_inline_action"),
-                        )
-                        .variant(ButtonVariant::Primary)
-                        .on_press(move |window, cx| {
-                            empty_create_root
-                                .update(cx, |this, cx| this.open_create_crew(window, cx));
-                        }),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .when(cfg!(test), |entry| {
+                                        entry.debug_selector(|| "EMPTY_NEW_CREW".into())
+                                    })
+                                    .child(
+                                        Button::new(
+                                            "empty-new-crew",
+                                            crate::i18n::text("ui.new_crew_inline_action"),
+                                        )
+                                        .variant(ButtonVariant::Primary)
+                                        .on_press(
+                                            move |window, cx| {
+                                                empty_create_root.update(cx, |this, cx| {
+                                                    this.open_create_crew(window, cx)
+                                                });
+                                            },
+                                        ),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .when(cfg!(test), |entry| {
+                                        entry.debug_selector(|| "EMPTY_IMPORT_CREW".into())
+                                    })
+                                    .child(
+                                        Button::new(
+                                            "empty-import-crew",
+                                            crate::i18n::text("template.import_action"),
+                                        )
+                                        .icon("download.svg")
+                                        .on_press(
+                                            move |window, cx| {
+                                                empty_import_root.update(cx, |this, cx| {
+                                                    this.open_template_import_modal(window, cx)
+                                                });
+                                            },
+                                        ),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("empty-browse-sample-crews")
+                            .when(cfg!(test), |link| {
+                                link.debug_selector(|| "EMPTY_BROWSE_SAMPLES".into())
+                            })
+                            .flex()
+                            .items_center()
+                            .gap(rems(4. / 16.))
+                            .cursor(CursorStyle::PointingHand)
+                            .text_size(theme::text_ui())
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(theme::accent())
+                            .on_click(|_, _, cx| {
+                                cx.open_url(
+                                    crate::surfaces::template_import::logic::SAMPLE_CREWS_URL,
+                                )
+                            })
+                            .child(crate::i18n::text("template.browse_samples_long"))
+                            .child(
+                                svg()
+                                    .path("arrow-up-right.svg")
+                                    .size(rems(12. / 16.))
+                                    .text_color(theme::accent()),
+                            ),
                     )
             }),
         );
         PaginatedListPage::new(
             crate::i18n::text("ui.crews"),
-            div().child(crate::i18n::text(if remote {
-                "client.crews_read_only"
-            } else {
-                "ui.teams_of_roles_you_start_missions_from"
-            })),
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(rems(6. / 16.))
+                .child(crate::i18n::text(if remote {
+                    "client.crews_read_only"
+                } else {
+                    "ui.teams_of_roles_you_start_missions_from"
+                }))
+                .when(!remote, |subtitle| {
+                    subtitle
+                        .child(div().text_color(theme::faint()).child("·"))
+                        .child(
+                            div()
+                                .id("crews-browse-samples")
+                                .when(cfg!(test), |link| {
+                                    link.debug_selector(|| "CREWS_BROWSE_SAMPLES".into())
+                                })
+                                .flex()
+                                .items_center()
+                                .gap(rems(3. / 16.))
+                                .cursor(CursorStyle::PointingHand)
+                                .text_color(theme::accent())
+                                .font_weight(FontWeight::MEDIUM)
+                                .on_click(|_, _, cx| {
+                                    cx.open_url(
+                                        crate::surfaces::template_import::logic::SAMPLE_CREWS_URL,
+                                    )
+                                })
+                                .child(crate::i18n::text("template.browse_samples"))
+                                .child(
+                                    svg()
+                                        .path("arrow-up-right.svg")
+                                        .size(rems(12. / 16.))
+                                        .text_color(theme::accent()),
+                                ),
+                        )
+                }),
             div()
                 .when(remote, |entry| {
                     entry.child(self.remote_client.render_library_refresh(cx))
                 })
                 .when(!remote, |entry| {
                     entry
-                        .when(cfg!(test), |entry| {
-                            entry.debug_selector(|| "NEW_CREW".into())
-                        })
+                        .flex()
+                        .items_center()
+                        .gap_2()
                         .child(
-                            Button::new("new-crew", crate::i18n::text("ui.new_crew_inline_action"))
-                                .variant(ButtonVariant::Primary)
-                                .on_press(move |window, cx| {
-                                    create_root
-                                        .update(cx, |this, cx| this.open_create_crew(window, cx));
-                                }),
+                            div()
+                                .when(cfg!(test), |entry| {
+                                    entry.debug_selector(|| "CREWS_IMPORT".into())
+                                })
+                                .child(
+                                    Button::new(
+                                        "import-crew-template",
+                                        crate::i18n::text("template.import_action"),
+                                    )
+                                    .icon("download.svg")
+                                    .on_press(
+                                        move |window, cx| {
+                                            import_root.update(cx, |this, cx| {
+                                                this.open_template_import_modal(window, cx)
+                                            });
+                                        },
+                                    ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .when(cfg!(test), |entry| {
+                                    entry.debug_selector(|| "NEW_CREW".into())
+                                })
+                                .child(
+                                    Button::new(
+                                        "new-crew",
+                                        crate::i18n::text("ui.new_crew_inline_action"),
+                                    )
+                                    .variant(ButtonVariant::Primary)
+                                    .on_press(
+                                        move |window, cx| {
+                                            create_root.update(cx, |this, cx| {
+                                                this.open_create_crew(window, cx)
+                                            });
+                                        },
+                                    ),
+                                ),
                         )
                 }),
             crate::i18n::text("noun.crews"),
@@ -700,6 +830,9 @@ impl NativeRoot {
     ) {
         let actions = [
             CrewMenuAction::Open(item.crew.id.clone()),
+            CrewMenuAction::Export {
+                id: item.crew.id.clone(),
+            },
             CrewMenuAction::Delete {
                 id: item.crew.id,
                 name: item.crew.name,
@@ -707,8 +840,10 @@ impl NativeRoot {
         ];
         let items = vec![
             UiMenuItem::new(crate::i18n::message("ui.open")),
+            UiMenuItem::new(crate::i18n::message("template.export_action")).icon("upload.svg"),
             UiMenuItem::new(crate::i18n::message("ui.delete"))
                 .icon("trash.svg")
+                .separator_before(true)
                 .destructive(true),
         ];
         let root = cx.entity();
@@ -743,6 +878,57 @@ impl NativeRoot {
         cx.notify();
     }
 
+    pub(super) fn open_crew_detail_menu(
+        &mut self,
+        id: String,
+        name: String,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let actions = [
+            CrewMenuAction::Export { id: id.clone() },
+            CrewMenuAction::Delete { id, name },
+        ];
+        let items = vec![
+            UiMenuItem::new(crate::i18n::message("template.export_action")).icon("upload.svg"),
+            UiMenuItem::new(crate::i18n::message("template.delete_crew"))
+                .icon("trash.svg")
+                .separator_before(true)
+                .destructive(true),
+        ];
+        let root = cx.entity();
+        let dismiss_root = root.clone();
+        let return_focus = window.focused(cx);
+        let menu = cx.new(move |menu_cx| {
+            let action_root = root;
+            ContextMenu::new(
+                "crew-detail-menu",
+                menu_cx.focus_handle(),
+                position,
+                items,
+                Rc::new(move |index, window, cx| {
+                    if let Some(action) = actions.get(index).cloned() {
+                        action_root.update(cx, |this, cx| {
+                            this.handle_crew_menu_action(action, window, cx)
+                        });
+                    }
+                }),
+                Rc::new(move |_, cx| {
+                    dismiss_root.update(cx, |this, cx| {
+                        this.crew_surfaces.context_menu = None;
+                        cx.notify();
+                    });
+                }),
+            )
+            .return_focus(return_focus)
+        });
+        let focus = menu.read(cx).focus_handle();
+        self.crew_surfaces.context_menu = Some(menu);
+        focus.focus(window, cx);
+        cx.notify();
+    }
+
     fn handle_crew_menu_action(
         &mut self,
         action: CrewMenuAction,
@@ -751,6 +937,7 @@ impl NativeRoot {
     ) {
         match action {
             CrewMenuAction::Open(id) => self.open_crew_editor(id, window, cx),
+            CrewMenuAction::Export { id } => self.export_crew_template(id, window, cx),
             CrewMenuAction::Delete { id, name } => {
                 self.crew_surfaces.delete_confirm = Some(CrewDeleteConfirm { id, name });
                 cx.notify();

@@ -472,6 +472,10 @@ impl StyledSelect {
         self.disabled
     }
 
+    pub fn is_open(&self) -> bool {
+        self.state.is_open()
+    }
+
     /// The option the select currently shows, if it holds one.
     pub fn selected(&self) -> Option<&SelectOption> {
         self.options.get(self.selected_index())

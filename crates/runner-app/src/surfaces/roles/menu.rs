@@ -20,6 +20,9 @@ impl NativeRoot {
     ) {
         let actions = [
             RoleMenuAction::Edit(Box::new(item.role.clone())),
+            RoleMenuAction::Export {
+                id: item.role.id.clone(),
+            },
             RoleMenuAction::Delete {
                 id: item.role.id,
                 handle: item.role.handle,
@@ -27,8 +30,10 @@ impl NativeRoot {
         ];
         let items = vec![
             UiMenuItem::new(crate::i18n::message("ui.edit_details")).icon("pencil.svg"),
+            UiMenuItem::new(crate::i18n::message("template.export_action")).icon("upload.svg"),
             UiMenuItem::new(crate::i18n::message("ui.delete_role"))
                 .icon("trash.svg")
+                .separator_before(true)
                 .destructive(true),
         ];
         let root = cx.entity();
@@ -38,6 +43,57 @@ impl NativeRoot {
             let action_root = root;
             ContextMenu::new(
                 "role-context-menu",
+                menu_cx.focus_handle(),
+                position,
+                items,
+                Rc::new(move |index, window, cx| {
+                    if let Some(action) = actions.get(index).cloned() {
+                        action_root.update(cx, |this, cx| {
+                            this.handle_role_menu_action(action, window, cx)
+                        });
+                    }
+                }),
+                Rc::new(move |_, cx| {
+                    dismiss_root.update(cx, |this, cx| {
+                        this.role_surfaces.context_menu = None;
+                        cx.notify();
+                    });
+                }),
+            )
+            .return_focus(return_focus)
+        });
+        let focus = menu.read(cx).focus_handle();
+        self.role_surfaces.context_menu = Some(menu);
+        focus.focus(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn open_role_detail_menu(
+        &mut self,
+        id: String,
+        handle: String,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let actions = [
+            RoleMenuAction::Export { id: id.clone() },
+            RoleMenuAction::Delete { id, handle },
+        ];
+        let items = vec![
+            UiMenuItem::new(crate::i18n::message("template.export_action")).icon("upload.svg"),
+            UiMenuItem::new(crate::i18n::message("ui.delete_role"))
+                .icon("trash.svg")
+                .separator_before(true)
+                .destructive(true),
+        ];
+        let root = cx.entity();
+        let dismiss_root = root.clone();
+        let return_focus = window.focused(cx);
+        let menu = cx.new(move |menu_cx| {
+            let action_root = root;
+            ContextMenu::new(
+                "role-detail-menu",
                 menu_cx.focus_handle(),
                 position,
                 items,
@@ -73,6 +129,9 @@ impl NativeRoot {
             RoleMenuAction::Edit(role) => {
                 self.open_role_detail(role.handle.clone(), window, cx);
                 self.open_role_edit(*role, window, cx);
+            }
+            RoleMenuAction::Export { id } => {
+                self.export_role_template(id, window, cx);
             }
             RoleMenuAction::Delete { id, handle } => {
                 self.role_surfaces.delete_confirm = Some(RoleDeleteConfirm { id, handle });

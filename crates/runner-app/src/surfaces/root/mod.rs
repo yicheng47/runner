@@ -212,6 +212,10 @@ pub(crate) struct NativeRoot {
     pub(crate) sidebar: Entity<Sidebar>,
     pub(crate) launchers: surfaces::start_chat::launcher::LauncherState,
     pub(crate) start_chat_modal: Option<StartChatModal>,
+    pub(crate) template_import_modal: Option<surfaces::template_import::TemplateImportModal>,
+    pub(crate) template_import_generation: u64,
+    #[cfg(test)]
+    pub(crate) template_import_in_flight: usize,
     pub(crate) project_modal: Option<ProjectModal>,
     pub(crate) project_delete_confirm: Option<String>,
     pub(crate) project_delete_busy: bool,

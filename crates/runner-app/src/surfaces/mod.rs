@@ -23,6 +23,7 @@ pub(crate) mod settings;
 pub(crate) mod side_panel;
 pub(crate) mod sidebar;
 pub(crate) mod start_chat;
+pub(crate) mod template_import;
 mod terminal_attachment;
 pub(crate) mod update_ui;
 pub(crate) mod windowing;

@@ -336,6 +336,10 @@ impl NativeRoot {
             sidebar,
             launchers: surfaces::start_chat::launcher::LauncherState::default(),
             start_chat_modal: None,
+            template_import_modal: None,
+            template_import_generation: 0,
+            #[cfg(test)]
+            template_import_in_flight: 0,
             project_modal: None,
             project_delete_confirm: None,
             project_delete_busy: false,

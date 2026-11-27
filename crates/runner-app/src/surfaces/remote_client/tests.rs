@@ -510,6 +510,23 @@ pub(crate) fn choose_host(
 ) {
     root.choose_computer(computers()[1].clone(), false, window, cx);
 }
+pub(crate) fn choose_unpaired_host(
+    fake: &Fake,
+    clients: &Entity<model::ClientState>,
+    root: &mut NativeRoot,
+    window: &mut Window,
+    cx: &mut Context<NativeRoot>,
+) {
+    let mut computer = computers()[1].clone();
+    computer.paired = false;
+    fake.computers.lock().unwrap()[1].paired = false;
+    clients.update(cx, |state, _| {
+        if let Some(row) = state.computers.iter_mut().find(|row| row.id == computer.id) {
+            row.paired = false;
+        }
+    });
+    root.choose_computer(computer, false, window, cx);
+}
 pub(crate) fn computers() -> Vec<Computer> {
     vec![
         Computer {

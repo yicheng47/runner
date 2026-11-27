@@ -5,6 +5,7 @@ impl NativeRoot {
         self.usage.close();
         self.remote_client.usage_popover = None;
         self.start_chat_modal = None;
+        self.clear_template_import_modal();
         self.panes.rename = None;
         self.panes.clear_maximized();
         self.chat_lifecycle.clear_fork_confirm();
@@ -39,6 +40,9 @@ impl NativeRoot {
                 cx,
             );
         } else {
+            if !new_window {
+                self.clear_template_import_modal();
+            }
             self.remote_client.open_computer(computer, new_window, cx);
         }
         cx.notify();
@@ -139,6 +143,7 @@ impl NativeRoot {
     pub(crate) fn select_remote_item(&mut self, item: RemoteItem, cx: &mut Context<Self>) {
         if self.remote_client.select_remote_item(item) {
             self.start_chat_modal = None;
+            self.clear_template_import_modal();
         }
         self.sync_remote_state(cx);
         self.mark_remote_sessions_viewed_if_unobstructed(cx);

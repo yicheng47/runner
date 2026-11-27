@@ -85,6 +85,10 @@ impl NativeRoot {
                 match result {
                     Ok(()) => {
                         this.role_surfaces.delete_confirm = None;
+                        if matches!(&this.route, AppRoute::RoleDetail(active) if active == &handle)
+                        {
+                            this.set_route(AppRoute::Roles, cx);
+                        }
                         if let Ok(roles) = this.core(cx).role_list() {
                             this.app_store
                                 .update(cx, |store, store_cx| store.replace_roles(roles, store_cx));

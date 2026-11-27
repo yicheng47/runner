@@ -132,6 +132,11 @@ impl NativeRoot {
         let preview_trigger = self.render_sidebar_preview_trigger(cx);
         let modal = (self.route != AppRoute::Settings && self.start_chat_modal.is_some())
             .then(|| self.render_start_chat_modal(window, cx));
+        let template_import_modal = (!self.remote_client.is_active()
+            && self.route != AppRoute::Settings
+            && self.template_import_modal.is_some())
+        .then(|| self.render_template_import_modal(window, cx))
+        .flatten();
         let terminal_close_confirm = ((self.remote_client.is_active()
             || matches!(self.route, AppRoute::Chat | AppRoute::Mission(_)))
             && self.panes.has_close_confirm())
@@ -253,6 +258,7 @@ impl NativeRoot {
             .children(self.render_window_top_margin_drag_area(cx))
             .children(self.render_window_navigation(window, cx))
             .children(modal)
+            .children(template_import_modal)
             .children(settings_confirm)
             .children(command_palette)
             .children(computer_picker)
