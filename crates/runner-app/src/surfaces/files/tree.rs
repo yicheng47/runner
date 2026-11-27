@@ -262,6 +262,10 @@ impl FileTree {
         true
     }
 
+    pub(crate) fn clear_selection(&mut self) -> bool {
+        self.selected.take().is_some()
+    }
+
     /// The status letter git gives `path`.
     pub(crate) fn letter(&self, path: &str) -> Option<Letter> {
         self.status.as_ref()?.letters.get(path).copied()

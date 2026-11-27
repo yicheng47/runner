@@ -46,13 +46,23 @@ pub(in super::super) fn reveal(path: PathBuf) -> Result<(), String> {
 
 type RowAction = Box<dyn Fn(&mut UnifiedViewer, &mut Context<UnifiedViewer>)>;
 
-const OPEN_IN_WIDTH: f32 = 224.;
+const OPEN_IN_WIDTH: f32 = 260.;
+
+/// One editor row shared by Settings → General → Editor and the viewer's
+/// Open in menu.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct EditorMenuEntry {
+    pub(crate) editor: FileLinkEditor,
+    pub(crate) available: bool,
+    pub(crate) selected: bool,
+    pub(crate) missing_command: Option<&'static str>,
+}
 
 /// The editors whose command-line launcher is on PATH, then whether the
 /// chosen one is among them.
 pub(crate) fn found_editors(cx: &App) -> (Vec<FileLinkEditor>, FileLinkEditor) {
     let store = crate::app_store::global_app_store(cx).read(cx);
-    let found = FileLinkEditor::ALL
+    let found = FileLinkEditor::MENU_ORDER
         .into_iter()
         .filter(|editor| {
             editor.cli().is_some_and(|command| {
@@ -72,6 +82,54 @@ pub(crate) fn found_editors(cx: &App) -> (Vec<FileLinkEditor>, FileLinkEditor) {
         FileLinkEditor::DefaultApp
     };
     (found, effective)
+}
+
+/// Shared editor menu entries in display order: Zed, VS Code, Cursor (with
+/// missing CLI commands disabled and annotated), then Default app.
+pub(crate) fn editor_menu_entries(cx: &App) -> Vec<EditorMenuEntry> {
+    let (found, effective) = found_editors(cx);
+    FileLinkEditor::MENU_ORDER
+        .into_iter()
+        .map(|editor| {
+            let available = editor == FileLinkEditor::DefaultApp || found.contains(&editor);
+            EditorMenuEntry {
+                editor,
+                available,
+                selected: editor == effective,
+                missing_command: (!available).then(|| editor.cli()).flatten(),
+            }
+        })
+        .collect()
+}
+
+/// `StyledSelect` options for Settings → General → Editor, backed by the same
+/// editor list and icons as the viewer's Open in menu.
+pub(crate) fn file_link_editor_options(cx: &App) -> Vec<runner_app::ui::SelectOption> {
+    use runner_app::ui::{SelectLeading, SelectOption};
+    editor_menu_entries(cx)
+        .into_iter()
+        .map(|entry| {
+            let editor = entry.editor;
+            let label = match editor {
+                FileLinkEditor::DefaultApp => crate::i18n::message("ui.default_app"),
+                _ => editor.label().into(),
+            };
+            let mut option = SelectOption::new(editor.key(), label)
+                .leading(SelectLeading::new(
+                    format!("file-link-editor-{}", editor.key()),
+                    move |size| editor_icon(editor, size),
+                ))
+                .disabled(!entry.available)
+                .separator_before(editor == FileLinkEditor::DefaultApp);
+            if let Some(command) = entry.missing_command {
+                option = option.trailing_hint(crate::i18n::messagef(
+                    "format.not_on_path",
+                    &[("command", command.to_owned())],
+                ));
+            }
+            option
+        })
+        .collect()
 }
 
 pub(crate) fn editor_icon(editor: FileLinkEditor, size: f32) -> AnyElement {
@@ -116,8 +174,11 @@ fn reveal_icon(size: f32) -> AnyElement {
 
 impl UnifiedViewer {
     pub(super) fn active_path(&self) -> Option<PathBuf> {
-        let root = self.root_path()?;
         let tab = self.tabs.active()?;
+        if let Some(outside) = tab.key.outside_path() {
+            return Some(outside.to_path_buf());
+        }
+        let root = self.root_path()?;
         Some(absolute(root, tab.path()))
     }
 
@@ -139,10 +200,15 @@ impl UnifiedViewer {
             .docs
             .get(key)
             .is_none_or(|doc| doc.is_working_tree_deleted(key));
-        let Some(root) = self.root_path().filter(|_| !deleted) else {
+        if deleted {
+            return;
+        }
+        let Some(path) = (match key.outside_path() {
+            Some(outside) => Some(outside.to_path_buf()),
+            None => self.root_path().map(|root| absolute(root, &key.path)),
+        }) else {
             return;
         };
-        let path = absolute(root, &key.path);
         self.launch(None, path, Some(line), cx);
     }
 
@@ -168,7 +234,7 @@ impl UnifiedViewer {
             };
             match editor {
                 Some(editor) => file_links::open_file_with(editor, target, cx),
-                None => file_links::open_file_link(target, cx),
+                None => file_links::open_file_in_editor(target, cx),
             }
         }
     }
@@ -326,13 +392,15 @@ impl UnifiedViewer {
             return None;
         }
         let name = self.tabs.active()?.name().to_owned();
-        let (found, effective) = found_editors(cx);
+        let entries = editor_menu_entries(cx);
         let row = |id: (&'static str, usize),
                    icon: AnyElement,
                    label: String,
+                   hint: Option<String>,
                    checked: bool,
+                   disabled: bool,
                    cx: &mut Context<Self>,
-                   on_click: RowAction| {
+                   on_click: Option<RowAction>| {
             div()
                 .id(id)
                 .when(cfg!(test), |element| {
@@ -344,17 +412,36 @@ impl UnifiedViewer {
                 .items_center()
                 .gap(px(10.))
                 .rounded_md()
-                .cursor_pointer()
-                .hover(|element| element.bg(theme::sidebar_selected()))
-                .on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+                .opacity(if disabled { 0.5 } else { 1. })
+                .when(!disabled, |element| {
+                    element
+                        .cursor_pointer()
+                        .hover(|element| element.bg(theme::sidebar_selected()))
+                        .when_some(on_click, |element, on_click| {
+                            element.on_click(cx.listener(move |this, _, _, cx| on_click(this, cx)))
+                        })
+                })
                 .child(icon)
                 .child(
                     div()
                         .flex_1()
+                        .min_w(px(0.))
+                        .truncate()
                         .text_size(theme::text_ui())
-                        .text_color(theme::text())
+                        .text_color(if disabled {
+                            theme::faint()
+                        } else {
+                            theme::text()
+                        })
                         .child(label),
                 )
+                .children(hint.map(|hint| {
+                    div()
+                        .flex_none()
+                        .text_size(theme::text_meta())
+                        .text_color(theme::faint())
+                        .child(hint)
+                }))
                 .when(checked, |element| {
                     element.child(
                         svg()
@@ -366,45 +453,63 @@ impl UnifiedViewer {
                 })
                 .into_any_element()
         };
-        let mut rows = found
-            .iter()
-            .enumerate()
-            .map(|(index, editor)| {
-                let editor = *editor;
-                row(
-                    ("file-open-in-editor", index),
-                    editor_icon(editor, 16.),
-                    editor.label().to_owned(),
-                    editor == effective,
+        let mut rows = Vec::new();
+        let mut editor_index = 0usize;
+        for entry in entries {
+            let editor = entry.editor;
+            if editor == FileLinkEditor::DefaultApp {
+                rows.push(
+                    div()
+                        .my(px(4.))
+                        .h(px(1.))
+                        .bg(theme::border())
+                        .into_any_element(),
+                );
+                rows.push(row(
+                    ("file-open-in-default", 0),
+                    editor_icon(FileLinkEditor::DefaultApp, 16.),
+                    crate::i18n::text("ui.default_app").to_owned(),
+                    None,
+                    entry.selected,
+                    false,
                     cx,
-                    Box::new(move |this, cx| this.open_in(Some(editor), cx)),
-                )
-            })
-            .collect::<Vec<_>>();
-        if !rows.is_empty() {
-            rows.push(
-                div()
-                    .my(px(4.))
-                    .h(px(1.))
-                    .bg(theme::border())
-                    .into_any_element(),
-            );
+                    Some(Box::new(|this, cx| {
+                        this.open_in(Some(FileLinkEditor::DefaultApp), cx)
+                    })),
+                ));
+                continue;
+            }
+            let hint = entry.missing_command.map(|command| {
+                crate::i18n::tf("format.not_on_path", &[("command", command.to_owned())])
+            });
+            let idx = editor_index;
+            editor_index += 1;
+            rows.push(row(
+                ("file-open-in-editor", idx),
+                editor_icon(editor, 16.),
+                editor.label().to_owned(),
+                hint,
+                entry.selected,
+                !entry.available,
+                cx,
+                entry.available.then(|| {
+                    Box::new(
+                        move |this: &mut UnifiedViewer, cx: &mut Context<UnifiedViewer>| {
+                            this.open_in(Some(editor), cx)
+                        },
+                    ) as RowAction
+                }),
+            ));
         }
-        rows.push(row(
-            ("file-open-in-default", 0),
-            editor_icon(FileLinkEditor::DefaultApp, 16.),
-            crate::i18n::text("ui.default_app").to_owned(),
-            effective == FileLinkEditor::DefaultApp,
-            cx,
-            Box::new(|this, cx| this.open_in(Some(FileLinkEditor::DefaultApp), cx)),
-        ));
         rows.push(row(
             ("file-open-in-reveal", 0),
             reveal_icon(16.),
             reveal_label().to_owned(),
+            None,
+            false,
             false,
             cx,
-            Box::new(|this, cx| this.reveal_active(cx)),
+            Some(Box::new(|this, cx| this.reveal_active(cx))),
         ));
         let content = div()
             .when(cfg!(test), |element| {

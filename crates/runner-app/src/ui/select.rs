@@ -62,8 +62,10 @@ pub struct SelectOption {
     label_source: crate::i18n::Text,
     description_source: Option<crate::i18n::Text>,
     trigger_description_source: Option<crate::i18n::Text>,
+    trailing_hint_source: Option<crate::i18n::Text>,
     pub description: Option<SharedString>,
     pub trigger_description: Option<SharedString>,
+    pub trailing_hint: Option<SharedString>,
     pub separator_before: bool,
     pub danger: bool,
     pub disabled: bool,
@@ -85,8 +87,10 @@ impl SelectOption {
             tags: Vec::new(),
             description_source: None,
             trigger_description_source: None,
+            trailing_hint_source: None,
             description: None,
             trigger_description: None,
+            trailing_hint: None,
             separator_before: false,
             danger: false,
             disabled: false,
@@ -143,6 +147,13 @@ impl SelectOption {
         self
     }
 
+    pub fn trailing_hint(mut self, hint: impl Into<crate::i18n::Text>) -> Self {
+        let source = hint.into();
+        self.trailing_hint = Some(source.resolve());
+        self.trailing_hint_source = Some(source);
+        self
+    }
+
     pub fn separator_before(mut self, separator: bool) -> Self {
         self.separator_before = separator;
         self
@@ -170,6 +181,9 @@ impl SelectOption {
         }
         if let Some(source) = &self.trigger_description_source {
             self.trigger_description = Some(source.resolve());
+        }
+        if let Some(source) = &self.trailing_hint_source {
+            self.trailing_hint = Some(source.resolve());
         }
     }
 
@@ -1263,6 +1277,15 @@ pub(crate) fn option_menu(
                             .child(description)
                     })),
             )
+            .children(option.trailing_hint.map(|hint| {
+                div()
+                    .debug_selector(|| format!("STYLED_SELECT_HINT_{index}"))
+                    .flex_none()
+                    .pl_2()
+                    .text_size(theme::text_meta())
+                    .text_color(theme::faint())
+                    .child(hint)
+            }))
             .when(
                 active && !style.detailed && !style.compact && !style.wrapped,
                 |row| {
@@ -1408,7 +1431,10 @@ pub(crate) fn rerender_after_draw(window: &Window, cx: &mut App) {
 /// Options with descriptions read best on one line each, so their menu grows
 /// to fit them instead of wrapping inside the trigger's width.
 pub(crate) fn option_menu_width(options: &[SelectOption], min: Pixels, zoom: f32) -> PopupWidth {
-    if options.iter().any(|option| option.description.is_some()) {
+    if options
+        .iter()
+        .any(|option| option.description.is_some() || option.trailing_hint.is_some())
+    {
         PopupWidth::Fit {
             min,
             max: px(480.) * zoom,

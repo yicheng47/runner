@@ -22,7 +22,7 @@ impl UnifiedViewer {
             true
         } else if let Some(doc) = self.docs.get_mut(&key) {
             doc.mode = DocMode::Code;
-            matches!(doc.content, Content::Idle)
+            matches!(doc.content, Content::Idle | Content::Deleted(_))
         } else {
             false
         };
@@ -43,6 +43,48 @@ impl UnifiedViewer {
         }
         if self.has_uncommitted_diff(&key.path) == Some(true) {
             self.load_code_hunks(key.clone(), cx);
+        }
+        if self.shown && self.ignored_refresh.is_none() {
+            self.ignored_refresh = Some(self.refresh_ignored_tabs(cx));
+        }
+        self.sync_watch(cx);
+        self.tab_shown(cx);
+    }
+
+    pub(crate) fn open_pinned_outside(
+        &mut self,
+        path: PathBuf,
+        line: Option<u32>,
+        cx: &mut Context<Self>,
+    ) {
+        let outcome = self.tabs.open_pinned_outside(path);
+        let key = outcome.key().clone();
+        let source = !is_svg(&key.path)
+            && super::settings(cx)
+                .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
+        let need_read = if outcome.is_new() || !self.docs.contains_key(&key) {
+            self.docs
+                .insert(key.clone(), OpenDocument::new_code(source, false));
+            true
+        } else if let Some(doc) = self.docs.get_mut(&key) {
+            doc.mode = DocMode::Code;
+            matches!(doc.content, Content::Idle | Content::Deleted(_))
+        } else {
+            false
+        };
+        if let Some(line) = line
+            && let Some(doc) = self.docs.get_mut(&key)
+        {
+            doc.line = Some(line);
+            doc.mode = DocMode::Code;
+            if is_markdown(&key.path) || is_svg(&key.path) {
+                doc.source = true;
+            }
+        }
+        if need_read {
+            self.read_file(key.clone(), cx);
+        } else if line.is_some() {
+            self.show_line(&key, cx);
         }
         if self.shown && self.ignored_refresh.is_none() {
             self.ignored_refresh = Some(self.refresh_ignored_tabs(cx));
@@ -356,7 +398,7 @@ impl UnifiedViewer {
             .tabs
             .tabs()
             .iter()
-            .filter(|t| &t.key.target == target)
+            .filter(|t| !t.key.is_outside() && &t.key.target == target)
             .map(|t| t.key.clone())
             .collect();
         let mut to_reload = Vec::new();
@@ -518,7 +560,7 @@ impl UnifiedViewer {
         let rev = self.viewed_revision;
         let mut updated = false;
         for (key, doc) in &mut self.docs {
-            if key.path != path {
+            if key.is_outside() || key.path != path {
                 continue;
             }
             if &key.target == target

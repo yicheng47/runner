@@ -73,10 +73,27 @@ impl UnifiedViewer {
         }
     }
 
+    fn outside_folder(path: &Path, cx: &App) -> Option<String> {
+        let parent = path.parent()?;
+        if parent.as_os_str().is_empty() {
+            return None;
+        }
+        let home = crate::app_store::global_app_store(cx)
+            .read(cx)
+            .home_dir
+            .clone();
+        Some(crate::text_util::abbreviate_home(
+            crate::text_util::HomePath::Native(parent, home.as_deref()),
+        ))
+    }
+
     fn tab_letter(&self, tab: &FileTab) -> Option<(&'static str, gpui::Hsla)> {
         if let Some(doc) = self.docs.get(&tab.key) {
             if matches!(doc.content, Content::Deleted(_)) {
                 return Some(("D", theme::danger()));
+            }
+            if tab.key.is_outside() {
+                return None;
             }
             if let FileTabDiff::Loaded(loaded) = &doc.diff {
                 return Some(status_letter_and_color(&loaded.status));
@@ -85,7 +102,7 @@ impl UnifiedViewer {
                 return Some(status_letter_and_color(status));
             }
         }
-        if tab.key.target != SelectedTarget::Uncommitted {
+        if tab.key.is_outside() || tab.key.target != SelectedTarget::Uncommitted {
             return None;
         }
         let status = self.status.as_ref()?;
@@ -631,7 +648,9 @@ impl UnifiedViewer {
                 .map(|(w, h, s)| image::format_dimensions_and_size(w, h, s)),
             _ => None,
         };
-        let folder = if image_meta.is_some() || (self.active_is_image() && !doc.svg_invalid) {
+        let folder = if let Some(outside) = tab.key.outside_path() {
+            Self::outside_folder(outside, cx)
+        } else if image_meta.is_some() || (self.active_is_image() && !doc.svg_invalid) {
             None
         } else {
             abbreviate_folder(tab.path())
@@ -697,7 +716,12 @@ impl UnifiedViewer {
                             .child(meta)
                     }))
                     .children(folder.map(|f| {
+                        let folder_for_selector = f.clone();
                         div()
+                            .when(cfg!(test), move |el| {
+                                let f = folder_for_selector.clone();
+                                el.debug_selector(move || format!("FILE_SUBBAR_FOLDER {f}"))
+                            })
                             .min_w(px(0.))
                             .flex_shrink(3.)
                             .truncate()
@@ -867,8 +891,11 @@ impl UnifiedViewer {
         icon: &'static str,
         title: String,
         body: String,
+        hint: Option<String>,
         action: AnyElement,
     ) -> AnyElement {
+        let title_for_selector = title.clone();
+        let body_for_selector = body.clone();
         div()
             .when(cfg!(test), |element| {
                 element.debug_selector(move || selector.into())
@@ -886,23 +913,45 @@ impl UnifiedViewer {
             .child(
                 div()
                     .pt(px(8.))
-                    .text_size(theme::text_body())
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::text())
-                    .map(|element| {
-                        #[cfg(test)]
-                        let element =
-                            crate::theme_snapshot::record_text("FILE_STATE_TITLE", element);
-                        element
+                    .when(cfg!(test), move |element| {
+                        let title = title_for_selector.clone();
+                        element.debug_selector(move || format!("FILE_STATE_TITLE_TEXT {title}"))
                     })
-                    .child(title),
+                    .child(
+                        div()
+                            .text_size(theme::text_body())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(theme::text())
+                            .map(|element| {
+                                #[cfg(test)]
+                                let element =
+                                    crate::theme_snapshot::record_text("FILE_STATE_TITLE", element);
+                                element
+                            })
+                            .child(title),
+                    ),
             )
             .child(
                 div()
+                    .when(cfg!(test), move |element| {
+                        let body = body_for_selector.clone();
+                        element.debug_selector(move || format!("FILE_STATE_BODY_TEXT {body}"))
+                    })
                     .text_size(theme::text_ui())
                     .text_color(theme::muted())
                     .child(body),
             )
+            .children(hint.map(|hint| {
+                let hint_for_selector = hint.clone();
+                div()
+                    .when(cfg!(test), move |element| {
+                        let hint = hint_for_selector.clone();
+                        element.debug_selector(move || format!("FILE_STATE_HINT_TEXT {hint}"))
+                    })
+                    .text_size(theme::text_ui())
+                    .text_color(theme::muted())
+                    .child(hint)
+            }))
             .child(div().pt(px(12.)).child(action))
             .into_any_element()
     }
@@ -929,39 +978,54 @@ impl UnifiedViewer {
                 .text_color(theme::danger())
                 .child(error.clone())
                 .into_any_element(),
-            Content::Binary { size } => self.render_placeholder(
-                "FILE_BINARY",
-                "file.svg",
-                name,
-                crate::i18n::tf("format.binary_file_size", &[("size", format_size(*size))]),
-                Button::new(
-                    "file-open-default",
-                    crate::i18n::text("ui.open_in_default_app"),
+            Content::Binary { size } => {
+                let kind = crate::file_links::binary_kind_label(Path::new(&name));
+                self.render_placeholder(
+                    "FILE_BINARY",
+                    "eye-off.svg",
+                    crate::i18n::text("viewer.binary_title").to_owned(),
+                    crate::i18n::tf(
+                        "viewer.binary_detail",
+                        &[
+                            ("name", name),
+                            ("kind", kind.to_owned()),
+                            ("size", format_size(*size)),
+                        ],
+                    ),
+                    Some(crate::i18n::text("viewer.binary_hint").to_owned()),
+                    Button::new(
+                        "file-open-default",
+                        crate::i18n::text("ui.open_in_default_app"),
+                    )
+                    .variant(ButtonVariant::Secondary)
+                    .debug_selector("FILE_OPEN_DEFAULT")
+                    .on_press(move |_, cx| {
+                        let _ = root.update(cx, |this, cx| {
+                            if let Some(path) = this.active_path() {
+                                this.launch(Some(FileLinkEditor::DefaultApp), path, None, cx);
+                            }
+                        });
+                    })
+                    .into_any_element(),
                 )
-                .variant(ButtonVariant::Secondary)
-                .debug_selector("FILE_OPEN_DEFAULT")
-                .on_press(move |_, cx| {
-                    let _ = root.update(cx, |this, cx| {
-                        if let Some(path) = this.active_path() {
-                            this.launch(Some(FileLinkEditor::DefaultApp), path, None, cx);
-                        }
-                    });
-                })
-                .into_any_element(),
-            ),
+            }
             Content::TooLarge { size } => {
                 let (_, effective) = found_editors(cx);
                 self.render_placeholder(
                     "FILE_TOO_LARGE",
                     "triangle-alert.svg",
-                    format!("{name} · {}", format_size(*size)),
+                    crate::i18n::text("viewer.too_large_title").to_owned(),
                     crate::i18n::tf(
-                        "format.files_up_to_open_in_the_viewer",
+                        "viewer.too_large_detail",
+                        &[("name", name), ("size", format_size(*size))],
+                    ),
+                    Some(crate::i18n::tf(
+                        "viewer.too_large_hint",
                         &[(
                             "size",
                             format_size(runner_core::protocol::files::MAX_READ_BYTES),
                         )],
-                    ),
+                    )),
                     Button::new(
                         "file-open-large",
                         crate::i18n::tf(
@@ -992,6 +1056,7 @@ impl UnifiedViewer {
                         image::format_dimensions_and_size(*width, *height, *size)
                     ),
                     crate::i18n::text("viewer.image_too_many_pixels").to_owned(),
+                    None,
                     Button::new(
                         "file-open-large",
                         crate::i18n::tf(
@@ -1012,6 +1077,7 @@ impl UnifiedViewer {
                 "image-off.svg",
                 crate::i18n::text("viewer.image_decode_failed_title").to_owned(),
                 crate::i18n::tf("viewer.image_decode_failed_body", &[("name", name)]),
+                None,
                 Button::new(
                     "file-open-default",
                     crate::i18n::text("ui.open_in_default_app"),
@@ -1041,6 +1107,7 @@ impl UnifiedViewer {
                             image::format_dimensions_and_size(width, height, size)
                         ),
                         crate::i18n::text("viewer.image_too_many_pixels").to_owned(),
+                        None,
                         Button::new(
                             "file-open-large",
                             crate::i18n::tf(
@@ -1145,6 +1212,7 @@ impl UnifiedViewer {
                                         image::format_dimensions_and_size(width, height, size)
                                     ),
                                     crate::i18n::text("viewer.image_too_many_pixels").to_owned(),
+                                    None,
                                     div().into_any_element(),
                                 ))
                                 .into_any_element()
@@ -1562,6 +1630,11 @@ impl UnifiedViewer {
                 let letter = self.tab_letter(tab);
                 let preview = tab.preview;
                 let path = tab.path().to_owned();
+                let folder = tab
+                    .key
+                    .outside_path()
+                    .and_then(|outside| Self::outside_folder(outside, cx))
+                    .unwrap_or_else(|| tab.folder().to_owned());
                 div()
                     .id(("file-list-item", index))
                     .when(cfg!(test), |element| {
@@ -1601,7 +1674,7 @@ impl UnifiedViewer {
                             .truncate()
                             .text_size(theme::text_meta())
                             .text_color(theme::faint())
-                            .child(tab.folder().to_owned()),
+                            .child(folder),
                     )
                     .children(letter.map(|(text, color)| {
                         div()

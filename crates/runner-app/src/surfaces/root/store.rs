@@ -86,6 +86,12 @@ impl NativeRoot {
                     .update(cx, |select, cx| select.set_value(value, cx));
             }
         }
+        if revisions.settings != previous.settings
+            || revisions.locale != previous.locale
+            || revisions.full_refresh != previous.full_refresh
+        {
+            self.sync_file_link_editor_select(cx);
+        }
         if revisions.locale != previous.locale {
             self.toasts.relocalize();
             self.command_palette

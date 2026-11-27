@@ -12,7 +12,8 @@ impl UnifiedViewer {
             .docs
             .iter()
             .filter(|(key, doc)| {
-                key.target == SelectedTarget::Uncommitted
+                !key.is_outside()
+                    && key.target == SelectedTarget::Uncommitted
                     && ((!doc.has_changes_target && matches!(doc.content, Content::Deleted(_)))
                         || ((!doc.has_changes_target || authoritative_uncommitted)
                             && self.has_uncommitted_diff(&key.path) == Some(false)))
@@ -45,7 +46,7 @@ impl UnifiedViewer {
             && let Some(files) = self.uncommitted_files.as_ref()
         {
             for (key, doc) in &mut self.docs {
-                if key.target != SelectedTarget::Uncommitted {
+                if key.is_outside() || key.target != SelectedTarget::Uncommitted {
                     continue;
                 }
                 let Some(entry) = files.get(&key.path) else {
@@ -61,7 +62,8 @@ impl UnifiedViewer {
             .docs
             .iter()
             .filter(|(key, doc)| {
-                if doc.mode != DocMode::Code
+                if key.is_outside()
+                    || doc.mode != DocMode::Code
                     || key.target != SelectedTarget::Uncommitted
                     || doc.is_working_tree_deleted(key)
                 {
@@ -124,6 +126,9 @@ impl UnifiedViewer {
     /// directly from `Files` show the `[ ]` hunk indicator and support `[`/`]`
     /// without waiting for the user to visit Diff mode first.
     pub(super) fn load_code_hunks(&mut self, key: TabKey, cx: &mut Context<Self>) {
+        if key.is_outside() {
+            return;
+        }
         let Some(root) = self.root_path().map(PathBuf::from) else {
             return;
         };
@@ -174,6 +179,9 @@ impl UnifiedViewer {
     }
 
     pub(crate) fn load_tab_diff(&mut self, key: TabKey, cx: &mut Context<Self>) {
+        if key.is_outside() {
+            return;
+        }
         let Some(root) = self.root_path().map(PathBuf::from) else {
             return;
         };

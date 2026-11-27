@@ -23,6 +23,7 @@ pub(super) struct DirtyTracker {
     pub(super) watched: Option<PathBuf>,
     watch_chain: Option<Task<()>>,
     dirty: bool,
+    is_git: Option<bool>,
     owner: Option<EntityId>,
     generation: u64,
     pub(super) hub: Option<Subscription>,
@@ -42,6 +43,7 @@ impl DirtyTracker {
             watched: None,
             watch_chain: None,
             dirty: false,
+            is_git: None,
             owner: None,
             generation: 0,
             hub: None,
@@ -98,25 +100,34 @@ impl DirtyTracker {
         owner: Option<EntityId>,
         external_watch_owner: bool,
         active_dirty: Option<bool>,
+        active_git: Option<bool>,
         cx: &mut Context<Self>,
-    ) -> bool {
+    ) -> (bool, Option<bool>) {
         self.owner = owner;
         if context.remote {
             self.deactivate(cx);
             self.last_subject = None;
             self.dirty = false;
-            return false;
+            self.is_git = Some(true);
+            return (false, Some(true));
         }
         let subject_changed = self.last_subject.as_ref() != Some(&context.subject);
         if external_watch_owner {
             self.deactivate(cx);
             self.last_subject = Some(context.subject.clone());
-            if let Some(dirty) = active_dirty {
+            if let Some(git) = active_git {
+                self.is_git = Some(git);
+            } else if subject_changed {
+                self.is_git = None;
+            }
+            if self.is_git == Some(false) {
+                self.dirty = false;
+            } else if let Some(dirty) = active_dirty {
                 self.dirty = dirty;
             } else if subject_changed {
                 self.dirty = false;
             }
-            return self.dirty;
+            return (self.dirty, self.is_git);
         }
 
         self.active = true;
@@ -136,11 +147,12 @@ impl DirtyTracker {
             self.last_subject = Some(context.subject.clone());
             if subject_changed {
                 self.dirty = false;
+                self.is_git = None;
             }
             self.generation += 1;
             self.start_watch(context.subject.clone(), cx);
         }
-        self.dirty
+        (self.dirty, self.is_git)
     }
 
     fn start_watch(&mut self, subject: PanelSubject, cx: &mut Context<Self>) {
@@ -172,6 +184,9 @@ impl DirtyTracker {
     }
 
     fn set_watched_root(&mut self, root: Option<PathBuf>, generation: u64, cx: &mut Context<Self>) {
+        let next_is_git = Some(root.is_some());
+        let git_changed = self.is_git != next_is_git;
+        self.is_git = next_is_git;
         let same_watched = match (self.watched.as_deref(), root.as_deref()) {
             (Some(a), Some(b)) => runner_core::app_paths::same_normalized_checkout_path(a, b),
             (None, None) => true,
@@ -181,12 +196,15 @@ impl DirtyTracker {
             self.unwatch(cx);
         }
         let Some(root) = root else {
-            if self.dirty {
-                self.dirty = false;
+            let dirty_changed = std::mem::replace(&mut self.dirty, false);
+            if dirty_changed || git_changed {
                 self.notify_owner(cx);
             }
             return;
         };
+        if git_changed {
+            self.notify_owner(cx);
+        }
         let need_watch = !same_watched;
         if need_watch {
             self.watched = Some(root.clone());

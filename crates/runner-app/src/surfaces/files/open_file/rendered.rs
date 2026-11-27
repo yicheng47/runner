@@ -175,7 +175,40 @@ impl UnifiedViewer {
                 #[cfg(not(test))]
                 cx.open_url(&url);
             }
-            LinkTarget::File(path) => self.open_pinned_file(path, None, cx),
+            LinkTarget::File(path) => {
+                if let Some(parent) = self
+                    .tabs
+                    .active()
+                    .and_then(|tab| tab.key.outside_path())
+                    .and_then(Path::parent)
+                {
+                    let target = absolute(parent, &path);
+                    let root = self.root_path().map(Path::to_path_buf);
+                    let task = cx.background_spawn(async move {
+                        let relative = root
+                            .as_deref()
+                            .and_then(|root| super::super::links::relative_in(root, &target));
+                        let canonical = target
+                            .canonicalize()
+                            .ok()
+                            .map(|c| runner_core::app_paths::normalize_checkout_path(&c));
+                        (relative, canonical)
+                    });
+                    cx.spawn(async move |this, cx| {
+                        let (relative, canonical) = task.await;
+                        let _ = this.update(cx, |this, cx| {
+                            if let Some(relative) = relative {
+                                this.open_pinned_file(relative, None, cx);
+                            } else if let Some(canonical) = canonical {
+                                this.open_pinned_outside(canonical, None, cx);
+                            }
+                        });
+                    })
+                    .detach();
+                } else {
+                    self.open_pinned_file(path, None, cx);
+                }
+            }
             LinkTarget::None => {}
         }
     }

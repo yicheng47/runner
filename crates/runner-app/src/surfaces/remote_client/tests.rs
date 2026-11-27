@@ -1651,10 +1651,29 @@ fn remote_panel_defaults_closed_isolates_from_open_archive_and_snaps_across_remo
         .unwrap();
     let folder = temp.path().join("archived-project");
     std::fs::create_dir_all(&folder).unwrap();
+    assert!(std::process::Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(&folder)
+        .status()
+        .unwrap()
+        .success());
     std::fs::write(folder.join("notes.txt"), "archived\n").unwrap();
 
     let mut cx = TestAppContext::single();
     let (store, fake, _) = fixture(&mut cx, temp.path());
+    store.update(&mut cx, |store, _| {
+        store
+            .test_core
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions (id, title, status, agent_runtime, agent_command, cwd, files_root, archived_at)
+                 VALUES ('arch-local', 'Archived Local', 'stopped', 'codex', 'codex', ?1, ?1, '2026-11-20T00:00:00Z')",
+                [folder.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+    });
     enable_front_page(&fake);
     let mut data: Overview = serde_json::from_value(serde_json::json!({
         "projects": [{"id": "p", "name": "Remote project"}],
@@ -13066,4 +13085,131 @@ fn usage_pairing_and_missing_notifications_never_disconnect_a_remote_window() {
         })
         .unwrap();
     assert_eq!(fake.cancels.load(Ordering::SeqCst), cancels_before);
+}
+
+#[test]
+fn remote_terminal_file_uris_preserve_chosen_editor_for_html_and_pdf() {
+    use crate::app_settings::{FileLinkEditor, FileLinkOpenIn};
+    use crate::file_links::{FileLinkDecision, FileLinkLaunch, FileLinkTarget, LAUNCHED};
+    use gpui::{Modifiers, MouseButton};
+
+    let _theme = crate::theme_snapshot::ThemeGuard::new();
+    let temp = tempfile::tempdir().unwrap();
+    let mut cx = TestAppContext::single();
+    let (store, fake, _) = fixture(&mut cx, temp.path());
+    *fake.snapshot.lock().unwrap() = b"file:///tmp/report.html\r\nfile:///tmp/spec.pdf".to_vec();
+    store.update(&mut cx, |store, cx| {
+        let mut found = HashMap::new();
+        found.insert("zed".into(), true);
+        store.file_link_environment = (String::new(), found);
+        store.update_settings(
+            |settings| {
+                settings.file_link_open_in = FileLinkOpenIn::Preview;
+                settings.file_link_editor = FileLinkEditor::Zed;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    let window = add_window(&mut cx, &store, temp.path(), "remote-file-links");
+    let mut visual = VisualTestContext::from_window(window.into(), &cx);
+    visual.simulate_resize(gpui::size(px(1200.), px(800.)));
+    window.update(&mut visual, choose_host).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while visual.debug_bounds("REMOTE_TERMINAL_SURFACE").is_none()
+        || !window
+            .read_with(&visual, |root, _| {
+                root.remote_client
+                    .workspace()
+                    .and_then(|ws| ws.terminals.get("s"))
+                    .is_some()
+            })
+            .unwrap()
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for remote terminal surface"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        visual.run_until_parked();
+    }
+
+    let interaction = window
+        .read_with(&visual, |root, _| {
+            root.remote_client.workspace().unwrap().terminals["s"]
+                .attachment
+                .terminal_interaction
+                .clone()
+        })
+        .unwrap();
+    window
+        .update(&mut visual, |_, window, cx| {
+            window.activate_window();
+            cx.notify();
+        })
+        .unwrap();
+    visual.run_until_parked();
+
+    let bounds = visual.debug_bounds("REMOTE_TERMINAL_SURFACE").unwrap();
+    let control = Modifiers {
+        control: true,
+        ..Default::default()
+    };
+    let expected_prefix = format!(
+        "{}-click to open in Zed",
+        crate::platform_ui::PRIMARY_MODIFIER
+    );
+
+    // TerminalSurface uses py_3() (12 px top) and pl_3() (12 px left); line
+    // height is ~20 px at 14 px font size.
+    for (row, expected_path) in [
+        (0, PathBuf::from("/tmp/report.html")),
+        (1, PathBuf::from("/tmp/spec.pdf")),
+    ] {
+        let on_uri = bounds.origin + gpui::point(px(60.), px(20. + row as f32 * 20.));
+        // Hover over the remote file URI past the tooltip delay and verify the
+        // tooltip stays on Editor (Zed), never local browser or default app.
+        visual.simulate_mouse_move(on_uri, None, Modifiers::default());
+        visual.run_until_parked();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while interaction
+            .read_with(&visual, |interaction, _| interaction.cached_link_tooltip())
+            .is_none()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for remote link tooltip on row {row}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            window.update(&mut visual, |_, _, cx| cx.notify()).unwrap();
+            visual.run_until_parked();
+        }
+        let (decision, text) = interaction
+            .read_with(&visual, |interaction, _| interaction.cached_link_tooltip())
+            .unwrap();
+        assert_eq!(decision, FileLinkDecision::Editor);
+        assert_eq!(text.as_ref(), expected_prefix);
+
+        // ⌘-click / Ctrl-click launches Zed, never Browser or DefaultApp.
+        LAUNCHED.with(|l| l.borrow_mut().clear());
+        visual.simulate_mouse_move(on_uri, None, control);
+        visual.simulate_mouse_down(on_uri, MouseButton::Left, control);
+        visual.simulate_mouse_up(on_uri, MouseButton::Left, control);
+        visual.run_until_parked();
+        assert_eq!(
+            LAUNCHED.with(|l| l.borrow().clone()),
+            [(
+                FileLinkLaunch::Editor(FileLinkEditor::Zed),
+                FileLinkTarget {
+                    path: expected_path,
+                    line: None,
+                    column: None,
+                }
+            )],
+            "remote URI on row {row} must preserve Editor(Zed)"
+        );
+        visual.simulate_mouse_move(gpui::point(px(0.), px(0.)), None, Modifiers::default());
+        visual.run_until_parked();
+    }
 }

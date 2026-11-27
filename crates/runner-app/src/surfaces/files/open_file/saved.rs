@@ -14,7 +14,7 @@ pub(crate) struct SavedViewerTab {
 
 #[derive(Clone, Debug)]
 pub(crate) struct SavedViewerState {
-    pub(crate) root: PathBuf,
+    pub(crate) root: Option<PathBuf>,
     pub(crate) tabs: Vec<SavedViewerTab>,
     pub(crate) active: Option<TabKey>,
     pub(crate) tree_hidden: bool,
@@ -24,11 +24,12 @@ impl UnifiedViewer {
     // ── LRU Eviction State Persistence ─────────────────────────────────
 
     pub(crate) fn saved_state(&self) -> Option<SavedViewerState> {
-        let Some(root) = &self.root else {
-            return self.pending_restore.clone();
-        };
         if self.tabs.is_empty() && !self.tree_hidden {
-            return None;
+            return if self.root.is_none() {
+                self.pending_restore.clone()
+            } else {
+                None
+            };
         }
         let tabs = self
             .tabs
@@ -49,7 +50,7 @@ impl UnifiedViewer {
             })
             .collect();
         Some(SavedViewerState {
-            root: root.path.clone(),
+            root: self.root.as_ref().map(|root| root.path.clone()),
             tabs,
             active: self.tabs.active().map(|t| t.key.clone()),
             tree_hidden: self.tree_hidden,
@@ -65,10 +66,11 @@ impl UnifiedViewer {
     }
 
     pub(super) fn apply_saved_state(&mut self, saved: SavedViewerState, cx: &mut Context<Self>) {
-        let same_root = self
-            .root
-            .as_ref()
-            .is_some_and(|r| runner_core::app_paths::same_checkout_path(&r.path, &saved.root));
+        let same_root = match (self.root.as_ref(), saved.root.as_ref()) {
+            (Some(r), Some(s)) => runner_core::app_paths::same_checkout_path(&r.path, s),
+            (None, None) => true,
+            _ => false,
+        };
         if !same_root {
             self.notify_owner(cx);
             cx.notify();
@@ -79,21 +81,25 @@ impl UnifiedViewer {
             .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
         let has_head = self.root_has_head();
         for item in saved.tabs {
+            let outside = item.key.is_outside();
             let source = !is_svg(&item.key.path) && markdown_source;
             self.tabs.push_restored(item.key.clone(), item.preview);
-            let mut doc = OpenDocument::new_code(source, has_head);
-            doc.mode = item.mode;
-            doc.has_changes_target = item.has_changes_target;
-            doc.diff_base = item.diff_base;
-            doc.resolved_base = item.resolved_base;
-            doc.branch_name = item.branch_name;
-            doc.commit_short_id = item.commit_short_id;
-            if doc.mode == DocMode::Diff {
-                doc.content = Content::Idle;
-                doc.diff = FileTabDiff::Loading;
+            let mut doc = OpenDocument::new_code(source, !outside && has_head);
+            if !outside {
+                doc.mode = item.mode;
+                doc.has_changes_target = item.has_changes_target;
+                doc.diff_base = item.diff_base;
+                doc.resolved_base = item.resolved_base;
+                doc.branch_name = item.branch_name;
+                doc.commit_short_id = item.commit_short_id;
+                if doc.mode == DocMode::Diff {
+                    doc.content = Content::Idle;
+                    doc.diff = FileTabDiff::Loading;
+                }
             }
+            let load_diff = !outside && item.mode == DocMode::Diff;
             self.docs.insert(item.key.clone(), doc);
-            if item.mode == DocMode::Diff {
+            if load_diff {
                 self.load_tab_diff(item.key, cx);
             } else {
                 self.read_file(item.key, cx);
@@ -103,6 +109,9 @@ impl UnifiedViewer {
             && let Some(index) = self.tabs.position_key(&active)
         {
             self.tabs.activate(index);
+        }
+        if self.shown && self.ignored_refresh.is_none() && self.has_tabs() {
+            self.ignored_refresh = Some(self.refresh_ignored_tabs(cx));
         }
         self.ensure_uncommitted_paths(cx);
         self.tab_shown(cx);

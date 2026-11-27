@@ -1276,14 +1276,14 @@ fn a_hovered_link_names_the_panel_its_own_pane_will_show() {
     visual.simulate_resize(size(px(1600.), px(900.)));
     visual.run_until_parked();
     let since = std::time::Instant::now();
-    let previews = |visual: &mut VisualTestContext, pane: &str, path: std::path::PathBuf| {
+    let decision = |visual: &mut VisualTestContext, pane: &str, path: std::path::PathBuf| {
         let route = host
             .update(visual, |root, _, cx| root.file_link_route(pane, cx))
             .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         loop {
             let answer =
-                visual.update(|_, cx| route.previews(&path, since, std::rc::Rc::new(|_| {}), cx));
+                visual.update(|_, cx| route.decision(&path, since, std::rc::Rc::new(|_| {}), cx));
             if let Some(answer) = answer {
                 return answer;
             }
@@ -1293,18 +1293,56 @@ fn a_hovered_link_names_the_panel_its_own_pane_will_show() {
         }
     };
 
-    // The first chat has focus; each pane's links name its own panel.
-    assert!(previews(&mut visual, "second-agent", second.join("lib.rs")));
-    assert!(!previews(&mut visual, "second-agent", first.join("lib.rs")));
-    assert!(previews(&mut visual, "direct-agent", first.join("lib.rs")));
-    assert!(!previews(
-        &mut visual,
-        "direct-agent",
-        second.join("lib.rs")
-    ));
-    // A terminal follows the tab's last focused chat.
-    assert!(previews(&mut visual, "busy-shell", first.join("lib.rs")));
-    assert!(!previews(&mut visual, "busy-shell", second.join("lib.rs")));
+    // Both in-root and outside local files preview under Runner preview;
+    // a known binary routes to DefaultApp.
+    assert_eq!(
+        decision(&mut visual, "second-agent", second.join("lib.rs")),
+        crate::file_links::FileLinkDecision::Preview
+    );
+    assert_eq!(
+        decision(&mut visual, "second-agent", first.join("lib.rs")),
+        crate::file_links::FileLinkDecision::Preview
+    );
+    assert_eq!(
+        decision(&mut visual, "direct-agent", first.join("lib.rs")),
+        crate::file_links::FileLinkDecision::Preview
+    );
+    assert_eq!(
+        decision(&mut visual, "busy-shell", first.join("lib.rs")),
+        crate::file_links::FileLinkDecision::Preview
+    );
+    assert_eq!(
+        decision(&mut visual, "busy-shell", first.join("spec.pdf")),
+        crate::file_links::FileLinkDecision::DefaultApp
+    );
+
+    // Wait for each pane's own Files view to resolve its root, and check that
+    // the terminal follows the last focused chat.
+    let wait_root = |visual: &mut VisualTestContext, pane: &str, expected: &std::path::Path| {
+        let expected =
+            runner_core::app_paths::normalize_checkout_path(&expected.canonicalize().unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            let route = host
+                .update(visual, |root, _, cx| root.file_link_route(pane, cx))
+                .unwrap();
+            let got = visual.update(|_, cx| route.link_context(cx).extra_root);
+            if got
+                .as_deref()
+                .and_then(|p| p.canonicalize().ok())
+                .map(|p| runner_core::app_paths::normalize_checkout_path(&p))
+                == Some(expected.clone())
+            {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "timed out: {pane}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            visual.run_until_parked();
+        }
+    };
+    wait_root(&mut visual, "second-agent", &second);
+    wait_root(&mut visual, "direct-agent", &first);
+    wait_root(&mut visual, "busy-shell", &first);
 
     // Clicking in the second chat focuses it, as mouse-down does, and
     // the link opens in its panel.
@@ -1344,7 +1382,7 @@ fn a_hovered_link_names_the_panel_its_own_pane_will_show() {
     }
     assert!(LAUNCHED.with(|launched| launched.borrow().is_empty()));
     // Now the shell follows the second chat.
-    assert!(previews(&mut visual, "busy-shell", second.join("lib.rs")));
+    wait_root(&mut visual, "busy-shell", &second);
 }
 
 fn panel_root(
@@ -1513,11 +1551,47 @@ fn chat_panel_activity_bar_switches_files_and_changes_in_both_themes() {
     let _theme = crate::theme_snapshot::ThemeGuard::new();
     for locale in [Locale::English, Locale::SimplifiedChinese] {
         with_locale(locale, || {
-            let (_temp, _cx, store, host, mut visual) = panel_root("direct-agent");
+            let (temp, _cx, store, host, mut visual) = panel_root("direct-agent");
+            let repo = temp.path().join("repo");
+            std::fs::create_dir_all(&repo).unwrap();
+            assert!(std::process::Command::new("git")
+                .args(["init", "-q", "-b", "main"])
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
+            store.update(&mut visual, |store, _| {
+                store
+                    .test_core
+                    .db
+                    .get()
+                    .unwrap()
+                    .execute(
+                        "UPDATE sessions SET files_root = ?1 WHERE id = 'direct-agent'",
+                        [repo.to_string_lossy().as_ref()],
+                    )
+                    .unwrap();
+            });
             // Wide chat starts with its right side panel collapsed; opening it shows Files at 300 px.
             assert!(visual.debug_bounds("CHAT_SIDE_PANEL").is_none());
             assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_some());
             open_chat_panel(&host, &mut visual);
+            let subject = PanelSubject::Session("direct-agent".into());
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while host
+                .read_with(&visual, |root, cx| {
+                    root.side_panel
+                        .files
+                        .view(&subject)
+                        .and_then(|v| v.read(cx).changes_root_is_git())
+                })
+                .unwrap()
+                != Some(true)
+            {
+                assert!(std::time::Instant::now() < deadline, "git root timed out");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                visual.run_until_parked();
+            }
             let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
             assert!(visual.debug_bounds("PANEL_ACTIVITY Files active").is_some());
             let files = visual.debug_bounds("PANEL_ACTIVITY Files").unwrap();
@@ -1705,6 +1779,12 @@ fn a_file_link_opens_in_the_panel_preview_of_a_chat_or_a_terminal_tab() {
         std::fs::write(root.join("lib.rs"), "one\ntwo\nthree\n").unwrap();
         let outside = temp.path().join("outside.txt");
         std::fs::write(&outside, "x\n").unwrap();
+        let outside_tab =
+            runner_core::app_paths::normalize_checkout_path(&outside.canonicalize().unwrap())
+                .to_string_lossy()
+                .into_owned();
+        let outside_pdf = temp.path().join("spec.pdf");
+        std::fs::write(&outside_pdf, "%PDF-1.4\n").unwrap();
         store.update(&mut visual, |store, _| {
             store
                 .test_core
@@ -1753,12 +1833,35 @@ fn a_file_link_opens_in_the_panel_preview_of_a_chat_or_a_terminal_tab() {
                 .unwrap()
         };
 
-        click(&mut visual, outside.clone());
+        // Known binary leaves the collapsed panel closed and opens externally.
+        click(&mut visual, outside_pdf.clone());
         wait(&mut visual, &|_| launched() == 1);
         assert!(!panel_open(&mut visual), "{session}");
 
-        click(&mut visual, root.join("lib.rs"));
+        // A local text file outside the root opens the collapsed panel as an outside tab.
+        click(&mut visual, outside.clone());
         let subject = PanelSubject::Session(session.into());
+        wait(&mut visual, &|visual| {
+            host.read_with(visual, |root, cx| {
+                root.side_panel
+                    .files
+                    .view(&subject)
+                    .and_then(|view| view.read(cx).active_tab(cx))
+                    == Some(outside_tab.clone())
+            })
+            .unwrap()
+        });
+        assert_eq!(launched(), 0, "{session}");
+        assert!(
+            panel_open(&mut visual),
+            "{session}: outside file opens panel"
+        );
+
+        host.update(&mut visual, |root, _, cx| {
+            root.set_chat_panel_open(false, cx);
+        })
+        .unwrap();
+        click(&mut visual, root.join("lib.rs"));
         wait(&mut visual, &|visual| {
             host.read_with(visual, |root, cx| {
                 root.side_panel
@@ -1783,12 +1886,16 @@ fn a_file_link_opens_in_the_panel_preview_of_a_chat_or_a_terminal_tab() {
         for off in [
             (|settings: &mut AppSettings| settings.files_view = false) as fn(&mut AppSettings),
             |settings| settings.show_side_panel = false,
+            |settings| {
+                settings.file_link_open_in = crate::app_settings::FileLinkOpenIn::Editor;
+            },
         ] {
             store.update(&mut visual, |store, cx| {
                 store.update_settings(
                     |settings| {
                         settings.files_view = true;
                         settings.show_side_panel = true;
+                        settings.file_link_open_in = crate::app_settings::FileLinkOpenIn::Preview;
                         off(settings);
                         true
                     },
@@ -1940,7 +2047,27 @@ fn terminal_tab_panel_holds_files_and_changes_and_keeps_its_own_panel_state() {
     use crate::theme_snapshot::assert_fill_color;
 
     let _theme = crate::theme_snapshot::ThemeGuard::new();
-    let (_temp, _cx, store, host, mut visual) = panel_root("busy-shell");
+    let (temp, _cx, store, host, mut visual) = panel_root("busy-shell");
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(std::process::Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(&repo)
+        .status()
+        .unwrap()
+        .success());
+    store.update(&mut visual, |store, _| {
+        store
+            .test_core
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET files_root = ?1 WHERE id = 'busy-shell'",
+                [repo.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+    });
     // A terminal-only tab starts with its side panel collapsed by default.
     assert!(!host
         .read_with(&visual, |root, cx| root.chat_panel_is_open(cx))
@@ -1948,6 +2075,22 @@ fn terminal_tab_panel_holds_files_and_changes_and_keeps_its_own_panel_state() {
     assert!(visual.debug_bounds("CHAT_SIDE_PANEL").is_none());
     assert!(visual.debug_bounds("CHAT_PANEL_TOGGLE").is_some());
     open_chat_panel(&host, &mut visual);
+    let subject = PanelSubject::Session("busy-shell".into());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while host
+        .read_with(&visual, |root, cx| {
+            root.side_panel
+                .files
+                .view(&subject)
+                .and_then(|v| v.read(cx).changes_root_is_git())
+        })
+        .unwrap()
+        != Some(true)
+    {
+        assert!(std::time::Instant::now() < deadline, "git root timed out");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        visual.run_until_parked();
+    }
     let panel = visual.debug_bounds("CHAT_SIDE_PANEL").unwrap();
     let width = store.read_with(&visual, |store, _| store.settings.chat_panel_width);
     assert!((panel.size.width - px(width)).abs() <= px(1.), "{panel:?}");
@@ -4955,6 +5098,12 @@ fn narrow_archived_chat_reserves_zero_width_when_closed_and_isolates_live_tab_pa
         .unwrap();
     let folder = temp.path().join("project");
     std::fs::create_dir_all(&folder).unwrap();
+    assert!(std::process::Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(&folder)
+        .status()
+        .unwrap()
+        .success());
     std::fs::write(folder.join("notes.txt"), "hello\n").unwrap();
 
     let mut cx = gpui::TestAppContext::single();
@@ -5568,4 +5717,241 @@ fn an_open_file_and_its_tree_stay_inside_the_chat_panel_card() {
 
     host.update(&mut visual, |_, window, _| window.remove_window())
         .unwrap();
+}
+
+#[test]
+fn changes_activity_icon_is_disabled_without_git_and_re_enables_for_git_root() {
+    use crate::surfaces::side_panel::{PanelSelection, PanelSubject, PanelViewId};
+
+    let (temp, _cx, store, host, mut visual) = panel_root("direct-agent");
+    let plain = temp.path().join("plain-folder");
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(plain.join("note.txt"), "plain\n").unwrap();
+
+    let repo = temp.path().join("git-repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "t@example.com"],
+        &["config", "user.name", "Test"],
+    ] {
+        assert!(std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+    }
+    std::fs::write(repo.join("lib.rs"), "fn main() {}\n").unwrap();
+    assert!(std::process::Command::new("git")
+        .args(["add", "lib.rs"])
+        .current_dir(&repo)
+        .status()
+        .unwrap()
+        .success());
+    assert!(std::process::Command::new("git")
+        .args(["commit", "-q", "-m", "init"])
+        .current_dir(&repo)
+        .status()
+        .unwrap()
+        .success());
+    // Leave an uncommitted edit so the dirty dot appears once git root is active.
+    std::fs::write(repo.join("lib.rs"), "fn main() { println!(\"hi\"); }\n").unwrap();
+
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                pred: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !pred(visual) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            visual.run_until_parked();
+        }
+    };
+
+    // 1. Chat with no project (ChooseFolder): Changes is dimmed/disabled with no dirty dot,
+    //    and clicking it does not switch away from Files.
+    open_chat_panel(&host, &mut visual);
+    wait(&mut visual, "Changes disabled on ChooseFolder", &|v| {
+        v.debug_bounds("PANEL_ACTIVITY Changes disabled").is_some()
+    });
+    assert!(visual.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_none());
+    click_selector(&mut visual, "PANEL_ACTIVITY Changes");
+    assert_ne!(
+        chat_surfaces(&host, &mut visual),
+        PanelSelection::new(PanelViewId::Changes)
+    );
+    assert!(visual.debug_bounds("PANEL_ACTIVITY Files active").is_some());
+
+    // 2. Choose a plain non-git folder as the root: Changes stays disabled.
+    let subject = PanelSubject::Session("direct-agent".into());
+    let files_view = host
+        .read_with(&visual, |root, _| root.side_panel.files.view(&subject))
+        .unwrap()
+        .unwrap();
+    files_view.update(&mut visual, |v, cx| v.set_root(Some(plain.clone()), cx));
+    wait(&mut visual, "plain folder loaded", &|v| {
+        v.debug_bounds("FILES_ROW note.txt").is_some()
+            && v.debug_bounds("PANEL_ACTIVITY Changes disabled").is_some()
+    });
+    assert!(visual.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_none());
+    click_selector(&mut visual, "PANEL_ACTIVITY Changes");
+    assert!(visual.debug_bounds("PANEL_ACTIVITY Files active").is_some());
+
+    // 3. Switch to the dirty git repo: Changes re-enables, shows the dirty dot, and opens.
+    files_view.update(&mut visual, |v, cx| v.set_root(Some(repo.clone()), cx));
+    wait(&mut visual, "Changes re-enabled with dirty dot", &|v| {
+        v.debug_bounds("PANEL_ACTIVITY Changes disabled").is_none()
+            && v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_some()
+    });
+    click_selector(&mut visual, "PANEL_ACTIVITY Changes");
+    wait(&mut visual, "Changes view active", &|v| {
+        v.debug_bounds("PANEL_ACTIVITY Changes active").is_some()
+            && v.debug_bounds("CHANGES_ROW lib.rs").is_some()
+    });
+
+    // 4. Leaving git while Changes is ALREADY shown keeps the CHANGES_NOT_GIT screen
+    //    AND independently dims/disables the Changes icon with the non-git tooltip.
+    let _ = &store;
+    files_view.update(&mut visual, |v, cx| v.set_root(Some(plain.clone()), cx));
+    wait(
+        &mut visual,
+        "CHANGES_NOT_GIT shown and icon disabled when leaving git",
+        &|v| {
+            v.debug_bounds("CHANGES_NOT_GIT").is_some()
+                && v.debug_bounds("PANEL_ACTIVITY Changes active").is_some()
+                && v.debug_bounds("PANEL_ACTIVITY Changes disabled").is_some()
+                && v.debug_bounds("PANEL_ACTIVITY_TOOLTIP Changes Changes · Not a git repository")
+                    .is_some()
+                && v.debug_bounds("PANEL_CHANGES_DIRTY_DOT").is_none()
+        },
+    );
+
+    // Switching to Files keeps Changes disabled.
+    click_selector(&mut visual, "PANEL_ACTIVITY Files");
+    wait(&mut visual, "Changes disabled again after leaving", &|v| {
+        v.debug_bounds("PANEL_ACTIVITY Files active").is_some()
+            && v.debug_bounds("PANEL_ACTIVITY Changes disabled").is_some()
+    });
+
+    host.update(&mut visual, |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+#[test]
+fn changes_activity_icon_blocks_entry_while_local_root_resolution_is_pending() {
+    use runner_core::protocol::files::FilesSubject;
+
+    let wait = |visual: &mut gpui::VisualTestContext,
+                what: &str,
+                pred: &dyn Fn(&mut gpui::VisualTestContext) -> bool| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !pred(visual) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            visual.run_until_parked();
+        }
+    };
+
+    // 1. Fresh panel on a non-git chat: while root resolution is pending,
+    //    Changes is unclickable and never admits CHANGES_NOT_GIT; once
+    //    resolved it transitions straight to disabled.
+    {
+        let (_temp, _cx, _store, host, mut visual) = panel_root("direct-agent");
+        let gate = host
+            .read_with(&visual, |root, _| {
+                root.side_panel.files.gate_next_root_resolve()
+            })
+            .unwrap();
+        open_chat_panel(&host, &mut visual);
+        wait(&mut visual, "Changes pending on fresh panel", &|v| {
+            v.debug_bounds("PANEL_ACTIVITY Files active").is_some()
+                && v.debug_bounds("PANEL_ACTIVITY Changes pending").is_some()
+        });
+        assert!(visual
+            .debug_bounds("PANEL_ACTIVITY Changes disabled")
+            .is_none());
+        click_selector(&mut visual, "PANEL_ACTIVITY Changes");
+        assert!(visual.debug_bounds("PANEL_ACTIVITY Files active").is_some());
+        assert!(visual.debug_bounds("CHANGES_NOT_GIT").is_none());
+
+        gate.release();
+        wait(&mut visual, "non-git resolves to Changes disabled", &|v| {
+            v.debug_bounds("PANEL_ACTIVITY Changes pending").is_none()
+                && v.debug_bounds("PANEL_ACTIVITY Changes disabled").is_some()
+        });
+        click_selector(&mut visual, "PANEL_ACTIVITY Changes");
+        assert!(visual.debug_bounds("PANEL_ACTIVITY Files active").is_some());
+        assert!(visual.debug_bounds("CHANGES_NOT_GIT").is_none());
+        host.update(&mut visual, |_, window, _| window.remove_window())
+            .unwrap();
+    }
+
+    // 2. Fresh panel on a git repo: blocked while pending, then clickable once
+    //    the git checkout resolves.
+    {
+        let (temp, _cx, store, host, mut visual) = panel_root("direct-agent");
+        let repo = temp.path().join("git-repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "t@example.com"],
+            &["config", "user.name", "Test"],
+        ] {
+            assert!(std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
+        }
+        std::fs::write(repo.join("lib.rs"), "fn main() {}\n").unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["add", "lib.rs"])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+        assert!(std::process::Command::new("git")
+            .args(["commit", "-q", "-m", "init"])
+            .current_dir(&repo)
+            .status()
+            .unwrap()
+            .success());
+
+        let client = store.read_with(&visual, |store, _| store.client.clone());
+        client
+            .files_set_root(&FilesSubject::Session("direct-agent".into()), Some(&repo))
+            .unwrap();
+        let gate = host
+            .read_with(&visual, |root, _| {
+                root.side_panel.files.gate_next_root_resolve()
+            })
+            .unwrap();
+        open_chat_panel(&host, &mut visual);
+        wait(&mut visual, "git chat Changes pending", &|v| {
+            v.debug_bounds("PANEL_ACTIVITY Files active").is_some()
+                && v.debug_bounds("PANEL_ACTIVITY Changes pending").is_some()
+        });
+        click_selector(&mut visual, "PANEL_ACTIVITY Changes");
+        assert!(visual.debug_bounds("PANEL_ACTIVITY Files active").is_some());
+
+        gate.release();
+        wait(&mut visual, "git chat Changes enabled", &|v| {
+            v.debug_bounds("PANEL_ACTIVITY Changes pending").is_none()
+                && v.debug_bounds("PANEL_ACTIVITY Changes disabled").is_none()
+        });
+        click_selector(&mut visual, "PANEL_ACTIVITY Changes");
+        wait(&mut visual, "git chat switches to Changes", &|v| {
+            v.debug_bounds("PANEL_ACTIVITY Changes active").is_some()
+        });
+        host.update(&mut visual, |_, window, _| window.remove_window())
+            .unwrap();
+    }
 }

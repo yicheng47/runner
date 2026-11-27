@@ -98,6 +98,23 @@ impl UnifiedViewer {
         self.ignored_refresh = None;
     }
 
+    pub(super) fn reset_root_tabs(&mut self, mut window: Option<&mut Window>, cx: &mut App) {
+        let removed = self.tabs.retain_outside();
+        for key in &removed {
+            if let Some(doc) = self.docs.remove(key) {
+                doc.drop_image_textures(window.as_deref_mut(), cx);
+            }
+        }
+        if !removed.is_empty() {
+            self.find = None;
+            self.list_open = false;
+            self.open_in_open = false;
+        }
+        if self.tabs.is_empty() {
+            self.ignored_refresh = None;
+        }
+    }
+
     // ── Focus & Keyboard ───────────────────────────────────────────────
 
     pub(super) fn on_focus_lost(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -234,6 +251,9 @@ impl UnifiedViewer {
     // ── Code | Diff Mode Switch ────────────────────────────────────────
 
     fn tab_can_diff(&self, key: &TabKey, doc: &OpenDocument) -> bool {
+        if key.is_outside() {
+            return false;
+        }
         if doc.has_changes_target || key.target != SelectedTarget::Uncommitted {
             return true;
         }

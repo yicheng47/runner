@@ -33,6 +33,27 @@ impl UnifiedViewer {
             return;
         }
         let subject = subject_protocol(&self.context);
+        #[cfg(test)]
+        if let Some(gate) = self.resolve_gate.take() {
+            let client = self.client.clone();
+            let generation = self.generation;
+            let task = cx.background_spawn(async move {
+                let _ = gate.await;
+                client.files_root(&subject)
+            });
+            cx.spawn(async move |this, cx| {
+                let result = task.await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.generation == generation
+                        && let Ok(outcome) = result
+                    {
+                        this.apply_root_outcome(outcome, cx);
+                    }
+                });
+            })
+            .detach();
+            return;
+        }
         self.request(
             cx,
             move |client| client.files_root(&subject),
@@ -56,7 +77,8 @@ impl UnifiedViewer {
                 return;
             }
             (FilesRootOutcome::ChooseFolder | FilesRootOutcome::Missing { .. }, None)
-                if self.pending_restore.is_none() && self.tabs.is_empty() =>
+                if self.pending_restore.is_none()
+                    && self.tabs.tabs().iter().all(|tab| tab.key.is_outside()) =>
             {
                 return;
             }
@@ -66,22 +88,26 @@ impl UnifiedViewer {
     }
 
     pub(super) fn apply_root_outcome(&mut self, outcome: FilesRootOutcome, cx: &mut Context<Self>) {
-        let same = matches!(
-            (&outcome, &self.root),
-            (FilesRootOutcome::Root(next), Some(current))
-                if runner_core::app_paths::same_checkout_path(&current.path, &next.path)
-        );
+        let same = match (&outcome, &self.root) {
+            (FilesRootOutcome::Root(next), Some(current)) => {
+                runner_core::app_paths::same_checkout_path(&current.path, &next.path)
+            }
+            (FilesRootOutcome::ChooseFolder | FilesRootOutcome::Missing { .. }, None) => true,
+            _ => false,
+        };
         if !same {
             self.generation += 1;
         }
         match outcome {
             FilesRootOutcome::Root(next_root) => {
+                let next_root_path = next_root.path.clone();
                 if same {
                     self.root = Some(next_root);
                     self.read_again_after_resolve(cx);
                     self.refresh_uncommitted_paths(true, cx);
+                    self.reconcile_outside_tabs_for_root(next_root_path, cx);
                 } else {
-                    self.reset_tabs(None, cx);
+                    self.reset_root_tabs(None, cx);
                     self.status = None;
                     self.status_stale = true;
                     self.uncommitted_files = None;
@@ -89,20 +115,130 @@ impl UnifiedViewer {
                     if let Some(saved) = self.pending_restore.take() {
                         self.apply_saved_state(saved, cx);
                     }
+                    self.read_again_after_resolve(cx);
+                    self.reconcile_outside_tabs_for_root(next_root_path, cx);
                     self.notify_owner(cx);
                 }
             }
             FilesRootOutcome::ChooseFolder | FilesRootOutcome::Missing { .. } => {
-                self.pending_restore = None;
                 self.root = None;
                 self.status = None;
                 self.uncommitted_files = None;
-                self.reset_tabs(None, cx);
+                self.reset_root_tabs(None, cx);
+                if let Some(saved) = self.pending_restore.take() {
+                    self.apply_saved_state(saved, cx);
+                }
+                self.read_again_after_resolve(cx);
                 self.notify_owner(cx);
             }
         }
         self.watched_root_changed(cx);
         cx.notify();
+    }
+
+    fn reconcile_outside_tabs_for_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        let outside: Vec<(TabKey, PathBuf)> = self
+            .tabs
+            .tabs()
+            .iter()
+            .filter_map(|tab| {
+                tab.key
+                    .outside_path()
+                    .map(|path| (tab.key.clone(), path.to_path_buf()))
+            })
+            .collect();
+        if outside.is_empty() {
+            return;
+        }
+        let generation = self.generation;
+        let check_root = root.clone();
+        let task = cx.background_spawn(async move {
+            outside
+                .into_iter()
+                .filter_map(|(key, path)| {
+                    super::super::links::relative_in_canonical(&check_root, &path)
+                        .map(|relative| (key, relative))
+                })
+                .collect::<Vec<_>>()
+        });
+        cx.spawn(async move |this, cx| {
+            let promotions = task.await;
+            if promotions.is_empty() {
+                return;
+            }
+            let _ = this.update(cx, |this, cx| {
+                if this.generation != generation
+                    || this.root_path().is_none_or(|current| {
+                        !runner_core::app_paths::same_checkout_path(current, &root)
+                    })
+                {
+                    return;
+                }
+                this.promote_outside_tabs(promotions, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn promote_outside_tabs(&mut self, promotions: Vec<(TabKey, String)>, cx: &mut Context<Self>) {
+        use super::super::tabs::PromoteOutsideOutcome;
+
+        let has_head = self.root_has_head();
+        let markdown_source = super::settings(cx)
+            .is_some_and(|settings| settings.markdown_open_as == MarkdownOpenAs::Source);
+        let mut promoted_any = false;
+        let mut keys_to_read = Vec::new();
+        for (old_key, relative) in promotions {
+            match self.tabs.promote_outside(&old_key, relative) {
+                Some(PromoteOutsideOutcome::MergedIntoExisting(new_key)) => {
+                    promoted_any = true;
+                    if let Some(old_doc) = self.docs.remove(&old_key) {
+                        old_doc.drop_image_textures(None, cx);
+                    }
+                    if !self.docs.contains_key(&new_key) {
+                        let source = !is_svg(&new_key.path) && markdown_source;
+                        self.docs
+                            .insert(new_key.clone(), OpenDocument::new_code(source, has_head));
+                        keys_to_read.push(new_key);
+                    }
+                }
+                Some(PromoteOutsideOutcome::Replaced(new_key)) => {
+                    promoted_any = true;
+                    if let Some(mut doc) = self.docs.remove(&old_key) {
+                        doc.has_head = has_head;
+                        doc.ignored = false;
+                        doc.stamp = None;
+                        doc.image_hash = None;
+                        doc.rendered = None;
+                        let open_line = self.open_line_handler(new_key.clone(), cx);
+                        match &doc.content {
+                            Content::Text(view)
+                            | Content::Deleted(Some(DeletedContent::Text(view))) => {
+                                view.update(cx, |view, _| view.set_open_line(open_line));
+                            }
+                            _ => {}
+                        }
+                        self.docs.insert(new_key.clone(), doc);
+                    } else {
+                        let source = !is_svg(&new_key.path) && markdown_source;
+                        self.docs
+                            .insert(new_key.clone(), OpenDocument::new_code(source, has_head));
+                    }
+                    keys_to_read.push(new_key);
+                }
+                None => {}
+            }
+        }
+        if !promoted_any {
+            return;
+        }
+        self.note_ignored_tabs();
+        for key in keys_to_read {
+            self.read_file(key, cx);
+        }
+        self.refresh_uncommitted_paths(true, cx);
+        self.sync_watch(cx);
+        self.tab_shown(cx);
     }
 
     pub(crate) fn set_status_snapshot(
@@ -314,6 +450,9 @@ impl UnifiedViewer {
                 }
                 if self.root.is_none() {
                     self.resolve(cx);
+                    if self.shown && self.has_tabs() {
+                        self.reload_changed(None, cx);
+                    }
                     return;
                 }
                 for doc in self.docs.values_mut() {

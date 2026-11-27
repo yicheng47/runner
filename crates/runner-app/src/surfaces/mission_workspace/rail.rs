@@ -161,6 +161,10 @@ impl MissionWorkspace {
                     cx.notify();
                 }
             },
+            |this: &Self, cx| crate::file_links::FileLinkRouteState {
+                local: !this.presentation.is_remote(),
+                panel_open: this.rail_is_open(cx),
+            },
         )
     }
 

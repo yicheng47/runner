@@ -127,6 +127,10 @@ impl Render for Host {
                         host.link_panel_shown += 1;
                         cx.notify();
                     },
+                    |host: &Self, _cx| crate::file_links::FileLinkRouteState {
+                        local: host.context.as_ref().is_none_or(|context| !context.remote),
+                        panel_open: true,
+                    },
                 );
                 div()
                     .debug_selector(|| "FILES_LINK_TERMINAL".into())
@@ -3560,11 +3564,15 @@ fn a_terminal_link_cited_at_a_line_in_markdown_shows_the_source_there() {
 }
 
 #[test]
-fn a_terminal_link_outside_the_root_opens_the_editor() {
+fn a_terminal_link_outside_the_root_opens_one_outside_tab_and_respects_editor_setting() {
     let mut h = viewer(chat("in-project"));
     let outside = h.temp.path().join("outside");
     std::fs::create_dir_all(&outside).unwrap();
-    std::fs::write(outside.join("note.txt"), "note\n").unwrap();
+    std::fs::write(outside.join("note.txt"), "one\ntwo\nthree\n").unwrap();
+    let canonical = runner_core::app_paths::normalize_checkout_path(
+        &outside.join("note.txt").canonicalize().unwrap(),
+    );
+    let expected_tab = canonical.to_string_lossy().into_owned();
     let view = h.view();
     // A symlink inside the root that leads out of it.
     #[cfg(unix)]
@@ -3578,11 +3586,42 @@ fn a_terminal_link_outside_the_root_opens_the_editor() {
     for target in targets.into_iter().flatten() {
         crate::file_links::LAUNCHED.with(|launched| launched.borrow_mut().clear());
         let shown = h.click_link(&view, target.clone());
-        h.wait("the editor", |_| !launched().is_empty());
-        assert_eq!(launched(), [target]);
-        assert_eq!(shown.get(), 0);
-        assert!(h.read(|view| view.open_tabs()).is_empty());
+        h.wait("the outside tab", |h| {
+            h.read(|view| view.active_tab()) == Some(expected_tab.clone())
+                && h.read(|view| view.code_view()).is_some()
+        });
+        assert!(launched().is_empty(), "{target:?}");
+        assert_eq!(shown.get(), 1);
+        assert_eq!(h.read(|view| view.open_tabs()), [expected_tab.as_str()]);
+        assert!(
+            !h.has("VIEWER_MODE_SWITCH"),
+            "outside tabs never offer Code | Diff"
+        );
     }
+    #[cfg(unix)]
+    h.wait("line 2 selected", |h| {
+        h.read(|view| view.code_view()).is_some_and(|code| {
+            code.read_with(&h.visual, |code, _| code.selected_text()) == Some("two".into())
+        })
+    });
+
+    // With Editor chosen in Settings, the same outside link opens in the Editor.
+    h.store.update(&mut h.visual, |store, cx| {
+        store.update_settings(
+            |settings| {
+                settings.file_link_open_in = crate::app_settings::FileLinkOpenIn::Editor;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    let target = link(outside.join("note.txt"), Some(3));
+    crate::file_links::LAUNCHED.with(|launched| launched.borrow_mut().clear());
+    let shown = h.click_link(&view, target.clone());
+    h.wait("the editor", |_| !launched().is_empty());
+    assert_eq!(launched(), [target]);
+    assert_eq!(shown.get(), 0);
 }
 
 #[test]
@@ -3609,29 +3648,47 @@ fn a_terminal_link_waits_for_a_root_still_resolving() {
 }
 
 #[test]
-fn a_remote_or_rootless_view_sends_links_to_the_editor() {
+fn a_remote_view_sends_links_to_the_editor_while_rootless_local_previews_outside() {
     let mut h = harness(None);
     std::fs::write(h.repo.join("lines.txt"), "one\n").unwrap();
-    for context in [
-        PanelContext {
-            remote: true,
-            ..chat("in-project")
-        },
-        chat("outside"),
-    ] {
-        crate::file_links::LAUNCHED.with(|launched| launched.borrow_mut().clear());
-        let view = h
-            .host
-            .update(&mut h.visual, |host, _, cx| {
-                host.panel.link_view(&context, cx)
-            })
-            .unwrap();
-        let target = link(h.repo.join("lines.txt"), Some(1));
-        let shown = h.click_link(&view, target.clone());
-        h.wait("the editor", |_| !launched().is_empty());
-        assert_eq!(launched(), [target], "{context:?}");
-        assert_eq!(shown.get(), 0);
-    }
+    let canonical = runner_core::app_paths::normalize_checkout_path(
+        &h.repo.join("lines.txt").canonicalize().unwrap(),
+    );
+    let expected_tab = canonical.to_string_lossy().into_owned();
+
+    // Remote sessions keep today's behavior and send links straight to the editor.
+    let remote = PanelContext {
+        remote: true,
+        ..chat("in-project")
+    };
+    crate::file_links::LAUNCHED.with(|launched| launched.borrow_mut().clear());
+    let view = h
+        .host
+        .update(&mut h.visual, |host, _, cx| {
+            host.panel.link_view(&remote, cx)
+        })
+        .unwrap();
+    let target = link(h.repo.join("lines.txt"), Some(1));
+    let shown = h.click_link(&view, target.clone());
+    h.wait("the editor", |_| !launched().is_empty());
+    assert_eq!(launched(), [target]);
+    assert_eq!(shown.get(), 0);
+
+    // A local chat without a project opens the file as an outside tab beside ChooseFolder.
+    crate::file_links::LAUNCHED.with(|launched| launched.borrow_mut().clear());
+    let view = h
+        .host
+        .update(&mut h.visual, |host, _, cx| {
+            host.panel.link_view(&chat("outside"), cx)
+        })
+        .unwrap();
+    let shown = h.click_link(&view, link(h.repo.join("lines.txt"), Some(1)));
+    h.wait("the outside tab", |h| {
+        view.read_with(&h.visual, |view, cx| view.active_tab(cx)) == Some(expected_tab.clone())
+    });
+    assert!(launched().is_empty());
+    assert_eq!(shown.get(), 1);
+    assert_eq!(view.read_with(&h.visual, |view, _| view.state()), "choose");
 }
 
 #[test]
@@ -3639,22 +3696,34 @@ fn whether_a_link_previews_is_worked_out_off_the_ui_thread() {
     let mut h = viewer(chat("in-project"));
     let outside = h.temp.path().join("outside.txt");
     std::fs::write(&outside, "x\n").unwrap();
+    let huge = h.temp.path().join("huge.log");
+    std::fs::File::create(&huge)
+        .unwrap()
+        .set_len(runner_core::protocol::files::MAX_READ_BYTES + 1)
+        .unwrap();
     let view = h.view();
-    for (path, previews) in [(h.repo.join("a.txt"), true), (outside, false)] {
+    for (path, expected) in [
+        (
+            h.repo.join("a.txt"),
+            crate::file_links::FileLinkDecision::Preview,
+        ),
+        (outside, crate::file_links::FileLinkDecision::Preview),
+        (huge, crate::file_links::FileLinkDecision::Editor),
+    ] {
         let redraws = std::rc::Rc::new(std::cell::Cell::new(0));
         let count = redraws.clone();
         let redraw: crate::surfaces::files::ShowPreview =
             std::rc::Rc::new(move |_| count.set(count.get() + 1));
         let since = std::time::Instant::now();
         let first = view.update(&mut h.visual, |view, cx| {
-            view.link_previews(&path, since, redraw.clone(), cx)
+            view.link_decision(&path, since, redraw.clone(), cx)
         });
         assert_eq!(first, None, "unknown until checked");
         h.wait("the answer", |_| redraws.get() == 1);
         let known = view.update(&mut h.visual, |view, cx| {
-            view.link_previews(&path, since, redraw.clone(), cx)
+            view.link_decision(&path, since, redraw.clone(), cx)
         });
-        assert_eq!(known, Some(previews), "{path:?}");
+        assert_eq!(known, Some(expected), "{path:?}");
     }
 }
 
@@ -3720,7 +3789,16 @@ fn a_retargeted_symlink_is_checked_again_on_the_next_click_and_hover() {
     let mut h = harness(None);
     let outside = h.temp.path().join("outside");
     std::fs::create_dir_all(&outside).unwrap();
-    std::fs::write(outside.join("far.rs"), "far\n").unwrap();
+    let far = outside.join("far.rs");
+    std::fs::write(&far, "far\n").unwrap();
+    let far_tab = runner_core::app_paths::normalize_checkout_path(&far.canonicalize().unwrap())
+        .to_string_lossy()
+        .into_owned();
+    let huge = outside.join("huge.rs");
+    std::fs::File::create(&huge)
+        .unwrap()
+        .set_len(runner_core::protocol::files::MAX_READ_BYTES + 1)
+        .unwrap();
     std::fs::write(h.repo.join("b.txt"), "b\n").unwrap();
     let current = h.repo.join("current.rs");
     let point = |to: &Path| {
@@ -3741,10 +3819,10 @@ fn a_retargeted_symlink_is_checked_again_on_the_next_click_and_hover() {
         let since = std::time::Instant::now();
         loop {
             let answer = view.update(&mut h.visual, |view, cx| {
-                view.link_previews(&current, since, std::rc::Rc::new(|_| {}), cx)
+                view.link_decision(&current, since, std::rc::Rc::new(|_| {}), cx)
             });
             if let Some(answer) = answer {
-                return answer;
+                return answer == crate::file_links::FileLinkDecision::Preview;
             }
             h.settle();
             std::thread::sleep(Duration::from_millis(10));
@@ -3773,14 +3851,22 @@ fn a_retargeted_symlink_is_checked_again_on_the_next_click_and_hover() {
     click(&mut h);
     h.wait("b.txt", |h| active(h) == Some("b.txt".into()));
 
-    // Inside to outside: the editor.
-    point(&outside.join("far.rs"));
+    // Inside to outside: opens the outside tab in preview.
+    point(&far);
+    assert!(hover(&mut h));
+    click(&mut h);
+    h.wait("far.rs outside tab", |h| active(h) == Some(far_tab.clone()));
+    assert!(launched().is_empty());
+
+    // Outside to over-10 MB: opens the editor instead.
+    point(&huge);
     assert!(!hover(&mut h));
     click(&mut h);
+    h.wait("the editor", |_| !launched().is_empty());
     assert_eq!(launched(), [link(current.clone(), None)]);
-    assert_eq!(active(&mut h), Some("b.txt".into()));
+    assert_eq!(active(&mut h), Some(far_tab));
 
-    // Outside to inside: the preview again.
+    // Over-10 MB back to inside: the root tab again.
     point(&h.repo.join("a.txt"));
     assert!(hover(&mut h));
     click(&mut h);
@@ -6305,4 +6391,623 @@ fn svg_tab_renders_zooms_sharply_switches_on_find_and_handles_broken_svg() {
         "deleted oversized SVG hides Open in button under banner",
         |h| h.has("FILE_DELETED") && h.has("FILE_IMAGE_TOO_LARGE") && !h.has("FILE_OPEN_LARGE"),
     );
+}
+
+#[test]
+fn outside_tab_reads_reloads_shows_full_folder_has_no_diff_even_in_git_and_clears_tree_selection() {
+    let mut h = viewer(chat("in-project"));
+    // Create a second dirty git repo outside the Files root.
+    let other_repo = h.temp.path().join("other-repo");
+    std::fs::create_dir_all(&other_repo).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "t@example.com"],
+        &["config", "user.name", "Test"],
+    ] {
+        assert!(std::process::Command::new("git")
+            .args(args)
+            .current_dir(&other_repo)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let outside_file = other_repo.join("report.txt");
+    std::fs::write(&outside_file, "initial line\n").unwrap();
+    assert!(std::process::Command::new("git")
+        .args(["add", "report.txt"])
+        .current_dir(&other_repo)
+        .status()
+        .unwrap()
+        .success());
+    assert!(std::process::Command::new("git")
+        .args(["commit", "-q", "-m", "init"])
+        .current_dir(&other_repo)
+        .status()
+        .unwrap()
+        .success());
+    // Modify the committed file so the second repo has an uncommitted git diff.
+    std::fs::write(&outside_file, "v1 outside\n").unwrap();
+
+    let canonical =
+        runner_core::app_paths::normalize_checkout_path(&outside_file.canonicalize().unwrap());
+    let expected_tab = canonical.to_string_lossy().into_owned();
+    let expected_folder = crate::text_util::abbreviate_home(crate::text_util::HomePath::Native(
+        canonical.parent().unwrap(),
+        h.store
+            .read_with(&h.visual, |store, _| store.home_dir.clone())
+            .as_deref(),
+    ));
+
+    // Open an in-root file first so the Files tree has an active selection.
+    std::fs::write(h.repo.join("a.txt"), "first\nsecond\n").unwrap();
+    h.open("a.txt");
+    h.wait("in-root a.txt", |h| {
+        h.read(|v| v.active_tab()) == Some("a.txt".into()) && h.has("FILE_CODE")
+    });
+    // Clicking the in-root file by absolute path focuses its root tab at the
+    // cited line and never adds an outside tab.
+    let view = h.view();
+    h.click_link(&view, link(h.repo.join("a.txt"), Some(2)));
+    h.wait("in-root click scrolled to line 2", |h| {
+        h.read(|v| v.code_view()).is_some_and(|code| {
+            code.read_with(&h.visual, |code, _| code.selected_text()) == Some("second".into())
+        })
+    });
+    assert_eq!(h.read(|v| v.open_tabs()), ["a.txt"]);
+
+    // Clicking the file in the second git repo opens an outside tab beside the project tree.
+    h.click_link(&view, link(outside_file.clone(), None));
+    h.wait("outside tab loaded", |h| {
+        h.read(|v| v.active_tab()) == Some(expected_tab.clone())
+            && h.has("FILE_CODE")
+            && h.line(0) == "v1 outside"
+    });
+    assert_eq!(h.read(|v| v.open_tabs()), ["a.txt", expected_tab.as_str()]);
+    assert!(
+        h.has(format!("FILE_SUBBAR_FOLDER {expected_folder}")),
+        "subbar should display the full ~-shortened folder: {expected_folder}"
+    );
+    assert!(
+        !h.has("VIEWER_MODE_SWITCH"),
+        "outside tab must not offer Code | Diff even when its own folder is a dirty git repo"
+    );
+    assert!(
+        h.read(|v| v.selected()).is_none(),
+        "Files tree selection is cleared while an outside tab is active"
+    );
+
+    // Editing the outside file on disk reloads via IGNORED_REFRESH without a watcher.
+    std::fs::write(&outside_file, "v2 reloaded\n").unwrap();
+    h.wait("outside tab reloads on tick", |h| {
+        tick(h);
+        h.line(0) == "v2 reloaded"
+    });
+
+    // Deleting the outside file marks it deleted; recreating restores it.
+    std::fs::remove_file(&outside_file).unwrap();
+    h.wait("outside tab marked deleted", |h| {
+        tick(h);
+        h.has("FILE_DELETED")
+    });
+    std::fs::write(&outside_file, "v3 restored\n").unwrap();
+    h.wait("outside tab restored", |h| {
+        tick(h);
+        !h.has("FILE_DELETED") && h.line(0) == "v3 restored"
+    });
+}
+
+#[test]
+fn outside_tab_promotes_to_root_tab_when_files_root_moves_to_its_repo() {
+    let mut h = viewer(chat("in-project"));
+    let other_repo = h.temp.path().join("other-repo");
+    std::fs::create_dir_all(&other_repo).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "t@example.com"],
+        &["config", "user.name", "Test"],
+    ] {
+        assert!(std::process::Command::new("git")
+            .args(args)
+            .current_dir(&other_repo)
+            .status()
+            .unwrap()
+            .success());
+    }
+    let outside_file = other_repo.join("report.txt");
+    std::fs::write(&outside_file, "initial\n").unwrap();
+    assert!(std::process::Command::new("git")
+        .args(["add", "report.txt"])
+        .current_dir(&other_repo)
+        .status()
+        .unwrap()
+        .success());
+    assert!(std::process::Command::new("git")
+        .args(["commit", "-q", "-m", "init"])
+        .current_dir(&other_repo)
+        .status()
+        .unwrap()
+        .success());
+    std::fs::write(&outside_file, "line1\nline2\n").unwrap();
+
+    let canonical =
+        runner_core::app_paths::normalize_checkout_path(&outside_file.canonicalize().unwrap());
+    let expected_outside = canonical.to_string_lossy().into_owned();
+
+    let view = h.view();
+    h.click_link(&view, link(outside_file.clone(), None));
+    h.wait("outside tab opened before root switch", |h| {
+        h.read(|v| v.active_tab()) == Some(expected_outside.clone())
+            && h.has("FILE_CODE")
+            && h.line(0) == "line1"
+    });
+    assert!(!h.has("VIEWER_MODE_SWITCH"));
+    assert!(h.read(|v| v.selected()).is_none());
+
+    // Choose the sibling repo as the Files root: the outside tab promotes in
+    // place to the root-relative tab, tree selection follows, and Diff enables.
+    view.update(&mut h.visual, |v, cx| {
+        v.set_root(Some(other_repo.clone()), cx);
+    });
+    h.wait(
+        "outside tab promoted to root tab with Diff and tree selection",
+        |h| {
+            h.read(|v| v.open_tabs()) == ["report.txt"]
+                && h.read(|v| v.active_tab()) == Some("report.txt".into())
+                && h.read(|v| v.selected()) == Some("report.txt".into())
+                && h.has("VIEWER_MODE_SWITCH")
+        },
+    );
+
+    // Clicking the same file again focuses the promoted root tab at line 2 with no duplicate.
+    h.click_link(&view, link(outside_file, Some(2)));
+    h.wait("promoted root tab scrolled to line 2", |h| {
+        h.read(|v| v.code_view()).is_some_and(|code| {
+            code.read_with(&h.visual, |code, _| code.selected_text()) == Some("line2".into())
+        })
+    });
+    assert_eq!(h.read(|v| v.open_tabs()), ["report.txt"]);
+
+    // Deleted outside leaf still promotes when its folder becomes the Files root,
+    // so recreating and opening it from the tree reuses the single root tab.
+    let third_dir = h.temp.path().join("third-folder");
+    std::fs::create_dir_all(&third_dir).unwrap();
+    let fleeting = third_dir.join("notes.txt");
+    std::fs::write(&fleeting, "before delete\n").unwrap();
+    let canonical_fleeting =
+        runner_core::app_paths::normalize_checkout_path(&fleeting.canonicalize().unwrap());
+    let expected_fleeting_outside = canonical_fleeting.to_string_lossy().into_owned();
+
+    h.click_link(&view, link(fleeting.clone(), None));
+    h.wait("fleeting outside tab loaded", |h| {
+        h.read(|v| v.active_tab()) == Some(expected_fleeting_outside.clone())
+            && h.has("FILE_CODE")
+            && h.line(0) == "before delete"
+    });
+    std::fs::remove_file(&fleeting).unwrap();
+    h.wait("fleeting outside tab marked deleted", |h| {
+        tick(h);
+        h.has("FILE_DELETED")
+    });
+
+    // Switch Files root while the leaf is still missing on disk: the outside tab
+    // promotes to "notes.txt" using its canonical key.
+    view.update(&mut h.visual, |v, cx| {
+        v.set_root(Some(third_dir.clone()), cx);
+    });
+    h.wait("deleted outside tab promoted to root tab", |h| {
+        h.read(|v| v.open_tabs()) == ["notes.txt"]
+            && h.read(|v| v.active_tab()) == Some("notes.txt".into())
+            && h.has("FILE_DELETED")
+    });
+
+    // Recreate the file and open it from the tree: restores the single root tab
+    // without creating a duplicate tab.
+    std::fs::write(&fleeting, "recreated content\n").unwrap();
+    h.open("notes.txt");
+    h.wait("recreated file restored in promoted root tab", |h| {
+        h.read(|v| v.open_tabs()) == ["notes.txt"]
+            && h.read(|v| v.active_tab()) == Some("notes.txt".into())
+            && !h.has("FILE_DELETED")
+            && h.line(0) == "recreated content"
+    });
+    assert_eq!(h.read(|v| v.open_tabs()), ["notes.txt"]);
+}
+
+#[test]
+fn terminal_link_handles_executables_safely_and_sniffs_unknown_binary_with_editor() {
+    use crate::app_settings::{FileLinkEditor, FileLinkOpenIn};
+    use crate::file_links::{FileLinkDecision, FileLinkLaunch, LAUNCHED};
+
+    let mut h = viewer(chat("in-project"));
+    let scratch = h.temp.path().join("scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let exe = scratch.join("setup.exe");
+    let msi = scratch.join("installer.msi");
+    let bin_unknown = scratch.join("dump.dat");
+    let text_unknown = scratch.join("notes.dat");
+    std::fs::write(&exe, b"MZ\0\0inert").unwrap();
+    std::fs::write(&msi, b"\xD0\xCF\x11\xE0\0inert").unwrap();
+    std::fs::write(&bin_unknown, b"\x89BIN\0\x01\x02").unwrap();
+    std::fs::write(&text_unknown, "plain text unknown ext\n").unwrap();
+
+    let view = h.view();
+    let launches = || LAUNCHED.with(|l| l.borrow().clone());
+
+    // Under Runner preview, inert .exe and .msi open the safe cannot-preview
+    // placeholder tab without launching an OS association.
+    LAUNCHED.with(|l| l.borrow_mut().clear());
+    let shown = h.click_link(&view, link(exe.clone(), None));
+    h.wait("exe opens safe binary placeholder", |h| {
+        h.has("FILE_BINARY") && h.has("FILE_STATE_BODY_TEXT setup.exe is an executable, 9 B.")
+    });
+    assert_eq!(shown.get(), 1);
+    assert!(launches().is_empty());
+
+    let shown = h.click_link(&view, link(msi.clone(), None));
+    h.wait("msi opens safe binary placeholder", |h| {
+        h.has("FILE_BINARY") && h.has("FILE_STATE_BODY_TEXT installer.msi is an installer, 10 B.")
+    });
+    assert_eq!(shown.get(), 1);
+    assert!(launches().is_empty());
+
+    // With Open file links in = Editor and Editor = Zed:
+    // - hover on unknown-extension dump.dat keeps the extension-based Editor hint;
+    // - clicking binary dump.dat sniffs off-thread and routes to DefaultApp (not Zed);
+    // - clicking text notes.dat and inert setup.exe route to Zed.
+    h.store.update(&mut h.visual, |store, cx| {
+        store.update_settings(
+            |settings| {
+                settings.file_link_open_in = FileLinkOpenIn::Editor;
+                settings.file_link_editor = FileLinkEditor::Zed;
+                true
+            },
+            false,
+            cx,
+        );
+    });
+    let hover = view.update(&mut h.visual, |v, cx| {
+        v.link_decision(
+            &bin_unknown,
+            std::time::Instant::now(),
+            std::rc::Rc::new(|_| {}),
+            cx,
+        )
+    });
+    assert_eq!(hover, Some(FileLinkDecision::Editor));
+
+    LAUNCHED.with(|l| l.borrow_mut().clear());
+    h.click_link(&view, link(bin_unknown.clone(), None));
+    h.wait("unknown binary under Editor launches DefaultApp", |_| {
+        !launches().is_empty()
+    });
+    assert_eq!(
+        launches(),
+        [(FileLinkLaunch::DefaultApp, link(bin_unknown, None))]
+    );
+
+    LAUNCHED.with(|l| l.borrow_mut().clear());
+    h.click_link(&view, link(text_unknown.clone(), None));
+    h.wait("unknown text under Editor launches Zed", |_| {
+        !launches().is_empty()
+    });
+    assert_eq!(
+        launches(),
+        [(
+            FileLinkLaunch::Editor(FileLinkEditor::Zed),
+            link(text_unknown, None)
+        )]
+    );
+
+    LAUNCHED.with(|l| l.borrow_mut().clear());
+    h.click_link(&view, link(exe.clone(), None));
+    h.wait("exe under Editor=Zed launches Zed", |_| {
+        !launches().is_empty()
+    });
+    assert_eq!(
+        launches(),
+        [(FileLinkLaunch::Editor(FileLinkEditor::Zed), link(exe, None))]
+    );
+}
+
+#[test]
+fn terminal_link_routes_by_file_type_including_html_binary_unknown_sniff_and_over_10_mb() {
+    use crate::file_links::{FileLinkLaunch, LAUNCHED};
+
+    let mut h = viewer(chat("in-project"));
+    let scratch = h.temp.path().join("scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let html = scratch.join("index.html");
+    let pdf = scratch.join("spec.pdf");
+    let bin_unknown = scratch.join("dump.dat");
+    let text_unknown = scratch.join("notes.dat");
+    let huge = scratch.join("huge.log");
+    std::fs::write(&html, "<h1>hi</h1>\n").unwrap();
+    std::fs::write(&pdf, b"%PDF-1.4\n\0\x01").unwrap();
+    std::fs::write(&bin_unknown, b"\x89BIN\0\x01\x02").unwrap();
+    std::fs::write(&text_unknown, "plain text unknown ext\n").unwrap();
+    std::fs::File::create(&huge)
+        .unwrap()
+        .set_len(runner_core::protocol::files::MAX_READ_BYTES + 1)
+        .unwrap();
+
+    let view = h.view();
+    let launches = || LAUNCHED.with(|l| l.borrow().clone());
+
+    // HTML -> default browser, no tab.
+    LAUNCHED.with(|l| l.borrow_mut().clear());
+    let shown = h.click_link(&view, link(html.clone(), None));
+    h.wait("html browser launch", |_| !launches().is_empty());
+    assert_eq!(launches(), [(FileLinkLaunch::Browser, link(html, None))]);
+    assert_eq!(shown.get(), 0);
+    assert!(h.read(|v| v.open_tabs()).is_empty());
+
+    // PDF -> default app, no tab.
+    LAUNCHED.with(|l| l.borrow_mut().clear());
+    let shown = h.click_link(&view, link(pdf.clone(), None));
+    h.wait("pdf default-app launch", |_| !launches().is_empty());
+    assert_eq!(launches(), [(FileLinkLaunch::DefaultApp, link(pdf, None))]);
+    assert_eq!(shown.get(), 0);
+    assert!(h.read(|v| v.open_tabs()).is_empty());
+
+    // Unknown extension with binary content -> sniffed off UI thread -> default app, no tab.
+    LAUNCHED.with(|l| l.borrow_mut().clear());
+    let shown = h.click_link(&view, link(bin_unknown.clone(), None));
+    h.wait("unknown binary default-app launch", |_| {
+        !launches().is_empty()
+    });
+    assert_eq!(
+        launches(),
+        [(FileLinkLaunch::DefaultApp, link(bin_unknown, None))]
+    );
+    assert_eq!(shown.get(), 0);
+    assert!(h.read(|v| v.open_tabs()).is_empty());
+
+    // Text over 10 MB -> Editor, no tab.
+    LAUNCHED.with(|l| l.borrow_mut().clear());
+    let shown = h.click_link(&view, link(huge.clone(), None));
+    h.wait("over-10MB editor launch", |_| !launches().is_empty());
+    assert!(
+        matches!(launches().as_slice(), [(FileLinkLaunch::Editor(_), target)] if target == &link(huge, None))
+    );
+    assert_eq!(shown.get(), 0);
+    assert!(h.read(|v| v.open_tabs()).is_empty());
+
+    // Unknown extension with UTF-8 text -> opens preview tab.
+    let expected_tab =
+        runner_core::app_paths::normalize_checkout_path(&text_unknown.canonicalize().unwrap())
+            .to_string_lossy()
+            .into_owned();
+    LAUNCHED.with(|l| l.borrow_mut().clear());
+    let shown = h.click_link(&view, link(text_unknown, None));
+    h.wait("unknown text opens preview", |h| {
+        h.read(|v| v.active_tab()) == Some(expected_tab.clone())
+            && h.has("FILE_CODE")
+            && h.line(0) == "plain text unknown ext"
+    });
+    assert!(launches().is_empty());
+    assert_eq!(shown.get(), 1);
+}
+
+#[test]
+fn binary_and_large_placeholders_show_kind_and_reason_in_both_locales() {
+    use crate::i18n::{testing::with_locale, Locale};
+    use gpui::AssetSource as _;
+
+    assert!(
+        crate::assets::Assets.load("eye-off.svg").unwrap().is_some(),
+        "eye-off.svg asset must be registered"
+    );
+
+    for locale in [Locale::English, Locale::SimplifiedChinese] {
+        with_locale(locale, || {
+            let mut h = viewer(chat("in-project"));
+            std::fs::write(h.repo.join("spec.pdf"), b"%PDF-1.4\0\x01").unwrap();
+            std::fs::write(h.repo.join("bundle.zip"), b"PK\x03\x04\0\x01").unwrap();
+            std::fs::write(h.repo.join("dump.dat"), b"RAW\0\x01\x02").unwrap();
+            std::fs::File::create(h.repo.join("events.ndjson"))
+                .unwrap()
+                .set_len(runner_core::protocol::files::MAX_READ_BYTES + 1)
+                .unwrap();
+
+            let (
+                bin_title,
+                bin_hint,
+                pdf_body,
+                zip_body,
+                dat_body,
+                large_title,
+                large_body,
+                large_hint,
+            ) = match locale {
+                Locale::English => (
+                    "No preview for this file",
+                    "Runner previews text, code, Markdown and images.",
+                    "spec.pdf is a PDF document, 10 B.",
+                    "bundle.zip is a ZIP archive, 6 B.",
+                    "dump.dat is a binary file, 6 B.",
+                    "Too large to preview",
+                    "events.ndjson is 10 MB.",
+                    "Runner previews files up to 10 MB.",
+                ),
+                Locale::SimplifiedChinese => (
+                    "无法预览此文件",
+                    "Runner 支持预览文本、代码、Markdown 和图片。",
+                    "spec.pdf 是PDF 文档，10 B。",
+                    "bundle.zip 是ZIP 压缩包，6 B。",
+                    "dump.dat 是二进制文件，6 B。",
+                    "文件过大，无法预览",
+                    "events.ndjson 大小为 10 MB。",
+                    "Runner 支持预览不超过 10 MB 的文件。",
+                ),
+            };
+
+            for (file, body) in [
+                ("spec.pdf", pdf_body),
+                ("bundle.zip", zip_body),
+                ("dump.dat", dat_body),
+            ] {
+                h.open(file);
+                h.wait("binary placeholder", |h| {
+                    h.has("FILE_BINARY")
+                        && h.has(format!("FILE_STATE_TITLE_TEXT {bin_title}"))
+                        && h.has(format!("FILE_STATE_BODY_TEXT {body}"))
+                        && h.has(format!("FILE_STATE_HINT_TEXT {bin_hint}"))
+                        && h.has("FILE_OPEN_DEFAULT")
+                });
+            }
+
+            h.open("events.ndjson");
+            h.wait("large placeholder", |h| {
+                h.has("FILE_TOO_LARGE")
+                    && h.has(format!("FILE_STATE_TITLE_TEXT {large_title}"))
+                    && h.has(format!("FILE_STATE_BODY_TEXT {large_body}"))
+                    && h.has(format!("FILE_STATE_HINT_TEXT {large_hint}"))
+                    && h.has("FILE_OPEN_LARGE")
+            });
+        });
+    }
+}
+
+#[test]
+fn nul_free_and_large_known_binary_files_show_binary_placeholder_from_tree_and_finder() {
+    let mut h = viewer(chat("in-project"));
+    let ascii_pdf = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n";
+    let comment_pdf = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<<>>\nendobj\n%%EOF\n";
+    std::fs::write(h.repo.join("ascii.pdf"), ascii_pdf).unwrap();
+    std::fs::write(h.repo.join("comment.pdf"), comment_pdf).unwrap();
+    std::fs::File::create(h.repo.join("huge.pdf"))
+        .unwrap()
+        .set_len(runner_core::protocol::files::MAX_READ_BYTES + 1)
+        .unwrap();
+    std::fs::write(h.repo.join("build.command"), "#!/bin/sh\necho ok\n").unwrap();
+
+    // 1. ASCII-only NUL-free PDF opened from the tree shows the binary placeholder.
+    let ascii_body = format!(
+        "FILE_STATE_BODY_TEXT ascii.pdf is a PDF document, {} B.",
+        ascii_pdf.len()
+    );
+    h.open("ascii.pdf");
+    h.wait("ASCII-only PDF shows binary placeholder", |h| {
+        h.has("FILE_BINARY")
+            && !h.has("FILE_CODE")
+            && h.has("FILE_STATE_TITLE_TEXT No preview for this file")
+            && h.has(ascii_body.as_str())
+            && h.has("FILE_OPEN_DEFAULT")
+    });
+
+    // 2. Non-ASCII-header NUL-free PDF opened from the finder shows the binary placeholder.
+    let comment_body = format!(
+        "FILE_STATE_BODY_TEXT comment.pdf is a PDF document, {} B.",
+        comment_pdf.len()
+    );
+    h.click("FILES_SEARCH");
+    h.wait("finder index loaded", |h| h.has("FILES_FINDER_ITEM 0"));
+    h.visual.simulate_keystrokes("comment.pdf");
+    h.wait("finder matches comment.pdf", |h| {
+        h.read(|view| {
+            view.finder
+                .as_ref()
+                .is_some_and(|finder| finder.path_at(0) == Some("comment.pdf"))
+        })
+    });
+    h.visual.simulate_keystrokes("enter");
+    h.wait("finder PDF shows binary placeholder", |h| {
+        h.has("FILE_BINARY")
+            && !h.has("FILE_CODE")
+            && h.has("FILE_STATE_TITLE_TEXT No preview for this file")
+            && h.has(comment_body.as_str())
+            && h.has("FILE_OPEN_DEFAULT")
+    });
+
+    // 3. Over-10 MB known binary file shows the binary placeholder (not TooLarge).
+    h.open("huge.pdf");
+    h.wait("large PDF shows binary placeholder", |h| {
+        h.has("FILE_BINARY")
+            && !h.has("FILE_TOO_LARGE")
+            && !h.has("FILE_CODE")
+            && h.has("FILE_STATE_TITLE_TEXT No preview for this file")
+            && h.has("FILE_STATE_BODY_TEXT huge.pdf is a PDF document, 10 MB.")
+            && h.has("FILE_OPEN_DEFAULT")
+    });
+
+    // 4. Text script under Executable kind remains inspectable as code.
+    h.open("build.command");
+    h.wait("text .command script opens as code", |h| {
+        h.has("FILE_CODE") && !h.has("FILE_BINARY")
+    });
+
+    // 5. Gitignored NUL-free PDF captures a usable stamp on initial read, keeps it on an
+    //    unchanged refresh, and updates the cached stamp on a same-size rewrite.
+    std::fs::create_dir_all(h.repo.join("target")).unwrap();
+    let pdf_v1 = b"%PDF-1.4\n1 0 obj\n(v1)\nendobj\n%%EOF\n";
+    let pdf_v2 = b"%PDF-1.4\n1 0 obj\n(v2)\nendobj\n%%EOF\n";
+    assert_eq!(pdf_v1.len(), pdf_v2.len());
+    let ignored_path = h.repo.join("target/ignored.pdf");
+    std::fs::write(&ignored_path, pdf_v1).unwrap();
+    let t1 = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&ignored_path)
+        .unwrap()
+        .set_modified(t1)
+        .unwrap();
+    h.wait("ignored.pdf is marked ignored in git status", |h| {
+        h.read(|view| {
+            view.git_status()
+                .is_some_and(|status| status.is_ignored("target/ignored.pdf"))
+        })
+    });
+
+    h.open("target/ignored.pdf");
+    let ignored_body = format!(
+        "FILE_STATE_BODY_TEXT ignored.pdf is a PDF document, {} B.",
+        pdf_v1.len()
+    );
+    let viewer_entity = h.read(|view| view.viewer.clone());
+    h.wait("ignored NUL-free PDF opens with usable stamp", |h| {
+        h.has("FILE_BINARY")
+            && h.has(ignored_body.as_str())
+            && viewer_entity
+                .read_with(&h.visual, |viewer, _| {
+                    viewer.doc_stamp("target/ignored.pdf")
+                })
+                .is_some_and(|(size, modified)| size == pdf_v1.len() as u64 && modified.is_some())
+    });
+    let initial_stamp = viewer_entity
+        .read_with(&h.visual, |viewer, _| {
+            viewer.doc_stamp("target/ignored.pdf")
+        })
+        .unwrap();
+
+    // Unchanged refresh completes cleanly and keeps the same stamp.
+    tick(&mut h);
+    h.wait("unchanged ignored PDF refresh finishes", |h| {
+        !viewer_entity.read_with(&h.visual, |viewer, _| viewer.reading("target/ignored.pdf"))
+    });
+    assert_eq!(
+        viewer_entity.read_with(&h.visual, |viewer, _| {
+            viewer.doc_stamp("target/ignored.pdf")
+        }),
+        Some(initial_stamp),
+    );
+
+    // Same-size rewrite with a newer mtime updates the cached stamp even though size is unchanged.
+    std::fs::write(&ignored_path, pdf_v2).unwrap();
+    let t2 = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&ignored_path)
+        .unwrap()
+        .set_modified(t2)
+        .unwrap();
+    h.wait("same-size rewrite updates ignored PDF cached stamp", |h| {
+        tick(h);
+        !viewer_entity.read_with(&h.visual, |viewer, _| viewer.reading("target/ignored.pdf"))
+            && viewer_entity
+                .read_with(&h.visual, |viewer, _| {
+                    viewer.doc_stamp("target/ignored.pdf")
+                })
+                .is_some_and(|stamp| stamp.0 == pdf_v2.len() as u64 && stamp.1 != initial_stamp.1)
+    });
+    assert!(h.has("FILE_BINARY"));
 }

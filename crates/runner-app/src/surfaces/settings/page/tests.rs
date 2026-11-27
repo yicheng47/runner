@@ -2496,6 +2496,178 @@ fn appearance_mode_segmented_supports_keyboard_navigation_and_moves_active_pill(
 }
 
 #[test]
+fn file_links_section_switches_open_in_shows_panel_fallback_and_syncs_editor_menu() {
+    use crate::app_settings::{FileLinkEditor, FileLinkOpenIn};
+    use crate::i18n::{testing::with_locale, Locale};
+    use gpui::{size, Modifiers, TestAppContext, VisualTestContext};
+
+    for locale in [Locale::English, Locale::SimplifiedChinese] {
+        with_locale(locale, || {
+            let temp = tempfile::tempdir().unwrap();
+            let mut cx = TestAppContext::single();
+            let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
+            store.update(&mut cx, |store, cx| {
+                let mut found = std::collections::HashMap::new();
+                found.insert("zed".into(), true);
+                found.insert("code".into(), false);
+                found.insert("cursor".into(), false);
+                store.file_link_environment = (String::new(), found);
+                store.update_settings(
+                    |settings| {
+                        settings.file_link_open_in = FileLinkOpenIn::Preview;
+                        settings.file_link_editor = FileLinkEditor::Zed;
+                        settings.show_side_panel = true;
+                        settings.files_view = true;
+                        true
+                    },
+                    false,
+                    cx,
+                );
+            });
+            let host = cx.add_window(|window, cx| {
+                NativeRoot::new(
+                    "file-links-settings".into(),
+                    temp.path().join("logs"),
+                    None,
+                    None,
+                    store.clone(),
+                    window,
+                    cx,
+                )
+            });
+            let mut visual = VisualTestContext::from_window(host.into(), &cx);
+            visual.simulate_resize(size(px(1200.), px(900.)));
+            host.update(&mut visual, |root, window, cx| {
+                root.enter_settings_pane(SettingsPane::General, window, cx);
+                window.refresh();
+            })
+            .unwrap();
+            visual.run_until_parked();
+
+            // File links section and controls render; no fallback note while panel & Files are on.
+            assert!(visual.debug_bounds("SETTINGS_FILE_LINKS_SECTION").is_some());
+            assert!(visual
+                .debug_bounds("SETTINGS_FILE_LINK_OPEN_IN_PREVIEW")
+                .is_some());
+            assert!(visual
+                .debug_bounds("SETTINGS_FILE_LINK_OPEN_IN_EDITOR")
+                .is_some());
+            assert!(visual.debug_bounds("SETTINGS_FILE_LINK_EDITOR").is_some());
+            assert!(visual
+                .debug_bounds("SETTINGS_FILE_LINK_FALLBACK_NOTE")
+                .is_none());
+
+            // Shared Editor menu lists Zed (enabled), VS Code & Cursor (disabled with PATH hint),
+            // and Default app (enabled).
+            let options =
+                visual.update(|_, cx| crate::surfaces::files::file_link_editor_options(cx));
+            assert_eq!(options.len(), 4);
+            assert!(!options[0].disabled && options[0].trailing_hint.is_none());
+            assert!(options[1].disabled);
+            assert!(options[2].disabled);
+            assert!(!options[3].disabled && options[3].separator_before);
+            let code_hint = options[1].trailing_hint.as_ref().unwrap().as_str();
+            assert!(code_hint.contains("code"), "{locale:?}: {code_hint}");
+
+            // Clicking Editor and Runner preview updates settings.
+            let editor_btn = visual
+                .debug_bounds("SETTINGS_FILE_LINK_OPEN_IN_EDITOR")
+                .unwrap();
+            visual.simulate_click(editor_btn.center(), Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(
+                visual.read(|cx| store.read(cx).settings.file_link_open_in),
+                FileLinkOpenIn::Editor
+            );
+            let preview_btn = visual
+                .debug_bounds("SETTINGS_FILE_LINK_OPEN_IN_PREVIEW")
+                .unwrap();
+            visual.simulate_click(preview_btn.center(), Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(
+                visual.read(|cx| store.read(cx).settings.file_link_open_in),
+                FileLinkOpenIn::Preview
+            );
+
+            // Panel off -> fallback note appears; switching to Editor hides it;
+            // Files off with Preview -> fallback note appears again.
+            store.update(&mut visual, |store, cx| {
+                store.update_settings(
+                    |settings| {
+                        settings.show_side_panel = false;
+                        true
+                    },
+                    false,
+                    cx,
+                );
+            });
+            visual.run_until_parked();
+            assert!(visual
+                .debug_bounds("SETTINGS_FILE_LINK_FALLBACK_NOTE")
+                .is_some());
+
+            let editor_btn = visual
+                .debug_bounds("SETTINGS_FILE_LINK_OPEN_IN_EDITOR")
+                .unwrap();
+            visual.simulate_click(editor_btn.center(), Modifiers::default());
+            visual.run_until_parked();
+            assert!(visual
+                .debug_bounds("SETTINGS_FILE_LINK_FALLBACK_NOTE")
+                .is_none());
+
+            store.update(&mut visual, |store, cx| {
+                store.update_settings(
+                    |settings| {
+                        settings.file_link_open_in = FileLinkOpenIn::Preview;
+                        settings.show_side_panel = true;
+                        settings.files_view = false;
+                        true
+                    },
+                    false,
+                    cx,
+                );
+            });
+            visual.run_until_parked();
+            assert!(visual
+                .debug_bounds("SETTINGS_FILE_LINK_FALLBACK_NOTE")
+                .is_some());
+
+            // Changing file_link_editor via store (as the viewer's Open in chevron does)
+            // updates Settings' Editor select immediately.
+            store.update(&mut visual, |store, cx| {
+                store.update_settings(
+                    |settings| {
+                        settings.file_link_editor = FileLinkEditor::DefaultApp;
+                        true
+                    },
+                    false,
+                    cx,
+                );
+            });
+            visual.run_until_parked();
+            let select_value = host
+                .read_with(&visual, |root, cx| {
+                    root.settings_page
+                        .file_link_editor
+                        .read(cx)
+                        .value()
+                        .to_owned()
+                })
+                .unwrap();
+            assert_eq!(select_value, FileLinkEditor::DefaultApp.key());
+
+            // Nav search finds General for "file links" / "editor".
+            if locale == Locale::English {
+                assert_eq!(
+                    filtered_nav_groups("file links"),
+                    vec![("App", vec![SettingsPane::General])]
+                );
+            }
+        });
+    }
+}
+
+#[test]
 fn theme_card_focus_style_occludes_shadow_with_opaque_panel_background() {
     use crate::theme::ThemeVariant;
     use crate::theme_snapshot::ThemeGuard;

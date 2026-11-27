@@ -312,10 +312,13 @@ impl RemoteClient {
                         resize_owner: interactive,
                         scrollable: true,
                         find: None,
-                        file_links: None,
+                        file_links: Some(crate::file_links::FileLinkRoute::remote()),
                     }
                     .render()
                     .id(SharedString::from(format!("remote-terminal-{id}")))
+                    .when(cfg!(test), |el| {
+                        el.debug_selector(|| "REMOTE_TERMINAL_SURFACE".into())
+                    })
                     .opacity(if interactive { 1. } else { 0.45 })
                     .on_key_down(move |event: &KeyDownEvent, _, cx| {
                         if !interactive {
