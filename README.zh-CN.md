@@ -81,7 +81,7 @@ https://github.com/user-attachments/assets/a45d2440-da17-4be4-8de5-0902f59eb1da
 
 ## 功能
 
-- **可复用的 Crew** — 把保存的角色组合成 crew，设定共享的团队约定，按需覆盖各槽位的 agent 和模型配置，随时用同一支团队发起 mission。
+- **可复用的 Crew** — 把保存的角色组合成 crew，设定共享的团队约定，按需覆盖各槽位的 agent 和模型配置，随时用同一支团队发起 mission。支持离线导出与导入 crew（`.crew.toml`）和独立 role（`.role.toml`），可通过 **Import…**、拖放文件或 CLI 完成。
 - **Mission 与协作** — 每个 mission 为 crew 的各个槽位提供实时终端和共享 feed，agent 在这里协作，需要你决定的问题也会出现在这里。单个槽位可以单独停止、恢复或重启，不影响其他槽位。[架构 →](./docs/arch/arch.md)
 - **Mission 向 chat 汇报** — 从 chat 启动的 mission 会关联到这个 chat，并在侧边栏归到它下面，agent 可以直接结束这一轮，不用再盯着。mission 需要你处理、失败或进入稳定状态时，Runner 会向 chat 输入一行提示，agent 再去读 mission 发生了什么。[关联聊天与汇报 →](./docs/guide/zh-CN/concepts/missions.md#关联聊天与汇报)
 - **远程控制** — 在侧边栏切换到另一台电脑，或从 iPhone 连接，操作实时终端、发起 chat 和 mission，随时回复 crew，连接采用端到端加密。由于中继服务器目前处于仅面向中国大陆的内测阶段，远程控制整体仍在内测中；海外用户的 Tailscale 支持正在开发中。[加入内测候补名单 →](https://runnersh.dev/zh-CN/beta/) · [远程访问指南 →](./docs/guide/guides/remote-access.md)
@@ -125,7 +125,9 @@ https://github.com/user-attachments/assets/a45d2440-da17-4be4-8de5-0902f59eb1da
 
 全新安装会预置 **Pair coding crew**：coder 负责实现，reviewer 审查 diff，反复迭代直到审查通过。两个角色默认使用 Codex，也可以分别选择其他 agent。
 
-[组建 Crew 并查看示例提示词 →](./docs/guide/guides/build-a-crew.md)
+[`examples/`](./examples/) 目录提供了可直接导入的 `.crew.toml` 模板（包括 pair coding、Codex trio、dev crew、docs crew 等）。将任意 `.crew.toml` 文件拖入 **Crews → Import…**（或运行 `runner crew import <file>`）即可预览提示词、将未安装的运行时替换为本机已安装的 agent 后导入；独立的 `.role.toml` 模板也可以同样通过 **Roles → Import…** 或 `runner role import <file>` 直接导入。
+
+[组建 Crew 并查看示例模板 →](./docs/guide/zh-CN/guides/build-a-crew.md)
 
 ## 致谢
 

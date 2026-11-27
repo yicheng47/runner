@@ -81,7 +81,7 @@ Use your iPhone to follow live terminals, start chats and missions, and answer y
 
 ## Features
 
-- **Reusable crews** — Compose saved roles into a crew, define shared team conventions, adjust per-slot agent and model overrides, and launch a mission with the same team whenever you need it.
+- **Reusable crews** — Compose saved roles into a crew, define shared team conventions, adjust per-slot agent and model overrides, and launch a mission with the same team whenever you need it. Export and import crews (`.crew.toml`) or standalone roles (`.role.toml`) offline via **Import…**, drag-and-drop, or the CLI.
 - **Missions and coordination** — Each mission gives every crew slot a live terminal and a shared feed where agents coordinate and bring questions to you. Stop, resume or restart one slot without touching the rest. [Architecture →](./docs/arch/arch.md)
 - **Missions report back to their chat** — A mission started from a chat links to it and groups under it in the sidebar, so the agent can end its turn instead of watching. When the mission needs you, fails or settles, Runner types one line into the chat and the agent reads what happened. [Linked chat and reports →](./docs/guide/concepts/missions.md#linked-chat-and-reports)
 - **Remote control** — Switch to another computer in the sidebar or connect from your iPhone to use its live terminals, start chats and missions, and answer your crew with end-to-end encryption. Remote control is currently in private beta because the relay server is in private beta for mainland China only; Tailscale support for outside mainland China is in development. [Join the beta waitlist →](https://runnersh.dev/beta/) · [Remote access guide →](./docs/guide/guides/remote-access.md)
@@ -125,7 +125,9 @@ Features and platform support vary by agent.
 
 Fresh installations include **Pair coding crew**: a coder implements and a reviewer checks the diff until the review is clean. Both use Codex by default; you can choose a different agent for either role.
 
-[Build a crew and explore example prompts →](./docs/guide/guides/build-a-crew.md)
+Ready-to-import `.crew.toml` templates live in [`examples/`](./examples/) (including pair coding, Codex trio, dev crew, docs crew and more). Drop any `.crew.toml` file into **Crews → Import…** (or run `runner crew import <file>`) to preview its prompts and switch any missing runtime to an installed agent; standalone `.role.toml` files import the same way under **Roles → Import…** or `runner role import <file>`.
+
+[Build a crew and explore example templates →](./docs/guide/guides/build-a-crew.md)
 
 ## Acknowledgements
 
