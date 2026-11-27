@@ -163,6 +163,11 @@ impl SettingsPane {
     /// Row labels the Settings search matches besides the pane's own label.
     fn search_terms(self) -> Vec<&'static str> {
         let keys: &[&'static str] = match self {
+            Self::General => &[
+                "settings.file_links",
+                "settings.file_link_open_in",
+                "settings.file_link_editor",
+            ],
             Self::Appearance => &[
                 "appearance.mode",
                 "ui.theme",
@@ -295,6 +300,7 @@ fn launch_dims_for(
 #[derive(Clone, Copy)]
 enum SettingsSelection {
     Language,
+    FileLinkEditor,
     DefaultCrew,
     TerminalFont,
     TerminalCursor,
@@ -333,6 +339,7 @@ pub(crate) struct SettingsState {
     pub(crate) usage_threshold: Entity<StyledSelect>,
     pub(crate) usage_interval: Entity<StyledSelect>,
     pub(crate) language: Entity<StyledSelect>,
+    pub(crate) file_link_editor: Entity<StyledSelect>,
     pub(crate) quit_behavior: Entity<StyledSelect>,
     agents: Option<Entity<settings::agents::AgentsPane>>,
     pub(crate) privacy: Option<Entity<settings::privacy::PrivacyPane>>,
@@ -540,6 +547,14 @@ impl SettingsState {
             SettingsSelection::Language,
             cx,
         );
+        let file_link_editor = settings_select(
+            &root,
+            "settings-file-link-editor",
+            settings.file_link_editor.key(),
+            crate::surfaces::files::file_link_editor_options(cx),
+            SettingsSelection::FileLinkEditor,
+            cx,
+        );
         let quit_behavior = settings_select(
             &root,
             "settings-quit-behavior",
@@ -609,6 +624,7 @@ impl SettingsState {
             usage_threshold,
             usage_interval,
             language,
+            file_link_editor,
             quit_behavior,
             agents: None,
             privacy: None,
@@ -749,7 +765,8 @@ fn settings_select(
         // Room for the sample icons beside the longest name, Catppuccin.
         SettingsSelection::FileIcons => Some(FILE_ICONS_SELECT_WIDTH),
         SettingsSelection::Language => Some(SETTINGS_SELECT_WIDTH),
-        SettingsSelection::DefaultCrew
+        SettingsSelection::FileLinkEditor
+        | SettingsSelection::DefaultCrew
         | SettingsSelection::TerminalFont
         | SettingsSelection::TerminalCursor
         | SettingsSelection::TerminalScrollback
@@ -1015,8 +1032,10 @@ impl NativeRoot {
                     archived.update(cx, |pane, pane_cx| pane.refresh(pane_cx));
                 }
             }
-            SettingsPane::General
-            | SettingsPane::Appearance
+            SettingsPane::General => {
+                self.sync_file_link_editor_select(cx);
+            }
+            SettingsPane::Appearance
             | SettingsPane::Terminal
             | SettingsPane::Shortcuts
             | SettingsPane::SidePanel
@@ -1048,6 +1067,8 @@ impl NativeRoot {
                 .into_iter()
                 .find(|language| language.key() == value)
                 .is_some_and(|language| update_if_changed(&mut settings.language, language)),
+            SettingsSelection::FileLinkEditor => crate::app_settings::FileLinkEditor::parse(value)
+                .is_some_and(|editor| update_if_changed(&mut settings.file_link_editor, editor)),
             SettingsSelection::DefaultCrew => {
                 update_if_changed(&mut settings.default_crew_id, value.to_owned())
             }
@@ -1113,6 +1134,31 @@ impl NativeRoot {
             select.set_value(files_font_value(files.as_ref()), cx);
             select.set_options(options, cx);
         });
+    }
+
+    pub(crate) fn sync_file_link_editor_select(&self, cx: &mut Context<Self>) {
+        let value = self.settings(cx).file_link_editor.key();
+        let options = crate::surfaces::files::file_link_editor_options(cx);
+        self.settings_page
+            .file_link_editor
+            .update(cx, |select, cx| {
+                select.set_options(options, cx);
+                if select.value() != value {
+                    select.set_value(value, cx);
+                }
+            });
+    }
+
+    pub(super) fn set_file_link_open_in(
+        &mut self,
+        open_in: crate::app_settings::FileLinkOpenIn,
+        cx: &mut Context<Self>,
+    ) {
+        if self.update_app_settings(cx, true, |settings| {
+            update_if_changed(&mut settings.file_link_open_in, open_in)
+        }) {
+            cx.notify();
+        }
     }
 
     /// Settings → Side panel's selects follow a change made in another

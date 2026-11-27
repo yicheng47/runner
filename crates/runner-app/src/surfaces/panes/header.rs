@@ -452,6 +452,10 @@ impl NativeRoot {
                     this.show_link_preview_in_tab(tab, cx);
                 }
             },
+            |this: &Self, cx| crate::file_links::FileLinkRouteState {
+                local: this.remote_client.is_local(),
+                panel_open: this.chat_panel_is_open(cx),
+            },
         )
     }
 

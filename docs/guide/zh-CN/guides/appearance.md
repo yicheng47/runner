@@ -36,3 +36,9 @@ Windows 使用实色，不显示 macOS 的材质选择器。
 **光标闪烁（Blink cursor）** 默认关闭，开启后获得焦点的终端光标会闪烁；自行设置光标样式的程序仍由其自己决定。 **回滚行数（Scrollback）** 让每个终端在屏幕上方保留 1,000、5,000、10,000（默认）、25,000 或 50,000 行。行数越多，每个打开的会话占用的内存越多；调低后，已打开终端中最早的行会被丢弃。 **选中即复制（Copy on select）** 默认关闭，开启后用鼠标完成选择时立即将文本复制到剪贴板，内容与 ⌘C 或 Ctrl+C 复制的相同，选区保持不变。
 
 在 macOS 上， **键盘（Keyboard）** 分组中的 **将 Option 用作 Meta 键（Option as Meta key）** 控制 Option 是发送 Shell 快捷键还是输入键盘布局的字符。默认的 **自动（Automatic）** 在 U.S.、U.S. International 和 ABC 布局中使用 Meta，在其他布局中输入字符。可选择 **左右 Option 键（Both Option keys）** 、 **仅左 Option 键（Left Option only）** 、 **仅右 Option 键（Right Option only）** 或 **关闭（Off）** 覆盖默认行为。布局切换从下一次按键生效。
+
+## 文件链接
+
+**设置 → 通用 → 文件链接（Settings → General → File links）** 控制在终端中 ⌘ 点击（Windows 和 Linux 上为 Ctrl 点击）文件路径时的打开位置。**打开文件链接于（Open file links in）** 可在 **Runner 预览（Runner preview）** （默认值，从旧版本升级后亦默认如此）与 **编辑器（Editor）** 之间切换。当选择 **Runner 预览** 且 **设置 → 侧面板** 中的 **显示侧面板** 或 **文件** 处于关闭状态时，文件链接会改用所选编辑器打开，该行也会显示指向 **侧面板 → 面板** 的提示；⌘ 点击不会自动重新打开已关闭的侧面板。
+
+**编辑器（Editor）** 在 Zed、VS Code、Cursor 与 **默认应用（Default app）** 中选择外部应用；PATH 中未找到命令的编辑器仍会列出但不可选择并附带提示。此选项与文件阅读器的 **打开方式（Open in）** 共享，修改任意一处都会同步更新另一处，升级时也会保留你此前在 **打开方式** 中选择的编辑器。HTML 文件在默认浏览器中打开，无法预览的二进制文件无论选择了哪个编辑器都会用 **默认应用** 打开。见[在侧面板中阅读文件](chats-and-windows.md#在侧面板中阅读文件)。

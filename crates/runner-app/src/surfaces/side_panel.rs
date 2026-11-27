@@ -801,14 +801,31 @@ pub(crate) fn maximize_button(control: MaximizeControl, settings: &AppSettings) 
         )
 }
 
+/// Availability of the Changes activity-bar icon for the active panel's root.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ChangesGitState {
+    /// Initial local root resolution is still in flight: keep the icon
+    /// visually normal so git checkouts do not flash dimmed, while blocking
+    /// entry until a checkout is known.
+    Pending,
+    /// Resolved git checkout (or remote session): fully interactive.
+    Git,
+    /// Resolved non-git folder or no folder: dimmed at 35% opacity,
+    /// unclickable, no dirty dot, and non-git tooltip — even while Changes is
+    /// already the active screen after its root left git.
+    NotGit,
+}
+
 /// Orca-style 40 px top icon activity bar: fixed icon buttons (`Sessions`,
 /// `Files`, `Changes` with amber dirty dot), active raised tile + 2 px bottom
 /// accent indicator, optional `Maximize`, and `Collapse`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn activity_bar(
     surface: PanelSurface,
     settings: &AppSettings,
     selection: &PanelSelection,
     dirty_changes: bool,
+    changes_git: ChangesGitState,
     handler: SurfaceHandler,
     maximize: Option<MaximizeControl>,
     collapse: impl IntoElement,
@@ -816,8 +833,16 @@ pub(crate) fn activity_bar(
     let active = shown(surface, settings, selection);
     let buttons = views(surface, settings)
         .map(|view| {
-            let dot = view.id == PanelViewId::Changes && dirty_changes;
-            activity_button(view, active == Some(view.id), dot, handler.clone())
+            let is_active = active == Some(view.id);
+            let git_state = if view.id == PanelViewId::Changes {
+                changes_git
+            } else {
+                ChangesGitState::Git
+            };
+            let dot = view.id == PanelViewId::Changes
+                && git_state == ChangesGitState::Git
+                && dirty_changes;
+            activity_button(view, is_active, git_state, dot, handler.clone())
         })
         .collect::<Vec<_>>();
     let maximize = maximize.map(|control| maximize_button(control, settings));
@@ -874,14 +899,23 @@ fn record(
 fn activity_button(
     view: &'static PanelView,
     active: bool,
+    git_state: ChangesGitState,
     dirty_dot: bool,
     handler: SurfaceHandler,
 ) -> AnyElement {
     let id = view.id;
+    let disabled = git_state == ChangesGitState::NotGit;
+    let pending = git_state == ChangesGitState::Pending;
+    let interactive = git_state == ChangesGitState::Git;
     let ink = if active {
         theme::text()
     } else {
         theme::muted()
+    };
+    let tooltip = if disabled {
+        crate::i18n::text("side_panel.changes_not_git_tooltip")
+    } else {
+        view.label()
     };
     let tile = stop_titlebar_drag(div().id(view_element_id("activity", view)))
         .relative()
@@ -890,13 +924,17 @@ fn activity_button(
         .items_center()
         .justify_center()
         .rounded_md()
-        .cursor_pointer()
         .when(active, |el| el.bg(theme::raised()))
-        .when(!active, |el| {
-            el.hover(|el| el.bg(theme::with_alpha(theme::raised(), 0.6)))
+        .when(disabled, |el| el.opacity(0.35).cursor_default())
+        .when(pending, |el| el.cursor_default())
+        .when(interactive, |el| {
+            el.cursor_pointer()
+                .when(!active, |el| {
+                    el.hover(|el| el.bg(theme::with_alpha(theme::raised(), 0.6)))
+                })
+                .on_click(move |_, window, cx| handler(SurfaceAction::Select(id), window, cx))
         })
         .map(|el| record("PANEL_ACTIVITY", view, el))
-        .on_click(move |_, window, cx| handler(SurfaceAction::Select(id), window, cx))
         .child(
             svg()
                 .flex_none()
@@ -904,7 +942,7 @@ fn activity_button(
                 .size(rems(15. / 16.))
                 .text_color(ink),
         )
-        .when(dirty_dot, |el| {
+        .when(dirty_dot && interactive, |el| {
             el.child(
                 div()
                     .when(cfg!(test), |dot| {
@@ -919,6 +957,29 @@ fn activity_button(
             )
         });
 
+    let state_wrapped = div()
+        .flex()
+        .items_center()
+        .when(cfg!(test) && disabled, |el| {
+            el.debug_selector(move || format!("PANEL_ACTIVITY {id:?} disabled"))
+        })
+        .when(cfg!(test) && pending, |el| {
+            el.debug_selector(move || format!("PANEL_ACTIVITY {id:?} pending"))
+        })
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .when(cfg!(test), |el| {
+                    el.debug_selector(move || format!("PANEL_ACTIVITY_TOOLTIP {id:?} {tooltip}"))
+                })
+                .child(Tooltip::new(
+                    view_element_id("activity-tip", view),
+                    tooltip,
+                    tile,
+                )),
+        );
+
     let wrapped = div()
         .relative()
         .h_full()
@@ -927,11 +988,7 @@ fn activity_button(
         .when(cfg!(test) && active, |el| {
             el.debug_selector(move || format!("PANEL_ACTIVITY {id:?} active"))
         })
-        .child(Tooltip::new(
-            view_element_id("activity-tip", view),
-            view.label(),
-            tile,
-        ))
+        .child(state_wrapped)
         .when(active, |el| {
             el.child(
                 div()

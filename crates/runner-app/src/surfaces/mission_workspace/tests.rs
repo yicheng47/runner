@@ -1904,8 +1904,28 @@ fn mission_panel_activity_bar_keeps_sessions_first_and_switches_files_and_change
     use gpui::{Modifiers, TestAppContext, VisualTestContext};
     let _theme = ThemeGuard::new();
     let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    assert!(std::process::Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(&repo)
+        .status()
+        .unwrap()
+        .success());
     let mut cx = TestAppContext::single();
     let (store, host) = rail_header_window(&mut cx, &temp);
+    store.update(&mut cx, |store, _| {
+        store
+            .test_core
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE missions SET files_root = ?1 WHERE id = 'test-mission'",
+                [repo.to_string_lossy().as_ref()],
+            )
+            .unwrap();
+    });
     let mut visual = VisualTestContext::from_window(host.into(), &cx);
     visual.simulate_resize(size(px(960.), px(600.)));
     visual.run_until_parked();
@@ -5187,6 +5207,12 @@ fn a_file_link_in_a_mission_terminal_opens_the_rails_preview() {
     std::fs::write(root.join("lib.rs"), "one\ntwo\nthree\n").unwrap();
     let outside = temp.path().join("outside.txt");
     std::fs::write(&outside, "x\n").unwrap();
+    let outside_tab =
+        runner_core::app_paths::normalize_checkout_path(&outside.canonicalize().unwrap())
+            .to_string_lossy()
+            .into_owned();
+    let outside_pdf = temp.path().join("spec.pdf");
+    std::fs::write(&outside_pdf, "%PDF-1.4\n").unwrap();
     let mut cx = TestAppContext::single();
     let store = crate::app_store::test_lifecycle_store(&mut cx, temp.path());
     store.update(&mut cx, |store, _| {
@@ -5253,12 +5279,30 @@ fn a_file_link_in_a_mission_terminal_opens_the_rails_preview() {
     let launched = || LAUNCHED.with(|launched| launched.borrow().len());
 
     // The member terminals and the drawer's shell share the rail's route.
-    click(&mut visual, outside.clone());
+    // A known binary launches externally without opening the rail.
+    click(&mut visual, outside_pdf.clone());
     wait(&mut visual, &|_| launched() == 1);
     assert!(!workspace.read_with(&visual, |workspace, cx| workspace.rail_is_open(cx)));
 
-    click(&mut visual, root.join("lib.rs"));
+    // A local text file outside the root opens the rail on Files as an outside tab.
     let subject = PanelSubject::Mission("test-mission".into());
+    click(&mut visual, outside.clone());
+    wait(&mut visual, &|visual| {
+        workspace.read_with(visual, |workspace, cx| {
+            workspace
+                .rail_files
+                .view(&subject)
+                .and_then(|view| view.read(cx).active_tab(cx))
+                == Some(outside_tab.clone())
+        })
+    });
+    assert_eq!(launched(), 0);
+    assert!(workspace.read_with(&visual, |workspace, cx| workspace.rail_is_open(cx)));
+
+    workspace.update(&mut visual, |workspace, cx| {
+        workspace.set_rail_open(false, cx)
+    });
+    click(&mut visual, root.join("lib.rs"));
     wait(&mut visual, &|visual| {
         workspace.read_with(visual, |workspace, cx| {
             workspace

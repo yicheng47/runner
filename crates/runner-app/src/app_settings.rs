@@ -175,6 +175,17 @@ pub enum DiffViewMode {
     Unified,
 }
 
+/// Where ⌘-click (Ctrl-click on Windows and Linux) on a file path in a terminal
+/// opens files the preview can show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FileLinkOpenIn {
+    Editor,
+    #[default]
+    #[serde(other)]
+    Preview,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FileLinkEditor {
@@ -188,6 +199,20 @@ pub enum FileLinkEditor {
 
 impl FileLinkEditor {
     pub const ALL: [Self; 4] = [Self::DefaultApp, Self::Zed, Self::VsCode, Self::Cursor];
+    pub const MENU_ORDER: [Self; 4] = [Self::Zed, Self::VsCode, Self::Cursor, Self::DefaultApp];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::DefaultApp => "default-app",
+            Self::Zed => "zed",
+            Self::VsCode => "vscode",
+            Self::Cursor => "cursor",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|editor| editor.key() == value)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -407,6 +432,7 @@ pub struct AppSettings {
     pub last_mission_terminal_ids: BTreeMap<String, String>,
     pub default_crew_id: String,
     pub default_working_dir: String,
+    pub file_link_open_in: FileLinkOpenIn,
     pub file_link_editor: FileLinkEditor,
     pub resume_on_launch: bool,
     pub quit_behavior: runner_app::lifecycle::QuitBehavior,
@@ -476,6 +502,7 @@ impl Default for AppSettings {
             last_mission_terminal_ids: BTreeMap::new(),
             default_crew_id: String::new(),
             default_working_dir: String::new(),
+            file_link_open_in: FileLinkOpenIn::Preview,
             file_link_editor: FileLinkEditor::DefaultApp,
             resume_on_launch: true,
             quit_behavior: Default::default(),

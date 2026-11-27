@@ -97,7 +97,14 @@ impl UnifiedViewer {
         let Some(key) = self.docs.keys().find(|k| k.path == path).cloned() else {
             return;
         };
-        self.apply_read(key, read, Ok(Read::Binary(size)), cx);
+        self.apply_read(key, read, Ok(Read::Binary(size, None)), cx);
+    }
+
+    pub(crate) fn doc_stamp(&self, path: &str) -> Option<Stamp> {
+        self.docs
+            .iter()
+            .find(|(k, _)| k.path == path)
+            .and_then(|(_, d)| d.stamp)
     }
 
     pub(crate) fn hold_search(&mut self, hold: bool, cx: &mut Context<Self>) {

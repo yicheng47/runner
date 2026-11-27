@@ -66,7 +66,7 @@ use crate::surfaces::side_panel::{
 use crate::terminal::find::{find_bar_panel, FindBarParts};
 use crate::theme;
 use crate::ui::markdown::{self, LinkTarget, MarkdownView, Page};
-pub(crate) use open_in::{editor_icon, found_editors};
+pub(crate) use open_in::{editor_icon, file_link_editor_options, found_editors};
 pub(super) use open_in::{reveal, reveal_label};
 #[cfg(test)]
 use read::{read_raster_file, read_text_or_svg_file, Read};
@@ -647,6 +647,8 @@ pub(crate) struct UnifiedViewer {
     _hub: Subscription,
     _settings: Subscription,
     #[cfg(test)]
+    pub(super) resolve_gate: Option<futures::channel::oneshot::Receiver<()>>,
+    #[cfg(test)]
     pub(super) hold_search: bool,
     #[cfg(test)]
     pub(super) hold_diffs: bool,
@@ -669,7 +671,32 @@ pub(crate) struct UnifiedViewer {
 }
 
 impl UnifiedViewer {
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn new(context: PanelContext, cx: &mut Context<Self>) -> Self {
+        #[cfg(test)]
+        {
+            Self::new_with_resolve_gate(context, None, cx)
+        }
+        #[cfg(not(test))]
+        {
+            Self::new_inner(context, cx)
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_resolve_gate(
+        context: PanelContext,
+        resolve_gate: Option<futures::channel::oneshot::Receiver<()>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_inner(context, resolve_gate, cx)
+    }
+
+    fn new_inner(
+        context: PanelContext,
+        #[cfg(test)] resolve_gate: Option<futures::channel::oneshot::Receiver<()>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let client = crate::app_store::global_app_store(cx)
             .read(cx)
             .client
@@ -726,6 +753,8 @@ impl UnifiedViewer {
             chrome: ViewerChrome::default(),
             _hub: hub_subscription,
             _settings: settings_subscription,
+            #[cfg(test)]
+            resolve_gate,
             #[cfg(test)]
             hold_search: false,
             #[cfg(test)]
@@ -839,6 +868,13 @@ impl UnifiedViewer {
 
     pub(crate) fn root_path(&self) -> Option<&Path> {
         self.root.as_ref().map(|r| r.path.as_path())
+    }
+
+    pub(crate) fn changes_root_is_git(&self) -> Option<bool> {
+        if self.context.remote {
+            return Some(true);
+        }
+        self.root.as_ref().map(|root| root.git.is_some())
     }
 
     pub(crate) fn root_has_head(&self) -> bool {

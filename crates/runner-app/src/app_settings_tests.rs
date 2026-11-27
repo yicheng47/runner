@@ -132,15 +132,31 @@ fn terminal_ctrl_keys_do_not_exist_on_macos() {
 #[test]
 fn file_link_editor_defaults_to_the_default_app_for_pre_feature_settings() {
     let settings: AppSettings = serde_json::from_str(r#"{"appZoom":1.0}"#).unwrap();
+    assert_eq!(settings.file_link_open_in, FileLinkOpenIn::Preview);
     assert_eq!(settings.file_link_editor, FileLinkEditor::DefaultApp);
 
+    // Upgrading a settings file that already chose an editor moves to Runner
+    // preview while keeping the saved editor for Open in and fallback.
+    let upgraded: AppSettings = serde_json::from_str(r#"{"fileLinkEditor":"vscode"}"#).unwrap();
+    assert_eq!(upgraded.file_link_open_in, FileLinkOpenIn::Preview);
+    assert_eq!(upgraded.file_link_editor, FileLinkEditor::VsCode);
+
+    // An unknown fileLinkOpenIn value falls back to Preview.
+    let unknown: AppSettings =
+        serde_json::from_str(r#"{"fileLinkOpenIn":"future","fileLinkEditor":"cursor"}"#).unwrap();
+    assert_eq!(unknown.file_link_open_in, FileLinkOpenIn::Preview);
+    assert_eq!(unknown.file_link_editor, FileLinkEditor::Cursor);
+
     let json = serde_json::to_string(&AppSettings {
+        file_link_open_in: FileLinkOpenIn::Editor,
         file_link_editor: FileLinkEditor::VsCode,
         ..AppSettings::default()
     })
     .unwrap();
+    assert!(json.contains(r#""fileLinkOpenIn":"editor""#), "{json}");
     assert!(json.contains(r#""fileLinkEditor":"vscode""#), "{json}");
     let reloaded: AppSettings = serde_json::from_str(&json).unwrap();
+    assert_eq!(reloaded.file_link_open_in, FileLinkOpenIn::Editor);
     assert_eq!(reloaded.file_link_editor, FileLinkEditor::VsCode);
 }
 

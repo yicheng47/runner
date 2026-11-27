@@ -118,6 +118,9 @@ pub(crate) struct FilesView {
     /// Holds the next root write until the test lets it go.
     #[cfg(test)]
     pub(super) root_gate: Option<futures::channel::oneshot::Receiver<()>>,
+    /// Holds the initial root resolve until the test lets it go.
+    #[cfg(test)]
+    pub(super) resolve_gate: Option<futures::channel::oneshot::Receiver<()>>,
     error: Option<SharedString>,
     /// Why the last asked-for status failed, until a status arrives.
     pub(super) status_error: Option<SharedString>,
@@ -170,9 +173,36 @@ pub(super) fn letter_color(letter: Letter) -> gpui::Hsla {
 }
 
 impl FilesView {
+    #[cfg_attr(test, allow(dead_code))]
     pub(crate) fn new(
         context: PanelContext,
         viewer: Entity<UnifiedViewer>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        #[cfg(test)]
+        {
+            Self::new_with_resolve_gate(context, viewer, None, cx)
+        }
+        #[cfg(not(test))]
+        {
+            Self::new_inner(context, viewer, cx)
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_resolve_gate(
+        context: PanelContext,
+        viewer: Entity<UnifiedViewer>,
+        resolve_gate: Option<futures::channel::oneshot::Receiver<()>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_inner(context, viewer, resolve_gate, cx)
+    }
+
+    fn new_inner(
+        context: PanelContext,
+        viewer: Entity<UnifiedViewer>,
+        #[cfg(test)] resolve_gate: Option<futures::channel::oneshot::Receiver<()>>,
         cx: &mut Context<Self>,
     ) -> Self {
         let client = crate::app_store::global_app_store(cx)
@@ -233,6 +263,8 @@ impl FilesView {
             root_chain: None,
             #[cfg(test)]
             root_gate: None,
+            #[cfg(test)]
+            resolve_gate,
             error: None,
             status_error: None,
             recent: Vec::new(),
@@ -358,6 +390,23 @@ impl FilesView {
     pub(crate) fn open_cited(&mut self, path: String, line: Option<u32>, cx: &mut Context<Self>) {
         self.viewer
             .update(cx, |viewer, cx| viewer.open_pinned_file(path, line, cx));
+    }
+
+    pub(crate) fn open_outside(
+        &mut self,
+        path: PathBuf,
+        line: Option<u32>,
+        cx: &mut Context<Self>,
+    ) {
+        self.viewer
+            .update(cx, |viewer, cx| viewer.open_pinned_outside(path, line, cx));
+    }
+
+    pub(crate) fn clear_tree_selection(&mut self, cx: &mut Context<Self>) {
+        self.reveal = None;
+        if self.tree_mut().is_some_and(FileTree::clear_selection) {
+            cx.notify();
+        }
     }
 
     pub(crate) fn reveal_in_tree(&mut self, path: &str, cx: &mut Context<Self>) {

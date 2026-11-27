@@ -40,6 +40,19 @@ impl FilesView {
         self.generation
     }
 
+    pub(in super::super) fn is_remote(&self) -> bool {
+        self.context.remote
+    }
+
+    pub(crate) fn changes_root_is_git(&self) -> Option<bool> {
+        match &self.body {
+            Body::Loading => None,
+            Body::Remote => Some(true),
+            Body::Root(state) => Some(state.root.git.is_some()),
+            Body::Choose | Body::Missing { .. } | Body::Failed(_) => Some(false),
+        }
+    }
+
     pub(in super::super) fn link_root(&self) -> LinkRoot {
         match &self.body {
             Body::Loading => LinkRoot::Pending,
@@ -58,6 +71,25 @@ impl FilesView {
             return;
         }
         let subject = subject(&self.context);
+        #[cfg(test)]
+        if let Some(gate) = self.resolve_gate.take() {
+            let client = self.client.clone();
+            let generation = self.generation;
+            let task = cx.background_spawn(async move {
+                let _ = gate.await;
+                client.files_root(&subject)
+            });
+            cx.spawn(async move |this, cx| {
+                let result = task.await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.generation == generation {
+                        this.apply_outcome(result, cx);
+                    }
+                });
+            })
+            .detach();
+            return;
+        }
         self.request(
             cx,
             move |client| client.files_root(&subject),
@@ -137,7 +169,13 @@ impl FilesView {
         self.status_error = None;
         match outcome {
             Ok(FilesRootOutcome::Root(root)) => match &mut self.body {
-                Body::Root(state) if same => state.root = root,
+                Body::Root(state) if same => {
+                    let git_changed = state.root.git.is_some() != root.git.is_some();
+                    state.root = root;
+                    if git_changed {
+                        self.notify_owner(cx);
+                    }
+                }
                 _ => {
                     self.reveal = None;
                     self.finder_root_changed();

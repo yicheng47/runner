@@ -42,8 +42,8 @@ use dirty::DirtyTracker;
 pub(crate) use hub::{hub, FilesHub};
 pub(crate) use links::ShowPreview;
 pub(crate) use open_file::{
-    editor_icon, format_size, found_editors, SavedViewerState, TitlebarWrapper, UnifiedViewer,
-    ViewerChrome,
+    editor_icon, file_link_editor_options, format_size, found_editors, SavedViewerState,
+    TitlebarWrapper, UnifiedViewer, ViewerChrome,
 };
 use panel_view::SavedFilesState;
 pub(crate) use panel_view::{absolute, compact_missing_path, FileTreeResizeDrag, FilesView};
@@ -146,6 +146,20 @@ pub(crate) struct SidePanelRenderProps {
     pub(crate) loading_fallback: Option<AnyElement>,
 }
 
+#[cfg(test)]
+pub(crate) struct RootResolveGate(
+    futures::channel::oneshot::Sender<()>,
+    futures::channel::oneshot::Sender<()>,
+);
+
+#[cfg(test)]
+impl RootResolveGate {
+    pub(crate) fn release(self) {
+        let _ = self.0.send(());
+        let _ = self.1.send(());
+    }
+}
+
 /// A side panel's shared per-subject `UnifiedViewer` plus lazy `FilesView` and
 /// `ChangesView` rails (#1421).
 #[derive(Default)]
@@ -161,6 +175,14 @@ pub(crate) struct FilesPanel {
     surface: Rc<Cell<f32>>,
     /// Full composed side-panel bounds, so `⇧⌘O` centers over viewer + rail.
     panel_bounds: Rc<Cell<Bounds<Pixels>>>,
+    #[cfg(test)]
+    #[allow(clippy::type_complexity)]
+    next_resolve_gate: RefCell<
+        Option<(
+            Option<futures::channel::oneshot::Receiver<()>>,
+            Option<futures::channel::oneshot::Receiver<()>>,
+        )>,
+    >,
 }
 
 impl FilesPanel {
@@ -187,7 +209,16 @@ impl FilesPanel {
         let saved = self.saved.borrow_mut().remove(&context.subject);
         let ctx_clone = context.clone();
         let saved_viewer = saved.as_ref().and_then(|s| s.viewer.clone());
+        #[cfg(test)]
+        let viewer_gate = self
+            .next_resolve_gate
+            .borrow_mut()
+            .as_mut()
+            .and_then(|pair| pair.0.take());
         let viewer = cx.new(|cx| {
+            #[cfg(test)]
+            let mut viewer = UnifiedViewer::new_with_resolve_gate(ctx_clone, viewer_gate, cx);
+            #[cfg(not(test))]
             let mut viewer = UnifiedViewer::new(ctx_clone, cx);
             if let Some(state) = saved_viewer {
                 viewer.restore_saved_state(state, cx);
@@ -267,7 +298,16 @@ impl FilesPanel {
         let viewer = bundle.viewer.clone();
         let ctx_clone = context.clone();
         let saved = bundle.saved_files.take();
+        #[cfg(test)]
+        let files_gate = self
+            .next_resolve_gate
+            .borrow_mut()
+            .as_mut()
+            .and_then(|pair| pair.1.take());
         let files = cx.new(|cx| {
+            #[cfg(test)]
+            let mut view = FilesView::new_with_resolve_gate(ctx_clone, viewer, files_gate, cx);
+            #[cfg(not(test))]
             let mut view = FilesView::new(ctx_clone, viewer, cx);
             if let Some(state) = saved {
                 view.restore_saved_state(state, cx);
@@ -373,8 +413,11 @@ impl FilesPanel {
                 if let Some(files) = &tab_files
                     && let Some(key) = &key
                 {
-                    let path = key.path.clone();
-                    let _ = files.update(cx, |v, cx| v.reveal_in_tree(&path, cx));
+                    if let Some(path) = key.root_path().map(str::to_owned) {
+                        let _ = files.update(cx, |v, cx| v.reveal_in_tree(&path, cx));
+                    } else {
+                        let _ = files.update(cx, |v, cx| v.clear_tree_selection(cx));
+                    }
                 }
                 if let Some(changes) = &tab_changes {
                     let _ = changes.update(cx, |v, cx| v.sync_active_tab(key.as_ref(), cx));
@@ -638,15 +681,18 @@ impl FilesPanel {
             }
         }
 
-        let dirty_changes = !props.remote
-            && self.dirty_changes_for(
+        let (dirty_changes, changes_git) = if props.remote {
+            (false, side_panel::ChangesGitState::Git)
+        } else {
+            self.changes_activity_state_for(
                 props.context.as_ref(),
                 props.shown,
                 show_rail_column,
                 props.settings.changes_view,
                 Some(props.owner),
                 cx,
-            );
+            )
+        };
 
         let rail_column = show_rail_column.then(|| {
             #[cfg(test)]
@@ -681,6 +727,7 @@ impl FilesPanel {
                         &props.settings,
                         &props.selection,
                         dirty_changes,
+                        changes_git,
                         props.on_surface_action,
                         props.maximize_control.take(),
                         (props.make_collapse_button)(cx),
@@ -985,12 +1032,12 @@ impl FilesPanel {
         self.viewer_widening(subject, cx)
     }
 
-    /// Authoritative uncommitted-changes indicator for the Changes activity
-    /// icon (#1403, #1421): reads from whichever active entity owns the watch
-    /// (`FilesView`, `ChangesView`, or `UnifiedViewer`), or holds a scoped
-    /// daemon watch via `DirtyTracker` when none of them is watching (e.g. a
-    /// rail-only mission on Sessions).
-    pub(crate) fn dirty_changes_for(
+    /// Authoritative uncommitted-changes indicator and git-checkout status for
+    /// the Changes activity icon (#1403, #1421, #1458): reads from whichever
+    /// active entity owns the watch (`FilesView`, `ChangesView`, or
+    /// `UnifiedViewer`), or holds a scoped daemon watch via `DirtyTracker`
+    /// when none of them is watching (e.g. a rail-only mission on Sessions).
+    pub(crate) fn changes_activity_state_for(
         &self,
         context: Option<&PanelContext>,
         shown: Option<PanelViewId>,
@@ -998,10 +1045,10 @@ impl FilesPanel {
         changes_enabled: bool,
         owner: Option<EntityId>,
         cx: &mut App,
-    ) -> bool {
+    ) -> (bool, side_panel::ChangesGitState) {
         let Some(context) = context else {
             self.hide_dirty_tracker(cx);
-            return false;
+            return (false, side_panel::ChangesGitState::Pending);
         };
         if !changes_enabled
             || context.remote
@@ -1010,12 +1057,34 @@ impl FilesPanel {
                 .is_none()
         {
             self.hide_dirty_tracker(cx);
-            return false;
+            return (false, side_panel::ChangesGitState::Git);
         }
-        let (external_watch_owner, active_dirty) = {
+        let (external_watch_owner, active_dirty, active_git) = {
             let subjects = self.subjects.borrow();
             let bundle = subjects.iter().find(|b| b.subject == context.subject);
-            match bundle {
+            let active_git = bundle.and_then(|b| match shown {
+                Some(PanelViewId::Changes) => b
+                    .changes
+                    .as_ref()
+                    .and_then(|v| v.read(cx).changes_root_is_git())
+                    .or_else(|| {
+                        b.files
+                            .as_ref()
+                            .and_then(|v| v.read(cx).changes_root_is_git())
+                    })
+                    .or_else(|| b.viewer.read(cx).changes_root_is_git()),
+                _ => b
+                    .files
+                    .as_ref()
+                    .and_then(|v| v.read(cx).changes_root_is_git())
+                    .or_else(|| {
+                        b.changes
+                            .as_ref()
+                            .and_then(|v| v.read(cx).changes_root_is_git())
+                    })
+                    .or_else(|| b.viewer.read(cx).changes_root_is_git()),
+            });
+            let (external, dirty) = match bundle {
                 Some(b) if show_rail_column && shown == Some(PanelViewId::Files) => (
                     true,
                     b.files
@@ -1036,20 +1105,39 @@ impl FilesPanel {
                             .and_then(|v| v.read(cx).fresh_dirty_changes()),
                     )
                 }
-                Some(b) if b.viewer.read(cx).has_tabs() => {
+                Some(b)
+                    if b.viewer.read(cx).has_tabs() && b.viewer.read(cx).root_path().is_some() =>
+                {
                     (true, b.viewer.read(cx).fresh_dirty_changes())
                 }
                 _ => (false, None),
-            }
+            };
+            (external, dirty, active_git)
         };
         let tracker = {
             let mut slot = self.dirty_tracker.borrow_mut();
             slot.get_or_insert_with(|| cx.new(DirtyTracker::new))
                 .clone()
         };
-        tracker.update(cx, |tracker, cx| {
-            tracker.sync(context, owner, external_watch_owner, active_dirty, cx)
-        })
+        let (dirty, tracker_git) = tracker.update(cx, |tracker, cx| {
+            tracker.sync(
+                context,
+                owner,
+                external_watch_owner,
+                active_dirty,
+                active_git,
+                cx,
+            )
+        });
+        let changes_git = match active_git.or(tracker_git) {
+            Some(true) => side_panel::ChangesGitState::Git,
+            Some(false) => side_panel::ChangesGitState::NotGit,
+            None => side_panel::ChangesGitState::Pending,
+        };
+        (
+            changes_git == side_panel::ChangesGitState::Git && dirty,
+            changes_git,
+        )
     }
 
     /// Measures the width the panel shares with its chat or mission; drawn
@@ -1218,6 +1306,14 @@ impl FilesPanel {
             let t = tracker.read(cx);
             t.active || t.watched.is_some() || t.hub.is_some()
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn gate_next_root_resolve(&self) -> RootResolveGate {
+        let (viewer_tx, viewer_rx) = futures::channel::oneshot::channel();
+        let (files_tx, files_rx) = futures::channel::oneshot::channel();
+        *self.next_resolve_gate.borrow_mut() = Some((Some(viewer_rx), Some(files_rx)));
+        RootResolveGate(viewer_tx, files_tx)
     }
 
     #[cfg(test)]

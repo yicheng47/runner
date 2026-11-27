@@ -21,7 +21,7 @@ pub(super) enum Read {
         hash: u64,
     },
     Unchanged(Option<Stamp>),
-    Binary(u64),
+    Binary(u64, Option<Stamp>),
     TooLarge(u64),
     Missing,
 }
@@ -95,7 +95,9 @@ pub(super) fn read_raster_file(
                 DecodeOutcome::Failed => Read::ImageFailed { stamp, hash },
             }
         }
-        FileContent::Binary { size, .. } => Read::Binary(size),
+        FileContent::Binary { size, modified, .. } => {
+            Read::Binary(size, modified.map(|modified| (size, Some(modified))))
+        }
         FileContent::Text {
             bytes,
             size,
@@ -152,9 +154,20 @@ pub(super) fn read_text_or_svg_file(
     since: Option<Stamp>,
     prev_hash: Option<u64>,
 ) -> Result<Read, ClientError> {
+    let known_binary = matches!(
+        crate::file_links::classify_file_link(Path::new(relative)),
+        crate::file_links::FileLinkKind::Binary(_)
+    );
     Ok(
         match client.files_read(root, relative, false, stamp_filter(since))? {
             FileContent::Unchanged => Read::Unchanged(None),
+            FileContent::Text { size, modified, .. } if known_binary => {
+                Read::Binary(size, modified.map(|modified| (size, Some(modified))))
+            }
+            FileContent::Binary { size, modified, .. } => {
+                Read::Binary(size, modified.map(|modified| (size, Some(modified))))
+            }
+            FileContent::TooLarge { size } if known_binary => Read::Binary(size, None),
             FileContent::Text { size, modified, .. }
                 if since == Some((size, modified)) && (!svg || modified.is_some()) =>
             {
@@ -186,7 +199,6 @@ pub(super) fn read_text_or_svg_file(
                 let svg_decoded = svg.then(|| image::decode_svg_image(&bytes.0, size));
                 Read::Text(document, rendered, svg_decoded, stamp, svg_hash)
             }
-            FileContent::Binary { size, .. } => Read::Binary(size),
             FileContent::TooLarge { size } => Read::TooLarge(size),
             FileContent::Missing => Read::Missing,
         },
@@ -229,7 +241,7 @@ impl UnifiedViewer {
             return;
         };
         for (key, doc) in &mut self.docs {
-            if status.status.is_ignored(&key.path) {
+            if !key.is_outside() && status.status.is_ignored(&key.path) {
                 doc.ignored = true;
             }
         }
@@ -239,7 +251,10 @@ impl UnifiedViewer {
         let Some(doc) = self.docs.get(&key) else {
             return;
         };
-        if doc.ignored && !doc.reading && !matches!(doc.content, Content::Idle) {
+        if (doc.ignored || key.is_outside())
+            && !doc.reading
+            && !matches!(doc.content, Content::Idle)
+        {
             let stamp = doc.stamp;
             let prev_hash = (!matches!(doc.content, Content::Deleted(_)))
                 .then_some(doc.image_hash)
@@ -297,6 +312,15 @@ impl UnifiedViewer {
         self.read_file_since(key, None, prev_hash, cx);
     }
 
+    fn read_target(&self, key: &TabKey) -> Option<(PathBuf, String)> {
+        if let Some(outside) = key.outside_path() {
+            let parent = outside.parent()?.to_path_buf();
+            let name = outside.file_name()?.to_str()?.to_owned();
+            return Some((parent, name));
+        }
+        Some((self.root_path()?.to_path_buf(), key.path.clone()))
+    }
+
     fn read_file_since(
         &mut self,
         key: TabKey,
@@ -304,7 +328,7 @@ impl UnifiedViewer {
         prev_hash: Option<u64>,
         cx: &mut Context<Self>,
     ) {
-        let Some(root) = self.root_path().map(PathBuf::from) else {
+        let Some((root, relative)) = self.read_target(&key) else {
             return;
         };
         self.next_read += 1;
@@ -316,7 +340,6 @@ impl UnifiedViewer {
                 doc.content = Content::Loading;
             }
         }
-        let relative = key.path.clone();
         let markdown = is_markdown(&key.path);
         let svg = is_svg(&key.path);
         let raster_format = raster_image_format(&key.path);
@@ -357,11 +380,14 @@ impl UnifiedViewer {
         }
         let same = match (&result, &doc.content) {
             (Ok(Read::Missing), Content::Deleted(_)) => true,
-            (Ok(Read::Binary(new)), Content::Binary { size })
+            (Ok(Read::Binary(new, _)), Content::Binary { size })
             | (Ok(Read::TooLarge(new)), Content::TooLarge { size }) => new == size,
             _ => false,
         };
         if same {
+            if let Ok(Read::Binary(_, stamp)) = &result {
+                doc.stamp = *stamp;
+            }
             return;
         }
         doc.stamp = match &result {
@@ -369,6 +395,7 @@ impl UnifiedViewer {
             | Ok(Read::Image(_, stamp, _))
             | Ok(Read::ImageTooLarge { stamp, .. })
             | Ok(Read::ImageFailed { stamp, .. }) => Some(*stamp),
+            Ok(Read::Binary(_, stamp)) => *stamp,
             _ => None,
         };
         doc.image_hash = match &result {
@@ -405,7 +432,11 @@ impl UnifiedViewer {
                     view.set_deleted(false, cx);
                 }),
                 None => {
-                    let relative = key.path.clone();
+                    let relative = if key.is_outside() {
+                        key.name().to_owned()
+                    } else {
+                        key.path.clone()
+                    };
                     doc.rendered = Some(cx.new(|cx| {
                         let mut view = MarkdownView::new(page, relative, images, cx);
                         view.set_open_link(open_link);
@@ -426,7 +457,7 @@ impl UnifiedViewer {
                 | Read::Image(..)
                 | Read::ImageTooLarge { .. }
                 | Read::ImageFailed { .. }
-                | Read::Binary(_)
+                | Read::Binary(..)
                 | Read::TooLarge(_),
             ) => Some(false),
             Ok(Read::Missing) => Some(true),
@@ -546,7 +577,7 @@ impl UnifiedViewer {
                 Content::ImageFailed
             }
             Ok(Read::Unchanged(_)) => unreachable!(),
-            Ok(Read::Binary(size)) => {
+            Ok(Read::Binary(size, _)) => {
                 drop_kept_image(kept_image, cx);
                 clear_svg_canvas(doc, cx);
                 Content::Binary { size }
@@ -606,6 +637,9 @@ impl UnifiedViewer {
             .iter()
             .map(|t| t.key.clone())
             .filter(|key| {
+                if key.is_outside() {
+                    return changed.is_none();
+                }
                 rescan
                     || changed.is_some_and(|changed| {
                         changed.paths.iter().any(|changed| {
@@ -624,6 +658,9 @@ impl UnifiedViewer {
                     .get(&key)
                     .map_or((false, false, false, false), |doc| {
                         let read_code = !matches!(doc.content, Content::Idle);
+                        if key.is_outside() {
+                            return (read_code, false, false, false);
+                        }
                         let read_diff = doc.mode == DocMode::Diff
                             || (key.target == SelectedTarget::Uncommitted
                                 && matches!(doc.diff, FileTabDiff::Loaded(_)));

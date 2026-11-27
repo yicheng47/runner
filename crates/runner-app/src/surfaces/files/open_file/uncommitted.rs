@@ -2,6 +2,9 @@ use super::*;
 
 impl UnifiedViewer {
     pub(super) fn reprobe_working_tree_exists(&mut self, key: TabKey, cx: &mut Context<Self>) {
+        if key.is_outside() {
+            return;
+        }
         let Some(root) = self.root_path().map(PathBuf::from) else {
             return;
         };

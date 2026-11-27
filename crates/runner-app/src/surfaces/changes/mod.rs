@@ -285,6 +285,14 @@ impl ChangesView {
         matches!(self.body, Body::NotInGit)
     }
 
+    pub(crate) fn changes_root_is_git(&self) -> Option<bool> {
+        match &self.body {
+            Body::Loading => None,
+            Body::Remote | Body::Root(_) => Some(true),
+            Body::NotInGit | Body::Choose | Body::Missing { .. } | Body::Failed(_) => Some(false),
+        }
+    }
+
     pub(crate) fn focus_default(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.root_focus.contains_focused(window, cx) {
             return;
@@ -386,7 +394,8 @@ impl ChangesView {
         };
         let next = active
             .filter(|key| {
-                key.target == state.selected_target
+                !key.is_outside()
+                    && key.target == state.selected_target
                     && state.files.iter().any(|f| f.path == key.path)
             })
             .map(|key| key.path.clone());

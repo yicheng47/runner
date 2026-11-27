@@ -12,7 +12,7 @@ pub(crate) fn settings_section_heading(label: impl Into<SharedString>) -> AnyEle
 
 pub(super) fn command_line_settings_row(
     title: AnyElement,
-    description: &'static str,
+    description: impl Into<SharedString>,
     status_lines: Vec<AnyElement>,
     control: Option<AnyElement>,
 ) -> AnyElement {
@@ -34,7 +34,7 @@ pub(super) fn command_line_settings_row(
                     div()
                         .text_size(theme::text_meta())
                         .text_color(theme::muted())
-                        .child(description),
+                        .child(description.into()),
                 )
                 .children(status_lines),
         )
@@ -197,6 +197,8 @@ impl NativeRoot {
             ),
         );
 
+        let file_links_section = self.render_file_links_section(cx);
+
         div()
             .flex()
             .flex_col()
@@ -220,6 +222,7 @@ impl NativeRoot {
                     )
                     .into_any_element(),
             ]))
+            .child(file_links_section)
             .child(
                 div().flex().flex_col().gap_2()
                     .child(settings_section_heading(crate::i18n::text("ui.sessions")))
@@ -265,6 +268,113 @@ impl NativeRoot {
                     )
                     .into_any_element()])),
             )
+            .into_any_element()
+    }
+
+    fn render_file_links_section(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::app_settings::FileLinkOpenIn;
+        use crate::file_links::{
+            effective_editor_destination, settings_panel_fallback, FileLinkPanelState,
+        };
+
+        let (open_in, fallback, editor_destination) = {
+            let store = self.app_store.read(cx);
+            let settings = &store.settings;
+            let editor = settings.file_link_editor;
+            let cli_found = editor.cli().map(|command| {
+                store
+                    .file_link_environment
+                    .1
+                    .get(command)
+                    .copied()
+                    .unwrap_or(false)
+            });
+            (
+                settings.file_link_open_in,
+                settings_panel_fallback(settings),
+                effective_editor_destination(editor, cli_found),
+            )
+        };
+        let preview_root = cx.entity();
+        let editor_root = preview_root.clone();
+        let open_in_control = SegmentedControl::new([
+            SegmentOption::new(
+                "settings-file-link-open-in-preview",
+                crate::i18n::text("settings.file_link_preview"),
+                open_in == FileLinkOpenIn::Preview,
+                move |_, cx| {
+                    preview_root.update(cx, |this, cx| {
+                        this.set_file_link_open_in(FileLinkOpenIn::Preview, cx);
+                    });
+                },
+            )
+            .debug_selector("SETTINGS_FILE_LINK_OPEN_IN_PREVIEW"),
+            SegmentOption::new(
+                "settings-file-link-open-in-editor",
+                crate::i18n::text("settings.file_link_editor"),
+                open_in == FileLinkOpenIn::Editor,
+                move |_, cx| {
+                    editor_root.update(cx, |this, cx| {
+                        this.set_file_link_open_in(FileLinkOpenIn::Editor, cx);
+                    });
+                },
+            )
+            .debug_selector("SETTINGS_FILE_LINK_OPEN_IN_EDITOR"),
+        ])
+        .debug_selector("SETTINGS_FILE_LINK_OPEN_IN");
+        let fallback_lines = fallback
+            .into_iter()
+            .map(|panel| {
+                let key = match panel {
+                    FileLinkPanelState::FilesOff => "settings.file_link_files_off",
+                    _ => "settings.file_link_panel_off",
+                };
+                let text = crate::i18n::tf(key, &[("editor", editor_destination.to_owned())]);
+                div()
+                    .when(cfg!(test), |el| {
+                        el.debug_selector(|| "SETTINGS_FILE_LINK_FALLBACK_NOTE".into())
+                    })
+                    .pt(rems(4. / 16.))
+                    .child(command_status_text(text, theme::info(), Some("info.svg")))
+                    .into_any_element()
+            })
+            .collect();
+        let open_in_row = command_line_settings_row(
+            div()
+                .text_size(theme::text_body())
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(theme::text())
+                .child(crate::i18n::text("settings.file_link_open_in"))
+                .into_any_element(),
+            crate::i18n::tf(
+                "settings.file_link_open_in_description",
+                &[("shortcut", crate::platform_ui::PRIMARY_MODIFIER.to_string())],
+            ),
+            fallback_lines,
+            Some(open_in_control.into_any_element()),
+        );
+        let editor_row = SettingsRow::new(
+            crate::i18n::text("settings.file_link_editor"),
+            div()
+                .when(cfg!(test), |el| {
+                    el.debug_selector(|| "SETTINGS_FILE_LINK_EDITOR".into())
+                })
+                .child(self.settings_page.file_link_editor.clone()),
+        )
+        .subtitle(crate::i18n::text("settings.file_link_editor_description"))
+        .into_any_element();
+
+        div()
+            .when(cfg!(test), |el| {
+                el.debug_selector(|| "SETTINGS_FILE_LINKS_SECTION".into())
+            })
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(settings_section_heading(crate::i18n::text(
+                "settings.file_links",
+            )))
+            .child(SettingsCard::new(vec![open_in_row, editor_row]))
             .into_any_element()
     }
 

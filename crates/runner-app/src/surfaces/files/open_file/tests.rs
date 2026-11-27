@@ -376,3 +376,176 @@ fn ignored_image_poll_skips_bytes_until_stamp_changes_and_handles_missing_modifi
         "unchanged Markdown must not refetch embedded local images"
     );
 }
+
+#[test]
+fn nul_free_pdf_read_preserves_and_updates_stamp_for_conditional_refresh() {
+    let pdf_v1 = b"%PDF-1.4\n1 0 obj\n(v1)\nendobj\n%%EOF\n".to_vec();
+    let pdf_v2 = b"%PDF-1.4\n1 0 obj\n(v2)\nendobj\n%%EOF\n".to_vec();
+    assert_eq!(pdf_v1.len(), pdf_v2.len());
+    let size = pdf_v1.len() as u64;
+    let t1: chrono::DateTime<chrono::Utc> = "2026-11-27T00:00:01Z".parse().unwrap();
+    let t2: chrono::DateTime<chrono::Utc> = "2026-11-27T00:00:02Z".parse().unwrap();
+
+    let transport = Arc::new(FakeFilesTransport {
+        state: Mutex::new((pdf_v1, Some(t1), true)),
+        requests: Mutex::new(Vec::new()),
+        bytes_transferred: Mutex::new(0),
+    });
+    let client = DaemonClient::new(transport.clone());
+
+    // 1. Initial read of a NUL-free PDF classifies as Binary and retains its stamp.
+    let initial = read_text_or_svg_file(
+        &client,
+        Path::new("/repo"),
+        "build/report.pdf",
+        false,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    let initial_stamp = match initial {
+        Read::Binary(got_size, Some(stamp)) => {
+            assert_eq!(got_size, size);
+            stamp
+        }
+        _ => panic!("expected Read::Binary with daemon stamp"),
+    };
+    assert_eq!(initial_stamp, (size, Some(t1)));
+
+    // 2. Unchanged conditional refresh sends if_unchanged and transfers 0 bytes.
+    transport.requests.lock().unwrap().clear();
+    *transport.bytes_transferred.lock().unwrap() = 0;
+    let unchanged = read_text_or_svg_file(
+        &client,
+        Path::new("/repo"),
+        "build/report.pdf",
+        false,
+        false,
+        Some(initial_stamp),
+        None,
+    )
+    .unwrap();
+    assert!(matches!(unchanged, Read::Unchanged(None)));
+    assert_eq!(*transport.bytes_transferred.lock().unwrap(), 0);
+    assert_eq!(
+        *transport.requests.lock().unwrap(),
+        vec![(
+            None,
+            Some(FileStamp {
+                size,
+                modified: Some(t1),
+            })
+        )]
+    );
+
+    // 3. Same-size rewrite with newer modified time returns Read::Binary with the updated stamp.
+    transport.requests.lock().unwrap().clear();
+    *transport.bytes_transferred.lock().unwrap() = 0;
+    *transport.state.lock().unwrap() = (pdf_v2, Some(t2), true);
+    let rewritten = read_text_or_svg_file(
+        &client,
+        Path::new("/repo"),
+        "build/report.pdf",
+        false,
+        false,
+        Some(initial_stamp),
+        None,
+    )
+    .unwrap();
+    let updated_stamp = match rewritten {
+        Read::Binary(got_size, Some(stamp)) => {
+            assert_eq!(got_size, size);
+            stamp
+        }
+        _ => panic!("expected Read::Binary with updated stamp after same-size rewrite"),
+    };
+    assert_eq!(updated_stamp, (size, Some(t2)));
+
+    // 4. Subsequent refresh using the updated stamp short-circuits with 0 bytes transferred.
+    transport.requests.lock().unwrap().clear();
+    *transport.bytes_transferred.lock().unwrap() = 0;
+    let after_rewrite = read_text_or_svg_file(
+        &client,
+        Path::new("/repo"),
+        "build/report.pdf",
+        false,
+        false,
+        Some(updated_stamp),
+        None,
+    )
+    .unwrap();
+    assert!(matches!(after_rewrite, Read::Unchanged(None)));
+    assert_eq!(*transport.bytes_transferred.lock().unwrap(), 0);
+}
+
+#[test]
+fn same_size_text_and_binary_transitions_without_mtime_are_not_treated_as_unchanged() {
+    let text_bytes = b"abcd".to_vec();
+    let binary_bytes = b"a\0cd".to_vec();
+    assert_eq!(text_bytes.len(), binary_bytes.len());
+    let size = text_bytes.len() as u64;
+
+    let transport = Arc::new(FakeFilesTransport {
+        state: Mutex::new((binary_bytes, None, false)),
+        requests: Mutex::new(Vec::new()),
+        bytes_transferred: Mutex::new(0),
+    });
+    let client = DaemonClient::new(transport.clone());
+
+    // 1. Text tab with size-only stamp replaced by same-size binary without mtime:
+    //    must return Read::Binary with stamp = None (never Unchanged).
+    let text_to_binary = read_text_or_svg_file(
+        &client,
+        Path::new("/repo"),
+        "build/notes.dat",
+        false,
+        false,
+        Some((size, None)),
+        None,
+    )
+    .unwrap();
+    let binary_stamp = match text_to_binary {
+        Read::Binary(got_size, stamp) => {
+            assert_eq!(got_size, size);
+            stamp
+        }
+        _ => panic!("expected Read::Binary when text is replaced by same-size binary"),
+    };
+    assert_eq!(binary_stamp, None);
+
+    // 2. Binary placeholder (no cached mtime stamp) replaced by same-size text without mtime:
+    //    must return Read::Text (never Unchanged).
+    *transport.state.lock().unwrap() = (text_bytes, None, true);
+    let binary_to_text = read_text_or_svg_file(
+        &client,
+        Path::new("/repo"),
+        "build/notes.dat",
+        false,
+        false,
+        binary_stamp,
+        None,
+    )
+    .unwrap();
+    assert!(matches!(
+        binary_to_text,
+        Read::Text(doc, None, None, (got_size, None), None)
+            if got_size == size && doc.text() == "abcd"
+    ));
+
+    // 3. Known binary extension without mtime also omits a size-only stamp.
+    let pdf_bytes = b"%PDF-1.4\n%%EOF\n".to_vec();
+    let pdf_size = pdf_bytes.len() as u64;
+    *transport.state.lock().unwrap() = (pdf_bytes, None, true);
+    let pdf_no_mtime = read_text_or_svg_file(
+        &client,
+        Path::new("/repo"),
+        "build/report.pdf",
+        false,
+        false,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(matches!(pdf_no_mtime, Read::Binary(got_size, None) if got_size == pdf_size));
+}

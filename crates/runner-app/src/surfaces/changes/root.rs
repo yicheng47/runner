@@ -184,8 +184,8 @@ impl ChangesView {
                         })
                     {
                         self.pending_restore = None;
-                        self.notify_owner(cx);
                     }
+                    self.notify_owner(cx);
                     if self.shown {
                         self.load_snapshot_inner(true, true, false, cx);
                     }

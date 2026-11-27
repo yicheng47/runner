@@ -121,7 +121,10 @@ type CursorBlinkRestart = (u64, u64, GridPoint);
 struct LinkTooltip {
     target: LinkTarget,
     modifier_held: bool,
-    previews: bool,
+    decision: crate::file_links::FileLinkDecision,
+    local: bool,
+    #[cfg(test)]
+    content: SharedString,
     view: AnyView,
     mouse_position: Point<Pixels>,
 }
@@ -257,27 +260,46 @@ impl TerminalInteraction {
         &mut self,
         target: LinkTarget,
         modifier_held: bool,
-        previews: bool,
+        decision: crate::file_links::FileLinkDecision,
+        local: bool,
         mouse_position: Point<Pixels>,
         cx: &mut App,
-    ) -> LinkTooltip {
+    ) -> Option<LinkTooltip> {
+        let content =
+            crate::file_links::link_tooltip_content(&target, modifier_held, decision, local, cx)?;
         if let Some(cached) = self.link_tooltip.as_ref().filter(|cached| {
             cached.target == target
                 && cached.modifier_held == modifier_held
-                && cached.previews == previews
+                && cached.decision == decision
+                && cached.local == local
         }) {
-            return cached.clone();
+            return Some(cached.clone());
         }
-        let content = crate::file_links::link_tooltip_content(&target, modifier_held, previews, cx);
         let tooltip = LinkTooltip {
             target,
             modifier_held,
-            previews,
+            decision,
+            local,
+            #[cfg(test)]
+            content: content.clone(),
             view: tooltip_view(content, cx),
             mouse_position,
         };
         self.link_tooltip = Some(tooltip.clone());
-        tooltip
+        Some(tooltip)
+    }
+
+    fn clear_link_tooltip(&mut self) {
+        self.link_tooltip = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cached_link_tooltip(
+        &self,
+    ) -> Option<(crate::file_links::FileLinkDecision, SharedString)> {
+        self.link_tooltip
+            .as_ref()
+            .map(|tooltip| (tooltip.decision, tooltip.content.clone()))
     }
 
     fn refresh_hovered_link(
@@ -541,7 +563,7 @@ impl TerminalInteraction {
                         let target = crate::file_links::FileLinkTarget { path, line, column };
                         match file_links.cloned() {
                             Some(route) => cx.defer(move |cx| route.open(target, cx)),
-                            None => crate::file_links::open_file_link(target, cx),
+                            None => crate::file_links::open_file_in_editor(target, cx),
                         }
                     }
                 }
@@ -1224,9 +1246,9 @@ impl Element for TerminalElement {
                 interaction.link_modifier_held,
             )
         });
-        // Until the panel knows whether the preview takes the file, the
-        // tooltip waits rather than naming the wrong destination.
-        let previews = hovered_link
+        // Until the panel knows where the file opens, the tooltip waits rather
+        // than naming the wrong destination.
+        let decision = hovered_link
             .as_ref()
             .filter(|_| self.interaction.read(cx).link_tooltip_visible())
             .and_then(|link| match (&link.target, &self.file_links) {
@@ -1237,27 +1259,63 @@ impl Element for TerminalElement {
                         let _ = interaction.update(cx, |_, cx| cx.notify());
                     });
                     route
-                        .previews(path, since, redraw, cx)
-                        .map(|previews| (link, previews))
+                        .decision(path, since, redraw, cx)
+                        .map(|decision| (link, decision))
                 }
-                _ => Some((link, false)),
+                (LinkTarget::File { path, .. }, None) => {
+                    let open_in = crate::app_store::global_app_store(cx)
+                        .read(cx)
+                        .settings
+                        .file_link_open_in;
+                    let decision = crate::file_links::decide_file_link(
+                        path,
+                        None,
+                        crate::file_links::FileLinkContent::Unknown,
+                        false,
+                        open_in,
+                        crate::file_links::FileLinkPanelState::PanelOff,
+                    );
+                    Some((link, decision))
+                }
+                (LinkTarget::Url(_), _) => {
+                    Some((link, crate::file_links::FileLinkDecision::Browser))
+                }
             });
-        if let Some((link, previews)) = previews {
+        if let Some((link, decision)) = decision {
             let mouse_position = window.mouse_position();
             let target = link.target.clone();
+            let local = self
+                .file_links
+                .as_ref()
+                .is_some_and(|route| route.is_local(cx));
             let tooltip = self.interaction.update(cx, |interaction, cx| {
-                interaction.link_tooltip(target, link_modifier_held, previews, mouse_position, cx)
+                match interaction.link_tooltip(
+                    target,
+                    link_modifier_held,
+                    decision,
+                    local,
+                    mouse_position,
+                    cx,
+                ) {
+                    Some(tooltip) => Some(tooltip),
+                    None => {
+                        interaction.clear_link_tooltip();
+                        None
+                    }
+                }
             });
-            let interaction = self.interaction.downgrade();
-            window.set_tooltip(AnyTooltip {
-                view: tooltip.view,
-                mouse_position: tooltip.mouse_position,
-                check_visible_and_update: Rc::new(move |_, _, cx| {
-                    interaction
-                        .upgrade()
-                        .is_some_and(|interaction| interaction.read(cx).link_tooltip_visible())
-                }),
-            });
+            if let Some(tooltip) = tooltip {
+                let interaction = self.interaction.downgrade();
+                window.set_tooltip(AnyTooltip {
+                    view: tooltip.view,
+                    mouse_position: tooltip.mouse_position,
+                    check_visible_and_update: Rc::new(move |_, _, cx| {
+                        interaction
+                            .upgrade()
+                            .is_some_and(|interaction| interaction.read(cx).link_tooltip_visible())
+                    }),
+                });
+            }
         }
 
         let terminal_palette = self.style.palette;

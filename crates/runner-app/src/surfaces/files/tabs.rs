@@ -2,14 +2,20 @@
 //! reusable italic preview tab driven by single-click / arrow navigation in
 //! Changes.
 
+use std::path::{Path, PathBuf};
+
 use crate::surfaces::changes::model::SelectedTarget;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct TabKey {
-    /// Relative to the root, `/`-separated.
+    /// Relative to the root (`/`-separated) for a root tab, or the absolute
+    /// path string for an outside tab.
     pub(crate) path: String,
+    /// Present for a local file outside the Files root (#1458), keyed by its
+    /// normalized canonical path.
+    pub(crate) outside: Option<PathBuf>,
     /// Diff target associated with this tab. Files opened from the project tree
-    /// use `SelectedTarget::Uncommitted` (`Working tree vs HEAD`).
+    /// and outside tabs use `SelectedTarget::Uncommitted`.
     pub(crate) target: SelectedTarget,
 }
 
@@ -17,6 +23,7 @@ impl TabKey {
     pub(crate) fn working_tree(path: impl Into<String>) -> Self {
         Self {
             path: path.into(),
+            outside: None,
             target: SelectedTarget::Uncommitted,
         }
     }
@@ -24,17 +31,47 @@ impl TabKey {
     pub(crate) fn new(path: impl Into<String>, target: SelectedTarget) -> Self {
         Self {
             path: path.into(),
+            outside: None,
             target,
         }
     }
 
+    pub(crate) fn outside(path: PathBuf) -> Self {
+        Self {
+            path: path.to_string_lossy().into_owned(),
+            outside: Some(path),
+            target: SelectedTarget::Uncommitted,
+        }
+    }
+
+    pub(crate) fn is_outside(&self) -> bool {
+        self.outside.is_some()
+    }
+
+    pub(crate) fn outside_path(&self) -> Option<&Path> {
+        self.outside.as_deref()
+    }
+
+    pub(crate) fn root_path(&self) -> Option<&str> {
+        self.outside.is_none().then_some(&self.path)
+    }
+
     pub(crate) fn name(&self) -> &str {
+        if let Some(path) = self.outside.as_deref() {
+            return path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(&self.path);
+        }
         self.path
             .rsplit_once('/')
             .map_or(&self.path, |(_, name)| name)
     }
 
     pub(crate) fn folder(&self) -> &str {
+        if self.outside.is_some() {
+            return "";
+        }
         self.path.rsplit_once('/').map_or("", |(folder, _)| folder)
     }
 }
@@ -99,6 +136,12 @@ impl OpenPreviewOutcome {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum PromoteOutsideOutcome {
+    Replaced(TabKey),
+    MergedIntoExisting(TabKey),
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FileTabs {
     tabs: Vec<FileTab>,
@@ -133,7 +176,7 @@ impl FileTabs {
     pub(crate) fn has_duplicate_path(&self, path: &str) -> bool {
         self.tabs
             .iter()
-            .filter(|tab| tab.key.path == path)
+            .filter(|tab| !tab.key.is_outside() && tab.key.path == path)
             .nth(1)
             .is_some()
     }
@@ -155,7 +198,7 @@ impl FileTabs {
         if let Some(index) = self
             .tabs
             .iter()
-            .position(|tab| tab.preview && tab.key.path == path)
+            .position(|tab| !tab.key.is_outside() && tab.preview && tab.key.path == path)
         {
             self.tabs[index].preview = false;
             let key = self.tabs[index].key.clone();
@@ -176,6 +219,81 @@ impl FileTabs {
         );
         self.active = at;
         OpenPinnedOutcome::Created(working_key)
+    }
+
+    /// Opens a local file outside the Files root as a pinned tab keyed by its
+    /// canonical absolute path.
+    pub(crate) fn open_pinned_outside(&mut self, path: PathBuf) -> OpenPinnedOutcome {
+        let key = TabKey::outside(path);
+        if let Some(index) = self.tabs.iter().position(|tab| tab.key == key) {
+            self.active = index;
+            return OpenPinnedOutcome::Existing(key);
+        }
+        let at = if self.tabs.is_empty() {
+            0
+        } else {
+            (self.active + 1).min(self.tabs.len())
+        };
+        self.tabs.insert(
+            at,
+            FileTab {
+                key: key.clone(),
+                preview: false,
+            },
+        );
+        self.active = at;
+        OpenPinnedOutcome::Created(key)
+    }
+
+    /// Drops root tabs while keeping outside tabs intact, preserving the active
+    /// index when an outside tab remains.
+    pub(crate) fn retain_outside(&mut self) -> Vec<TabKey> {
+        let active_key = self.active().map(|tab| tab.key.clone());
+        let mut removed = Vec::new();
+        self.tabs.retain(|tab| {
+            if tab.key.is_outside() {
+                true
+            } else {
+                removed.push(tab.key.clone());
+                false
+            }
+        });
+        self.active = active_key
+            .and_then(|key| self.position_key(&key))
+            .unwrap_or_else(|| self.tabs.len().saturating_sub(1));
+        removed
+    }
+
+    /// Promotes an outside tab to its root-relative key when the Files root
+    /// moves to contain it, deduplicating if the root tab already exists.
+    pub(crate) fn promote_outside(
+        &mut self,
+        old: &TabKey,
+        relative: String,
+    ) -> Option<PromoteOutsideOutcome> {
+        let old_idx = self.position_key(old)?;
+        let new_key = TabKey::working_tree(relative);
+        if let Some(existing_idx) = self
+            .tabs
+            .iter()
+            .enumerate()
+            .position(|(i, tab)| i != old_idx && tab.key == new_key)
+        {
+            self.tabs[existing_idx].preview = false;
+            self.tabs.remove(old_idx);
+            if self.active == old_idx {
+                self.active = if old_idx < existing_idx {
+                    existing_idx - 1
+                } else {
+                    existing_idx
+                };
+            } else if old_idx < self.active {
+                self.active = self.active.saturating_sub(1);
+            }
+            return Some(PromoteOutsideOutcome::MergedIntoExisting(new_key));
+        }
+        self.tabs[old_idx].key = new_key.clone();
+        Some(PromoteOutsideOutcome::Replaced(new_key))
     }
 
     /// Opens `(path, target)` from Changes single-click or `↑↓` / `j` / `k`:
@@ -428,5 +546,73 @@ mod tests {
             preview: false,
         };
         assert_eq!((top.name(), top.folder()), ("README.md", ""));
+    }
+
+    #[test]
+    fn outside_tabs_dedupe_by_absolute_path_and_survive_root_reset() {
+        let mut tabs = FileTabs::default();
+        let outside_a = PathBuf::from("/tmp/outside/report.md");
+        let outside_b = PathBuf::from("/tmp/other/notes.txt");
+        assert!(tabs.open_pinned("src/lib.rs").is_new());
+        assert!(tabs.open_pinned_outside(outside_a.clone()).is_new());
+        assert!(!tabs.open_pinned_outside(outside_a.clone()).is_new());
+        assert!(tabs.open_pinned_outside(outside_b.clone()).is_new());
+        assert_eq!(tabs.tabs().len(), 3);
+        assert_eq!(tabs.active().unwrap().name(), "notes.txt");
+        assert!(tabs.active().unwrap().key.is_outside());
+        assert_eq!(
+            tabs.active().unwrap().key.outside_path(),
+            Some(outside_b.as_path())
+        );
+        assert_eq!(tabs.active().unwrap().key.root_path(), None);
+
+        let removed = tabs.retain_outside();
+        assert_eq!(removed, [TabKey::working_tree("src/lib.rs")]);
+        assert_eq!(tabs.tabs().len(), 2);
+        assert_eq!(tabs.active().unwrap().key, TabKey::outside(outside_b));
+        assert!(!tabs.has_duplicate_path(&outside_a.to_string_lossy()));
+    }
+
+    #[test]
+    fn promote_outside_replaces_in_place_and_dedupes_existing_root_tab() {
+        let mut tabs = FileTabs::default();
+        let outside_a = PathBuf::from("/repo/report.txt");
+        let outside_b = PathBuf::from("/other/notes.txt");
+        tabs.open_pinned_outside(outside_a.clone());
+        tabs.open_pinned_outside(outside_b.clone());
+        tabs.activate(0);
+
+        // In-place replacement preserves order and active index.
+        assert_eq!(
+            tabs.promote_outside(&TabKey::outside(outside_a), "report.txt".into()),
+            Some(PromoteOutsideOutcome::Replaced(TabKey::working_tree(
+                "report.txt"
+            )))
+        );
+        assert_eq!(paths(&tabs), ["report.txt", "/other/notes.txt"]);
+        assert_eq!(tabs.active_index(), Some(0));
+        assert!(!tabs.tabs()[0].key.is_outside());
+
+        // Merging when a preview root tab already exists deduplicates and pins it.
+        let outside_c = PathBuf::from("/repo/sub/doc.md");
+        tabs.open_preview("sub/doc.md", SelectedTarget::Uncommitted);
+        tabs.open_pinned_outside(outside_c.clone());
+        assert_eq!(tabs.tabs().len(), 4);
+        assert_eq!(
+            tabs.active().unwrap().key,
+            TabKey::outside(outside_c.clone())
+        );
+        assert_eq!(
+            tabs.promote_outside(&TabKey::outside(outside_c), "sub/doc.md".into()),
+            Some(PromoteOutsideOutcome::MergedIntoExisting(
+                TabKey::working_tree("sub/doc.md")
+            ))
+        );
+        assert_eq!(
+            paths(&tabs),
+            ["report.txt", "/other/notes.txt", "sub/doc.md"]
+        );
+        assert_eq!(tabs.active_index(), Some(2));
+        assert!(!tabs.tabs()[2].preview);
     }
 }
