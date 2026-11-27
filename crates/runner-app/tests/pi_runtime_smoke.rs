@@ -11,7 +11,6 @@ use runner_daemon::router::runtime::PermissionMode;
 use runner_daemon::session::pty_runtime::PtyRuntime;
 use runner_daemon::session::SessionManager;
 use runner_daemon::AppCore;
-use runner_terminal::replay::visible_lines;
 use runner_terminal::terminal::{TerminalBridge, TerminalMirror};
 
 const DEFAULT_MODEL: &str = "deepseek/deepseek-v4-flash";
@@ -105,7 +104,7 @@ fn user_message_count(events: &[serde_json::Value]) -> usize {
 }
 
 fn grid_text(terminal: &TerminalMirror) -> String {
-    visible_lines(&*terminal.term.lock()).join("\n")
+    terminal.visible_lines().join("\n")
 }
 
 fn wait_for_ready(terminal: &TerminalMirror) {

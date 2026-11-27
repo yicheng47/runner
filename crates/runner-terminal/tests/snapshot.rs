@@ -1,85 +1,83 @@
 use std::path::{Path, PathBuf};
 
-use alacritty_terminal::event::VoidListener;
-use alacritty_terminal::grid::{Cursor, Dimensions, Grid};
-use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::cell::Cell;
-use alacritty_terminal::term::test::TermSize;
-use alacritty_terminal::term::{Config, Term, TermMode};
 use runner_terminal::fixtures::{decode_chunk, Fixture, FixtureEvent};
-use runner_terminal::snapshot::TrackedProcessor as Processor;
-use runner_terminal::snapshot::{serialize, BoundaryScanner};
+use runner_terminal::replay::Terminal;
+use runner_terminal::snapshot::{serialize, CellSnapshot, CursorSnapshot, GridSnapshot};
+use runner_terminal::TerminalModeFlags;
 
-fn new_term(cols: u16, rows: u16) -> Term<VoidListener> {
-    Term::new(
-        Config {
-            kitty_keyboard: true,
-            ..Config::default()
-        },
-        &TermSize::new(cols as usize, rows as usize),
-        VoidListener,
-    )
+fn new_term(cols: u16, rows: u16) -> Terminal {
+    Terminal::with_kitty_keyboard(cols, rows)
 }
 
-fn cell_equal(a: &Cell, b: &Cell, context: &str) {
+fn cell_equal(a: &CellSnapshot, b: &CellSnapshot, context: &str) {
     assert_eq!(
         (
             a.c,
             a.fg,
             a.bg,
             a.flags,
-            a.zerowidth().unwrap_or_default(),
-            a.underline_color(),
-            a.hyperlink()
+            a.zerowidth.as_slice(),
+            a.underline_color,
+            &a.hyperlink
         ),
         (
             b.c,
             b.fg,
             b.bg,
             b.flags,
-            b.zerowidth().unwrap_or_default(),
-            b.underline_color(),
-            b.hyperlink()
+            b.zerowidth.as_slice(),
+            b.underline_color,
+            &b.hyperlink
         ),
         "{context}"
     );
 }
 
-fn cursor_equal(a: &Cursor<Cell>, b: &Cursor<Cell>, context: &str) {
+fn cursor_equal(a: &CursorSnapshot, b: &CursorSnapshot, context: &str) {
     assert_eq!(a.point, b.point, "{context}: point");
     assert_eq!(a.charsets, b.charsets, "{context}: charsets");
     assert_eq!(a.input_needs_wrap, b.input_needs_wrap, "{context}: wrap");
     cell_equal(&a.template, &b.template, context);
 }
 
-fn grid_equal(a: &Grid<Cell>, b: &Grid<Cell>, context: &str) {
-    assert_eq!(a.history_size(), b.history_size(), "{context}: history");
+fn grid_equal(a: &GridSnapshot, b: &GridSnapshot, context: &str) {
+    assert_eq!(a.history_size, b.history_size, "{context}: history");
+    assert_eq!(a.rows.len(), b.rows.len(), "{context}: row count");
     cursor_equal(&a.cursor, &b.cursor, &format!("{context}: cursor"));
     cursor_equal(
         &a.saved_cursor,
         &b.saved_cursor,
         &format!("{context}: saved cursor"),
     );
-    for line in -(a.history_size() as i32)..a.screen_lines() as i32 {
-        for column in 0..a.columns() {
-            let a = &a[Line(line)][Column(column)];
-            let b = &b[Line(line)][Column(column)];
-            cell_equal(a, b, &format!("{context}: cell {line}:{column}"));
+    for (row_index, (row_a, row_b)) in a.rows.iter().zip(b.rows.iter()).enumerate() {
+        let line = row_index as i32 - a.history_size as i32;
+        assert_eq!(
+            row_a.len(),
+            row_b.len(),
+            "{context}: row {line} column count"
+        );
+        for (column, (cell_a, cell_b)) in row_a.iter().zip(row_b.iter()).enumerate() {
+            cell_equal(cell_a, cell_b, &format!("{context}: cell {line}:{column}"));
         }
     }
+    assert_eq!(a, b, "{context}: grid snapshot");
 }
 
-fn equal(a: &Term<VoidListener>, b: &Term<VoidListener>, context: &str) {
-    assert_eq!(a.mode(), b.mode(), "{context}: modes");
-    grid_equal(a.grid(), b.grid(), context);
+fn equal(a: &Terminal, b: &Terminal, context: &str) {
     let x = a.snapshot_state();
     let y = b.snapshot_state();
-    if a.mode().contains(TermMode::ALT_SCREEN) {
-        grid_equal(x.inactive_grid, y.inactive_grid, context);
+    assert_eq!(x.mode, y.mode, "{context}: modes");
+    grid_equal(&x.active_grid, &y.active_grid, context);
+    if x.mode.contains(TerminalModeFlags::ALT_SCREEN) {
+        grid_equal(
+            x.inactive_grid.as_ref().expect("inactive grid"),
+            y.inactive_grid.as_ref().expect("inactive grid"),
+            context,
+        );
     }
     cursor_equal(
-        &x.inactive_grid.saved_cursor,
-        &y.inactive_grid.saved_cursor,
+        &x.inactive_saved_cursor,
+        &y.inactive_saved_cursor,
         &format!("{context}: inactive saved cursor"),
     );
     assert_eq!(x.scroll_region, y.scroll_region, "{context}: scroll region");
@@ -98,20 +96,14 @@ fn equal(a: &Term<VoidListener>, b: &Term<VoidListener>, context: &str) {
     assert_eq!(x.active_charset, y.active_charset, "{context}: charset");
 }
 
-fn restore(
-    original: &Term<VoidListener>,
-    parser: &Processor,
-    scanner: &BoundaryScanner,
-) -> (Term<VoidListener>, Processor, BoundaryScanner) {
-    let mut restored = new_term(original.columns() as u16, original.screen_lines() as u16);
-    let mut replay = Processor::new();
-    let mut boundary = BoundaryScanner::default();
-    let bytes = serialize(original, scanner.unfinished());
-    let split = bytes.len() - scanner.unfinished().len();
-    parse(&mut restored, &mut replay, &mut boundary, &bytes[..split]);
-    replay.restore_preceding_char(parser.preceding_char());
-    parse(&mut restored, &mut replay, &mut boundary, &bytes[split..]);
-    (restored, replay, boundary)
+fn restore(original: &Terminal) -> Terminal {
+    let mut restored = new_term(original.cols() as u16, original.rows() as u16);
+    let bytes = serialize(original, original.unfinished());
+    let split = bytes.len() - original.unfinished().len();
+    restored.advance(&bytes[..split]);
+    restored.restore_preceding_char(original.preceding_char());
+    restored.advance(&bytes[split..]);
+    restored
 }
 
 fn recordings() -> Vec<PathBuf> {
@@ -124,31 +116,15 @@ fn recordings() -> Vec<PathBuf> {
     paths
 }
 
-fn parse(
-    term: &mut Term<VoidListener>,
-    parser: &mut Processor,
-    scanner: &mut BoundaryScanner,
-    bytes: &[u8],
-) {
-    parser.advance(term, bytes);
-    let held = parser
-        .sync_timeout()
-        .sync_timeout()
-        .map(|_| parser.sync_bytes_count());
-    scanner.advance(bytes, held);
-}
-
 #[test]
 fn recording_round_trips() {
     for path in recordings() {
         let fixture = Fixture::load(&path).unwrap();
         let mut original = new_term(fixture.header.cols, fixture.header.rows);
-        let mut parser = Processor::new();
-        let mut scanner = BoundaryScanner::default();
         for event in &fixture.events {
-            apply_event(&mut original, &mut parser, &mut scanner, event);
+            apply_event(&mut original, event);
         }
-        let (restored, _, _) = restore(&original, &parser, &scanner);
+        let restored = restore(&original);
         equal(&original, &restored, path.to_str().unwrap());
     }
 }
@@ -157,18 +133,16 @@ fn recording_round_trips() {
 fn hyperlinks_preserve_cells_cursors_screens_and_continuation() {
     let bytes = b"\x1b]8;;https://example.com/anonymous\x1b\\anonymous\x1b]8;;\x1b\\ plain\r\n\x1b]8;id=saved;file:///tmp/example.rs#L12\x1b\\saved\x1b7\x1b]8;;\x1b\\\r\n\x1b]8;id=edge;https://example.com/edge\x1b\\\x1b[3;20HX\x1b[?1049h\x1b]8;id=alt;https://example.com/alt\x1b\\alternate\x1b7\x1b]8;id=active;https://example.com/active\x1b\\\x1b[2;20HZ";
     let mut original = new_term(20, 4);
-    let mut parser = Processor::new();
-    let mut scanner = BoundaryScanner::default();
-    parse(&mut original, &mut parser, &mut scanner, bytes);
-    let (mut restored, mut replay, mut boundary) = restore(&original, &parser, &scanner);
+    original.advance(bytes);
+    let mut restored = restore(&original);
     equal(&original, &restored, "hyperlink snapshot");
     for bytes in [
         b"wrap\x1b]8;;\x1b\\ plain".as_slice(),
         b"\x1b8continued\x1b]8;;\x1b\\",
         b"\x1b[?1049l\x1b8continued\x1b]8;;\x1b\\ plain",
     ] {
-        parse(&mut original, &mut parser, &mut scanner, bytes);
-        parse(&mut restored, &mut replay, &mut boundary, bytes);
+        original.advance(bytes);
+        restored.advance(bytes);
         equal(&original, &restored, "hyperlink continuation");
     }
 }
@@ -247,8 +221,6 @@ fn recording_split_points(name: &str) {
     offsets.dedup();
     for offset in offsets {
         let mut original = new_term(fixture.header.cols, fixture.header.rows);
-        let mut parser = Processor::new();
-        let mut scanner = BoundaryScanner::default();
         let mut remaining = offset;
         let mut resume = (fixture.events.len(), 0);
         for (index, event) in fixture.events.iter().enumerate() {
@@ -259,21 +231,15 @@ fn recording_split_points(name: &str) {
             if let FixtureEvent::Data { data, .. } = event {
                 let chunk = decode_chunk(data).unwrap();
                 if remaining < chunk.len() {
-                    parse(
-                        &mut original,
-                        &mut parser,
-                        &mut scanner,
-                        &chunk[..remaining],
-                    );
+                    original.advance(&chunk[..remaining]);
                     resume = (index, remaining);
                     break;
                 }
                 remaining -= chunk.len();
             }
-            apply_event(&mut original, &mut parser, &mut scanner, event);
+            apply_event(&mut original, event);
         }
-        let (mut restored, mut restored_parser, mut restored_scanner) =
-            restore(&original, &parser, &scanner);
+        let mut restored = restore(&original);
         equal(
             &original,
             &restored,
@@ -285,25 +251,15 @@ fn recording_split_points(name: &str) {
                     unreachable!();
                 };
                 let chunk = decode_chunk(data).unwrap();
-                parse(&mut original, &mut parser, &mut scanner, &chunk[resume.1..]);
-                parse(
-                    &mut restored,
-                    &mut restored_parser,
-                    &mut restored_scanner,
-                    &chunk[resume.1..],
-                );
+                original.advance(&chunk[resume.1..]);
+                restored.advance(&chunk[resume.1..]);
             } else {
-                apply_event(&mut original, &mut parser, &mut scanner, event);
-                apply_event(
-                    &mut restored,
-                    &mut restored_parser,
-                    &mut restored_scanner,
-                    event,
-                );
+                apply_event(&mut original, event);
+                apply_event(&mut restored, event);
             }
         }
-        parser.stop_sync(&mut original);
-        restored_parser.stop_sync(&mut restored);
+        original.stop_sync();
+        restored.stop_sync();
         equal(
             &original,
             &restored,
@@ -314,35 +270,24 @@ fn recording_split_points(name: &str) {
 
 #[test]
 fn partial_sequences_and_modes_round_trip_at_every_byte() {
-    let bytes=b"\x1b[?1h\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b=\x1b[3;8r\x1b[?6h\x1b[>7u\x1b[>1u\x1b)0\x0eq\x1b[?2026h\x1b[31mheld\x1b[?2026l\x1b]2;title\x1b\\\x1b[<1u\x0fq";
+    let bytes = b"\x1b[?1h\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b=\x1b[3;8r\x1b[?6h\x1b[>7u\x1b[>1u\x1b)0\x0eq\x1b[?2026h\x1b[31mheld\x1b[?2026l\x1b]2;title\x1b\\\x1b[<1u\x0fq";
     for offset in 0..=bytes.len() {
         let mut original = new_term(20, 10);
-        let mut parser = Processor::new();
-        let mut scanner = BoundaryScanner::default();
-        parse(&mut original, &mut parser, &mut scanner, &bytes[..offset]);
-        let (mut restored, mut restored_parser, _) = restore(&original, &parser, &scanner);
+        original.advance(&bytes[..offset]);
+        let mut restored = restore(&original);
         equal(&original, &restored, &format!("byte {offset} immediate"));
-        parser.advance(&mut original, &bytes[offset..]);
-        restored_parser.advance(&mut restored, &bytes[offset..]);
-        parser.stop_sync(&mut original);
-        restored_parser.stop_sync(&mut restored);
+        original.advance(&bytes[offset..]);
+        restored.advance(&bytes[offset..]);
+        original.stop_sync();
+        restored.stop_sync();
         equal(&original, &restored, &format!("byte {offset}"));
     }
 }
 
-fn apply_event(
-    term: &mut Term<VoidListener>,
-    parser: &mut Processor,
-    scanner: &mut BoundaryScanner,
-    event: &FixtureEvent,
-) {
+fn apply_event(term: &mut Terminal, event: &FixtureEvent) {
     match event {
-        FixtureEvent::Data { data, .. } => {
-            parse(term, parser, scanner, &decode_chunk(data).unwrap())
-        }
-        FixtureEvent::Resize { cols, rows, .. } => {
-            term.resize(TermSize::new(*cols as usize, *rows as usize))
-        }
+        FixtureEvent::Data { data, .. } => term.advance(&decode_chunk(data).unwrap()),
+        FixtureEvent::Resize { cols, rows, .. } => term.resize(*cols, *rows),
         _ => {}
     }
 }
@@ -352,13 +297,11 @@ fn saved_alternate_cursor_survives_attach_on_the_primary_screen() {
     let bytes = b"primary\x1b[?1049h\x1b[4;6H\x1b[31m\x1b7\x1b[?1049lmore\x1b[?1049h\x1b8X";
     for offset in 0..=bytes.len() {
         let mut original = new_term(20, 10);
-        let mut parser = Processor::new();
-        let mut scanner = BoundaryScanner::default();
-        parse(&mut original, &mut parser, &mut scanner, &bytes[..offset]);
-        let (mut restored, mut restored_parser, _) = restore(&original, &parser, &scanner);
+        original.advance(&bytes[..offset]);
+        let mut restored = restore(&original);
         equal(&original, &restored, &format!("byte {offset} immediate"));
-        parser.advance(&mut original, &bytes[offset..]);
-        restored_parser.advance(&mut restored, &bytes[offset..]);
+        original.advance(&bytes[offset..]);
+        restored.advance(&bytes[offset..]);
         equal(
             &original,
             &restored,
@@ -370,8 +313,6 @@ fn saved_alternate_cursor_survives_attach_on_the_primary_screen() {
 #[test]
 fn resize_during_a_partial_sequence_or_held_update_round_trips() {
     let mut original = new_term(20, 10);
-    let mut parser = Processor::new();
-    let mut scanner = BoundaryScanner::default();
     for bytes in [
         b"wrapped text at initial width".as_slice(),
         b"\x1b[?2026hheld",
@@ -379,16 +320,15 @@ fn resize_during_a_partial_sequence_or_held_update_round_trips() {
         b"120;80;40mcolour",
         b"\x1b[?2026l",
     ] {
-        parse(&mut original, &mut parser, &mut scanner, bytes);
+        original.advance(bytes);
         for (cols, rows) in [(12, 8), (30, 14)] {
-            original.resize(TermSize::new(cols, rows));
-            let (mut restored, mut restored_parser, _) = restore(&original, &parser, &scanner);
+            original.resize(cols, rows);
+            let mut restored = restore(&original);
             equal(&original, &restored, "resize unfinished immediate");
             let suffix = b"\x1b[?2026l";
-            parser.advance(&mut original, suffix);
-            scanner.advance(suffix, None);
-            scanner.end_sync();
-            restored_parser.advance(&mut restored, suffix);
+            original.advance(suffix);
+            original.end_sync();
+            restored.advance(suffix);
             equal(&original, &restored, "resize unfinished");
         }
     }
@@ -397,26 +337,24 @@ fn resize_during_a_partial_sequence_or_held_update_round_trips() {
 fn every_split(bytes: &[u8], cols: u16, rows: u16, context: &str) {
     for offset in 0..=bytes.len() {
         let mut original = new_term(cols, rows);
-        let mut parser = Processor::new();
-        let mut scanner = BoundaryScanner::default();
-        parse(&mut original, &mut parser, &mut scanner, &bytes[..offset]);
-        let (mut restored, mut replay, mut boundary) = restore(&original, &parser, &scanner);
+        original.advance(&bytes[..offset]);
+        let mut restored = restore(&original);
         equal(
             &original,
             &restored,
             &format!("{context} byte {offset} immediate"),
         );
-        assert_eq!(parser.preceding_char(), replay.preceding_char());
-        parse(&mut original, &mut parser, &mut scanner, &bytes[offset..]);
-        parse(&mut restored, &mut replay, &mut boundary, &bytes[offset..]);
-        parser.stop_sync(&mut original);
-        replay.stop_sync(&mut restored);
+        assert_eq!(original.preceding_char(), restored.preceding_char());
+        original.advance(&bytes[offset..]);
+        restored.advance(&bytes[offset..]);
+        original.stop_sync();
+        restored.stop_sync();
         equal(
             &original,
             &restored,
             &format!("{context} byte {offset} continued"),
         );
-        assert_eq!(parser.preceding_char(), replay.preceding_char());
+        assert_eq!(original.preceding_char(), restored.preceding_char());
     }
 }
 
@@ -488,34 +426,32 @@ fn synchronized_capacity_flushes_and_restarts_preserve_immediate_and_continued_s
         let chunks = [first.as_slice(), second.as_slice(), last];
         for checkpoint in 0..=chunks.len() {
             let mut original = new_term(20, 5);
-            let mut parser = Processor::new();
-            let mut scanner = BoundaryScanner::default();
             for chunk in &chunks[..checkpoint] {
-                parse(&mut original, &mut parser, &mut scanner, chunk);
+                original.advance(chunk);
             }
-            let (mut restored, mut replay, mut boundary) = restore(&original, &parser, &scanner);
+            let mut restored = restore(&original);
             let context = format!("capacity {last:?}, checkpoint {checkpoint}");
             equal(&original, &restored, &format!("{context} immediate"));
             assert_eq!(
-                parser.sync_bytes_count(),
-                replay.sync_bytes_count(),
+                original.sync_bytes_count(),
+                restored.sync_bytes_count(),
                 "{context}"
             );
-            assert_eq!(scanner.unfinished(), boundary.unfinished(), "{context}");
+            assert_eq!(original.unfinished(), restored.unfinished(), "{context}");
             if checkpoint == chunks.len() && last.starts_with(b"z\x1b") {
-                assert_eq!(scanner.unfinished().len(), 8 + parser.sync_bytes_count());
-                assert!(parser.sync_bytes_count() <= 4);
+                assert_eq!(original.unfinished().len(), 8 + original.sync_bytes_count());
+                assert!(original.sync_bytes_count() <= 4);
             }
             for chunk in &chunks[checkpoint..] {
-                parse(&mut original, &mut parser, &mut scanner, chunk);
-                parse(&mut restored, &mut replay, &mut boundary, chunk);
+                original.advance(chunk);
+                restored.advance(chunk);
             }
             let suffix = b"m\nX\x1b[2b\x1b[?2026l\r\ncontinued";
-            parse(&mut original, &mut parser, &mut scanner, suffix);
-            parse(&mut restored, &mut replay, &mut boundary, suffix);
+            original.advance(suffix);
+            restored.advance(suffix);
             equal(&original, &restored, &format!("{context} continued"));
-            assert_eq!(parser.sync_bytes_count(), 0);
-            assert_eq!(replay.sync_bytes_count(), 0);
+            assert_eq!(original.sync_bytes_count(), 0);
+            assert_eq!(restored.sync_bytes_count(), 0);
         }
     }
     for bytes in [

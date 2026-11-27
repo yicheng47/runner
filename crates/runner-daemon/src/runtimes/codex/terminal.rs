@@ -179,7 +179,7 @@ const CODEX_TITLE_SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼
 
 #[derive(Default)]
 struct CodexTitleHint {
-    parser: vte::Parser,
+    parser: runner_terminal::title_parser::TitleParser,
     classifier: CodexTitleClassifier,
 }
 
@@ -194,44 +194,10 @@ struct CodexTitleClassifier {
     rename_completed: bool,
 }
 
-enum TitleEvent {
-    Set(String),
-    Reset,
-}
-
-#[derive(Default)]
-struct TitleEvents(Vec<TitleEvent>);
-
-impl vte::Perform for TitleEvents {
-    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
-        if !matches!(params.first(), Some(selector) if *selector == b"0" || *selector == b"2") {
-            return;
-        }
-        let mut raw = Vec::new();
-        for (index, part) in params.iter().skip(1).enumerate() {
-            if index > 0 {
-                raw.push(b';');
-            }
-            raw.extend_from_slice(part);
-        }
-        match String::from_utf8(raw) {
-            Ok(title) if !title.is_empty() => self.0.push(TitleEvent::Set(title)),
-            _ => self.0.push(TitleEvent::Reset),
-        }
-    }
-
-    fn esc_dispatch(&mut self, intermediates: &[u8], ignore: bool, byte: u8) {
-        if !ignore && intermediates.is_empty() && byte == b'c' {
-            self.0.push(TitleEvent::Reset);
-        }
-    }
-}
-
 impl CodexTitleHint {
     fn observe(&mut self, bytes: &[u8]) -> Option<SessionActivityState> {
-        let mut events = TitleEvents::default();
-        self.parser.advance(&mut events, bytes);
-        for event in events.0 {
+        use runner_terminal::title_parser::TitleEvent;
+        for event in self.parser.advance(bytes) {
             match event {
                 TitleEvent::Set(title) => self.classifier.observe(&title),
                 TitleEvent::Reset => self.classifier.clear_authority(),

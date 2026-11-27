@@ -4,11 +4,10 @@ use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use alacritty_terminal::grid::Dimensions as _;
-use alacritty_terminal::index::{Boundary, Column, Line, Point};
-use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::Term;
 use regex::Regex;
+
+use crate::screen::ScreenView;
+use crate::types::{CellFlags as Flags, Column, GridPoint as Point, Line};
 
 pub(super) const MAX_WRAP_JOIN_ROWS: usize = 8;
 pub(super) const MAX_LINK_PATH_PROBES: usize = 32;
@@ -202,10 +201,16 @@ struct LinkCell {
     end: usize,
 }
 
-fn link_row_content<T>(term: &Term<T>, line: Line) -> Option<(usize, usize)> {
-    let row = &term.grid()[line];
-    let first = (0..term.columns()).find(|&column| !row[Column(column)].c.is_whitespace())?;
-    let last = (first..term.columns()).rfind(|&column| !row[Column(column)].c.is_whitespace())?;
+fn link_row_content(view: &ScreenView<'_>, line: Line) -> Option<(usize, usize)> {
+    let cols = view.cols();
+    let first = (0..cols).find(|&column| {
+        view.row_cell(line, Column(column))
+            .is_some_and(|cell| !cell.c().is_whitespace())
+    })?;
+    let last = (first..cols).rfind(|&column| {
+        view.row_cell(line, Column(column))
+            .is_some_and(|cell| !cell.c().is_whitespace())
+    })?;
     Some((first, last))
 }
 
@@ -219,31 +224,33 @@ enum Osc8Lookup {
     Link(TerminalLink),
 }
 
-fn terminal_hyperlink_at<T>(
-    term: &Term<T>,
+fn terminal_hyperlink_at(
+    view: &ScreenView<'_>,
     point: Point,
     cwds: &[&Path],
     budget: &mut ProbeBudget<'_>,
 ) -> Osc8Lookup {
-    let Some(hyperlink) = term.grid()[point].hyperlink() else {
+    let Some(hyperlink) = view.cell(point).and_then(|cell| cell.hyperlink()) else {
         return Osc8Lookup::None;
     };
     let is_separator = |column| {
-        let cell = &term.grid()[point.line][Column(column)];
-        matches!(cell.c, '│' | '|') && cell.hyperlink().is_none()
+        view.row_cell(point.line, Column(column))
+            .is_some_and(|cell| matches!(cell.c(), '│' | '|') && cell.hyperlink().is_none())
     };
     let first = (0..point.column.0)
         .rfind(|&column| is_separator(column))
         .map_or(0, |column| column + 1);
-    let last = (point.column.0 + 1..term.columns())
+    let last = (point.column.0 + 1..view.cols())
         .find(|&column| is_separator(column))
-        .unwrap_or(term.columns());
+        .unwrap_or(view.cols());
     let columns = first..last;
     let matches_link = |point: Point| {
-        term.grid()[point].hyperlink().is_some_and(|other| {
-            other.uri() == hyperlink.uri()
-                && wrapped_hyperlink_ids_match(other.id(), hyperlink.id())
-        })
+        view.cell(point)
+            .and_then(|cell| cell.hyperlink())
+            .is_some_and(|other| {
+                other.uri() == hyperlink.uri()
+                    && wrapped_hyperlink_ids_match(other.id(), hyperlink.id())
+            })
     };
     let row_has_link = |line| {
         columns
@@ -252,11 +259,11 @@ fn terminal_hyperlink_at<T>(
     };
     // Redraws can assign new anonymous IDs inside a row; table padding is not link text.
     let mut start = point.line;
-    while start > term.topmost_line() && row_has_link(start - 1) {
+    while start > view.topmost_line() && row_has_link(start - 1) {
         start -= 1;
     }
     let mut end = point.line;
-    while end < term.bottommost_line() && row_has_link(end + 1) {
+    while end < view.bottommost_line() && row_has_link(end + 1) {
         end += 1;
     }
     let points = (start.0..=end.0)
@@ -317,111 +324,129 @@ fn resolve_osc8_bare_path(
     })
 }
 
-fn link_rows_joined<T>(term: &Term<T>, line: Line) -> bool {
-    if term.grid()[line][Column(term.columns() - 1)]
-        .flags
-        .contains(Flags::WRAPLINE)
+fn link_rows_joined(view: &ScreenView<'_>, line: Line) -> bool {
+    let cols = view.cols();
+    if cols == 0 {
+        return false;
+    }
+    if view
+        .row_cell(line, Column(cols - 1))
+        .is_some_and(|cell| cell.flags().contains(Flags::WRAPLINE))
     {
         return true;
     }
+    let next_line = Line(line.0 + 1);
     let (Some((_, last)), Some((first, _))) = (
-        link_row_content(term, line),
-        link_row_content(term, Line(line.0 + 1)),
+        link_row_content(view, line),
+        link_row_content(view, next_line),
     ) else {
         return false;
     };
-    let next = &term.grid()[Line(line.0 + 1)];
-    let prefix: String = (first..(first + MAX_URL_SCHEME_PREFIX_LEN).min(term.columns()))
-        .map(|column| next[Column(column)].c)
+    let prefix: String = (first..(first + MAX_URL_SCHEME_PREFIX_LEN).min(cols))
+        .filter_map(|column| {
+            view.row_cell(next_line, Column(column))
+                .map(|cell| cell.c())
+        })
         .collect();
     if starts_with_url_scheme(&prefix) {
         return false;
     }
-    let left = &term.grid()[line][Column(last)];
-    let right = &next[Column(first)];
+    let Some(left) = view.row_cell(line, Column(last)) else {
+        return false;
+    };
+    let Some(right) = view.row_cell(next_line, Column(first)) else {
+        return false;
+    };
     // TUIs also wrap links with explicit newlines, leaving WRAPLINE unset.
     match (left.hyperlink(), right.hyperlink()) {
         (Some(left), Some(right)) => {
             left.uri() == right.uri() && wrapped_hyperlink_ids_match(left.id(), right.id())
         }
         (None, None) => {
-            if !left.flags.intersects(Flags::ALL_UNDERLINES)
-                || left.flags & Flags::ALL_UNDERLINES != right.flags & Flags::ALL_UNDERLINES
-                || left.fg != right.fg
-                || left.bg != right.bg
+            let left_flags = left.flags();
+            let right_flags = right.flags();
+            if !left_flags.intersects(Flags::ALL_UNDERLINES)
+                || left_flags & Flags::ALL_UNDERLINES != right_flags & Flags::ALL_UNDERLINES
+                || left.fg() != right.fg()
+                || left.bg() != right.bg()
             {
                 return false;
             }
-            let fragment_end = (first..term.columns())
+            let fragment_end = (first..cols)
                 .find(|&column| {
-                    let cell = &next[Column(column)];
-                    !cell.flags.contains(Flags::WIDE_CHAR_SPACER)
-                        && (cell.c.is_whitespace()
-                            || (column > first && matches!(cell.c, '/' | '\\')))
+                    view.row_cell(next_line, Column(column))
+                        .is_some_and(|cell| {
+                            !cell.flags().contains(Flags::WIDE_CHAR_SPACER)
+                                && (cell.c().is_whitespace()
+                                    || (column > first && matches!(cell.c(), '/' | '\\')))
+                        })
                 })
-                .map_or(term.columns(), |column| {
-                    column + usize::from(matches!(next[Column(column)].c, '/' | '\\'))
+                .map_or(cols, |column| {
+                    column
+                        + usize::from(
+                            view.row_cell(next_line, Column(column))
+                                .is_some_and(|cell| matches!(cell.c(), '/' | '\\')),
+                        )
                 });
             // Allow a two-column TUI margin, but do not join text that would have fit.
-            fragment_end - first > (term.columns() - last - 1).saturating_sub(2)
+            fragment_end - first > (cols - last - 1).saturating_sub(2)
         }
         _ => false,
     }
 }
 
-pub(super) fn terminal_link_at<T>(
-    term: &Term<T>,
+pub(super) fn terminal_link_at(
+    view: &ScreenView<'_>,
     point: Point,
     cwds: &[&Path],
 ) -> Option<TerminalLink> {
     let mut is_file =
         |path: &Path| std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file());
-    terminal_link_at_with_prober(term, point, cwds, &mut is_file)
+    terminal_link_at_with_prober(view, point, cwds, &mut is_file)
 }
 
-pub(super) fn terminal_link_at_with_prober<T>(
-    term: &Term<T>,
+pub(super) fn terminal_link_at_with_prober(
+    view: &ScreenView<'_>,
     point: Point,
     cwds: &[&Path],
     is_file: &mut dyn FnMut(&Path) -> bool,
 ) -> Option<TerminalLink> {
     let mut budget = ProbeBudget::new(MAX_LINK_PATH_PROBES, is_file);
-    terminal_link_at_with_hard_breaks(term, point, cwds, true, &mut budget)
+    terminal_link_at_with_hard_breaks(view, point, cwds, true, &mut budget)
 }
 
-fn terminal_link_at_with_hard_breaks<T>(
-    term: &Term<T>,
+fn terminal_link_at_with_hard_breaks(
+    view: &ScreenView<'_>,
     point: Point,
     cwds: &[&Path],
     hard_breaks: bool,
     budget: &mut ProbeBudget<'_>,
 ) -> Option<TerminalLink> {
-    let mut point = point.grid_clamp(term, Boundary::Grid);
-    if term.grid()[point]
-        .flags
-        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-    {
+    let mut point = view.clamp_grid_point(point);
+    if view.cell(point).is_some_and(|cell| {
+        cell.flags()
+            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+    }) {
         point.column = Column(point.column.0.saturating_sub(1));
     }
-    match terminal_hyperlink_at(term, point, cwds, budget) {
+    match terminal_hyperlink_at(view, point, cwds, budget) {
         Osc8Lookup::Link(link) => return Some(link),
         Osc8Lookup::Rejected => return None,
         Osc8Lookup::None => {}
     }
 
-    let soft_start = term.line_search_left(point).line;
-    let soft_end = term.line_search_right(point).line;
+    let (soft_start, soft_end) = view.soft_wrapped_line_bounds(point.line);
     let mut start = soft_start;
     let mut end = soft_end;
     if hard_breaks {
-        while start > term.topmost_line() && link_rows_joined(term, start - 1) {
+        while start > view.topmost_line() && link_rows_joined(view, start - 1) {
             start -= 1;
         }
-        while end < term.bottommost_line() && link_rows_joined(term, end) {
+        while end < view.bottommost_line() && link_rows_joined(view, end) {
             end += 1;
         }
     }
-    let (text, cells) = collect_line_range(term, start, end);
+    let (text, cells) = collect_line_range(view, start, end);
 
     let hit = cells.iter().position(|cell| cell.point == point)?;
     let hit_cell = cells[hit];
@@ -437,10 +462,10 @@ fn terminal_link_at_with_hard_breaks<T>(
         return link_from_byte_range(target, &cells, &uri_range);
     }
     if hard_breaks && (start != soft_start || end != soft_end) {
-        return terminal_link_at_with_hard_breaks(term, point, cwds, false, budget);
+        return terminal_link_at_with_hard_breaks(view, point, cwds, false, budget);
     }
 
-    resolve_plain_file_link(term, point, &text, &cells, hit_cell, cwds, budget)
+    resolve_plain_file_link(view, point, &text, &cells, hit_cell, cwds, budget)
 }
 
 fn local_uri_prefix_len(text: &str) -> Option<usize> {
@@ -568,33 +593,33 @@ fn is_local_uri_terminator(c: char) -> bool {
         || ('\u{2500}'..='\u{257F}').contains(&c)
 }
 
-fn collect_line_range<T>(term: &Term<T>, start: Line, end: Line) -> (String, Vec<LinkCell>) {
+fn collect_line_range(view: &ScreenView<'_>, start: Line, end: Line) -> (String, Vec<LinkCell>) {
+    let cols = view.cols();
     let mut text = String::new();
     let mut cells = Vec::new();
+    if cols == 0 {
+        return (text, cells);
+    }
     for line in start.0..=end.0 {
         let line = Line(line);
-        let (first, last) = link_row_content(term, line).unwrap_or((0, term.columns() - 1));
+        let (first, last) = link_row_content(view, line).unwrap_or((0, cols - 1));
         let hard_break_before = line > start
-            && !term.grid()[Line(line.0 - 1)][Column(term.columns() - 1)]
-                .flags
-                .contains(Flags::WRAPLINE);
+            && !view
+                .row_cell(Line(line.0 - 1), Column(cols - 1))
+                .is_some_and(|cell| cell.flags().contains(Flags::WRAPLINE));
         let hard_break_after = line < end
-            && !term.grid()[line][Column(term.columns() - 1)]
-                .flags
-                .contains(Flags::WRAPLINE);
+            && !view
+                .row_cell(line, Column(cols - 1))
+                .is_some_and(|cell| cell.flags().contains(Flags::WRAPLINE));
         let first = if hard_break_before { first } else { 0 };
-        let last = if hard_break_after {
-            last
-        } else {
-            term.columns() - 1
-        };
-        append_row_cells(term, line, first, last, &mut text, &mut cells);
+        let last = if hard_break_after { last } else { cols - 1 };
+        append_row_cells(view, line, first, last, &mut text, &mut cells);
     }
     (text, cells)
 }
 
-fn append_row_cells<T>(
-    term: &Term<T>,
+fn append_row_cells(
+    view: &ScreenView<'_>,
     line: Line,
     first: usize,
     last: usize,
@@ -603,15 +628,17 @@ fn append_row_cells<T>(
 ) {
     for column in first..=last {
         let cell_point = Point::new(line, Column(column));
-        let cell = &term.grid()[cell_point];
+        let Some(cell) = view.cell(cell_point) else {
+            continue;
+        };
         if cell
-            .flags
+            .flags()
             .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
         {
             continue;
         }
         let rendered_start = text.len();
-        text.push(cell.c);
+        text.push(cell.c());
         if let Some(zerowidth) = cell.zerowidth() {
             text.extend(zerowidth.iter());
         }
@@ -640,8 +667,8 @@ fn link_from_byte_range(
     ))
 }
 
-fn link_ends_at_row_last_non_blank<T>(term: &Term<T>, link: &TerminalLink) -> bool {
-    link_row_content(term, link.end.line).is_some_and(|(_, last)| link.end.column.0 == last)
+fn link_ends_at_row_last_non_blank(view: &ScreenView<'_>, link: &TerminalLink) -> bool {
+    link_row_content(view, link.end.line).is_some_and(|(_, last)| link.end.column.0 == last)
 }
 
 #[derive(Clone, Debug)]
@@ -687,8 +714,8 @@ fn preceded_by_uri_scheme(text: &str, start: usize) -> bool {
 /// 2. hard-wrap joins, longest first (verbatim);
 /// 3. spaced readings (verbatim);
 /// 4. prefix-stripped forms (`@`, then `a/` or `b/`).
-fn resolve_plain_file_link<T>(
-    term: &Term<T>,
+fn resolve_plain_file_link(
+    view: &ScreenView<'_>,
     point: Point,
     text: &str,
     cells: &[LinkCell],
@@ -716,7 +743,7 @@ fn resolve_plain_file_link<T>(
                 cells,
                 &candidate.full_range,
             )?;
-            if !link_ends_at_row_last_non_blank(term, &link) {
+            if !link_ends_at_row_last_non_blank(view, &link) {
                 return Some(link);
             }
             single_fallback = Some(link);
@@ -724,7 +751,7 @@ fn resolve_plain_file_link<T>(
     }
 
     // 2. Hard-wrap joins, longest first (verbatim).
-    let hard_wrapped = build_hard_wrapped_candidates(term, point);
+    let hard_wrapped = build_hard_wrapped_candidates(view, point);
     let mut hard_wrapped_matches: Vec<(usize, ParsedPathCandidate)> = Vec::new();
     for (index, candidate) in hard_wrapped.iter().enumerate() {
         if budget.exhausted() {
@@ -799,7 +826,7 @@ fn resolve_plain_file_link<T>(
         if let Some(link) =
             resolve_prefix_stripped_candidate(candidate, cells, hit_cell, cwds, budget)
         {
-            if !link_ends_at_row_last_non_blank(term, &link) {
+            if !link_ends_at_row_last_non_blank(view, &link) {
                 return Some(link);
             }
             stripped_single_fallback = Some(link);
@@ -941,22 +968,19 @@ impl TrimmedLogicalLine {
     }
 }
 
-fn trim_logical_line<T>(
-    term: &Term<T>,
+fn trim_logical_line(
+    view: &ScreenView<'_>,
     start_line: Line,
     end_line: Line,
 ) -> Option<TrimmedLogicalLine> {
+    let cols = view.cols();
+    if cols == 0 {
+        return None;
+    }
     let mut raw_text = String::new();
     let mut raw_cells = Vec::new();
     for line in start_line.0..=end_line.0 {
-        append_row_cells(
-            term,
-            Line(line),
-            0,
-            term.columns() - 1,
-            &mut raw_text,
-            &mut raw_cells,
-        );
+        append_row_cells(view, Line(line), 0, cols - 1, &mut raw_text, &mut raw_cells);
     }
     let first_non_ws = raw_text.find(|c: char| !c.is_whitespace())?;
     let last_non_ws_start = raw_text.rfind(|c: char| !c.is_whitespace())?;
@@ -983,12 +1007,8 @@ fn trim_logical_line<T>(
     })
 }
 
-fn soft_wrapped_bounds<T>(term: &Term<T>, line: Line) -> (Line, Line) {
-    let probe = Point::new(line, Column(0));
-    (
-        term.line_search_left(probe).line,
-        term.line_search_right(probe).line,
-    )
+fn soft_wrapped_bounds(view: &ScreenView<'_>, line: Line) -> (Line, Line) {
+    view.soft_wrapped_line_bounds(line)
 }
 
 fn hard_wrap_fragment_full_regex() -> &'static Regex {
@@ -1056,17 +1076,17 @@ fn hard_wrap_row_prefix_end(text: &str) -> usize {
     base_end + suffix_len
 }
 
-fn build_hard_wrapped_candidates<T>(term: &Term<T>, point: Point) -> Vec<HardWrappedCandidate> {
+fn build_hard_wrapped_candidates(view: &ScreenView<'_>, point: Point) -> Vec<HardWrappedCandidate> {
     let max_offset = (MAX_WRAP_JOIN_ROWS - 1) as i32;
-    let topmost = term.topmost_line();
-    let bottommost = term.bottommost_line();
+    let topmost = view.topmost_line();
+    let bottommost = view.bottommost_line();
     let min_physical = Line((point.line.0 - max_offset).max(topmost.0));
     let max_physical = Line((point.line.0 + max_offset).min(bottommost.0));
 
-    let (cur_soft_start, cur_soft_end) = soft_wrapped_bounds(term, point.line);
+    let (cur_soft_start, cur_soft_end) = soft_wrapped_bounds(view, point.line);
     let cur_clamped_start = Line(cur_soft_start.0.max(min_physical.0));
     let cur_clamped_end = Line(cur_soft_end.0.min(max_physical.0));
-    let Some(current_logical) = trim_logical_line(term, cur_clamped_start, cur_clamped_end) else {
+    let Some(current_logical) = trim_logical_line(view, cur_clamped_start, cur_clamped_end) else {
         return Vec::new();
     };
 
@@ -1075,9 +1095,9 @@ fn build_hard_wrapped_candidates<T>(term: &Term<T>, point: Point) -> Vec<HardWra
     let mut cursor = cur_soft_start;
     while cursor > min_physical {
         let prev_end = Line(cursor.0 - 1);
-        let (prev_start, _) = soft_wrapped_bounds(term, prev_end);
+        let (prev_start, _) = soft_wrapped_bounds(view, prev_end);
         let clamped_start = Line(prev_start.0.max(min_physical.0));
-        let item = trim_logical_line(term, clamped_start, prev_end);
+        let item = trim_logical_line(view, clamped_start, prev_end);
         let stop = match &item {
             None => true,
             Some(row) => !is_hard_wrapped_path_continuation(&row.text),
@@ -1097,9 +1117,9 @@ fn build_hard_wrapped_candidates<T>(term: &Term<T>, point: Point) -> Vec<HardWra
     let mut cursor = cur_soft_end;
     while cursor < max_physical {
         let next_start = Line(cursor.0 + 1);
-        let (_, next_end) = soft_wrapped_bounds(term, next_start);
+        let (_, next_end) = soft_wrapped_bounds(view, next_start);
         let clamped_end = Line(next_end.0.min(max_physical.0));
-        let item = trim_logical_line(term, next_start, clamped_end);
+        let item = trim_logical_line(view, next_start, clamped_end);
         let is_blank = item.is_none();
         logical_lines.push(item);
         if is_blank || next_end >= max_physical {

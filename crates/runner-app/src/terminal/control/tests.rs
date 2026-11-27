@@ -58,7 +58,7 @@ impl Transport for RecordingHost {
                     if let Some(observation) = tracker.observe_input(
                         input,
                         std::time::Instant::now(),
-                        &runner_terminal::replay::new_term(80, 24),
+                        &runner_terminal::replay::new_term(80, 24).screen(),
                     ) {
                         *self.input_observation.lock().unwrap() = Some(observation);
                     }

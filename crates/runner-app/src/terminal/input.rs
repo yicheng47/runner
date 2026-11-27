@@ -74,14 +74,13 @@ pub(crate) fn paste_text_from_clipboard(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alacritty_terminal::index::{Column, Line, Point, Side};
-    use alacritty_terminal::selection::SelectionType;
     use gpui::TestAppContext;
     use runner_core::protocol::terminal::{
         TerminalAttachment, TerminalController, TerminalFrame, TerminalMetadata, TerminalSnapshot,
         TerminalSubscription,
     };
     use runner_core::protocol::{DaemonClient, EventSubscription, Request, Response, Transport};
+    use runner_terminal::{Column, GridPoint as Point, Line, SelectionKind as SelectionType, Side};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -259,9 +258,9 @@ mod tests {
                     let mut term = replay::replay_bytes(80, 24, b"> ");
                     let mut tracker = InputTracker::new(start);
                     tracker.initial_observation(start);
-                    tracker.observe_input(&observed[0], start, &term);
+                    tracker.observe_input(&observed[0], start, &term.screen());
                     replay::feed(&mut term, b".");
-                    tracker.observe_output(start + Duration::from_millis(1), &term);
+                    tracker.observe_output(start + Duration::from_millis(1), &term.screen());
                     assert_eq!(
                         tracker.latest_observation().state,
                         if seq == 1 {

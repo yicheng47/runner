@@ -1,13 +1,25 @@
 use super::*;
+use crate::types::{CellFlags, Column, GridPoint as Point, Line};
 
-fn link_term(columns: usize, bytes: &[u8]) -> Term<alacritty_terminal::event::VoidListener> {
-    let mut term = Term::new(
-        Config::default(),
-        &TermSize::new(columns, 8),
-        alacritty_terminal::event::VoidListener,
-    );
-    crate::snapshot::TrackedProcessor::new().advance(&mut term, bytes);
-    term
+fn link_term(columns: usize, bytes: &[u8]) -> crate::replay::Terminal {
+    link_term_sized(columns, 8, bytes)
+}
+
+fn terminal_link_at(
+    term: &crate::replay::Terminal,
+    point: Point,
+    cwds: &[&Path],
+) -> Option<TerminalLink> {
+    super::terminal_link_at(&term.screen(), point, cwds)
+}
+
+fn terminal_link_at_with_prober(
+    term: &crate::replay::Terminal,
+    point: Point,
+    cwds: &[&Path],
+    is_file: &mut dyn FnMut(&Path) -> bool,
+) -> Option<TerminalLink> {
+    super::terminal_link_at_with_prober(&term.screen(), point, cwds, is_file)
 }
 
 #[test]
@@ -246,7 +258,7 @@ fn terminal_links_do_not_join_an_underlined_scrollback_block() {
         bytes.push_str(&format!("row https://example.com/{line}"));
     }
     let term = link_term(40, bytes.as_bytes());
-    let point = Point::new(term.topmost_line(), Column(5));
+    let point = Point::new(term.screen().topmost_line(), Column(5));
     let link = terminal_link_at(&term, point, &[]).unwrap();
     assert_eq!(link.target, LinkTarget::Url("https://example.com/0".into()));
     assert_eq!(link.start.line, point.line);
@@ -1565,7 +1577,7 @@ fn snapshot_mirror(seq: u64, chunks: &[&[u8]]) -> Arc<TerminalMirror> {
         seq,
         cols: 80,
         rows: 24,
-        bytes: crate::snapshot::serialize(&term, unfinished),
+        bytes: crate::snapshot::serialize_term(&term, unfinished),
         unfinished_len: unfinished.len(),
         preceding_char: parser.processor.preceding_char(),
         activity: None,
@@ -1961,17 +1973,9 @@ fn snapshot_provenance_preserves_paint_and_output_seq_across_attach_and_resync_r
     }
 }
 
-fn link_term_sized(
-    columns: usize,
-    rows: usize,
-    bytes: &[u8],
-) -> Term<alacritty_terminal::event::VoidListener> {
-    let mut term = Term::new(
-        Config::default(),
-        &TermSize::new(columns, rows),
-        alacritty_terminal::event::VoidListener,
-    );
-    crate::snapshot::TrackedProcessor::new().advance(&mut term, bytes);
+fn link_term_sized(columns: usize, rows: usize, bytes: &[u8]) -> crate::replay::Terminal {
+    let mut term = crate::replay::Terminal::new(columns as u16, rows as u16);
+    term.advance(bytes);
     term
 }
 
@@ -2003,9 +2007,12 @@ fn hard_wrapped_paths_join_across_rows_including_1451_shape_suffixes_and_cjk() {
     let bytes = format!("  ({part1}\r\n  {part2})");
     let term = link_term_sized(80, 12, bytes.as_bytes());
     // Ensure WRAPLINE is unset, matching agent TUI hard-wrapping.
-    assert!(!term.grid()[Line(0)][Column(79)]
-        .flags
-        .contains(Flags::WRAPLINE));
+    assert!(!term
+        .screen()
+        .cell(Point::new(Line(0), Column(79)))
+        .unwrap()
+        .flags()
+        .contains(CellFlags::WRAPLINE));
     let on_row0 = terminal_link_at(&term, Point::new(Line(0), Column(5)), &[]).unwrap();
     let on_row1 = terminal_link_at(&term, Point::new(Line(1), Column(6)), &[]).unwrap();
     assert_eq!(on_row0, on_row1);
@@ -2129,9 +2136,12 @@ fn hard_wrapped_paths_join_across_rows_including_1451_shape_suffixes_and_cjk() {
     std::fs::write(&spaced, "spaced\n").unwrap();
     std::fs::write(&unspaced, "unspaced\n").unwrap();
     let soft_term = link_term_sized(8, 4, b"src/dir file.rs");
-    assert!(soft_term.grid()[Line(0)][Column(7)]
-        .flags
-        .contains(Flags::WRAPLINE));
+    assert!(soft_term
+        .screen()
+        .cell(Point::new(Line(0), Column(7)))
+        .unwrap()
+        .flags()
+        .contains(CellFlags::WRAPLINE));
     let soft_top = terminal_link_at(&soft_term, Point::new(Line(0), Column(2)), &[&root]).unwrap();
     let soft_bot = terminal_link_at(&soft_term, Point::new(Line(1), Column(2)), &[&root]).unwrap();
     assert_eq!(soft_top, soft_bot);

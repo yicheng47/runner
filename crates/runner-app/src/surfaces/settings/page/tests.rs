@@ -1229,7 +1229,7 @@ fn appearance_theme_galleries_update_app_and_terminal_together_and_fit_six_cards
     use runner_daemon::{db, session, shell_path};
     use std::sync::{Arc, RwLock};
 
-    fn packed(rgb: alacritty_terminal::vte::ansi::Rgb) -> u32 {
+    fn packed(rgb: runner_terminal::palette::Rgb) -> u32 {
         u32::from(rgb.r) << 16 | u32::from(rgb.g) << 8 | u32::from(rgb.b)
     }
 

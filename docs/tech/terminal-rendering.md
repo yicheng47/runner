@@ -11,7 +11,7 @@ A terminal is a fixed grid of cells, not a text box. The child process writes a 
 Three jobs span the daemon, terminal library and app:
 
 - Process IO and terminal ownership: `crates/runner-daemon/src/session/`.
-- Emulation and snapshots: `alacritty_terminal`, wrapped by `crates/runner-terminal`.
+- Emulation and snapshots: `alacritty_terminal`, wrapped behind `crates/runner-terminal` (`types.rs`, `screen.rs`, `palette.rs`, `title_parser.rs`) so engine types stay inside that crate.
 - Painting and interaction: `crates/runner-app/src/terminal/`, with pure encoders in `runner-terminal/src/mappings.rs` and IME routing in `runner-app/src/terminal/ime.rs`.
 
 ```text
@@ -48,7 +48,7 @@ The mirror discards query replies. User keys, text, paste and composition observ
 GPUI runs every element through three phases each frame. `TerminalElement` implements all three in `crates/runner-app/src/terminal/element.rs`:
 
 - `request_layout` asks taffy for one node that fills its parent and nothing more. The grid is not flexbox; everything else is done by hand.
-- `prepaint` does all the work. It computes cell geometry, locks the `Term`, walks every visible cell, and fills a `GridPrepaint` struct: background quads, selection quads, procedural cells, shaped text lines, the cursor, and any IME marked text.
+- `prepaint` does all the work. It computes cell geometry, borrows a read-only `ScreenView` through `TerminalMirror::with_screen`, walks every visible cell, and fills a `GridPrepaint` struct: background quads, selection quads, procedural cells, shaped text lines, the cursor, and any IME marked text.
 - `paint` is deliberately dumb. Full background, background quads, selection quads, procedural glyphs, text lines, cursor on top. Then it registers the IME input handler, picks the mouse cursor style, and registers the mouse listeners.
 
 ### prepaint, step by step
@@ -56,11 +56,11 @@ GPUI runs every element through three phases each frame. `TerminalElement` imple
 1. **Geometry.** Cell width is the em advance of the configured mono font at the configured size, with a fallback of six tenths of the size if the font cannot be measured. Line height is the size times `LINE_HEIGHT_FACTOR` (1.4), rounded. A hitbox covering the bounds is inserted so mouse listeners can test hover.
 2. **Resize.** `terminal_grid_size` floors the bounds into cols and rows, minimum two each, or `None` when the element has no size yet. `size_push_verdict` in `crates/runner-app/src/terminal/resize.rs` compares that against the session's last pushed size: unchanged is a no-op, a non-owner pane never pushes, and an unplaced pane returns an empty prepaint so nothing is painted from a zero-size layout. A real push calls `TerminalMirror::resize`, which reflows the local grid immediately and sends a one-way resize frame. The daemon applies the PTY/model size and informs the other subscribers. Nothing clears the grid; the TUI's SIGWINCH repaint plus alacritty's reflow is the whole story.
 3. **Hover.** The hovered link is refreshed from the mouse position. Hitbox ids are fresh every frame and the hit test runs after prepaint, so `is_hovered` is always false here; the code tests the bounds directly, as GPUI's own tooltips do. If a link has been hovered for 500 ms a tooltip is registered.
-4. **The cell walk.** Under the `Term` lock, `renderable_content` yields the visible cells, the display offset, the cursor, the selection, the colour overrides, and the mode. For each cell:
-   - Map the grid point to a viewport row and column with `point_to_viewport`; skip anything off screen.
+4. **The cell walk.** Inside `TerminalMirror::with_screen`, `ScreenView` borrows the locked `Term` (backed by `renderable_content` internally) and yields borrowed `ViewportCell`s, the display offset, the `RenderCursor`, selection membership, and `TerminalModeFlags` without per-cell or per-frame allocation. For each cell:
+   - Read the viewport row and column computed from `point_to_viewport`; skip anything off screen.
    - If the cell is selected, emit a selection quad, merged into the previous one when adjacent.
    - Skip wide-char spacer cells; the glyph cell before them is painted two columns wide.
-   - Resolve foreground and background through `palette::resolve_for`, swap them for `INVERSE`, dim the foreground for `DIM`.
+   - Resolve foreground and background through `ScreenView::resolve_color`, swap them for `INVERSE`, dim the foreground for `DIM`.
    - Emit a background quad only when the colour differs from the pane background, merged with the previous quad when the colour matches and the rectangles touch. This keeps the GPU batch short.
    - Skip hidden cells and plain spaces.
    - Try `ProceduralCell::new` first. Box drawing, block elements, and braille from U+2500 up are painted from geometry, never from a font, unless the cell carries an underline or strikeout. A block cursor on such a cell gets a second procedural cell in cursor colours.

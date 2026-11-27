@@ -169,7 +169,7 @@ fn start_task(
                     last_output = Instant::now();
                 }
                 let rows = model.input_rows();
-                let column = model.term.lock().grid().cursor.point.column.0;
+                let column = model.cursor_point().column.0;
                 let step = rows
                     .iter()
                     .rev()

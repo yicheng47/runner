@@ -1,12 +1,12 @@
 use std::time::{Duration, Instant};
 
-use alacritty_terminal::grid::Dimensions as _;
-use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::Term;
-use alacritty_terminal::vte::ansi::Color;
 pub use runner_core::protocol::terminal::InputEvent;
 use unicode_width::UnicodeWidthStr;
+
+use crate::mappings::InputKind;
+use crate::palette::Color;
+use crate::screen::{CellView, ScreenView};
+use crate::types::{CellFlags, Column, Line};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InputState {
@@ -24,9 +24,6 @@ pub struct InputObservation {
     pub composing: bool,
     pub composer_visible: bool,
 }
-
-use crate::mappings::InputKind;
-use crate::replay::row_to_string;
 
 pub const ECHO_WINDOW: Duration = Duration::from_millis(500);
 
@@ -64,7 +61,7 @@ enum SubmitOrigin {
 struct CellStyle {
     fg: Color,
     bg: Color,
-    flags: Flags,
+    flags: CellFlags,
 }
 
 #[derive(Clone, Debug)]
@@ -155,11 +152,11 @@ impl InputTracker {
         }
     }
 
-    pub fn observe_input<T>(
+    pub fn observe_input(
         &mut self,
         event: &InputEvent,
         now: Instant,
-        term: &Term<T>,
+        screen: &ScreenView<'_>,
     ) -> Option<InputObservation> {
         // The app ends a composition before every typed key and whenever the IME unmarks, as on
         // a focus change; ending one that never started changes nothing a delivery holds (#1225).
@@ -169,11 +166,11 @@ impl InputTracker {
         self.expire_probe(now);
         match event {
             InputEvent::Composing { composing } => self.composing = *composing,
-            InputEvent::Paste { text } => self.observe_content(text, true, now, term),
+            InputEvent::Paste { text } => self.observe_content(text, true, now, screen),
             InputEvent::Key { kind } => match kind {
-                InputKind::Content { text } => self.observe_content(text, false, now, term),
+                InputKind::Content { text } => self.observe_content(text, false, now, screen),
                 InputKind::Submit if !self.composing => {
-                    self.submit(now, term, SubmitOrigin::Native)
+                    self.submit(now, screen, SubmitOrigin::Native)
                 }
                 InputKind::Edit | InputKind::Cancel => {
                     if let TrackerState::Drafting(composer) = &mut self.state {
@@ -182,7 +179,7 @@ impl InputTracker {
                         }
                         // A redraw such as a Codex rollback can leave a transcript row with the
                         // prompt prefix at the tracked row; edits go to the live editor.
-                        if let Some(row) = cursor_prompt_row(term, &composer.prefix) {
+                        if let Some(row) = cursor_prompt_row(screen, &composer.prefix) {
                             composer.row = row;
                         }
                     }
@@ -206,7 +203,7 @@ impl InputTracker {
         }
     }
 
-    pub fn track_delivery_input<T>(&mut self, text: &str, now: Instant, term: &Term<T>) {
+    pub fn track_delivery_input(&mut self, text: &str, now: Instant, screen: &ScreenView<'_>) {
         self.expire_probe(now);
         self.delivery_held = false;
         if matches!(self.state, TrackerState::Idle) {
@@ -216,18 +213,18 @@ impl InputTracker {
             self.delivery_revision = Some(self.input_revision);
             self.delivery_text.push_str(text);
         }
-        self.observe_content(text, true, now, term);
+        self.observe_content(text, true, now, screen);
     }
 
     /// The composer row still reads as it did at the router's Enter.
-    pub fn unsent_notice<T>(&self, term: &Term<T>) -> bool {
+    pub fn unsent_notice(&self, screen: &ScreenView<'_>) -> bool {
         self.delivery_owned()
             && matches!(
                 &self.state,
                 TrackerState::Drafting(composer) | TrackerState::Submitted(composer)
-                    if composer.row < term.screen_lines()
+                    if composer.row < screen.rows()
                         && composer.submitted_form.as_deref()
-                            == Some(row_to_string(term, composer.row as i32).as_str())
+                            == Some(screen.row_to_string(Line(composer.row as i32)).as_str())
             )
     }
 
@@ -240,8 +237,8 @@ impl InputTracker {
             )
     }
 
-    pub fn track_delivery_submit<T>(&mut self, now: Instant, term: &Term<T>) {
-        self.submit(now, term, SubmitOrigin::Delivery);
+    pub fn track_delivery_submit(&mut self, now: Instant, screen: &ScreenView<'_>) {
+        self.submit(now, screen, SubmitOrigin::Delivery);
         self.delivery_held |= self.delivery_owned();
     }
 
@@ -272,17 +269,17 @@ impl InputTracker {
     /// With no router attempt pending, keep the notice only where the input cursor still
     /// sits on it or on the rows it wrapped onto, or once a person has used the terminal since.
     /// A notice or draft is dropped wherever the input cursor sits at an empty composer instead.
-    pub fn recheck_delivery<T>(
+    pub fn recheck_delivery(
         &mut self,
         now: Instant,
-        term: &Term<T>,
+        screen: &ScreenView<'_>,
     ) -> Option<InputObservation> {
         let (live, editor_empty) = match &self.state {
             TrackerState::Drafting(composer) | TrackerState::Submitted(composer) => (
                 composer.visible
-                    && self.unsent_notice(term)
-                    && cursor_in_notice(term, composer, &self.delivery_text),
-                cursor_at_empty_composer(term, composer),
+                    && self.unsent_notice(screen)
+                    && cursor_in_notice(screen, composer, &self.delivery_text),
+                cursor_at_empty_composer(screen, composer),
             ),
             _ => (false, false),
         };
@@ -294,13 +291,13 @@ impl InputTracker {
         }
         let observation = self.emit_if_changed(now, "re-check");
         if observation.is_none() {
-            self.log_recheck_draft_hold(now, term);
+            self.log_recheck_draft_hold(now, screen);
         }
         observation
     }
 
-    fn log_recheck_draft_hold<T>(&mut self, now: Instant, term: &Term<T>) {
-        let Some(diag) = self.record_recheck_draft_hold(now, term) else {
+    fn log_recheck_draft_hold(&mut self, now: Instant, screen: &ScreenView<'_>) {
+        let Some(diag) = self.record_recheck_draft_hold(now, screen) else {
             return;
         };
         log::info!(
@@ -318,24 +315,24 @@ impl InputTracker {
         );
     }
 
-    fn record_recheck_draft_hold<T>(
+    fn record_recheck_draft_hold(
         &mut self,
         now: Instant,
-        term: &Term<T>,
+        screen: &ScreenView<'_>,
     ) -> Option<RecheckHoldDiagnostic> {
         if self.current_reported_state().state != InputState::Drafting {
             self.last_recheck_diag = None;
             return None;
         }
-        let cursor = cursor_position(term);
+        let cursor = cursor_position(screen);
         let (visible, submitted, tracked_row, cursor_prefix_col, cursor_prefix_match, cursor_empty) =
             match &self.state {
                 TrackerState::Drafting(composer) | TrackerState::Submitted(composer) => {
                     let prefix_col = cursor.is_some_and(|(_, col)| col == composer.prefix.width());
                     let (prefix_match, empty) = cursor.map_or((false, false), |(row, _)| {
-                        let current = row_to_string(term, row as i32);
+                        let current = screen.row_to_string(Line(row as i32));
                         let matched = row_matches_prefix(&current, &composer.prefix);
-                        let empty = matched && composer_is_empty(term, row, &current, composer);
+                        let empty = matched && composer_is_empty(screen, row, &current, composer);
                         (matched, empty)
                     });
                     (
@@ -367,7 +364,11 @@ impl InputTracker {
         Some(diag)
     }
 
-    pub fn observe_output<T>(&mut self, now: Instant, term: &Term<T>) -> Option<InputObservation> {
+    pub fn observe_output(
+        &mut self,
+        now: Instant,
+        screen: &ScreenView<'_>,
+    ) -> Option<InputObservation> {
         let state = std::mem::replace(&mut self.state, TrackerState::Idle);
         self.state = match state {
             TrackerState::Idle => TrackerState::Idle,
@@ -375,11 +376,13 @@ impl InputTracker {
                 if now.duration_since(probe.started) > ECHO_WINDOW {
                     TrackerState::Idle
                 } else {
-                    let rows_after = visible_rows(term);
-                    match locate_probe_echo(&probe, &rows_after, term) {
+                    let rows_after = visible_rows(screen);
+                    match locate_probe_echo(&probe, &rows_after, screen) {
                         Some(matched) => {
-                            let placeholder_style = probe_placeholder_style(&probe, &matched, term);
-                            let draft_style = row_content_style(term, matched.row, &matched.prefix);
+                            let placeholder_style =
+                                probe_placeholder_style(&probe, &matched, screen);
+                            let draft_style =
+                                row_content_style(screen, matched.row, &matched.prefix);
                             if placeholder_style.is_some() {
                                 self.last_placeholder_style = placeholder_style;
                             } else if draft_style.is_some()
@@ -422,15 +425,15 @@ impl InputTracker {
                 probe,
                 mut composer,
             } => {
-                let rows_after = visible_rows(term);
-                if let Some(matched) = locate_probe_echo(&probe, &rows_after, term) {
+                let rows_after = visible_rows(screen);
+                if let Some(matched) = locate_probe_echo(&probe, &rows_after, screen) {
                     let before = &probe.rows_before[matched.before_row];
                     if composer_text_is_empty(before, &matched.prefix, &composer.empty_forms)
                         && !composer.empty_forms.contains(before)
                     {
                         composer.empty_forms.push(before.clone());
                     }
-                    if let Some(style) = row_content_style(term, matched.row, &matched.prefix) {
+                    if let Some(style) = row_content_style(screen, matched.row, &matched.prefix) {
                         composer.draft_style = Some(style);
                         if self.last_placeholder_style == Some(style) {
                             self.last_placeholder_style = None;
@@ -439,7 +442,7 @@ impl InputTracker {
                             composer.placeholder_style = None;
                         }
                     }
-                    if let Some(style) = probe_placeholder_style(&probe, &matched, term) {
+                    if let Some(style) = probe_placeholder_style(&probe, &matched, screen) {
                         composer.placeholder_style = Some(style);
                         self.last_placeholder_style = Some(style);
                     } else if composer.placeholder_style.is_none() {
@@ -468,11 +471,11 @@ impl InputTracker {
                 } else if now.duration_since(probe.started) <= ECHO_WINDOW {
                     TrackerState::Reprobing { probe, composer }
                 } else {
-                    self.observe_composer(now, term, composer, true)
+                    self.observe_composer(now, screen, composer, true)
                 }
             }
-            TrackerState::Drafting(composer) => self.observe_composer(now, term, composer, false),
-            TrackerState::Submitted(composer) => self.observe_composer(now, term, composer, true),
+            TrackerState::Drafting(composer) => self.observe_composer(now, screen, composer, false),
+            TrackerState::Submitted(composer) => self.observe_composer(now, screen, composer, true),
         };
         self.delivery_held |= self.delivery_owned();
         // Submitted text can remain in history with the same prefix as the live composer; text
@@ -481,7 +484,8 @@ impl InputTracker {
             && matches!(
                 &self.state,
                 TrackerState::Submitted(composer) | TrackerState::Drafting(composer)
-                    if composer.submitted_form.is_some() && cursor_at_empty_composer(term, composer)
+                    if composer.submitted_form.is_some()
+                        && cursor_at_empty_composer(screen, composer)
             )
         {
             self.state = TrackerState::Idle;
@@ -503,14 +507,14 @@ impl InputTracker {
         self.emit_if_changed(now, "reset")
     }
 
-    fn observe_content<T>(&mut self, text: &str, pasted: bool, now: Instant, term: &Term<T>) {
+    fn observe_content(&mut self, text: &str, pasted: bool, now: Instant, screen: &ScreenView<'_>) {
         if text.is_empty() {
             return;
         }
         self.content_at = Some(now);
         let state = std::mem::replace(&mut self.state, TrackerState::Idle);
         self.state = match state {
-            TrackerState::Idle => TrackerState::Probing(new_probe(text, pasted, now, term)),
+            TrackerState::Idle => TrackerState::Probing(new_probe(text, pasted, now, screen)),
             TrackerState::Probing(mut probe) => {
                 probe.typed.push_str(&probe_text(text));
                 probe.weak_match |= pasted && weak_paste_match(text);
@@ -538,13 +542,13 @@ impl InputTracker {
                 TrackerState::Drafting(composer)
             }
             TrackerState::Submitted(composer) => TrackerState::Reprobing {
-                probe: new_probe(text, pasted, now, term),
+                probe: new_probe(text, pasted, now, screen),
                 composer,
             },
         };
     }
 
-    fn submit<T>(&mut self, _now: Instant, term: &Term<T>, origin: SubmitOrigin) {
+    fn submit(&mut self, _now: Instant, screen: &ScreenView<'_>, origin: SubmitOrigin) {
         self.content_at = None;
         if origin == SubmitOrigin::Native && !self.delivery_owned() {
             self.delivery_revision = None;
@@ -563,8 +567,8 @@ impl InputTracker {
                 self.state = TrackerState::Reprobing { probe, composer };
             }
             TrackerState::Drafting(mut composer) => {
-                if composer.row < term.screen_lines() {
-                    let current = row_to_string(term, composer.row as i32);
+                if composer.row < screen.rows() {
+                    let current = screen.row_to_string(Line(composer.row as i32));
                     if row_matches_nonempty_prefix(&current, &composer.prefix) {
                         composer.last_form = current;
                     }
@@ -576,53 +580,53 @@ impl InputTracker {
         }
     }
 
-    fn observe_composer<T>(
+    fn observe_composer(
         &self,
         now: Instant,
-        term: &Term<T>,
+        screen: &ScreenView<'_>,
         mut composer: Composer,
         submitted: bool,
     ) -> TrackerState {
         // Submitted prompts or scrolled transcript rows can remain at the old row. A unique
         // learned frame always identifies the current editor; without a frame, follow a non-empty
         // prompt under the live cursor only after the tracked row no longer holds the intact draft.
-        if term.grid().cursor.point.line != Line(composer.row as i32) {
-            let tracked_row_intact = composer.row < term.screen_lines() && {
-                let tracked = row_to_string(term, composer.row as i32);
+        if screen.raw_cursor_point().line != Line(composer.row as i32) {
+            let tracked_row_intact = composer.row < screen.rows() && {
+                let tracked = screen.row_to_string(Line(composer.row as i32));
                 tracked == composer.last_form
                     || composer.submitted_form.as_deref() == Some(tracked.as_str())
             };
             if let Some(row) = composer
                 .frame_border
-                .and_then(|border| framed_composer_row(term, &composer.prefix, border))
+                .and_then(|border| framed_composer_row(screen, &composer.prefix, border))
                 .or_else(|| {
                     if tracked_row_intact {
                         return None;
                     }
-                    let row = cursor_prompt_row(term, &composer.prefix)?;
-                    let text = row_to_string(term, row as i32);
+                    let row = cursor_prompt_row(screen, &composer.prefix)?;
+                    let text = screen.row_to_string(Line(row as i32));
                     let matches_submitted = composer
                         .submitted_form
                         .as_deref()
                         .is_none_or(|submitted| text == submitted);
-                    (matches_submitted && !composer_is_empty(term, row, &text, &composer))
+                    (matches_submitted && !composer_is_empty(screen, row, &text, &composer))
                         .then_some(row)
                 })
             {
                 composer.row = row;
             }
         }
-        let mut current = if composer.row < term.screen_lines() {
-            row_to_string(term, composer.row as i32)
+        let mut current = if composer.row < screen.rows() {
+            screen.row_to_string(Line(composer.row as i32))
         } else if let Some(row) = relocate_row(
-            term,
+            screen,
             &composer.prefix,
-            composer.row.min(term.screen_lines().saturating_sub(1)),
+            composer.row.min(screen.rows().saturating_sub(1)),
             composer.frame_border,
         ) {
             composer.row = row;
             composer.visible = true;
-            row_to_string(term, row as i32)
+            screen.row_to_string(Line(row as i32))
         } else {
             composer.visible = false;
             return if submitted {
@@ -632,11 +636,14 @@ impl InputTracker {
             };
         };
         if !row_matches_prefix(&current, &composer.prefix) {
-            if let Some(row) =
-                relocate_row(term, &composer.prefix, composer.row, composer.frame_border)
-            {
+            if let Some(row) = relocate_row(
+                screen,
+                &composer.prefix,
+                composer.row,
+                composer.frame_border,
+            ) {
                 composer.row = row;
-                current = row_to_string(term, row as i32);
+                current = screen.row_to_string(Line(row as i32));
                 composer.visible = true;
             } else {
                 composer.visible = false;
@@ -650,7 +657,7 @@ impl InputTracker {
             composer.visible = true;
         }
 
-        if composer_is_empty(term, composer.row, &current, &composer) {
+        if composer_is_empty(screen, composer.row, &current, &composer) {
             return TrackerState::Idle;
         }
 
@@ -663,10 +670,10 @@ impl InputTracker {
             if self
                 .delivery_revision
                 .is_some_and(|revision| revision != self.input_revision)
-                && (self.content_pending(now) || !cursor_at_empty_composer(term, &composer))
+                && (self.content_pending(now) || !cursor_at_empty_composer(screen, &composer))
             {
                 composer.submitted_form = None;
-                if !row_has_placeholder_style(term, composer.row, &composer) {
+                if !row_has_placeholder_style(screen, composer.row, &composer) {
                     composer.last_form = current;
                 }
                 return TrackerState::Drafting(composer);
@@ -675,7 +682,7 @@ impl InputTracker {
         }
         // Preserve the confirmed draft text while a placeholder-styled row awaits cursor
         // confirmation, so returning the cursor to it still sees `current != last_form`.
-        if !row_has_placeholder_style(term, composer.row, &composer) {
+        if !row_has_placeholder_style(screen, composer.row, &composer) {
             composer.last_form = current;
         }
         TrackerState::Drafting(composer)
@@ -791,23 +798,20 @@ enum EchoMatchKind {
     Weak,
 }
 
-pub(crate) fn visible_rows<T>(term: &Term<T>) -> Vec<String> {
-    (0..term.screen_lines())
-        .map(|row| row_to_string(term, row as i32))
-        .collect()
+pub(crate) fn visible_rows(screen: &ScreenView<'_>) -> Vec<String> {
+    screen.visible_lines()
 }
 
-fn visible_row_styles<T>(term: &Term<T>) -> Vec<Vec<CellStyle>> {
-    (0..term.screen_lines())
+fn visible_row_styles(screen: &ScreenView<'_>) -> Vec<Vec<CellStyle>> {
+    (0..screen.rows())
         .map(|row| {
-            let grid = term.grid();
-            let row = &grid[Line(row as i32)];
-            (0..grid.columns())
+            let line = Line(row as i32);
+            (0..screen.cols())
                 .filter_map(|column| {
-                    let cell = &row[Column(column)];
-                    (!cell
-                        .flags
-                        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER))
+                    let cell = screen.row_cell(line, Column(column))?;
+                    (!cell.flags().intersects(
+                        CellFlags::WIDE_CHAR_SPACER | CellFlags::LEADING_WIDE_CHAR_SPACER,
+                    ))
                     .then(|| {
                         std::iter::repeat_n(
                             cell_style(cell),
@@ -821,34 +825,34 @@ fn visible_row_styles<T>(term: &Term<T>) -> Vec<Vec<CellStyle>> {
         .collect()
 }
 
-fn cursor_position<T>(term: &Term<T>) -> Option<(usize, usize)> {
-    let cursor = term.grid().cursor.point;
+fn cursor_position(screen: &ScreenView<'_>) -> Option<(usize, usize)> {
+    let cursor = screen.raw_cursor_point();
     Some((usize::try_from(cursor.line.0).ok()?, cursor.column.0))
 }
 
-fn new_probe<T>(text: &str, pasted: bool, now: Instant, term: &Term<T>) -> Probe {
+fn new_probe(text: &str, pasted: bool, now: Instant, screen: &ScreenView<'_>) -> Probe {
     Probe {
         typed: probe_text(text),
-        rows_before: visible_rows(term),
-        styles_before: visible_row_styles(term),
-        cursor: cursor_position(term),
+        rows_before: visible_rows(screen),
+        styles_before: visible_row_styles(screen),
+        cursor: cursor_position(screen),
         started: now,
         weak_match: pasted && weak_paste_match(text),
         submitted: None,
     }
 }
 
-fn cell_style(cell: &alacritty_terminal::term::cell::Cell) -> CellStyle {
-    let mut flags = cell.flags;
+fn cell_style(cell: CellView<'_>) -> CellStyle {
+    let mut flags = cell.flags();
     flags.remove(
-        Flags::WIDE_CHAR
-            | Flags::WIDE_CHAR_SPACER
-            | Flags::LEADING_WIDE_CHAR_SPACER
-            | Flags::WRAPLINE,
+        CellFlags::WIDE_CHAR
+            | CellFlags::WIDE_CHAR_SPACER
+            | CellFlags::LEADING_WIDE_CHAR_SPACER
+            | CellFlags::WRAPLINE,
     );
     CellStyle {
-        fg: cell.fg,
-        bg: cell.bg,
+        fg: cell.fg(),
+        bg: cell.bg(),
         flags,
     }
 }
@@ -857,11 +861,11 @@ fn cell_style(cell: &alacritty_terminal::term::cell::Cell) -> CellStyle {
 /// alone, so prefer the second non-whitespace cell when cell 0 is inverted.
 fn effective_content_style(styles: &[CellStyle]) -> Option<CellStyle> {
     let &first = styles.first()?;
-    if first.flags.contains(Flags::INVERSE) {
+    if first.flags.contains(CellFlags::INVERSE) {
         styles
             .get(1)
             .copied()
-            .or_else(|| first.flags.contains(Flags::DIM).then_some(first))
+            .or_else(|| first.flags.contains(CellFlags::DIM).then_some(first))
     } else {
         Some(first)
     }
@@ -878,16 +882,17 @@ fn snapshot_content_style(text: &str, styles: &[CellStyle], prefix: &str) -> Opt
     effective_content_style(&content)
 }
 
-fn row_content_styles<T>(term: &Term<T>, row: usize, prefix: &str) -> Vec<CellStyle> {
-    let grid = term.grid();
-    let row = &grid[Line(row as i32)];
+fn row_content_styles(screen: &ScreenView<'_>, row: usize, prefix: &str) -> Vec<CellStyle> {
+    let line = Line(row as i32);
     let mut prefix_characters = prefix.chars().count();
     let mut styles = Vec::new();
-    for column in 0..grid.columns() {
-        let cell = &row[Column(column)];
+    for column in 0..screen.cols() {
+        let Some(cell) = screen.row_cell(line, Column(column)) else {
+            continue;
+        };
         if cell
-            .flags
-            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            .flags()
+            .intersects(CellFlags::WIDE_CHAR_SPACER | CellFlags::LEADING_WIDE_CHAR_SPACER)
         {
             continue;
         }
@@ -896,7 +901,7 @@ fn row_content_styles<T>(term: &Term<T>, row: usize, prefix: &str) -> Vec<CellSt
                 prefix_characters.saturating_sub(1 + cell.zerowidth().map_or(0, <[_]>::len));
             continue;
         }
-        if !cell.c.is_whitespace() {
+        if !cell.c().is_whitespace() {
             styles.push(cell_style(cell));
             if styles.len() >= 2 {
                 break;
@@ -906,12 +911,12 @@ fn row_content_styles<T>(term: &Term<T>, row: usize, prefix: &str) -> Vec<CellSt
     styles
 }
 
-fn row_content_style<T>(term: &Term<T>, row: usize, prefix: &str) -> Option<CellStyle> {
-    effective_content_style(&row_content_styles(term, row, prefix))
+fn row_content_style(screen: &ScreenView<'_>, row: usize, prefix: &str) -> Option<CellStyle> {
+    effective_content_style(&row_content_styles(screen, row, prefix))
 }
 
-fn row_has_placeholder_style<T>(term: &Term<T>, row: usize, composer: &Composer) -> bool {
-    let Some(style) = row_content_style(term, row, &composer.prefix) else {
+fn row_has_placeholder_style(screen: &ScreenView<'_>, row: usize, composer: &Composer) -> bool {
+    let Some(style) = row_content_style(screen, row, &composer.prefix) else {
         return false;
     };
     if composer.draft_style == Some(style) {
@@ -920,39 +925,43 @@ fn row_has_placeholder_style<T>(term: &Term<T>, row: usize, composer: &Composer)
     if composer.placeholder_style == Some(style) {
         return true;
     }
-    style.flags.contains(Flags::DIM)
+    style.flags.contains(CellFlags::DIM)
         && !composer
             .draft_style
-            .is_some_and(|draft| draft.flags.contains(Flags::DIM))
+            .is_some_and(|draft| draft.flags.contains(CellFlags::DIM))
 }
 
-fn is_placeholder_style<T>(term: &Term<T>, row: usize, composer: &Composer) -> bool {
-    term.grid().cursor.point.line == Line(row as i32)
-        && row_has_placeholder_style(term, row, composer)
+fn is_placeholder_style(screen: &ScreenView<'_>, row: usize, composer: &Composer) -> bool {
+    screen.raw_cursor_point().line == Line(row as i32)
+        && row_has_placeholder_style(screen, row, composer)
 }
 
-fn probe_placeholder_style<T>(
+fn probe_placeholder_style(
     probe: &Probe,
     matched: &EchoMatch,
-    term: &Term<T>,
+    screen: &ScreenView<'_>,
 ) -> Option<CellStyle> {
     let placeholder = snapshot_content_style(
         &probe.rows_before[matched.before_row],
         &probe.styles_before[matched.before_row],
         &matched.prefix,
     )?;
-    let draft = row_content_style(term, matched.row, &matched.prefix)?;
+    let draft = row_content_style(screen, matched.row, &matched.prefix)?;
     (placeholder != draft).then_some(placeholder)
 }
 
-fn locate_probe_echo<T>(probe: &Probe, after: &[String], term: &Term<T>) -> Option<EchoMatch> {
-    let submitted_cursor = probe.submitted.and_then(|_| cursor_position(term));
+fn locate_probe_echo(
+    probe: &Probe,
+    after: &[String],
+    screen: &ScreenView<'_>,
+) -> Option<EchoMatch> {
+    let submitted_cursor = probe.submitted.and_then(|_| cursor_position(screen));
     locate_echo_with_cursors(
         &probe.rows_before,
         after,
         &probe.typed,
         probe.weak_match,
-        term.columns(),
+        screen.cols(),
         probe.cursor,
         submitted_cursor,
     )
@@ -1170,32 +1179,37 @@ fn composer_text_is_empty(current: &str, prefix: &str, empty_forms: &[String]) -
     empty_forms.iter().any(|form| current == form) || current.trim_end() == prefix.trim_end()
 }
 
-fn composer_is_empty<T>(term: &Term<T>, row: usize, current: &str, composer: &Composer) -> bool {
+fn composer_is_empty(
+    screen: &ScreenView<'_>,
+    row: usize,
+    current: &str,
+    composer: &Composer,
+) -> bool {
     composer_text_is_empty(current, &composer.prefix, &composer.empty_forms)
         || (row_matches_prefix(current, &composer.prefix)
             && current != composer.last_form
-            && is_placeholder_style(term, row, composer))
+            && is_placeholder_style(screen, row, composer))
 }
 
-fn cursor_at_empty_composer<T>(term: &Term<T>, composer: &Composer) -> bool {
-    let cursor = term.grid().cursor.point;
+fn cursor_at_empty_composer(screen: &ScreenView<'_>, composer: &Composer) -> bool {
+    let cursor = screen.raw_cursor_point();
     if cursor.line.0 < 0 || cursor.column.0 != composer.prefix.width() {
         return false;
     }
     let row = cursor.line.0 as usize;
-    let current = row_to_string(term, cursor.line.0);
+    let current = screen.row_to_string(cursor.line);
     row_matches_prefix(&current, &composer.prefix)
-        && composer_is_empty(term, row, &current, composer)
+        && composer_is_empty(screen, row, &current, composer)
 }
 
 /// The cursor is on the composer row, or below it on rows that only continue the notice.
-fn cursor_in_notice<T>(term: &Term<T>, composer: &Composer, notice: &str) -> bool {
-    let Ok(cursor) = usize::try_from(term.grid().cursor.point.line.0) else {
+fn cursor_in_notice(screen: &ScreenView<'_>, composer: &Composer, notice: &str) -> bool {
+    let Ok(cursor) = usize::try_from(screen.raw_cursor_point().line.0) else {
         return false;
     };
     cursor >= composer.row
         && (composer.row + 1..=cursor).all(|row| {
-            let text = row_to_string(term, row as i32);
+            let text = screen.row_to_string(Line(row as i32));
             let text = text.trim();
             !text.is_empty() && notice.contains(text)
         })
@@ -1211,29 +1225,29 @@ fn composer_frame_border(rows: &[String], row: usize) -> Option<char> {
     .then_some(glyph)
 }
 
-fn framed_composer_row<T>(term: &Term<T>, prefix: &str, border: char) -> Option<usize> {
-    let rows = visible_rows(term);
+fn framed_composer_row(screen: &ScreenView<'_>, prefix: &str, border: char) -> Option<usize> {
+    let rows = visible_rows(screen);
     let mut candidates = rows.iter().enumerate().filter_map(|(row, text)| {
         (row_matches_prefix(text, prefix) && composer_frame_border(&rows, row) == Some(border))
             .then_some(row)
     });
     let row = candidates.next()?;
-    let cursor = term.grid().cursor.point;
+    let cursor = screen.raw_cursor_point();
     (candidates.next().is_none()
         && cursor.line == Line(row as i32)
         && cursor.column.0 >= prefix.width())
     .then_some(row)
 }
 
-fn cursor_prompt_row<T>(term: &Term<T>, prefix: &str) -> Option<usize> {
-    let cursor = term.grid().cursor.point;
+fn cursor_prompt_row(screen: &ScreenView<'_>, prefix: &str) -> Option<usize> {
+    let cursor = screen.raw_cursor_point();
     let row = usize::try_from(cursor.line.0).ok()?;
-    let text = row_to_string(term, cursor.line.0);
+    let text = screen.row_to_string(cursor.line);
     (row_matches_prefix(&text, prefix) && cursor.column.0 >= prefix.width()).then_some(row)
 }
 
-fn relocate_row<T>(
-    term: &Term<T>,
+fn relocate_row(
+    screen: &ScreenView<'_>,
     prefix: &str,
     old_row: usize,
     frame_border: Option<char>,
@@ -1241,12 +1255,14 @@ fn relocate_row<T>(
     if let Some(border) = frame_border {
         // The frame can change shape after a resize or mode switch; the input
         // cursor still marks the live editor where a history row cannot.
-        return framed_composer_row(term, prefix, border)
-            .or_else(|| cursor_prompt_row(term, prefix));
+        return framed_composer_row(screen, prefix, border)
+            .or_else(|| cursor_prompt_row(screen, prefix));
     }
-    cursor_prompt_row(term, prefix).or_else(|| {
-        (0..term.screen_lines())
-            .filter(|row| row_matches_nonempty_prefix(&row_to_string(term, *row as i32), prefix))
+    cursor_prompt_row(screen, prefix).or_else(|| {
+        (0..screen.rows())
+            .filter(|row| {
+                row_matches_nonempty_prefix(&screen.row_to_string(Line(*row as i32)), prefix)
+            })
             .min_by_key(|row| row.abs_diff(old_row))
     })
 }

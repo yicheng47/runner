@@ -3,11 +3,11 @@
 //! Zed's terminal crate). Pure functions: terminal mode state is passed
 //! in, bytes come out.
 
-use alacritty_terminal::term::TermMode;
+use crate::types::TerminalModeFlags as TermMode;
 pub use runner_core::protocol::terminal::InputKind;
 
 pub fn classify_key(
-    mode: TermMode,
+    mode: crate::TerminalModeFlags,
     key: &str,
     ctrl: bool,
     alt: bool,
@@ -77,7 +77,7 @@ pub fn encode_key(
     alt: bool,
     shift: bool,
     key_char: Option<&str>,
-    mode: TermMode,
+    mode: crate::TerminalModeFlags,
 ) -> Option<Vec<u8>> {
     if mode.contains(TermMode::DISAMBIGUATE_ESC_CODES) {
         if let Some(bytes) = encode_kitty_key(key, ctrl, alt, shift) {
@@ -288,7 +288,7 @@ fn encode_modified_special_key(key: &str, ctrl: bool, alt: bool, shift: bool) ->
 /// the local viewport. `bypass_reporting` (shift held, xterm
 /// convention) forces the viewport path.
 pub fn encode_scroll(
-    mode: TermMode,
+    mode: crate::TerminalModeFlags,
     delta_lines: i32,
     bypass_reporting: bool,
     column: usize,
@@ -336,7 +336,7 @@ pub fn encode_scroll(
 }
 
 pub fn encode_mouse_press(
-    mode: TermMode,
+    mode: crate::TerminalModeFlags,
     button: MouseButton,
     column: usize,
     row: usize,
@@ -355,7 +355,7 @@ pub fn encode_mouse_press(
 }
 
 pub fn encode_mouse_release(
-    mode: TermMode,
+    mode: crate::TerminalModeFlags,
     button: MouseButton,
     column: usize,
     row: usize,
@@ -374,7 +374,7 @@ pub fn encode_mouse_release(
 }
 
 pub fn encode_mouse_motion(
-    mode: TermMode,
+    mode: crate::TerminalModeFlags,
     button: MouseButton,
     column: usize,
     row: usize,
@@ -393,7 +393,7 @@ pub fn encode_mouse_motion(
 }
 
 fn encode_mouse(
-    mode: TermMode,
+    mode: crate::TerminalModeFlags,
     action: MouseAction,
     button: MouseButton,
     column: usize,

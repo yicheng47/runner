@@ -10,7 +10,6 @@ use runner_daemon::router::runtime::PermissionMode;
 use runner_daemon::session::pty_runtime::PtyRuntime;
 use runner_daemon::session::SessionManager;
 use runner_daemon::AppCore;
-use runner_terminal::replay::visible_lines;
 use runner_terminal::terminal::{TerminalBridge, TerminalMirror};
 
 #[derive(Default)]
@@ -68,7 +67,7 @@ fn transcript(home: &Path, key: &str) -> Vec<serde_json::Value> {
 }
 
 fn grid_text(terminal: &TerminalMirror) -> String {
-    visible_lines(&*terminal.term.lock()).join("\n")
+    terminal.visible_lines().join("\n")
 }
 
 fn wait_for_turn(terminal: &TerminalMirror, home: &Path, key: &str, expected: &str) {

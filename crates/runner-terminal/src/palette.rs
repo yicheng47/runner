@@ -1,7 +1,142 @@
 //! UI-agnostic terminal palettes and color resolution.
 
+use std::ops::Mul;
+
 use alacritty_terminal::term::color::Colors;
-use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
+use alacritty_terminal::vte::ansi as alacritty_ansi;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Rgb {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+impl Rgb {
+    #[inline]
+    pub const fn new(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+
+    #[inline]
+    pub(crate) fn from_alacritty(rgb: alacritty_ansi::Rgb) -> Self {
+        Self {
+            r: rgb.r,
+            g: rgb.g,
+            b: rgb.b,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn to_alacritty(self) -> alacritty_ansi::Rgb {
+        alacritty_ansi::Rgb {
+            r: self.r,
+            g: self.g,
+            b: self.b,
+        }
+    }
+}
+
+impl Mul<f32> for Rgb {
+    type Output = Self;
+
+    #[inline]
+    fn mul(self, rhs: f32) -> Self::Output {
+        Self {
+            r: (f32::from(self.r) * rhs).clamp(0.0, 255.0) as u8,
+            g: (f32::from(self.g) * rhs).clamp(0.0, 255.0) as u8,
+            b: (f32::from(self.b) * rhs).clamp(0.0, 255.0) as u8,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NamedColor {
+    Black = 0,
+    Red = 1,
+    Green = 2,
+    Yellow = 3,
+    Blue = 4,
+    Magenta = 5,
+    Cyan = 6,
+    White = 7,
+    BrightBlack = 8,
+    BrightRed = 9,
+    BrightGreen = 10,
+    BrightYellow = 11,
+    BrightBlue = 12,
+    BrightMagenta = 13,
+    BrightCyan = 14,
+    BrightWhite = 15,
+    Foreground = 256,
+    Background = 257,
+    Cursor = 258,
+    DimBlack = 259,
+    DimRed = 260,
+    DimGreen = 261,
+    DimYellow = 262,
+    DimBlue = 263,
+    DimMagenta = 264,
+    DimCyan = 265,
+    DimWhite = 266,
+    BrightForeground = 267,
+    DimForeground = 268,
+}
+
+impl NamedColor {
+    #[inline]
+    pub(crate) fn from_alacritty(named: alacritty_ansi::NamedColor) -> Self {
+        match named {
+            alacritty_ansi::NamedColor::Black => Self::Black,
+            alacritty_ansi::NamedColor::Red => Self::Red,
+            alacritty_ansi::NamedColor::Green => Self::Green,
+            alacritty_ansi::NamedColor::Yellow => Self::Yellow,
+            alacritty_ansi::NamedColor::Blue => Self::Blue,
+            alacritty_ansi::NamedColor::Magenta => Self::Magenta,
+            alacritty_ansi::NamedColor::Cyan => Self::Cyan,
+            alacritty_ansi::NamedColor::White => Self::White,
+            alacritty_ansi::NamedColor::BrightBlack => Self::BrightBlack,
+            alacritty_ansi::NamedColor::BrightRed => Self::BrightRed,
+            alacritty_ansi::NamedColor::BrightGreen => Self::BrightGreen,
+            alacritty_ansi::NamedColor::BrightYellow => Self::BrightYellow,
+            alacritty_ansi::NamedColor::BrightBlue => Self::BrightBlue,
+            alacritty_ansi::NamedColor::BrightMagenta => Self::BrightMagenta,
+            alacritty_ansi::NamedColor::BrightCyan => Self::BrightCyan,
+            alacritty_ansi::NamedColor::BrightWhite => Self::BrightWhite,
+            alacritty_ansi::NamedColor::Foreground => Self::Foreground,
+            alacritty_ansi::NamedColor::Background => Self::Background,
+            alacritty_ansi::NamedColor::Cursor => Self::Cursor,
+            alacritty_ansi::NamedColor::DimBlack => Self::DimBlack,
+            alacritty_ansi::NamedColor::DimRed => Self::DimRed,
+            alacritty_ansi::NamedColor::DimGreen => Self::DimGreen,
+            alacritty_ansi::NamedColor::DimYellow => Self::DimYellow,
+            alacritty_ansi::NamedColor::DimBlue => Self::DimBlue,
+            alacritty_ansi::NamedColor::DimMagenta => Self::DimMagenta,
+            alacritty_ansi::NamedColor::DimCyan => Self::DimCyan,
+            alacritty_ansi::NamedColor::DimWhite => Self::DimWhite,
+            alacritty_ansi::NamedColor::BrightForeground => Self::BrightForeground,
+            alacritty_ansi::NamedColor::DimForeground => Self::DimForeground,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Color {
+    Rgb(Rgb),
+    Indexed(u8),
+    Named(NamedColor),
+}
+
+impl Color {
+    #[inline]
+    pub(crate) fn from_alacritty(color: alacritty_ansi::Color) -> Self {
+        match color {
+            alacritty_ansi::Color::Spec(rgb) => Self::Rgb(Rgb::from_alacritty(rgb)),
+            alacritty_ansi::Color::Indexed(index) => Self::Indexed(index),
+            alacritty_ansi::Color::Named(named) => Self::Named(NamedColor::from_alacritty(named)),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerminalPalette {
@@ -361,33 +496,33 @@ pub fn resolve_index_for(index: usize, palette: &[Rgb; 256], theme: TerminalPale
     }
 }
 
-pub fn resolve(color: Color, overrides: &Colors, palette: &[Rgb; 256]) -> Rgb {
-    resolve_for(color, overrides, palette, RUNNER)
-}
-
-pub fn resolve_for(
+pub(crate) fn resolve_with_alacritty_colors(
     color: Color,
     overrides: &Colors,
     palette: &[Rgb; 256],
     theme: TerminalPalette,
 ) -> Rgb {
     match color {
-        Color::Spec(rgb) => rgb,
-        Color::Indexed(index) => overrides[index as usize].unwrap_or(palette[index as usize]),
-        Color::Named(named) => overrides[named].unwrap_or_else(|| match named {
-            NamedColor::Foreground | NamedColor::BrightForeground => theme.foreground,
-            NamedColor::DimForeground => theme.foreground * 0.66,
-            NamedColor::Background => theme.background,
-            NamedColor::Cursor => theme.cursor,
-            _ => {
-                let index = named as usize;
-                if index < 16 {
-                    palette[index]
-                } else {
-                    palette[index.saturating_sub(259).min(7)] * 0.66
+        Color::Rgb(rgb) => rgb,
+        Color::Indexed(index) => overrides[index as usize]
+            .map(Rgb::from_alacritty)
+            .unwrap_or(palette[index as usize]),
+        Color::Named(named) => overrides[named as usize]
+            .map(Rgb::from_alacritty)
+            .unwrap_or_else(|| match named {
+                NamedColor::Foreground | NamedColor::BrightForeground => theme.foreground,
+                NamedColor::DimForeground => theme.foreground * 0.66,
+                NamedColor::Background => theme.background,
+                NamedColor::Cursor => theme.cursor,
+                _ => {
+                    let index = named as usize;
+                    if index < 16 {
+                        palette[index]
+                    } else {
+                        palette[index.saturating_sub(259).min(7)] * 0.66
+                    }
                 }
-            }
-        }),
+            }),
     }
 }
 

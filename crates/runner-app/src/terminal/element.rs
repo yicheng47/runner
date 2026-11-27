@@ -1,4 +1,4 @@
-//! Custom GPUI element painting the `alacritty_terminal` grid: cell
+//! Custom GPUI element painting the terminal screen view: cell
 //! backgrounds as quads, glyphs as shaped lines, cursor on top.
 //!
 //! Alignment strategy: same-style ASCII spans are shaped as one run
@@ -13,11 +13,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use alacritty_terminal::index::{Column, Point as GridPoint, Side};
-use alacritty_terminal::selection::SelectionType;
-use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::{point_to_viewport, viewport_to_point, TermMode};
-use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 use gpui::{
     fill, outline, point, px, relative, size, AnyTooltip, AnyView, App, Bounds, ClipboardItem,
     ContentMask, Context, CursorStyle, DispatchPhase, Element, Entity, FocusHandle, Font,
@@ -36,8 +31,12 @@ use runner_app::ui::tooltip::tooltip_view;
 use runner_terminal::mappings::{
     encode_mouse_motion, encode_mouse_press, encode_mouse_release, MouseButton, MouseModifiers,
 };
-use runner_terminal::palette::{self, TerminalPalette};
+use runner_terminal::palette::{self, Color, NamedColor, Rgb, TerminalPalette};
 use runner_terminal::terminal::{FileLinkContext, LinkTarget, TerminalLink, TerminalMirror};
+use runner_terminal::{
+    point_to_viewport, viewport_to_point, CellFlags as Flags, Column, CursorShape, GridPoint,
+    SelectionKind as SelectionType, Side, TerminalModeFlags as TermMode, ViewportPoint,
+};
 
 use super::glyphs::{snapped_cell_bounds, ProceduralCell};
 use crate::file_links::FileLinkRoute;
@@ -622,7 +621,7 @@ impl TerminalInteraction {
         };
         let point = viewport_to_point(
             display_offset,
-            GridPoint::new(row, Column(drag.endpoint_column)),
+            ViewportPoint::new(row, Column(drag.endpoint_column)),
         );
         self.session.update_selection(point, drag.endpoint_side);
         true
@@ -724,7 +723,7 @@ fn push_match_cell(
 }
 
 fn point_for_viewport(display_offset: usize, row: usize, column: usize) -> GridPoint {
-    viewport_to_point(display_offset, GridPoint::new(row, Column(column)))
+    viewport_to_point(display_offset, ViewportPoint::new(row, Column(column)))
 }
 
 fn cell_and_side(local_x: f32, cell_width: f32, raw_column: usize) -> (usize, Side) {
@@ -749,8 +748,7 @@ fn hit_test(
         0.,
         (f32::from(geometry.cell_width) * geometry.cols as f32).max(1.) - 0.001,
     );
-    let term = session.term.lock_unfair();
-    let display_offset = term.grid().display_offset();
+    let display_offset = session.display_offset();
     let (column, side) = cell_and_side(local_x, f32::from(geometry.cell_width), raw_column);
     TerminalHit {
         point: point_for_viewport(display_offset, viewport_row, column),
@@ -1281,58 +1279,43 @@ impl Element for TerminalElement {
         let mut cursor_cols = 1;
         let mut cursor_blinks = false;
         let mut cursor_point = GridPoint::default();
-        let mode;
-        let marked_foreground;
-        let marked_background;
-
-        {
-            let term = self.session.term.lock();
-            let content = term.renderable_content();
-            mode = content.mode;
-            let display_offset = content.display_offset;
-            let overrides = content.colors;
-            let selection = content.selection;
-            let renderable_cursor = content.cursor;
+        let (mode, marked_foreground, marked_background) = self.session.with_screen(|screen| {
+            let view = screen.view();
+            let mode = view.mode();
+            let display_offset = view.display_offset();
+            let renderable_cursor = view.cursor();
             let highlights = self
                 .find
                 .as_ref()
-                .and_then(|find| find.update(cx, |find, _| find.highlights(&term, rows as usize)));
+                .and_then(|find| find.update(cx, |find, _| find.highlights(screen, rows as usize)));
             let (highlighted, current_match) = highlights
                 .map(|highlights| (highlights.matches, highlights.current))
                 .unwrap_or_default();
             let mut next_match = 0;
-            marked_foreground = palette::resolve_for(
+            let marked_foreground = view.resolve_color(
                 Color::Named(NamedColor::Foreground),
-                overrides,
                 &base,
                 terminal_palette,
             );
-            marked_background = palette::resolve_for(
+            let marked_background = view.resolve_color(
                 Color::Named(NamedColor::Background),
-                overrides,
                 &base,
                 terminal_palette,
             );
 
-            for indexed in content.display_iter {
-                let cell = &indexed.cell;
-                let Some(vp) = point_to_viewport(display_offset, indexed.point) else {
-                    continue;
-                };
-                let (row, col) = (vp.line, vp.column.0);
+            for cell in view.visible_cells() {
+                let (row, col) = (cell.viewport_row, cell.viewport_col);
                 if row >= rows as usize || col >= cols as usize {
                     continue;
                 }
 
-                let wide = cell.flags.contains(Flags::WIDE_CHAR);
+                let flags = cell.flags();
+                let wide = flags.contains(Flags::WIDE_CHAR);
                 let cell_cols = if wide { 2usize } else { 1 };
-                if indexed.point == renderable_cursor.point {
+                if cell.point == renderable_cursor.point {
                     cursor_cols = cell_cols;
                 }
-                let selected = selection.is_some_and(|range| {
-                    range.contains_cell(&indexed, renderable_cursor.point, CursorShape::Hidden)
-                });
-                if selected && !cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                if cell.selected && !flags.contains(Flags::WIDE_CHAR_SPACER) {
                     let quad_bounds = Bounds::new(
                         point(
                             bounds.left() + cell_width * col as f32,
@@ -1353,18 +1336,18 @@ impl Element for TerminalElement {
 
                 while highlighted
                     .get(next_match)
-                    .is_some_and(|found| *found.end() < indexed.point)
+                    .is_some_and(|found| *found.end() < cell.point)
                 {
                     next_match += 1;
                 }
                 let in_current = current_match
                     .as_ref()
-                    .is_some_and(|found| found.contains(&indexed.point));
+                    .is_some_and(|found| found.contains(&cell.point));
                 let in_match = in_current
                     || highlighted
                         .get(next_match)
-                        .is_some_and(|found| found.contains(&indexed.point));
-                if in_match && !cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                        .is_some_and(|found| found.contains(&cell.point));
+                if in_match && !flags.contains(Flags::WIDE_CHAR_SPACER) {
                     let quad_bounds = Bounds::new(
                         point(
                             bounds.left() + cell_width * col as f32,
@@ -1390,19 +1373,16 @@ impl Element for TerminalElement {
                     }
                 }
 
-                if cell
-                    .flags
-                    .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-                {
+                if flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
                     continue;
                 }
 
-                let mut fg = palette::resolve_for(cell.fg, overrides, &base, terminal_palette);
-                let mut bg = palette::resolve_for(cell.bg, overrides, &base, terminal_palette);
-                if cell.flags.contains(Flags::INVERSE) {
+                let mut fg = view.resolve_color(cell.fg(), &base, terminal_palette);
+                let mut bg = view.resolve_color(cell.bg(), &base, terminal_palette);
+                if flags.contains(Flags::INVERSE) {
                     std::mem::swap(&mut fg, &mut bg);
                 }
-                if cell.flags.contains(Flags::DIM) {
+                if flags.contains(Flags::DIM) {
                     fg = fg * 0.66;
                 }
 
@@ -1430,22 +1410,22 @@ impl Element for TerminalElement {
 
                 let link_underlined = hovered_link
                     .as_ref()
-                    .is_some_and(|link| link.contains(indexed.point));
+                    .is_some_and(|link| link.contains(cell.point));
+                let cell_c = cell.c();
+                let cell_zerowidth = cell.zerowidth();
                 let Some(text) = painted_cell_text(
-                    cell.c,
-                    cell.zerowidth(),
-                    cell.flags.contains(Flags::HIDDEN),
+                    cell_c,
+                    cell_zerowidth,
+                    flags.contains(Flags::HIDDEN),
                     link_underlined,
                 ) else {
                     continue;
                 };
-                let uses_text_decorations = link_underlined
-                    || cell
-                        .flags
-                        .intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
+                let uses_text_decorations =
+                    link_underlined || flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
                 if !uses_text_decorations {
                     if let Some(procedural_cell) = ProceduralCell::new(
-                        cell.c,
+                        cell_c,
                         snapped_cell_bounds(
                             bounds,
                             cell_width,
@@ -1462,11 +1442,11 @@ impl Element for TerminalElement {
                         to_hsla(bg, 1.),
                         font_size,
                     ) {
-                        if indexed.point == renderable_cursor.point
+                        if cell.point == renderable_cursor.point
                             && renderable_cursor.shape == CursorShape::Block
                         {
                             cursor_procedural = ProceduralCell::new(
-                                cell.c,
+                                cell_c,
                                 snapped_cell_bounds(
                                     bounds,
                                     cell_width,
@@ -1485,16 +1465,15 @@ impl Element for TerminalElement {
                     }
                 }
 
-                let mut cell_font: Font = if wants_text_presentation(cell.c, wide, cell.zerowidth())
-                {
+                let mut cell_font: Font = if wants_text_presentation(cell_c, wide, cell_zerowidth) {
                     symbol_font.clone()
                 } else {
                     base_font.clone()
                 };
-                if cell.flags.contains(Flags::BOLD) || in_current {
+                if flags.contains(Flags::BOLD) || in_current {
                     cell_font = cell_font.bold();
                 }
-                if cell.flags.contains(Flags::ITALIC) {
+                if flags.contains(Flags::ITALIC) {
                     cell_font = cell_font.italic();
                 }
                 let link_armed = link_underlined && link_modifier_held;
@@ -1511,23 +1490,21 @@ impl Element for TerminalElement {
                         thickness: px(self.style.app_zoom),
                         wavy: false,
                     })
-                } else if cell.flags.intersects(Flags::ALL_UNDERLINES) {
+                } else if flags.intersects(Flags::ALL_UNDERLINES) {
                     Some(gpui::UnderlineStyle {
                         color: Some(to_hsla(
                             cell.underline_color()
-                                .map(|color| {
-                                    palette::resolve_for(color, overrides, &base, terminal_palette)
-                                })
+                                .map(|color| view.resolve_color(color, &base, terminal_palette))
                                 .unwrap_or(fg),
                             1.,
                         )),
                         thickness: px(self.style.app_zoom),
-                        wavy: cell.flags.contains(Flags::UNDERCURL),
+                        wavy: flags.contains(Flags::UNDERCURL),
                     })
                 } else {
                     None
                 };
-                let strikethrough = if cell.flags.contains(Flags::STRIKEOUT) {
+                let strikethrough = if flags.contains(Flags::STRIKEOUT) {
                     Some(gpui::StrikethroughStyle {
                         color: Some(to_hsla(fg, 1.)),
                         thickness: px(self.style.app_zoom),
@@ -1544,7 +1521,7 @@ impl Element for TerminalElement {
                     underline,
                     strikethrough,
                 };
-                if indexed.point == renderable_cursor.point
+                if cell.point == renderable_cursor.point
                     && renderable_cursor.shape == CursorShape::Block
                 {
                     let mut cursor_run = run.clone();
@@ -1570,7 +1547,7 @@ impl Element for TerminalElement {
                 // a non-ASCII narrow glyph (box drawing, braille)
                 // must start its own span, or it inherits the
                 // fallback font's advance and skews off the grid.
-                let simple = !wide && cell.c.is_ascii() && cell.zerowidth().is_none();
+                let simple = !wide && cell_c.is_ascii() && cell_zerowidth.is_none();
                 let extended = simple
                     && match spans.last_mut() {
                         Some((last_row, span))
@@ -1607,10 +1584,7 @@ impl Element for TerminalElement {
                 }
             }
 
-            if let Some(vp) = point_to_viewport(
-                display_offset,
-                GridPoint::new(renderable_cursor.point.line, renderable_cursor.point.column),
-            ) {
+            if let Some(vp) = point_to_viewport(display_offset, renderable_cursor.point) {
                 if vp.line < rows as usize && vp.column.0 < cols as usize {
                     let origin = point(
                         bounds.left() + cell_width * vp.column.0 as f32,
@@ -1621,12 +1595,13 @@ impl Element for TerminalElement {
                     cursor_cell = Some(bounds);
                     if renderable_cursor.shape != CursorShape::Hidden {
                         cursor = Some((bounds, renderable_cursor.shape));
-                        cursor_blinks = term.cursor_style().blinking;
+                        cursor_blinks = renderable_cursor.blinking;
                         cursor_point = renderable_cursor.point;
                     }
                 }
             }
-        }
+            (mode, marked_foreground, marked_background)
+        });
         let blinking = cursor_blinks
             && cursor.is_some()
             && self.focus_handle.is_focused(window)
@@ -1866,7 +1841,6 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use std::sync::{Arc, Condvar, Mutex, RwLock};
 
-    use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
     use gpui::prelude::*;
     use gpui::{
         div, point, px, Bounds, Context, Entity, FocusHandle, Render, TestAppContext,
@@ -1878,6 +1852,9 @@ mod tests {
     };
     use runner_daemon::{db, session, shell_path, AppCore};
     use runner_terminal::terminal::TerminalMirror;
+    use runner_terminal::{
+        CellFlags as Flags, Column, GridPoint, Line, Side, TerminalModeFlags as TermMode,
+    };
 
     use super::{
         accumulate_scroll, autoscroll_amount, cell_and_side, cell_text, link_modifier,
@@ -1885,7 +1862,6 @@ mod tests {
         viewport_cell, wants_text_presentation, TerminalElement, TerminalGeometry, TerminalInput,
         TerminalInteraction, TerminalStyle,
     };
-    use alacritty_terminal::term::TermMode;
     use runner_terminal::mappings::encode_scroll;
 
     #[derive(Default)]
@@ -2703,10 +2679,11 @@ mod tests {
             (b"ab\t\rab\x1b[C\xcc\x81cdefg", Some(" \u{301}")),
         ] {
             let term = runner_terminal::replay::replay_bytes(20, 2, bytes);
-            let row = &term.grid()[alacritty_terminal::index::Line(0)];
-            assert_eq!(row[Column(2)].c, '\t');
+            let screen = term.screen();
+            let at = |col| screen.cell(GridPoint::new(Line(0), Column(col))).unwrap();
+            assert_eq!(at(2).c(), '\t');
             let texts = (0..8)
-                .map(|col| cell_text(row[Column(col)].c, row[Column(col)].zerowidth()))
+                .map(|col| cell_text(at(col).c(), at(col).zerowidth()))
                 .collect::<Vec<_>>();
             assert_eq!(texts[2].as_deref(), tab_cell);
             let letters = [0, 1, 3, 4, 5, 6, 7]
@@ -2720,16 +2697,15 @@ mod tests {
     #[test]
     fn hovered_link_paints_interior_spaces_without_painting_padding() {
         let term = runner_terminal::replay::replay_bytes(30, 2, b"  docs/my plan.md  ");
-        let row = &term.grid()[Line(0)];
+        let screen = term.screen();
         let link_cols = 2..17;
         let texts = (0..19)
             .map(|col| {
-                let cell = &row[Column(col)];
+                let cell = screen.cell(GridPoint::new(Line(0), Column(col))).unwrap();
                 painted_cell_text(
-                    cell.c,
+                    cell.c(),
                     cell.zerowidth(),
-                    cell.flags
-                        .contains(alacritty_terminal::term::cell::Flags::HIDDEN),
+                    cell.flags().contains(Flags::HIDDEN),
                     link_cols.contains(&col),
                 )
             })

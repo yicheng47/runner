@@ -79,7 +79,11 @@ fn submitted_history_releases_at_a_new_empty_composer(
     let text =
         "Run python3 /private/tmp/runner-940.fixture/qa_worker.py read once. Then ACK QA940.";
     if pasted {
-        tracker.observe_input(&InputEvent::Paste { text: text.into() }, start, &term);
+        tracker.observe_input(
+            &InputEvent::Paste { text: text.into() },
+            start,
+            &term.screen(),
+        );
     } else {
         for character in text.chars() {
             tracker.observe_input(
@@ -89,13 +93,13 @@ fn submitted_history_releases_at_a_new_empty_composer(
                     },
                 },
                 start,
-                &term,
+                &term.screen(),
             );
         }
     }
     if echo_before_submit {
         feed(&mut term, format!("\x1b[2;1H\x1b[K› {text}").as_bytes());
-        state = tracker.observe_output(start, &term).unwrap().state;
+        state = tracker.observe_output(start, &term.screen()).unwrap().state;
         assert_eq!(state, InputState::Drafting);
     }
     if let Some(observation) = tracker.observe_input(
@@ -103,7 +107,7 @@ fn submitted_history_releases_at_a_new_empty_composer(
             kind: InputKind::Submit,
         },
         start,
-        &term,
+        &term.screen(),
     ) {
         state = observation.state;
     }
@@ -112,7 +116,9 @@ fn submitted_history_releases_at_a_new_empty_composer(
             &mut term,
             format!("\x1b[2;1H\x1b[K› {text}\x1b[4;1HACK QA940").as_bytes(),
         );
-        if let Some(observation) = tracker.observe_output(start + Duration::from_millis(1), &term) {
+        if let Some(observation) =
+            tracker.observe_output(start + Duration::from_millis(1), &term.screen())
+        {
             state = observation.state;
         }
         assert_eq!(state, InputState::Drafting);
@@ -124,12 +130,14 @@ fn submitted_history_releases_at_a_new_empty_composer(
         )
         .as_bytes(),
     );
-    if let Some(observation) = tracker.observe_output(start + Duration::from_millis(30), &term) {
+    if let Some(observation) =
+        tracker.observe_output(start + Duration::from_millis(30), &term.screen())
+    {
         state = observation.state;
     }
     assert_eq!(state, InputState::Idle);
     assert!(tracker
-        .observe_output(start + Duration::from_secs(30), &term)
+        .observe_output(start + Duration::from_secs(30), &term.screen())
         .is_none());
 
     tracker.observe_input(
@@ -139,19 +147,19 @@ fn submitted_history_releases_at_a_new_empty_composer(
             },
         },
         start + Duration::from_secs(31),
-        &term,
+        &term.screen(),
     );
     feed(&mut term, "\x1b[7;1H\x1b[K› unsent".as_bytes());
     assert_eq!(
         tracker
-            .observe_output(start + Duration::from_secs(31), &term)
+            .observe_output(start + Duration::from_secs(31), &term.screen())
             .unwrap()
             .state,
         InputState::Drafting
     );
     feed(&mut term, b"\x1b[3S\x1b[4;9H");
     assert!(tracker
-        .observe_output(start + Duration::from_secs(60), &term)
+        .observe_output(start + Duration::from_secs(60), &term.screen())
         .is_none());
     feed(
         &mut term,
@@ -159,7 +167,7 @@ fn submitted_history_releases_at_a_new_empty_composer(
     );
     assert_eq!(
         tracker
-            .observe_output(start + Duration::from_secs(61), &term)
+            .observe_output(start + Duration::from_secs(61), &term.screen())
             .unwrap()
             .state,
         InputState::Idle
@@ -178,25 +186,29 @@ fn a_rejected_native_probe_submit_holds_on_its_only_redraw() {
             kind: InputKind::Submit,
         };
         if reprobe {
-            tracker.observe_input(&InputEvent::Paste { text: "old".into() }, start, &term);
+            tracker.observe_input(
+                &InputEvent::Paste { text: "old".into() },
+                start,
+                &term.screen(),
+            );
             feed(&mut term, "\x1b[2;1H\x1b[K› old".as_bytes());
-            tracker.observe_output(start, &term);
-            tracker.observe_input(&submit, start, &term);
+            tracker.observe_output(start, &term.screen());
+            tracker.observe_input(&submit, start, &term.screen());
         }
         tracker.observe_input(
             &InputEvent::Paste {
                 text: "line one\nline two".into(),
             },
             start,
-            &term,
+            &term.screen(),
         );
-        tracker.observe_input(&submit, start, &term);
+        tracker.observe_input(&submit, start, &term.screen());
         feed(
             &mut term,
             "\x1b[2;1H\x1b[K› line one\x1b[3;1H  line two\x1b[4;3H".as_bytes(),
         );
         let observation = tracker
-            .observe_output(start + Duration::from_millis(1), &term)
+            .observe_output(start + Duration::from_millis(1), &term.screen())
             .unwrap();
         assert_eq!(observation.state, InputState::Drafting, "reprobe={reprobe}");
     }
@@ -209,22 +221,30 @@ fn native_submit_during_reprobe_releases_at_a_new_empty_composer() {
     feed(&mut term, "\x1b[2;1H› Ask Codex".as_bytes());
     let mut tracker = InputTracker::new(start);
     tracker.initial_observation(start);
-    tracker.observe_input(&InputEvent::Paste { text: "old".into() }, start, &term);
+    tracker.observe_input(
+        &InputEvent::Paste { text: "old".into() },
+        start,
+        &term.screen(),
+    );
     feed(&mut term, "\x1b[2;1H\x1b[K› old".as_bytes());
-    tracker.observe_output(start, &term);
+    tracker.observe_output(start, &term.screen());
     let submit = InputEvent::Key {
         kind: InputKind::Submit,
     };
-    tracker.observe_input(&submit, start, &term);
-    tracker.observe_input(&InputEvent::Paste { text: "new".into() }, start, &term);
-    tracker.observe_input(&submit, start, &term);
+    tracker.observe_input(&submit, start, &term.screen());
+    tracker.observe_input(
+        &InputEvent::Paste { text: "new".into() },
+        start,
+        &term.screen(),
+    );
+    tracker.observe_input(&submit, start, &term.screen());
     feed(
         &mut term,
         "\x1b[2J\x1b[1;1H› old\x1b[4;1H› new\x1b[7;1H› Ask Codex\x1b[7;3H".as_bytes(),
     );
     assert_eq!(
         tracker
-            .observe_output(start + Duration::from_millis(1), &term)
+            .observe_output(start + Duration::from_millis(1), &term.screen())
             .unwrap()
             .state,
         InputState::Idle
@@ -258,7 +278,7 @@ fn submit_before_echo_with_scrolled_transcript_and_pinned_composer_releases_1381
                             tracker.observe_input(
                                 &InputEvent::Paste { text: text.into() },
                                 start,
-                                &term,
+                                &term.screen(),
                             );
                         } else {
                             for character in text.chars() {
@@ -269,7 +289,7 @@ fn submit_before_echo_with_scrolled_transcript_and_pinned_composer_releases_1381
                                         },
                                     },
                                     start,
-                                    &term,
+                                    &term.screen(),
                                 );
                             }
                         }
@@ -278,7 +298,7 @@ fn submit_before_echo_with_scrolled_transcript_and_pinned_composer_releases_1381
                                 kind: InputKind::Submit,
                             },
                             start,
-                            &term,
+                            &term.screen(),
                         ) {
                             state = observation.state;
                         }
@@ -296,8 +316,8 @@ fn submit_before_echo_with_scrolled_transcript_and_pinned_composer_releases_1381
                             )
                             .as_bytes(),
                         );
-                        if let Some(observation) =
-                            tracker.observe_output(start + Duration::from_millis(20), &term)
+                        if let Some(observation) = tracker
+                            .observe_output(start + Duration::from_millis(20), &term.screen())
                         {
                             state = observation.state;
                         }
@@ -306,7 +326,7 @@ fn submit_before_echo_with_scrolled_transcript_and_pinned_composer_releases_1381
                             "cols={cols} empty={empty:?} text={text:?} pasted={pasted} row={submitted_row}"
                         );
                         assert!(tracker
-                            .recheck_delivery(start + Duration::from_secs(30), &term)
+                            .recheck_delivery(start + Duration::from_secs(30), &term.screen())
                             .is_none());
 
                         tracker.observe_input(
@@ -316,12 +336,12 @@ fn submit_before_echo_with_scrolled_transcript_and_pinned_composer_releases_1381
                                 },
                             },
                             start + Duration::from_secs(31),
-                            &term,
+                            &term.screen(),
                         );
                         feed(&mut term, "\x1b[9;1H\x1b[K› draft\x1b[9;8H".as_bytes());
                         assert_eq!(
                             tracker
-                                .observe_output(start + Duration::from_secs(31), &term)
+                                .observe_output(start + Duration::from_secs(31), &term.screen())
                                 .unwrap()
                                 .state,
                             InputState::Drafting
@@ -332,7 +352,7 @@ fn submit_before_echo_with_scrolled_transcript_and_pinned_composer_releases_1381
                         );
                         assert_eq!(
                             tracker
-                                .observe_output(start + Duration::from_secs(32), &term)
+                                .observe_output(start + Duration::from_secs(32), &term.screen())
                                 .unwrap()
                                 .state,
                             InputState::Idle
@@ -362,7 +382,7 @@ fn wrapped_draft_with_nearby_scrolled_transcript_keeps_cursor_composer_empty_for
                 .into(),
         },
         start,
-        &term,
+        &term.screen(),
     );
     feed(
         &mut term,
@@ -375,7 +395,7 @@ fn wrapped_draft_with_nearby_scrolled_transcript_keeps_cursor_composer_empty_for
     );
     assert_eq!(
         tracker
-            .observe_output(start + Duration::from_millis(10), &term)
+            .observe_output(start + Duration::from_millis(10), &term.screen())
             .unwrap()
             .state,
         InputState::Drafting
@@ -385,7 +405,7 @@ fn wrapped_draft_with_nearby_scrolled_transcript_keeps_cursor_composer_empty_for
             kind: InputKind::Submit,
         },
         start + Duration::from_millis(20),
-        &term,
+        &term.screen(),
     );
     feed(
         &mut term,
@@ -396,7 +416,7 @@ fn wrapped_draft_with_nearby_scrolled_transcript_keeps_cursor_composer_empty_for
     );
     assert_eq!(
         tracker
-            .observe_output(start + Duration::from_millis(30), &term)
+            .observe_output(start + Duration::from_millis(30), &term.screen())
             .unwrap()
             .state,
         InputState::Idle
@@ -416,8 +436,8 @@ fn delivery_submit_before_echo_with_pinned_composer_marks_delivery_held_and_rele
     let mut tracker = InputTracker::new(start);
     tracker.initial_observation(start);
     let notice = "[inbox] 1 new messages — run `runner msg read` to view.";
-    tracker.track_delivery_input(notice, start, &term);
-    tracker.track_delivery_submit(start + Duration::from_millis(10), &term);
+    tracker.track_delivery_input(notice, start, &term.screen());
+    tracker.track_delivery_submit(start + Duration::from_millis(10), &term.screen());
     feed(
         &mut term,
         format!(
@@ -428,7 +448,7 @@ fn delivery_submit_before_echo_with_pinned_composer_marks_delivery_held_and_rele
         .as_bytes(),
     );
     assert!(tracker
-        .observe_output(start + Duration::from_millis(20), &term)
+        .observe_output(start + Duration::from_millis(20), &term.screen())
         .is_none());
     assert_eq!(tracker.latest_observation().state, InputState::Idle);
     assert!(tracker.delivery_held());
@@ -455,11 +475,11 @@ fn reprobe_submit_before_echo_with_pinned_composer_and_scrolled_history_releases
             text: "first".into(),
         },
         start,
-        &term,
+        &term.screen(),
     );
     feed(&mut term, "\x1b[9;1H\x1b[K› first\x1b[9;8H".as_bytes());
-    tracker.observe_output(start + Duration::from_millis(5), &term);
-    tracker.observe_input(&submit, start + Duration::from_millis(10), &term);
+    tracker.observe_output(start + Duration::from_millis(5), &term.screen());
+    tracker.observe_input(&submit, start + Duration::from_millis(10), &term.screen());
 
     // Before the first submit's empty composer renders, a second wrapped prompt is pasted and
     // submitted, and the next frame shows the pinned empty composer back on row 9.
@@ -472,9 +492,9 @@ fn reprobe_submit_before_echo_with_pinned_composer_and_scrolled_history_releases
             text: "second multiline prompt\nwith continuation".into(),
         },
         start + Duration::from_millis(15),
-        &term,
+        &term.screen(),
     );
-    tracker.observe_input(&submit, start + Duration::from_millis(20), &term);
+    tracker.observe_input(&submit, start + Duration::from_millis(20), &term.screen());
     feed(
         &mut term,
         "\x1b[2J\x1b[1;1H› [inbox] 1 new messages — run `runner msg read` to view.\
@@ -486,7 +506,7 @@ fn reprobe_submit_before_echo_with_pinned_composer_and_scrolled_history_releases
     );
     assert_eq!(
         tracker
-            .observe_output(start + Duration::from_millis(30), &term)
+            .observe_output(start + Duration::from_millis(30), &term.screen())
             .unwrap()
             .state,
         InputState::Idle
@@ -515,10 +535,10 @@ fn history_only_redraw_before_rejected_submit_echo_preserves_pending_probe_1381(
             };
 
             if reprobe {
-                tracker.observe_input(&InputEvent::Paste { text: "old".into() }, start, &term);
+                tracker.observe_input(&InputEvent::Paste { text: "old".into() }, start, &term.screen());
                 feed(&mut term, "\x1b[9;1H\x1b[K› old\x1b[9;6H".as_bytes());
-                tracker.observe_output(start + Duration::from_millis(2), &term);
-                tracker.observe_input(&submit, start + Duration::from_millis(4), &term);
+                tracker.observe_output(start + Duration::from_millis(2), &term.screen());
+                tracker.observe_input(&submit, start + Duration::from_millis(4), &term.screen());
                 feed(
                     &mut term,
                     "\x1b[9;1H\x1b[K› \x1b[2mAsk Codex to do anything\x1b[22m\x1b[9;3H"
@@ -531,21 +551,21 @@ fn history_only_redraw_before_rejected_submit_echo_preserves_pending_probe_1381(
                     text: "new line one\nnew line two".into(),
                 },
                 start + Duration::from_millis(5),
-                &term,
+                &term.screen(),
             );
-            tracker.observe_input(&submit, start + Duration::from_millis(6), &term);
+            tracker.observe_input(&submit, start + Duration::from_millis(6), &term.screen());
 
             // Only transcript history redraws before the pasted draft reaches the composer.
             feed(&mut term, history_frame.as_bytes());
-            tracker.observe_output(start + Duration::from_millis(10), &term);
+            tracker.observe_output(start + Duration::from_millis(10), &term.screen());
 
             // The paste echoes next with Return rejected, leaving the draft in the composer.
             feed(
                 &mut term,
                 "\x1b[9;1H\x1b[K› new line one\x1b[10;1H  new line two\x1b[10;15H".as_bytes(),
             );
-            tracker.observe_output(start + Duration::from_millis(20), &term);
-            tracker.recheck_delivery(start + Duration::from_secs(30), &term);
+            tracker.observe_output(start + Duration::from_millis(20), &term.screen());
+            tracker.recheck_delivery(start + Duration::from_secs(30), &term.screen());
             assert_eq!(
                 tracker.latest_observation().state,
                 InputState::Drafting,
@@ -568,8 +588,8 @@ fn collapsed_paste_submit_with_pinned_composer_ignores_scrolled_paste_and_releas
     );
     let mut tracker = InputTracker::new(start);
     tracker.initial_observation(start);
-    tracker.track_delivery_input("line one\nline two", start, &term);
-    tracker.track_delivery_submit(start + Duration::from_millis(2), &term);
+    tracker.track_delivery_input("line one\nline two", start, &term.screen());
+    tracker.track_delivery_submit(start + Duration::from_millis(2), &term.screen());
 
     // Scrolling the prior collapsed paste alone does not satisfy the pending delivery probe.
     feed(
@@ -578,7 +598,7 @@ fn collapsed_paste_submit_with_pinned_composer_ignores_scrolled_paste_and_releas
          \x1b[9;1H❯ \x1b[2mTry a task\x1b[22m\x1b[9;3H"
             .as_bytes(),
     );
-    tracker.observe_output(start + Duration::from_millis(8), &term);
+    tracker.observe_output(start + Duration::from_millis(8), &term.screen());
     assert!(!tracker.delivery_held());
 
     // Rendering the new collapsed paste in transcript while restoring the pinned composer does.
@@ -589,7 +609,7 @@ fn collapsed_paste_submit_with_pinned_composer_ignores_scrolled_paste_and_releas
          \x1b[9;1H❯ \x1b[2mTry a task\x1b[22m\x1b[9;3H"
             .as_bytes(),
     );
-    tracker.observe_output(start + Duration::from_millis(16), &term);
+    tracker.observe_output(start + Duration::from_millis(16), &term.screen());
     assert_eq!(tracker.latest_observation().state, InputState::Idle);
     assert!(tracker.delivery_held());
 }
@@ -606,30 +626,30 @@ fn a_rejected_multiline_submit_holds_with_the_cursor_on_a_blank_continuation() {
             text: "line one\nline two".into(),
         },
         start,
-        &term,
+        &term.screen(),
     );
     feed(
         &mut term,
         "\x1b[2;1H\x1b[K› line one\x1b[3;1H  line two".as_bytes(),
     );
-    tracker.observe_output(start, &term);
+    tracker.observe_output(start, &term.screen());
     tracker.observe_input(
         &InputEvent::Key {
             kind: InputKind::Submit,
         },
         start,
-        &term,
+        &term.screen(),
     );
     feed(&mut term, b"\x1b[4;3H");
     assert_eq!(
         tracker
-            .observe_output(start + Duration::from_millis(1), &term)
+            .observe_output(start + Duration::from_millis(1), &term.screen())
             .unwrap()
             .state,
         InputState::Drafting
     );
     assert!(tracker
-        .observe_output(start + Duration::from_secs(30), &term)
+        .observe_output(start + Duration::from_secs(30), &term.screen())
         .is_none());
 }
 
@@ -648,31 +668,35 @@ fn a_composition_return_cannot_clear_a_draft_using_another_empty_prompt() {
             text: "line one\nline two".into(),
         },
         start,
-        &term,
+        &term.screen(),
     );
-    tracker.observe_input(&InputEvent::Composing { composing: true }, start, &term);
+    tracker.observe_input(
+        &InputEvent::Composing { composing: true },
+        start,
+        &term.screen(),
+    );
     tracker.observe_input(
         &InputEvent::Key {
             kind: InputKind::Submit,
         },
         start,
-        &term,
+        &term.screen(),
     );
     feed(
         &mut term,
         "\x1b[2;1H\x1b[K› line one\x1b[3;1H  line two\x1b[7;3H".as_bytes(),
     );
-    tracker.observe_output(start + Duration::from_millis(1), &term);
+    tracker.observe_output(start + Duration::from_millis(1), &term.screen());
     let observation = tracker
         .observe_input(
             &InputEvent::Composing { composing: false },
             start + Duration::from_millis(2),
-            &term,
+            &term.screen(),
         )
         .unwrap();
     assert_eq!(observation.state, InputState::Drafting);
     assert!(tracker
-        .observe_output(start + Duration::from_secs(30), &term)
+        .observe_output(start + Duration::from_secs(30), &term.screen())
         .is_none());
 }
 
@@ -704,7 +728,7 @@ fn recorded_input_transitions_follow_the_grid() {
                     feed(&mut term, &decode_chunk(&data).unwrap());
                     (
                         ms,
-                        tracker.observe_output(started + Duration::from_millis(ms), &term),
+                        tracker.observe_output(started + Duration::from_millis(ms), &term.screen()),
                     )
                 }
                 FixtureEvent::Input {
@@ -712,7 +736,11 @@ fn recorded_input_transitions_follow_the_grid() {
                     input: FixtureInput::Event(input),
                 } => (
                     ms,
-                    tracker.observe_input(&input, started + Duration::from_millis(ms), &term),
+                    tracker.observe_input(
+                        &input,
+                        started + Duration::from_millis(ms),
+                        &term.screen(),
+                    ),
                 ),
                 FixtureEvent::Input {
                     input: FixtureInput::LegacyBytes(_),
@@ -720,10 +748,7 @@ fn recorded_input_transitions_follow_the_grid() {
                 }
                 | FixtureEvent::Exit { .. } => continue,
                 FixtureEvent::Resize { cols, rows, .. } => {
-                    term.resize(alacritty_terminal::term::test::TermSize::new(
-                        cols as usize,
-                        rows as usize,
-                    ));
+                    term.resize(cols, rows);
                     continue;
                 }
             };

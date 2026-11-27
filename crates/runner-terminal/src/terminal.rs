@@ -8,15 +8,13 @@ use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions as _, Scroll};
-use alacritty_terminal::index::{Boundary, Point, Side};
-#[cfg(test)]
-use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::selection::{Selection, SelectionType};
+use alacritty_terminal::index::{Boundary, Point};
+use alacritty_terminal::selection::Selection;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{ClipboardType, Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Handler, KeyboardModes};
+use alacritty_terminal::vte::ansi::{CursorStyle as AlacrittyCursorStyle, Handler, KeyboardModes};
 use anyhow::{Context as _, Result};
 use runner_core::protocol::terminal::{
     TerminalAttachment, TerminalController, TerminalFrame, TerminalMetadata, TerminalPalette,
@@ -41,6 +39,8 @@ use links::{
 use links::{percent_decode, percent_decode_bytes, strip_file_scheme, terminal_link_at};
 
 use crate::palette;
+use crate::screen::{ScreenGuard, ScreenView};
+use crate::types::{CursorShape, CursorStyle, GridPoint, SelectionKind, Side, TerminalModeFlags};
 use crate::{
     fixtures::FixtureRecorder,
     input_state::{InputEvent, InputObservation, InputTracker},
@@ -62,7 +62,7 @@ enum ProxyEvent {
     },
 }
 
-pub struct EventProxy {
+pub(crate) struct EventProxy {
     tx: Sender<ProxyEvent>,
     waker: Arc<dyn Fn() + Send + Sync>,
 }
@@ -74,26 +74,21 @@ impl EventListener for EventProxy {
     }
 }
 
-pub fn query_color<T>(
-    term: &Term<T>,
+pub fn query_color(
+    screen: &ScreenView<'_>,
     index: usize,
-    base: &[alacritty_terminal::vte::ansi::Rgb; 256],
-) -> alacritty_terminal::vte::ansi::Rgb {
-    query_color_for(term, index, base, palette::RUNNER)
+    base: &[palette::Rgb; 256],
+) -> palette::Rgb {
+    query_color_for(screen, index, base, palette::RUNNER)
 }
 
-pub fn query_color_for<T>(
-    term: &Term<T>,
+pub fn query_color_for(
+    screen: &ScreenView<'_>,
     index: usize,
-    base: &[alacritty_terminal::vte::ansi::Rgb; 256],
+    base: &[palette::Rgb; 256],
     theme: palette::TerminalPalette,
-) -> alacritty_terminal::vte::ansi::Rgb {
-    let stored = if index < alacritty_terminal::term::color::COUNT {
-        term.colors()[index]
-    } else {
-        None
-    };
-    stored.unwrap_or_else(|| palette::resolve_index_for(index, base, theme))
+) -> palette::Rgb {
+    screen.query_color(index, base, theme)
 }
 
 /// DEC private mode 2031: colour-scheme change notifications (Contour's
@@ -405,7 +400,7 @@ fn sanitize_title(raw: &str) -> String {
 #[derive(Clone, Copy)]
 struct PaletteState {
     theme: palette::TerminalPalette,
-    base: [alacritty_terminal::vte::ansi::Rgb; 256],
+    base: [palette::Rgb; 256],
 }
 
 impl PaletteState {
@@ -432,7 +427,7 @@ fn parse_with<H: Handler>(parser: &mut ParserState, handler: &mut H, bytes: &[u8
 }
 
 pub struct TerminalMirror {
-    pub term: Arc<FairMutex<Term<EventProxy>>>,
+    pub(crate) term: Arc<FairMutex<Term<EventProxy>>>,
     client: DaemonClient,
     session_id: String,
     subscriber_id: AtomicU64,
@@ -872,8 +867,8 @@ impl TerminalMirror {
         let config = Config {
             scrolling_history: scrollback,
             semantic_escape_chars: XTERM_WORD_SEPARATORS.to_owned(),
-            default_cursor_style: CursorStyle {
-                shape: cursor_shape,
+            default_cursor_style: AlacrittyCursorStyle {
+                shape: cursor_shape.to_alacritty(),
                 blinking,
             },
             ..term_config()
@@ -891,6 +886,24 @@ impl TerminalMirror {
             .client
             .terminal_configure(&self.session_id, scrollback, shape);
         (self.waker)();
+    }
+
+    pub fn with_screen<R>(&self, f: impl FnOnce(&ScreenGuard<'_>) -> R) -> R {
+        let term = self.term.lock();
+        let screen = ScreenGuard::new(&term);
+        f(&screen)
+    }
+
+    pub fn display_offset(&self) -> usize {
+        self.term.lock_unfair().grid().display_offset()
+    }
+
+    pub fn cursor_style(&self) -> CursorStyle {
+        CursorStyle::from_alacritty(self.term.lock().cursor_style())
+    }
+
+    pub fn visible_lines(&self) -> Vec<String> {
+        self.with_screen(|screen| screen.view().visible_lines())
     }
     pub fn output_activity(&self) -> TerminalOutputActivity {
         let sequence = self.sequence.lock().unwrap();
@@ -1081,7 +1094,7 @@ impl TerminalMirror {
         shift: bool,
         key_char: Option<&str>,
     ) -> std::result::Result<bool, ClientError> {
-        let mode = *self.term.lock_unfair().mode();
+        let mode = TerminalModeFlags::from_alacritty(*self.term.lock_unfair().mode());
         let kind = crate::mappings::classify_key(mode, key, ctrl, alt, shift, key_char);
         match crate::mappings::encode_key(key, ctrl, alt, shift, key_char, mode) {
             Some(bytes) => {
@@ -1261,7 +1274,7 @@ impl TerminalMirror {
         *self.size.lock().unwrap()
     }
     pub fn scroll(&self, delta_lines: i32, bypass_reporting: bool, column: usize, row: usize) {
-        let mode = *self.term.lock_unfair().mode();
+        let mode = TerminalModeFlags::from_alacritty(*self.term.lock_unfair().mode());
         match crate::mappings::encode_scroll(mode, delta_lines, bypass_reporting, column, row) {
             Some(bytes) => {
                 if !bytes.is_empty() {
@@ -1283,21 +1296,25 @@ impl TerminalMirror {
         self.term.lock().scroll_display(Scroll::Bottom);
     }
 
-    pub fn mode(&self) -> TermMode {
-        *self.term.lock_unfair().mode()
+    pub fn mode(&self) -> TerminalModeFlags {
+        TerminalModeFlags::from_alacritty(*self.term.lock_unfair().mode())
     }
 
-    pub fn start_selection(&self, ty: SelectionType, point: Point, side: Side) {
-        self.term.lock().selection = Some(Selection::new(ty, point, side));
+    pub fn start_selection(&self, kind: SelectionKind, point: GridPoint, side: Side) {
+        self.term.lock().selection = Some(Selection::new(
+            kind.to_alacritty(),
+            point.to_alacritty(),
+            side.to_alacritty(),
+        ));
         (self.waker)();
     }
 
-    pub fn update_selection(&self, point: Point, side: Side) -> bool {
+    pub fn update_selection(&self, point: GridPoint, side: Side) -> bool {
         let mut term = self.term.lock();
         let Some(selection) = term.selection.as_mut() else {
             return false;
         };
-        selection.update(point, side);
+        selection.update(point.to_alacritty(), side.to_alacritty());
         drop(term);
         (self.waker)();
         true
@@ -1318,25 +1335,25 @@ impl TerminalMirror {
             .filter(|text| !text.is_empty())
     }
 
-    pub fn selection_contains(&self, point: Point) -> bool {
+    pub fn selection_contains(&self, point: GridPoint) -> bool {
         let term = self.term.lock_unfair();
         term.selection
             .as_ref()
             .and_then(|selection| selection.to_range(&*term))
-            .is_some_and(|range| range.contains(point))
+            .is_some_and(|range| range.contains(point.to_alacritty()))
     }
 
-    pub fn selection_type(&self) -> Option<SelectionType> {
+    pub fn selection_type(&self) -> Option<SelectionKind> {
         self.term
             .lock_unfair()
             .selection
             .as_ref()
-            .map(|selection| selection.ty)
+            .map(|selection| SelectionKind::from_alacritty(selection.ty))
     }
 
-    pub fn cell_is_whitespace(&self, point: Point) -> bool {
+    pub fn cell_is_whitespace(&self, point: GridPoint) -> bool {
         let term = self.term.lock_unfair();
-        let point = point.grid_clamp(&*term, Boundary::Grid);
+        let point = point.to_alacritty().grid_clamp(&*term, Boundary::Grid);
         let cell = &term.grid()[point];
         !cell
             .flags
@@ -1358,13 +1375,17 @@ impl TerminalMirror {
 
     /// Relative paths try the shell's live cwd first, then the spawn cwd, so
     /// output printed before a `cd` still resolves.
-    pub fn link_at(&self, point: Point) -> Option<TerminalLink> {
+    pub fn link_at(&self, point: GridPoint) -> Option<TerminalLink> {
         self.link_at_with(point, &FileLinkContext::default())
     }
 
     /// Relative paths try the shell's live cwd, then the spawn cwd, then any
     /// extra root from `context`, without duplicates.
-    pub fn link_at_with(&self, point: Point, context: &FileLinkContext) -> Option<TerminalLink> {
+    pub fn link_at_with(
+        &self,
+        point: GridPoint,
+        context: &FileLinkContext,
+    ) -> Option<TerminalLink> {
         let live = self.metadata.lock().unwrap().live_cwd.clone();
         let spawn = self.link_cwd.get_or_init(|| {
             self.client
@@ -1385,7 +1406,9 @@ impl TerminalMirror {
                 cwds.push(root);
             }
         }
-        terminal_link_at(&*self.term.lock_unfair(), point, &cwds)
+        let term = self.term.lock_unfair();
+        let view = ScreenView::from_term_grid(&term);
+        terminal_link_at(&view, point, &cwds)
     }
 
     pub fn move_cursor_to_viewport(&self, column: usize, row: usize) {
@@ -1394,7 +1417,7 @@ impl TerminalMirror {
             (
                 term.grid().cursor.point,
                 term.columns(),
-                *term.mode(),
+                TerminalModeFlags::from_alacritty(*term.mode()),
                 term.grid().display_offset(),
             )
         };
@@ -1403,7 +1426,7 @@ impl TerminalMirror {
         }
 
         let mut bytes = Vec::new();
-        if mode.contains(TermMode::ALT_SCREEN) {
+        if mode.contains(TerminalModeFlags::ALT_SCREEN) {
             let vertical = row as i32 - cursor.line.0;
             let key = if vertical < 0 { "up" } else { "down" };
             if let Some(sequence) =
@@ -1469,7 +1492,8 @@ fn observe_parsed(
 ) -> Option<InputObservation> {
     let (previous_mode, was_tui_ready) = prior;
     finish_parsed_chunk(sequence, term, parser, previous_mode, was_tui_ready, seq);
-    input_tracker.observe_output(now, term)
+    let view = ScreenView::from_term_grid(term);
+    input_tracker.observe_output(now, &view)
 }
 
 fn finish_parsed_chunk(
@@ -1682,7 +1706,7 @@ impl TerminalBridge {
 }
 
 pub fn palette_to_wire(palette: palette::TerminalPalette) -> TerminalPalette {
-    let rgb = |color: alacritty_terminal::vte::ansi::Rgb| [color.r, color.g, color.b];
+    let rgb = |color: palette::Rgb| [color.r, color.g, color.b];
     TerminalPalette {
         background: rgb(palette.background),
         foreground: rgb(palette.foreground),
@@ -1694,7 +1718,7 @@ pub fn palette_to_wire(palette: palette::TerminalPalette) -> TerminalPalette {
 }
 
 pub fn palette_from_wire(palette: TerminalPalette) -> palette::TerminalPalette {
-    let rgb = |[r, g, b]: [u8; 3]| alacritty_terminal::vte::ansi::Rgb { r, g, b };
+    let rgb = |[r, g, b]: [u8; 3]| palette::Rgb { r, g, b };
     palette::TerminalPalette {
         background: rgb(palette.background),
         foreground: rgb(palette.foreground),
@@ -1706,6 +1730,19 @@ pub fn palette_from_wire(palette: TerminalPalette) -> palette::TerminalPalette {
 }
 
 pub type HostResult<T> = anyhow::Result<T>;
+
+#[cfg(any(test, feature = "test-support"))]
+pub struct TestGridObserver {
+    term: Arc<FairMutex<Term<EventProxy>>>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl TestGridObserver {
+    pub fn visible_lines(&self) -> Vec<String> {
+        let term = self.term.lock();
+        ScreenView::from_term_grid(&term).visible_lines()
+    }
+}
 
 #[cfg(any(test, feature = "test-support"))]
 impl TerminalMirror {
@@ -1734,6 +1771,34 @@ impl TerminalMirror {
     }
     pub fn viewer_count(&self) -> usize {
         self.viewers.load(Ordering::Acquire)
+    }
+    pub fn test_is_screen_locked(&self) -> bool {
+        self.term.try_lock_unfair().is_none()
+    }
+    pub fn test_semantic_escape_chars(&self) -> String {
+        self.term.lock().semantic_escape_chars().to_owned()
+    }
+    pub fn test_grid_observer(&self) -> TestGridObserver {
+        TestGridObserver {
+            term: Arc::clone(&self.term),
+        }
+    }
+    pub fn test_set_wrapline(&self, point: GridPoint, wrap: bool) {
+        let mut term = self.term.lock();
+        let cell = &mut term.grid_mut()[point.to_alacritty()];
+        if wrap {
+            cell.flags.insert(Flags::WRAPLINE);
+        } else {
+            cell.flags.remove(Flags::WRAPLINE);
+        }
+    }
+    pub fn test_set_row_text(&self, line: crate::types::Line, text: &str) {
+        let mut term = self.term.lock();
+        let grid = term.grid_mut();
+        let alacritty_line = line.to_alacritty();
+        for (column, character) in text.chars().enumerate() {
+            grid[alacritty_line][alacritty_terminal::index::Column(column)].c = character;
+        }
     }
 }
 

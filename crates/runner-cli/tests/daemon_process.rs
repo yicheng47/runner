@@ -1313,7 +1313,6 @@ fn process_exists(pid: u32) -> bool {
 #[test]
 #[ignore = "manual socket terminal latency and throughput gate"]
 fn socket_terminal_benchmark() {
-    use runner_terminal::replay::visible_lines;
     use runner_terminal::terminal::{TerminalBridge, TerminalMirror};
     use std::io::Write;
     use std::sync::{Condvar, Mutex};
@@ -1346,7 +1345,8 @@ fn socket_terminal_benchmark() {
         }
     }
     fn contains(mirror: &TerminalMirror, marker: &str) -> bool {
-        visible_lines(&*mirror.term.lock())
+        mirror
+            .visible_lines()
             .iter()
             .any(|line| line.trim() == marker)
     }
@@ -1379,13 +1379,14 @@ fn socket_terminal_benchmark() {
             echo.output_activity().last_seq > before
         });
         samples.push(start.elapsed().as_secs_f64() * 1000.0);
-        let term = echo.term.lock();
-        let cursor = &term.grid().cursor;
-        let mut point = cursor.point;
-        if !cursor.input_needs_wrap {
-            point.column.0 -= 1;
-        }
-        assert_eq!(term.grid()[point].c, character, "cat echo {i}");
+        echo.with_screen(|screen| {
+            let view = screen.view();
+            let mut point = view.raw_cursor_point();
+            if !view.cursor_input_needs_wrap() {
+                point.column.0 -= 1;
+            }
+            assert_eq!(view.cell(point).unwrap().c(), character, "cat echo {i}");
+        });
     }
     samples.sort_by(f64::total_cmp);
     let mut burst_file = tempfile::NamedTempFile::new_in(daemon.root.path()).unwrap();

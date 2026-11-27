@@ -7,10 +7,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use alacritty_terminal::grid::Dimensions as _;
-use alacritty_terminal::index::Line;
-use alacritty_terminal::term::search::{Match, RegexSearch};
-use alacritty_terminal::term::{Term, TermMode};
 use gpui::prelude::*;
 use gpui::{
     div, px, rems, svg, AnyElement, App, BoxShadow, Context, Entity, FocusHandle, FontWeight,
@@ -20,9 +16,10 @@ use gpui::{
 use runner_app::theme;
 use runner_app::ui::{TextField, Tooltip};
 use runner_terminal::terminal::find::{
-    self as search, FindCount, FindPattern, FindQuery, ScrollMark,
+    self as search, FindCount, FindPattern, FindQuery, FindRegex as RegexSearch, ScrollMark,
 };
-use runner_terminal::terminal::{EventProxy, TerminalMirror, ViewportHold};
+use runner_terminal::terminal::{TerminalMirror, ViewportHold};
+use runner_terminal::{FindMatch as Match, Line, ScreenGuard, TerminalModeFlags as TermMode};
 
 use crate::FindInTerminal;
 
@@ -319,24 +316,26 @@ impl TerminalFind {
     }
 
     /// Picks the current match with `pick`, given the old one carried to the
-    /// latest positions, and counts the matches under one term lock.
+    /// latest positions, and counts the matches under one screen lock.
     fn select(
         &mut self,
-        pick: impl FnOnce(&Term<EventProxy>, &mut RegexSearch, Option<Match>) -> Option<Match>,
+        pick: impl FnOnce(&ScreenGuard<'_>, &mut RegexSearch, Option<Match>) -> Option<Match>,
     ) {
         let Some(regex) = self.search.as_mut() else {
             return;
         };
-        let term = self.terminal.term.lock();
-        let mark = self.terminal.scroll_mark();
-        let carried = carry(self.current.as_ref(), self.mark, mark);
-        let (newest, more) = search::newest_matches(&term, regex);
-        let current = (!newest.is_empty())
-            .then(|| pick(&term, regex, carried))
-            .flatten();
-        let count = FindCount::new(&newest, more, current.as_ref());
-        self.alt_screen = term.mode().contains(TermMode::ALT_SCREEN);
-        drop(term);
+        let (count, mark, current, alt_screen) = self.terminal.with_screen(|screen| {
+            let mark = self.terminal.scroll_mark();
+            let carried = carry(self.current.as_ref(), self.mark, mark);
+            let (newest, more) = search::newest_matches(screen, regex);
+            let current = (!newest.is_empty())
+                .then(|| pick(screen, regex, carried))
+                .flatten();
+            let count = FindCount::new(&newest, more, current.as_ref());
+            let alt_screen = screen.mode().contains(TermMode::ALT_SCREEN);
+            (count, mark, current, alt_screen)
+        });
+        self.alt_screen = alt_screen;
         self.count = count;
         self.mark = mark;
         self.searched_at = Some(Instant::now());
@@ -407,16 +406,16 @@ impl TerminalFind {
     /// The matches to paint over the viewport's `rows` lines.
     pub(crate) fn highlights(
         &mut self,
-        term: &Term<EventProxy>,
+        screen: &ScreenGuard<'_>,
         rows: usize,
     ) -> Option<FindHighlights> {
         if !self.open {
             return None;
         }
         let regex = self.search.as_mut()?;
-        let top = -(term.grid().display_offset() as i32);
-        let bottom = (top + rows.max(1) as i32 - 1).min(term.screen_lines() as i32 - 1);
-        let matches = search::matches_in_lines(term, regex, Line(top), Line(bottom));
+        let top = -(screen.display_offset() as i32);
+        let bottom = (top + rows.max(1) as i32 - 1).min(screen.rows() as i32 - 1);
+        let matches = search::matches_in_lines(screen, regex, Line(top), Line(bottom));
         Some(FindHighlights {
             matches,
             current: self.current_now(),
@@ -461,8 +460,8 @@ fn carry(current: Option<&Match>, found_at: ScrollMark, now: ScrollMark) -> Opti
     current.map(|found| search::shift_match(found, lines))
 }
 
-fn viewport_bottom(term: &Term<EventProxy>) -> Line {
-    Line(term.screen_lines() as i32 - 1 - term.grid().display_offset() as i32)
+fn viewport_bottom(screen: &ScreenGuard<'_>) -> Line {
+    Line(screen.rows() as i32 - 1 - screen.display_offset() as i32)
 }
 
 /// The terminal surface `surface` with its find bar floating over the
@@ -814,10 +813,11 @@ pub(crate) mod tests {
     use super::*;
     use crate::terminal::control::tests::{attached, mirror_named};
     use crate::AttachedChat;
-    use alacritty_terminal::index::{Column, Point, Side};
-    use alacritty_terminal::selection::SelectionType;
     use gpui::{TestAppContext, VisualTestContext};
     use runner_core::protocol::terminal::TerminalController;
+    use runner_terminal::{
+        Column, CursorShape, GridPoint as Point, SelectionKind as SelectionType, Side,
+    };
 
     struct Host {
         chat: AttachedChat,
@@ -933,10 +933,7 @@ pub(crate) mod tests {
         find: &Entity<TerminalFind>,
     ) -> String {
         let found = visual.update(|_, cx| find.read(cx).current_now()).unwrap();
-        terminal
-            .term
-            .lock()
-            .bounds_to_string(*found.start(), *found.end())
+        terminal.with_screen(|screen| screen.bounds_to_string(*found.start(), *found.end()))
     }
 
     #[test]
@@ -983,7 +980,7 @@ pub(crate) mod tests {
         assert!(terminal_focused);
         let highlights = visual.update(|_, cx| {
             find.update(cx, |find, _| {
-                find.highlights(&terminal.term.lock(), 24).is_some()
+                terminal.with_screen(|screen| find.highlights(screen, 24).is_some())
             })
         });
         assert!(!highlights);
@@ -1018,7 +1015,7 @@ pub(crate) mod tests {
     fn a_selection_with_a_combining_mark_finds_its_text() {
         let (terminal, mut visual, find, _) = setup();
         terminal.test_feed(2, "\r\nresume cafe\u{301} here".as_bytes());
-        let line = alacritty_terminal::index::Line(23);
+        let line = Line(23);
         terminal.start_selection(
             SelectionType::Simple,
             Point::new(line, Column(7)),
@@ -1038,7 +1035,7 @@ pub(crate) mod tests {
     #[test]
     fn a_selection_fills_the_query_and_reopening_selects_it() {
         let (terminal, mut visual, find, focus) = setup();
-        let line = alacritty_terminal::index::Line(14);
+        let line = Line(14);
         terminal.start_selection(
             SelectionType::Simple,
             Point::new(line, Column(0)),
@@ -1095,7 +1092,7 @@ pub(crate) mod tests {
     #[test]
     fn stepping_before_a_refresh_from_a_match_that_left_the_scrollback() {
         let (terminal, mut visual, find, _) = setup();
-        terminal.configure(40, alacritty_terminal::vte::ansi::CursorShape::Block, false);
+        terminal.configure(40, CursorShape::Block, false);
         terminal.test_feed(2, &lines("hit", 0..100));
         open_with(&mut visual, "hit");
         visual.simulate_keystrokes("shift-enter");
@@ -1203,8 +1200,7 @@ pub(crate) mod tests {
         open_with(&mut visual, "pass");
         let highlighted = visual.update(|_, cx| {
             find.update(cx, |find, _| {
-                let term = terminal.term.lock();
-                find.highlights(&term, 24).unwrap().matches.len()
+                terminal.with_screen(|screen| find.highlights(screen, 24).unwrap().matches.len())
             })
         });
         assert_eq!(highlighted, 23);
@@ -1225,7 +1221,7 @@ pub(crate) mod tests {
         assert!(terminal
             .mode()
             .contains(TermMode::ALT_SCREEN | TermMode::MOUSE_REPORT_CLICK));
-        let line = alacritty_terminal::index::Line(0);
+        let line = Line(0);
         terminal.start_selection(
             SelectionType::Simple,
             Point::new(line, Column(0)),
@@ -1386,7 +1382,7 @@ pub(crate) mod tests {
                 let Some(mirror) = target.get().and_then(std::sync::Weak::upgrade) else {
                     return;
                 };
-                if mirror.term.try_lock_unfair().is_none() {
+                if mirror.test_is_screen_locked() {
                     return;
                 }
                 if armed.swap(false, Ordering::SeqCst) {

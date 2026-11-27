@@ -3,8 +3,10 @@
 
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions as _;
-use alacritty_terminal::index::{Boundary, Column, Direction, Line, Point};
-use alacritty_terminal::term::search::{Match, RegexSearch};
+use alacritty_terminal::index::{
+    Boundary, Column as AlacrittyColumn, Direction, Line as AlacrittyLine, Point as AlacrittyPoint,
+};
+use alacritty_terminal::term::search::RegexSearch;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::cursor_icon::CursorIcon;
 use unicode_width::UnicodeWidthChar as _;
@@ -15,8 +17,15 @@ use alacritty_terminal::vte::ansi::{
     ScpCharPath, ScpUpdateMode, StandardCharset, TabulationClearMode,
 };
 
+use crate::screen::ScreenGuard;
+use crate::types::{FindMatch, GridPoint, Line};
+
 /// Counts past this many read as "1000+".
 pub const MATCH_LIMIT: usize = 1000;
+
+/// Compiled terminal search pattern.
+#[derive(Clone, Debug)]
+pub struct FindRegex(RegexSearch);
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct FindQuery {
@@ -28,7 +37,7 @@ pub struct FindQuery {
 pub enum FindPattern {
     Empty,
     Invalid,
-    Ready(Box<RegexSearch>),
+    Ready(Box<FindRegex>),
 }
 
 impl FindQuery {
@@ -60,7 +69,7 @@ impl FindQuery {
             return FindPattern::Invalid;
         }
         RegexSearch::new(&pattern).map_or(FindPattern::Invalid, |regex| {
-            FindPattern::Ready(Box::new(regex))
+            FindPattern::Ready(Box::new(FindRegex(regex)))
         })
     }
 }
@@ -75,7 +84,7 @@ pub struct FindCount {
 }
 
 impl FindCount {
-    pub fn new(newest: &[Match], more: bool, current: Option<&Match>) -> Self {
+    pub fn new(newest: &[FindMatch], more: bool, current: Option<&FindMatch>) -> Self {
         Self {
             total: newest.len(),
             more,
@@ -84,11 +93,147 @@ impl FindCount {
     }
 }
 
+mod private {
+    use super::*;
+
+    pub trait Sealed {
+        fn newest_matches_inner(&self, regex: &mut FindRegex) -> (Vec<FindMatch>, bool);
+        fn matches_in_lines_inner(
+            &self,
+            regex: &mut FindRegex,
+            first: Line,
+            last: Line,
+        ) -> Vec<FindMatch>;
+        fn newest_at_or_above_inner(&self, regex: &mut FindRegex, line: Line) -> Option<FindMatch>;
+        fn step_match_inner(
+            &self,
+            regex: &mut FindRegex,
+            current: &FindMatch,
+            older: bool,
+        ) -> Option<FindMatch>;
+        fn locate_inner(&self, regex: &mut FindRegex, carried: &FindMatch) -> Option<FindMatch>;
+    }
+}
+
+/// Sealed trait implemented by locked screens and headless terminals that can be searched.
+pub trait FindTarget: private::Sealed {}
+
+impl<T: private::Sealed> FindTarget for T {}
+
+impl private::Sealed for ScreenGuard<'_> {
+    fn newest_matches_inner(&self, regex: &mut FindRegex) -> (Vec<FindMatch>, bool) {
+        newest_matches_term(self.term(), &mut regex.0)
+    }
+
+    fn matches_in_lines_inner(
+        &self,
+        regex: &mut FindRegex,
+        first: Line,
+        last: Line,
+    ) -> Vec<FindMatch> {
+        matches_in_lines_term(self.term(), &mut regex.0, first, last)
+    }
+
+    fn newest_at_or_above_inner(&self, regex: &mut FindRegex, line: Line) -> Option<FindMatch> {
+        newest_at_or_above_term(self.term(), &mut regex.0, line)
+    }
+
+    fn step_match_inner(
+        &self,
+        regex: &mut FindRegex,
+        current: &FindMatch,
+        older: bool,
+    ) -> Option<FindMatch> {
+        step_match_term(self.term(), &mut regex.0, current, older)
+    }
+
+    fn locate_inner(&self, regex: &mut FindRegex, carried: &FindMatch) -> Option<FindMatch> {
+        locate_term(self.term(), &mut regex.0, carried)
+    }
+}
+
+impl private::Sealed for crate::replay::Terminal {
+    fn newest_matches_inner(&self, regex: &mut FindRegex) -> (Vec<FindMatch>, bool) {
+        newest_matches_term(self.term(), &mut regex.0)
+    }
+
+    fn matches_in_lines_inner(
+        &self,
+        regex: &mut FindRegex,
+        first: Line,
+        last: Line,
+    ) -> Vec<FindMatch> {
+        matches_in_lines_term(self.term(), &mut regex.0, first, last)
+    }
+
+    fn newest_at_or_above_inner(&self, regex: &mut FindRegex, line: Line) -> Option<FindMatch> {
+        newest_at_or_above_term(self.term(), &mut regex.0, line)
+    }
+
+    fn step_match_inner(
+        &self,
+        regex: &mut FindRegex,
+        current: &FindMatch,
+        older: bool,
+    ) -> Option<FindMatch> {
+        step_match_term(self.term(), &mut regex.0, current, older)
+    }
+
+    fn locate_inner(&self, regex: &mut FindRegex, carried: &FindMatch) -> Option<FindMatch> {
+        locate_term(self.term(), &mut regex.0, carried)
+    }
+}
+
 /// The newest `MATCH_LIMIT` matches over the active grid, scrollback
 /// included, newest first, and whether older ones exist. On the alternate
 /// screen that grid is the visible screen. The cap bounds only the count:
 /// selection and stepping search the whole grid on demand.
-pub fn newest_matches<T>(term: &Term<T>, regex: &mut RegexSearch) -> (Vec<Match>, bool) {
+pub fn newest_matches(target: &impl FindTarget, regex: &mut FindRegex) -> (Vec<FindMatch>, bool) {
+    target.newest_matches_inner(regex)
+}
+
+/// Every match touching the lines `first..=last`, oldest first.
+pub fn matches_in_lines(
+    target: &impl FindTarget,
+    regex: &mut FindRegex,
+    first: Line,
+    last: Line,
+) -> Vec<FindMatch> {
+    target.matches_in_lines_inner(regex, first, last)
+}
+
+/// The newest match starting at or above `line`, or the nearest one below it
+/// when there is none.
+pub fn newest_at_or_above(
+    target: &impl FindTarget,
+    regex: &mut FindRegex,
+    line: Line,
+) -> Option<FindMatch> {
+    target.newest_at_or_above_inner(regex, line)
+}
+
+/// The next older match, or the next newer one, wrapping at the ends. A
+/// current match that has left the scrollback has nothing older than it.
+pub fn step_match(
+    target: &impl FindTarget,
+    regex: &mut FindRegex,
+    current: &FindMatch,
+    older: bool,
+) -> Option<FindMatch> {
+    target.step_match_inner(regex, current, older)
+}
+
+/// `carried`, a match moved to the current positions: the same match when
+/// it is still there, otherwise the nearest one.
+pub fn locate(
+    target: &impl FindTarget,
+    regex: &mut FindRegex,
+    carried: &FindMatch,
+) -> Option<FindMatch> {
+    target.locate_inner(regex, carried)
+}
+
+fn newest_matches_term<T>(term: &Term<T>, regex: &mut RegexSearch) -> (Vec<FindMatch>, bool) {
     let mut matches = Vec::new();
     let more = matches_left(
         term,
@@ -101,103 +246,122 @@ pub fn newest_matches<T>(term: &Term<T>, regex: &mut RegexSearch) -> (Vec<Match>
     (matches, more)
 }
 
-/// Every match touching the lines `first..=last`, oldest first.
-pub fn matches_in_lines<T>(
+fn matches_in_lines_term<T>(
     term: &Term<T>,
     regex: &mut RegexSearch,
     first: Line,
     last: Line,
-) -> Vec<Match> {
-    let start = term.line_search_right(Point::new(last, term.last_column()));
-    let end = term.line_search_left(Point::new(first, Column(0)));
+) -> Vec<FindMatch> {
+    let start =
+        term.line_search_right(AlacrittyPoint::new(last.to_alacritty(), term.last_column()));
+    let end = term.line_search_left(AlacrittyPoint::new(
+        first.to_alacritty(),
+        AlacrittyColumn(0),
+    ));
     let mut matches = Vec::new();
     matches_left(term, regex, start, end, usize::MAX, &mut matches);
     matches.reverse();
     matches
 }
 
-/// The newest match starting at or above `line`, or the nearest one below it
-/// when there is none.
-pub fn newest_at_or_above<T>(term: &Term<T>, regex: &mut RegexSearch, line: Line) -> Option<Match> {
-    let line = clamp_line(term, line);
+fn newest_at_or_above_term<T>(
+    term: &Term<T>,
+    regex: &mut RegexSearch,
+    line: Line,
+) -> Option<FindMatch> {
+    let line = clamp_line(term, line.to_alacritty());
     let end = top(term);
-    let mut origin = term.line_search_right(Point::new(line, term.last_column()));
+    let mut origin = term.line_search_right(AlacrittyPoint::new(line, term.last_column()));
     while let Some(found) = term.regex_search_left(regex, origin, end) {
         if found.start().line <= line {
-            return Some(found);
+            return Some(FindMatch::from_alacritty(found));
         }
         if *found.start() <= end {
             break;
         }
         origin = before(term, *found.start());
     }
-    matches_in_lines(term, regex, line, line)
+    let runner_line = Line::from_alacritty(line);
+    matches_in_lines_term(term, regex, runner_line, runner_line)
         .into_iter()
-        .find(|found| found.start().line > line)
+        .find(|found| found.start.line > runner_line)
         .or_else(|| oldest_from(term, regex, next_line(term, line)?))
 }
 
-/// The next older match, or the next newer one, wrapping at the ends. A
-/// current match that has left the scrollback has nothing older than it.
-pub fn step_match<T>(
+fn step_match_term<T>(
     term: &Term<T>,
     regex: &mut RegexSearch,
-    current: &Match,
+    current: &FindMatch,
     older: bool,
-) -> Option<Match> {
-    let line = current.start().line;
+) -> Option<FindMatch> {
+    let current_start = current.start.to_alacritty();
+    let line = current_start.line;
     if line < term.topmost_line() {
         return if older {
             term.regex_search_left(regex, bottom(term), top(term))
+                .map(FindMatch::from_alacritty)
         } else {
             oldest_from(term, regex, term.topmost_line())
         };
     }
-    let same_line = matches_in_lines(term, regex, line, line);
+    let runner_line = current.start.line;
+    let same_line = matches_in_lines_term(term, regex, runner_line, runner_line);
     if older {
         if let Some(found) = same_line
             .into_iter()
             .rev()
-            .find(|found| found.start() < current.start())
+            .find(|found| found.start < current.start)
         {
             return Some(found);
         }
-        let line_start = term.line_search_left(*current.start());
+        let line_start = term.line_search_left(current_start);
         if line_start > top(term) {
             if let Some(found) = term.regex_search_left(regex, before(term, line_start), top(term))
             {
-                return Some(found);
+                return Some(FindMatch::from_alacritty(found));
             }
         }
         term.regex_search_left(regex, bottom(term), top(term))
+            .map(FindMatch::from_alacritty)
     } else {
         same_line
             .into_iter()
-            .find(|found| found.start() > current.start())
+            .find(|found| found.start > current.start)
             .or_else(|| oldest_from(term, regex, next_line(term, line)?))
             .or_else(|| oldest_from(term, regex, term.topmost_line()))
     }
 }
 
-/// `carried`, a match moved to the current positions: the same match when
-/// it is still there, otherwise the nearest one.
-pub fn locate<T>(term: &Term<T>, regex: &mut RegexSearch, carried: &Match) -> Option<Match> {
-    let line = carried.start().line;
-    if line >= term.topmost_line() && line < Line(term.screen_lines() as i32) {
-        if let Some(found) = matches_in_lines(term, regex, line, line)
-            .into_iter()
-            .find(|found| found == carried)
+fn locate_term<T>(
+    term: &Term<T>,
+    regex: &mut RegexSearch,
+    carried: &FindMatch,
+) -> Option<FindMatch> {
+    let line = carried.start.line.to_alacritty();
+    if line >= term.topmost_line() && line < AlacrittyLine(term.screen_lines() as i32) {
+        if let Some(found) =
+            matches_in_lines_term(term, regex, carried.start.line, carried.start.line)
+                .into_iter()
+                .find(|found| found == carried)
         {
             return Some(found);
         }
     }
-    newest_at_or_above(term, regex, line)
+    newest_at_or_above_term(term, regex, carried.start.line)
 }
 
 /// The oldest match on the logical lines from the one holding `line` down.
-fn oldest_from<T>(term: &Term<T>, regex: &mut RegexSearch, mut line: Line) -> Option<Match> {
+fn oldest_from<T>(
+    term: &Term<T>,
+    regex: &mut RegexSearch,
+    mut line: AlacrittyLine,
+) -> Option<FindMatch> {
     loop {
-        if let Some(found) = matches_in_lines(term, regex, line, line).into_iter().next() {
+        let runner_line = Line::from_alacritty(line);
+        if let Some(found) = matches_in_lines_term(term, regex, runner_line, runner_line)
+            .into_iter()
+            .next()
+        {
             return Some(found);
         }
         line = next_line(term, line)?;
@@ -205,28 +369,31 @@ fn oldest_from<T>(term: &Term<T>, regex: &mut RegexSearch, mut line: Line) -> Op
 }
 
 /// The first line of the logical line after the one holding `line`.
-fn next_line<T>(term: &Term<T>, line: Line) -> Option<Line> {
+fn next_line<T>(term: &Term<T>, line: AlacrittyLine) -> Option<AlacrittyLine> {
     let next = term
-        .line_search_right(Point::new(line, term.last_column()))
+        .line_search_right(AlacrittyPoint::new(line, term.last_column()))
         .line
         + 1;
-    (next < Line(term.screen_lines() as i32)).then_some(next)
+    (next < AlacrittyLine(term.screen_lines() as i32)).then_some(next)
 }
 
-fn clamp_line<T>(term: &Term<T>, line: Line) -> Line {
+fn clamp_line<T>(term: &Term<T>, line: AlacrittyLine) -> AlacrittyLine {
     line.max(term.topmost_line())
-        .min(Line(term.screen_lines() as i32 - 1))
+        .min(AlacrittyLine(term.screen_lines() as i32 - 1))
 }
 
-fn top<T>(term: &Term<T>) -> Point {
-    Point::new(term.topmost_line(), Column(0))
+fn top<T>(term: &Term<T>) -> AlacrittyPoint {
+    AlacrittyPoint::new(term.topmost_line(), AlacrittyColumn(0))
 }
 
-fn bottom<T>(term: &Term<T>) -> Point {
-    Point::new(Line(term.screen_lines() as i32 - 1), term.last_column())
+fn bottom<T>(term: &Term<T>) -> AlacrittyPoint {
+    AlacrittyPoint::new(
+        AlacrittyLine(term.screen_lines() as i32 - 1),
+        term.last_column(),
+    )
 }
 
-fn before<T>(term: &Term<T>, point: Point) -> Point {
+fn before<T>(term: &Term<T>, point: AlacrittyPoint) -> AlacrittyPoint {
     term.expand_wide(point, Direction::Left)
         .sub(term, Boundary::None, 1)
 }
@@ -236,17 +403,17 @@ fn before<T>(term: &Term<T>, point: Point) -> Point {
 fn matches_left<T>(
     term: &Term<T>,
     regex: &mut RegexSearch,
-    mut origin: Point,
-    end: Point,
+    mut origin: AlacrittyPoint,
+    end: AlacrittyPoint,
     limit: usize,
-    matches: &mut Vec<Match>,
+    matches: &mut Vec<FindMatch>,
 ) -> bool {
     while let Some(found) = term.regex_search_left(regex, origin, end) {
         if matches.len() == limit {
             return true;
         }
         let start = *found.start();
-        matches.push(found);
+        matches.push(FindMatch::from_alacritty(found));
         if start <= end {
             break;
         }
@@ -263,14 +430,14 @@ fn matches_left<T>(
 /// row is always found and the count stays exact however long the output is,
 /// synchronized updates included. Calls made on the other screen are not
 /// counted; `finish` reports a switch of screens.
-pub struct ScrollTracker<'a, T> {
+pub(crate) struct ScrollTracker<'a, T> {
     term: &'a mut Term<T>,
     alt_screen: bool,
     lines: usize,
 }
 
 impl<'a, T: EventListener> ScrollTracker<'a, T> {
-    pub fn new(term: &'a mut Term<T>) -> Self {
+    pub(crate) fn new(term: &'a mut Term<T>) -> Self {
         let alt_screen = term.mode().contains(TermMode::ALT_SCREEN);
         Self {
             term,
@@ -280,24 +447,25 @@ impl<'a, T: EventListener> ScrollTracker<'a, T> {
     }
 
     /// Lines moved up, or `None` when the parse ended on the other screen.
-    pub fn finish(self) -> Option<usize> {
+    pub(crate) fn finish(self) -> Option<usize> {
         (self.term.mode().contains(TermMode::ALT_SCREEN) == self.alt_screen).then_some(self.lines)
     }
 
     fn scrolling(&mut self, call: impl FnOnce(&mut Term<T>)) {
-        let row = row_address(self.term, Line(0));
+        let row = row_address(self.term, AlacrittyLine(0));
         call(self.term);
         let term = &*self.term;
         if term.mode().contains(TermMode::ALT_SCREEN) != self.alt_screen
-            || row_address(term, Line(0)) == row
+            || row_address(term, AlacrittyLine(0)) == row
         {
             return;
         }
         let screen_lines = term.screen_lines() as i32;
         let in_history = (1..=screen_lines.min(term.history_size() as i32))
-            .find(|line| row_address(term, Line(-line)) == row);
+            .find(|line| row_address(term, AlacrittyLine(-line)) == row);
         // Without room in history the top row is reused at the bottom.
-        let reused = || (1..screen_lines).find(|line| row_address(term, Line(*line)) == row);
+        let reused =
+            || (1..screen_lines).find(|line| row_address(term, AlacrittyLine(*line)) == row);
         self.lines += match in_history {
             Some(line) => line as usize,
             None => reused().map_or(screen_lines as usize, |line| (screen_lines - line) as usize),
@@ -305,8 +473,8 @@ impl<'a, T: EventListener> ScrollTracker<'a, T> {
     }
 }
 
-fn row_address<T>(term: &Term<T>, line: Line) -> usize {
-    std::ptr::from_ref(&term.grid()[line][Column(0)]) as usize
+fn row_address<T>(term: &Term<T>, line: AlacrittyLine) -> usize {
+    std::ptr::from_ref(&term.grid()[line][AlacrittyColumn(0)]) as usize
 }
 
 macro_rules! forward {
@@ -442,14 +610,15 @@ impl ScrollMark {
 }
 
 /// `found` moved up by `lines`.
-pub fn shift_match(found: &Match, lines: i32) -> Match {
-    let shift = |point: Point| Point::new(Line(point.line.0.saturating_sub(lines)), point.column);
-    shift(*found.start())..=shift(*found.end())
+pub fn shift_match(found: &FindMatch, lines: i32) -> FindMatch {
+    let shift =
+        |point: GridPoint| GridPoint::new(Line(point.line.0.saturating_sub(lines)), point.column);
+    FindMatch::new(shift(found.start), shift(found.end))
 }
 
 /// The display offset that centres `found`, when it is not already on screen.
 pub fn centring_offset(
-    found: &Match,
+    found: &FindMatch,
     screen_lines: usize,
     history_lines: usize,
     display_offset: usize,
@@ -467,23 +636,16 @@ pub fn centring_offset(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alacritty_terminal::event::VoidListener;
+    use crate::replay::Terminal;
+    use crate::types::Column;
     use alacritty_terminal::term::test::TermSize;
-    use alacritty_terminal::term::Config;
 
-    fn term(columns: usize, lines: usize, scrollback: usize) -> Term<VoidListener> {
-        Term::new(
-            Config {
-                scrolling_history: scrollback,
-                ..Config::default()
-            },
-            &TermSize::new(columns, lines),
-            VoidListener,
-        )
+    fn term(columns: usize, lines: usize, scrollback: usize) -> Terminal {
+        Terminal::with_scrollback(columns as u16, lines as u16, scrollback)
     }
 
-    fn feed(term: &mut Term<VoidListener>, bytes: &[u8]) {
-        crate::snapshot::TrackedProcessor::new().advance(term, bytes);
+    fn feed(term: &mut Terminal, bytes: &[u8]) {
+        term.advance(bytes);
     }
 
     fn query(text: &str, match_case: bool, regex: bool) -> FindQuery {
@@ -494,33 +656,29 @@ mod tests {
         }
     }
 
-    fn regex(query: &FindQuery) -> Box<RegexSearch> {
+    fn regex(query: &FindQuery) -> Box<FindRegex> {
         match query.pattern() {
             FindPattern::Ready(regex) => regex,
             _ => panic!("{query:?} should build"),
         }
     }
 
-    fn plain(text: &str) -> Box<RegexSearch> {
+    fn plain(text: &str) -> Box<FindRegex> {
         regex(&query(text, false, false))
     }
 
     /// Every match in the grid, oldest first.
-    fn all(term: &Term<VoidListener>, regex: &mut RegexSearch) -> Vec<Match> {
-        let bottom = Line(term.screen_lines() as i32 - 1);
-        matches_in_lines(term, regex, term.topmost_line(), bottom)
+    fn all(term: &Terminal, regex: &mut FindRegex) -> Vec<FindMatch> {
+        let bottom = Line(term.rows() as i32 - 1);
+        matches_in_lines(term, regex, term.screen().topmost_line(), bottom)
     }
 
-    fn count(
-        term: &Term<VoidListener>,
-        regex: &mut RegexSearch,
-        current: Option<&Match>,
-    ) -> FindCount {
+    fn count(term: &Terminal, regex: &mut FindRegex, current: Option<&FindMatch>) -> FindCount {
         let (newest, more) = newest_matches(term, regex);
         FindCount::new(&newest, more, current)
     }
 
-    fn text(term: &Term<VoidListener>, found: &Match) -> String {
+    fn text(term: &Terminal, found: &FindMatch) -> String {
         term.bounds_to_string(*found.start(), *found.end())
     }
 
@@ -537,8 +695,8 @@ mod tests {
         feed(&mut term, b"build: panicked at x");
         let found = all(&term, &mut plain("panicked"));
         assert_eq!(found.len(), 1);
-        assert_eq!(*found[0].start(), Point::new(Line(0), Column(7)));
-        assert_eq!(*found[0].end(), Point::new(Line(1), Column(4)));
+        assert_eq!(*found[0].start(), GridPoint::new(Line(0), Column(7)));
+        assert_eq!(*found[0].end(), GridPoint::new(Line(1), Column(4)));
         assert_eq!(text(&term, &found[0]), "panicked");
     }
 
@@ -691,16 +849,16 @@ mod tests {
         assert_eq!(expected.len(), 5);
         let mut current = newest_at_or_above(&term, &mut regex, Line(7)).unwrap();
         assert_eq!(current, expected[4]);
-        let mut visited = vec![current.clone()];
+        let mut visited = vec![current];
         for _ in 0..5 {
             current = step_match(&term, &mut regex, &current, true).unwrap();
-            visited.push(current.clone());
+            visited.push(current);
         }
         let mut older_first = expected.clone();
         older_first.reverse();
-        older_first.push(expected[4].clone());
+        older_first.push(expected[4]);
         assert_eq!(visited, older_first);
-        current = expected[0].clone();
+        current = expected[0];
         for expected_newer in expected.iter().skip(1).chain(expected.first()) {
             current = step_match(&term, &mut regex, &current, false).unwrap();
             assert_eq!(&current, expected_newer);
@@ -723,7 +881,7 @@ mod tests {
         feed(&mut term, b"hit 1\r\nhit 2\r\nhit 3");
         let mut regex = plain("hit");
         let second = newest_at_or_above(&term, &mut regex, Line(1)).unwrap();
-        assert_eq!(locate(&term, &mut regex, &second), Some(second.clone()));
+        assert_eq!(locate(&term, &mut regex, &second), Some(second));
         let gone = shift_match(&second, -3);
         assert_eq!(
             locate(&term, &mut regex, &gone).unwrap().start().line,
@@ -741,7 +899,7 @@ mod tests {
         let mut term = term(20, 8, 120);
         feed(&mut term, &numbered(0..200, "hit"));
         let mut regex = plain("hit");
-        let oldest = newest_at_or_above(&term, &mut regex, term.topmost_line()).unwrap();
+        let oldest = newest_at_or_above(&term, &mut regex, term.screen().topmost_line()).unwrap();
         assert_eq!(oldest.start().line, Line(-120));
         feed(&mut term, &numbered(0..1, "hit"));
         let evicted = shift_match(&oldest, 1);
@@ -758,7 +916,12 @@ mod tests {
 
     #[test]
     fn centring_scrolls_only_for_an_off_screen_match() {
-        let at = |line: i32| Point::new(Line(line), Column(0))..=Point::new(Line(line), Column(3));
+        let at = |line: i32| {
+            FindMatch::new(
+                GridPoint::new(Line(line), Column(0)),
+                GridPoint::new(Line(line), Column(3)),
+            )
+        };
         assert_eq!(centring_offset(&at(3), 10, 100, 0), None);
         assert_eq!(centring_offset(&at(-5), 10, 100, 8), None);
         assert_eq!(centring_offset(&at(-20), 10, 100, 0), Some(25));
@@ -767,14 +930,14 @@ mod tests {
     }
 
     /// Lines `bytes` moved the content, measured the way the mirror does.
-    fn moved(term: &mut Term<VoidListener>, bytes: &[u8]) -> Option<usize> {
-        let mut tracker = ScrollTracker::new(term);
+    fn moved(term: &mut Terminal, bytes: &[u8]) -> Option<usize> {
+        let mut tracker = ScrollTracker::new(term.term_mut());
         crate::snapshot::TrackedProcessor::new().advance(&mut tracker, bytes);
         tracker.finish()
     }
 
     /// Feeds the chunks the way the mirror does and carries `found` along.
-    fn follow(term: &mut Term<VoidListener>, found: &Match, chunks: &[Vec<u8>]) -> Match {
+    fn follow(term: &mut Terminal, found: &FindMatch, chunks: &[Vec<u8>]) -> FindMatch {
         let mut mark = ScrollMark::default();
         let start = mark;
         for chunk in chunks {
@@ -802,7 +965,7 @@ mod tests {
                     vec![numbered(0..after, "out")]
                 };
                 let carried = follow(&mut term, &found, &chunks);
-                assert_eq!(locate(&term, &mut regex, &carried), Some(carried.clone()));
+                assert_eq!(locate(&term, &mut regex, &carried), Some(carried));
                 assert_eq!(
                     text(&term, &carried),
                     "needle",
@@ -829,9 +992,9 @@ mod tests {
         burst.extend_from_slice(&numbered(60..120, "more"));
         let carried = follow(&mut term, &found, &[burst]);
         assert_eq!(carried.start().line, Line(-114));
-        assert_eq!(locate(&term, &mut regex, &carried), Some(carried.clone()));
+        assert_eq!(locate(&term, &mut regex, &carried), Some(carried));
         assert_eq!(
-            term.bounds_to_string(Point::new(Line(-114), Column(0)), *carried.end()),
+            term.bounds_to_string(GridPoint::new(Line(-114), Column(0)), *carried.end()),
             "old needle"
         );
         assert_eq!(count(&term, &mut regex, Some(&carried)).index, Some(1));
@@ -872,10 +1035,10 @@ mod tests {
         let mut processor = crate::snapshot::TrackedProcessor::new();
         let mut open = b"\x1b[?2026h".to_vec();
         open.extend_from_slice(&numbered(0..1010, "more"));
-        let mut tracker = ScrollTracker::new(&mut term);
+        let mut tracker = ScrollTracker::new(term.term_mut());
         processor.advance(&mut tracker, &open);
         assert_eq!(tracker.finish(), Some(0));
-        let mut tracker = ScrollTracker::new(&mut term);
+        let mut tracker = ScrollTracker::new(term.term_mut());
         processor.stop_sync(&mut tracker);
         assert_eq!(tracker.finish(), Some(1010));
 
@@ -926,13 +1089,13 @@ mod tests {
                 match event {
                     FixtureEvent::Data { data, .. } => {
                         let bytes = decode_chunk(data).unwrap();
-                        plain_parser.advance(&mut plain, &bytes);
-                        tracked_parser.advance(&mut ScrollTracker::new(&mut tracked), &bytes);
+                        plain_parser.advance(plain.term_mut(), &bytes);
+                        tracked_parser.advance(&mut ScrollTracker::new(tracked.term_mut()), &bytes);
                     }
                     FixtureEvent::Resize { cols, rows, .. } => {
                         let size = || TermSize::new(*cols as usize, *rows as usize);
-                        plain.resize(size());
-                        tracked.resize(size());
+                        plain.term_mut().resize(size());
+                        tracked.term_mut().resize(size());
                     }
                     _ => {}
                 }
@@ -957,7 +1120,7 @@ mod tests {
             .collect::<Vec<_>>();
         let carried = follow(&mut term, &found, &chunks);
         assert_eq!(carried.start().line, Line(5 - 1100));
-        assert_eq!(locate(&term, &mut regex, &carried), Some(carried.clone()));
+        assert_eq!(locate(&term, &mut regex, &carried), Some(carried));
         let count = count(&term, &mut regex, Some(&carried));
         assert_eq!((count.more, count.index), (true, None));
     }

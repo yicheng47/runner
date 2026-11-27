@@ -834,7 +834,7 @@ fn preview_tokens(
     }
 }
 
-fn palette_rgb(rgb: alacritty_terminal::vte::ansi::Rgb) -> gpui::Rgba {
+fn palette_rgb(rgb: runner_terminal::palette::Rgb) -> gpui::Rgba {
     gpui::rgb(u32::from(rgb.r) << 16 | u32::from(rgb.g) << 8 | u32::from(rgb.b))
 }
 

@@ -9,16 +9,12 @@ use runner_app::terminal_ime::TerminalInput;
 use runner_daemon::daemon::boot::{boot_core, NativePaths};
 use runner_daemon::ops::role::CreateRoleInput;
 use runner_daemon::router::runtime::PermissionMode;
-use runner_terminal::replay::visible_lines;
 use runner_terminal::terminal::{TerminalBridge, TerminalMirror};
 
 fn wait_for_text(terminal: &TerminalMirror, expected: &str) -> bool {
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        let rendered = {
-            let term = terminal.term.lock();
-            visible_lines(&*term).join("\n").contains(expected)
-        };
+        let rendered = terminal.visible_lines().join("\n").contains(expected);
         if rendered {
             return true;
         }
@@ -130,10 +126,7 @@ fn terminal_ime_commit_forwards_utf8_through_session_manager() {
     input.commit_text("拼音").unwrap();
     assert_eq!(input.marked_text(), None);
     let rendered = wait_for_text(&terminal, "拼音");
-    let visible = {
-        let term = terminal.term.lock();
-        visible_lines(&*term).join("\n")
-    };
+    let visible = terminal.visible_lines().join("\n");
 
     runner_daemon::ops::session::session_kill(&core, &spawned.id).unwrap();
     assert_eq!(bridge.live_session_count(), 0);

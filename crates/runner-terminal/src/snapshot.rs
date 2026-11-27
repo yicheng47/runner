@@ -1,4 +1,5 @@
 use std::fmt::Write as _;
+use std::ops::Range;
 
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::{Cursor, Dimensions, Grid};
@@ -10,8 +11,14 @@ use alacritty_terminal::vte::ansi::{
     StdSyncHandler,
 };
 
+use crate::palette::Color as RunnerColor;
+use crate::types::{
+    CellFlags, CursorStyle as RunnerCursorStyle, GridPoint, Hyperlink as RunnerHyperlink,
+    Line as RunnerLine, TerminalModeFlags,
+};
+
 #[derive(Default)]
-pub struct TrackedProcessor {
+pub(crate) struct TrackedProcessor {
     processor: Processor,
     capture: Processor,
     preceding: PrecedingChar,
@@ -80,11 +87,190 @@ impl TrackedProcessor {
     }
 }
 
-pub fn serialize<T: EventListener>(term: &Term<T>, unfinished: &[u8]) -> Vec<u8> {
-    serialize_with_history(term, unfinished, usize::MAX)
+/// Runner-owned character set slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotCharsetIndex {
+    G0,
+    G1,
+    G2,
+    G3,
 }
 
-pub fn serialize_with_history<T: EventListener>(
+impl SnapshotCharsetIndex {
+    fn from_alacritty(index: CharsetIndex) -> Self {
+        match index {
+            CharsetIndex::G0 => Self::G0,
+            CharsetIndex::G1 => Self::G1,
+            CharsetIndex::G2 => Self::G2,
+            CharsetIndex::G3 => Self::G3,
+        }
+    }
+}
+
+/// Runner-owned character set designation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SnapshotStandardCharset {
+    Ascii,
+    SpecialCharacterAndLineDrawing,
+}
+
+impl SnapshotStandardCharset {
+    fn from_alacritty(charset: StandardCharset) -> Self {
+        match charset {
+            StandardCharset::Ascii => Self::Ascii,
+            StandardCharset::SpecialCharacterAndLineDrawing => Self::SpecialCharacterAndLineDrawing,
+        }
+    }
+}
+
+/// Owned snapshot of one cell for round-trip verification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CellSnapshot {
+    pub c: char,
+    pub fg: RunnerColor,
+    pub bg: RunnerColor,
+    pub flags: CellFlags,
+    pub zerowidth: Vec<char>,
+    pub underline_color: Option<RunnerColor>,
+    pub hyperlink: Option<RunnerHyperlink>,
+}
+
+impl CellSnapshot {
+    fn from_alacritty(cell: &Cell) -> Self {
+        Self {
+            c: cell.c,
+            fg: RunnerColor::from_alacritty(cell.fg),
+            bg: RunnerColor::from_alacritty(cell.bg),
+            flags: CellFlags::from_alacritty(cell.flags),
+            zerowidth: cell.zerowidth().map(<[char]>::to_vec).unwrap_or_default(),
+            underline_color: cell.underline_color().map(RunnerColor::from_alacritty),
+            hyperlink: cell.hyperlink().map(RunnerHyperlink::from_alacritty),
+        }
+    }
+}
+
+/// Owned snapshot of cursor state for round-trip verification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CursorSnapshot {
+    pub point: GridPoint,
+    pub charsets: [SnapshotStandardCharset; 4],
+    pub input_needs_wrap: bool,
+    pub template: CellSnapshot,
+}
+
+impl CursorSnapshot {
+    fn from_alacritty(cursor: &Cursor<Cell>) -> Self {
+        Self {
+            point: GridPoint::from_alacritty(cursor.point),
+            charsets: [
+                SnapshotStandardCharset::from_alacritty(cursor.charsets[CharsetIndex::G0]),
+                SnapshotStandardCharset::from_alacritty(cursor.charsets[CharsetIndex::G1]),
+                SnapshotStandardCharset::from_alacritty(cursor.charsets[CharsetIndex::G2]),
+                SnapshotStandardCharset::from_alacritty(cursor.charsets[CharsetIndex::G3]),
+            ],
+            input_needs_wrap: cursor.input_needs_wrap,
+            template: CellSnapshot::from_alacritty(&cursor.template),
+        }
+    }
+}
+
+/// Owned snapshot of a grid (history + screen) for round-trip verification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GridSnapshot {
+    pub history_size: usize,
+    pub screen_lines: usize,
+    pub columns: usize,
+    pub cursor: CursorSnapshot,
+    pub saved_cursor: CursorSnapshot,
+    pub rows: Vec<Vec<CellSnapshot>>,
+}
+
+impl GridSnapshot {
+    fn from_alacritty(grid: &Grid<Cell>) -> Self {
+        let history_size = grid.history_size();
+        let screen_lines = grid.screen_lines();
+        let columns = grid.columns();
+        let mut rows = Vec::with_capacity(history_size + screen_lines);
+        for line in -(history_size as i32)..screen_lines as i32 {
+            let row = &grid[Line(line)];
+            let mut cells = Vec::with_capacity(columns);
+            for col in 0..columns {
+                cells.push(CellSnapshot::from_alacritty(&row[Column(col)]));
+            }
+            rows.push(cells);
+        }
+        Self {
+            history_size,
+            screen_lines,
+            columns,
+            cursor: CursorSnapshot::from_alacritty(&grid.cursor),
+            saved_cursor: CursorSnapshot::from_alacritty(&grid.saved_cursor),
+            rows,
+        }
+    }
+}
+
+/// Owned Runner-typed view of complete terminal state for snapshot round-trip verification.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalSnapshotState {
+    pub mode: TerminalModeFlags,
+    pub active_grid: GridSnapshot,
+    pub inactive_grid: Option<GridSnapshot>,
+    pub inactive_saved_cursor: CursorSnapshot,
+    pub scroll_region: Range<RunnerLine>,
+    pub title: Option<String>,
+    pub title_stack: Vec<Option<String>>,
+    pub tabs: Vec<bool>,
+    pub keyboard_mode_stack: Vec<u8>,
+    pub inactive_keyboard_mode_stack: Vec<u8>,
+    pub cursor_style: Option<RunnerCursorStyle>,
+    pub active_charset: SnapshotCharsetIndex,
+}
+
+pub(crate) fn inspect_term<T: EventListener>(term: &Term<T>) -> TerminalSnapshotState {
+    let state = term.snapshot_state();
+    let mode = TerminalModeFlags::from_alacritty(*term.mode());
+    let inactive_grid = mode
+        .contains(TerminalModeFlags::ALT_SCREEN)
+        .then(|| GridSnapshot::from_alacritty(state.inactive_grid));
+    TerminalSnapshotState {
+        mode,
+        active_grid: GridSnapshot::from_alacritty(term.grid()),
+        inactive_grid,
+        inactive_saved_cursor: CursorSnapshot::from_alacritty(&state.inactive_grid.saved_cursor),
+        scroll_region: RunnerLine::from_alacritty(state.scroll_region.start)
+            ..RunnerLine::from_alacritty(state.scroll_region.end),
+        title: state.title.map(str::to_owned),
+        title_stack: state.title_stack.to_vec(),
+        tabs: state.tabs.to_vec(),
+        keyboard_mode_stack: state.keyboard_mode_stack.iter().map(|m| m.bits()).collect(),
+        inactive_keyboard_mode_stack: state
+            .inactive_keyboard_mode_stack
+            .iter()
+            .map(|m| m.bits())
+            .collect(),
+        cursor_style: state.cursor_style.map(RunnerCursorStyle::from_alacritty),
+        active_charset: SnapshotCharsetIndex::from_alacritty(*state.active_charset),
+    }
+}
+
+pub fn serialize(term: &crate::replay::Terminal, unfinished: &[u8]) -> Vec<u8> {
+    serialize_term(term.term(), unfinished)
+}
+
+pub fn serialize_with_history(
+    term: &crate::replay::Terminal,
+    unfinished: &[u8],
+    history: usize,
+) -> Vec<u8> {
+    serialize_term_with_history(term.term(), unfinished, history)
+}
+
+pub(crate) fn serialize_term<T: EventListener>(term: &Term<T>, unfinished: &[u8]) -> Vec<u8> {
+    serialize_term_with_history(term, unfinished, usize::MAX)
+}
+
+pub(crate) fn serialize_term_with_history<T: EventListener>(
     term: &Term<T>,
     unfinished: &[u8],
     history: usize,

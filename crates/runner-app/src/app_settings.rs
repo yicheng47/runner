@@ -47,7 +47,7 @@ pub fn configure_terminal(
     terminal: &runner_terminal::terminal::TerminalMirror,
     settings: &AppSettings,
 ) {
-    use alacritty_terminal::vte::ansi::CursorShape;
+    use runner_terminal::CursorShape;
     let cursor = match settings.terminal_cursor_style {
         TerminalCursorStyle::Block => CursorShape::Block,
         TerminalCursorStyle::Underline => CursorShape::Underline,

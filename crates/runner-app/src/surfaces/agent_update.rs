@@ -1027,7 +1027,7 @@ mod tests {
             Host(dialog)
         });
         cx.run_until_parked();
-        let blinks = |mirror: &TerminalMirror| mirror.term.lock().cursor_style().blinking;
+        let blinks = |mirror: &TerminalMirror| mirror.cursor_style().blinking;
         assert!(!blinks(&mirror));
 
         store.update(&mut cx, |store, cx| {

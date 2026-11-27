@@ -38,7 +38,7 @@ The best single function to read is `Term::input`. It shows the whole cell model
 
 `Storage` is a ring buffer: a `Vec` of rows and a `zero` index. Scrolling the screen up by one line does not move any memory. It is a modular add on `zero`, in `rotate`. Indexing by `Line` goes through `compute_index`, which applies the offset. Read `Grid::scroll_up`: when the region starts at the top, the scrollback limit grows, the buffer rotates, and the rows that rotated in are reset from the cursor's template. The old top row is now history. When the region does not start at the top, rows are swapped within the region and nothing enters history.
 
-Coordinates follow from this. `Line` is a signed integer. Zero is the top of the visible screen, positive goes down, negative goes up into scrollback. `Column` is unsigned. `display_offset` is how many lines the user has scrolled back. The two helpers `point_to_viewport` and `viewport_to_point` in `term/mod.rs` are a single addition each; Runner calls them in the paint loop and in mouse hit testing.
+Coordinates follow from this. `Line` is a signed integer. Zero is the top of the visible screen, positive goes down, negative goes up into scrollback. `Column` is unsigned. `display_offset` is how many lines the user has scrolled back. The two helpers `point_to_viewport` and `viewport_to_point` in `term/mod.rs` are a single addition each; Runner mirrors them alongside its own `Line`, `Column`, `GridPoint`, and `ViewportPoint` types in `crates/runner-terminal/src/types.rs` for the paint loop and mouse hit testing.
 
 `display_iter` walks from `-display_offset` for `screen_lines` rows, so a renderer gets exactly the visible cells in row order and never touches scrollback it is not showing.
 
@@ -48,7 +48,7 @@ Coordinates follow from this. `Line` is a signed integer. Zero is the top of the
 
 The flags are what a renderer reads: `INVERSE`, `BOLD`, `ITALIC`, `DIM`, `HIDDEN`, `STRIKEOUT`, five underline kinds gathered as `ALL_UNDERLINES`, `WRAPLINE` marking a soft wrap, and the two wide-char markers.
 
-`Color`, defined in vte's `ansi.rs`, is an enum with three shapes. `Spec` is a literal 24-bit RGB. `Indexed` is one of 256. `Named` is one of the 16 ANSI slots plus foreground, background, cursor, and their dim and bright variants. Resolving a `Color` to real RGB is the embedder's job: check the `Term`'s overrides, then fall back to a palette. That is why `crates/runner-terminal/src/palette.rs` exists, and why the Rosé Pine and Catppuccin tables live in Runner, not in alacritty. `term/color.rs` defines the `Colors` override table with 269 slots; the index layout comes from `NamedColor` in vte's `ansi.rs`: 0 to 255 are the standard palette, then foreground, background, cursor, the eight dim colours, bright foreground, and dim foreground, which is why Runner's `resolve_index_for` special-cases indices 256 through 267 and lets 268 fall through to dim foreground.
+`Color`, defined in vte's `ansi.rs`, is an enum with three shapes. `Spec` is a literal 24-bit RGB. `Indexed` is one of 256. `Named` is one of the 16 ANSI slots plus foreground, background, cursor, and their dim and bright variants. Resolving a `Color` to real RGB is the embedder's job: check the `Term`'s overrides, then fall back to a palette. That is why `crates/runner-terminal/src/palette.rs` defines Runner's own `Rgb`, `Color` (`Rgb`, `Indexed`, `Named`), and `NamedColor` types, keeps the Rosé Pine and Catppuccin tables in Runner rather than alacritty, and resolves colors through `ScreenView::resolve_color`. `term/color.rs` defines the `Colors` override table with 269 slots; the index layout comes from `NamedColor` in vte's `ansi.rs`: 0 to 255 are the standard palette, then foreground, background, cursor, the eight dim colours, bright foreground, and dim foreground, which is why Runner's `resolve_index_for` special-cases indices 256 through 267 and lets 268 fall through to dim foreground.
 
 ## Mode flags
 
@@ -64,7 +64,7 @@ The flags are what a renderer reads: `INVERSE`, `BOLD`, `ITALIC`, `DIM`, `HIDDEN
 
 ## The read side
 
-`renderable_content` is the only API a renderer needs. It returns a `RenderableContent` with a `display_iter` over exactly the visible cells, the `display_offset`, the cursor as a `RenderableCursor` with point and shape, the selection as a `SelectionRange`, the colour overrides, and the mode. The cursor already has the wide-char adjustment applied, sits at the vi cursor in vi mode, and reads as `Hidden` when `SHOW_CURSOR` is off. `SelectionRange::contains_cell` handles the corner cases: it does not invert a block cursor at the selection boundary, and it treats a wide char's trailing spacer as selected with its glyph.
+`renderable_content` is the only API a renderer needs. It returns a `RenderableContent` with a `display_iter` over exactly the visible cells, the `display_offset`, the cursor as a `RenderableCursor` with point and shape, the selection as a `SelectionRange`, the colour overrides, and the mode. The cursor already has the wide-char adjustment applied, sits at the vi cursor in vi mode, and reads as `Hidden` when `SHOW_CURSOR` is off. `SelectionRange::contains_cell` handles the corner cases: it does not invert a block cursor at the selection boundary, and it treats a wide char's trailing spacer as selected with its glyph. Runner wraps this in `crates/runner-terminal/src/screen.rs` (`ScreenView`, `ViewportCell`, `VisibleCells`, and `TerminalMirror::with_screen`) so the app and daemon read borrowed Runner-typed cells without importing `alacritty_terminal` types.
 
 ## Selection
 
@@ -92,7 +92,7 @@ Runner's `EventProxy` pushes these onto a channel and a per-session thread write
 
 ## What the crate does not do
 
-No fonts, no pixels, no PTY, no default palette, no input encoding. Everything in that list is the embedder's, which is why Runner's `runner-terminal` crate has `palette.rs` and `mappings.rs` next to `terminal.rs`.
+No fonts, no pixels, no PTY, no default palette, no input encoding. Everything in that list is the embedder's, which is why Runner's `runner-terminal` crate has `types.rs`, `screen.rs`, `palette.rs`, `mappings.rs`, and `title_parser.rs` next to `terminal.rs` and keeps `alacritty_terminal` and `vte` behind that crate boundary.
 
 ## Reading order
 

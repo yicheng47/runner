@@ -172,8 +172,7 @@ mod ambiguity_tests {
 #[cfg(test)]
 mod wrapped_grid_tests {
     use super::*;
-    use crate::replay::{feed, new_term, row_cells};
-    use alacritty_terminal::grid::Dimensions;
+    use crate::replay::{feed, new_term, row_cells, Terminal};
 
     #[test]
     fn actual_terminal_cells_keep_a_space_at_the_notification_wrap_boundary() {
@@ -182,12 +181,11 @@ mod wrapped_grid_tests {
         for cols in [boundary, boundary + 4] {
             let mut term = new_term(cols, 8);
             feed(&mut term, b"> ");
-            let snapshot =
-                |term: &alacritty_terminal::term::Term<alacritty_terminal::event::VoidListener>| {
-                    (0..term.screen_lines())
-                        .map(|row| row_cells(term, row as i32))
-                        .collect::<Vec<_>>()
-                };
+            let snapshot = |term: &Terminal| {
+                (0..term.rows())
+                    .map(|row| row_cells(term, row as i32))
+                    .collect::<Vec<_>>()
+            };
             let mut probe = InputProbe::new(snapshot(&term), text);
             feed(&mut term, text.as_bytes());
             probe.locate(&snapshot(&term));
