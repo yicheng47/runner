@@ -3238,7 +3238,7 @@ fn snapshot_priority_treats_negative_column_overlapping_relative_placement_as_vi
 }
 
 #[test]
-fn normalized_frame_splitter_keeps_in_place_replacement_delete_and_transmit_atomic() {
+fn normalized_frame_splitter_respects_1mib_cap_and_keeps_sub_cap_replacements_atomic() {
     let cell = CellSize {
         width: 10,
         height: 20,
@@ -3259,9 +3259,38 @@ fn normalized_frame_splitter_keeps_in_place_replacement_delete_and_transmit_atom
     );
     let (_, frames1, seq1) = model.feed_forwarded(1, &items1);
     assert_eq!(frames1.len(), 1);
+    assert!(frames1[0].len() <= MAX_NORMALIZED_FRAME_BYTES);
 
-    // Case 1: replace i=77 with a > MAX_NORMALIZED_FRAME_BYTES payload (~1.2 MiB base64).
-    // Pre-delete `a=d,d=I,i=77` and replacement `a=T,i=77` must travel in ONE frame.
+    // Case 1: sub-1 MiB replacement right under the 1 MiB cap (393×667 RGB:
+    // normalized upload is 1,048,563 B <= 1,048,576 B, while delete + upload
+    // totals 1,048,584 B > 1,048,576 B). Both frames must respect the 1 MiB cap.
+    let edge_px = vec![0x44u8; 393 * 667 * 3];
+    let items_edge = scan_to_forwarded(
+        &mut sc,
+        &apc(&format!(
+            "a=T,f=24,s=393,v=667,i=77,C=1,q=2;{}",
+            BASE64.encode(&edge_px)
+        )),
+        &temp,
+    );
+    let (_, frames_edge, seq_edge) = model.feed_forwarded(seq1 + 1, &items_edge);
+    assert_eq!(
+        frames_edge.len(),
+        2,
+        "sub-1 MiB replacement whose delete+transmit crosses 1 MiB must split into two <= 1 MiB frames"
+    );
+    for (idx, frame) in frames_edge.iter().enumerate() {
+        assert!(
+            frame.len() <= MAX_NORMALIZED_FRAME_BYTES,
+            "frame {idx} length {} exceeded MAX_NORMALIZED_FRAME_BYTES ({MAX_NORMALIZED_FRAME_BYTES})",
+            frame.len()
+        );
+    }
+    assert!(String::from_utf8_lossy(&frames_edge[0]).contains("a=d,d=I,i=77"));
+    assert!(String::from_utf8_lossy(&frames_edge[1]).contains("i=77,f=24,s=393,v=667"));
+
+    // Case 2: > 1 MiB replacement (~1.2 MiB base64) must travel alone in its
+    // own frame while the preceding 21-byte delete stays in its own <= 1 MiB frame.
     let big_px = vec![0x55u8; 640 * 500 * 3];
     let big_b64 = BASE64.encode(&big_px);
     assert!(big_b64.len() > MAX_NORMALIZED_FRAME_BYTES);
@@ -3270,19 +3299,22 @@ fn normalized_frame_splitter_keeps_in_place_replacement_delete_and_transmit_atom
         &apc(&format!("a=T,f=24,s=640,v=500,i=77,C=1,q=2;{big_b64}")),
         &temp,
     );
-    let (_, frames2, seq2) = model.feed_forwarded(seq1 + 1, &items2);
+    let (_, frames2, seq2) = model.feed_forwarded(seq_edge + 1, &items2);
     assert_eq!(
         frames2.len(),
-        1,
-        "large replacement must not split a=d,d=I,i=77 and a=T,i=77 into separate frames"
+        2,
+        "> 1 MiB transmission must travel alone without concatenating the pre-delete"
     );
-    let frame2_text = String::from_utf8_lossy(&frames2[0]);
-    assert!(frame2_text.contains("a=d,d=I,i=77"));
-    assert!(frame2_text.contains("i=77,f=24,s=640,v=500"));
+    assert!(frames2[0].len() <= MAX_NORMALIZED_FRAME_BYTES);
+    assert!(String::from_utf8_lossy(&frames2[0]).contains("a=d,d=I,i=77"));
+    let frame2_1 = String::from_utf8_lossy(&frames2[1]);
+    assert!(!frame2_1.contains("a=d,d=I,i=77"));
+    assert!(frame2_1.contains("i=77,f=24,s=640,v=500"));
 
-    // Case 2: near MAX_NORMALIZED_FRAME_BYTES boundary within one burst:
-    // ~980 KiB of text followed by a ~120 KiB replacement of i=77 must flush the text
-    // into frame 0 and keep both `a=d,d=I,i=77` and `a=T,i=77` together in frame 1.
+    // Case 3: sub-1 MiB replacement near MAX_NORMALIZED_FRAME_BYTES within one
+    // burst (~980 KiB text + ~128 KiB replacement) flushes the text into
+    // frame 0 and keeps both `a=d,d=I,i=77` and `a=T,i=77` together in frame 1,
+    // with both frames strictly <= 1 MiB.
     let med_px = vec![0x33u8; 200 * 160 * 3];
     let mut burst = vec![b'x'; MAX_NORMALIZED_FRAME_BYTES - 4096];
     burst.extend_from_slice(&apc(&format!(
@@ -3292,6 +3324,8 @@ fn normalized_frame_splitter_keeps_in_place_replacement_delete_and_transmit_atom
     let items3 = scan_to_forwarded(&mut sc, &burst, &temp);
     let (_, frames3, _) = model.feed_forwarded(seq2 + 1, &items3);
     assert_eq!(frames3.len(), 2);
+    assert!(frames3[0].len() <= MAX_NORMALIZED_FRAME_BYTES);
+    assert!(frames3[1].len() <= MAX_NORMALIZED_FRAME_BYTES);
     assert!(
         !String::from_utf8_lossy(&frames3[0]).contains("a=d,d=I,i=77"),
         "pre-delete must not be stranded at the tail of frame 0"

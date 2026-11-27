@@ -658,9 +658,15 @@ pub trait MirrorGraphicsObserver: Send + Sync + 'static {
         mirror_id: u64,
         sync_seq: u64,
         viewers: &Arc<AtomicUsize>,
+        sync_open: &Arc<AtomicBool>,
         live_keys: &[LiveImageKey],
         decode_candidates: &[crate::kitty::StoredImage],
     );
+
+    /// Called after an open DECSET 2026 synchronized update closes (via DECRST
+    /// 2026 or timeout) so textures deferred during the guarded interval can
+    /// now invalidate views and retire cleanly.
+    fn on_sync_ended(&self, _mirror_id: u64) {}
 
     fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>);
 
@@ -835,6 +841,7 @@ impl TerminalMirror {
                         return;
                     };
                     let mut force_graphics_sync = false;
+                    let was_sync_open = mirror.is_sync_open();
                     // Mark frame-worker reconciliation in flight before mutating
                     // `graphics` so overlapping UI prepaints preserve same-lineage
                     // replacements and do not steal decodes via `schedule_decode`.
@@ -915,6 +922,9 @@ impl TerminalMirror {
                         },
                     }
                     mirror.sync_graphics_observer(force_graphics_sync, true);
+                    if was_sync_open && !mirror.is_sync_open() {
+                        mirror.notify_graphics_sync_ended();
+                    }
                     drop(sync_pending);
                     mirror.refresh_metadata();
                     mirror.wake_viewers();
@@ -1225,6 +1235,9 @@ impl TerminalMirror {
     pub fn viewer_count(&self) -> usize {
         self.viewers.load(Ordering::Acquire)
     }
+    pub fn is_sync_open(&self) -> bool {
+        self.sync_open.load(Ordering::Acquire)
+    }
     pub fn frame_worker_sync_pending(&self) -> bool {
         self.frame_worker_sync_pending.load(Ordering::Acquire) > 0
     }
@@ -1298,9 +1311,18 @@ impl TerminalMirror {
             self.mirror_id,
             sync_seq,
             &self.viewers,
+            &self.sync_open,
             &live_keys,
             &decode_candidates,
         );
+    }
+    fn notify_graphics_sync_ended(&self) {
+        if self.sync_open.load(Ordering::Acquire) {
+            return;
+        }
+        if let Some(observer) = self.graphics_observer.lock().unwrap().clone() {
+            observer.on_sync_ended(self.mirror_id);
+        }
     }
     pub fn session_id(&self) -> &str {
         &self.session_id
@@ -1489,6 +1511,7 @@ impl TerminalMirror {
         true
     }
     fn flush_held_output(&self) -> Option<Instant> {
+        let was_sync_open = self.is_sync_open();
         self.frame_worker_sync_pending
             .fetch_add(1, Ordering::AcqRel);
         let sync_pending = SyncPendingGuard(&self.frame_worker_sync_pending);
@@ -1547,6 +1570,9 @@ impl TerminalMirror {
         drop(sequence);
         if flushed {
             self.sync_graphics_observer(false, true);
+        }
+        if was_sync_open && !self.is_sync_open() {
+            self.notify_graphics_sync_ended();
         }
         drop(sync_pending);
         if flushed {
@@ -2371,11 +2397,15 @@ impl TerminalMirror {
         if chunk_indicates_tui_ready(bytes) {
             sequence.tui_ready_seq = sequence.tui_ready_seq.max(seq);
         }
+        let was_sync_open = self.is_sync_open();
         let mut parser = self.parser.lock().unwrap();
         self.apply_output_chunk(&mut sequence, &mut parser, seq, bytes);
         drop(parser);
         drop(sequence);
         self.sync_graphics_observer(false, true);
+        if was_sync_open && !self.is_sync_open() {
+            self.notify_graphics_sync_ended();
+        }
         self.wake_viewers();
     }
     /// Arm the background sync-flush thread for an already-open synchronized

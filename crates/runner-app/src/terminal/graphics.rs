@@ -1,7 +1,7 @@
 //! Kitty graphics texture cache, background decoding, and paint-band layout.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::channel::mpsc;
@@ -40,7 +40,21 @@ struct CachedTexture {
     screen_lineage: u64,
     source_width: u32,
     source_height: u32,
+    presented: bool,
     image: Arc<RenderImage>,
+}
+
+#[derive(Default)]
+struct PrunedTextures {
+    presented: Vec<Arc<RenderImage>>,
+    unpresented: Vec<Arc<RenderImage>>,
+}
+
+impl PrunedTextures {
+    #[cfg(test)]
+    fn total_len(&self) -> usize {
+        self.presented.len() + self.unpresented.len()
+    }
 }
 
 #[derive(Default)]
@@ -53,17 +67,40 @@ struct MirrorCache {
     live_keys: HashMap<TextureKey, u64>,
     in_flight: HashSet<TextureKey>,
     failed: HashSet<TextureKey>,
+    /// Presented textures whose atlas drop and view invalidation are deferred
+    /// until an open DECSET 2026 synchronized update closes (DECRST or timeout).
+    deferred_release: Vec<Arc<RenderImage>>,
 }
 
 impl MirrorCache {
-    fn drain_textures(&mut self) -> Vec<Arc<RenderImage>> {
+    fn drain_textures(&mut self) -> PrunedTextures {
         self.in_flight.clear();
         self.failed.clear();
         self.by_lineage_id.clear();
-        self.textures
-            .drain()
-            .map(|(_, cached)| cached.image)
-            .collect()
+        let mut pruned = PrunedTextures::default();
+        for (_, cached) in self.textures.drain() {
+            if cached.presented {
+                pruned.presented.push(cached.image);
+            } else {
+                pruned.unpresented.push(cached.image);
+            }
+        }
+        pruned
+    }
+
+    fn collect_releases(
+        &mut self,
+        pruned: PrunedTextures,
+        defer_for_sync: bool,
+    ) -> (Vec<Arc<RenderImage>>, Vec<Arc<RenderImage>>) {
+        if defer_for_sync {
+            self.deferred_release.extend(pruned.presented);
+            (Vec::new(), pruned.unpresented)
+        } else {
+            let mut to_release = std::mem::take(&mut self.deferred_release);
+            to_release.extend(pruned.presented);
+            (to_release, pruned.unpresented)
+        }
     }
 
     fn insert_texture(&mut self, key: TextureKey, cached: CachedTexture) {
@@ -85,7 +122,7 @@ impl MirrorCache {
     /// for a foreground metadata-only sync such as `configure`, any live
     /// undecoded non-failed `(screen_lineage, image_id)`) so same-lineage
     /// replacements do not flash blank before their decode publishes.
-    fn prune_stale_textures(&mut self, preserve_undecoded_live: bool) -> Vec<Arc<RenderImage>> {
+    fn prune_stale_textures(&mut self, preserve_undecoded_live: bool) -> PrunedTextures {
         let mut pending_lineages: HashSet<LineageId> = HashSet::with_capacity(self.in_flight.len());
         for key in &self.in_flight {
             if let Some(&lineage) = self.live_keys.get(key) {
@@ -120,7 +157,7 @@ impl MirrorCache {
             }
         }
 
-        let mut released = Vec::new();
+        let mut pruned = PrunedTextures::default();
         self.by_lineage_id.clear();
         self.textures.retain(|&key, cached| {
             let lineage_id = (cached.screen_lineage, key.0);
@@ -137,11 +174,15 @@ impl MirrorCache {
                     .or_insert(key.1);
                 true
             } else {
-                released.push(Arc::clone(&cached.image));
+                if cached.presented {
+                    pruned.presented.push(Arc::clone(&cached.image));
+                } else {
+                    pruned.unpresented.push(Arc::clone(&cached.image));
+                }
                 false
             }
         });
-        released
+        pruned
     }
 }
 
@@ -239,8 +280,8 @@ impl TextureStore {
         let mut missing: Vec<StoredImage> = Vec::new();
         let mut missing_keys: HashSet<TextureKey> = HashSet::new();
 
-        let mirrors = self.mirrors.lock().unwrap();
-        let entry = mirrors.get(&mirror_id);
+        let mut mirrors = self.mirrors.lock().unwrap();
+        let mut entry = mirrors.get_mut(&mirror_id);
 
         for (&key, placement) in storage.placements() {
             let Some(pin) = storage.resolved_signed_anchor(placement) else {
@@ -277,8 +318,9 @@ impl TextureStore {
             let tex_key = (img.id, img.generation);
             let full_source =
                 src.x == 0 && src.y == 0 && src.width == img.width && src.height == img.height;
-            let cached = entry.and_then(|cache| {
-                if let Some(exact) = cache.textures.get(&tex_key) {
+            let cached = entry.as_deref_mut().and_then(|cache| {
+                if let Some(exact) = cache.textures.get_mut(&tex_key) {
+                    exact.presented = true;
                     return Some(Arc::clone(&exact.image));
                 }
                 if sync_decode_pending || cache.in_flight.contains(&tex_key) {
@@ -290,11 +332,12 @@ impl TextureStore {
                     if !sync_decode_pending && cache.live_keys.contains_key(&fallback_key) {
                         return None;
                     }
-                    let fallback = cache.textures.get(&fallback_key)?;
+                    let fallback = cache.textures.get_mut(&fallback_key)?;
                     if full_source
                         || (fallback.source_width == img.width
                             && fallback.source_height == img.height)
                     {
+                        fallback.presented = true;
                         return Some(Arc::clone(&fallback.image));
                     }
                 }
@@ -302,7 +345,7 @@ impl TextureStore {
             });
             let Some(render_image) = cached else {
                 let already_pending = sync_decode_pending
-                    || entry.is_some_and(|cache| {
+                    || entry.as_deref().is_some_and(|cache| {
                         cache.in_flight.contains(&tex_key) || cache.failed.contains(&tex_key)
                     });
                 if !already_pending && missing_keys.insert(tex_key) {
@@ -414,7 +457,7 @@ impl TextureStore {
             // stays strictly `term -> graphics -> store.mirrors`.
             let mirror_live: HashSet<TextureKey> = mirror.live_image_keys().into_iter().collect();
             let mut inserted_any = false;
-            let released = {
+            let (released, unpresented) = {
                 let mut mirrors = store.mirrors.lock().unwrap();
                 if let Some(entry) = mirrors.get_mut(&mirror_id) {
                     let has_viewers = mirror.viewer_count() > 0;
@@ -436,6 +479,7 @@ impl TextureStore {
                                         screen_lineage,
                                         source_width,
                                         source_height,
+                                        presented: false,
                                         image,
                                     },
                                 );
@@ -447,15 +491,18 @@ impl TextureStore {
                         }
                     }
                     if has_viewers {
-                        entry.prune_stale_textures(false)
+                        let pruned = entry.prune_stale_textures(false);
+                        entry.collect_releases(pruned, mirror.is_sync_open())
                     } else {
                         entry.live_keys.clear();
-                        entry.drain_textures()
+                        let pruned = entry.drain_textures();
+                        entry.collect_releases(pruned, false)
                     }
                 } else {
-                    Vec::new()
+                    (Vec::new(), Vec::new())
                 }
             };
+            drop(unpresented);
             store.enqueue_release(mirror_id, released);
             // Respect the mirror's DECSET 2026 synchronized-update wake guard:
             // notifying `TerminalInteraction` wakes `TerminalViewport`, so only
@@ -501,6 +548,7 @@ impl MirrorGraphicsObserver for TextureStore {
         mirror_id: u64,
         sync_seq: u64,
         viewers: &Arc<AtomicUsize>,
+        sync_open: &Arc<AtomicBool>,
         live_keys: &[LiveImageKey],
         decode_candidates: &[StoredImage],
     ) {
@@ -508,7 +556,7 @@ impl MirrorGraphicsObserver for TextureStore {
             .iter()
             .map(|k| ((k.image_id, k.generation), k.screen_lineage))
             .collect();
-        let (to_release, to_decode) = {
+        let (to_release, unpresented, to_decode) = {
             let mut mirrors = self.mirrors.lock().unwrap();
             let entry = mirrors.entry(mirror_id).or_default();
             if sync_seq <= entry.last_sync_seq {
@@ -532,12 +580,16 @@ impl MirrorGraphicsObserver for TextureStore {
                         missing.push(img.clone());
                     }
                 }
-                (Vec::new(), missing)
+                (Vec::new(), Vec::new(), missing)
             } else {
                 entry.last_sync_seq = sync_seq;
-                if viewers.load(Ordering::Acquire) == 0 || live_map.is_empty() {
+                let has_viewers = viewers.load(Ordering::Acquire) > 0;
+                if !has_viewers || live_map.is_empty() {
                     entry.live_keys.clear();
-                    (entry.drain_textures(), Vec::new())
+                    let pruned = entry.drain_textures();
+                    let defer = has_viewers && sync_open.load(Ordering::Acquire);
+                    let (released, unpresented) = entry.collect_releases(pruned, defer);
+                    (released, unpresented, Vec::new())
                 } else {
                     entry.live_keys = live_map;
                     entry
@@ -556,12 +608,15 @@ impl MirrorGraphicsObserver for TextureStore {
                             missing.push(img.clone());
                         }
                     }
-                    let released = entry.prune_stale_textures(decode_candidates.is_empty());
-                    (released, missing)
+                    let pruned = entry.prune_stale_textures(decode_candidates.is_empty());
+                    let defer = sync_open.load(Ordering::Acquire);
+                    let (released, unpresented) = entry.collect_releases(pruned, defer);
+                    (released, unpresented, missing)
                 }
             }
         };
 
+        drop(unpresented);
         self.enqueue_release(mirror_id, to_release);
 
         if to_decode.is_empty() {
@@ -589,14 +644,15 @@ impl MirrorGraphicsObserver for TextureStore {
             })
             .collect();
 
-        let released = {
+        let (released, unpresented) = {
             let mut mirrors = self.mirrors.lock().unwrap();
             let Some(entry) = mirrors.get_mut(&mirror_id) else {
                 return;
             };
             if viewers.load(Ordering::Acquire) == 0 {
                 entry.live_keys.clear();
-                entry.drain_textures()
+                let pruned = entry.drain_textures();
+                entry.collect_releases(pruned, false)
             } else {
                 for (key, screen_lineage, source_width, source_height, maybe_image) in decoded {
                     entry.in_flight.remove(&key);
@@ -611,6 +667,7 @@ impl MirrorGraphicsObserver for TextureStore {
                                     screen_lineage,
                                     source_width,
                                     source_height,
+                                    presented: false,
                                     image,
                                 },
                             );
@@ -620,14 +677,27 @@ impl MirrorGraphicsObserver for TextureStore {
                         }
                     }
                 }
-                entry.prune_stale_textures(false)
+                let pruned = entry.prune_stale_textures(false);
+                entry.collect_releases(pruned, sync_open.load(Ordering::Acquire))
             }
+        };
+        drop(unpresented);
+        self.enqueue_release(mirror_id, released);
+    }
+
+    fn on_sync_ended(&self, mirror_id: u64) {
+        let released = {
+            let mut mirrors = self.mirrors.lock().unwrap();
+            mirrors
+                .get_mut(&mirror_id)
+                .map(|entry| std::mem::take(&mut entry.deferred_release))
+                .unwrap_or_default()
         };
         self.enqueue_release(mirror_id, released);
     }
 
     fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>) {
-        let released = {
+        let (released, unpresented) = {
             let mut mirrors = self.mirrors.lock().unwrap();
             if viewers.load(Ordering::Acquire) > 0 {
                 return;
@@ -636,21 +706,27 @@ impl MirrorGraphicsObserver for TextureStore {
                 .get_mut(&mirror_id)
                 .map(|entry| {
                     entry.live_keys.clear();
-                    entry.drain_textures()
+                    let pruned = entry.drain_textures();
+                    entry.collect_releases(pruned, false)
                 })
                 .unwrap_or_default()
         };
+        drop(unpresented);
         self.enqueue_release(mirror_id, released);
     }
 
     fn on_mirror_dropped(&self, mirror_id: u64) {
-        let released = {
+        let (released, unpresented) = {
             let mut mirrors = self.mirrors.lock().unwrap();
             mirrors
                 .remove(&mirror_id)
-                .map(|mut entry| entry.drain_textures())
+                .map(|mut entry| {
+                    let pruned = entry.drain_textures();
+                    entry.collect_releases(pruned, false)
+                })
                 .unwrap_or_default()
         };
+        drop(unpresented);
         if released.is_empty() {
             self.direct_painted_windows
                 .lock()
@@ -1606,10 +1682,12 @@ mod tests {
             }
         }
         let img1 = graphics.primary.image_by_id(1).unwrap().clone();
+        let sync_open = Arc::new(AtomicBool::new(false));
         store.on_graphics_updated(
             test_mirror_id,
             1,
             &test_viewers,
+            &sync_open,
             &[LiveImageKey {
                 image_id: img1.id,
                 generation: img1.generation,
@@ -1797,6 +1875,7 @@ mod tests {
                 mirror_id: u64,
                 sync_seq: u64,
                 viewers: &Arc<AtomicUsize>,
+                sync_open: &Arc<AtomicBool>,
                 live_keys: &[LiveImageKey],
                 decode_candidates: &[StoredImage],
             ) {
@@ -1817,6 +1896,7 @@ mod tests {
                         mirror_id,
                         sync_seq,
                         viewers,
+                        sync_open,
                         live_keys,
                         decode_candidates,
                     );
@@ -1825,11 +1905,15 @@ mod tests {
                         mirror_id,
                         sync_seq,
                         viewers,
+                        sync_open,
                         live_keys,
                         decode_candidates,
                     );
                     let _ = self.worker_done.send((sync_seq, live_keys.len()));
                 }
+            }
+            fn on_sync_ended(&self, mirror_id: u64) {
+                self.inner.on_sync_ended(mirror_id);
             }
             fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>) {
                 self.inner.on_last_viewer_dropped(mirror_id, viewers);
@@ -1962,6 +2046,7 @@ mod tests {
                 mirror_id: u64,
                 sync_seq: u64,
                 viewers: &Arc<AtomicUsize>,
+                sync_open: &Arc<AtomicBool>,
                 live_keys: &[LiveImageKey],
                 decode_candidates: &[StoredImage],
             ) {
@@ -1969,9 +2054,13 @@ mod tests {
                     mirror_id,
                     sync_seq,
                     viewers,
+                    sync_open,
                     live_keys,
                     decode_candidates,
                 );
+            }
+            fn on_sync_ended(&self, mirror_id: u64) {
+                self.inner.on_sync_ended(mirror_id);
             }
             fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>) {
                 self.inner.on_last_viewer_dropped(mirror_id, viewers);
@@ -2248,11 +2337,13 @@ mod tests {
 
         let mirror_id = 777_777u64;
         let viewers = Arc::new(AtomicUsize::new(1));
+        let sync_open = Arc::new(AtomicBool::new(false));
         let img1 = graphics.primary.image_by_id(1).unwrap().clone();
         store.on_graphics_updated(
             mirror_id,
             1,
             &viewers,
+            &sync_open,
             &[LiveImageKey {
                 image_id: img1.id,
                 generation: img1.generation,
@@ -2895,6 +2986,7 @@ mod tests {
                 mirror_id: u64,
                 sync_seq: u64,
                 viewers: &Arc<AtomicUsize>,
+                sync_open: &Arc<AtomicBool>,
                 live_keys: &[LiveImageKey],
                 decode_candidates: &[StoredImage],
             ) {
@@ -2912,9 +3004,13 @@ mod tests {
                     mirror_id,
                     sync_seq,
                     viewers,
+                    sync_open,
                     live_keys,
                     decode_candidates,
                 );
+            }
+            fn on_sync_ended(&self, mirror_id: u64) {
+                self.inner.on_sync_ended(mirror_id);
             }
             fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>) {
                 self.inner.on_last_viewer_dropped(mirror_id, viewers);
@@ -3098,6 +3194,7 @@ mod tests {
                 mirror_id: u64,
                 sync_seq: u64,
                 viewers: &Arc<AtomicUsize>,
+                sync_open: &Arc<AtomicBool>,
                 live_keys: &[LiveImageKey],
                 decode_candidates: &[StoredImage],
             ) {
@@ -3114,9 +3211,13 @@ mod tests {
                     mirror_id,
                     sync_seq,
                     viewers,
+                    sync_open,
                     live_keys,
                     decode_candidates,
                 );
+            }
+            fn on_sync_ended(&self, mirror_id: u64) {
+                self.inner.on_sync_ended(mirror_id);
             }
             fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>) {
                 self.inner.on_last_viewer_dropped(mirror_id, viewers);
@@ -3539,6 +3640,7 @@ mod tests {
                     screen_lineage: lineage,
                     source_width: 1,
                     source_height: 1,
+                    presented: true,
                     image: Arc::clone(&shared_render),
                 },
             );
@@ -3554,6 +3656,7 @@ mod tests {
                 screen_lineage: lineage,
                 source_width: 1,
                 source_height: 1,
+                presented: true,
                 image: Arc::clone(&shared_render),
             },
         );
@@ -3563,16 +3666,19 @@ mod tests {
                 screen_lineage: 99,
                 source_width: 1,
                 source_height: 1,
+                presented: false,
                 image: Arc::clone(&shared_render),
             },
         );
 
         let released = cache.prune_stale_textures(false);
         assert_eq!(
-            released.len(),
+            released.total_len(),
             2,
             "deleted ID 2001 and wrong-lineage ID 1 must be evicted while all 2000 same-lineage fallbacks remain"
         );
+        assert_eq!(released.presented.len(), 1);
+        assert_eq!(released.unpresented.len(), 1);
         assert_eq!(cache.textures.len(), 2_000);
         assert_eq!(cache.by_lineage_id.len(), 2_000);
         assert_eq!(cache.by_lineage_id.get(&(lineage, 1)), Some(&1));
@@ -3865,6 +3971,7 @@ mod tests {
                 mirror_id: u64,
                 sync_seq: u64,
                 viewers: &Arc<AtomicUsize>,
+                sync_open: &Arc<AtomicBool>,
                 live_keys: &[LiveImageKey],
                 decode_candidates: &[StoredImage],
             ) {
@@ -3886,9 +3993,13 @@ mod tests {
                     mirror_id,
                     sync_seq,
                     viewers,
+                    sync_open,
                     live_keys,
                     decode_candidates,
                 );
+            }
+            fn on_sync_ended(&self, mirror_id: u64) {
+                self.inner.on_sync_ended(mirror_id);
             }
             fn on_last_viewer_dropped(&self, mirror_id: u64, viewers: &Arc<AtomicUsize>) {
                 self.inner.on_last_viewer_dropped(mirror_id, viewers);
@@ -4346,5 +4457,351 @@ mod tests {
         assert!(!visual1.update(|window, _| window.has_image_atlas_entry(&prev_img)));
         assert!(!visual2.update(|window, _| window.has_image_atlas_entry(&prev_img)));
         assert!(!visual3.update(|window, _| window.has_image_atlas_entry(&prev_img)));
+    }
+
+    #[test]
+    fn decset_2026_defers_texture_release_and_invalidation_until_decrst_or_timeout() {
+        use std::sync::mpsc;
+
+        struct SiblingView(usize);
+        impl Render for SiblingView {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(32.)).h_full().child(format!("s{}", self.0))
+            }
+        }
+
+        struct CachedHost {
+            sibling: Entity<SiblingView>,
+            terminal: Arc<TerminalMirror>,
+            interaction: Entity<TerminalInteraction>,
+            input: Entity<TerminalInput>,
+            focus: gpui::FocusHandle,
+        }
+        impl Render for CachedHost {
+            fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let style = TerminalStyle {
+                    palette: runner_terminal::palette::RUNNER,
+                    font: crate::app_settings::AppSettings::default()
+                        .terminal_font_family
+                        .font(cx),
+                    font_size: 14.,
+                    app_zoom: 1.,
+                    line_height_factor: 1.4,
+                    copy_on_select: false,
+                };
+                div().flex().size_full().child(self.sibling.clone()).child(
+                    div().flex_1().h_full().child(
+                        TerminalElement::new(
+                            Arc::clone(&self.terminal),
+                            self.interaction.clone(),
+                            self.input.clone(),
+                            self.focus.clone(),
+                            true,
+                            true,
+                            style,
+                        )
+                        .cached(),
+                    ),
+                )
+            }
+        }
+
+        let mut cx = TestAppContext::single();
+        let (wake_tx, wake_rx) = mpsc::channel();
+        let session_name = "decset-2026-release";
+        let (_host, mirror, tx, ack) = crate::terminal::control::tests::mirror_waking(
+            session_name,
+            TerminalController::Desktop,
+            Arc::new(move || {
+                let _ = wake_tx.send(());
+            }),
+        );
+        let mirror_id = mirror.mirror_id();
+        let store = cx.update(|cx| TerminalTextureCache::attach_mirror(&mirror, cx));
+        let invalidation_count = Arc::new(AtomicUsize::new(0));
+        let inv_cb = Arc::clone(&invalidation_count);
+        let _inv_sub = cx.update(|cx| {
+            let inv = TerminalTextureCache::invalidations(cx);
+            cx.subscribe(&inv, move |_, &id: &u64, _| {
+                if id == mirror_id {
+                    inv_cb.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+        });
+        let render_counts = crate::render_counts::RenderCounts::default();
+        cx.update(|cx| cx.set_global(render_counts.clone()));
+        let term_key = format!("terminal:{session_name}");
+        let reset_counters = |counts: &crate::render_counts::RenderCounts, inv: &AtomicUsize| {
+            counts.0.borrow_mut().clear();
+            inv.store(0, Ordering::SeqCst);
+        };
+        let render_count = |counts: &crate::render_counts::RenderCounts| -> usize {
+            counts.0.borrow().get(&term_key).copied().unwrap_or(0)
+        };
+
+        let _lease1 = mirror.view();
+        let _lease2 = mirror.view();
+        let sibling = cx.new(|_| SiblingView(0));
+        let interaction1 = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input1 = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let win_cached = cx.add_window(|_, cx| CachedHost {
+            sibling: sibling.clone(),
+            terminal: Arc::clone(&mirror),
+            interaction: interaction1.clone(),
+            input: input1.clone(),
+            focus: cx.focus_handle(),
+        });
+        let mut visual_cached = VisualTestContext::from_window(win_cached.into(), &cx);
+        visual_cached.simulate_resize(gpui::size(px(440.), px(260.)));
+
+        let interaction2 = cx.new(|_| TerminalInteraction::new(Arc::clone(&mirror)));
+        let input2 = cx.new(|_| TerminalInput::new(Arc::clone(&mirror)));
+        let win_direct = cx.add_window(|_, cx| GraphicsPaneHost {
+            terminal: Some(Arc::clone(&mirror)),
+            interaction: Some(interaction2.clone()),
+            input: Some(input2.clone()),
+            focus: cx.focus_handle(),
+            font_size: 14.,
+            line_height_factor: 1.4,
+        });
+        let mut visual_direct = VisualTestContext::from_window(win_direct.into(), &cx);
+        visual_direct.simulate_resize(gpui::size(px(400.), px(260.)));
+
+        // Seed image 77 (frame 1) and paint both cached and direct hosts.
+        let mut seq = 1u64;
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: kitty_rgba_command(
+                    "a=T,f=32,s=4,v=4,i=77,z=-9,C=1,q=2",
+                    &solid_rgba(4, 4, [240, 20, 20, 255]),
+                )
+                .into(),
+            },
+        );
+        seq += 1;
+        while wake_rx.try_recv().is_ok() {}
+        visual_cached.update(|window, _| window.refresh());
+        visual_direct.update(|window, _| window.refresh());
+        visual_cached.refresh().unwrap();
+        visual_direct.refresh().unwrap();
+        cx.run_until_parked();
+
+        let img1 = store
+            .cached_image(mirror_id, live_key_for(&mirror, 77))
+            .expect("frame 1 cached");
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img1)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img1)));
+
+        // --- Sub-case A: replacement during open DECSET 2026, closed by DECRST ---
+        reset_counters(&render_counts, &invalidation_count);
+        let mut replace_sync = b"\x1b[?2026h\x1b[1;1H\x1b_Ga=d,d=I,i=77,q=2\x1b\\".to_vec();
+        replace_sync.extend_from_slice(&kitty_rgba_command(
+            "a=T,f=32,s=4,v=4,i=77,z=-9,C=1,q=2",
+            &solid_rgba(4, 4, [20, 220, 40, 255]),
+        ));
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: replace_sync.into(),
+            },
+        );
+        seq += 1;
+        assert!(mirror.is_sync_open());
+        assert!(!mirror.wake_viewers_now());
+        cx.run_until_parked();
+        // Unrelated sibling redraw on the cached window must reuse the cached
+        // viewport cleanly without repainting TerminalElement or losing img1.
+        sibling.update(&mut cx, |s, cx| {
+            s.0 += 1;
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        assert_eq!(
+            invalidation_count.load(Ordering::SeqCst),
+            0,
+            "open DECSET 2026 must not emit graphics invalidations on replacement"
+        );
+        assert_eq!(
+            render_count(&render_counts),
+            0,
+            "open DECSET 2026 must not repaint cached or direct terminal hosts on replacement"
+        );
+        assert!(
+            visual_cached.update(|window, _| window.has_image_atlas_entry(&img1)),
+            "cached host must retain img1 in atlas during open DECSET 2026"
+        );
+        assert!(
+            visual_direct.update(|window, _| window.has_image_atlas_entry(&img1)),
+            "direct host must retain img1 in atlas during open DECSET 2026"
+        );
+        let img2 = store
+            .cached_image(mirror_id, live_key_for(&mirror, 77))
+            .expect("frame 2 decoded during sync");
+        assert!(!Arc::ptr_eq(&img1, &img2));
+
+        // Close DECSET 2026 via DECRST -> invalidates & retires img1, paints img2.
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: b"\x1b[?2026l".to_vec().into(),
+            },
+        );
+        seq += 1;
+        assert!(!mirror.is_sync_open());
+        cx.run_until_parked();
+        while wake_rx.try_recv().is_ok() {}
+        assert!(invalidation_count.load(Ordering::SeqCst) >= 1);
+        assert!(!visual_cached.update(|window, _| window.has_image_atlas_entry(&img1)));
+        assert!(!visual_direct.update(|window, _| window.has_image_atlas_entry(&img1)));
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img2)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img2)));
+
+        // --- Sub-case B: deletion during open DECSET 2026, closed by DECRST ---
+        reset_counters(&render_counts, &invalidation_count);
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: b"\x1b[?2026h\x1b_Ga=d,d=A,q=2\x1b\\".to_vec().into(),
+            },
+        );
+        seq += 1;
+        assert!(mirror.is_sync_open());
+        cx.run_until_parked();
+        sibling.update(&mut cx, |s, cx| {
+            s.0 += 1;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            invalidation_count.load(Ordering::SeqCst),
+            0,
+            "open DECSET 2026 must not emit graphics invalidations on delete"
+        );
+        assert_eq!(
+            render_count(&render_counts),
+            0,
+            "open DECSET 2026 must not repaint cached or direct terminal hosts on delete"
+        );
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img2)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img2)));
+
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: b"\x1b[?2026l".to_vec().into(),
+            },
+        );
+        seq += 1;
+        assert!(!mirror.is_sync_open());
+        cx.run_until_parked();
+        while wake_rx.try_recv().is_ok() {}
+        assert!(invalidation_count.load(Ordering::SeqCst) >= 1);
+        assert!(!visual_cached.update(|window, _| window.has_image_atlas_entry(&img2)));
+        assert!(!visual_direct.update(|window, _| window.has_image_atlas_entry(&img2)));
+
+        // --- Sub-case C: replacement and deletion closed by sync timeout ---
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: kitty_rgba_command(
+                    "a=T,f=32,s=4,v=4,i=77,z=-9,C=1,q=2",
+                    &solid_rgba(4, 4, [20, 60, 240, 255]),
+                )
+                .into(),
+            },
+        );
+        seq += 1;
+        visual_cached.update(|window, _| window.refresh());
+        visual_direct.update(|window, _| window.refresh());
+        visual_cached.refresh().unwrap();
+        visual_direct.refresh().unwrap();
+        cx.run_until_parked();
+        while wake_rx.try_recv().is_ok() {}
+        let img3 = store
+            .cached_image(mirror_id, live_key_for(&mirror, 77))
+            .expect("frame 3 cached");
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img3)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img3)));
+
+        reset_counters(&render_counts, &invalidation_count);
+        let mut timeout_replace = b"\x1b[?2026h\x1b[1;1H\x1b_Ga=d,d=I,i=77,q=2\x1b\\".to_vec();
+        timeout_replace.extend_from_slice(&kitty_rgba_command(
+            "a=T,f=32,s=4,v=4,i=77,z=-9,C=1,q=2",
+            &solid_rgba(4, 4, [240, 220, 20, 255]),
+        ));
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: timeout_replace.into(),
+            },
+        );
+        seq += 1;
+        assert!(mirror.is_sync_open());
+        cx.run_until_parked();
+        assert_eq!(invalidation_count.load(Ordering::SeqCst), 0);
+        assert_eq!(render_count(&render_counts), 0);
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img3)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img3)));
+
+        // Wait deterministically for the real DECSET 2026 sync timeout to wake viewers.
+        wake_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("DECSET 2026 timeout wake after replacement");
+        assert!(!mirror.is_sync_open());
+        cx.run_until_parked();
+        let img4 = store
+            .cached_image(mirror_id, live_key_for(&mirror, 77))
+            .expect("frame 4 cached");
+        assert!(!Arc::ptr_eq(&img3, &img4));
+        assert!(!visual_cached.update(|window, _| window.has_image_atlas_entry(&img3)));
+        assert!(!visual_direct.update(|window, _| window.has_image_atlas_entry(&img3)));
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img4)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img4)));
+
+        // Deletion closed by sync timeout.
+        while wake_rx.try_recv().is_ok() {}
+        reset_counters(&render_counts, &invalidation_count);
+        send_and_wait(
+            &tx,
+            &ack,
+            TerminalFrame::Output {
+                seq,
+                bytes: b"\x1b[?2026h\x1b_Ga=d,d=A,q=2\x1b\\".to_vec().into(),
+            },
+        );
+        assert!(mirror.is_sync_open());
+        cx.run_until_parked();
+        assert_eq!(invalidation_count.load(Ordering::SeqCst), 0);
+        assert_eq!(render_count(&render_counts), 0);
+        assert!(visual_cached.update(|window, _| window.has_image_atlas_entry(&img4)));
+        assert!(visual_direct.update(|window, _| window.has_image_atlas_entry(&img4)));
+
+        wake_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("DECSET 2026 timeout wake after delete");
+        assert!(!mirror.is_sync_open());
+        cx.run_until_parked();
+        assert!(!visual_cached.update(|window, _| window.has_image_atlas_entry(&img4)));
+        assert!(!visual_direct.update(|window, _| window.has_image_atlas_entry(&img4)));
     }
 }
