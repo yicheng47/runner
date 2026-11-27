@@ -125,7 +125,7 @@ https://github.com/user-attachments/assets/a45d2440-da17-4be4-8de5-0902f59eb1da
 
 全新安装会预置 **Pair coding crew**：coder 负责实现，reviewer 审查 diff，反复迭代直到审查通过。两个角色默认使用 Codex，也可以分别选择其他 agent。
 
-[`examples/`](./examples/) 目录提供了可直接导入的 `.crew.toml` 模板（包括 pair coding、Codex trio、dev crew、docs crew 等）。将任意 `.crew.toml` 文件拖入 **Crews → Import…**（或运行 `runner crew import <file>`）即可预览提示词、将未安装的运行时替换为本机已安装的 agent 后导入；独立的 `.role.toml` 模板也可以同样通过 **Roles → Import…** 或 `runner role import <file>` 直接导入。
+[`examples/`](./examples/) 目录按研发（`neon-trio`、`claude-duo`、`brainstorm-crew`、`review-panel`、`pair-coding`）、社交媒体（`x-promotion`）、视频制作（`release-video`）与趣味游戏（`tic-tac-toe`）提供了可直接导入的 `.crew.toml` 模板。将任意 `.crew.toml` 文件拖入 **Crews → Import…** 即可在创建前预览提示词并将未安装的运行时替换为本机已安装的 agent，也可以在命令行运行 `runner crew import <file>` 直接导入（先加 `--dry-run` 可只查看计划而不写入）；独立的 `.role.toml` 模板同样可通过 **Roles → Import…** 或 `runner role import <file>` 导入。
 
 [组建 Crew 并查看示例模板 →](./docs/guide/zh-CN/guides/build-a-crew.md)
 

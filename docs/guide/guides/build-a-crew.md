@@ -53,15 +53,20 @@ The team conventions in [pair-coding.crew.toml](https://github.com/yicheng47/run
 
 ### More crews
 
-The repository includes ready-to-import `.crew.toml` templates alongside example `goal.md` starting points:
+The repository includes curated `.crew.toml` templates grouped across Dev, Social Media, Video, and Gaming, each alongside a sample `goal.md`:
 
-- [Pair coding](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/pair-coding.crew.toml): the seeded coder/reviewer loop.
-- [Codex trio](https://github.com/yicheng47/runner/blob/main/examples/codex-trio/codex-trio.crew.toml): coder, reviewer and QA; QA builds the reviewed revision and tests it in the live app.
-- [Development crew](https://github.com/yicheng47/runner/blob/main/examples/dev-crew/dev-crew.crew.toml): architect, implementer and reviewer.
-- [Documentation crew](https://github.com/yicheng47/runner/blob/main/examples/docs-crew/docs-crew.crew.toml): architect, writers and editor.
-- [Tic-tac-toe](https://github.com/yicheng47/runner/blob/main/examples/tic-tac-toe/tic-tac-toe.crew.toml): two players and a referee.
-- [Werewolf](https://github.com/yicheng47/runner/blob/main/examples/werewolf/werewolf.crew.toml): six players and a moderator.
-- [Tomb raid](https://github.com/yicheng47/runner/blob/main/examples/tomb-raid/tomb-raid.crew.toml): a four-person heist crew run by a game master.
+- **Dev**
+  - [Neon Trio](https://github.com/yicheng47/runner/blob/main/examples/neon-trio/neon-trio.crew.toml) *(author's pick)*: Antigravity coder, Codex reviewer, and Codex live QA running a pipelined delivery loop.
+  - [Claude Duo](https://github.com/yicheng47/runner/blob/main/examples/claude-duo/claude-duo.crew.toml): Claude Code implementer and Codex reviewer for fast two-agent delivery.
+  - [Brainstorm Crew](https://github.com/yicheng47/runner/blob/main/examples/brainstorm-crew/brainstorm-crew.crew.toml): Antigravity, Claude Code, and Codex drafting independent plans and cross-validating into one converged spec.
+  - [Review Panel](https://github.com/yicheng47/runner/blob/main/examples/review-panel/review-panel.crew.toml): a review lead plus two independent reviewers on Claude Code and Codex auditing the same diff in parallel.
+  - [Pair coding](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/pair-coding.crew.toml): minimal unpinned starter coder/reviewer loop.
+- **Social Media**
+  - [X Promotion Crew](https://github.com/yicheng47/runner/blob/main/examples/x-promotion/x-promotion.crew.toml): organizer, browser-only scout, and writer for finding relevant X discussions and drafting verified replies in your voice.
+- **Video**
+  - [Release Video Crew](https://github.com/yicheng47/runner/blob/main/examples/release-video/release-video.crew.toml): director, Remotion video editor, and contact-sheet visual QA reviewer for product release demos.
+- **Gaming (Fun)**
+  - [Tic-Tac-Toe](https://github.com/yicheng47/runner/blob/main/examples/tic-tac-toe/tic-tac-toe.crew.toml): two players sharing one role plus a neutral referee.
 
 Download any `.crew.toml` file and drop it into **Crews → Import…**, or import it with `runner crew import <file>`. The example `goal.md` files are starting points to replace with your task. The links above show the current examples on `main`; use the repository's tag selector for examples matching an older release.
 

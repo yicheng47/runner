@@ -600,7 +600,7 @@ fn read_template_bounded_stops_at_size_limit_and_rejects_non_utf8() {
 }
 
 #[test]
-fn every_example_crew_template_is_valid_and_omits_model_and_effort() {
+fn every_example_crew_template_is_valid_and_curated() {
     let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     let mut found = Vec::new();
     for entry in std::fs::read_dir(&examples_dir).unwrap() {
@@ -616,6 +616,10 @@ fn every_example_crew_template_is_valid_and_omits_model_and_effort() {
             template_path.display()
         );
         let raw = std::fs::read_to_string(&template_path).unwrap();
+        assert!(
+            !raw.contains("/Users/") && !raw.contains("C:\\Users\\"),
+            "{slug} template must not contain personal filesystem paths"
+        );
         let parsed = parse_template(&raw)
             .unwrap_or_else(|err| panic!("invalid {}: {err}", template_path.display()));
         let Template::Crew(crew) = parsed else {
@@ -623,23 +627,48 @@ fn every_example_crew_template_is_valid_and_omits_model_and_effort() {
         };
         assert!(!crew.slots.is_empty(), "{slug} has no slots");
         assert!(!crew.roles.is_empty(), "{slug} has no roles");
-        for role in &crew.roles {
-            assert!(
-                role.model.is_none() && role.effort.is_none(),
-                "{slug} role @{} must omit model and effort",
-                role.handle
-            );
-            if slug == "codex-trio" {
-                assert_eq!(role.runtime, Runtime::Codex, "{slug} role @{}", role.handle);
+        assert!(
+            crew.meta
+                .description
+                .as_deref()
+                .is_some_and(|desc| !desc.trim().is_empty()),
+            "{slug} must set [meta].description"
+        );
+        assert!(!crew.meta.tags.is_empty(), "{slug} must set [meta].tags");
+        let doc = raw.parse::<toml_edit::DocumentMut>().unwrap();
+        let category = doc
+            .get("meta")
+            .and_then(|item| item.as_table())
+            .and_then(|table| table.get("category"))
+            .and_then(|item| item.as_str())
+            .unwrap_or_else(|| panic!("{slug} must set [meta].category"));
+        assert!(
+            matches!(category, "dev" | "social" | "video" | "fun"),
+            "{slug} has unexpected [meta].category `{category}`"
+        );
+        if slug == "pair-coding" {
+            for role in &crew.roles {
+                assert!(
+                    role.model.is_none() && role.effort.is_none(),
+                    "{slug} starter role @{} must omit model and effort",
+                    role.handle
+                );
+            }
+            for slot in &crew.slots {
+                assert!(
+                    slot.model.is_none() && slot.effort.is_none(),
+                    "{slug} starter slot @{} must omit model and effort",
+                    slot.handle
+                );
             }
         }
-        for slot in &crew.slots {
-            assert!(
-                slot.model.is_none() && slot.effort.is_none(),
-                "{slug} slot @{} must omit model and effort",
-                slot.handle
-            );
-        }
+        let round_trip = format_template(&Template::Crew(crew.clone()))
+            .unwrap_or_else(|err| panic!("failed to reformat {slug}: {err}"));
+        assert_eq!(
+            parse_template(&round_trip).unwrap(),
+            Template::Crew(crew),
+            "{slug} did not round-trip through format_template"
+        );
         // Only goal.md and <slug>.crew.toml remain in each example folder.
         let mut files: Vec<String> = std::fs::read_dir(entry.path())
             .unwrap()
@@ -655,13 +684,14 @@ fn every_example_crew_template_is_valid_and_omits_model_and_effort() {
     assert_eq!(
         found,
         vec![
-            "codex-trio",
-            "dev-crew",
-            "docs-crew",
+            "brainstorm-crew",
+            "claude-duo",
+            "neon-trio",
             "pair-coding",
+            "release-video",
+            "review-panel",
             "tic-tac-toe",
-            "tomb-raid",
-            "werewolf",
+            "x-promotion",
         ]
     );
 }

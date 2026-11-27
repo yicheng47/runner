@@ -53,15 +53,20 @@
 
 ### 更多小队
 
-仓库提供可直接导入的 `.crew.toml` 模板以及示例 `goal.md` 起点：
+仓库按研发、社交媒体、视频制作与趣味游戏四个分类提供精选 `.crew.toml` 模板，每个目录附带一份示例 `goal.md`：
 
-- [Pair coding](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/pair-coding.crew.toml)：预置的 coder/reviewer 流程。
-- [Codex trio](https://github.com/yicheng47/runner/blob/main/examples/codex-trio/codex-trio.crew.toml)：coder、reviewer 和 QA；QA 构建已审查版本，并在运行的应用中验证。
-- [Development crew](https://github.com/yicheng47/runner/blob/main/examples/dev-crew/dev-crew.crew.toml)：架构师、实现者和审查者。
-- [Documentation crew](https://github.com/yicheng47/runner/blob/main/examples/docs-crew/docs-crew.crew.toml)：架构师、作者与编辑。
-- [Tic-tac-toe](https://github.com/yicheng47/runner/blob/main/examples/tic-tac-toe/tic-tac-toe.crew.toml)：两位玩家和一位裁判。
-- [Werewolf](https://github.com/yicheng47/runner/blob/main/examples/werewolf/werewolf.crew.toml)：六位玩家和一位主持人。
-- [Tomb raid](https://github.com/yicheng47/runner/blob/main/examples/tomb-raid/tomb-raid.crew.toml)：由游戏主持人带领的四人夺宝小队。
+- **研发（Dev）**
+  - [Neon Trio](https://github.com/yicheng47/runner/blob/main/examples/neon-trio/neon-trio.crew.toml)（作者主力小队）：Antigravity 实现 + Codex 审查 + Codex 实机 QA 的流水线交付团队。
+  - [Claude Duo](https://github.com/yicheng47/runner/blob/main/examples/claude-duo/claude-duo.crew.toml)：Claude Code 实现与 Codex 审查的跨提供商双人开发小队。
+  - [Brainstorm Crew](https://github.com/yicheng47/runner/blob/main/examples/brainstorm-crew/brainstorm-crew.crew.toml)：Antigravity、Claude Code 与 Codex 各自独立拟定方案并交叉验证，收敛为一份完整规格。
+  - [Review Panel](https://github.com/yicheng47/runner/blob/main/examples/review-panel/review-panel.crew.toml)：由一位主审带领 Claude Code 与 Codex 两位独立审查员并行审查同一份 diff。
+  - [Pair coding](https://github.com/yicheng47/runner/blob/main/examples/pair-coding/pair-coding.crew.toml)：不固定模型的轻量起步结对小队。
+- **社交媒体（Social Media）**
+  - [X Promotion Crew](https://github.com/yicheng47/runner/blob/main/examples/x-promotion/x-promotion.crew.toml)：由组织者、仅操作浏览器的侦察员与撰稿人组成，用于发现高信号讨论并起草经核验的回复。
+- **视频（Video）**
+  - [Release Video Crew](https://github.com/yicheng47/runner/blob/main/examples/release-video/release-video.crew.toml)：由导演、Remotion 剪辑与基于缩略图网格的视觉 QA 组成的发布视频制作小队。
+- **趣味游戏（Gaming / Fun）**
+  - [Tic-Tac-Toe](https://github.com/yicheng47/runner/blob/main/examples/tic-tac-toe/tic-tac-toe.crew.toml)：两位共用同一角色的玩家与一位中立裁判。
 
 下载任意 `.crew.toml` 文件并拖入 **小队 → 导入…**，或使用 `runner crew import <file>` 导入。示例 `goal.md` 文件只是起点，请替换为自己的任务。以上链接显示 `main` 上的当前示例；旧版本示例请使用仓库的标签选择器。
 
