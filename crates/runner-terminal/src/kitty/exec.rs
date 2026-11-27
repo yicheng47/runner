@@ -328,6 +328,7 @@ fn load_and_add_image<H: ExecuteHost>(
     let storage = host.storage_mut();
 
     let mut deleted_existing: Option<u32> = None;
+    let mut self_affected_relatives = false;
     let mut loading = if let Some(mut loading) = storage.loading.take() {
         loading.add_data(&cmd.data)?;
         if t.more_chunks {
@@ -340,10 +341,13 @@ fn load_and_add_image<H: ExecuteHost>(
         // placements when the new transmission begins, before it completes or fails.
         // Succeeding single-command replacements omit a separate normalized
         // `a=d,d=I` because the mirror's own replacement deletes the old image
-        // atomically; failed replacements and chunked starts (`m=1`) still emit it.
+        // atomically; failed replacements, chunked starts (`m=1`), and
+        // replacements that both trigger evictions and interact with relative
+        // placements still emit it so mirror orphan cleanup matches runnerd.
         if t.image_id > 0 {
             let had_existing = storage.contains_image(t.image_id);
-            storage.delete(
+            let self_had_relative = storage.has_relative_placement(t.image_id);
+            let self_orphaned_other = storage.delete(
                 DeleteAction::Id {
                     delete_images: true,
                     image_id: t.image_id,
@@ -356,6 +360,7 @@ fn load_and_add_image<H: ExecuteHost>(
             );
             if mode == ExecMode::Authoritative && had_existing {
                 deleted_existing = Some(t.image_id);
+                self_affected_relatives = self_had_relative || self_orphaned_other;
             }
         }
 
@@ -404,6 +409,13 @@ fn load_and_add_image<H: ExecuteHost>(
         };
         let evicted = storage.add_image(image.clone())?;
         if mode == ExecMode::Authoritative {
+            if !evicted.is_empty() && self_affected_relatives {
+                if let Some(id) = deleted_existing {
+                    let mut buf = Vec::new();
+                    encode_delete_image_by_id(&mut buf, id);
+                    normalized.push(buf);
+                }
+            }
             emit_evictions(&evicted, normalized);
         }
         Ok(LoadOutcome::Complete { image, display })

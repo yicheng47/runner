@@ -531,6 +531,12 @@ impl ImageStorage {
         self.images.contains_key(&id)
     }
 
+    pub fn has_relative_placement(&self, image_id: u32) -> bool {
+        self.placements.iter().any(|(key, p)| {
+            key.image_id == image_id && matches!(p.location, PlacementLocation::Relative(_))
+        })
+    }
+
     pub fn mark_dirty(&mut self) {
         self.dirty = self.dirty.wrapping_add(1);
     }
@@ -1113,7 +1119,8 @@ impl ImageStorage {
         self.mark_mutated();
     }
 
-    /// Execute a protocol delete action (`a=d`).
+    /// Execute a protocol delete action (`a=d`). Returns `true` when deleting
+    /// also orphaned at least one relative placement belonging to another image.
     pub fn delete(
         &mut self,
         action: DeleteAction,
@@ -1121,7 +1128,7 @@ impl ImageStorage {
         screen_lines: usize,
         screen_cols: usize,
         cell: CellSize,
-    ) {
+    ) -> bool {
         let placements_before = self.placements.len();
         let images_before = self.images.len();
 
@@ -1301,11 +1308,16 @@ impl ImageStorage {
             }
         }
 
-        self.remove_orphans(action.delete_images());
+        let source_id = match action {
+            DeleteAction::Id { image_id, .. } => image_id,
+            _ => 0,
+        };
+        let orphaned_other = self.remove_orphans_tracking_other(source_id, action.delete_images());
 
         if self.placements.len() != placements_before || self.images.len() != images_before {
             self.mark_mutated();
         }
+        orphaned_other
     }
 
     fn delete_by_id(&mut self, image_id: u32, placement_id: u32, delete_unused: bool) {

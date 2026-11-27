@@ -3380,3 +3380,182 @@ fn normalized_frame_splitter_respects_1mib_cap_and_omits_redundant_single_comman
 
     shutdown_model(&model);
 }
+
+#[test]
+fn replacement_with_eviction_preserves_authoritative_relative_orphan_outcomes_on_mirror() {
+    let cell = CellSize {
+        width: 8,
+        height: 16,
+    };
+
+    // Case A (shared child across replaced parent 77 and evicted parent 88):
+    // Parents 88 and 77 are placed, and image 99 has two relative placements
+    // (p=1 on 77, p=2 on 88). Replacing 77 with a 2x1 RGB image under a 9-byte
+    // limit evicts 88 after deleting 77: runnerd retains image 99 with 0
+    // placements, so mirror must also retain 99 and honor a subsequent a=p,i=99,p=3.
+    let (model, host) = new_model(80, 24, cell, None);
+    let mut sc = Scanner::new();
+    let dirs = TempDirs::default();
+    let mut setup = Vec::new();
+    for cmd in [
+        "a=T,f=24,s=1,v=1,i=88,p=1,C=1;/wAA",
+        "a=T,f=24,s=1,v=1,i=77,p=1,C=1;AP8A",
+        "a=t,f=24,s=1,v=1,i=99;AAD/",
+        "a=p,i=99,p=1,P=77,Q=1,C=1",
+        "a=p,i=99,p=2,P=88,Q=1,C=1",
+    ] {
+        setup.extend(apc(cmd));
+    }
+    let (_, mut stream, seq) = model.feed_forwarded(1, &scan_to_forwarded(&mut sc, &setup, &dirs));
+    {
+        let mut g = model.graphics().lock().unwrap();
+        assert_eq!(g.primary.image_by_id(99).unwrap().placement_count, 2);
+        g.primary.set_limit(9);
+    }
+
+    let (_, replacement, last) = model.feed_forwarded(
+        seq + 1,
+        &scan_to_forwarded(
+            &mut sc,
+            &apc("a=T,f=24,s=2,v=1,i=77,p=1,C=1;AQIDBAUG"),
+            &dirs,
+        ),
+    );
+    // Replacement + eviction fit in one <= 1 MiB frame via push_group, with
+    // `a=d,d=I,i=77` ordered before `a=d,d=i,i=88` / `a=d,d=I,i=88`.
+    assert_eq!(replacement.len(), 1);
+    let rep_str = String::from_utf8_lossy(&replacement[0]);
+    let pos_del_77 = rep_str
+        .find("a=d,d=I,i=77,q=2")
+        .expect("relative-interacting eviction must emit pre-delete for i=77");
+    let pos_evict_88 = rep_str
+        .find("a=d,d=i,i=88,q=2")
+        .expect("eviction of parent 88 must emit lowercase d=i before d=I");
+    assert!(pos_del_77 < pos_evict_88);
+    stream.extend(replacement);
+
+    let chunks: Vec<&[u8]> = stream.iter().map(Vec::as_slice).collect();
+    let (_, mirror_gfx, _) = replay_mirror(80, 24, 32, cell, &chunks);
+    {
+        let auth = model.graphics().lock().unwrap();
+        assert_eq!(
+            auth.primary.image_by_id(99).map(|img| img.placement_count),
+            Some(0)
+        );
+        assert_eq!(
+            mirror_gfx
+                .primary
+                .image_by_id(99)
+                .map(|img| img.placement_count),
+            Some(0),
+            "mirror must retain image 99 with 0 placements like runnerd"
+        );
+        assert!(!auth.primary.contains_image(88));
+        assert!(!mirror_gfx.primary.contains_image(88));
+        assert!(auth.primary.contains_image(77));
+        assert!(mirror_gfx.primary.contains_image(77));
+    }
+
+    // Subsequent valid redisplay of image 99 succeeds in both runnerd and mirror.
+    flush_model_events(&model);
+    let _ = host.take_replies();
+    let (_, place, _) = model.feed_forwarded(
+        last + 1,
+        &scan_to_forwarded(&mut sc, &apc("a=p,i=99,p=3,C=1"), &dirs),
+    );
+    flush_model_events(&model);
+    assert_eq!(host.take_replies(), vec!["\x1b_Gi=99,p=3;OK\x1b\\"]);
+    stream.extend(place);
+    let chunks_after: Vec<&[u8]> = stream.iter().map(Vec::as_slice).collect();
+    let (_, mirror_after, _) = replay_mirror(80, 24, 32, cell, &chunks_after);
+    assert_eq!(
+        model
+            .graphics()
+            .lock()
+            .unwrap()
+            .primary
+            .image_by_id(99)
+            .map(|img| img.placement_count),
+        Some(1)
+    );
+    assert_eq!(
+        mirror_after
+            .primary
+            .image_by_id(99)
+            .map(|img| img.placement_count),
+        Some(1),
+        "mirror must draw subsequent redisplay of retained image 99"
+    );
+    shutdown_model(&model);
+
+    // Case B (dual chain `88 -> 77 -> 99` plus sibling `88 -> 66`):
+    // Replacing 77 deletes 77 and orphans+deletes 99, then evicting 88 orphans
+    // 66 while retaining 66's image bytes. Mirror must match both outcomes:
+    // 99 deleted (redisplay fails) and 66 retained (redisplay succeeds).
+    let (model2, host2) = new_model(80, 24, cell, None);
+    let mut sc2 = Scanner::new();
+    let mut setup2 = Vec::new();
+    for cmd in [
+        "a=T,f=24,s=1,v=1,i=88,p=1,C=1;/wAA",
+        "a=t,f=24,s=1,v=1,i=77;AP8A",
+        "a=p,i=77,p=1,P=88,Q=1,C=1",
+        "a=t,f=24,s=1,v=1,i=99;AAD/",
+        "a=p,i=99,p=1,P=77,Q=1,C=1",
+        "a=t,f=24,s=1,v=1,i=66;//8A",
+        "a=p,i=66,p=1,P=88,Q=1,C=1",
+    ] {
+        setup2.extend(apc(cmd));
+    }
+    let (_, mut stream2, seq2) =
+        model2.feed_forwarded(1, &scan_to_forwarded(&mut sc2, &setup2, &dirs));
+    // Images: 88(3), 77(3), 99(3), 66(3) = 12 B. After deleting 77+99 -> 6 B (88+66).
+    // Replacing 77 with 2x1 RGB (6 B) under limit 9 B evicts 88 (keeping 66 + new 77 = 9 B).
+    model2.graphics().lock().unwrap().primary.set_limit(9);
+    let (_, rep2, last2) = model2.feed_forwarded(
+        seq2 + 1,
+        &scan_to_forwarded(
+            &mut sc2,
+            &apc("a=T,f=24,s=2,v=1,i=77,p=1,C=1;AQIDBAUG"),
+            &dirs,
+        ),
+    );
+    stream2.extend(rep2);
+    flush_model_events(&model2);
+    let _ = host2.take_replies();
+    let (_, redisplay2, _) = model2.feed_forwarded(
+        last2 + 1,
+        &scan_to_forwarded(
+            &mut sc2,
+            &[apc("a=p,i=66,p=2,C=1"), apc("a=p,i=99,p=2,C=1")].concat(),
+            &dirs,
+        ),
+    );
+    flush_model_events(&model2);
+    assert_eq!(
+        host2.take_replies(),
+        vec![
+            "\x1b_Gi=66,p=2;OK\x1b\\",
+            "\x1b_Gi=99,p=2;ENOENT: image not found\x1b\\",
+        ]
+    );
+    stream2.extend(redisplay2);
+
+    let chunks2: Vec<&[u8]> = stream2.iter().map(Vec::as_slice).collect();
+    let (_, mirror2, _) = replay_mirror(80, 24, 32, cell, &chunks2);
+    let auth2 = model2.graphics().lock().unwrap();
+    assert!(!auth2.primary.contains_image(99));
+    assert!(!mirror2.primary.contains_image(99));
+    assert_eq!(
+        auth2.primary.image_by_id(66).map(|img| img.placement_count),
+        Some(1)
+    );
+    assert_eq!(
+        mirror2
+            .primary
+            .image_by_id(66)
+            .map(|img| img.placement_count),
+        Some(1)
+    );
+    drop(auth2);
+    shutdown_model(&model2);
+}
