@@ -209,6 +209,8 @@ write_plist() {
     <string>$FEED_URL</string>
     <key>SUPublicEDKey</key>
     <string>$SPARKLE_PUBLIC_KEY</string>
+    <key>SUScheduledCheckInterval</key>
+    <integer>21600</integer>
 </dict>
 </plist>
 EOF
