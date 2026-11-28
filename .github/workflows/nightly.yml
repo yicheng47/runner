@@ -15,7 +15,7 @@ on:
           - macos
           - windows
       channel:
-        description: Release to publish; nightly is cut from main, preview-nightly from a branch listed in preview-nightly.yml
+        description: Release to publish; nightly is cut from main, preview-nightly from preview
         type: choice
         default: nightly
         options:

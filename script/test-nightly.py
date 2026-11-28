@@ -342,26 +342,21 @@ class NightlyTests(unittest.TestCase):
         self.assertIn('--ref main -f platform=all', merge_dispatch)
         self.assertNotIn('channel', merge_dispatch)
 
-    def test_preview_pushes_dispatch_an_all_platform_preview_cut_of_the_pushed_umbrella(self):
-        if not PREVIEW_PATH.exists():
-            self.skipTest('no umbrella is listed for preview nightlies')
+    def test_preview_pushes_dispatch_an_all_platform_preview_cut_of_the_preview_branch(self):
         preview = yaml.safe_load(PREVIEW_PATH.read_text())
         push = preview[True]['push']
         # The prepare guard matches names exactly, so the trigger must not use patterns.
-        self.assertTrue(push['branches'])
-        for branch in push['branches']:
-            self.assertRegex(branch, r'^[A-Za-z0-9._/-]+$')
-            self.assertNotEqual(branch, 'main')
+        self.assertEqual(push['branches'], ['preview'])
         self.assertEqual(push['paths-ignore'], ON_MERGE[True]['push']['paths-ignore'])
         self.assertEqual(push['paths-ignore'], ['docs/**', '**/*.md'])
         self.assertEqual(preview['permissions'], {'actions': 'write', 'contents': 'read'})
         [step] = preview['jobs']['dispatch']['steps']
-        self.env.update(GITHUB_REPOSITORY='yicheng47/runner', GITHUB_REF_NAME='feat/1-any-umbrella')
+        self.env.update(GITHUB_REPOSITORY='yicheng47/runner', GITHUB_REF_NAME='preview')
         mock = 'gh() { printf "gh %s\\n" "$*" >> "$CALLS"; }\n'
         result = subprocess.run(['bash', '-euo', 'pipefail', '-c', mock + step['run']],
                                 cwd=self.root, env=self.env, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls(), ['gh workflow run nightly.yml --repo yicheng47/runner --ref feat/1-any-umbrella -f channel=preview-nightly -f platform=all'])
+        self.assertEqual(self.calls(), ['gh workflow run nightly.yml --repo yicheng47/runner --ref preview -f channel=preview-nightly -f platform=all'])
 
     def test_preview_nightly_publishes_only_to_its_own_release_tag_and_feeds(self):
         self.use_channel('preview-nightly')
