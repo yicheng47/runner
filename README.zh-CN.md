@@ -85,7 +85,7 @@ https://github.com/user-attachments/assets/a45d2440-da17-4be4-8de5-0902f59eb1da
 - **Mission 与协作** — 每个 mission 为 crew 的各个槽位提供实时终端和共享 feed，agent 在这里协作，需要你决定的问题也会出现在这里。单个槽位可以单独停止、恢复或重启，不影响其他槽位。[架构 →](./docs/arch/arch.md)
 - **Mission 向 chat 汇报** — 从 chat 启动的 mission 会关联到这个 chat，并在侧边栏归到它下面，agent 可以直接结束这一轮，不用再盯着。mission 需要你处理、失败或进入稳定状态时，Runner 会向 chat 输入一行提示，agent 再去读 mission 发生了什么。[关联聊天与汇报 →](./docs/guide/zh-CN/concepts/missions.md#关联聊天与汇报)
 - **远程控制** — 在侧边栏切换到另一台电脑，或从 iPhone 连接，操作实时终端、发起 chat 和 mission，随时回复 crew，连接采用端到端加密。由于中继服务器目前处于仅面向中国大陆的内测阶段，远程控制整体仍在内测中；海外用户的 Tailscale 支持正在开发中。[加入内测候补名单 →](https://runnersh.dev/zh-CN/beta/) · [远程访问指南 →](./docs/guide/guides/remote-access.md)
-- **真实终端** — 每个 agent 都在真实 PTY 里保留自己的 TUI，跑在 GPU 绘制的 `alacritty_terminal` 网格上：鼠标上报、输入法（包括拼音）、文件路径粘贴和点击打开，每个 mission 下面还有一个终端抽屉。
+- **真实终端** — 每个 agent 都在真实 PTY 里保留自己的 TUI，跑在 GPU 绘制的 `libghostty-vt` 网格上：鼠标上报、输入法（包括拼音）、文件路径粘贴和点击打开，每个 mission 下面还有一个终端抽屉。
 - **分栏与多窗口** — 标签页可以一直分栏到窗口放不下为止，拖动各栏重新排列，把标签页归进文件夹，用 `⇧⌘N` 或 `Ctrl+Shift+N` 打开更多窗口。
 - **在 agent 旁边看文件** — 侧面板的 Files 视图显示 agent 所在的 checkout 及其 git 状态，不离开 Runner 就能看清改了什么：代码带语法高亮，Markdown 直接渲染，`⇧⌘O` 按文件名查找，在终端里 `⌘`-点击文件路径即可在对应行打开。[文件指南 →](./docs/guide/zh-CN/guides/chats-and-windows.md#在侧面板中浏览文件)
 - <a id="runner-cli"></a>**`runner` 命令行** — 你的 agent、脚本和终端都能通过 `runner` 命令发起 chat、启动 crew、跟踪 mission，应用关闭时也照样可用（支持 `--json` 输出）。Runner 会为检测到的 agent 安装 skill，让它们也能直接驱动 Runner。[CLI 指南 →](./docs/guide/guides/drive-runner-from-agents.md)
@@ -132,7 +132,7 @@ https://github.com/user-attachments/assets/a45d2440-da17-4be4-8de5-0902f59eb1da
 ## 致谢
 
 - **[GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui)** 与 **[gpui-pre](https://github.com/longbridge/gpui-kit)** — UI 使用 Zed GPU 加速 UI 框架的 crates.io 快照。感谢 Zed 团队构建并开源了 GPUI，感谢 gpui-kit 和 Jason Lee（huacnlee）发布 gpui-pre；Zed 的终端 crate 是 Runner 终端分层的架构参考。
-- **[alacritty_terminal](https://github.com/alacritty/alacritty)** — 每一栏底下的终端网格、解析器和回滚。
+- **[Ghostty / libghostty-vt](https://github.com/ghostty-org/ghostty)**（MIT）— 每一栏底下的终端仿真引擎、VT 解析器、回滚、选区、搜索与输入编码器。
 - **[xterm.js](https://github.com/xtermjs/xterm.js)** — 程序化绘制的制表符字形表按其 MIT 声明转录自 WebGL 插件（`crates/runner-app/LICENSE.xterm`）。
 - **[Windows Terminal ConPTY](https://github.com/microsoft/terminal)** — Windows 构建按 MIT 声明内置了微软的 `conpty.dll` 和 `OpenConsole.exe`（`crates/runner-app/LICENSE.conpty`）。
 - **[Catppuccin](https://github.com/catppuccin/catppuccin)**（MIT）、**[Rosé Pine](https://github.com/rose-pine/rose-pine-theme)**（MIT）、**[Tokyo Night](https://github.com/folke/tokyonight.nvim)**（Apache-2.0）、**[Gruvbox](https://github.com/morhetz/gruvbox)**（MIT）与 **[Solarized](https://ethanschoonover.com/solarized/)**（MIT）— 内置应用与终端主题（`crates/runner-app/LICENSE.themes`）。

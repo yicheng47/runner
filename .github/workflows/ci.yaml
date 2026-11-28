@@ -63,6 +63,29 @@ jobs:
       - name: Install Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
 
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+          use-cache: false
+
+      - name: Cache libghostty-vt Zig deps
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/libghostty-vt-deps
+          key: libghostty-vt-deps-${{ hashFiles('vendor/libghostty-vt.vendor.json') }}
+
+      - name: Fetch libghostty-vt Zig deps
+        run: |
+          deps_dir="${{ runner.temp }}/libghostty-vt-deps"
+          python3 script/fetch-libghostty-vt-deps.py --output "$deps_dir"
+          echo "LIBGHOSTTY_VT_ZIG_SYSTEM_DIR=$deps_dir" >> "$GITHUB_ENV"
+
+      - name: Build and test ghostty-vt-sys
+        run: |
+          cargo nextest run --locked -p ghostty-vt-sys --profile ci --cargo-profile ci
+          find target/ci/build/ghostty-vt-sys-*/out/lib -type f -exec ls -lh {} \;
+
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings
 
@@ -127,6 +150,43 @@ jobs:
 
       - name: Verify Windows installer behavior
         run: ./script/windows/test-installer.ps1
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+          use-cache: false
+
+      - name: Cache libghostty-vt Zig deps
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\libghostty-vt-deps
+          key: libghostty-vt-deps-${{ hashFiles('vendor/libghostty-vt.vendor.json') }}
+
+      - name: Configure libghostty-vt deps and libclang
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $depsDir = Join-Path $env:RUNNER_TEMP "libghostty-vt-deps"
+          python script/fetch-libghostty-vt-deps.py --output $depsDir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "LIBGHOSTTY_VT_ZIG_SYSTEM_DIR=$depsDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $candidates = @(
+            "C:\Program Files\LLVM\bin",
+            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin",
+            "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin"
+          )
+          $libclangDir = $candidates | Where-Object { Test-Path (Join-Path $_ "libclang.dll") } | Select-Object -First 1
+          if (-not $libclangDir) { throw "libclang.dll not found in standard LLVM locations" }
+          "LIBCLANG_PATH=$libclangDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using LIBCLANG_PATH=$libclangDir"
+
+      - name: Build and test ghostty-vt-sys
+        shell: pwsh
+        run: |
+          cargo nextest run --locked -p ghostty-vt-sys --profile ci --cargo-profile ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem target/ci/build/ghostty-vt-sys-*/out/lib -File | Format-Table FullName, Length
 
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings
@@ -240,8 +300,31 @@ jobs:
           key: linux-22.04-${{ matrix.arch }}
           cache-on-failure: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+          use-cache: false
+      - name: Cache libghostty-vt Zig deps
+        uses: actions/cache@v4
+        with:
+          path: /tmp/libghostty-vt-deps
+          key: libghostty-vt-deps-${{ hashFiles('vendor/libghostty-vt.vendor.json') }}
+      - name: Fetch libghostty-vt Zig deps
+        run: |
+          deps_dir="/tmp/libghostty-vt-deps"
+          python3 script/fetch-libghostty-vt-deps.py --output "$deps_dir"
+          chmod -R a+rX "$deps_dir"
+          zig_bin="$(command -v zig)"
+          chmod -R a+rX "$(dirname "$zig_bin")"
+          echo "ZIG=$zig_bin" >> "$GITHUB_ENV"
+          echo "LIBGHOSTTY_VT_ZIG_SYSTEM_DIR=$deps_dir" >> "$GITHUB_ENV"
       - name: Check formatting
         run: cargo fmt --all --check
+      - name: Build and test ghostty-vt-sys
+        run: |
+          cargo nextest run --locked -p ghostty-vt-sys --profile ci --cargo-profile ci
+          find target/ci/build/ghostty-vt-sys-*/out/lib -type f -exec ls -lh {} \;
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings
       - name: Test
@@ -251,6 +334,7 @@ jobs:
           # Later CLI and lockfile checks run as root against this checkout.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           runuser -u runner-ci -- env CARGO_HOME="$HOME/.cargo" RUSTUP_HOME="$HOME/.rustup" \
+            ZIG="$ZIG" LIBGHOSTTY_VT_ZIG_SYSTEM_DIR="$LIBGHOSTTY_VT_ZIG_SYSTEM_DIR" \
             cargo nextest run --locked --workspace --no-fail-fast --profile ci --cargo-profile ci --timings
       - name: Check generated CLI reference
         run: |

@@ -1,6 +1,8 @@
 use runner_core::{
     protocol::{
-        terminal::{TerminalAttachment, TerminalMetadata},
+        terminal::{
+            FrameSink, TerminalAttachment, TerminalFrame, TerminalMetadata, TerminalSubscription,
+        },
         ClientError, DaemonClient, EventSubscription, Request, Response, Transport,
     },
     remote::RemoteTerminal,
@@ -150,9 +152,19 @@ impl Transport for RemoteTransport {
     fn attach(&self, address: &str) -> Result<TerminalAttachment, ClientError> {
         let mut config = self.check(address)?;
         config.take_control = self.first_attach.swap(false, Ordering::AcqRel);
-        let attachment = self.client.attach_remote(config)?;
+        let mut attachment = self.client.attach_remote(config)?;
+        let raw_cancel = attachment.frames.cancellation();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel: Cancel = Arc::new(move || {
+            if !cancelled.swap(true, Ordering::AcqRel) {
+                raw_cancel();
+            }
+        });
+        attachment.frames = Box::new(CancelOnceFrames {
+            inner: attachment.frames,
+            cancel: cancel.clone(),
+        });
         let mut state = self.attachment.lock().unwrap();
-        let cancel = attachment.frames.cancellation();
         if state.closed {
             cancel();
         } else {
@@ -178,5 +190,24 @@ impl Transport for RemoteTransport {
             config.rows = rows;
         }
         self.client.resize(address, subscriber, cols, rows);
+    }
+}
+
+struct CancelOnceFrames {
+    inner: Box<dyn TerminalSubscription>,
+    cancel: Cancel,
+}
+
+impl TerminalSubscription for CancelOnceFrames {
+    fn recv(&mut self) -> Result<TerminalFrame, ClientError> {
+        self.inner.recv()
+    }
+
+    fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+        self.cancel.clone()
+    }
+
+    fn install_sink(&mut self, sink: FrameSink) -> bool {
+        self.inner.install_sink(sink)
     }
 }

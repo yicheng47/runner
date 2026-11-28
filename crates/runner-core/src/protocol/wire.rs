@@ -187,6 +187,15 @@ pub fn snapshot_header(id: u64, subscriber: u64, snapshot: &TerminalSnapshot) ->
         }
         None => frame.payload.push(0),
     }
+    let format_tag = match snapshot.format {
+        super::terminal::SnapshotFormat::Vt => 0u8,
+        super::terminal::SnapshotFormat::GhosttyBinary => 1u8,
+    };
+    frame.payload.push(if snapshot.unavailable {
+        format_tag | 0x80
+    } else {
+        format_tag
+    });
     frame
         .payload
         .extend_from_slice(&snapshot.cols.to_le_bytes());

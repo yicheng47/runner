@@ -12,31 +12,67 @@ use std::{
 };
 
 #[derive(Default)]
+struct QueueState {
+    frames: VecDeque<TerminalFrame>,
+    bytes: usize,
+    closed: bool,
+    sink: Option<Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync>>,
+}
+#[derive(Default)]
 struct Queue {
-    state: StdMutex<(std::collections::VecDeque<TerminalFrame>, usize, bool)>,
+    state: StdMutex<QueueState>,
     ready: Condvar,
 }
 impl Queue {
     fn push(&self, frame: TerminalFrame) {
-        let mut state = self.state.lock().unwrap();
-        if state.2 {
-            return;
+        let sink = {
+            let mut state = self.state.lock().unwrap();
+            if state.closed {
+                return;
+            }
+            if let Some(sink) = state.sink.clone() {
+                Some(sink)
+            } else {
+                let size = frame_size(&frame);
+                if state.bytes + size > c::MAX_MESSAGE_SIZE
+                    || matches!(frame, TerminalFrame::Resync)
+                {
+                    state.frames.clear();
+                    state.bytes = 0;
+                    state.frames.push_back(TerminalFrame::Resync);
+                    state.closed = true;
+                } else {
+                    state.bytes += size;
+                    state.frames.push_back(frame);
+                }
+                self.ready.notify_all();
+                return;
+            }
+        };
+        if let Some(sink) = sink {
+            let frame = if frame_size(&frame) > c::MAX_MESSAGE_SIZE {
+                TerminalFrame::Resync
+            } else {
+                frame
+            };
+            let resync = matches!(frame, TerminalFrame::Resync);
+            if !sink(Some(frame)) || resync {
+                let mut state = self.state.lock().unwrap();
+                state.closed = true;
+                state.sink = None;
+            }
         }
-        let size = frame_size(&frame);
-        if state.1 + size > c::MAX_MESSAGE_SIZE || matches!(frame, TerminalFrame::Resync) {
-            state.0.clear();
-            state.1 = 0;
-            state.0.push_back(TerminalFrame::Resync);
-            state.2 = true;
-        } else {
-            state.1 += size;
-            state.0.push_back(frame);
-        }
-        self.ready.notify_all();
     }
     fn close(&self) {
-        self.state.lock().unwrap().2 = true;
+        let sink = {
+            let mut state = self.state.lock().unwrap();
+            state.closed = true;
+            state.sink.take()
+        };
         self.ready.notify_all();
+        if let Some(sink) = sink {
+            let _ = sink(None);
+        }
     }
 }
 struct Frames {
@@ -47,11 +83,11 @@ impl TerminalSubscription for Frames {
     fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
         let mut state = self.queue.state.lock().unwrap();
         loop {
-            if let Some(frame) = state.0.pop_front() {
-                state.1 = state.1.saturating_sub(frame_size(&frame));
+            if let Some(frame) = state.frames.pop_front() {
+                state.bytes = state.bytes.saturating_sub(frame_size(&frame));
                 return Ok(frame);
             }
-            if state.2 {
+            if state.closed {
                 return Err(ClientError::msg("Remote terminal closed"));
             }
             state = self.queue.ready.wait(state).unwrap();
@@ -59,6 +95,23 @@ impl TerminalSubscription for Frames {
     }
     fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
         self.cancel.clone()
+    }
+    fn install_sink(&mut self, sink: runner_core::protocol::terminal::FrameSink) -> bool {
+        let sink: Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync> = Arc::from(sink);
+        let mut state = self.queue.state.lock().unwrap();
+        while let Some(frame) = state.frames.pop_front() {
+            state.bytes = state.bytes.saturating_sub(frame_size(&frame));
+            if !sink(Some(frame)) {
+                state.closed = true;
+                return true;
+            }
+        }
+        if state.closed {
+            let _ = sink(None);
+        } else {
+            state.sink = Some(sink);
+        }
+        true
     }
 }
 impl Drop for Frames {
@@ -356,6 +409,8 @@ impl Terminals {
                     stream.assembling = Some(TerminalSnapshot {
                         seq: chunk.seq,
                         activity: None,
+                        format: Default::default(),
+                        unavailable: false,
                         cols: chunk.cols,
                         rows: chunk.rows,
                         controller: TerminalController::None,

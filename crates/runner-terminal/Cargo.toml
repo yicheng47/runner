@@ -10,15 +10,31 @@ publish = false
 workspace = true
 
 [dependencies]
-alacritty_terminal = "0.26"
 anyhow = "1"
 base64 = "0.22"
+ghostty-vt-sys = { path = "../ghostty-vt-sys" }
 log = "0.4"
+png = "0.18"
 regex = "1"
+regex-automata = { version = "0.4", default-features = false, features = [
+    "hybrid",
+    "nfa-thompson",
+    "std",
+    "syntax",
+    "unicode-age",
+    "unicode-bool",
+    "unicode-case",
+    "unicode-gencat",
+    "unicode-perl",
+    "unicode-script",
+    "unicode-segment",
+    "unicode-word-boundary",
+] }
 regex-syntax = "0.8"
 runner-core = { path = "../runner-core" }
 serde.workspace = true
 serde_json.workspace = true
+tracing = { version = "0.1", features = ["log"] }
 unicode-width = "0.2"
 
 [dev-dependencies]

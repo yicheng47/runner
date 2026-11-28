@@ -1418,15 +1418,59 @@ fn terminal_configuration_applies_scrollback_and_cursor_shape() {
     let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
     let terminal = TerminalSession::attach(core, "replay-race".into(), 80, 5, waker).unwrap();
 
-    terminal.configure(3, CursorShape::Beam, true);
-    terminal
-        .feed_output(&output(1, &"configured line\r\n".repeat(20)))
-        .unwrap();
-
+    // Scrollback 0 retains zero rows and applies the requested cursor shape.
+    terminal.configure(0, CursorShape::Beam, true);
+    let mut seq = 1u64;
+    let first: String = (0..20).map(|i| format!("zero-{i:04}\r\n")).collect();
+    terminal.feed_output(&output(seq, &first)).unwrap();
+    seq += 1;
     terminal.with_screen(|screen| {
         let view = screen.view();
-        assert_eq!(view.history_size(), 3);
+        assert_eq!(view.history_size(), 0);
         assert_eq!(view.cursor().shape, CursorShape::Beam);
+    });
+
+    // Positive scrollback retains multiple pages around the configured count
+    // and evicts oldest rows once exceeded.
+    terminal.configure(500, CursorShape::Beam, true);
+    let many: String = (0..2000).map(|i| format!("row-{i:04}\r\n")).collect();
+    terminal.feed_output(&output(seq, &many)).unwrap();
+    seq += 1;
+    terminal.with_screen(|screen| {
+        let view = screen.view();
+        let history = view.history_size();
+        assert!(
+            (200..1500).contains(&history),
+            "expected whole-page scrollback around 500 lines, got {history}"
+        );
+        assert_eq!(view.cursor().shape, CursorShape::Beam);
+    });
+    let all_text = terminal.with_screen(|screen| {
+        let view = screen.view();
+        let top = view.topmost_line();
+        let bottom = Line(view.rows() as i32 - 1);
+        let cols = view.cols();
+        let mut out = String::new();
+        for line in top.0..=bottom.0 {
+            for col in 0..cols {
+                if let Some(cell) = view.cell(Point::new(Line(line), Column(col))) {
+                    out.push(cell.c());
+                }
+            }
+            out.push('\n');
+        }
+        out
+    });
+    assert!(!all_text.contains("row-0000"), "oldest row must be evicted");
+    assert!(all_text.contains("row-1999"), "newest row must be kept");
+
+    // Lowering back to 0 erases retained history immediately.
+    terminal.configure(0, CursorShape::Underline, false);
+    terminal.feed_output(&output(seq, "tail\r\n")).unwrap();
+    terminal.with_screen(|screen| {
+        let view = screen.view();
+        assert_eq!(view.history_size(), 0);
+        assert_eq!(view.cursor().shape, CursorShape::Underline);
     });
 }
 
@@ -1620,19 +1664,25 @@ fn wait_until(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
     }
 }
 
-fn populated_terminal(core: AppCore) -> Arc<TerminalSession> {
+fn populated_terminal(
+    core: AppCore,
+) -> (
+    Arc<TerminalSession>,
+    runner_terminal::terminal::TerminalView,
+) {
     let terminal =
         TerminalSession::attach(core, "replay-race".into(), 20, 4, Arc::new(|| {})).unwrap();
+    let view = terminal.view();
     terminal
         .feed_output(&output(1, "old prompt\r\nold output"))
         .unwrap();
-    terminal
+    (terminal, view)
 }
 
 #[test]
 fn a_synchronized_update_without_its_end_marker_flushes_at_its_deadline() {
     let temp = tempfile::tempdir().unwrap();
-    let terminal = populated_terminal(test_core(temp.path()));
+    let (terminal, _view) = populated_terminal(test_core(temp.path()));
     terminal.feed_output(&output(2, HELD_REDRAW)).unwrap();
     let deadline = sync_deadline(&terminal).expect("the redraw is held");
     let held = screen(&terminal);
@@ -1657,7 +1707,7 @@ fn a_synchronized_update_without_its_end_marker_flushes_at_its_deadline() {
 #[test]
 fn resizes_neither_release_a_held_update_early_nor_lose_it() {
     let temp = tempfile::tempdir().unwrap();
-    let terminal = populated_terminal(test_core(temp.path()));
+    let (terminal, _view) = populated_terminal(test_core(temp.path()));
     terminal.feed_output(&output(2, HELD_REDRAW)).unwrap();
     let deadline = sync_deadline(&terminal).expect("the redraw is held");
 
@@ -1726,7 +1776,7 @@ fn a_complete_update_split_anywhere_applies_once_without_a_timeout_flush() {
 #[test]
 fn a_flush_scheduled_for_a_dropped_session_does_nothing() {
     let temp = tempfile::tempdir().unwrap();
-    let terminal = populated_terminal(test_core(temp.path()));
+    let (terminal, _view) = populated_terminal(test_core(temp.path()));
     terminal.feed_output(&output(2, HELD_REDRAW)).unwrap();
     let deadline = sync_deadline(&terminal).expect("the redraw is held");
     let observer = terminal.test_grid_observer();
@@ -1745,7 +1795,7 @@ fn a_flush_scheduled_for_a_dropped_session_does_nothing() {
 #[test]
 fn a_begin_marker_inside_a_held_update_extends_its_deadline() {
     let temp = tempfile::tempdir().unwrap();
-    let terminal = populated_terminal(test_core(temp.path()));
+    let (terminal, _view) = populated_terminal(test_core(temp.path()));
     terminal
         .feed_output(&output(2, "\x1b[?2026h\x1b[2J\x1b[H\x1b[?25lredrawn"))
         .unwrap();
@@ -1821,10 +1871,13 @@ fn da1_has_one_reply_with_zero_one_and_two_mirrors() {
                 .unwrap()
             })
             .collect();
-        runtime.push_output(b"\x1b[c");
-        assert!(wait_until(Duration::from_secs(5), || !runtime
+        runtime.push_output(b"\x1b[c\x1b[>c\x1b[=c");
+        assert!(wait_until(Duration::from_secs(5), || runtime
             .writes()
-            .is_empty()));
+            .iter()
+            .filter(|bytes| !bytes.is_empty())
+            .count()
+            >= 3));
         core.sessions
             .terminal_model(&spawned.id)
             .unwrap()
@@ -1838,7 +1891,11 @@ fn da1_has_one_reply_with_zero_one_and_two_mirrors() {
                 .into_iter()
                 .filter(|bytes| !bytes.is_empty())
                 .collect::<Vec<_>>(),
-            vec![b"\x1b[?6c".to_vec()],
+            vec![
+                b"\x1b[?6c".to_vec(),
+                b"\x1b[>0;2600;1c".to_vec(),
+                b"\x1bP!|00000000\x1b\\".to_vec(),
+            ],
             "{mirror_count} mirrors"
         );
         core.sessions.kill(&spawned.id).unwrap();
@@ -1867,11 +1924,7 @@ fn full_frame_queue_requires_a_fresh_snapshot() {
     assert!(attachment.frames.recv().is_err());
     let fresh = client.attach("frames").unwrap();
     assert_eq!(fresh.snapshot.seq, super::FRAME_CAPACITY as u64 + 1);
-    let restored = runner_terminal::replay::replay_bytes(
-        fresh.snapshot.cols,
-        fresh.snapshot.rows,
-        &fresh.snapshot.bytes,
-    );
+    let restored = runner_terminal::replay::Terminal::from_snapshot(&fresh.snapshot).unwrap();
     assert!(visible_lines(&restored)
         .join("")
         .contains(&"x".repeat(super::FRAME_CAPACITY + 1)));
@@ -1907,8 +1960,7 @@ fn attach_and_output_share_the_sequence_parse_lock() {
             .attach("frames")
             .unwrap();
         let mut restored =
-            runner_terminal::replay::new_term(attachment.snapshot.cols, attachment.snapshot.rows);
-        restored.advance(&attachment.snapshot.bytes);
+            runner_terminal::replay::Terminal::from_snapshot(&attachment.snapshot).unwrap();
         let mut seq = attachment.snapshot.seq;
         writer.join().unwrap();
         while seq < 32 {
@@ -2209,6 +2261,11 @@ fn snapshot_history_limit_keeps_screen_modes_and_newest_history() {
     core.sessions
         .ingest_output_chunk("history", None, bytes.as_bytes(), events.as_ref());
     let full = core.sessions.attach_terminal("history").unwrap().snapshot;
+    let full_vt = core
+        .sessions
+        .attach_terminal_with_history("history", usize::MAX)
+        .unwrap()
+        .snapshot;
     let limited = core
         .sessions
         .attach_terminal_with_history("history", 2)
@@ -2220,13 +2277,44 @@ fn snapshot_history_limit_keeps_screen_modes_and_newest_history() {
         .unwrap()
         .snapshot;
     assert_eq!(limited.seq, full.seq);
+    assert_eq!(full_vt.seq, full.seq);
     assert_eq!((limited.cols, limited.rows), (30, 8));
-    assert!(full.bytes.windows(7).any(|bytes| bytes == b"line-00"));
+    assert_eq!((full.cols, full.rows), (30, 8));
+    assert_eq!(
+        full.format,
+        runner_core::protocol::terminal::SnapshotFormat::GhosttyBinary
+    );
+    assert_eq!(
+        full_vt.format,
+        runner_core::protocol::terminal::SnapshotFormat::Vt
+    );
+    assert_eq!(
+        limited.format,
+        runner_core::protocol::terminal::SnapshotFormat::Vt
+    );
+    assert_eq!(
+        screen.format,
+        runner_core::protocol::terminal::SnapshotFormat::Vt
+    );
+    assert!(full_vt.bytes.windows(7).any(|bytes| bytes == b"line-00"));
     assert!(!limited.bytes.windows(7).any(|bytes| bytes == b"line-00"));
     assert!(limited.bytes.windows(7).any(|bytes| bytes == b"line-29"));
     assert!(screen.bytes.len() < limited.bytes.len());
-    assert!(limited.bytes.len() < full.bytes.len());
+    assert!(limited.bytes.len() < full_vt.bytes.len());
     assert_eq!(model.snapshot(99).bytes, full.bytes);
+
+    let decoded_full = runner_terminal::replay::Terminal::from_snapshot(&full).unwrap();
+    let decoded_view = decoded_full.screen();
+    let mut all_rows = Vec::new();
+    for line in decoded_view.topmost_line().0..=decoded_view.bottommost_line().0 {
+        all_rows.push(decoded_view.row_to_string(Line(line)));
+    }
+    assert!(all_rows.iter().any(|row| row == "line-00"));
+    assert!(all_rows.iter().any(|row| row == "line-29"));
+    assert_eq!(
+        decoded_full.snapshot_state().active_grid.rows,
+        model.with_screen(|s| s.snapshot_state()).active_grid.rows
+    );
 }
 
 #[test]
@@ -2414,22 +2502,56 @@ fn companion_snapshot_rep_continuation_fixtures_match_host() {
             .snapshot;
         assert_eq!(snapshot.preceding_char, Some('c'));
         assert_eq!(snapshot.unfinished_len, unfinished.len());
+        assert_eq!(
+            snapshot.format,
+            runner_core::protocol::terminal::SnapshotFormat::Vt
+        );
         let message = HostMessage::Snapshot(Snapshot {
             session: "rep".into(),
             seq: snapshot.seq,
             cols: snapshot.cols,
             rows: snapshot.rows,
-            data: TerminalBytes(snapshot.bytes),
+            data: TerminalBytes(snapshot.bytes.clone()),
             more: false,
             preceding_char: snapshot.preceding_char,
             unfinished_len: snapshot.unfinished_len,
         });
+        // Verify both the legacy saved JSON fixture and the freshly generated
+        // Ghostty Formatter snapshot share the companion schema and replay with
+        // following REP/CSI bytes to the exact same screen.
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../runner-core/src/companion/fixtures")
             .join(format!("{name}.json"));
-        let expected: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
-        assert_eq!(serde_json::to_value(message).unwrap(), expected);
+        let legacy: HostMessage = serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
+        let encoded_value = serde_json::to_value(&message).unwrap();
+        let decoded_fresh: HostMessage = serde_json::from_value(encoded_value).unwrap();
+        for (label, msg) in [("legacy", legacy), ("fresh", decoded_fresh)] {
+            let HostMessage::Snapshot(snap) = msg else {
+                panic!("{label}: expected snapshot message");
+            };
+            assert_eq!(snap.session, "rep", "{label}");
+            assert_eq!(snap.cols, 20, "{label}");
+            assert_eq!(snap.rows, 8, "{label}");
+            assert_eq!(snap.preceding_char, Some('c'), "{label}");
+            assert_eq!(snap.unfinished_len, unfinished.len(), "{label}");
+            let mut restored = runner_terminal::replay::Terminal::from_snapshot(
+                &runner_core::protocol::terminal::TerminalSnapshot {
+                    seq: snap.seq,
+                    format: runner_core::protocol::terminal::SnapshotFormat::Vt,
+                    unavailable: false,
+                    cols: snap.cols,
+                    rows: snap.rows,
+                    bytes: snap.data.0,
+                    unfinished_len: snap.unfinished_len,
+                    preceding_char: snap.preceding_char,
+                    activity: None,
+                    controller: Default::default(),
+                },
+            )
+            .unwrap();
+            restored.advance(output);
+            assert_eq!(visible_lines(&restored)[0], "abcccc", "{label} ({name})");
+        }
         core.sessions
             .ingest_output_chunk("rep", None, output, events.as_ref());
         let model = core.sessions.terminal_model("rep").unwrap();

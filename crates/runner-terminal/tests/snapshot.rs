@@ -97,13 +97,22 @@ fn equal(a: &Terminal, b: &Terminal, context: &str) {
 }
 
 fn restore(original: &Terminal) -> Terminal {
-    let mut restored = new_term(original.cols() as u16, original.rows() as u16);
-    let bytes = serialize(original, original.unfinished());
-    let split = bytes.len() - original.unfinished().len();
-    restored.advance(&bytes[..split]);
-    restored.restore_preceding_char(original.preceding_char());
-    restored.advance(&bytes[split..]);
-    restored
+    let bytes = original.encode_binary_snapshot();
+    Terminal::from_binary_snapshot(&bytes, 10_000).unwrap()
+}
+
+#[test]
+fn companion_vt_formatter_round_trips_visible_screen_and_modes() {
+    let mut original = new_term(30, 6);
+    original.advance(b"\x1b[?2004h\x1b[31mhello\x1b[0m world\r\nsecond");
+    let bytes = serialize(&original, original.unfinished());
+    let mut restored = new_term(30, 6);
+    restored.advance(&bytes);
+    assert_eq!(
+        original.screen().visible_lines(),
+        restored.screen().visible_lines()
+    );
+    assert_eq!(original.screen().mode(), restored.screen().mode());
 }
 
 fn recordings() -> Vec<PathBuf> {
@@ -433,14 +442,13 @@ fn synchronized_capacity_flushes_and_restarts_preserve_immediate_and_continued_s
             let context = format!("capacity {last:?}, checkpoint {checkpoint}");
             equal(&original, &restored, &format!("{context} immediate"));
             assert_eq!(
-                original.sync_bytes_count(),
-                restored.sync_bytes_count(),
+                original.is_sync_held(),
+                restored.is_sync_held(),
                 "{context}"
             );
             assert_eq!(original.unfinished(), restored.unfinished(), "{context}");
-            if checkpoint == chunks.len() && last.starts_with(b"z\x1b") {
-                assert_eq!(original.unfinished().len(), 8 + original.sync_bytes_count());
-                assert!(original.sync_bytes_count() <= 4);
+            if checkpoint > 0 {
+                assert!(original.is_sync_held(), "{context}: sync stays held");
             }
             for chunk in &chunks[checkpoint..] {
                 original.advance(chunk);
@@ -450,8 +458,8 @@ fn synchronized_capacity_flushes_and_restarts_preserve_immediate_and_continued_s
             original.advance(suffix);
             restored.advance(suffix);
             equal(&original, &restored, &format!("{context} continued"));
-            assert_eq!(original.sync_bytes_count(), 0);
-            assert_eq!(restored.sync_bytes_count(), 0);
+            assert!(!original.is_sync_held());
+            assert!(!restored.is_sync_held());
         }
     }
     for bytes in [

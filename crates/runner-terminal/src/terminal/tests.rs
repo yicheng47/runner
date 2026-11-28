@@ -326,6 +326,8 @@ fn reconnect_cancels_an_idle_subscription_replaced_by_resync() {
                 subscriber_id: id,
                 snapshot: runner_core::protocol::terminal::TerminalSnapshot {
                     seq: 0,
+                    format: Default::default(),
+                    unavailable: false,
                     cols: 80,
                     rows: 24,
                     bytes: Vec::new(),
@@ -537,6 +539,8 @@ impl runner_core::protocol::Transport for ScriptedHost {
             subscriber_id: 1,
             snapshot: TerminalSnapshot {
                 seq: 0,
+                format: Default::default(),
+                unavailable: false,
                 cols: 80,
                 rows: 24,
                 bytes: Vec::new(),
@@ -579,11 +583,10 @@ fn scripted_mirror(
 
 fn screen_text(mirror: &TerminalMirror) -> String {
     mirror
-        .term
-        .lock()
-        .grid()
-        .display_iter()
-        .map(|cell| cell.c)
+        .viewport_snapshot()
+        .view()
+        .visible_cells()
+        .map(|cell| cell.c())
         .collect()
 }
 
@@ -763,16 +766,29 @@ fn local_mirror_parses_a_clear_scrollback_at_once() {
 fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
     use runner_core::protocol::terminal::{TerminalAttachment, TerminalSubscription};
     use runner_core::protocol::{EventSubscription, Request, Response, Transport};
-    struct Frames(mpsc::Receiver<TerminalFrame>);
+    struct Frames {
+        tx: mpsc::Sender<TerminalFrame>,
+        rx: mpsc::Receiver<TerminalFrame>,
+        cancelled: Arc<AtomicBool>,
+    }
     impl TerminalSubscription for Frames {
         fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
-            self.0.recv().map_err(|_| ClientError::msg("closed"))
+            let frame = self.rx.recv().map_err(|_| ClientError::msg("closed"))?;
+            if self.cancelled.load(Ordering::Acquire) {
+                return Err(ClientError::msg("cancelled"));
+            }
+            Ok(frame)
         }
         fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
-            Arc::new(|| {})
+            let tx = self.tx.clone();
+            let cancelled = Arc::clone(&self.cancelled);
+            Arc::new(move || {
+                cancelled.store(true, Ordering::Release);
+                let _ = tx.send(TerminalFrame::Resync);
+            })
         }
     }
-    struct Host(Mutex<Option<mpsc::Receiver<TerminalFrame>>>);
+    struct Host(Mutex<Option<Frames>>);
     impl Transport for Host {
         fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
             Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
@@ -781,11 +797,13 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
             unreachable!()
         }
         fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
-            let rx = self.0.lock().unwrap().take().unwrap();
+            let frames = self.0.lock().unwrap().take().unwrap();
             Ok(TerminalAttachment {
                 subscriber_id: 0,
                 snapshot: TerminalSnapshot {
                     seq: 0,
+                    format: Default::default(),
+                    unavailable: false,
                     cols: 20,
                     rows: 5,
                     bytes: Vec::new(),
@@ -794,7 +812,7 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
                     activity: None,
                     controller: Default::default(),
                 },
-                frames: Box::new(Frames(rx)),
+                frames: Box::new(frames),
             })
         }
     }
@@ -802,7 +820,11 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
     let wakes = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&wakes);
     let mirror = TerminalMirror::attach(
-        DaemonClient::new(Arc::new(Host(Mutex::new(Some(rx))))),
+        DaemonClient::new(Arc::new(Host(Mutex::new(Some(Frames {
+            tx: frames.clone(),
+            rx,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }))))),
         "find".into(),
         Arc::new(move || {
             counted.fetch_add(1, Ordering::SeqCst);
@@ -831,35 +853,91 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
     mirror.resize_local(20, 5);
     assert_eq!(start.moved_since(mirror.scroll_mark()), Some(13));
 
-    // A tab that wraps a full bottom row scrolls a held viewport too.
+    // Right-margin HT with wrap pending stays on the full bottom row; the next
+    // printable character wraps and scrolls a held viewport once.
     let hold = mirror.hold_viewport();
     let mark = mirror.scroll_mark();
     mirror.test_feed(6, b"\x1b[5;1Habcdefghijklmnopqrst");
     assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(0));
     mirror.test_feed(7, b"\t");
+    assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(0));
+    assert_eq!(mirror.scroll_state().display_offset, 0);
+    mirror.test_feed(8, b"z");
     assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(1));
     assert_eq!(mirror.scroll_state().display_offset, 1);
     drop(hold);
     mirror.scroll_to_bottom();
 
-    // A burst past the scrollback leaves a held viewport at its top, also
-    // when it scrolls the ring buffer's whole length (1005 rows here) so
-    // the same row allocations come back to the top.
+    // Bursts past the whole-page scrollback evict older pages and leave a held
+    // viewport clamped at the top of actual retained history. Chunked overflow
+    // tracks exact scrolled rows across page recycling; a single write larger
+    // than the whole retained grid advances the scroll mark by at least the
+    // full grid height so prior matches leave scrollback and held views clamp.
     mirror.configure(20, CursorShape::Block, false);
-    for (seq, burst) in [(8, 40), (9, 1005), (10, 1007)] {
+    let mut seq = 9u64;
+    let mut line_num = 0usize;
+    {
         let mark = mirror.scroll_mark();
         let hold = mirror.hold_viewport();
-        mirror.test_feed(seq, &lines(burst));
+        let total_rows = 2_500usize;
+        for _ in 0..250 {
+            let payload: Vec<u8> = (line_num..line_num + 10)
+                .map(|n| format!("\r\nrow-{n:05}"))
+                .collect::<String>()
+                .into_bytes();
+            line_num += 10;
+            mirror.test_feed(seq, &payload);
+            seq += 1;
+        }
         let state = mirror.scroll_state();
-        assert_eq!(
-            (state.history_lines, state.display_offset),
-            (20, 20),
-            "{burst}"
+        assert!(
+            state.history_lines > 0 && state.history_lines < total_rows,
+            "expected whole-page eviction for chunked overflow, got history={}",
+            state.history_lines
         );
-        assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(burst as i32));
+        assert_eq!(state.display_offset, state.history_lines);
+        assert_eq!(
+            mark.moved_since(mirror.scroll_mark()),
+            Some(total_rows as i32)
+        );
         drop(hold);
         mirror.scroll_to_bottom();
     }
+    for burst in [2_500usize, 3_500] {
+        let mark = mirror.scroll_mark();
+        let hold = mirror.hold_viewport();
+        let payload: Vec<u8> = (line_num..line_num + burst)
+            .map(|n| format!("\r\nrow-{n:05}"))
+            .collect::<String>()
+            .into_bytes();
+        line_num += burst;
+        mirror.test_feed(seq, &payload);
+        seq += 1;
+        let state = mirror.scroll_state();
+        assert!(
+            state.history_lines > 0 && state.history_lines < burst,
+            "expected whole-page eviction for burst={burst}, got history={}",
+            state.history_lines
+        );
+        assert_eq!(state.display_offset, state.history_lines, "{burst}");
+        assert_eq!(
+            mark.moved_since(mirror.scroll_mark()),
+            Some(burst as i32),
+            "single-write overflow should track exact scrolled rows: burst={burst} state={state:?}"
+        );
+        drop(hold);
+        mirror.scroll_to_bottom();
+    }
+
+    // Scrollback 0 retains zero rows and keeps a held viewport at offset 0.
+    mirror.configure(0, CursorShape::Block, false);
+    assert_eq!(mirror.scroll_state().history_lines, 0);
+    let hold = mirror.hold_viewport();
+    mirror.test_feed(seq, &lines(10));
+    seq += 1;
+    assert_eq!(mirror.scroll_state().history_lines, 0);
+    assert_eq!(mirror.scroll_state().display_offset, 0);
+    drop(hold);
 
     // A resize from the daemon, with the controller unchanged, still
     // wakes the views so an open find bar recomputes.
@@ -868,7 +946,7 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
     let mark = mirror.scroll_mark();
     frames
         .send(TerminalFrame::Resized {
-            seq: 11,
+            seq,
             cols: 24,
             rows: 5,
             controller: Default::default(),
@@ -884,7 +962,7 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
     }
     assert_eq!(mirror.size(), (24, 5));
     let after_resize = mirror.output_activity();
-    assert_eq!(after_resize.last_seq, 11);
+    assert_eq!(after_resize.last_seq, seq);
     assert_eq!(
         after_resize.last_output_seq,
         before_activity.last_output_seq
@@ -892,34 +970,26 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
     assert_eq!(after_resize.last_paint_seq, before_activity.last_paint_seq);
     assert_eq!(mark.moved_since(mirror.scroll_mark()), None);
     let resized = mirror.scroll_mark();
-    mirror.test_feed(12, b"\x1b[?1049h");
+    mirror.test_feed(seq + 1, b"\x1b[?1049h");
     assert_eq!(resized.moved_since(mirror.scroll_mark()), None);
     drop(frames);
     mirror.test_stop_frames();
 }
 
 #[test]
-fn shared_parse_keeps_only_the_bytes_held_after_a_capacity_restart() {
-    let (tx, _) = mpsc::channel();
-    let mut term = Term::new(
-        Config::default(),
-        &TermSize::new(20, 5),
-        EventProxy {
-            tx,
-            waker: Arc::new(|| {}),
-        },
-    );
-    let mut parser = ParserState::default();
+fn large_synchronized_updates_stay_held_until_end_marker() {
+    let mut term = crate::replay::Terminal::new(20, 5);
     let mut first = b"\x1b[?2026h".to_vec();
     first.resize(1024 * 1024, b'x');
     let mut second = vec![b'y'; 1024 * 1024 - 12];
     second.extend_from_slice(b"\x1b[?2026hheld");
     for chunk in [first.as_slice(), second.as_slice(), b"z\x1b[?2026hnew"] {
-        parse(&mut parser, &mut term, chunk);
+        term.advance(chunk);
     }
-    assert_eq!(parser.processor.sync_bytes_count(), 3);
-    assert_eq!(parser.boundary.unfinished().len(), 11);
-    assert_eq!(parser.boundary.unfinished(), b"\x1b[?2026hnew");
+    assert!(term.is_sync_held());
+    term.advance(b"\x1b[?2026l");
+    assert!(!term.is_sync_held());
+    assert!(term.screen().visible_lines().join("").contains("new"));
 }
 
 #[test]
@@ -930,12 +1000,17 @@ fn shell_title_sanitization_preserves_content_and_bounds_the_label() {
 }
 
 fn osc7_payloads(chunks: &[&[u8]]) -> Vec<String> {
-    let mut reports = super::CwdReports::default();
-    chunks
-        .iter()
-        .flat_map(|chunk| reports.payloads(chunk))
-        .map(|payload| String::from_utf8(payload).unwrap())
-        .collect()
+    let mut term = crate::vt::Terminal::new(&crate::vt::TerminalConfig::default()).unwrap();
+    let mut out = Vec::new();
+    for chunk in chunks {
+        term.vt_write(chunk);
+        for effect in term.take_effects() {
+            if let crate::vt::TerminalEffect::PwdChanged(pwd) = effect {
+                out.push(String::from_utf8(pwd).unwrap());
+            }
+        }
+    }
+    out
 }
 
 #[test]
@@ -956,20 +1031,14 @@ fn osc7_reports_end_at_bel_or_st_across_any_chunk_split() {
 }
 
 #[test]
-fn osc7_reports_abort_on_esc_can_and_sub_and_skip_overlong_payloads() {
-    assert_eq!(
-        osc7_payloads(&[b"\x1b]7;file:///a\x1b[0m\x1b]7;file:///b\x07"]),
-        vec!["file:///b"]
-    );
-    assert_eq!(
-        osc7_payloads(&[b"\x1b]7;file:///a\x1b", b"\x1b]7;file:///b\x07"]),
-        vec!["file:///b"]
-    );
+fn osc7_reports_abort_on_can_and_sub_and_skip_overlong_payloads() {
+    // Under Ghostty's VT500 parser, ESC ends an OSC string (`osc_end`), while
+    // CAN (0x18) and SUB (0x1a) abort it without dispatching.
     assert_eq!(
         osc7_payloads(&[b"\x1b]7;file:///a\x18 \x1b]7;file:///b\x1a \x1b]7;file:///c\x07"]),
         vec!["file:///c"]
     );
-    let overlong = format!("\x1b]7;file:///{}", "a".repeat(super::OSC7_MAX_PAYLOAD));
+    let overlong = format!("\x1b]7;file:///{}", "a".repeat(16 * 1024));
     assert!(osc7_payloads(&[format!("{overlong}\x07").as_bytes()]).is_empty());
     assert_eq!(
         osc7_payloads(&[
@@ -1031,10 +1100,16 @@ fn osc7_file_uri_paths_drop_the_slash_before_a_windows_drive() {
 
 #[test]
 fn only_kitty_flag_queries_are_masked() {
-    use super::kitty_flags_reply;
-    let bits = |text| kitty_flags_reply(text).map(|flags| flags.bits());
-    assert_eq!(bits("\x1b[?0u"), Some(0));
-    assert_eq!(bits("\x1b[?31u"), Some(31));
+    let masked = |text: &str| {
+        String::from_utf8(super::model::mask_kitty_keyboard_query_reply(
+            text.as_bytes().to_vec(),
+        ))
+        .unwrap()
+    };
+    assert_eq!(masked("\x1b[?0u"), "\x1b[?0u");
+    assert_eq!(masked("\x1b[?1u"), "\x1b[?1u");
+    assert_eq!(masked("\x1b[?31u"), "\x1b[?1u");
+    assert_eq!(masked("\x1b[?6u"), "\x1b[?0u");
     for other in [
         "\x1b[?u",
         "\x1b[?6c",
@@ -1043,26 +1118,34 @@ fn only_kitty_flag_queries_are_masked() {
         "\x1b[?1;2u",
         "\x1b[?999u",
     ] {
-        assert_eq!(bits(other), None, "{other:?}");
+        assert_eq!(masked(other), other, "{other:?}");
     }
 }
 
 #[test]
 fn scheme_sequences_are_seen_once_across_chunk_splits() {
-    use super::{scan_scheme_sequences, SchemeSequence};
-    let mut tail = Vec::new();
-    assert_eq!(
-        scan_scheme_sequences(&mut tail, b"\x1b[?2031h\x1b[?996n"),
-        vec![(8, SchemeSequence::Subscribe), (15, SchemeSequence::Query)]
-    );
-    assert_eq!(scan_scheme_sequences(&mut tail, b"plain"), vec![]);
-    assert_eq!(scan_scheme_sequences(&mut tail, b"\x1b[?20"), vec![]);
-    assert_eq!(
-        scan_scheme_sequences(&mut tail, b"31l"),
-        vec![(3, SchemeSequence::Unsubscribe)]
-    );
-    assert_eq!(scan_scheme_sequences(&mut tail, b""), vec![]);
-    assert_eq!(scan_scheme_sequences(&mut tail, b"\x1b[?25h"), vec![]);
+    let mut term = crate::vt::Terminal::new(&crate::vt::TerminalConfig::default()).unwrap();
+    term.set_color_scheme(crate::vt::ColorScheme::Dark);
+    term.vt_write(b"\x1b[?2031h\x1b[?996n");
+    assert!(term.mode(crate::vt::dec_mode(2031)));
+    let replies: Vec<Vec<u8>> = term
+        .take_effects()
+        .into_iter()
+        .filter_map(|e| match e {
+            crate::vt::TerminalEffect::WritePty(b) => Some(b),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(replies, vec![b"\x1b[?997;1n".to_vec()]);
+    term.vt_write(b"plain");
+    assert!(term.take_effects().is_empty());
+    term.vt_write(b"\x1b[?20");
+    assert!(term.mode(crate::vt::dec_mode(2031)));
+    term.vt_write(b"31l");
+    assert!(!term.mode(crate::vt::dec_mode(2031)));
+    term.vt_write(b"");
+    term.vt_write(b"\x1b[?25h");
+    assert!(!term.mode(crate::vt::dec_mode(2031)));
 }
 
 #[test]
@@ -1563,23 +1646,20 @@ fn snapshot_mirror(seq: u64, chunks: &[&[u8]]) -> Arc<TerminalMirror> {
         }
     }
 
-    let mut term = Term::new(
-        term_config(),
-        &TermSize::new(80, 24),
-        alacritty_terminal::event::VoidListener,
-    );
-    let mut parser = ParserState::default();
+    let mut term = crate::replay::Terminal::with_kitty_keyboard(80, 24);
     for chunk in chunks {
-        parse_with(&mut parser, &mut term, chunk);
+        term.advance(chunk);
     }
-    let unfinished = parser.boundary.unfinished();
+    let unfinished = term.unfinished().to_vec();
     let snapshot = TerminalSnapshot {
         seq,
+        format: SnapshotFormat::Vt,
+        unavailable: false,
         cols: 80,
         rows: 24,
-        bytes: crate::snapshot::serialize_term(&term, unfinished),
+        bytes: crate::snapshot::serialize(&term, &unfinished),
         unfinished_len: unfinished.len(),
-        preceding_char: parser.processor.preceding_char(),
+        preceding_char: term.preceding_char(),
         activity: None,
         controller: Default::default(),
     };
@@ -3166,4 +3246,4276 @@ fn link_probe_budget_caps_lookups_and_extra_root_resolves_via_link_at_with() {
             column: None,
         }
     );
+}
+
+#[test]
+#[ignore = "manual #1508 Open Question 3 25-session scale benchmark"]
+fn benchmark_25_open_sessions_memory_threads_and_latency() {
+    use runner_core::protocol::terminal::{
+        TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    struct BenchHost;
+    impl TerminalHost for BenchHost {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    type SharedFrameSink = Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync>;
+
+    struct BenchQueue {
+        sink: Mutex<Option<SharedFrameSink>>,
+    }
+    struct BenchFrames {
+        queue: Arc<BenchQueue>,
+    }
+    impl TerminalSubscription for BenchFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("push-only bench frames"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            let queue = Arc::clone(&self.queue);
+            Arc::new(move || {
+                if let Some(sink) = queue.sink.lock().unwrap().take() {
+                    let _ = sink(None);
+                }
+            })
+        }
+        fn install_sink(&mut self, sink: runner_core::protocol::terminal::FrameSink) -> bool {
+            *self.queue.sink.lock().unwrap() = Some(Arc::from(sink));
+            true
+        }
+    }
+
+    struct BenchTransport {
+        snapshot: Mutex<Option<TerminalSnapshot>>,
+        frames: Mutex<Option<BenchFrames>>,
+    }
+    impl Transport for BenchTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: self.snapshot.lock().unwrap().take().unwrap(),
+                frames: Box::new(self.frames.lock().unwrap().take().unwrap()),
+            })
+        }
+    }
+
+    fn process_rss_kib_and_threads() -> (u64, u64) {
+        let pid = std::process::id().to_string();
+        let rss = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        let threads = std::process::Command::new("ps")
+            .args(["-M", "-p", &pid])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.lines().count().saturating_sub(1) as u64)
+            .unwrap_or(0);
+        (rss, threads)
+    }
+
+    const SESSIONS: usize = 25;
+    const COLS: u16 = 120;
+    const ROWS: u16 = 40;
+    const HISTORY_LINES: usize = 2_000;
+
+    let (base_rss, base_threads) = process_rss_kib_and_threads();
+    let host: Arc<dyn TerminalHost> = Arc::new(BenchHost);
+    let mut models = Vec::with_capacity(SESSIONS);
+    let mut mirrors = Vec::with_capacity(SESSIONS);
+    let mut queues = Vec::with_capacity(SESSIONS);
+
+    for i in 0..SESSIONS {
+        let id = format!("bench-{i:02}");
+        let model = TerminalModel::new(
+            Arc::clone(&host),
+            id.clone(),
+            COLS,
+            ROWS,
+            ModelOptions::default(),
+        )
+        .unwrap();
+        let initial_snap = model.snapshot(0);
+        let queue = Arc::new(BenchQueue {
+            sink: Mutex::new(None),
+        });
+        let transport = Arc::new(BenchTransport {
+            snapshot: Mutex::new(Some(initial_snap)),
+            frames: Mutex::new(Some(BenchFrames {
+                queue: Arc::clone(&queue),
+            })),
+        });
+        let mirror =
+            TerminalMirror::attach(DaemonClient::new(transport), id, Arc::new(|| {})).unwrap();
+        models.push(model);
+        mirrors.push(mirror);
+        queues.push(queue);
+    }
+    let (idle_rss, idle_threads) = process_rss_kib_and_threads();
+
+    // Feed 2,000 realistic colored lines into each model & mirror (hidden first).
+    let mut payload = Vec::with_capacity(HISTORY_LINES * 96);
+    for line in 0..HISTORY_LINES {
+        payload.extend_from_slice(
+            format!(
+                "\x1b[32m[{line:04}]\x1b[0m \x1b[1mrunner\x1b[0m src/terminal/model.rs:{line} \x1b[36mstatus=working\x1b[0m\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    for (model, mirror) in models.iter().zip(mirrors.iter()) {
+        model.feed_output(1, &payload);
+        mirror.test_feed(1, &payload);
+    }
+    let (populated_rss, populated_threads) = process_rss_kib_and_threads();
+
+    // 1. Hidden mirrors (`viewers == 0`): lazy viewport publishing skips RenderState::update.
+    let mut model_feed_us = Vec::with_capacity(SESSIONS * 20);
+    let mut hidden_mirror_feed_us = Vec::with_capacity(SESSIONS * 20);
+    for round in 0..20u64 {
+        let seq = 2 + round;
+        let line = format!("\x1b[33mhidden {round:02}\x1b[0m hello from hidden benchmark\r\n");
+        for (model, mirror) in models.iter().zip(mirrors.iter()) {
+            let t0 = Instant::now();
+            model.feed_output(seq, line.as_bytes());
+            model_feed_us.push(t0.elapsed().as_secs_f64() * 1e6);
+
+            let t1 = Instant::now();
+            mirror.test_feed(seq, line.as_bytes());
+            hidden_mirror_feed_us.push(t1.elapsed().as_secs_f64() * 1e6);
+        }
+    }
+
+    // 2. Visible mirrors (`viewers == 1`): publish ViewportSnapshot per output chunk + published-slot Arc::clone reads.
+    let views: Vec<_> = mirrors.iter().map(|m| m.view()).collect();
+    let mut visible_mirror_feed_us = Vec::with_capacity(SESSIONS * 20);
+    let mut paint_read_ns = Vec::with_capacity(SESSIONS * 40);
+    for round in 0..20u64 {
+        let seq = 30 + round;
+        let line = format!("\x1b[33mvisible {round:02}\x1b[0m hello from visible benchmark\r\n");
+        for mirror in &mirrors {
+            let t1 = Instant::now();
+            mirror.test_feed(seq, line.as_bytes());
+            visible_mirror_feed_us.push(t1.elapsed().as_secs_f64() * 1e6);
+
+            for _ in 0..2 {
+                let t2 = Instant::now();
+                let snap = mirror.viewport_snapshot();
+                std::hint::black_box(snap.cols());
+                paint_read_ns.push(t2.elapsed().as_secs_f64() * 1e9);
+            }
+        }
+    }
+    drop(views);
+
+    let mut encode_us = Vec::with_capacity(SESSIONS);
+    let mut decode_us = Vec::with_capacity(SESSIONS);
+    let mut snap_sizes = Vec::with_capacity(SESSIONS);
+    for model in &models {
+        let t0 = Instant::now();
+        let snap = model.snapshot(100);
+        encode_us.push(t0.elapsed().as_secs_f64() * 1e6);
+        snap_sizes.push(snap.bytes.len());
+
+        let t1 = Instant::now();
+        let decoded = crate::replay::Terminal::from_snapshot(&snap).unwrap();
+        decode_us.push(t1.elapsed().as_secs_f64() * 1e6);
+        std::hint::black_box(decoded.history_size());
+    }
+
+    let pct = |xs: &mut Vec<f64>, p: f64| {
+        xs.sort_by(f64::total_cmp);
+        let idx = ((xs.len() as f64 - 1.0) * p).round() as usize;
+        xs[idx]
+    };
+
+    drop(mirrors);
+    drop(queues);
+    for model in &models {
+        for worker in model.stop_workers() {
+            worker.join().unwrap();
+        }
+    }
+    drop(models);
+    let (_after_rss, after_threads) = process_rss_kib_and_threads();
+
+    println!(
+        "bench_25_sessions: base_rss_kib={base_rss} base_threads={base_threads} \
+         idle_rss_kib={idle_rss} idle_delta_mib={:.2} idle_threads={idle_threads} \
+         populated_rss_kib={populated_rss} populated_delta_mib={:.2} populated_threads={populated_threads} \
+         after_shutdown_threads={after_threads} \
+         model_feed_p50_us={:.1} model_feed_p99_us={:.1} \
+         hidden_mirror_feed_p50_us={:.1} hidden_mirror_feed_p99_us={:.1} \
+         visible_mirror_feed_p50_us={:.1} visible_mirror_feed_p99_us={:.1} \
+         paint_read_p50_ns={:.0} paint_read_p99_ns={:.0} \
+         snap_bytes_avg={} snap_encode_p50_us={:.1} snap_decode_p50_us={:.1}",
+        (idle_rss.saturating_sub(base_rss)) as f64 / 1024.0,
+        (populated_rss.saturating_sub(base_rss)) as f64 / 1024.0,
+        pct(&mut model_feed_us, 0.50),
+        pct(&mut model_feed_us, 0.99),
+        pct(&mut hidden_mirror_feed_us, 0.50),
+        pct(&mut hidden_mirror_feed_us, 0.99),
+        pct(&mut visible_mirror_feed_us, 0.50),
+        pct(&mut visible_mirror_feed_us, 0.99),
+        pct(&mut paint_read_ns, 0.50),
+        pct(&mut paint_read_ns, 0.99),
+        snap_sizes.iter().sum::<usize>() / snap_sizes.len().max(1),
+        pct(&mut encode_us, 0.50),
+        pct(&mut decode_us, 0.50),
+    );
+}
+
+#[test]
+fn selection_copies_tabs_as_spaces_including_across_soft_wraps() {
+    use runner_core::protocol::terminal::{TerminalAttachment, TerminalSubscription};
+    use runner_core::protocol::{EventSubscription, Request, Response, Transport};
+    struct Frames {
+        tx: mpsc::Sender<TerminalFrame>,
+        rx: mpsc::Receiver<TerminalFrame>,
+        cancelled: Arc<AtomicBool>,
+    }
+    impl TerminalSubscription for Frames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            let frame = self.rx.recv().map_err(|_| ClientError::msg("closed"))?;
+            if self.cancelled.load(Ordering::Acquire) {
+                return Err(ClientError::msg("cancelled"));
+            }
+            Ok(frame)
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            let tx = self.tx.clone();
+            let cancelled = Arc::clone(&self.cancelled);
+            Arc::new(move || {
+                cancelled.store(true, Ordering::Release);
+                let _ = tx.send(TerminalFrame::Resync);
+            })
+        }
+    }
+    struct StaticHost {
+        cols: u16,
+        rows: u16,
+        frames: Mutex<Option<Frames>>,
+    }
+    impl Transport for StaticHost {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            let frames = self.frames.lock().unwrap().take().unwrap();
+            Ok(TerminalAttachment {
+                subscriber_id: 0,
+                snapshot: TerminalSnapshot {
+                    seq: 0,
+                    format: Default::default(),
+                    unavailable: false,
+                    cols: self.cols,
+                    rows: self.rows,
+                    bytes: Vec::new(),
+                    unfinished_len: 0,
+                    preceding_char: None,
+                    activity: None,
+                    controller: Default::default(),
+                },
+                frames: Box::new(frames),
+            })
+        }
+    }
+
+    // 1. Plain row with HT copies spaces up to the 8-column tab stop.
+    let (tx1, rx1) = mpsc::channel();
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(StaticHost {
+            cols: 20,
+            rows: 4,
+            frames: Mutex::new(Some(Frames {
+                tx: tx1.clone(),
+                rx: rx1,
+                cancelled: Arc::new(AtomicBool::new(false)),
+            })),
+        })),
+        "tab-plain".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    mirror.test_feed(1, b"A\tB");
+    mirror.start_selection(
+        SelectionKind::Simple,
+        GridPoint::new(Line(0), Column(0)),
+        Side::Left,
+    );
+    mirror.update_selection(GridPoint::new(Line(0), Column(8)), Side::Right);
+    assert_eq!(mirror.selection_text().as_deref(), Some("A       B"));
+    drop(tx1);
+    mirror.test_stop_frames();
+
+    // 2. Selection spanning a soft wrap after HT preserves spaces to the tab
+    //    stop and emits no spurious newline across the wrap boundary.
+    let (tx2, rx2) = mpsc::channel();
+    let wrapped = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(StaticHost {
+            cols: 10,
+            rows: 4,
+            frames: Mutex::new(Some(Frames {
+                tx: tx2.clone(),
+                rx: rx2,
+                cancelled: Arc::new(AtomicBool::new(false)),
+            })),
+        })),
+        "tab-wrap".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    wrapped.test_feed(1, b"A\tBCDE");
+    wrapped.start_selection(
+        SelectionKind::Simple,
+        GridPoint::new(Line(0), Column(0)),
+        Side::Left,
+    );
+    wrapped.update_selection(GridPoint::new(Line(1), Column(1)), Side::Right);
+    assert_eq!(wrapped.selection_text().as_deref(), Some("A       BCDE"));
+    drop(tx2);
+    wrapped.test_stop_frames();
+}
+
+fn wait_until(timeout: Duration, mut pred: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if pred() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    pred()
+}
+
+#[test]
+fn unavailable_and_corrupt_snapshots_never_blank_a_synced_mirror() {
+    use runner_core::protocol::terminal::{
+        FrameSink, TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    type SharedFrameSink = Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync>;
+
+    struct PushQueue {
+        state: Mutex<(
+            Option<SharedFrameSink>,
+            std::collections::VecDeque<TerminalFrame>,
+        )>,
+    }
+    impl PushQueue {
+        fn new() -> Self {
+            Self {
+                state: Mutex::new((None, std::collections::VecDeque::new())),
+            }
+        }
+        fn push(&self, frame: TerminalFrame) {
+            let ready = {
+                let mut guard = self.state.lock().unwrap();
+                if let Some(sink) = guard.0.as_ref() {
+                    Some((Arc::clone(sink), frame))
+                } else {
+                    guard.1.push_back(frame);
+                    None
+                }
+            };
+            if let Some((sink, frame)) = ready {
+                let _ = sink(Some(frame));
+            }
+        }
+        fn has_sink(&self) -> bool {
+            self.state.lock().unwrap().0.is_some()
+        }
+    }
+    struct PushFrames(Arc<PushQueue>);
+    impl TerminalSubscription for PushFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("push-only"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            let q = Arc::clone(&self.0);
+            Arc::new(move || {
+                let sink = q.state.lock().unwrap().0.take();
+                if let Some(sink) = sink {
+                    let _ = sink(None);
+                }
+            })
+        }
+        fn install_sink(&mut self, sink: FrameSink) -> bool {
+            let sink: SharedFrameSink = Arc::from(sink);
+            let pending: Vec<TerminalFrame> = {
+                let mut guard = self.0.state.lock().unwrap();
+                guard.0 = Some(Arc::clone(&sink));
+                guard.1.drain(..).collect()
+            };
+            for frame in pending {
+                if !sink(Some(frame)) {
+                    break;
+                }
+            }
+            true
+        }
+    }
+
+    struct Host;
+    impl TerminalHost for Host {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    let model = TerminalModel::new(
+        Arc::new(Host),
+        "unavail".into(),
+        20,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    model.feed_output(1, b"KEEPME");
+    let good_snap = model.snapshot(1);
+    assert!(!good_snap.unavailable);
+    assert_eq!(good_snap.format, SnapshotFormat::GhosttyBinary);
+    assert_eq!(good_snap.preceding_char, None);
+
+    // Unfinished sequence past the 64 KiB continuation cap marks both snapshot
+    // formats unavailable while keeping the model's screen intact.
+    model.feed_output(2, b"\x1b]2;");
+    model.feed_output(3, &vec![b'x'; 65_537]);
+    assert_eq!(model.visible_lines()[0], "KEEPME");
+    let unavail_bin = model.snapshot(3);
+    assert!(unavail_bin.unavailable);
+    assert!(unavail_bin.bytes.is_empty());
+    assert!(crate::replay::Terminal::from_snapshot(&unavail_bin).is_err());
+    let unavail_vt = model.snapshot_with_history(3, 0);
+    assert!(unavail_vt.unavailable);
+    assert!(unavail_vt.bytes.is_empty());
+    assert!(crate::replay::Terminal::from_snapshot(&unavail_vt).is_err());
+    assert!(!model.take_resync_needed());
+
+    // Aborting the oversize OSC with CAN and immediately opening a short
+    // partial CSI makes snapshots representable again even though the parser is
+    // not at ground at the end of the write.
+    model.feed_output(4, b"\x18MORE\x1b[");
+    assert!(model.take_resync_needed());
+    assert!(!model.take_resync_needed());
+    let recovered_snap = model.snapshot(4);
+    assert!(!recovered_snap.unavailable);
+
+    // Corrupt binary snapshot on initial attach fails loudly.
+    struct SingleSnapTransport(Mutex<Option<TerminalSnapshot>>);
+    impl Transport for SingleSnapTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: self.0.lock().unwrap().take().unwrap(),
+                frames: Box::new(PushFrames(Arc::new(PushQueue::new()))),
+            })
+        }
+    }
+    let mut corrupt = good_snap.clone();
+    corrupt.bytes = b"not-a-valid-snapshot".to_vec();
+    assert!(TerminalMirror::attach(
+        DaemonClient::new(Arc::new(SingleSnapTransport(Mutex::new(Some(
+            corrupt.clone()
+        ))))),
+        "corrupt-init".into(),
+        Arc::new(|| {}),
+    )
+    .is_err());
+
+    // On resync, an unavailable or corrupt snapshot retains the prior good view
+    // and does not advance `last_seq`, then recovers once a valid snapshot arrives.
+    struct SequenceTransport {
+        snaps: Mutex<std::collections::VecDeque<TerminalSnapshot>>,
+        queues: Mutex<Vec<Arc<PushQueue>>>,
+    }
+    impl Transport for SequenceTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            let snap = self.snaps.lock().unwrap().pop_front().unwrap();
+            let q = Arc::new(PushQueue::new());
+            self.queues.lock().unwrap().push(Arc::clone(&q));
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: snap,
+                frames: Box::new(PushFrames(q)),
+            })
+        }
+    }
+
+    let transport = Arc::new(SequenceTransport {
+        snaps: Mutex::new(
+            vec![good_snap, unavail_bin, corrupt, recovered_snap]
+                .into_iter()
+                .collect(),
+        ),
+        queues: Mutex::new(Vec::new()),
+    });
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(transport.clone()),
+        "resync-keep".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let _view = mirror.view();
+    assert_eq!(mirror.visible_lines()[0], "KEEPME");
+    assert_eq!(mirror.output_activity().last_seq, 1);
+
+    // 1. Resync receives unavailable snapshot -> keeps KEEPME and seq=1,
+    // and ignores a Resized frame's sequence/dimensions while still applying its
+    // controller update.
+    assert!(wait_until(Duration::from_secs(2), || {
+        transport
+            .queues
+            .lock()
+            .unwrap()
+            .first()
+            .is_some_and(|q| q.has_sink())
+    }));
+    transport.queues.lock().unwrap()[0].push(TerminalFrame::Resync);
+    assert!(wait_until(Duration::from_secs(2), || {
+        transport
+            .queues
+            .lock()
+            .unwrap()
+            .get(1)
+            .is_some_and(|q| q.has_sink())
+    }));
+    let browser_controller = TerminalController::Browser {
+        channel: 1,
+        name: "Phone".into(),
+    };
+    transport.queues.lock().unwrap()[1].push(TerminalFrame::Resized {
+        seq: 5,
+        cols: 42,
+        rows: 11,
+        controller: browser_controller.clone(),
+    });
+    assert!(wait_until(Duration::from_secs(2), || {
+        mirror.control().controller == browser_controller
+    }));
+    assert_eq!(mirror.size(), (20, 4));
+    assert_eq!(mirror.visible_lines()[0], "KEEPME");
+    assert_eq!(mirror.output_activity().last_seq, 1);
+
+    // 2. Resync receives corrupt binary snapshot -> retains KEEPME at seq=1,
+    // ignores normal output and resize frames while awaiting recovery, and
+    // automatically recovers via bounded decode retry without an external Resync.
+    transport.queues.lock().unwrap()[1].push(TerminalFrame::Resync);
+    assert!(wait_until(Duration::from_secs(2), || {
+        transport
+            .queues
+            .lock()
+            .unwrap()
+            .get(2)
+            .is_some_and(|q| q.has_sink())
+    }));
+    // Send normal output and a resize on the corrupt-step subscription (no manual Resync).
+    transport.queues.lock().unwrap()[2].push(TerminalFrame::Resized {
+        seq: 6,
+        cols: 50,
+        rows: 12,
+        controller: TerminalController::Desktop,
+    });
+    transport.queues.lock().unwrap()[2].push(TerminalFrame::Output {
+        seq: 7,
+        bytes: b"IGNORED".to_vec(),
+    });
+    assert!(wait_until(Duration::from_secs(2), || {
+        mirror.output_activity().last_seq == 4 && mirror.visible_lines()[0] == "KEEPMEMORE"
+    }));
+    assert_eq!(mirror.size(), (20, 4));
+    // Normal output on the automatically recovered subscription applies cleanly.
+    assert!(wait_until(Duration::from_secs(2), || {
+        transport
+            .queues
+            .lock()
+            .unwrap()
+            .get(3)
+            .is_some_and(|q| q.has_sink())
+    }));
+    transport.queues.lock().unwrap()[3].push(TerminalFrame::Output {
+        seq: 5,
+        bytes: b"m!".to_vec(),
+    });
+    assert!(wait_until(Duration::from_secs(2), || {
+        mirror.output_activity().last_seq == 5 && mirror.visible_lines()[0] == "KEEPMEMORE!"
+    }));
+
+    drop(mirror);
+
+    // 3. Fallback recv-based ResizedFrame while awaiting resync likewise keeps
+    // last_seq and dimensions intact while applying controller updates.
+    {
+        struct RecvQueue {
+            tx: mpsc::Sender<TerminalFrame>,
+            rx: mpsc::Receiver<TerminalFrame>,
+            cancelled: Arc<AtomicBool>,
+        }
+        impl TerminalSubscription for RecvQueue {
+            fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+                let frame = self.rx.recv().map_err(|_| ClientError::msg("closed"))?;
+                if self.cancelled.load(Ordering::Acquire) {
+                    return Err(ClientError::msg("cancelled"));
+                }
+                Ok(frame)
+            }
+            fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+                let tx = self.tx.clone();
+                let cancelled = Arc::clone(&self.cancelled);
+                Arc::new(move || {
+                    cancelled.store(true, Ordering::Release);
+                    let _ = tx.send(TerminalFrame::Resync);
+                })
+            }
+        }
+        struct RecvSeqTransport {
+            snaps: Mutex<std::collections::VecDeque<TerminalSnapshot>>,
+            senders: Mutex<Vec<mpsc::Sender<TerminalFrame>>>,
+        }
+        impl Transport for RecvSeqTransport {
+            fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+                Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+            }
+            fn subscribe(&self) -> Box<dyn EventSubscription> {
+                unreachable!()
+            }
+            fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+                let snap = self.snaps.lock().unwrap().pop_front().unwrap();
+                let (tx, rx) = mpsc::channel();
+                self.senders.lock().unwrap().push(tx.clone());
+                Ok(TerminalAttachment {
+                    subscriber_id: 1,
+                    snapshot: snap,
+                    frames: Box::new(RecvQueue {
+                        tx,
+                        rx,
+                        cancelled: Arc::new(AtomicBool::new(false)),
+                    }),
+                })
+            }
+        }
+        let good2 = model.snapshot(1);
+        let mut unavail2 = good2.clone();
+        unavail2.unavailable = true;
+        unavail2.bytes.clear();
+        let recv_transport = Arc::new(RecvSeqTransport {
+            snaps: Mutex::new(vec![good2, unavail2].into_iter().collect()),
+            senders: Mutex::new(Vec::new()),
+        });
+        let recv_mirror = TerminalMirror::attach(
+            DaemonClient::new(recv_transport.clone()),
+            "resync-recv-resize".into(),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        let _recv_view = recv_mirror.view();
+        recv_transport.senders.lock().unwrap()[0]
+            .send(TerminalFrame::Resync)
+            .unwrap();
+        assert!(wait_until(Duration::from_secs(2), || {
+            recv_transport.senders.lock().unwrap().len() >= 2
+        }));
+        let remote = TerminalController::Browser {
+            channel: 2,
+            name: "iPad".into(),
+        };
+        recv_transport.senders.lock().unwrap()[1]
+            .send(TerminalFrame::Resized {
+                seq: 9,
+                cols: 55,
+                rows: 15,
+                controller: remote.clone(),
+            })
+            .unwrap();
+        assert!(wait_until(Duration::from_secs(2), || {
+            recv_mirror.control().controller == remote
+        }));
+        assert_eq!(recv_mirror.size(), (20, 4));
+        assert_eq!(recv_mirror.output_activity().last_seq, 1);
+        drop(recv_mirror);
+    }
+
+    for worker in model.stop_workers() {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn companion_vt_snapshot_preserves_primary_screen_soft_wraps_and_rep_through_mirror() {
+    use runner_core::protocol::terminal::{
+        FrameSink, TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    struct NoopFrames;
+    impl TerminalSubscription for NoopFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("closed"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            Arc::new(|| {})
+        }
+        fn install_sink(&mut self, _sink: FrameSink) -> bool {
+            true
+        }
+    }
+    struct SnapTransport(Mutex<Option<TerminalSnapshot>>);
+    impl Transport for SnapTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: self.0.lock().unwrap().take().unwrap(),
+                frames: Box::new(NoopFrames),
+            })
+        }
+    }
+    struct Host;
+    impl TerminalHost for Host {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    // 1. Alternate screen active: companion VT snapshot restores BOTH alt screen
+    //    and primary screen (including scrollback history) on `TerminalMirror`.
+    let model = TerminalModel::new(
+        Arc::new(Host),
+        "alt-v1".into(),
+        20,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    model.feed_output(
+        1,
+        b"hist0\r\nhist1\r\nhist2\r\nhist3\r\nhist4\r\nKEEPME\x1b[?1049hALT",
+    );
+    let snap = model.snapshot_with_history(1, 10);
+    assert_eq!(snap.format, SnapshotFormat::Vt);
+    assert!(!snap.unavailable);
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(SnapTransport(Mutex::new(Some(snap))))),
+        "alt-v1-mirror".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    assert_eq!(mirror.visible_lines(), model.visible_lines());
+    mirror.test_feed(2, b"\x1b[?1049l");
+    model.feed_output(2, b"\x1b[?1049l");
+    assert_eq!(mirror.visible_lines(), model.visible_lines());
+    assert!(mirror.visible_lines().iter().any(|l| l == "KEEPME"));
+    assert_eq!(mirror.scroll_state().history_lines, 2);
+    mirror.with_screen(|screen| {
+        assert_eq!(screen.view().row_to_string(Line(-2)), "hist0");
+        assert_eq!(screen.view().row_to_string(Line(-1)), "hist1");
+    });
+    drop(mirror);
+    for worker in model.stop_workers() {
+        worker.join().unwrap();
+    }
+
+    // 2. Soft-wrapped primary line reflows identically to host when widened on `TerminalMirror`.
+    let model = TerminalModel::new(
+        Arc::new(Host),
+        "wrap-v1".into(),
+        8,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    model.feed_output(1, b"abcdefghijklmnopq");
+    let snap = model.snapshot_with_history(1, 0);
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(SnapTransport(Mutex::new(Some(snap))))),
+        "wrap-v1-mirror".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    model.resize(20, 4);
+    mirror.resize_local(20, 4);
+    assert_eq!(mirror.visible_lines(), model.visible_lines());
+    assert_eq!(mirror.visible_lines()[0], "abcdefghijklmnopq");
+    drop(mirror);
+    for worker in model.stop_workers() {
+        worker.join().unwrap();
+    }
+
+    // 3. Split CSI + REP (`abcccc`) still works through real `TerminalMirror` restore.
+    let model = TerminalModel::new(
+        Arc::new(Host),
+        "rep-v1".into(),
+        20,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    model.feed_output(1, b"abc\x1b[3");
+    let snap = model.snapshot_with_history(1, 0);
+    assert_eq!(snap.preceding_char, Some('c'));
+    assert_eq!(snap.unfinished_len, 3);
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(SnapTransport(Mutex::new(Some(snap))))),
+        "rep-v1-mirror".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    mirror.test_feed(2, b"b");
+    assert_eq!(mirror.visible_lines()[0], "abcccc");
+    drop(mirror);
+    for worker in model.stop_workers() {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn dec_2026_preserves_pre_hold_output_in_same_chunk_and_freezes_resync_while_held() {
+    use runner_core::protocol::terminal::{
+        FrameSink, TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    type SharedFrameSink = Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync>;
+
+    struct PushQueue {
+        state: Mutex<(
+            Option<SharedFrameSink>,
+            std::collections::VecDeque<TerminalFrame>,
+        )>,
+    }
+    impl PushQueue {
+        fn new() -> Self {
+            Self {
+                state: Mutex::new((None, std::collections::VecDeque::new())),
+            }
+        }
+        fn push(&self, frame: TerminalFrame) {
+            let ready = {
+                let mut guard = self.state.lock().unwrap();
+                if let Some(sink) = guard.0.as_ref() {
+                    Some((Arc::clone(sink), frame))
+                } else {
+                    guard.1.push_back(frame);
+                    None
+                }
+            };
+            if let Some((sink, frame)) = ready {
+                let _ = sink(Some(frame));
+            }
+        }
+    }
+    struct PushFrames(Arc<PushQueue>);
+    impl TerminalSubscription for PushFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("push-only"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            Arc::new(|| {})
+        }
+        fn install_sink(&mut self, sink: FrameSink) -> bool {
+            let sink: SharedFrameSink = Arc::from(sink);
+            let pending: Vec<TerminalFrame> = {
+                let mut guard = self.0.state.lock().unwrap();
+                guard.0 = Some(Arc::clone(&sink));
+                guard.1.drain(..).collect()
+            };
+            for frame in pending {
+                if !sink(Some(frame)) {
+                    break;
+                }
+            }
+            true
+        }
+    }
+    struct SequenceTransport {
+        snaps: Mutex<std::collections::VecDeque<TerminalSnapshot>>,
+        queues: Mutex<Vec<Arc<PushQueue>>>,
+    }
+    impl Transport for SequenceTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            let snap = self.snaps.lock().unwrap().pop_front().unwrap();
+            let q = Arc::new(PushQueue::new());
+            self.queues.lock().unwrap().push(Arc::clone(&q));
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: snap,
+                frames: Box::new(PushFrames(q)),
+            })
+        }
+    }
+    struct Host;
+    impl TerminalHost for Host {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    let model = TerminalModel::new(
+        Arc::new(Host),
+        "sync-m".into(),
+        20,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    let init_snap = model.snapshot(0);
+    model.feed_output(1, b"BASE");
+    model.feed_output(2, b"VISIBLE\x1b[?2026hHELD");
+    let mid_hold_snap = model.snapshot(2);
+
+    let transport = Arc::new(SequenceTransport {
+        snaps: Mutex::new(vec![init_snap, mid_hold_snap].into_iter().collect()),
+        queues: Mutex::new(Vec::new()),
+    });
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(transport.clone()),
+        "sync-mirror".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let _view = mirror.view();
+
+    // 1. Under Decision 18, an unsplit chunk containing a prefix and an open
+    //    `CSI ? 2026 h` keeps the pre-chunk published frame ("BASE") frozen
+    //    while held (never leaking `HELD`) and publishes the complete frame
+    //    ("BASEVISIBLEHELD") once `CSI ? 2026 l` arrives.
+    mirror.test_feed(1, b"BASE");
+    mirror.test_feed(2, b"VISIBLE\x1b[?2026hHELD");
+    assert_eq!(mirror.viewport_snapshot().view().visible_lines()[0], "BASE");
+    mirror.test_feed(3, b"\x1b[?2026l");
+    assert_eq!(
+        mirror.viewport_snapshot().view().visible_lines()[0],
+        "BASEVISIBLEHELD"
+    );
+
+    // 2. Large (>64 KiB) synchronized update stays frozen on the pre-hold frame
+    //    until its end marker arrives.
+    let mut big = b"\x1b[?2026h\x1b[2J\x1b[H".to_vec();
+    big.extend(std::iter::repeat_n(b'X', 70_000));
+    mirror.test_feed(4, &big);
+    assert_eq!(
+        mirror.viewport_snapshot().view().visible_lines()[0],
+        "BASEVISIBLEHELD"
+    );
+    mirror.test_feed(5, b"\x1b[HAFTERBIG\x1b[?2026l");
+    assert!(mirror.viewport_snapshot().view().visible_lines()[0].starts_with("AFTERBIG"));
+
+    // 3. Resync to a snapshot taken mid-DEC-2026 keeps the prior committed
+    //    frame frozen instead of exposing `HELD`, then flushes at the deadline.
+    transport.queues.lock().unwrap()[0].push(TerminalFrame::Resync);
+    assert!(wait_until(Duration::from_secs(2), || {
+        transport.queues.lock().unwrap().len() >= 2
+    }));
+    let before_flush = mirror.viewport_snapshot().view().visible_lines()[0].clone();
+    assert!(
+        before_flush.starts_with("AFTERBIG"),
+        "resync mid-hold exposed torn frame: {before_flush:?}"
+    );
+    assert!(wait_until(Duration::from_secs(2), || {
+        mirror.viewport_snapshot().view().visible_lines()[0] == "BASEVISIBLEHELD"
+    }));
+
+    drop(mirror);
+    for worker in model.stop_workers() {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn post_invalidation_osc_7501_accepts_subsequent_report_in_same_or_split_chunk() {
+    struct Host;
+    impl TerminalHost for Host {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    let cases: &[(&str, &[u8], &[u8])] = &[
+        (
+            "can-abort",
+            b"\x1b]7501;state=working:id=old",
+            b"\x18\x1b]7501;state=blocked:id=new\x07",
+        ),
+        (
+            "sub-abort",
+            b"\x1b]7501;state=working:id=old",
+            b"\x1a\x1b]7501;state=blocked:id=new\x07",
+        ),
+        (
+            "bel-valid-old",
+            b"\x1b]7501;state=working:id=old",
+            b"\x07\x1b]7501;state=blocked:id=new\x07",
+        ),
+        (
+            "bel-invalid-old",
+            b"\x1b]7501;state=bogus:id=old",
+            b"\x07\x1b]7501;state=blocked:id=new\x07",
+        ),
+        (
+            "st-valid-old",
+            b"\x1b]7501;state=working:id=old",
+            b"\x1b\\\x1b]7501;state=blocked:id=new\x07",
+        ),
+        (
+            "esc-starts-next-osc",
+            b"\x1b]7501;state=working:id=old",
+            b"\x1b]7501;state=blocked:id=new\x07",
+        ),
+    ];
+
+    for (name, prefix, suffix) in cases {
+        // Single-chunk post-invalidation delivery.
+        let model = TerminalModel::new(
+            Arc::new(Host),
+            format!("7501-{name}"),
+            40,
+            4,
+            ModelOptions::default(),
+        )
+        .unwrap();
+        model.feed_output(1, prefix);
+        model.invalidate_program_status();
+        model.feed_output(2, suffix);
+        let statuses = model.take_program_statuses();
+        assert_eq!(statuses.len(), 1, "{name} single-chunk");
+        assert_eq!(
+            statuses[0].1.current.as_ref().map(|r| r.id.as_str()),
+            Some("new"),
+            "{name} single-chunk"
+        );
+        for w in model.stop_workers() {
+            w.join().unwrap();
+        }
+
+        // Every 1-byte split of the post-invalidation suffix yields the exact same result.
+        for split in 1..suffix.len() {
+            let model = TerminalModel::new(
+                Arc::new(Host),
+                format!("7501-{name}-{split}"),
+                40,
+                4,
+                ModelOptions::default(),
+            )
+            .unwrap();
+            model.feed_output(1, prefix);
+            model.invalidate_program_status();
+            model.feed_output(2, &suffix[..split]);
+            model.feed_output(3, &suffix[split..]);
+            let statuses = model.take_program_statuses();
+            assert_eq!(statuses.len(), 1, "{name} split={split}");
+            assert_eq!(
+                statuses[0].1.current.as_ref().map(|r| r.id.as_str()),
+                Some("new"),
+                "{name} split={split}"
+            );
+            for w in model.stop_workers() {
+                w.join().unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn title_stack_da1_da2_da3_and_kitty_keyboard_bit0_cap_match_contract() {
+    struct RecordingHost {
+        replies: Mutex<Vec<Vec<u8>>>,
+        titles: Mutex<Vec<String>>,
+    }
+    impl TerminalHost for RecordingHost {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, bytes: &[u8]) -> Result<()> {
+            self.replies.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, title: &str) -> Result<()> {
+            self.titles.lock().unwrap().push(title.to_owned());
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    let host = Arc::new(RecordingHost {
+        replies: Mutex::default(),
+        titles: Mutex::default(),
+    });
+    let model = TerminalModel::new(
+        host.clone(),
+        "da-title-kitty".into(),
+        40,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+
+    // Title push/pop honors xterm 0/2 params and ignores 1 (icon-only).
+    model.feed_output(
+        1,
+        b"\x1b]2;oldtitle\x07\x1b[22;0t\x1b]2;newtitle\x07\x1b[22;1t\x1b[23;1t\x1b[23;0t",
+    );
+    model.flush_events();
+    assert_eq!(model.title(), "oldtitle");
+    assert_eq!(
+        *host.titles.lock().unwrap(),
+        vec![
+            "oldtitle".to_owned(),
+            "newtitle".to_owned(),
+            "oldtitle".to_owned()
+        ]
+    );
+
+    // DA1, DA2, DA3 each produce exactly one reply from the model.
+    model.feed_output(2, b"\x1b[c\x1b[>c\x1b[=c");
+    model.flush_events();
+    assert_eq!(
+        *host.replies.lock().unwrap(),
+        vec![
+            b"\x1b[?6c".to_vec(),
+            b"\x1b[>0;2600;1c".to_vec(),
+            b"\x1bP!|00000000\x1b\\".to_vec(),
+        ]
+    );
+
+    // Kitty keyboard bit-0 cap across queries, exported VT snapshots, and stack inspection.
+    host.replies.lock().unwrap().clear();
+    model.feed_output(3, b"\x1b[>31u\x1b[?u\x1b[>30u\x1b[?u\x1b[<u\x1b[?u");
+    model.flush_events();
+    assert_eq!(
+        *host.replies.lock().unwrap(),
+        vec![
+            b"\x1b[?1u".to_vec(),
+            b"\x1b[?0u".to_vec(),
+            b"\x1b[?1u".to_vec()
+        ]
+    );
+    let vt_snap = model.snapshot_with_history(3, 0);
+    let vt_text = String::from_utf8_lossy(&vt_snap.bytes);
+    assert!(
+        !vt_text.contains("\x1b[=31;1u") && !vt_text.contains("\x1b[=30;1u"),
+        "companion VT snapshot leaked uncapped Kitty flags: {vt_text:?}"
+    );
+    assert!(vt_text.contains("\x1b[>1u"));
+    model.with_screen(|screen| {
+        let state = screen.snapshot_state();
+        assert!(
+            state.keyboard_mode_stack.iter().all(|&f| f <= 1),
+            "uncapped stack: {:?}",
+            state.keyboard_mode_stack
+        );
+    });
+
+    // Mirror emits zero replies for DA1/DA2/DA3.
+    let mut replay = crate::replay::Terminal::new(40, 4);
+    replay.advance(b"\x1b]2;A\x07\x1b[22;2t\x1b]2;B\x07");
+    assert_eq!(replay.snapshot_state().title.as_deref(), Some("B"));
+    assert_eq!(replay.snapshot_state().title_stack, vec![Some("A".into())]);
+    replay.advance(b"\x1b[23;2t");
+    assert_eq!(replay.snapshot_state().title.as_deref(), Some("A"));
+    assert!(replay.snapshot_state().title_stack.is_empty());
+
+    for worker in model.stop_workers() {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn mirror_push_sink_uses_one_thread_publishes_lazily_and_exits_cleanly_on_drop() {
+    use runner_core::protocol::terminal::{
+        FrameSink, TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    type SharedFrameSink = Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync>;
+
+    struct PushQueue {
+        sink: Mutex<Option<SharedFrameSink>>,
+        dropped: Arc<AtomicBool>,
+    }
+    struct PushFrames(Arc<PushQueue>);
+    impl Drop for PushFrames {
+        fn drop(&mut self) {
+            self.0.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+    impl TerminalSubscription for PushFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("push-only"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            Arc::new(|| {})
+        }
+        fn install_sink(&mut self, sink: FrameSink) -> bool {
+            *self.0.sink.lock().unwrap() = Some(Arc::from(sink));
+            true
+        }
+    }
+    struct PushTransport {
+        queue: Arc<PushQueue>,
+    }
+    impl Transport for PushTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: TerminalSnapshot {
+                    seq: 0,
+                    format: SnapshotFormat::Vt,
+                    unavailable: false,
+                    cols: 20,
+                    rows: 4,
+                    bytes: Vec::new(),
+                    unfinished_len: 0,
+                    preceding_char: None,
+                    activity: None,
+                    controller: Default::default(),
+                },
+                frames: Box::new(PushFrames(Arc::clone(&self.queue))),
+            })
+        }
+    }
+
+    let dropped = Arc::new(AtomicBool::new(false));
+    let queue = Arc::new(PushQueue {
+        sink: Mutex::new(None),
+        dropped: Arc::clone(&dropped),
+    });
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(PushTransport {
+            queue: Arc::clone(&queue),
+        })),
+        "push-one-thread".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    // Push subscription runs on MirrorActor with no fallback FrameWorker thread.
+    assert!(mirror.frame_worker.lock().unwrap().is_none());
+
+    // Hidden mirror (`viewers == 0`) marks viewport dirty without calling
+    // `RenderState::update` on printable OR cursor/SGR/erase control chunks.
+    let updates_after_attach = mirror.test_render_state_updates();
+    queue.sink.lock().unwrap().as_ref().unwrap()(Some(TerminalFrame::Output {
+        seq: 1,
+        bytes: b"HIDDEN_LINE".to_vec(),
+    }));
+    queue.sink.lock().unwrap().as_ref().unwrap()(Some(TerminalFrame::Output {
+        seq: 2,
+        bytes: b"\x1b[2;5H\x1b[31;1m".to_vec(),
+    }));
+    queue.sink.lock().unwrap().as_ref().unwrap()(Some(TerminalFrame::Output {
+        seq: 3,
+        bytes: b"\x1b[2J\x1b[1;1H".to_vec(),
+    }));
+    queue.sink.lock().unwrap().as_ref().unwrap()(Some(TerminalFrame::Output {
+        seq: 4,
+        bytes: b"HIDDEN_AFTER".to_vec(),
+    }));
+    assert!(wait_until(Duration::from_secs(2), || {
+        mirror.output_activity().last_seq == 4
+    }));
+    assert_eq!(
+        mirror.test_render_state_updates(),
+        updates_after_attach,
+        "hidden mirror must not call RenderState::update on printable or control traffic"
+    );
+    assert_eq!(mirror.output_activity().first_paint_seq, 1);
+    assert_eq!(mirror.output_activity().last_paint_seq, 4);
+    assert!(mirror.shared.viewport_dirty.load(Ordering::Acquire));
+
+    // Becoming visible (`0 -> 1`) immediately syncs and clears `viewport_dirty`.
+    let view = mirror.view();
+    assert!(!mirror.shared.viewport_dirty.load(Ordering::Acquire));
+    assert_eq!(mirror.test_render_state_updates(), updates_after_attach + 1);
+    assert_eq!(
+        mirror.viewport_snapshot().view().visible_lines()[0],
+        "HIDDEN_AFTER"
+    );
+    drop(view);
+
+    // Dropping the mirror shuts down the actor thread and drops the subscription cleanly.
+    drop(mirror);
+    assert!(dropped.load(Ordering::SeqCst));
+}
+
+#[test]
+fn companion_vt_preserves_saved_cursors_and_kitty_stack_depth_on_both_screens() {
+    struct Host;
+    impl TerminalHost for Host {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    let cases: &[(&str, &[u8], &[u8])] = &[
+        (
+            "alt-cursor",
+            b"PRIMARY\x1b[2;4H\x1b[?1049hALT",
+            b"\x1b[?1049lZ",
+        ),
+        (
+            "saved-primary-cursor",
+            b"A\x1b[2;4H\x1b7\x1b[4;7HX",
+            b"\x1b8Z",
+        ),
+        (
+            "saved-alt-cursor",
+            b"PRIMARY\x1b[2;4H\x1b[?1049h\x1b[2;3H\x1b7\x1b[3;4HX",
+            b"\x1b8Z",
+        ),
+        (
+            "alt-csi",
+            b"PRIMARY\x1b[2;4H\x1b[?1049hALT\x1b[3",
+            b"b\x1b[?1049lZ",
+        ),
+        (
+            "alt-osc",
+            b"PRIMARY\x1b[2;4H\x1b[?1049hALT\x1b]2;partial",
+            b"title\x07\x1b[?1049lZ",
+        ),
+        (
+            "alt-dcs",
+            b"PRIMARY\x1b[2;4H\x1b[?1049hALT\x1bPqpartial",
+            b"rest\x1b\\\x1b[?1049lZ",
+        ),
+    ];
+    for (name, init, follow) in cases {
+        let model = TerminalModel::new(
+            Arc::new(Host),
+            format!("companion-{name}"),
+            8,
+            4,
+            ModelOptions::default(),
+        )
+        .unwrap();
+        model.feed_output(1, init);
+        let vt_snap = model.snapshot_with_history(1, 0);
+        assert!(!vt_snap.unavailable, "{name} snapshot unavailable");
+        let mut remote = crate::replay::Terminal::from_snapshot(&vt_snap).unwrap();
+        assert_eq!(
+            remote.screen().visible_lines(),
+            model.visible_lines(),
+            "{name} pre"
+        );
+        model.feed_output(2, follow);
+        remote.advance(follow);
+        assert_eq!(
+            remote.screen().visible_lines(),
+            model.visible_lines(),
+            "{name} post"
+        );
+        for w in model.stop_workers() {
+            w.join().unwrap();
+        }
+    }
+
+    // Two Kitty bit-0 pushes survive companion attach on both screens: one pop
+    // keeps DISAMBIGUATE_ESC_CODES on both host and remote; second pop returns legacy.
+    let model = TerminalModel::new(
+        Arc::new(Host),
+        "companion-kitty-steps".into(),
+        20,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    model.feed_output(1, b"\x1b[>31u\x1b[>1u\x1b[?1049h\x1b[>1u\x1b[>1u");
+    let vt_snap = model.snapshot_with_history(1, 0);
+    let mut remote = crate::replay::Terminal::from_snapshot(&vt_snap).unwrap();
+    let expected = [
+        (2u64, b"\x1b[<u".as_slice(), true),
+        (3, b"\x1b[<u", false),
+        (4, b"\x1b[?1049l\x1b[<u", true),
+        (5, b"\x1b[<u", false),
+    ];
+    for (seq, bytes, expect_kitty) in expected {
+        model.feed_output(seq, bytes);
+        remote.advance(bytes);
+        assert_eq!(
+            model
+                .mode()
+                .contains(TerminalModeFlags::DISAMBIGUATE_ESC_CODES),
+            expect_kitty,
+            "host mode at seq {seq}"
+        );
+        assert_eq!(
+            remote
+                .mode()
+                .contains(TerminalModeFlags::DISAMBIGUATE_ESC_CODES),
+            expect_kitty,
+            "remote mode at seq {seq}"
+        );
+        assert_eq!(
+            crate::mappings::encode_key("a", true, false, true, Some("a"), remote.mode()),
+            crate::mappings::encode_key("a", true, false, true, Some("a"), model.mode()),
+            "key encoding parity at seq {seq}"
+        );
+    }
+    for w in model.stop_workers() {
+        w.join().unwrap();
+    }
+}
+
+#[test]
+fn scroll_mark_counts_non_lf_alt_screen_indices_identically_in_one_or_many_writes() {
+    let (mirror, _tx, _) = scripted_mirror(false);
+    mirror.resize_local(20, 4);
+    mirror.test_feed(1, b"\x1b[?1049h\x1b[4;1H");
+    let mark = mirror.scroll_mark();
+    mirror.test_feed(2, &b"\x1bD".repeat(12));
+    assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(12));
+
+    let mark = mirror.scroll_mark();
+    for seq in 3..15 {
+        mirror.test_feed(seq, b"\x1bD");
+    }
+    assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(12));
+
+    let mark = mirror.scroll_mark();
+    mirror.test_feed(15, &b"\x1bE".repeat(10));
+    assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(10));
+}
+
+#[test]
+fn push_mailbox_bounds_backlog_to_single_resync_and_services_deadlines_under_traffic() {
+    use runner_core::protocol::terminal::{
+        FrameSink, TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    type SharedFrameSink = Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync>;
+
+    struct PushQueue {
+        sink: Mutex<Option<SharedFrameSink>>,
+    }
+    impl PushQueue {
+        fn new() -> Self {
+            Self {
+                sink: Mutex::new(None),
+            }
+        }
+    }
+    struct PushFrames(Arc<PushQueue>);
+    impl TerminalSubscription for PushFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("push-only"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            Arc::new(|| {})
+        }
+        fn install_sink(&mut self, sink: FrameSink) -> bool {
+            *self.0.sink.lock().unwrap() = Some(Arc::from(sink));
+            true
+        }
+    }
+    struct SlowMetadataTransport {
+        gate: Mutex<Option<(Sender<()>, mpsc::Receiver<()>)>>,
+        attaches: AtomicUsize,
+        queues: Mutex<Vec<Arc<PushQueue>>>,
+    }
+    impl Transport for SlowMetadataTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            let gate = self.gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                let _ = entered.send(());
+                let _ = release.recv_timeout(Duration::from_secs(5));
+            }
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            let n = self.attaches.fetch_add(1, Ordering::SeqCst);
+            let q = Arc::new(PushQueue::new());
+            self.queues.lock().unwrap().push(Arc::clone(&q));
+            let (seq, bytes) = if n == 0 {
+                (0, Vec::new())
+            } else {
+                (200, b"RECOVERED_AFTER_FLOOD".to_vec())
+            };
+            Ok(TerminalAttachment {
+                subscriber_id: (n + 1) as u64,
+                snapshot: TerminalSnapshot {
+                    seq,
+                    format: SnapshotFormat::Vt,
+                    unavailable: false,
+                    cols: 30,
+                    rows: 4,
+                    bytes,
+                    unfinished_len: 0,
+                    preceding_char: None,
+                    activity: None,
+                    controller: Default::default(),
+                },
+                frames: Box::new(PushFrames(q)),
+            })
+        }
+    }
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let transport = Arc::new(SlowMetadataTransport {
+        gate: Mutex::new(None),
+        attaches: AtomicUsize::new(0),
+        queues: Mutex::new(Vec::new()),
+    });
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(transport.clone()),
+        "push-bounded".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let _view = mirror.view();
+
+    // Arm the slow metadata gate so the consumer blocks on the first frame,
+    // then flood > TERMINAL_QUEUE_CAPACITY frames non-blockingly into the sink.
+    *transport.gate.lock().unwrap() = Some((entered_tx, release_rx));
+    let sink = transport.queues.lock().unwrap()[0]
+        .sink
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap();
+    assert!(sink(Some(TerminalFrame::Output {
+        seq: 1,
+        bytes: b"FIRST".to_vec(),
+    })));
+    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let mut overflowed_at = None;
+    for seq in 2..=(TERMINAL_QUEUE_CAPACITY as u64 + 16) {
+        if !sink(Some(TerminalFrame::Output {
+            seq,
+            bytes: b"flood".to_vec(),
+        })) {
+            overflowed_at = Some(seq);
+            break;
+        }
+    }
+    assert!(
+        overflowed_at.is_some(),
+        "bounded push mailbox must refuse frames past TERMINAL_QUEUE_CAPACITY"
+    );
+    release_tx.send(()).unwrap();
+    assert!(wait_until(Duration::from_secs(2), || {
+        mirror.output_activity().last_seq == 200
+            && mirror.visible_lines()[0] == "RECOVERED_AFTER_FLOOD"
+    }));
+    assert_eq!(transport.attaches.load(Ordering::SeqCst), 2);
+
+    // Under sustained output traffic on a held DEC 2026 frame, the hold deadline
+    // must flush before draining the remaining queued backlog. Arm Gate 1 BEFORE
+    // sending the frame that starts the hold so the actor freezes inside
+    // `refresh_metadata()` on seq 201 and the hold cannot expire before we read
+    // its deadline or enqueue the backlog.
+    assert!(wait_until(Duration::from_secs(2), || {
+        transport
+            .queues
+            .lock()
+            .unwrap()
+            .get(1)
+            .is_some_and(|q| q.sink.lock().unwrap().is_some())
+    }));
+    let sink2 = transport.queues.lock().unwrap()[1]
+        .sink
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap();
+    let (gate1_entered_tx, gate1_entered_rx) = mpsc::channel();
+    let (gate1_release_tx, gate1_release_rx) = mpsc::channel();
+    *transport.gate.lock().unwrap() = Some((gate1_entered_tx, gate1_release_rx));
+    assert!(sink2(Some(TerminalFrame::Output {
+        seq: 201,
+        bytes: b"\r\n\x1b[?2026hHELD".to_vec(),
+    })));
+    gate1_entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(mirror.output_activity().last_seq, 201);
+    let deadline = mirror
+        .sync_state()
+        .0
+        .expect("hold deadline must be live while actor is frozen at Gate 1");
+
+    const BACKLOG_END: u64 = 240;
+    for seq in 202..=BACKLOG_END {
+        assert!(sink2(Some(TerminalFrame::Output {
+            seq,
+            bytes: b".".to_vec(),
+        })));
+    }
+
+    // Wait for the real hold deadline to become overdue while the actor is held
+    // at Gate 1 with `seq 202..=240` queued ahead of it.
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if !remaining.is_zero() {
+        let (_never_tx, wait_rx) = mpsc::channel::<()>();
+        let _ = wait_rx.recv_timeout(remaining + Duration::from_millis(5));
+    }
+
+    // Arm Gate 2 on the next `refresh_metadata()` call (after at most one
+    // PUSH_DRAIN_SLICE of backlog) and release Gate 1. The actor must flush the
+    // expired hold BEFORE draining the backlog, so when Gate 2 catches it
+    // mid-backlog, `HELD` is already published and `last_seq < BACKLOG_END`.
+    let (gate2_entered_tx, gate2_entered_rx) = mpsc::channel();
+    let (gate2_release_tx, gate2_release_rx) = mpsc::channel();
+    *transport.gate.lock().unwrap() = Some((gate2_entered_tx, gate2_release_rx));
+    gate1_release_tx.send(()).unwrap();
+    gate2_entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+
+    assert!(
+        mirror.sync_state().0.is_none(),
+        "hold deadline must flush while backlog is still queued"
+    );
+    assert!(mirror.visible_lines().iter().any(|l| l.contains("HELD")));
+    let mid_seq = mirror.output_activity().last_seq;
+    assert!(
+        mid_seq < BACKLOG_END,
+        "expected hold release before backlog drained (last_seq={mid_seq}, end={BACKLOG_END})"
+    );
+
+    gate2_release_tx.send(()).unwrap();
+    assert!(wait_until(Duration::from_secs(2), || {
+        mirror.output_activity().last_seq == BACKLOG_END
+    }));
+    drop(mirror);
+}
+
+#[test]
+fn scroll_mark_is_split_invariant_across_su_rep_dl_alt_and_zero_scrollback() {
+    fn run_split(
+        setup: &[u8],
+        payload: &[u8],
+        split: usize,
+        cols: u16,
+        rows: u16,
+        scrollback: usize,
+    ) -> (Option<i32>, Option<i32>) {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.configure(scrollback, CursorShape::Block, false);
+        mirror.resize_local(cols, rows);
+        if !setup.is_empty() {
+            mirror.test_feed(1, setup);
+        }
+        let start = mirror.scroll_mark();
+        mirror.test_feed(2, &payload[..split]);
+        let after_first = start.moved_since(mirror.scroll_mark());
+        mirror.test_feed(3, &payload[split..]);
+        let total = start.moved_since(mirror.scroll_mark());
+        (after_first, total)
+    }
+
+    // 1. Six `CSI 2 S` on 20×4 alternate screen AND on primary with scrollback=0:
+    //    always exactly 12 rows at every byte split offset.
+    let six_su2 = b"\x1b[2S".repeat(6);
+    for (setup, sb) in [
+        (b"\x1b[?1049h\x1b[4;1H".as_slice(), 100usize),
+        (b"\x1b[4;1H".as_slice(), 0usize),
+    ] {
+        for split in 0..=six_su2.len() {
+            let (_, total) = run_split(setup, &six_su2, split, 20, 4, sb);
+            assert_eq!(total, Some(12), "SU 2 x6 split={split} sb={sb}");
+        }
+    }
+
+    // 2. `CSI 100 b` (REP) past a 4-row screen (1x = 5 rows, 6x = 30 rows) on
+    //    alternate screen and zero-scrollback primary at every byte split offset.
+    for (count, expected) in [(1usize, 5i32), (6usize, 30i32)] {
+        let rep = b"\x1b[100b".repeat(count);
+        for (setup, sb) in [
+            (b"\x1b[?1049h\x1b[4;1Hx".as_slice(), 100usize),
+            (b"\x1b[4;1Hx".as_slice(), 0usize),
+        ] {
+            for split in 0..=rep.len() {
+                let (_, total) = run_split(setup, &rep, split, 20, 4, sb);
+                assert_eq!(
+                    total,
+                    Some(expected),
+                    "REP 100 x{count} split={split} sb={sb}"
+                );
+            }
+        }
+    }
+
+    // 3. `DL` (`CSI n M`) at row 0 (top of region) counts exact deleted rows,
+    //    while `DL` below row 0 does not move row 0 off the top.
+    let dl_mix = b"\x1b[1;1H\x1b[2M\x1b[2;1H\x1b[2M\x1b[1;1H\x1b[1M";
+    for (setup, sb) in [
+        (b"".as_slice(), 0usize),
+        (b"\x1b[?1049h".as_slice(), 100usize),
+    ] {
+        for split in 0..=dl_mix.len() {
+            let (_, total) = run_split(setup, dl_mix, split, 20, 4, sb);
+            assert_eq!(total, Some(3), "DL mix split={split} sb={sb}");
+        }
+    }
+
+    // 4. Temporary alternate-screen excursion is split-invariant at every byte
+    //    offset: primary marks are incomparable (`None`) while alternate is
+    //    active, and report the exact same surviving primary mark and 5 rows
+    //    once the same primary screen returns.
+    let prefix = b"\x1b[4;1H\n\n";
+    let alt_enter = b"\x1b[?1049h";
+    let alt_body = b"\x1b[4;1H\x1b[2S\x1b[2S\x1b[2S";
+    let alt_exit = b"\x1b[?1049l";
+    let suffix = b"\x1b[4;1H\n\n\n";
+    let mut excursion_stream = Vec::new();
+    excursion_stream.extend_from_slice(prefix);
+    excursion_stream.extend_from_slice(alt_enter);
+    excursion_stream.extend_from_slice(alt_body);
+    excursion_stream.extend_from_slice(alt_exit);
+    excursion_stream.extend_from_slice(suffix);
+    let alt_active_start = prefix.len() + alt_enter.len();
+    let alt_active_end = alt_active_start + alt_body.len() + alt_exit.len();
+    for sb in [0usize, 100] {
+        // Whole stream in one write: 2 + 3 = 5 primary rows; 6 alt rows excluded.
+        let (_, total) = run_split(b"", &excursion_stream, 0, 20, 4, sb);
+        assert_eq!(total, Some(5), "alt excursion whole sb={sb}");
+        for split in 0..=excursion_stream.len() {
+            let (after_first, total) = run_split(b"", &excursion_stream, split, 20, 4, sb);
+            if split >= alt_active_start && split < alt_active_end {
+                assert_eq!(
+                    after_first, None,
+                    "primary mark must be incomparable while alternate is active (split={split}, sb={sb})"
+                );
+            }
+            assert_eq!(
+                total,
+                Some(5),
+                "surviving primary mark must be split-invariant at split={split} sb={sb}"
+            );
+        }
+        // Ending on alternate screen keeps primary marks incomparable.
+        let (_, end_alt) = run_split(b"", b"\x1b[4;1H\n\x1b[?1049h\x1b[2S", 0, 20, 4, sb);
+        assert_eq!(end_alt, None, "end on alt sb={sb}");
+    }
+
+    // 4b. A held primary viewport stays pinned by the exact same 5 rows across
+    //     a temporary alternate-screen excursion at every byte split offset.
+    for split in 0..=excursion_stream.len() {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.configure(100, CursorShape::Block, false);
+        mirror.resize_local(20, 4);
+        let _hold = mirror.hold_viewport();
+        let origin = mirror.scroll_mark();
+        mirror.test_feed(1, &excursion_stream[..split]);
+        mirror.test_feed(2, &excursion_stream[split..]);
+        assert_eq!(
+            origin.moved_since(mirror.scroll_mark()),
+            Some(5),
+            "held excursion scroll mark mismatch at split={split}"
+        );
+        assert_eq!(
+            mirror.display_offset(),
+            5,
+            "held primary viewport offset mismatch at split={split}"
+        );
+    }
+
+    // 5. Physical screen reset / replacement (`RIS`, ESC c) starts a fresh
+    //    generation for both primary and a freshly reallocated alternate screen
+    //    rather than subtracting unrelated counters.
+    {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(20, 4);
+        mirror.test_feed(1, b"\x1b[4;1H\n\n");
+        let pri_before_ris = mirror.scroll_mark();
+        mirror.test_feed(2, b"\x1b[?1049h\x1b[2S");
+        let alt_before_ris = mirror.scroll_mark();
+        assert_eq!(pri_before_ris.moved_since(alt_before_ris), None);
+
+        // Single write: RIS destroys alternate and resets primary, then enters a
+        // brand-new alternate screen whose native counter starts at 0.
+        mirror.test_feed(3, b"\x1bc\x1b[?1049h");
+        let alt_after_ris = mirror.scroll_mark();
+        assert_eq!(
+            alt_before_ris.moved_since(alt_after_ris),
+            None,
+            "replaced alternate screen must get a new epoch instead of subtracting 0 - 2"
+        );
+        assert_eq!(alt_after_ris.lines, 0);
+        mirror.test_feed(4, b"\x1b[2S");
+        assert_eq!(alt_after_ris.moved_since(mirror.scroll_mark()), Some(2));
+
+        // Returning to the reset primary screen also has a new epoch relative
+        // to the pre-RIS primary mark.
+        mirror.test_feed(5, b"\x1b[?1049l");
+        let pri_after_ris = mirror.scroll_mark();
+        assert_eq!(pri_before_ris.moved_since(pri_after_ris), None);
+        mirror.test_feed(6, b"\x1b[4;1H\n\n\n");
+        assert_eq!(pri_after_ris.moved_since(mirror.scroll_mark()), Some(3));
+    }
+}
+
+#[test]
+fn companion_vt_preserves_saved_pending_wrap_charsets_overline_and_primary_origin() {
+    struct Host;
+    impl TerminalHost for Host {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    let cases: &[(&str, &[u8], &[u8])] = &[
+        ("saved-wrap", b"12345678\x1b7\x1b[3;2H", b"\x1b8Z"),
+        (
+            "saved-wide-wrap",
+            b"123456\xe7\x95\x8c\x1b7\x1b[3;2H",
+            b"\x1b8Z",
+        ),
+        (
+            "saved-wrap-alt",
+            b"\x1b[?1049h12345678\x1b7\x1b[3;2H",
+            b"\x1b8Z",
+        ),
+        (
+            "cursor-wrap-park",
+            b"12345678\x1b[?1049hALT",
+            b"\x1b[?1049lZ",
+        ),
+        (
+            "cursor-wrap-park-irm",
+            b"12345678\x1b[?1049hALT\x1b[4h",
+            b"\x1b[2;2HX",
+        ),
+        (
+            "primary-origin-after-alt",
+            b"1234\x1b[2;3r\x1b[?6h\x1b[2;3H\x1b[?1049hALT",
+            b"\x1b[?1049lZ",
+        ),
+        (
+            "primary-origin-changed-while-alt",
+            b"AB\x1b[1;2r\x1b[?6h\x1b[1;1H\x1b[?1049hALT\x1b[3;4r",
+            b"\x1b[?1049lZ",
+        ),
+        (
+            "saved-origin-margins-changed-primary",
+            b"AB\x1b[1;2r\x1b[?6h\x1b[1;1H\x1b7\x1b[3;4r",
+            b"\x1b8Z",
+        ),
+        (
+            "saved-link",
+            b"12345678\x1b7\x1b[2;1H\x1b]8;id=after;https://example.org/a\x1b\\",
+            b"L\x1b8Z",
+        ),
+        (
+            "saved-bg",
+            b"\x1b[42m12345678\x1b7\x1b[2;1H\x1b[0m",
+            b"\x1b8Z",
+        ),
+        (
+            "saved-empty-bg",
+            b"\x1b[42m12345678\x1b7\x1b[1;8H\x1b[X\x1b[2;1H",
+            b"\x1b8Z",
+        ),
+        (
+            "saved-protected",
+            b"\x1b[1\"q12345678\x1b7\x1b[2;1H\x1b[0\"q",
+            b"\x1b8Z",
+        ),
+        ("saved-DEC-line", b"\x1b(0\x1b7\x1b(B", b"\x1b8qx"),
+        ("saved-ascii", b"\x1b(B\x1b7\x1b(0", b"\x1b8qx"),
+        ("active-DEC", b"\x1b7\x1b(0", b"qx"),
+        ("saved-british", b"\x1b(A\x1b7\x1b(B", b"\x1b8#"),
+    ];
+
+    for &(name, init, follow) in cases {
+        let model =
+            TerminalModel::new(Arc::new(Host), name.into(), 8, 4, ModelOptions::default()).unwrap();
+        model.feed_output(1, init);
+        let bin_snap = model.snapshot(1);
+        let vt_snap = model.snapshot_with_history(1, 0);
+        let mut reference = crate::replay::Terminal::from_snapshot(&bin_snap).unwrap();
+        let mut remote = crate::replay::Terminal::from_snapshot(&vt_snap).unwrap();
+        assert_eq!(
+            remote.snapshot_state().active_grid.rows,
+            reference.snapshot_state().active_grid.rows,
+            "{name}: pre-follow cell attributes mismatch"
+        );
+        if name == "cursor-wrap-park" || name == "cursor-wrap-park-irm" {
+            let first = GridPoint::new(Line(0), Column(0));
+            let last = GridPoint::new(Line(1), Column(2));
+            assert_eq!(
+                remote.bounds_to_string(first, last),
+                reference.bounds_to_string(first, last),
+                "{name}: pre-follow copy parity across blank soft wrap"
+            );
+            assert_eq!(remote.bounds_to_string(first, last), "        ALT");
+        }
+        assert_eq!(
+            remote.screen().visible_lines(),
+            model.visible_lines(),
+            "{name}: pre-follow lines mismatch"
+        );
+        model.feed_output(2, follow);
+        reference.advance(follow);
+        remote.advance(follow);
+        assert_eq!(
+            remote.screen().visible_lines(),
+            model.visible_lines(),
+            "{name}: post-follow lines mismatch"
+        );
+        if name == "cursor-wrap-park-irm" {
+            assert_eq!(
+                remote.screen().visible_lines(),
+                vec!["", "AXLT", "", ""],
+                "IRM must remain active so mid-row insertion shifts existing cells"
+            );
+        }
+        assert_eq!(
+            remote.snapshot_state().active_grid.rows,
+            reference.snapshot_state().active_grid.rows,
+            "{name}: post-follow cell attributes mismatch"
+        );
+        for w in model.stop_workers() {
+            w.join().unwrap();
+        }
+    }
+
+    // Verify protected cell bit survives pending-wrap replay independently of active DECSCA.
+    {
+        let model = TerminalModel::new(
+            Arc::new(Host),
+            "saved-protected-bit".into(),
+            8,
+            4,
+            ModelOptions::default(),
+        )
+        .unwrap();
+        model.feed_output(1, b"\x1b[1\"q12345678\x1b7\x1b[2;1H\x1b[0\"q");
+        let vt_snap = model.snapshot_with_history(1, 0);
+        let mut remote_vt = crate::vt::Terminal::new(&crate::vt::TerminalConfig {
+            cols: 8,
+            rows: 4,
+            ..crate::vt::TerminalConfig::default()
+        })
+        .unwrap();
+        remote_vt.vt_write(&vt_snap.bytes);
+        let cell = remote_vt
+            .grid_ref(crate::vt::GridPointTag::Active, 7, 0)
+            .unwrap()
+            .cell()
+            .unwrap();
+        assert!(
+            cell.protected,
+            "margin cell must retain its DECSCA protected bit after pending-wrap replay"
+        );
+        // Active DECSCA remains unprotected (`0"q`) for subsequent writes before DECRC.
+        remote_vt.vt_write(b"U");
+        let active_cell = remote_vt
+            .grid_ref(crate::vt::GridPointTag::Active, 0, 1)
+            .unwrap()
+            .cell()
+            .unwrap();
+        assert!(!active_cell.protected);
+        for w in model.stop_workers() {
+            w.join().unwrap();
+        }
+    }
+
+    // Verify SGR 53 (OVERLINE) round-trips on both saved and active pens.
+    let model = TerminalModel::new(
+        Arc::new(Host),
+        "overline-pen".into(),
+        8,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    model.feed_output(1, b"\x1b[53m\x1b7\x1b[0m\x1b[53mA");
+    let vt_snap = model.snapshot_with_history(1, 0);
+    let mut remote_vt = crate::vt::Terminal::new(&crate::vt::TerminalConfig {
+        cols: 8,
+        rows: 4,
+        ..crate::vt::TerminalConfig::default()
+    })
+    .unwrap();
+    remote_vt.vt_write(&vt_snap.bytes);
+    assert_ne!(
+        remote_vt.cursor_sgr_style().flags & crate::vt::STYLE_FLAG_OVERLINE,
+        0,
+        "active overline pen should round-trip through companion VT snapshot"
+    );
+    remote_vt.vt_write(b"\x1b[0m\x1b8");
+    assert_ne!(
+        remote_vt.cursor_sgr_style().flags & crate::vt::STYLE_FLAG_OVERLINE,
+        0,
+        "saved overline pen should round-trip through companion VT snapshot"
+    );
+    for w in model.stop_workers() {
+        w.join().unwrap();
+    }
+}
+
+#[test]
+fn recv_based_mirror_drop_cancels_idle_reader_and_avoids_self_join_deadlock() {
+    use runner_core::protocol::terminal::{
+        TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    struct BlockingRecvFrames {
+        rx: mpsc::Receiver<std::result::Result<TerminalFrame, ClientError>>,
+        tx: mpsc::Sender<std::result::Result<TerminalFrame, ClientError>>,
+        cancels: Arc<AtomicUsize>,
+        entered: mpsc::Sender<()>,
+        exited: Arc<AtomicBool>,
+    }
+    impl Drop for BlockingRecvFrames {
+        fn drop(&mut self) {
+            self.exited.store(true, Ordering::SeqCst);
+        }
+    }
+    impl TerminalSubscription for BlockingRecvFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            let _ = self.entered.send(());
+            self.rx
+                .recv()
+                .unwrap_or_else(|_| Err(ClientError::msg("closed")))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            let tx = self.tx.clone();
+            let cancels = Arc::clone(&self.cancels);
+            Arc::new(move || {
+                cancels.fetch_add(1, Ordering::SeqCst);
+                let _ = tx.send(Err(ClientError::msg("cancelled")));
+            })
+        }
+    }
+    struct RecvTransport {
+        frames: Mutex<Option<BlockingRecvFrames>>,
+        on_metadata: Mutex<Option<Box<dyn FnMut() + Send>>>,
+    }
+    impl Transport for RecvTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            if let Some(cb) = self.on_metadata.lock().unwrap().as_mut() {
+                cb();
+            }
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: TerminalSnapshot {
+                    seq: 0,
+                    format: SnapshotFormat::Vt,
+                    unavailable: false,
+                    cols: 20,
+                    rows: 4,
+                    bytes: Vec::new(),
+                    unfinished_len: 0,
+                    preceding_char: None,
+                    activity: None,
+                    controller: Default::default(),
+                },
+                frames: Box::new(self.frames.lock().unwrap().take().unwrap()),
+            })
+        }
+    }
+
+    // 1. Idle drop cancels a blocked recv-based reader and joins it cleanly.
+    let (tx, rx) = mpsc::channel();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let cancels = Arc::new(AtomicUsize::new(0));
+    let exited = Arc::new(AtomicBool::new(false));
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(RecvTransport {
+            frames: Mutex::new(Some(BlockingRecvFrames {
+                rx,
+                tx,
+                cancels: Arc::clone(&cancels),
+                entered: entered_tx,
+                exited: Arc::clone(&exited),
+            })),
+            on_metadata: Mutex::new(None),
+        })),
+        "recv-idle-drop".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    drop(mirror);
+    assert_eq!(cancels.load(Ordering::SeqCst), 1);
+    assert!(exited.load(Ordering::SeqCst));
+
+    // 2. Dropping the final Arc on the reader thread itself does not self-join deadlock.
+    let (tx, rx) = mpsc::channel();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (meta_entered_tx, meta_entered_rx) = mpsc::channel();
+    let (meta_release_tx, meta_release_rx) = mpsc::channel();
+    let cancels = Arc::new(AtomicUsize::new(0));
+    let exited = Arc::new(AtomicBool::new(false));
+    let transport = Arc::new(RecvTransport {
+        frames: Mutex::new(Some(BlockingRecvFrames {
+            rx,
+            tx: tx.clone(),
+            cancels: Arc::clone(&cancels),
+            entered: entered_tx,
+            exited: Arc::clone(&exited),
+        })),
+        on_metadata: Mutex::new(None),
+    });
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(transport.clone()),
+        "recv-self-drop".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    *transport.on_metadata.lock().unwrap() = Some(Box::new(move || {
+        let _ = meta_entered_tx.send(());
+        let _ = meta_release_rx.recv_timeout(Duration::from_secs(5));
+    }));
+    tx.send(Ok(TerminalFrame::Output {
+        seq: 1,
+        bytes: b"hi".to_vec(),
+    }))
+    .unwrap();
+    meta_entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    // Release external Arc while reader thread holds the only remaining Arc.
+    drop(mirror);
+    meta_release_tx.send(()).unwrap();
+    assert!(wait_until(Duration::from_secs(2), || {
+        exited.load(Ordering::SeqCst)
+    }));
+    assert_eq!(cancels.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn tracked_grid_ref_anchors_drag_selection_viewport_and_native_find_across_scroll_reflow_and_ris() {
+    use crate::terminal::find::{FindAction, FindQuery};
+    use crate::types::SelectionKind;
+
+    let (mirror, _tx, _) = scripted_mirror(false);
+    mirror.configure(500, CursorShape::Block, false);
+    mirror.resize_local(20, 6);
+    let _view = mirror.view();
+
+    // 1. Selection drag anchor tracks scrollback via `TrackedGridRef` while output streams.
+    let initial: String = (0..12).map(|i| format!("line-{i:02} alpha\r\n")).collect();
+    mirror.test_feed(1, initial.as_bytes());
+    let before_lines = mirror.visible_lines();
+    assert!(before_lines[0].starts_with("line-07"), "{before_lines:?}");
+    mirror.start_selection(
+        SelectionKind::Simple,
+        Point::new(Line(0), Column(0)),
+        Side::Left,
+    );
+    // Scroll 4 more lines during an active drag; `anchor_ref` moves to Line(-4).
+    mirror.test_feed(
+        2,
+        b"line-12 beta\r\nline-13 beta\r\nline-14 beta\r\nline-15 beta\r\n",
+    );
+    assert!(mirror.update_selection(Point::new(Line(0), Column(6)), Side::Right));
+    let dragged = mirror.selection_text().expect("dragged selection text");
+    assert!(
+        dragged.starts_with("line-07"),
+        "TrackedGridRef drag anchor should keep original start cell across scrollback: {dragged:?}"
+    );
+    assert!(dragged.contains("line-11"), "{dragged:?}");
+    assert!(mirror.clear_selection());
+
+    // 2. Viewport `GridAnchor` restores the exact scrolled line across output, reflow, and eviction.
+    mirror.scroll_to_display_offset(6);
+    let pinned_top_before = mirror.viewport_snapshot().view().row_to_string(Line(-6));
+    let viewport_anchor = mirror.track_viewport_top().expect("viewport anchor");
+    mirror.scroll_to_bottom();
+    mirror.test_feed(3, b"extra-1\r\nextra-2\r\nextra-3\r\nextra-4\r\n");
+    mirror.restore_viewport_anchor(&viewport_anchor);
+    let offset_after_output = mirror.scroll_state().display_offset;
+    assert_eq!(offset_after_output, 10);
+    assert_eq!(
+        mirror
+            .viewport_snapshot()
+            .view()
+            .row_to_string(Line(-(offset_after_output as i32))),
+        pinned_top_before
+    );
+
+    // 3. Native `GhosttySearch` + `MatchAnchor` track a wrapped match across scrollback and reflow.
+    mirror.scroll_to_bottom();
+    mirror.test_feed(
+        4,
+        b"first-target-hit\r\n0123456789abcdef target-wrap-end\r\nplain-row\r\nsecond-target-hit\r\n",
+    );
+    let query = FindQuery {
+        text: "target".into(),
+        match_case: false,
+        regex: false,
+    };
+    let found = mirror.find_matches(&query, FindAction::NewQuery);
+    assert_eq!(found.count.total, 3);
+    assert_eq!(found.count.index, Some(0));
+    let first_anchor = found.anchor.expect("match anchor");
+
+    // Step older to the wrapped middle match (`target-wrap-end`).
+    let stepped = mirror.find_matches(
+        &query,
+        FindAction::Step {
+            anchor: Some(first_anchor.id()),
+            carried: found.current,
+            older: true,
+        },
+    );
+    assert_eq!(stepped.count.index, Some(1));
+    let middle_anchor = stepped.anchor.expect("middle match anchor");
+    let middle_before = stepped.current.expect("middle match");
+
+    // Narrow columns so the wrapped line reflows to a new line/column; `MatchAnchor`
+    // follows the reflowed cells directly without `carried`.
+    mirror.resize_local(12, 6);
+    let reflowed = mirror.find_matches(
+        &query,
+        FindAction::Refresh {
+            anchor: Some(middle_anchor.id()),
+            carried: None,
+        },
+    );
+    assert_eq!(reflowed.count.total, 3);
+    assert_eq!(reflowed.count.index, Some(1));
+    let middle_after = reflowed.current.expect("reflowed middle match");
+    let text_after =
+        mirror.with_screen(|s| s.bounds_to_string(*middle_after.start(), *middle_after.end()));
+    assert_eq!(text_after, "target");
+    assert_ne!(
+        middle_after.start().column,
+        middle_before.start().column,
+        "narrowing should have reflowed the wrapped target column"
+    );
+
+    // 4. RIS invalidates tracked anchors cleanly without leaking or crashing on restore/drop.
+    mirror.test_feed(5, b"\x1bcFresh after RIS\r\n");
+    mirror.restore_viewport_anchor(&viewport_anchor);
+    assert_eq!(mirror.scroll_state().display_offset, 0);
+    drop(viewport_anchor);
+    drop(first_anchor);
+    drop(middle_anchor);
+    mirror.clear_find();
+
+    // 5. `link_at_with` resolves links in the viewport interior (zero-copy `viewport_snapshot`)
+    //    and soft-wrapped links crossing the viewport's top edge (bounded `LinkWindow`).
+    mirror.resize_local(40, 20);
+    let mut url_stream = (0..25)
+        .map(|i| format!("pad-{i:02}\r\n"))
+        .collect::<String>();
+    url_stream.push_str("open https://example.com/wrapped-across-viewport-boundary/path\r\n");
+    for i in 0..12 {
+        url_stream.push_str(&format!("mid-{i:02}\r\n"));
+    }
+    url_stream.push_str("visit https://example.com/in-view\r\n");
+    for i in 0..8 {
+        url_stream.push_str(&format!("tail-{i:02}\r\n"));
+    }
+    mirror.test_feed(6, url_stream.as_bytes());
+    let snap = mirror.viewport_snapshot();
+    let in_view_line = (0..snap.view().rows() as i32)
+        .map(Line)
+        .find(|&line| {
+            snap.view()
+                .row_to_string(line)
+                .contains("https://example.com/in-view")
+        })
+        .expect("in-view url row");
+    assert!(
+        in_view_line.0 >= 8,
+        "expected in-view URL in viewport interior (line={in_view_line:?})"
+    );
+    let in_view = mirror
+        .link_at(Point::new(in_view_line, Column(10)))
+        .expect("interior link via viewport_snapshot");
+    assert_eq!(
+        in_view.target,
+        LinkTarget::Url("https://example.com/in-view".into())
+    );
+    // Scroll so the second half of the wrapped URL sits on the top visible row while
+    // its `https://` prefix sits above the viewport boundary.
+    let wrapped_tail_line = mirror.with_screen(|screen| {
+        let view = screen.view();
+        (view.topmost_line().0..=view.bottommost_line().0)
+            .map(Line)
+            .find(|&line| view.row_to_string(line).contains("viewport-boundary/path"))
+            .expect("wrapped URL continuation row")
+    });
+    assert!(
+        wrapped_tail_line.0 < 0,
+        "expected wrapped URL continuation in scrollback (line={wrapped_tail_line:?})"
+    );
+    mirror.scroll_to_display_offset((-wrapped_tail_line.0) as usize);
+    let wrapped = mirror
+        .link_at(Point::new(wrapped_tail_line, Column(5)))
+        .expect("wrapped link crossing viewport top edge");
+    assert_eq!(
+        wrapped.target,
+        LinkTarget::Url("https://example.com/wrapped-across-viewport-boundary/path".into())
+    );
+}
+
+#[test]
+fn find_parity_overlaps_unicode_deep_navigation_and_unclipped_long_wrapped_links() {
+    use crate::terminal::find::{FindAction, FindQuery, MATCH_LIMIT};
+    use crate::terminal::LinkLookup;
+
+    let (mirror, _tx, _) = scripted_mirror(false);
+    mirror.configure(5_000, CursorShape::Block, false);
+    mirror.resize_local(40, 4);
+    let _view = mirror.view();
+
+    // 1. Overlaps, Unicode case folding (K, ſ), and combining marks (é) preserve baseline
+    //    counts, exact rightmost non-overlapping spans, and newest-first navigation.
+    mirror.test_feed(1, "key Key ſk sk e\u{301}x ex\r\naaaaa\r\n".as_bytes());
+    for (needle, expected_newest, expected_older) in [
+        (
+            "key",
+            FindMatch::new(
+                Point::new(Line(0), Column(4)),
+                Point::new(Line(0), Column(6)),
+            ),
+            FindMatch::new(
+                Point::new(Line(0), Column(0)),
+                Point::new(Line(0), Column(2)),
+            ),
+        ),
+        (
+            "sk",
+            FindMatch::new(
+                Point::new(Line(0), Column(11)),
+                Point::new(Line(0), Column(12)),
+            ),
+            FindMatch::new(
+                Point::new(Line(0), Column(8)),
+                Point::new(Line(0), Column(9)),
+            ),
+        ),
+        (
+            "ex",
+            FindMatch::new(
+                Point::new(Line(0), Column(17)),
+                Point::new(Line(0), Column(18)),
+            ),
+            FindMatch::new(
+                Point::new(Line(0), Column(14)),
+                Point::new(Line(0), Column(15)),
+            ),
+        ),
+        (
+            "aa",
+            FindMatch::new(
+                Point::new(Line(1), Column(3)),
+                Point::new(Line(1), Column(4)),
+            ),
+            FindMatch::new(
+                Point::new(Line(1), Column(1)),
+                Point::new(Line(1), Column(2)),
+            ),
+        ),
+    ] {
+        let query = FindQuery {
+            text: needle.into(),
+            match_case: false,
+            regex: false,
+        };
+        let first = mirror.find_matches_in_session(1, &query, FindAction::NewQuery);
+        assert_eq!(first.count.total, 2, "query={needle}");
+        assert!(!first.count.more, "query={needle}");
+        assert_eq!(first.count.index, Some(0), "query={needle}");
+        assert_eq!(first.current, Some(expected_newest), "query={needle}");
+        let snap = mirror.viewport_snapshot();
+        assert_eq!(
+            snap.find_highlights(1),
+            Some([expected_older, expected_newest].as_slice()),
+            "published highlights for query={needle}"
+        );
+        let older = mirror.find_matches_in_session(
+            1,
+            &query,
+            FindAction::Step {
+                anchor: first.anchor.as_ref().map(|a| a.id()),
+                carried: Some(expected_newest),
+                older: true,
+            },
+        );
+        assert_eq!(older.count.index, Some(1), "query={needle}");
+        assert_eq!(older.current, Some(expected_older), "query={needle}");
+        // Stepping older again wraps back to newest.
+        let wrapped = mirror.find_matches_in_session(
+            1,
+            &query,
+            FindAction::Step {
+                anchor: older.anchor.as_ref().map(|a| a.id()),
+                carried: Some(expected_older),
+                older: true,
+            },
+        );
+        assert_eq!(wrapped.current, Some(expected_newest), "query={needle}");
+    }
+    mirror.clear_find_session(1);
+
+    // 2. Long soft-wrapped URL (> 8 rows) resolves its full unclipped extent, while
+    //    blank cells in the top rows with history resolve synchronously without offscreen lookup.
+    mirror.test_feed(2, b"\x1bc");
+    mirror.resize_local(20, 5);
+    let long_url = format!("https://example.org/{}", "a".repeat(210));
+    mirror.test_feed(3, long_url.as_bytes());
+    let snap = mirror.viewport_snapshot();
+    assert_eq!(
+        mirror.try_link_at_published(
+            &snap,
+            Point::new(Line(2), Column(3)),
+            &FileLinkContext::default()
+        ),
+        LinkLookup::NeedsOffscreen
+    );
+    let resolved = mirror
+        .link_at(Point::new(Line(2), Column(3)))
+        .expect("full 230-byte wrapped URL");
+    assert_eq!(resolved.target, LinkTarget::Url(long_url));
+    // Blank row in top visible rows with scrollback resolves synchronously as Ready(None).
+    mirror.test_feed(4, b"\r\n\r\n\r\n\r\n\r\n");
+    let blank_snap = mirror.viewport_snapshot();
+    assert_eq!(
+        mirror.try_link_at_published(
+            &blank_snap,
+            Point::new(Line(0), Column(0)),
+            &FileLinkContext::default()
+        ),
+        LinkLookup::Ready(None)
+    );
+
+    // 3. Long soft-wrapped line publishes ONLY viewport-intersecting highlights (100 cells
+    //    on 20×5, not all 2,000 offscreen hits), while count still caps at 1,000+.
+    mirror.test_feed(5, b"\x1bc");
+    mirror.resize_local(20, 5);
+    mirror.test_feed(6, "a".repeat(2_000).as_bytes());
+    let a_query = FindQuery {
+        text: "a".into(),
+        match_case: false,
+        regex: false,
+    };
+    let wrapped_a = mirror.find_matches_in_session(2, &a_query, FindAction::NewQuery);
+    assert_eq!(wrapped_a.count.total, MATCH_LIMIT);
+    assert!(wrapped_a.count.more);
+    let wrapped_snap = mirror.viewport_snapshot();
+    let published_a = wrapped_snap.find_highlights(2).unwrap_or(&[]);
+    assert_eq!(
+        published_a.len(),
+        100,
+        "expected only 100 visible viewport hits, got {}",
+        published_a.len()
+    );
+    assert!(published_a
+        .iter()
+        .all(|m| m.end.line >= Line(0) && m.start.line <= Line(4)));
+    mirror.clear_find_session(2);
+
+    // 4. Deep history (> MATCH_LIMIT matches) caps count at 1,000+ while still stepping
+    //    beyond the 1,000th match into older scrollback.
+    mirror.test_feed(7, b"\x1bc");
+    mirror.resize_local(80, 24);
+    let deep = ("a".repeat(60) + "\r\n").repeat(200);
+    mirror.test_feed(8, deep.as_bytes());
+    let head = mirror.find_matches(&a_query, FindAction::NewQuery);
+    assert_eq!(head.count.total, MATCH_LIMIT);
+    assert!(head.count.more);
+    assert_eq!(head.count.index, Some(0));
+    // Jump directly to a match deeper than 1,000 hits and verify stepping older still works.
+    let deep_match = FindMatch::new(
+        Point::new(Line(-100), Column(10)),
+        Point::new(Line(-100), Column(10)),
+    );
+    let stepped = mirror.find_matches(
+        &a_query,
+        FindAction::Step {
+            anchor: None,
+            carried: Some(deep_match),
+            older: true,
+        },
+    );
+    assert_eq!(stepped.count.total, MATCH_LIMIT);
+    assert!(stepped.count.more);
+    assert_eq!(stepped.count.index, None);
+    assert_eq!(
+        stepped.current,
+        Some(FindMatch::new(
+            Point::new(Line(-100), Column(9)),
+            Point::new(Line(-100), Column(9)),
+        ))
+    );
+    // 5. Regex validity preserves baseline acceptance rules (e.g. Unicode word boundaries
+    //    reject as Invalid just like main's hybrid DFA search).
+    for invalid in [r"\btest\b", r"\b\w+\b", r"\bÉrr\b", r"t\b"] {
+        let query = FindQuery {
+            text: invalid.into(),
+            match_case: false,
+            regex: true,
+        };
+        assert!(
+            matches!(query.pattern(), crate::terminal::find::FindPattern::Invalid),
+            "expected Invalid for baseline-unsupported regex {invalid:?}"
+        );
+    }
+}
+
+#[test]
+fn held_frame_find_highlights_keep_pre_hold_wrap_context_and_ignore_hidden_post_hold_text() {
+    use crate::terminal::find::{FindAction, FindQuery};
+
+    let (mirror, _tx, _) = scripted_mirror(false);
+    mirror.configure(500, CursorShape::Block, false);
+    mirror.resize_local(8, 3);
+    let _view = mirror.view();
+
+    let xxyy = FindQuery {
+        text: "XXYY".into(),
+        match_case: false,
+        regex: false,
+    };
+    let hidden = FindQuery {
+        text: "hidden".into(),
+        match_case: false,
+        regex: false,
+    };
+
+    // Publish pre-hold scrollback + wrapped XXYY + visible XXYY before the hold opens.
+    mirror.test_feed(1, b"XXYY\r\naaaaaaXXYYbbbbbb\r\nmid\r\nXXYY");
+    let pre_hold = mirror.find_matches_in_session(1, &xxyy, FindAction::NewQuery);
+    let expected_visible = [
+        FindMatch::new(
+            Point::new(Line(-1), Column(6)),
+            Point::new(Line(0), Column(1)),
+        ),
+        FindMatch::new(
+            Point::new(Line(2), Column(0)),
+            Point::new(Line(2), Column(3)),
+        ),
+    ];
+    assert_eq!(pre_hold.count.total, 3);
+    assert_eq!(pre_hold.count.index, Some(0));
+    assert_eq!(pre_hold.current, Some(expected_visible[1]));
+
+    // Opening a DEC 2026 hold that clears the screen and writes hidden text
+    // keeps the published pre-hold frame and highlights immutable until release.
+    mirror.test_feed(2, b"\x1b[?2026h\x1b[2J\x1b[Hhidden");
+    assert!(mirror.is_render_held());
+    let held_snap = mirror.viewport_snapshot();
+    assert_eq!(held_snap.view().row_to_string(Line(0)), "YYbbbbbb");
+    assert_eq!(held_snap.view().row_to_string(Line(1)), "mid");
+    assert_eq!(held_snap.view().row_to_string(Line(2)), "XXYY");
+    assert_eq!(
+        held_snap.find_highlights(1),
+        Some(expected_visible.as_slice()),
+        "held frame must keep pre-hold published highlights with wrap context"
+    );
+
+    // Querying or stepping during the hold returns the last published state
+    // promptly without touching the live grid and queues the interaction for release.
+    let during_hold = mirror.find_matches_in_session(1, &xxyy, FindAction::NewQuery);
+    assert_eq!(during_hold.count.total, 3);
+    assert_eq!(during_hold.count.index, Some(0));
+    assert_eq!(during_hold.current, Some(expected_visible[1]));
+    assert_eq!(during_hold.mark, mirror.scroll_mark());
+    assert_eq!(
+        mirror.viewport_snapshot().find_highlights(1),
+        Some(expected_visible.as_slice()),
+        "find during hold must keep published pre-hold highlights unchanged"
+    );
+
+    // Searching post-hold text in a new session during the hold returns promptly
+    // with zero hits and never leaks hidden post-hold text before release.
+    let hidden_during_hold = mirror.find_matches_in_session(2, &hidden, FindAction::NewQuery);
+    assert_eq!(hidden_during_hold.count.total, 0);
+    assert_eq!(hidden_during_hold.current, None);
+    assert_eq!(
+        mirror.viewport_snapshot().find_highlights(2),
+        None,
+        "held frame highlights must never leak hidden post-hold text"
+    );
+
+    // Releasing the hold publishes the live post-hold frame and executes queued
+    // find queries once on the live grid.
+    mirror.test_feed(3, b"\x1b[?2026l");
+    assert!(!mirror.is_render_held());
+    let expected_hidden = FindMatch::new(
+        Point::new(Line(0), Column(0)),
+        Point::new(Line(0), Column(5)),
+    );
+    let released = mirror.viewport_snapshot();
+    assert_eq!(released.view().row_to_string(Line(0)), "hidden");
+    assert_eq!(
+        released.find_highlights(2),
+        Some([expected_hidden].as_slice())
+    );
+    let released_find = mirror.find_matches_in_session(
+        2,
+        &hidden,
+        FindAction::Refresh {
+            anchor: None,
+            carried: None,
+        },
+    );
+    assert_eq!(released_find.count.total, 1);
+    assert_eq!(released_find.current, Some(expected_hidden));
+
+    // Local scrolling during a hold stays on the published snapshot while held
+    // and applies cleanly upon hold release (Decision 18).
+    let (scroll_mirror, _stx, _) = scripted_mirror(false);
+    scroll_mirror.configure(500, CursorShape::Block, false);
+    scroll_mirror.resize_local(12, 3);
+    let _scroll_view = scroll_mirror.view();
+    let lines = (0..20)
+        .map(|i| format!("row{i:02} needle\r\n"))
+        .collect::<String>();
+    scroll_mirror.test_feed(1, lines.as_bytes());
+    scroll_mirror.test_feed(2, b"\x1b[?2026h\rhidden");
+    scroll_mirror.scroll_to_display_offset(8);
+    assert_eq!(
+        scroll_mirror.scroll_state().display_offset,
+        0,
+        "published viewport stays frozen while held"
+    );
+    scroll_mirror.test_feed(3, b"\x1b[?2026l");
+    assert_eq!(scroll_mirror.scroll_state().display_offset, 8);
+    assert_eq!(
+        scroll_mirror
+            .viewport_snapshot()
+            .view()
+            .row_to_string(Line(-8)),
+        "row10 needle"
+    );
+
+    // A query + step queued during a hold executes once on release, creates a
+    // live TrackedGridRef anchor, and survives resize reflow (26 -> 24 columns)
+    // retaining the exact same occurrence (index 1).
+    let (anchor_mirror, _atx, _) = scripted_mirror(false);
+    anchor_mirror.configure(500, CursorShape::Block, false);
+    anchor_mirror.resize_local(26, 6);
+    let _anchor_view = anchor_mirror.view();
+    anchor_mirror.test_feed(1, b"older needle\r\nmiddle needle\r\nlatest needle");
+    anchor_mirror.test_feed(2, b"\x1b[?2026h");
+    let needle_q = FindQuery {
+        text: "needle".into(),
+        match_case: false,
+        regex: false,
+    };
+    let queued_first = anchor_mirror.find_matches_in_session(2, &needle_q, FindAction::NewQuery);
+    assert_eq!(queued_first.count.total, 0);
+    let queued_second = anchor_mirror.find_matches_in_session(
+        2,
+        &needle_q,
+        FindAction::Step {
+            anchor: None,
+            carried: None,
+            older: true,
+        },
+    );
+    assert_eq!(queued_second.count.total, 0);
+    assert!(anchor_mirror.is_render_held());
+
+    anchor_mirror.test_feed(3, b"\x1b[?2026l");
+    let released_step = anchor_mirror.find_matches_in_session(
+        2,
+        &needle_q,
+        FindAction::Refresh {
+            anchor: None,
+            carried: None,
+        },
+    );
+    assert_eq!(released_step.count.index, Some(1));
+    assert!(
+        released_step.anchor.is_some(),
+        "released queued step must produce a live tracked anchor"
+    );
+    anchor_mirror.resize_local(24, 6);
+    let carried = released_step
+        .mark
+        .moved_since(anchor_mirror.scroll_mark())
+        .and_then(|moved| {
+            released_step
+                .current
+                .map(|m| crate::terminal::find::shift_match(&m, moved))
+        });
+    let after = anchor_mirror.find_matches_in_session(
+        2,
+        &needle_q,
+        FindAction::Refresh {
+            anchor: released_step.anchor.as_ref().map(|a| a.id()),
+            carried,
+        },
+    );
+    assert_eq!(after.count.index, Some(1));
+    assert_eq!(after.current, released_step.current);
+
+    // Split `CSI ? 2026 h` and split `CSI ? 2026 l` across chunk boundaries stay
+    // held without leaking post-hold bytes and release cleanly on the closing byte.
+    let (edge_mirror, _etx, _) = scripted_mirror(false);
+    edge_mirror.resize_local(20, 3);
+    let _edge_view = edge_mirror.view();
+    edge_mirror.test_feed(1, b"PRE\x1b[?202");
+    assert_eq!(edge_mirror.sync_state().0, None);
+    edge_mirror.test_feed(2, b"6hSPLIT_HELD\x1b[?202");
+    assert!(edge_mirror.sync_state().0.is_some());
+    assert_eq!(
+        edge_mirror
+            .viewport_snapshot()
+            .view()
+            .row_to_string(Line(0)),
+        "PRE"
+    );
+    edge_mirror.test_feed(3, b"6l");
+    assert_eq!(edge_mirror.sync_state().0, None);
+    assert_eq!(
+        edge_mirror
+            .viewport_snapshot()
+            .view()
+            .row_to_string(Line(0)),
+        "PRESPLIT_HELD"
+    );
+}
+
+#[test]
+fn dec_2026_grouped_decset_every_split_resize_parity_and_release_query_resolution() {
+    use crate::terminal::find::{FindAction, FindQuery};
+
+    struct Host;
+    impl TerminalHost for Host {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    let secret_q = FindQuery {
+        text: "SECRET".into(),
+        match_case: false,
+        regex: false,
+    };
+
+    // 1. Grouped DECSET (`?2026h`, `?25;2026h`, `?02026h`, `?2026;1049h`,
+    //    `?1049;2026h`) under Decision 18:
+    //    - Split before DECSET publishes "pre" first and freezes "pre" while held.
+    //    - Unsplit `pre + begin + SECRET` in one chunk stays on the pre-chunk
+    //      published frame ("") while held (never leaking "SECRET").
+    //    - After release (`?2026l`), split and unsplit converge to the exact
+    //      same final screen and resolve queries queued during the hold.
+    for (begin, expected_released) in [
+        (b"\x1b[?2026h".as_slice(), "preSECRET"),
+        (b"\x1b[?25;2026h", "preSECRET"),
+        (b"\x1b[?02026h", "preSECRET"),
+        (b"\x1b[?2026;1049h", "   SECRET"),
+        (b"\x1b[?1049;2026h", "   SECRET"),
+    ] {
+        for split in [false, true] {
+            let (mirror, _tx, _) = scripted_mirror(false);
+            mirror.resize_local(40, 3);
+            let _view = mirror.view();
+            if split {
+                let first = [b"pre".as_slice(), &begin[..begin.len() - 1]].concat();
+                let second = [&begin[begin.len() - 1..], b"SECRET"].concat();
+                mirror.test_feed(1, &first);
+                mirror.test_feed(2, &second);
+            } else {
+                let chunk = [b"pre".as_slice(), begin, b"SECRET"].concat();
+                mirror.test_feed(1, &chunk);
+            }
+            let expected_held = if split { "pre" } else { "" };
+            assert!(
+                mirror.sync_state().0.is_some(),
+                "expected active render hold for begin={:?} split={split}",
+                String::from_utf8_lossy(begin)
+            );
+            assert_eq!(
+                mirror.with_screen(|s| s.view().visible_lines())[0],
+                expected_held,
+                "held with_screen mismatch for begin={:?} split={split}",
+                String::from_utf8_lossy(begin)
+            );
+            assert_eq!(
+                mirror.viewport_snapshot().view().visible_lines()[0],
+                expected_held,
+                "held viewport mismatch for begin={:?} split={split}",
+                String::from_utf8_lossy(begin)
+            );
+            let secret_held = mirror.find_matches_in_session(2, &secret_q, FindAction::NewQuery);
+            assert_eq!(
+                secret_held.count.total,
+                0,
+                "SECRET searchable while held for begin={:?} split={split}",
+                String::from_utf8_lossy(begin)
+            );
+            assert_eq!(mirror.viewport_snapshot().find_highlights(2), None);
+
+            // Releasing the hold publishes the identical final screen for both
+            // split and unsplit and resolves the queued SECRET query immediately.
+            mirror.test_feed(3, b"\x1b[?2026l");
+            assert_eq!(mirror.sync_state().0, None);
+            assert_eq!(
+                mirror.viewport_snapshot().view().visible_lines()[0],
+                expected_released,
+                "released viewport mismatch for begin={:?} split={split}",
+                String::from_utf8_lossy(begin)
+            );
+            assert_eq!(
+                mirror
+                    .viewport_snapshot()
+                    .find_highlights(2)
+                    .map(|h| h.len()),
+                Some(1),
+                "query queued during hold must highlight immediately on release"
+            );
+            let secret_after = mirror.find_matches_in_session(
+                2,
+                &secret_q,
+                FindAction::Refresh {
+                    anchor: None,
+                    carried: None,
+                },
+            );
+            assert_eq!(secret_after.count.total, 1);
+        }
+    }
+
+    // 2. Same-cursor overwrite prefix (`abc` + `X\x08` + `?25;2026h` + `SECRET`):
+    //    split shows `"abcX"` while held, unsplit shows pre-chunk `"abc"` while
+    //    held (Decision 18), and both converge to `"abcSECRET"` on release.
+    for split in [false, true] {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(16, 3);
+        let _view = mirror.view();
+        mirror.test_feed(1, b"abc");
+        if split {
+            mirror.test_feed(2, b"X\x08");
+            mirror.test_feed(3, b"\x1b[?25;2026hSECRET");
+        } else {
+            mirror.test_feed(2, b"X\x08\x1b[?25;2026hSECRET");
+        }
+        assert!(mirror.is_render_held());
+        let expected_held = if split { "abcX" } else { "abc" };
+        assert_eq!(
+            mirror.with_screen(|s| s.view().row_to_string(Line(0))),
+            expected_held
+        );
+        assert_eq!(
+            mirror.viewport_snapshot().view().row_to_string(Line(0)),
+            expected_held
+        );
+        mirror.test_feed(4, b"\x1b[?2026l");
+        assert!(!mirror.is_render_held());
+        assert_eq!(
+            mirror.viewport_snapshot().view().row_to_string(Line(0)),
+            "abcSECRET"
+        );
+    }
+
+    // 3. Every byte split of `CSI ? 2026 h` and `CSI ? 2026 l` produces the exact
+    //    same frozen pre-hold view and released post-hold view.
+    let begin_seq = b"\x1b[?2026h";
+    let end_seq = b"\x1b[?2026l";
+    for b_split in 1..begin_seq.len() {
+        for e_split in 1..end_seq.len() {
+            let (mirror, _tx, _) = scripted_mirror(false);
+            mirror.resize_local(30, 3);
+            let _view = mirror.view();
+            let c1 = [b"pre".as_slice(), &begin_seq[..b_split]].concat();
+            let c2 = [&begin_seq[b_split..], b"BODY", &end_seq[..e_split]].concat();
+            let c3 = &end_seq[e_split..];
+            mirror.test_feed(1, &c1);
+            assert_eq!(mirror.sync_state().0, None);
+            mirror.test_feed(2, &c2);
+            assert!(
+                mirror.sync_state().0.is_some(),
+                "hold missing for b_split={b_split} e_split={e_split}"
+            );
+            assert_eq!(
+                mirror.viewport_snapshot().view().visible_lines()[0],
+                "pre",
+                "BODY leaked for b_split={b_split} e_split={e_split}"
+            );
+            mirror.test_feed(3, c3);
+            assert_eq!(mirror.sync_state().0, None);
+            assert_eq!(
+                mirror.viewport_snapshot().view().visible_lines()[0],
+                "preBODY",
+                "release mismatch for b_split={b_split} e_split={e_split}"
+            );
+        }
+    }
+
+    // 4. Daemon (`TerminalModel`) and mirror (`TerminalMirror`) converge to the
+    //    exact same grid when a resize arrives during a DEC 2026 hold.
+    let host = TerminalModel::new(
+        Arc::new(Host),
+        "sync-resize-host".into(),
+        12,
+        3,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    let (mirror, frames, _) = scripted_mirror(false);
+    mirror.resize_local(12, 3);
+    let _view = mirror.view();
+    let bytes = b"S\x1b[?2026h\x1b[1;25HX";
+    mirror.test_feed(1, bytes);
+    host.feed_output(1, bytes);
+    assert!(mirror.is_render_held());
+    host.resize(26, 3);
+    frames
+        .send(Ok(TerminalFrame::Resized {
+            seq: 2,
+            cols: 26,
+            rows: 3,
+            controller: TerminalController::Desktop,
+        }))
+        .unwrap();
+    assert!(wait_until(Duration::from_secs(2), || mirror.size() == (26, 3)));
+    let end = b"\x1b[?2026l";
+    mirror.test_feed(3, end);
+    host.feed_output(3, end);
+    assert_eq!(host.visible_lines()[0].find('X'), Some(11));
+    assert_eq!(mirror.visible_lines()[0].find('X'), Some(11));
+    assert_eq!(mirror.visible_lines(), host.visible_lines());
+    drop(frames);
+    mirror.test_stop_frames();
+    for worker in host.stop_workers() {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn dec_2026_preserves_scrolled_viewport_cached_find_and_anchors_across_ed3_alt_scroll_and_counts_native_updates(
+) {
+    use crate::terminal::find::{FindAction, FindQuery};
+
+    let q = FindQuery {
+        text: "needle".into(),
+        match_case: false,
+        regex: false,
+    };
+
+    // 1. Scrolled back 3 rows into history, then opening a DEC 2026 hold that
+    //    clears scrollback (CSI 3 J), enters alt screen (CSI ? 1049 h), or
+    //    scrolls active output must keep both the published/inspected scrolled
+    //    viewport ("first needle") and last published find count (3 -> 3)
+    //    intact until release.
+    for (name, post) in [
+        ("ED3", b"\x1b[3J".as_slice()),
+        ("ALT", b"\x1b[?1049h"),
+        ("scroll", b"\r\npost"),
+    ] {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(20, 3);
+        let _view = mirror.view();
+        mirror.test_feed(
+            1,
+            b"first needle\r\nsecond needle\r\nthird needle\r\nactive A\r\nactive B\r\nactive C",
+        );
+        mirror.scroll_to_display_offset(3);
+        let before_top = mirror.with_screen(|s| {
+            let v = s.view();
+            v.row_to_string(Line(-(v.display_offset() as i32)))
+        });
+        assert_eq!(before_top, "first needle");
+        let before = mirror.find_matches_in_session(17, &q, FindAction::NewQuery);
+        assert_eq!(before.count.total, 3);
+
+        let held_chunk = [b"\x1b[?2026h".as_slice(), post].concat();
+        mirror.test_feed(2, &held_chunk);
+        assert!(mirror.sync_state().0.is_some(), "{name} should stay held");
+        let during = mirror.find_matches_in_session(17, &q, FindAction::NewQuery);
+        assert_eq!(
+            during.count.total, 3,
+            "{name} dropped find count during hold"
+        );
+        let during_top = mirror.with_screen(|s| {
+            let v = s.view();
+            v.row_to_string(Line(-(v.display_offset() as i32)))
+        });
+        assert_eq!(
+            during_top, "first needle",
+            "{name} moved with_screen top row during hold"
+        );
+        let painted_top = {
+            let snap = mirror.viewport_snapshot();
+            let v = snap.view();
+            v.row_to_string(Line(-(v.display_offset() as i32)))
+        };
+        assert_eq!(
+            painted_top, "first needle",
+            "{name} moved published top row during hold"
+        );
+        mirror.test_feed(3, b"\x1b[?2026l");
+    }
+
+    // 2. Deterministic queued find during hold (Blocker #3):
+    //    (a) Uncached NewQuery on a scrolled viewport under ED3 returns promptly
+    //        while the hold is still active (never blocking on release), keeps
+    //        the pre-release state unchanged, and resolves once on release.
+    {
+        let (mirror, _frames, _) = scripted_mirror(false);
+        mirror.resize_local(20, 3);
+        let _view = mirror.view();
+        mirror.test_feed(
+            1,
+            b"hist alpha\r\nhist beta\r\nhist gamma\r\nactive A\r\nactive B\r\nactive C",
+        );
+        mirror.scroll_to_display_offset(3);
+        mirror.test_feed(2, b"\x1b[?2026h\x1b[3J\x1b[Hreleased_token");
+        assert!(mirror.is_render_held());
+
+        let q_new = FindQuery {
+            text: "released_token".into(),
+            match_case: false,
+            regex: false,
+        };
+        let pre_release = mirror.find_matches_in_session(29, &q_new, FindAction::NewQuery);
+        // The synchronous round-trip confirmed the actor queued the request
+        // while the hold was still open, returning the last published state
+        // promptly instead of blocking until release or timeout.
+        assert!(
+            mirror.is_render_held(),
+            "find_matches_in_session must return promptly while hold is still active"
+        );
+        assert_eq!(pre_release.count.total, 0);
+        assert_eq!(pre_release.current, None);
+        assert_eq!(mirror.viewport_snapshot().find_highlights(29), None);
+
+        mirror.test_feed(3, b"\x1b[?2026l");
+        assert!(!mirror.is_render_held());
+        let expected = FindMatch::new(
+            Point::new(Line(0), Column(0)),
+            Point::new(Line(0), Column(13)),
+        );
+        assert_eq!(
+            mirror.viewport_snapshot().find_highlights(29),
+            Some([expected].as_slice()),
+            "queued query must publish highlights once at release"
+        );
+        let released = mirror.find_matches_in_session(
+            29,
+            &q_new,
+            FindAction::Refresh {
+                anchor: None,
+                carried: None,
+            },
+        );
+        assert_eq!(released.count.total, 1);
+        assert_eq!(released.current, Some(expected));
+    }
+
+    //    (b) Step during a hold with intact history returns the last published
+    //        index (0 -> 0) promptly without recomputing before release, then
+    //        advances once on release (0 -> 1).
+    {
+        let (mirror, _frames, _) = scripted_mirror(false);
+        mirror.resize_local(16, 3);
+        let _view = mirror.view();
+        let key_q = FindQuery {
+            text: "key".into(),
+            match_case: false,
+            regex: false,
+        };
+        mirror.test_feed(1, b"key1\r\nkey2\r\nkey3");
+        let pre = mirror.find_matches_in_session(31, &key_q, FindAction::NewQuery);
+        assert_eq!(pre.count.total, 3);
+        assert_eq!(pre.count.index, Some(0));
+
+        mirror.test_feed(2, b"\x1b[?2026h");
+        assert!(mirror.is_render_held());
+        let during_step = mirror.find_matches_in_session(
+            31,
+            &key_q,
+            FindAction::Step {
+                older: true,
+                carried: pre.current,
+                anchor: pre.anchor.as_ref().map(|a| a.id()),
+            },
+        );
+        assert!(mirror.is_render_held());
+        assert_eq!(
+            during_step.count.index,
+            Some(0),
+            "Step during hold must return last published index before release"
+        );
+        assert_eq!(during_step.current, pre.current);
+
+        mirror.test_feed(3, b"\x1b[?2026l");
+        let after_release = mirror.find_matches_in_session(
+            31,
+            &key_q,
+            FindAction::Refresh {
+                anchor: during_step.anchor.as_ref().map(|a| a.id()),
+                carried: during_step.current,
+            },
+        );
+        assert_eq!(after_release.count.total, 3);
+        assert_eq!(after_release.count.index, Some(1));
+        assert_eq!(
+            after_release.current,
+            Some(FindMatch::new(
+                Point::new(Line(1), Column(0)),
+                Point::new(Line(1), Column(2)),
+            ))
+        );
+    }
+
+    // 3. Refreshing an existing selected match during a hold that scrolls live
+    //    output must stay in published pre-hold coordinates (row 2, index 1),
+    //    never resolving the live shifted TrackedGridRef while held, then follow
+    //    "two  needle" to live row 1 after release.
+    {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(28, 4);
+        let _view = mirror.view();
+        mirror.test_feed(
+            1,
+            b"zero needle\r\none  needle\r\ntwo  needle\r\nlast needle",
+        );
+        let newest = mirror.find_matches_in_session(33, &q, FindAction::NewQuery);
+        let selected = mirror.find_matches_in_session(
+            33,
+            &q,
+            FindAction::Step {
+                older: true,
+                anchor: newest.anchor.as_ref().map(|a| a.id()),
+                carried: newest.current,
+            },
+        );
+        assert_eq!(selected.count.index, Some(1));
+        assert_eq!(
+            selected.current,
+            Some(FindMatch::new(
+                Point::new(Line(2), Column(5)),
+                Point::new(Line(2), Column(10)),
+            ))
+        );
+
+        mirror.test_feed(2, b"\x1b[?2026h\r\nafter");
+        for carried in [selected.current, None] {
+            let during = mirror.find_matches_in_session(
+                33,
+                &q,
+                FindAction::Refresh {
+                    anchor: selected.anchor.as_ref().map(|a| a.id()),
+                    carried,
+                },
+            );
+            assert_eq!(during.count.index, Some(1));
+            assert_eq!(during.current, selected.current);
+        }
+
+        mirror.test_feed(3, b"\x1b[?2026l");
+        let after = mirror.find_matches_in_session(
+            33,
+            &q,
+            FindAction::Refresh {
+                anchor: selected.anchor.as_ref().map(|a| a.id()),
+                carried: None,
+            },
+        );
+        assert_eq!(after.count.index, Some(1));
+        assert_eq!(
+            after.current,
+            Some(FindMatch::new(
+                Point::new(Line(1), Column(5)),
+                Point::new(Line(1), Column(10)),
+            ))
+        );
+    }
+
+    // 4. Rectangular selection copy outside a hold and synchronous live-grid
+    //    Copy during a hold (both pre-hold selections and selections dragged
+    //    inside the hold): formats once on demand with Ghostty's native
+    //    formatter without releasing the hold or calling `RenderState::update`.
+    for held in [false, true] {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(16, 3);
+        let _view = mirror.view();
+        mirror.test_feed(1, b"01234567\r\nabcdefgh\r\nABCDEFGH");
+        mirror.start_selection(
+            SelectionKind::Block,
+            Point::new(Line(0), Column(2)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(2), Column(4)), Side::Right);
+        if held {
+            mirror.test_feed(2, b"\x1b[?2026h");
+            assert!(mirror.is_render_held());
+            let before_formats = mirror.test_selection_formats();
+            let before_updates = mirror.test_render_state_updates();
+            assert_eq!(mirror.selection_text().as_deref(), Some("234\ncde\nCDE"));
+            assert!(
+                mirror.is_render_held(),
+                "synchronous Copy must not release the active DEC 2026 hold"
+            );
+            assert_eq!(mirror.test_selection_formats(), before_formats + 1);
+            assert_eq!(mirror.test_render_state_updates(), before_updates);
+            mirror.test_feed(3, b"\x1b[?2026l");
+        } else {
+            assert_eq!(mirror.selection_text().as_deref(), Some("234\ncde\nCDE"));
+        }
+    }
+    {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(16, 3);
+        let _view = mirror.view();
+        mirror.test_feed(1, b"01234567\r\nabcdefgh\r\nABCDEFGH");
+        mirror.test_feed(2, b"\x1b[?2026h");
+        mirror.start_selection(
+            SelectionKind::Block,
+            Point::new(Line(0), Column(2)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(2), Column(4)), Side::Right);
+        let before_formats = mirror.test_selection_formats();
+        let before_updates = mirror.test_render_state_updates();
+        assert_eq!(mirror.selection_text().as_deref(), Some("234\ncde\nCDE"));
+        assert!(mirror.is_render_held());
+        assert_eq!(mirror.test_selection_formats(), before_formats + 1);
+        assert_eq!(mirror.test_render_state_updates(), before_updates);
+        mirror.test_feed(3, b"\x1b[?2026l");
+        assert_eq!(mirror.test_render_state_updates(), before_updates + 1);
+    }
+
+    // 5. Native RenderState::update count and zero unrequested selection
+    //    formatting across plain, unprefixed sync, prefixed sync, open hold
+    //    interactions, and hidden mirrors:
+    //    - visible mirror (including with an active multi-row selection):
+    //      exactly 1 native update and 0 selection formats per complete frame
+    //      (plain, unprefixed sync, cursor-moving prefixed sync, and
+    //      same-cursor overwrite prefixed sync), 0 updates / 0 formats during
+    //      an open hold, and 1 update / 0 formats on release.
+    //    - hidden mirror (`viewers == 0`): 0 native updates on all frames.
+    {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(40, 4);
+        let _view = mirror.view();
+        mirror.test_feed(1, b"row0\r\nrow1\r\nrow2\r\nrow3\r\nrow4\r\nrow5");
+        mirror.start_selection(
+            SelectionKind::Simple,
+            Point::new(Line(-2), Column(0)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(-1), Column(3)), Side::Right);
+
+        for (seq, label, chunk) in [
+            (2u64, "plain", b"\rplain".as_slice()),
+            (3, "unprefixed sync", b"\x1b[?2026h\rsynced\x1b[?2026l"),
+            (
+                4,
+                "cursor-moving prefixed sync",
+                b"pre\x1b[?25;2026hSECRET\x1b[?2026l",
+            ),
+            (
+                5,
+                "same-cursor overwrite prefixed sync",
+                b"X\x08\x1b[?25;2026hSECRET2\x1b[?2026l",
+            ),
+        ] {
+            let before = mirror.test_render_state_updates();
+            let before_formats = mirror.test_selection_formats();
+            mirror.test_feed(seq, chunk);
+            let delta = mirror.test_render_state_updates() - before;
+            assert_eq!(
+                delta, 1,
+                "{label} complete frame must invoke native RenderState::update exactly once"
+            );
+            assert_eq!(
+                mirror.test_selection_formats(),
+                before_formats,
+                "{label} complete frame must do zero selection formatting"
+            );
+        }
+
+        // Open hold + held writes + scroll + find + selection hit-testing
+        // perform 0 native updates and 0 selection formats while held, then
+        // exactly 1 native update and 0 selection formats on release.
+        let before_hold = mirror.test_render_state_updates();
+        let before_formats = mirror.test_selection_formats();
+        mirror.test_feed(6, b"pre\x1b[?25;2026hHELD_BODY");
+        mirror.scroll_local(1);
+        let _ = mirror.find_matches_in_session(41, &q, FindAction::NewQuery);
+        let _ = mirror.selection_contains(Point::new(Line(0), Column(0)));
+        assert_eq!(
+            mirror.test_render_state_updates() - before_hold,
+            0,
+            "open hold and held reads/queued interactions must do 0 native RenderState::update calls"
+        );
+        assert_eq!(mirror.test_selection_formats(), before_formats);
+        mirror.test_feed(7, b"\x1b[?2026l");
+        assert_eq!(
+            mirror.test_render_state_updates() - before_hold,
+            1,
+            "hold release must perform exactly 1 native RenderState::update"
+        );
+        assert_eq!(
+            mirror.test_selection_formats(),
+            before_formats,
+            "hold release without requested Copy must do 0 selection formatting"
+        );
+    }
+    {
+        let (hidden, _tx, _) = scripted_mirror(false);
+        hidden.resize_local(40, 4);
+        let before = hidden.test_render_state_updates();
+        hidden.test_feed(1, b"\x1b[?2026h\rhidden_sync\x1b[?2026l");
+        hidden.test_feed(2, b"pre\x1b[?25;2026h\rhidden_prefixed\x1b[?2026l");
+        hidden.test_feed(3, b"X\x08\x1b[?25;2026h\rhidden_open");
+        hidden.test_feed(4, b"\x1b[?2026l");
+        assert_eq!(
+            hidden.test_render_state_updates(),
+            before,
+            "hidden mirror must perform zero native RenderState::update calls on synchronized frames"
+        );
+    }
+}
+
+#[test]
+fn dec_2026_offscreen_copy_scrolled_queued_selection_dropped_viewport_anchor_and_deadline_bound() {
+    // 1. Copy formats synchronously on demand from the live grid with Ghostty's
+    //    native formatter for both Block and Simple selections extending into
+    //    scrollback, without releasing an open DEC 2026 hold.
+    for (kind, expected) in [
+        (SelectionKind::Block, "al\nbr\nch\nde"),
+        (SelectionKind::Simple, "alpha\n11bravo\n22charlie\n33de"),
+    ] {
+        for held in [false, true] {
+            let (mirror, _tx, _) = scripted_mirror(false);
+            mirror.resize_local(12, 3);
+            let _view = mirror.view();
+            mirror.test_feed(1, b"00alpha\r\n11bravo\r\n22charlie\r\n33delta\r\n44echo");
+            mirror.start_selection(kind, Point::new(Line(-2), Column(2)), Side::Left);
+            mirror.update_selection(Point::new(Line(1), Column(3)), Side::Right);
+            if held {
+                mirror.test_feed(2, b"\x1b[?2026h");
+                assert!(mirror.is_render_held());
+            }
+            assert_eq!(
+                mirror.selection_text().as_deref(),
+                Some(expected),
+                "offscreen {kind:?} copy mismatch for held={held}"
+            );
+            if held {
+                assert!(
+                    mirror.is_render_held(),
+                    "synchronous Copy must not end the open DEC 2026 hold"
+                );
+                mirror.test_feed(3, b"\x1b[?2026l");
+            }
+        }
+    }
+
+    // 2. Queued selection endpoints translate from published pre-hold
+    //    coordinates onto the surviving live content when whole-screen output
+    //    scrolled during the hold (both Simple drag and Semantic double-click),
+    //    and an evicted selection on a zero-scrollback screen clears cleanly.
+    {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(16, 3);
+        let _view = mirror.view();
+        mirror.test_feed(1, b"alpha\r\nbravo\r\ncello");
+        mirror.test_feed(2, b"\x1b[?2026h\r\ndelta");
+        assert_eq!(
+            mirror.with_screen(|s| s.view().row_to_string(Line(1))),
+            "bravo"
+        );
+        mirror.start_selection(
+            SelectionKind::Simple,
+            Point::new(Line(1), Column(0)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(1), Column(4)), Side::Right);
+        mirror.test_feed(3, b"\x1b[?2026l");
+        assert_eq!(mirror.selection_text().as_deref(), Some("bravo"));
+    }
+    {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(16, 3);
+        let _view = mirror.view();
+        mirror.test_feed(1, b"alpha\r\nbravo\r\ncello");
+        mirror.test_feed(2, b"\x1b[?2026h\r\ndelta");
+        mirror.start_selection(
+            SelectionKind::Semantic,
+            Point::new(Line(1), Column(2)),
+            Side::Left,
+        );
+        mirror.test_feed(3, b"\x1b[?2026l");
+        assert_eq!(mirror.selection_text().as_deref(), Some("bravo"));
+    }
+    {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.configure(0, CursorShape::Block, false);
+        mirror.resize_local(16, 3);
+        let _view = mirror.view();
+        mirror.test_feed(1, b"alpha\r\nbravo\r\ncello");
+        mirror.test_feed(2, b"\x1b[?2026h\r\ndelta");
+        mirror.start_selection(
+            SelectionKind::Simple,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(0), Column(4)), Side::Right);
+        mirror.test_feed(3, b"\x1b[?2026l");
+        assert_eq!(mirror.selection_text(), None);
+    }
+
+    // 3. Closing Find during a hold queues `RestoreViewportAnchor(id)` and
+    //    immediately drops its `GridAnchor`; the actor keeps the native pin
+    //    alive until release consumes the restore, matching unheld behavior.
+    for held in [false, true] {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(12, 3);
+        let _view = mirror.view();
+        let text = (0..20)
+            .map(|i| format!("row{i:02}\r\n"))
+            .collect::<String>();
+        mirror.test_feed(1, text.as_bytes());
+        mirror.scroll_to_display_offset(5);
+        let anchor = mirror.track_viewport_top().unwrap();
+        let top_row = |m: &TerminalMirror| {
+            let snap = m.viewport_snapshot();
+            let v = snap.view();
+            v.row_to_string(Line(-(v.display_offset() as i32)))
+        };
+        let expected = top_row(&mirror);
+        mirror.scroll_to_display_offset(0);
+        if held {
+            mirror.test_feed(2, b"\x1b[?2026h");
+        }
+        mirror.restore_viewport_anchor(&anchor);
+        drop(anchor);
+        if held {
+            mirror.test_feed(3, b"\x1b[?2026l");
+        }
+        assert_eq!(
+            top_row(&mirror),
+            expected,
+            "viewport anchor restore mismatch for held={held}"
+        );
+        assert_eq!(
+            mirror.scroll_state().display_offset,
+            5,
+            "display offset mismatch for held={held}"
+        );
+    }
+
+    // 4. Continuous paired `CSI ? 2026 l` + `CSI ? 2026 h` reopenings retain
+    //    the exact original hold deadline Instant (no sliding extension) and
+    //    publish deterministically at expiry — verified both with a controlled
+    //    clock (`test_feed_at`) and through the real actor publication event.
+    {
+        let (tx, rx) = mpsc::channel();
+        let host = Arc::new(ScriptedHost(Mutex::new(Some(ScriptedFrames(
+            rx,
+            tx.clone(),
+        )))));
+        let (wake_tx, wake_rx) = mpsc::channel::<()>();
+        let waker: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            let _ = wake_tx.send(());
+        });
+        let mirror =
+            TerminalMirror::attach(DaemonClient::new(host), "deadline".into(), waker).unwrap();
+        mirror.resize_local(16, 3);
+        let _view = mirror.view();
+        mirror.test_feed(1, b"BASE");
+
+        // Controlled clock (future epoch so OS wall-clock cannot preempt):
+        // paired close/open writes keep the exact original deadline until
+        // `t0 + MIRROR_SYNC_HOLD_TIMEOUT`, where expiry publishes `frame7`.
+        let t0 = Instant::now() + Duration::from_secs(10);
+        mirror.test_feed_at(2, b"\x1b[?2026h", t0);
+        let original_deadline = mirror.sync_state().0.expect("hold deadline armed");
+        assert_eq!(original_deadline, t0 + MIRROR_SYNC_HOLD_TIMEOUT);
+        for (seq, elapsed_ms) in [(3u64, 40u64), (4, 80), (5, 120), (6, 149)] {
+            let chunk = format!("\rframe{seq}\x1b[?2026l\x1b[?2026h");
+            mirror.test_feed_at(
+                seq,
+                chunk.as_bytes(),
+                t0 + Duration::from_millis(elapsed_ms),
+            );
+            assert_eq!(
+                mirror.sync_state().0,
+                Some(original_deadline),
+                "paired DEC 2026 close/open must retain the original hold deadline (seq={seq})"
+            );
+            assert_eq!(
+                mirror.viewport_snapshot().view().row_to_string(Line(0)),
+                "BASE"
+            );
+        }
+        mirror.test_feed_at(
+            7,
+            b"\rframe7\x1b[?2026l\x1b[?2026h\x1b[?2026h",
+            t0 + MIRROR_SYNC_HOLD_TIMEOUT,
+        );
+        assert_eq!(mirror.sync_state().0, None);
+        assert_eq!(
+            mirror.viewport_snapshot().view().row_to_string(Line(0)),
+            "frame7"
+        );
+
+        // Repeated begin inside an active hold (plain, split across writes,
+        // grouped DECSET `?25;2026h`, leading zero `?02026h`) extends the
+        // deadline, while literal `CSI ? 2026 h` bytes inside an OSC string
+        // do not extend it and paired close+open within one write still keeps
+        // the prior bound.
+        let t1 = Instant::now() + Duration::from_secs(20);
+        mirror.test_feed_at(8, b"\x1b[?2026h\rhold1", t1);
+        let d1 = mirror.sync_state().0.expect("hold1 armed");
+        assert_eq!(d1, t1 + MIRROR_SYNC_HOLD_TIMEOUT);
+
+        // Unrelated DECSET, ANSI mode 2026 (without `?`), DECRQM `?2026$p`
+        // queries, and saved-mode restore (`?2026s` followed by `?2026r` of
+        // already-active mode 2026) must not extend the hold deadline.
+        mirror.test_feed_at(
+            9,
+            b"\x1b[2026h\x1b[?2026$p\x1b[?25h\x1b]2;[?2026h\x07\x1b[?2026s",
+            t1 + Duration::from_millis(20),
+        );
+        assert_eq!(mirror.sync_state().0, Some(d1));
+        mirror.test_feed_at(10, b"\x1b[?2026r", t1 + Duration::from_millis(30));
+        assert_eq!(
+            mirror.sync_state().0,
+            Some(d1),
+            "saved-mode restore (?2026r) of already-active mode 2026 must not extend hold deadline"
+        );
+
+        // Plain repeated begin extends.
+        let t2 = t1 + Duration::from_millis(40);
+        mirror.test_feed_at(11, b"\x1b[?2026h", t2);
+        let d2 = mirror.sync_state().0.expect("plain reopen extended");
+        assert_eq!(d2, t2 + MIRROR_SYNC_HOLD_TIMEOUT);
+        assert!(d2 > d1);
+
+        // Split repeated begin across two writes extends on completion.
+        let t3 = t2 + Duration::from_millis(30);
+        mirror.test_feed_at(12, b"\x1b[?20", t3);
+        assert_eq!(mirror.sync_state().0, Some(d2));
+        let t4 = t3 + Duration::from_millis(20);
+        mirror.test_feed_at(13, b"26h", t4);
+        let d4 = mirror.sync_state().0.expect("split reopen extended");
+        assert_eq!(d4, t4 + MIRROR_SYNC_HOLD_TIMEOUT);
+        assert!(d4 > d2);
+
+        // Grouped and zero-padded DECSET forms extend.
+        let t5 = t4 + Duration::from_millis(25);
+        mirror.test_feed_at(14, b"\x1b[?25;2026h", t5);
+        let d5 = mirror.sync_state().0.expect("grouped reopen extended");
+        assert_eq!(d5, t5 + MIRROR_SYNC_HOLD_TIMEOUT);
+        assert!(d5 > d4);
+
+        let t6 = t5 + Duration::from_millis(25);
+        mirror.test_feed_at(15, b"\x1b[?02026h", t6);
+        let d6 = mirror.sync_state().0.expect("zero-padded reopen extended");
+        assert_eq!(d6, t6 + MIRROR_SYNC_HOLD_TIMEOUT);
+        assert!(d6 > d5);
+
+        // Paired close+open (even followed by a redundant begin in the same
+        // write) keeps the prior bound `d6` rather than sliding further.
+        let t7 = t6 + Duration::from_millis(50);
+        mirror.test_feed_at(16, b"\rpaired\x1b[?2026l\x1b[?2026h\x1b[?2026h", t7);
+        assert_eq!(mirror.sync_state().0, Some(d6));
+        mirror.test_feed_at(17, b"\x1b[?2026l", t7 + Duration::from_millis(5));
+        assert_eq!(mirror.sync_state().0, None);
+        assert_eq!(
+            mirror.viewport_snapshot().view().row_to_string(Line(0)),
+            "paired"
+        );
+
+        // Real actor timer expiry driven by the real publication wake event
+        // (no fixed sleep and no polling loop).
+        let before_open = Instant::now();
+        mirror.test_feed(18, b"\x1b[?2026h");
+        let after_open = Instant::now();
+        let real_deadline = mirror.sync_state().0.expect("real hold deadline armed");
+        assert!(
+            real_deadline >= before_open + MIRROR_SYNC_HOLD_TIMEOUT
+                && real_deadline <= after_open + MIRROR_SYNC_HOLD_TIMEOUT
+        );
+        mirror.test_feed(19, b"\rframe9\x1b[?2026l\x1b[?2026h");
+        assert_eq!(mirror.sync_state().0, Some(real_deadline));
+        let guard = Instant::now() + Duration::from_secs(1);
+        while mirror.sync_state().0.is_some() {
+            let remaining = guard.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "hold deadline expiry must emit a publication wake and clear hold"
+            );
+            let _ = wake_rx.recv_timeout(remaining);
+        }
+        assert!(Instant::now() >= real_deadline);
+        assert_eq!(
+            mirror.viewport_snapshot().view().row_to_string(Line(0)),
+            "frame9"
+        );
+
+        // Synchronous Copy during four repeated DECSET ?2026 reopens 65 ms
+        // apart returns live grid text immediately in microseconds without
+        // releasing the hold or updating the frozen published snapshot.
+        mirror.test_feed(20, b"\x1b[2J\x1b[Hhello world");
+        mirror.start_selection(
+            SelectionKind::Simple,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(0), Column(4)), Side::Right);
+        assert_eq!(mirror.selection_text().as_deref(), Some("hello"));
+        mirror.test_feed(21, b"\x1b[?2026h\x1b[1;1HLIVE!\x1b[2;1Hlive-mid-hold");
+        assert!(mirror.is_render_held());
+        let before_updates = mirror.test_render_state_updates();
+
+        let (reopens_done_tx, reopens_done_rx) = mpsc::channel::<()>();
+        let (close_tx, close_rx) = mpsc::channel::<()>();
+        let feeder_mirror = Arc::clone(&mirror);
+        let feeder = std::thread::spawn(move || {
+            for seq in 22..=25 {
+                std::thread::sleep(Duration::from_millis(65));
+                feeder_mirror.test_feed(seq, b"\x1b[?2026h");
+            }
+            let _ = reopens_done_tx.send(());
+            let _ = close_rx.recv_timeout(Duration::from_secs(2));
+            feeder_mirror.test_feed(26, b"\x1b[?2026l");
+        });
+        reopens_done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("all four 65 ms DEC 2026 reopens applied");
+        assert!(
+            mirror.is_render_held(),
+            "hold must remain active after four 65 ms reopens"
+        );
+        let started = Instant::now();
+        let live = mirror.selection_text();
+        let copy_elapsed = started.elapsed();
+        assert_eq!(live.as_deref(), Some("LIVE!"));
+        assert!(
+            copy_elapsed < Duration::from_millis(5),
+            "synchronous selection_text after 4x65 ms reopens took {copy_elapsed:?}"
+        );
+        assert!(mirror.is_render_held());
+        assert_eq!(mirror.test_render_state_updates(), before_updates);
+        assert_eq!(
+            mirror.viewport_snapshot().view().row_to_string(Line(0)),
+            "hello world",
+            "published display must remain frozen on pre-hold frame"
+        );
+        let _ = close_tx.send(());
+        feeder.join().unwrap();
+        assert!(!mirror.is_render_held());
+        assert_eq!(mirror.test_render_state_updates(), before_updates + 1);
+        assert_eq!(
+            mirror.viewport_snapshot().view().row_to_string(Line(1)),
+            "live-mid-hold"
+        );
+
+        // Explicit written spaces vs unwritten empty cells vs block per-row
+        // trailing-whitespace trim vs same-side zero-width drag during hold,
+        // plus single RenderState::update per held frame release (both explicit
+        // `?2026l` close and 150 ms deadline expiry).
+        mirror.test_feed(27, b"\x1b[2J\x1b[Habc   D\r\nxyz  Q");
+        mirror.start_selection(
+            SelectionKind::Block,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(1), Column(5)), Side::Right);
+        assert_eq!(
+            mirror.selection_text().as_deref(),
+            Some("abc\nxyz  Q"),
+            "block selection must preserve per-row trailing-whitespace trimming"
+        );
+        mirror.start_selection(
+            SelectionKind::Simple,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(1), Column(5)), Side::Right);
+        assert_eq!(
+            mirror.selection_text().as_deref(),
+            Some("abc   D\nxyz  Q"),
+            "simple selection across rows must preserve interior text and spaces"
+        );
+        mirror.start_selection(
+            SelectionKind::Lines,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(1), Column(5)), Side::Right);
+        assert_eq!(
+            mirror.selection_text().as_deref(),
+            Some("abc   D\nxyz  Q\n"),
+            "line selection must keep full lines with trailing newline"
+        );
+        mirror.start_selection(
+            SelectionKind::Simple,
+            Point::new(Line(0), Column(3)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(0), Column(5)), Side::Right);
+        assert_eq!(
+            mirror.selection_text().as_deref(),
+            Some("   "),
+            "explicitly written interior spaces must be preserved"
+        );
+        mirror.start_selection(
+            SelectionKind::Simple,
+            Point::new(Line(0), Column(8)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(0), Column(12)), Side::Right);
+        assert_eq!(
+            mirror.selection_text(),
+            None,
+            "unwritten cells past end of line must resolve to None"
+        );
+        mirror.start_selection(
+            SelectionKind::Simple,
+            Point::new(Line(0), Column(1)),
+            Side::Left,
+        );
+        mirror.test_feed(28, b"\x1b[?2026h");
+        mirror.update_selection(Point::new(Line(0), Column(1)), Side::Left);
+        assert_eq!(
+            mirror.selection_text(),
+            None,
+            "same-side zero-width drag during hold must resolve to None"
+        );
+        assert!(mirror.is_render_held());
+        mirror.test_feed(29, b"\x1b[?2026l");
+
+        let mut seq = 30u64;
+        for clear in [false, true] {
+            for via_deadline in [false, true] {
+                mirror.test_feed(seq, b"\x1b[2J\x1b[Hhello");
+                seq += 1;
+                mirror.start_selection(
+                    SelectionKind::Simple,
+                    Point::new(Line(0), Column(0)),
+                    Side::Left,
+                );
+                mirror.update_selection(Point::new(Line(0), Column(4)), Side::Right);
+                let before_updates = mirror.test_render_state_updates();
+                let t_pub = Instant::now() + Duration::from_secs(60);
+                mirror.test_feed_at(seq, b"\x1b[?2026h", t_pub);
+                seq += 1;
+                assert_eq!(mirror.selection_text().as_deref(), Some("hello"));
+                if clear {
+                    mirror.clear_selection();
+                    assert_eq!(
+                        mirror.selection_text(),
+                        None,
+                        "second read after clear_selection during hold must see None immediately"
+                    );
+                }
+                assert!(mirror.is_render_held());
+                assert_eq!(
+                    mirror.test_render_state_updates(),
+                    before_updates,
+                    "Copy and clear_selection during hold must perform 0 RenderState::update calls"
+                );
+                if via_deadline {
+                    mirror.test_feed_at(
+                        seq,
+                        b"\x1b[2;1Hdeadline-frame",
+                        t_pub + MIRROR_SYNC_HOLD_TIMEOUT,
+                    );
+                } else {
+                    mirror.test_feed_at(
+                        seq,
+                        b"\x1b[2;1Hclose-frame\x1b[?2026l",
+                        t_pub + Duration::from_millis(10),
+                    );
+                }
+                seq += 1;
+                if clear {
+                    assert_eq!(mirror.selection_text(), None);
+                }
+                assert_eq!(
+                    mirror.test_render_state_updates() - before_updates,
+                    1,
+                    "held frame release must perform exactly 1 RenderState::update (clear={clear}, via_deadline={via_deadline})"
+                );
+            }
+        }
+        drop(tx);
+    }
+
+    // 5. On-demand native formatting always reflects current text (hidden
+    //    viewer mutation and active edit + scroll into history both return ZE)
+    //    and split synchronized frames over an untouched offscreen selection do
+    //    zero selection formatting work.
+    for hidden in [false, true] {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(12, 3);
+        let mut view = Some(mirror.view());
+        mirror.test_feed(1, b"00alpha\r\n11bravo\r\n22charlie\r\n33delta\r\n44echo");
+        mirror.start_selection(
+            SelectionKind::Block,
+            Point::new(Line(-2), Column(2)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(1), Column(3)), Side::Right);
+        if hidden {
+            drop(view.take());
+        }
+        mirror.test_feed(2, b"\x1b[2;3HZEBRA");
+        if hidden {
+            view = Some(mirror.view());
+        }
+        assert_eq!(
+            mirror.with_screen(|s| s.view().row_to_string(Line(1))),
+            "33ZEBRA"
+        );
+        assert_eq!(
+            mirror.selection_text().as_deref(),
+            Some("al\nbr\nch\nZE"),
+            "plain copy stale after hidden={hidden} mutation"
+        );
+        mirror.test_feed(3, b"\x1b[?2026h");
+        assert_eq!(
+            mirror.selection_text().as_deref(),
+            Some("al\nbr\nch\nZE"),
+            "open-hold deferred copy stale after hidden={hidden} mutation"
+        );
+        mirror.test_feed(4, b"\x1b[?2026l");
+        drop(view);
+    }
+    for scroll in [false, true] {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(12, 3);
+        let _view = mirror.view();
+        mirror.test_feed(
+            1,
+            b"prefix\r\n00alpha\r\n11bravo\r\n22charlie\r\n33delta\r\n44echo",
+        );
+        mirror.start_selection(
+            SelectionKind::Block,
+            Point::new(Line(-2), Column(2)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(0), Column(3)), Side::Right);
+        let edit = if scroll {
+            b"\x1b[1;3HZEBRA\x1b[3;1H\n".as_slice()
+        } else {
+            b"\x1b[1;3HZEBRA"
+        };
+        mirror.test_feed(2, edit);
+        assert_eq!(
+            mirror.selection_text().as_deref(),
+            Some("al\nbr\nZE"),
+            "plain copy stale after active edit + scroll={scroll}"
+        );
+        mirror.test_feed(3, b"\x1b[?2026h");
+        assert_eq!(
+            mirror.selection_text().as_deref(),
+            Some("al\nbr\nZE"),
+            "held deferred copy stale after active edit + scroll={scroll}"
+        );
+        mirror.test_feed(4, b"\x1b[?2026l");
+    }
+    {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(40, 4);
+        let _view = mirror.view();
+        mirror.test_feed(1, b"h0\r\nh1\r\nh2\r\nh3\r\nh4\r\nh5");
+        mirror.start_selection(
+            SelectionKind::Simple,
+            Point::new(Line(-2), Column(0)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(-1), Column(1)), Side::Right);
+        let before_formats = mirror.test_selection_formats();
+        for seq in 2..=10u64 {
+            mirror.test_feed(2 * seq, b"\x1b[?2026h");
+            let end = format!("\rframe {seq:02}\x1b[?2026l");
+            mirror.test_feed(2 * seq + 1, end.as_bytes());
+        }
+        assert_eq!(
+            mirror.test_selection_formats(),
+            before_formats,
+            "split synchronized frames over untouched offscreen selection must not format selection"
+        );
+    }
+
+    // 6. No-selection, single-click, and active-selection `selection_text()`
+    //    reads all return synchronously during an open DEC 2026 hold without
+    //    releasing the hold or calling `RenderState::update`.
+    {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(20, 3);
+        let _view = mirror.view();
+        mirror.test_feed(1, b"hello world");
+        mirror.test_feed(2, b"\x1b[?2026h");
+        assert!(mirror.is_render_held());
+
+        assert_eq!(mirror.selection_text(), None);
+        assert!(mirror.is_render_held());
+
+        mirror.start_selection(
+            SelectionKind::Block,
+            Point::new(Line(0), Column(2)),
+            Side::Left,
+        );
+        assert_eq!(mirror.selection_text(), None);
+        assert!(mirror.is_render_held());
+        mirror.test_feed(3, b"\x1b[?2026l");
+
+        mirror.start_selection(
+            SelectionKind::Simple,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(0), Column(4)), Side::Right);
+        mirror.test_feed(4, b"\x1b[?2026h");
+        assert!(mirror.is_render_held());
+        assert_eq!(mirror.selection_text().as_deref(), Some("hello"));
+        assert!(mirror.is_render_held());
+        mirror.test_feed(5, b"\x1b[?2026l");
+        assert!(!mirror.is_render_held());
+    }
+}
+
+#[test]
+fn sync_copy_and_input_ordering_during_dec_2026_hold_preserve_later_selections() {
+    struct InputRecordingHost {
+        frames: Mutex<Option<ScriptedFrames>>,
+        inputs: Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl runner_core::protocol::Transport for InputRecordingHost {
+        fn call(
+            &self,
+            request: runner_core::protocol::Request,
+        ) -> std::result::Result<runner_core::protocol::Response, ClientError> {
+            match request {
+                runner_core::protocol::Request::terminal_metadata { .. } => {
+                    Ok(runner_core::protocol::Response::terminal_metadata(Ok(
+                        TerminalMetadata::default(),
+                    )))
+                }
+                runner_core::protocol::Request::terminal_observe_input { .. } => Ok(
+                    runner_core::protocol::Response::terminal_observe_input(Ok(())),
+                ),
+                _ => Err(ClientError::msg("unexpected request")),
+            }
+        }
+        fn subscribe(&self) -> Box<dyn runner_core::protocol::EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: TerminalSnapshot {
+                    seq: 0,
+                    format: Default::default(),
+                    unavailable: false,
+                    cols: 40,
+                    rows: 3,
+                    bytes: Vec::new(),
+                    unfinished_len: 0,
+                    preceding_char: None,
+                    activity: None,
+                    controller: Default::default(),
+                },
+                frames: Box::new(self.frames.lock().unwrap().take().expect("one attachment")),
+            })
+        }
+        fn input(&self, _: &str, bytes: &[u8]) -> std::result::Result<(), ClientError> {
+            self.inputs.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }
+    }
+
+    let (tx, rx) = mpsc::channel();
+    let host = Arc::new(InputRecordingHost {
+        frames: Mutex::new(Some(ScriptedFrames(rx, tx.clone()))),
+        inputs: Mutex::new(Vec::new()),
+    });
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(host.clone()),
+        "sync-copy-later-selection".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let inputs = &host.inputs;
+    let _view = mirror.view();
+
+    // 1. Empty Ctrl+C during a hold sends `\x03` immediately; selecting `"world"`
+    //    afterward keeps `"world"` selected across hold release.
+    mirror.test_feed(1, b"\x1b[2J\x1b[Hhello world\x1b[?2004h");
+    mirror.test_feed(2, b"\x1b[?2026h");
+    assert_eq!(mirror.selection_text(), None);
+    assert!(mirror.send_key("c", true, false, false, None).unwrap());
+    mirror.start_selection(
+        SelectionKind::Simple,
+        Point::new(Line(0), Column(6)),
+        Side::Left,
+    );
+    mirror.update_selection(Point::new(Line(0), Column(10)), Side::Right);
+    mirror.test_feed(3, b"\x1b[?2026l");
+    assert_eq!(*inputs.lock().unwrap(), vec![b"\x03".to_vec()]);
+    assert_eq!(mirror.selection_text().as_deref(), Some("world"));
+
+    // 2. Non-empty Ctrl+C (`"hello"`) + `Enter` during a hold copies `"hello"`,
+    //    clears it, sends `\r` immediately, and keeps a newer `"world"` selection.
+    inputs.lock().unwrap().clear();
+    mirror.start_selection(
+        SelectionKind::Simple,
+        Point::new(Line(0), Column(0)),
+        Side::Left,
+    );
+    mirror.update_selection(Point::new(Line(0), Column(4)), Side::Right);
+    mirror.test_feed(4, b"\x1b[?2026h");
+    assert_eq!(mirror.selection_text().as_deref(), Some("hello"));
+    mirror.clear_selection();
+    assert!(mirror.send_key("enter", false, false, false, None).unwrap());
+    mirror.start_selection(
+        SelectionKind::Simple,
+        Point::new(Line(0), Column(6)),
+        Side::Left,
+    );
+    mirror.update_selection(Point::new(Line(0), Column(10)), Side::Right);
+    mirror.test_feed(5, b"\x1b[?2026l");
+    assert_eq!(*inputs.lock().unwrap(), vec![b"\r".to_vec()]);
+    assert_eq!(mirror.selection_text().as_deref(), Some("world"));
+
+    // 3. Copy during a hold -> Paste -> Enter immediately writes `[Paste, \r]`
+    //    in natural order while keeping any selection made afterward.
+    inputs.lock().unwrap().clear();
+    mirror.test_feed(6, b"\x1b[?2026h");
+    let copied = mirror.selection_text().unwrap();
+    assert_eq!(copied, "world");
+    mirror.paste(&copied).unwrap();
+    assert!(mirror.send_key("enter", false, false, false, None).unwrap());
+    mirror.start_selection(
+        SelectionKind::Simple,
+        Point::new(Line(0), Column(0)),
+        Side::Left,
+    );
+    mirror.update_selection(Point::new(Line(0), Column(4)), Side::Right);
+    mirror.test_feed(7, b"\x1b[?2026l");
+    assert_eq!(
+        *inputs.lock().unwrap(),
+        vec![b"\x1b[200~world\x1b[201~".to_vec(), b"\r".to_vec()]
+    );
+    assert_eq!(mirror.selection_text().as_deref(), Some("hello"));
+
+    // 4. `selection_text_if_published` decides hold state atomically on the
+    //    actor thread, so racing it against a large opening-hold overwrite
+    //    (`"FAIL"` -> `"PASS"`) can only observe `Ready(Some("FAIL"))` before
+    //    the hold or `Held` once the hold is open — never unpublished `"PASS"`.
+    use crate::terminal::SelectionSeed;
+    let mut seq = 8u64;
+    for pad_len in [64_000usize, 128_000] {
+        mirror.test_feed(seq, b"\x1b[2J\x1b[HFAIL");
+        seq += 1;
+        mirror.start_selection(
+            SelectionKind::Simple,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        mirror.update_selection(Point::new(Line(0), Column(3)), Side::Right);
+        assert_eq!(
+            mirror.selection_text_if_published(),
+            SelectionSeed::Ready(Some("FAIL".into()))
+        );
+        let mut chunk = Vec::with_capacity(pad_len + 32);
+        chunk.extend_from_slice(b"\x1b[?2026h");
+        while chunk.len() < pad_len {
+            chunk.extend_from_slice(b"\x1b[2;1Hx");
+        }
+        chunk.extend_from_slice(b"\x1b[1;1HPASS");
+        let future_t = Instant::now() + Duration::from_secs(60);
+        let writer_mirror = Arc::clone(&mirror);
+        let write_seq = seq;
+        seq += 1;
+        let writer = thread::spawn(move || {
+            writer_mirror.test_feed_at(write_seq, &chunk, future_t);
+        });
+        let observed = mirror.selection_text_if_published();
+        assert!(
+            matches!(
+                observed,
+                SelectionSeed::Ready(Some(ref text)) if text == "FAIL"
+            ) || observed == SelectionSeed::Held,
+            "selection_text_if_published observed unexpected state during concurrent opening-hold write (pad_len={pad_len}): {observed:?}"
+        );
+        writer.join().unwrap();
+        assert_eq!(mirror.selection_text_if_published(), SelectionSeed::Held);
+        assert_eq!(mirror.selection_text().as_deref(), Some("PASS"));
+        mirror.test_feed_at(seq, b"\x1b[?2026l", future_t + Duration::from_millis(10));
+        seq += 1;
+        assert_eq!(
+            mirror.selection_text_if_published(),
+            SelectionSeed::Ready(Some("PASS".into()))
+        );
+    }
 }

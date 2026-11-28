@@ -29,7 +29,7 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 
 ## Stack
 
-- Native UI: GPUI with `alacritty_terminal` as the terminal model and render buffer.
+- Native UI: GPUI painting immutable `ViewportSnapshot`s from `libghostty-vt` (`vt-1.0.2`, static Zig `0.17.0` library via `crates/ghostty-vt-sys`), strictly wrapped behind `crates/runner-terminal`.
 - Background daemon: `runnerd` runs the Rust application core and SQLite via `rusqlite`, exposed by `crates/runner-daemon`; the app and CLI are clients.
 - PTY runtime: `portable-pty`.
 - Event transport: append-only NDJSON logs watched through `notify`.
@@ -37,7 +37,9 @@ Surface hierarchy (strict — do not blur these in code, docs, or UI copy):
 
 ## Project Map
 
-- `crates/runner-app/`: GPUI application, terminal renderer, and terminal fixture corpus.
+- `crates/runner-app/`: GPUI application and terminal renderer (`ViewportSnapshot`-backed `TerminalElement`).
+- `crates/runner-terminal/`: single-owner `TerminalModel` / `TerminalMirror` actors, safe `!Send`/`!Sync` `libghostty-vt` wrapper (`src/vt/`), pure Runner terminal types, input encoders, link detection, snapshots, and the terminal fixture corpus.
+- `crates/ghostty-vt-sys/`: static build script (Zig `0.17.0`, offline `--system` cache via `make ghostty-deps`) and `bindgen` FFI bindings for `vendor/libghostty-vt/` (`vt-1.0.2`, tracked patches in `vendor/libghostty-vt.patches.md`).
 - `crates/runner-daemon/`: `runnerd` and its UI-agnostic application core, including SQLite, the session manager, event bus and router, and the client-protocol server the app and CLI connect to.
 - `crates/runner-cli/`: the bundled `runner` CLI, used by spawned agents inside a mission and by people, scripts and agents outside one.
 - `crates/runner-core/`: shared types, event-log primitives, client protocol and daemon launch/connection.

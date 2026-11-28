@@ -1,14 +1,10 @@
 //! Runner-owned terminal types shared across the `runner-terminal` boundary.
-//! Shaped to map cleanly onto both `alacritty_terminal` and `libghostty-vt`.
 
 use std::fmt;
 use std::ops::{Add, AddAssign, BitAnd, BitAndAssign, BitOr, BitOrAssign, Not, Sub, SubAssign};
+use std::sync::Arc;
 
-use alacritty_terminal::index as alacritty_index;
-use alacritty_terminal::selection as alacritty_selection;
-use alacritty_terminal::term::cell as alacritty_cell;
-use alacritty_terminal::term::TermMode as AlacrittyTermMode;
-use alacritty_terminal::vte::ansi as alacritty_ansi;
+use crate::vt::{self, CellWide, UnderlineStyle};
 
 /// A grid line index: `0..rows` on the visible screen and negative lines in scrollback history.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -64,18 +60,6 @@ impl SubAssign<i32> for Line {
     }
 }
 
-impl Line {
-    #[inline]
-    pub(crate) fn from_alacritty(line: alacritty_index::Line) -> Self {
-        Self(line.0)
-    }
-
-    #[inline]
-    pub(crate) fn to_alacritty(self) -> alacritty_index::Line {
-        alacritty_index::Line(self.0)
-    }
-}
-
 /// A zero-based column index in the terminal grid.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Column(pub usize);
@@ -112,18 +96,6 @@ impl SubAssign<usize> for Column {
     }
 }
 
-impl Column {
-    #[inline]
-    pub(crate) fn from_alacritty(column: alacritty_index::Column) -> Self {
-        Self(column.0)
-    }
-
-    #[inline]
-    pub(crate) fn to_alacritty(self) -> alacritty_index::Column {
-        alacritty_index::Column(self.0)
-    }
-}
-
 /// A cell coordinate in the terminal grid (including scrollback lines).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GridPoint {
@@ -135,19 +107,6 @@ impl GridPoint {
     #[inline]
     pub const fn new(line: Line, column: Column) -> Self {
         Self { line, column }
-    }
-
-    #[inline]
-    pub(crate) fn from_alacritty(point: alacritty_index::Point) -> Self {
-        Self {
-            line: Line::from_alacritty(point.line),
-            column: Column::from_alacritty(point.column),
-        }
-    }
-
-    #[inline]
-    pub(crate) fn to_alacritty(self) -> alacritty_index::Point {
-        alacritty_index::Point::new(self.line.to_alacritty(), self.column.to_alacritty())
     }
 }
 
@@ -188,16 +147,6 @@ pub enum Side {
     Right,
 }
 
-impl Side {
-    #[inline]
-    pub(crate) fn to_alacritty(self) -> alacritty_index::Side {
-        match self {
-            Self::Left => alacritty_index::Side::Left,
-            Self::Right => alacritty_index::Side::Right,
-        }
-    }
-}
-
 /// Visual shape of the terminal cursor.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum CursorShape {
@@ -209,45 +158,11 @@ pub enum CursorShape {
     Hidden,
 }
 
-impl CursorShape {
-    #[inline]
-    pub(crate) fn from_alacritty(shape: alacritty_ansi::CursorShape) -> Self {
-        match shape {
-            alacritty_ansi::CursorShape::Block => Self::Block,
-            alacritty_ansi::CursorShape::HollowBlock => Self::HollowBlock,
-            alacritty_ansi::CursorShape::Underline => Self::Underline,
-            alacritty_ansi::CursorShape::Beam => Self::Beam,
-            alacritty_ansi::CursorShape::Hidden => Self::Hidden,
-        }
-    }
-
-    #[inline]
-    pub(crate) fn to_alacritty(self) -> alacritty_ansi::CursorShape {
-        match self {
-            Self::Block => alacritty_ansi::CursorShape::Block,
-            Self::HollowBlock => alacritty_ansi::CursorShape::HollowBlock,
-            Self::Underline => alacritty_ansi::CursorShape::Underline,
-            Self::Beam => alacritty_ansi::CursorShape::Beam,
-            Self::Hidden => alacritty_ansi::CursorShape::Hidden,
-        }
-    }
-}
-
 /// Configured or DECSCUSR cursor shape and blinking state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct CursorStyle {
     pub shape: CursorShape,
     pub blinking: bool,
-}
-
-impl CursorStyle {
-    #[inline]
-    pub(crate) fn from_alacritty(style: alacritty_ansi::CursorStyle) -> Self {
-        Self {
-            shape: CursorShape::from_alacritty(style.shape),
-            blinking: style.blinking,
-        }
-    }
 }
 
 /// Cursor geometry and visibility for rendering.
@@ -267,28 +182,6 @@ pub enum SelectionKind {
     Lines,
 }
 
-impl SelectionKind {
-    #[inline]
-    pub(crate) fn from_alacritty(ty: alacritty_selection::SelectionType) -> Self {
-        match ty {
-            alacritty_selection::SelectionType::Simple => Self::Simple,
-            alacritty_selection::SelectionType::Block => Self::Block,
-            alacritty_selection::SelectionType::Semantic => Self::Semantic,
-            alacritty_selection::SelectionType::Lines => Self::Lines,
-        }
-    }
-
-    #[inline]
-    pub(crate) fn to_alacritty(self) -> alacritty_selection::SelectionType {
-        match self {
-            Self::Simple => alacritty_selection::SelectionType::Simple,
-            Self::Block => alacritty_selection::SelectionType::Block,
-            Self::Semantic => alacritty_selection::SelectionType::Semantic,
-            Self::Lines => alacritty_selection::SelectionType::Lines,
-        }
-    }
-}
-
 /// Active selection span in grid coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SelectionRange {
@@ -305,15 +198,6 @@ impl SelectionRange {
             && (self.start.column <= point.column
                 || (self.start.line != point.line && !self.is_block))
             && (self.end.column >= point.column || (self.end.line != point.line && !self.is_block))
-    }
-
-    #[inline]
-    pub(crate) fn from_alacritty(range: alacritty_selection::SelectionRange) -> Self {
-        Self {
-            start: GridPoint::from_alacritty(range.start),
-            end: GridPoint::from_alacritty(range.end),
-            is_block: range.is_block,
-        }
     }
 }
 
@@ -344,36 +228,31 @@ impl FindMatch {
     pub fn contains(&self, point: &GridPoint) -> bool {
         self.start <= *point && *point <= self.end
     }
-
-    #[inline]
-    pub(crate) fn from_alacritty(matched: alacritty_terminal::term::search::Match) -> Self {
-        Self {
-            start: GridPoint::from_alacritty(*matched.start()),
-            end: GridPoint::from_alacritty(*matched.end()),
-        }
-    }
 }
 
 /// OSC 8 hyperlink attached to a cell.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Hyperlink {
-    inner: alacritty_cell::Hyperlink,
+    id: Arc<str>,
+    uri: Arc<str>,
 }
 
 impl Hyperlink {
+    pub fn new(id: impl Into<Arc<str>>, uri: impl Into<Arc<str>>) -> Self {
+        Self {
+            id: id.into(),
+            uri: uri.into(),
+        }
+    }
+
     #[inline]
     pub fn id(&self) -> &str {
-        self.inner.id()
+        &self.id
     }
 
     #[inline]
     pub fn uri(&self) -> &str {
-        self.inner.uri()
-    }
-
-    #[inline]
-    pub(crate) fn from_alacritty(inner: alacritty_cell::Hyperlink) -> Self {
-        Self { inner }
+        &self.uri
     }
 }
 
@@ -453,52 +332,42 @@ impl CellFlags {
     }
 
     #[inline]
-    pub(crate) fn from_alacritty(flags: alacritty_cell::Flags) -> Self {
+    pub(crate) fn from_vt_style(style_flags: u16, wide: CellWide, wrapline: bool) -> Self {
         let mut out = 0u16;
-        if flags.contains(alacritty_cell::Flags::INVERSE) {
+        if style_flags & vt::STYLE_FLAG_INVERSE != 0 {
             out |= Self::INVERSE.0;
         }
-        if flags.contains(alacritty_cell::Flags::BOLD) {
+        if style_flags & vt::STYLE_FLAG_BOLD != 0 {
             out |= Self::BOLD.0;
         }
-        if flags.contains(alacritty_cell::Flags::ITALIC) {
+        if style_flags & vt::STYLE_FLAG_ITALIC != 0 {
             out |= Self::ITALIC.0;
         }
-        if flags.contains(alacritty_cell::Flags::UNDERLINE) {
-            out |= Self::UNDERLINE.0;
-        }
-        if flags.contains(alacritty_cell::Flags::WRAPLINE) {
-            out |= Self::WRAPLINE.0;
-        }
-        if flags.contains(alacritty_cell::Flags::WIDE_CHAR) {
-            out |= Self::WIDE_CHAR.0;
-        }
-        if flags.contains(alacritty_cell::Flags::WIDE_CHAR_SPACER) {
-            out |= Self::WIDE_CHAR_SPACER.0;
-        }
-        if flags.contains(alacritty_cell::Flags::DIM) {
+        if style_flags & vt::STYLE_FLAG_FAINT != 0 {
             out |= Self::DIM.0;
         }
-        if flags.contains(alacritty_cell::Flags::HIDDEN) {
+        if style_flags & vt::STYLE_FLAG_INVISIBLE != 0 {
             out |= Self::HIDDEN.0;
         }
-        if flags.contains(alacritty_cell::Flags::STRIKEOUT) {
+        if style_flags & vt::STYLE_FLAG_STRIKETHROUGH != 0 {
             out |= Self::STRIKEOUT.0;
         }
-        if flags.contains(alacritty_cell::Flags::LEADING_WIDE_CHAR_SPACER) {
-            out |= Self::LEADING_WIDE_CHAR_SPACER.0;
+        match vt::style_underline(style_flags) {
+            UnderlineStyle::None => {}
+            UnderlineStyle::Single => out |= Self::UNDERLINE.0,
+            UnderlineStyle::Double => out |= Self::DOUBLE_UNDERLINE.0,
+            UnderlineStyle::Curly => out |= Self::UNDERCURL.0,
+            UnderlineStyle::Dotted => out |= Self::DOTTED_UNDERLINE.0,
+            UnderlineStyle::Dashed => out |= Self::DASHED_UNDERLINE.0,
         }
-        if flags.contains(alacritty_cell::Flags::DOUBLE_UNDERLINE) {
-            out |= Self::DOUBLE_UNDERLINE.0;
+        match wide {
+            CellWide::Narrow => {}
+            CellWide::Wide => out |= Self::WIDE_CHAR.0,
+            CellWide::SpacerTail => out |= Self::WIDE_CHAR_SPACER.0,
+            CellWide::SpacerHead => out |= Self::LEADING_WIDE_CHAR_SPACER.0,
         }
-        if flags.contains(alacritty_cell::Flags::UNDERCURL) {
-            out |= Self::UNDERCURL.0;
-        }
-        if flags.contains(alacritty_cell::Flags::DOTTED_UNDERLINE) {
-            out |= Self::DOTTED_UNDERLINE.0;
-        }
-        if flags.contains(alacritty_cell::Flags::DASHED_UNDERLINE) {
-            out |= Self::DASHED_UNDERLINE.0;
+        if wrapline {
+            out |= Self::WRAPLINE.0;
         }
         Self(out)
     }
@@ -667,76 +536,84 @@ impl TerminalModeFlags {
         self.0 &= !other.0;
     }
 
-    #[inline]
-    pub(crate) fn from_alacritty(mode: AlacrittyTermMode) -> Self {
+    pub(crate) fn from_vt(term: &vt::Terminal) -> Self {
         let mut out = 0u32;
-        if mode.contains(AlacrittyTermMode::SHOW_CURSOR) {
+        if term.cursor_visible() {
             out |= Self::SHOW_CURSOR.0;
         }
-        if mode.contains(AlacrittyTermMode::APP_CURSOR) {
+        if term.mode(vt::dec_mode(1)) {
             out |= Self::APP_CURSOR.0;
         }
-        if mode.contains(AlacrittyTermMode::APP_KEYPAD) {
+        if term.mode(vt::dec_mode(66)) {
             out |= Self::APP_KEYPAD.0;
         }
-        if mode.contains(AlacrittyTermMode::MOUSE_REPORT_CLICK) {
+        if term.mode(vt::dec_mode(1000)) || term.mode(vt::dec_mode(9)) {
             out |= Self::MOUSE_REPORT_CLICK.0;
         }
-        if mode.contains(AlacrittyTermMode::BRACKETED_PASTE) {
+        if term.mode(vt::dec_mode(2004)) {
             out |= Self::BRACKETED_PASTE.0;
         }
-        if mode.contains(AlacrittyTermMode::SGR_MOUSE) {
+        if term.mode(vt::dec_mode(1006)) {
             out |= Self::SGR_MOUSE.0;
         }
-        if mode.contains(AlacrittyTermMode::MOUSE_MOTION) {
+        if term.mode(vt::dec_mode(1003)) {
             out |= Self::MOUSE_MOTION.0;
         }
-        if mode.contains(AlacrittyTermMode::LINE_WRAP) {
+        if term.mode(vt::dec_mode(7)) {
             out |= Self::LINE_WRAP.0;
         }
-        if mode.contains(AlacrittyTermMode::LINE_FEED_NEW_LINE) {
+        if term.mode(vt::ansi_mode(20)) {
             out |= Self::LINE_FEED_NEW_LINE.0;
         }
-        if mode.contains(AlacrittyTermMode::ORIGIN) {
+        if term.mode(vt::dec_mode(6)) {
             out |= Self::ORIGIN.0;
         }
-        if mode.contains(AlacrittyTermMode::INSERT) {
+        if term.mode(vt::ansi_mode(4)) {
             out |= Self::INSERT.0;
         }
-        if mode.contains(AlacrittyTermMode::FOCUS_IN_OUT) {
+        if term.mode(vt::dec_mode(1004)) {
             out |= Self::FOCUS_IN_OUT.0;
         }
-        if mode.contains(AlacrittyTermMode::ALT_SCREEN) {
+        if term.active_screen() == vt::ActiveScreen::Alternate {
             out |= Self::ALT_SCREEN.0;
         }
-        if mode.contains(AlacrittyTermMode::MOUSE_DRAG) {
+        if term.mode(vt::dec_mode(1002)) {
             out |= Self::MOUSE_DRAG.0;
         }
-        if mode.contains(AlacrittyTermMode::UTF8_MOUSE) {
+        if term.mode(vt::dec_mode(1005)) {
             out |= Self::UTF8_MOUSE.0;
         }
-        if mode.contains(AlacrittyTermMode::ALTERNATE_SCROLL) {
+        if term.mode(vt::dec_mode(1007)) {
             out |= Self::ALTERNATE_SCROLL.0;
         }
-        if mode.contains(AlacrittyTermMode::URGENCY_HINTS) {
-            out |= Self::URGENCY_HINTS.0;
-        }
-        if mode.contains(AlacrittyTermMode::DISAMBIGUATE_ESC_CODES) {
+        // Phase 1 supports only the Kitty disambiguation bit (bit 0); releases,
+        // repeats, alternate keys and associated text wait for key-up wiring.
+        let kitty = term.kitty_keyboard_flags() & 1;
+        if kitty & (1 << 0) != 0 {
             out |= Self::DISAMBIGUATE_ESC_CODES.0;
         }
-        if mode.contains(AlacrittyTermMode::REPORT_EVENT_TYPES) {
-            out |= Self::REPORT_EVENT_TYPES.0;
-        }
-        if mode.contains(AlacrittyTermMode::REPORT_ALTERNATE_KEYS) {
-            out |= Self::REPORT_ALTERNATE_KEYS.0;
-        }
-        if mode.contains(AlacrittyTermMode::REPORT_ALL_KEYS_AS_ESC) {
-            out |= Self::REPORT_ALL_KEYS_AS_ESC.0;
-        }
-        if mode.contains(AlacrittyTermMode::REPORT_ASSOCIATED_TEXT) {
-            out |= Self::REPORT_ASSOCIATED_TEXT.0;
-        }
         Self(out)
+    }
+
+    #[inline]
+    pub(crate) fn kitty_keyboard_bits(self) -> u8 {
+        let mut bits = 0u8;
+        if self.contains(Self::DISAMBIGUATE_ESC_CODES) {
+            bits |= 1 << 0;
+        }
+        if self.contains(Self::REPORT_EVENT_TYPES) {
+            bits |= 1 << 1;
+        }
+        if self.contains(Self::REPORT_ALTERNATE_KEYS) {
+            bits |= 1 << 2;
+        }
+        if self.contains(Self::REPORT_ALL_KEYS_AS_ESC) {
+            bits |= 1 << 3;
+        }
+        if self.contains(Self::REPORT_ASSOCIATED_TEXT) {
+            bits |= 1 << 4;
+        }
+        bits
     }
 }
 

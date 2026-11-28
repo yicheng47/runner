@@ -122,6 +122,8 @@ mod tests {
                 snapshot: TerminalSnapshot {
                     seq: 0,
                     activity: None,
+                    format: Default::default(),
+                    unavailable: false,
                     cols: 10,
                     rows: 2,
                     controller: self
@@ -367,7 +369,11 @@ mod tests {
         cx.update(|cx| {
             cx.write_to_clipboard(ClipboardItem::new_string("unchanged".into()));
             assert!(!copy_selection(&terminal, cx));
-            assert!(cx.read_from_clipboard().unwrap().text().as_deref() == Some("unchanged"));
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some("unchanged")
+            );
+            assert!(host.inputs.lock().unwrap().is_empty());
             terminal.start_selection(
                 SelectionType::Simple,
                 Point::new(Line(0), Column(0)),
@@ -421,6 +427,58 @@ mod tests {
                 assert_eq!(terminal.selection_text(), Some(selected));
                 assert!(host.inputs.lock().unwrap().is_empty());
             }
+
+            // Written interior spaces copy as `"   "`, whereas unwritten cells
+            // past end of line and same-side zero-width drags return `false`
+            // so Windows/Linux Ctrl+C falls through to `\x03`.
+            terminal.test_feed(1, b"\x1b[2J\x1b[Habc   D");
+            terminal.start_selection(
+                SelectionType::Simple,
+                Point::new(Line(0), Column(3)),
+                Side::Left,
+            );
+            terminal.update_selection(Point::new(Line(0), Column(5)), Side::Right);
+            cx.write_to_clipboard(ClipboardItem::new_string("before-spaces".into()));
+            assert!(copy_selection(&terminal, cx));
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()),
+                Some("   ".into()),
+                "explicitly written interior spaces must copy as spaces"
+            );
+
+            terminal.start_selection(
+                SelectionType::Simple,
+                Point::new(Line(0), Column(8)),
+                Side::Left,
+            );
+            terminal.update_selection(Point::new(Line(0), Column(12)), Side::Right);
+            cx.write_to_clipboard(ClipboardItem::new_string("keep-unwritten".into()));
+            assert!(
+                !copy_selection(&terminal, cx),
+                "unwritten cells past end of line must not consume Copy"
+            );
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()),
+                Some("keep-unwritten".into())
+            );
+
+            // Same-side zero-width drag during a DEC 2026 hold resolves to
+            // `false` immediately without releasing the hold.
+            terminal.start_selection(
+                SelectionType::Simple,
+                Point::new(Line(0), Column(1)),
+                Side::Left,
+            );
+            terminal.test_feed(2, b"\x1b[?2026h");
+            terminal.update_selection(Point::new(Line(0), Column(1)), Side::Left);
+            cx.write_to_clipboard(ClipboardItem::new_string("keep-zw".into()));
+            assert!(!copy_selection(&terminal, cx));
+            assert!(terminal.is_render_held());
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()),
+                Some("keep-zw".into())
+            );
+            terminal.test_feed(3, b"\x1b[?2026l");
         });
     }
 
@@ -694,6 +752,235 @@ mod tests {
             } else {
                 assert!(host.inputs.lock().unwrap().is_empty());
             }
+        }
+    }
+
+    #[gpui::test]
+    fn copy_during_dec_2026_reopens_returns_live_text_synchronously_and_preserves_paste_and_ctrl_c_order(
+        cx: &mut TestAppContext,
+    ) {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        // 1. Copy outside a large write completes synchronously in microseconds
+        //    both outside a hold and during an open DEC 2026 hold kept alive by
+        //    four repeated DECSET ?2026 begins 65 ms apart, returning live grid
+        //    text immediately while the hold and published frame stay frozen.
+        let (_, terminal) = fixture();
+        let _view = terminal.view();
+        terminal.test_feed(1, b"\x1b[2J\x1b[Hhello 1234");
+        terminal.start_selection(
+            SelectionType::Simple,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        terminal.update_selection(Point::new(Line(0), Column(4)), Side::Right);
+
+        // Warm up once, then verify median synchronous Copy latency is sub-millisecond.
+        cx.update(|cx| assert!(copy_selection(&terminal, cx)));
+        let mut samples = Vec::with_capacity(21);
+        for _ in 0..21 {
+            terminal.start_selection(
+                SelectionType::Simple,
+                Point::new(Line(0), Column(0)),
+                Side::Left,
+            );
+            terminal.update_selection(Point::new(Line(0), Column(4)), Side::Right);
+            let elapsed = cx.update(|cx| {
+                let started = Instant::now();
+                assert!(copy_selection(&terminal, cx));
+                started.elapsed()
+            });
+            samples.push(elapsed);
+        }
+        samples.sort();
+        let median = samples[samples.len() / 2];
+        assert!(
+            median < Duration::from_millis(1),
+            "synchronous Copy median unexpectedly slow outside a large write: {median:?} (samples={samples:?})"
+        );
+
+        // Four repeated DECSET ?2026 reopens 65 ms apart (260 ms total) while
+        // live output overwrites the selected row: Copy returns immediately with
+        // the live text without releasing the hold or updating the frozen frame.
+        terminal.start_selection(
+            SelectionType::Simple,
+            Point::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        terminal.update_selection(Point::new(Line(0), Column(4)), Side::Right);
+        terminal.test_feed(2, b"\x1b[?2026h\x1b[1;1HLIVE!\x1b[2;1Hmid-hold");
+        assert!(terminal.is_render_held());
+        assert_eq!(
+            terminal.viewport_snapshot().view().row_to_string(Line(0)),
+            "hello 1234",
+            "published display must remain frozen on pre-hold frame"
+        );
+
+        let (reopens_done_tx, reopens_done_rx) = mpsc::channel::<()>();
+        let (close_tx, close_rx) = mpsc::channel::<()>();
+        let feeder_terminal = Arc::clone(&terminal);
+        let feeder = std::thread::spawn(move || {
+            for seq in 3..=6 {
+                std::thread::sleep(Duration::from_millis(65));
+                feeder_terminal.test_feed(seq, b"\x1b[?2026h");
+            }
+            let _ = reopens_done_tx.send(());
+            let _ = close_rx.recv_timeout(Duration::from_secs(2));
+            feeder_terminal.test_feed(7, b"\x1b[?2026l");
+        });
+
+        reopens_done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("all four 65 ms DEC 2026 reopens applied");
+        assert!(
+            terminal.is_render_held(),
+            "hold must still be active after four 65 ms reopens"
+        );
+        let copy_elapsed = cx.update(|cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string("stale".into()));
+            let started = Instant::now();
+            assert!(copy_selection(&terminal, cx));
+            let elapsed = started.elapsed();
+            assert_eq!(
+                cx.read_from_clipboard().and_then(|item| item.text()),
+                Some("LIVE!".into()),
+                "synchronous Copy during hold must immediately return live grid text"
+            );
+            elapsed
+        });
+        assert!(
+            copy_elapsed < Duration::from_millis(5),
+            "Copy after 4x65 ms DEC 2026 reopens did not return immediately: {copy_elapsed:?}"
+        );
+        assert!(
+            terminal.is_render_held(),
+            "Copy must not release the active DEC 2026 hold"
+        );
+        assert_eq!(
+            terminal.viewport_snapshot().view().row_to_string(Line(0)),
+            "hello 1234",
+            "published display must stay frozen after synchronous Copy"
+        );
+        let _ = close_tx.send(());
+        feeder.join().unwrap();
+        assert!(!terminal.is_render_held());
+
+        // 2. Copy-then-Paste-then-Enter during a DEC 2026 hold (both same-pane
+        //    and cross-pane) immediately puts the freshly copied text followed
+        //    by Enter in the PTY in natural order, as on `main`.
+        for cross_pane in [false, true] {
+            let (src_host, src) = fixture();
+            let (dst_host, dst) = if cross_pane {
+                fixture()
+            } else {
+                (Arc::clone(&src_host), Arc::clone(&src))
+            };
+            src.test_feed(1, b"\x1b[2J\x1b[Hfresh\r\nworld");
+            if cross_pane {
+                dst.test_feed(1, b"\x1b[2J\x1b[Hhello\r\nworld");
+            }
+            src.start_selection(
+                SelectionType::Simple,
+                Point::new(Line(0), Column(0)),
+                Side::Left,
+            );
+            src.update_selection(Point::new(Line(0), Column(4)), Side::Right);
+            src.test_feed(2, b"\x1b[?2026h");
+            assert!(src.is_render_held());
+
+            cx.update(|cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string("old".into()));
+                assert!(copy_selection(&src, cx));
+                paste_text_from_clipboard(&dst, cx).unwrap();
+                assert!(
+                    handle_key(&dst, false, &Keystroke::parse("enter").unwrap(), false, cx,)
+                        .unwrap()
+                );
+                assert_eq!(
+                    cx.read_from_clipboard().and_then(|item| item.text()),
+                    Some("fresh".into()),
+                    "cross_pane={cross_pane}"
+                );
+            });
+            assert_eq!(
+                *dst_host.inputs.lock().unwrap(),
+                vec![b"\x1b[200~fresh\x1b[201~".to_vec(), b"\r".to_vec()],
+                "cross_pane={cross_pane}: Paste must read fresh clipboard ahead of Enter"
+            );
+            assert!(src.is_render_held());
+            src.test_feed(3, b"\x1b[?2026l");
+        }
+
+        // 3. Ctrl+C ordering and newer-selection preservation during a hold
+        //    match `main`: empty Ctrl+C sends `\x03` immediately ahead of Paste
+        //    and Enter, and selecting `"world"` after Ctrl+C or Enter keeps
+        //    `"world"` selected across hold release.
+        for ctrl_empty in [true, false] {
+            let (host, term) = fixture();
+            term.test_feed(1, b"\x1b[2J\x1b[Hhello\r\nworld");
+            if !ctrl_empty {
+                term.start_selection(
+                    SelectionType::Simple,
+                    Point::new(Line(0), Column(0)),
+                    Side::Left,
+                );
+                term.update_selection(Point::new(Line(0), Column(4)), Side::Right);
+            }
+            term.test_feed(2, b"\x1b[?2026h");
+            cx.update(|cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string("old".into()));
+                if !copy_selection(&term, cx) {
+                    assert!(handle_key(
+                        &term,
+                        false,
+                        &Keystroke::parse("ctrl-c").unwrap(),
+                        false,
+                        cx,
+                    )
+                    .unwrap());
+                    paste_text_from_clipboard(&term, cx).unwrap();
+                    assert!(handle_key(
+                        &term,
+                        false,
+                        &Keystroke::parse("enter").unwrap(),
+                        false,
+                        cx,
+                    )
+                    .unwrap());
+                } else {
+                    assert!(handle_key(
+                        &term,
+                        false,
+                        &Keystroke::parse("enter").unwrap(),
+                        false,
+                        cx,
+                    )
+                    .unwrap());
+                }
+            });
+            term.start_selection(
+                SelectionType::Simple,
+                Point::new(Line(1), Column(0)),
+                Side::Left,
+            );
+            term.update_selection(Point::new(Line(1), Column(4)), Side::Right);
+            term.test_feed(3, b"\x1b[?2026l");
+            let expected_inputs = if ctrl_empty {
+                vec![
+                    b"\x03".to_vec(),
+                    b"\x1b[200~old\x1b[201~".to_vec(),
+                    b"\r".to_vec(),
+                ]
+            } else {
+                vec![b"\r".to_vec()]
+            };
+            assert_eq!(*host.inputs.lock().unwrap(), expected_inputs);
+            assert_eq!(
+                term.selection_text().as_deref(),
+                Some("world"),
+                "ctrl_empty={ctrl_empty}: selection created after Ctrl+C/Enter must survive release"
+            );
         }
     }
 }

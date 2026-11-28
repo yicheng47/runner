@@ -81,7 +81,7 @@ Runner's `TerminalInput` implements it. Pinyin composition works because the pla
 
 ## Where the two libraries meet
 
-The `Term` is the source of truth. On every terminal repaint (when `TerminalViewport` is invalidated rather than replayed from GPUI's cached view), under the fair lock, the element asks for `renderable_content` and walks every visible cell into GPU primitives. Nothing is diffed and alacritty's damage tracking is not used. The work is bounded by columns times rows, shaping is cached, and quads merge, so a full walk is cheaper than tracking what changed.
+The mirror actor's `libghostty-vt` terminal is the source of truth and publishes an immutable `ViewportSnapshot` (`ScreenView`) via `RenderState` whenever visible cells, cursor, or selection change. On every terminal repaint (when `TerminalViewport` is invalidated rather than replayed from GPUI's cached view), `TerminalElement::prepaint` reads the published `ViewportSnapshot` directly — with no actor lock or scrollback copy — and walks every visible cell into GPU primitives. The work is bounded by columns times rows, shaping is cached, and quads merge, so a full viewport walk is cheaper than incremental diffing.
 
 ## Reading order
 

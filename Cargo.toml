@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/ghostty-vt-sys",
     "crates/runner-daemon",
     "crates/runner-core",
     "crates/runner-app",
@@ -27,9 +28,6 @@ serde_json = "1"
 thiserror = "1"
 ulid = "1"
 uuid = { version = "1", features = ["v4"] }
-
-[patch.crates-io]
-alacritty_terminal = { path = "vendor/alacritty_terminal" }
 
 # Dev builds are the daily-drive builds (`make run`). Unoptimized taffy/gpui made
 # every keystroke relayout the window at ~100ms with a drawer open (profiled

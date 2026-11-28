@@ -87,6 +87,8 @@ fn client_debug_keeps_snapshot_output_and_overview_bodies_private() {
     let snapshot = TerminalSnapshot {
         seq: 1,
         activity: None,
+        format: Default::default(),
+        unavailable: false,
         cols: 80,
         rows: 24,
         controller: TerminalController::Desktop,

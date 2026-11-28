@@ -14,9 +14,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    fill, outline, point, px, relative, size, AnyTooltip, AnyView, App, Bounds, ClipboardItem,
-    ContentMask, Context, CursorStyle, DispatchPhase, Element, Entity, FocusHandle, Font,
-    FontFallbacks, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, LayoutId,
+    fill, outline, point, px, relative, size, AnyTooltip, AnyView, App, Bounds, ContentMask,
+    Context, CursorStyle, DispatchPhase, Element, Entity, FocusHandle, Font, FontFallbacks,
+    GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, LayoutId,
     MouseButton as GpuiMouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
     ScrollDelta, ScrollEvent, ShapedLine, SharedString, Style, Task, TextAlign, TextRun,
     UnderlineStyle, Window,
@@ -32,10 +32,13 @@ use runner_terminal::mappings::{
     encode_mouse_motion, encode_mouse_press, encode_mouse_release, MouseButton, MouseModifiers,
 };
 use runner_terminal::palette::{self, Color, NamedColor, Rgb, TerminalPalette};
-use runner_terminal::terminal::{FileLinkContext, LinkTarget, TerminalLink, TerminalMirror};
+use runner_terminal::terminal::{
+    FileLinkContext, LinkLookup, LinkTarget, TerminalLink, TerminalMirror,
+};
 use runner_terminal::{
     point_to_viewport, viewport_to_point, CellFlags as Flags, Column, CursorShape, GridPoint,
     SelectionKind as SelectionType, Side, TerminalModeFlags as TermMode, ViewportPoint,
+    ViewportSnapshot,
 };
 
 use super::glyphs::{snapped_cell_bounds, ProceduralCell};
@@ -138,7 +141,11 @@ pub(crate) struct TerminalInteraction {
     drag: Option<DragState>,
     next_generation: u64,
     hovered_link: Option<TerminalLink>,
+    hover_link_generation: u64,
     hover_signature: Option<HoverSignature>,
+    hover_lookup_task: Option<Task<()>>,
+    hover_tooltip_task: Option<Task<()>>,
+    hover_tooltip_ready: bool,
     hover_modifiers: Option<(bool, bool, bool, bool)>,
     link_modifier_held: bool,
     hover_since: Option<Instant>,
@@ -155,7 +162,11 @@ impl TerminalInteraction {
             drag: None,
             next_generation: 0,
             hovered_link: None,
+            hover_link_generation: 0,
             hover_signature: None,
+            hover_lookup_task: None,
+            hover_tooltip_task: None,
+            hover_tooltip_ready: false,
             hover_modifiers: None,
             link_modifier_held: false,
             hover_since: None,
@@ -226,9 +237,59 @@ impl TerminalInteraction {
 
     fn link_tooltip_visible(&self) -> bool {
         self.hovered_link.is_some()
-            && self
-                .hover_since
-                .is_some_and(|since| since.elapsed() >= LINK_TOOLTIP_DELAY)
+            && (self.hover_tooltip_ready
+                || self
+                    .hover_since
+                    .is_some_and(|since| since.elapsed() >= LINK_TOOLTIP_DELAY))
+    }
+
+    fn set_hovered_link(
+        &mut self,
+        hovered_link: Option<TerminalLink>,
+        window_handle: gpui::AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if hovered_link == self.hovered_link {
+            return false;
+        }
+        self.hover_link_generation = self.hover_link_generation.wrapping_add(1);
+        let generation = self.hover_link_generation;
+        let has_link = hovered_link.is_some();
+        self.hover_since = has_link.then(Instant::now);
+        self.hovered_link = hovered_link;
+        if has_link {
+            self.schedule_link_tooltip_redraw(generation, window_handle, cx);
+        } else {
+            self.hover_tooltip_task = None;
+            self.hover_tooltip_ready = false;
+        }
+        true
+    }
+
+    fn schedule_link_tooltip_redraw(
+        &mut self,
+        generation: u64,
+        window_handle: gpui::AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) {
+        self.hover_tooltip_ready = false;
+        self.hover_tooltip_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(LINK_TOOLTIP_DELAY).await;
+            let should_refresh = this
+                .update(cx, |this, cx| {
+                    this.hover_tooltip_task = None;
+                    if this.hover_link_generation != generation || this.hovered_link.is_none() {
+                        return false;
+                    }
+                    this.hover_tooltip_ready = true;
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if should_refresh {
+                let _ = window_handle.update(cx, |_, window, _| window.refresh());
+            }
+        }));
     }
 
     fn scroll_wheel(
@@ -302,21 +363,32 @@ impl TerminalInteraction {
             .map(|tooltip| (tooltip.decision, tooltip.content.clone()))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn refresh_hovered_link(
         &mut self,
+        snapshot: &ViewportSnapshot,
         modifiers: gpui::Modifiers,
         geometry: TerminalGeometry,
         position: Point<Pixels>,
         hovered: bool,
         interactive: bool,
         link_context: &FileLinkContext,
+        window_handle: gpui::AnyWindowHandle,
+        cx: &mut Context<Self>,
     ) -> bool {
         if !hovered {
             self.hover_signature = None;
+            self.hover_lookup_task = None;
+            self.hover_tooltip_task = None;
+            self.hover_tooltip_ready = false;
             self.hover_modifiers = None;
             self.hover_since = None;
             self.link_tooltip = None;
-            return self.hovered_link.take().is_some();
+            if self.hovered_link.take().is_some() {
+                self.hover_link_generation = self.hover_link_generation.wrapping_add(1);
+                return true;
+            }
+            return false;
         }
 
         let modifier_signature = (
@@ -330,32 +402,79 @@ impl TerminalInteraction {
         self.link_modifier_held = link_modifier(modifiers);
         if !interactive {
             self.hover_signature = None;
+            self.hover_lookup_task = None;
+            self.hover_tooltip_task = None;
+            self.hover_tooltip_ready = false;
             self.hover_since = None;
-            return self.hovered_link.take().is_some() || modifiers_changed;
+            let had_link = self.hovered_link.take().is_some();
+            if had_link {
+                self.hover_link_generation = self.hover_link_generation.wrapping_add(1);
+            }
+            return had_link || modifiers_changed;
         }
 
         let point = hit_test(&self.session, geometry, position).point;
         let activity = self.session.output_activity();
-        let display_offset = self.session.scroll_state().display_offset;
+        let display_offset = snapshot.display_offset();
         let signature = (
             point,
             activity.last_seq,
             display_offset,
-            self.session.size(),
+            (snapshot.cols() as u16, snapshot.rows() as u16),
             link_context.extra_root.clone(),
         );
         if self.hover_signature.as_ref() == Some(&signature) {
             return modifiers_changed;
         }
 
-        self.hover_signature = Some(signature);
-        let hovered_link = self.session.link_at_with(point, link_context);
-        let changed = hovered_link != self.hovered_link;
-        if changed {
-            self.hover_since = hovered_link.is_some().then(Instant::now);
+        self.hover_signature = Some(signature.clone());
+        match self
+            .session
+            .try_link_at_published(snapshot, point, link_context)
+        {
+            LinkLookup::Ready(hovered_link) => {
+                self.hover_lookup_task = None;
+                let changed = self.set_hovered_link(hovered_link, window_handle, cx);
+                changed || modifiers_changed
+            }
+            LinkLookup::NeedsOffscreen => {
+                // Never block prepaint on an actor round-trip: resolve links that may
+                // extend into scrollback off the UI thread and redraw when ready.
+                let mut changed = false;
+                if self
+                    .hovered_link
+                    .as_ref()
+                    .is_some_and(|link| !link.contains(point))
+                {
+                    changed = self.set_hovered_link(None, window_handle, cx);
+                }
+                let session = Arc::clone(&self.session);
+                let context = link_context.clone();
+                self.hover_lookup_task = Some(cx.spawn(async move |this, cx| {
+                    let resolved = cx
+                        .background_executor()
+                        .spawn(async move { session.link_at_with(point, &context) })
+                        .await;
+                    let should_refresh = this
+                        .update(cx, |this, cx| {
+                            this.hover_lookup_task = None;
+                            if this.hover_signature.as_ref() != Some(&signature) {
+                                return false;
+                            }
+                            if this.set_hovered_link(resolved, window_handle, cx) {
+                                cx.notify();
+                                return true;
+                            }
+                            false
+                        })
+                        .unwrap_or(false);
+                    if should_refresh {
+                        let _ = window_handle.update(cx, |_, window, _| window.refresh());
+                    }
+                }));
+                changed || modifiers_changed
+            }
         }
-        self.hovered_link = hovered_link;
-        changed || modifiers_changed
     }
 
     fn mouse_down(
@@ -601,8 +720,10 @@ impl TerminalInteraction {
                     .move_cursor_to_viewport(hit.viewport_column, hit.viewport_row);
             }
             DragKind::Local { .. } => {
-                if let Some(text) = self.session.selection_text().filter(|_| copy_on_select) {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                if copy_on_select {
+                    if let Some(text) = self.session.selection_text() {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                    }
                 }
             }
         }
@@ -807,10 +928,9 @@ fn wants_text_presentation(c: char, wide: bool, zerowidth: Option<&[char]>) -> b
 }
 
 /// The text shaped for a cell, or `None` when the cell draws nothing.
-/// alacritty stores `'\t'` in the blank cell where a tab starts, keeping any
-/// underline color, hyperlink or combining mark. Shaping a tab lays it out to
-/// the font's tab stops instead of one cell and pushes what follows off the
-/// grid (#1356), so it is shaped as a space.
+/// Defensive tab normalization: even though libghostty-vt moves the cursor on
+/// HT without storing `'\t'` in cells, any literal tab is shaped as a space
+/// so font tab stops can never push following glyphs off the grid (#1356).
 fn cell_text(c: char, zerowidth: Option<&[char]>) -> Option<String> {
     let c = if c == '\t' { ' ' } else { c };
     if c == ' ' && zerowidth.is_none() {
@@ -821,19 +941,19 @@ fn cell_text(c: char, zerowidth: Option<&[char]>) -> Option<String> {
     Some(text)
 }
 
-/// Text shaped for painting a cell. Plain spaces stay unshaped outside hovered
-/// links, but spaces inside a hovered link (such as `docs/my plan.md`) are kept
-/// so the hover underline runs continuously across the whole path.
+/// Text shaped for painting a cell. Plain spaces stay unshaped outside
+/// decorated runs, while spaces inside a hovered link or carrying underline or
+/// strikethrough decorations are kept so the decoration runs continuously.
 fn painted_cell_text(
     c: char,
     zerowidth: Option<&[char]>,
     hidden: bool,
-    link_underlined: bool,
+    decorated: bool,
 ) -> Option<String> {
     if hidden {
         return None;
     }
-    cell_text(c, zerowidth).or_else(|| link_underlined.then(|| String::from(' ')))
+    cell_text(c, zerowidth).or_else(|| decorated.then(|| String::from(' ')))
 }
 
 fn text_presentation_font(base: &Font) -> Font {
@@ -988,26 +1108,23 @@ impl TerminalElement {
                 .as_ref()
                 .map(|route| route.link_context(cx))
                 .unwrap_or_default();
-            let changed = interaction.update(cx, |interaction, _| {
+            let window_handle = window.window_handle();
+            let changed = interaction.update(cx, |interaction, cx| {
+                let snapshot = interaction.session.viewport_snapshot();
                 interaction.refresh_hovered_link(
+                    &snapshot,
                     event.modifiers,
                     geometry,
                     event.position,
                     move_hitbox.is_hovered(window),
                     interactive,
                     &link_context,
+                    window_handle,
+                    cx,
                 )
             });
             if changed {
                 cx.notify(current_view);
-                if interaction.read(cx).hovered_link.is_some() {
-                    window
-                        .spawn(cx, async move |cx| {
-                            cx.background_executor().timer(LINK_TOOLTIP_DELAY).await;
-                            cx.update(|window, _| window.refresh()).ok();
-                        })
-                        .detach();
-                }
             }
             if event.pressed_button.is_none() {
                 return;
@@ -1055,14 +1172,19 @@ impl TerminalElement {
                 .as_ref()
                 .map(|route| route.link_context(cx))
                 .unwrap_or_default();
-            let changed = interaction.update(cx, |interaction, _| {
+            let window_handle = window.window_handle();
+            let changed = interaction.update(cx, |interaction, cx| {
+                let snapshot = interaction.session.viewport_snapshot();
                 interaction.refresh_hovered_link(
+                    &snapshot,
                     event.modifiers,
                     geometry,
                     window.mouse_position(),
                     hovered,
                     interactive,
                     &link_context,
+                    window_handle,
+                    cx,
                 )
             });
             if hovered || changed {
@@ -1215,7 +1337,8 @@ impl Element for TerminalElement {
                 };
             }
         }
-        let (cols, rows) = self.session.size();
+        let snapshot = self.session.viewport_snapshot();
+        let (cols, rows) = (snapshot.cols() as u16, snapshot.rows() as u16);
         let geometry = TerminalGeometry {
             bounds,
             cell_width,
@@ -1232,14 +1355,18 @@ impl Element for TerminalElement {
             .as_ref()
             .map(|route| route.link_context(cx))
             .unwrap_or_default();
-        let (hovered_link, link_modifier_held) = self.interaction.update(cx, |interaction, _| {
+        let window_handle = window.window_handle();
+        let (hovered_link, link_modifier_held) = self.interaction.update(cx, |interaction, cx| {
             interaction.refresh_hovered_link(
+                &snapshot,
                 window.modifiers(),
                 geometry,
                 window.mouse_position(),
                 hovered,
                 self.interactive,
                 &link_context,
+                window_handle,
+                cx,
             );
             (
                 interaction.hovered_link.clone(),
@@ -1337,329 +1464,321 @@ impl Element for TerminalElement {
         let mut cursor_cols = 1;
         let mut cursor_blinks = false;
         let mut cursor_point = GridPoint::default();
-        let (mode, marked_foreground, marked_background) = self.session.with_screen(|screen| {
-            let view = screen.view();
-            let mode = view.mode();
-            let display_offset = view.display_offset();
-            let renderable_cursor = view.cursor();
-            let highlights = self
-                .find
+        let view = snapshot.view();
+        let mode = view.mode();
+        let display_offset = view.display_offset();
+        let renderable_cursor = view.cursor();
+        let highlights = self
+            .find
+            .as_ref()
+            .and_then(|find| find.read(cx).highlights(&snapshot));
+        let (highlighted, current_match) = highlights
+            .map(|highlights| (highlights.matches, highlights.current))
+            .unwrap_or((&[], None));
+        let mut next_match = 0;
+        let marked_foreground = view.resolve_color(
+            Color::Named(NamedColor::Foreground),
+            &base,
+            terminal_palette,
+        );
+        let marked_background = view.resolve_color(
+            Color::Named(NamedColor::Background),
+            &base,
+            terminal_palette,
+        );
+
+        for cell in view.visible_cells() {
+            let (row, col) = (cell.viewport_row, cell.viewport_col);
+            if row >= rows as usize || col >= cols as usize {
+                continue;
+            }
+
+            let flags = cell.flags();
+            let wide = flags.contains(Flags::WIDE_CHAR);
+            let cell_cols = if wide { 2usize } else { 1 };
+            if cell.point == renderable_cursor.point {
+                cursor_cols = cell_cols;
+            }
+            if cell.selected && !flags.contains(Flags::WIDE_CHAR_SPACER) {
+                let quad_bounds = Bounds::new(
+                    point(
+                        bounds.left() + cell_width * col as f32,
+                        bounds.top() + line_height * row as f32,
+                    ),
+                    size(cell_width * cell_cols as f32, line_height),
+                );
+                match (selection_end, selections.last_mut()) {
+                    (Some((last_row, last_column)), Some(last))
+                        if last_row == row && last_column == col =>
+                    {
+                        last.size.width += quad_bounds.size.width;
+                    }
+                    _ => selections.push(quad_bounds),
+                }
+                selection_end = Some((row, col + cell_cols));
+            }
+
+            while highlighted
+                .get(next_match)
+                .is_some_and(|found| *found.end() < cell.point)
+            {
+                next_match += 1;
+            }
+            let in_current = current_match
                 .as_ref()
-                .and_then(|find| find.update(cx, |find, _| find.highlights(screen, rows as usize)));
-            let (highlighted, current_match) = highlights
-                .map(|highlights| (highlights.matches, highlights.current))
-                .unwrap_or_default();
-            let mut next_match = 0;
-            let marked_foreground = view.resolve_color(
-                Color::Named(NamedColor::Foreground),
-                &base,
-                terminal_palette,
-            );
-            let marked_background = view.resolve_color(
-                Color::Named(NamedColor::Background),
-                &base,
-                terminal_palette,
-            );
-
-            for cell in view.visible_cells() {
-                let (row, col) = (cell.viewport_row, cell.viewport_col);
-                if row >= rows as usize || col >= cols as usize {
-                    continue;
-                }
-
-                let flags = cell.flags();
-                let wide = flags.contains(Flags::WIDE_CHAR);
-                let cell_cols = if wide { 2usize } else { 1 };
-                if cell.point == renderable_cursor.point {
-                    cursor_cols = cell_cols;
-                }
-                if cell.selected && !flags.contains(Flags::WIDE_CHAR_SPACER) {
-                    let quad_bounds = Bounds::new(
-                        point(
-                            bounds.left() + cell_width * col as f32,
-                            bounds.top() + line_height * row as f32,
-                        ),
-                        size(cell_width * cell_cols as f32, line_height),
-                    );
-                    match (selection_end, selections.last_mut()) {
-                        (Some((last_row, last_column)), Some(last))
-                            if last_row == row && last_column == col =>
-                        {
-                            last.size.width += quad_bounds.size.width;
-                        }
-                        _ => selections.push(quad_bounds),
-                    }
-                    selection_end = Some((row, col + cell_cols));
-                }
-
-                while highlighted
+                .is_some_and(|found| found.contains(&cell.point));
+            let in_match = in_current
+                || highlighted
                     .get(next_match)
-                    .is_some_and(|found| *found.end() < cell.point)
-                {
-                    next_match += 1;
-                }
-                let in_current = current_match
-                    .as_ref()
                     .is_some_and(|found| found.contains(&cell.point));
-                let in_match = in_current
-                    || highlighted
-                        .get(next_match)
-                        .is_some_and(|found| found.contains(&cell.point));
-                if in_match && !flags.contains(Flags::WIDE_CHAR_SPACER) {
-                    let quad_bounds = Bounds::new(
-                        point(
-                            bounds.left() + cell_width * col as f32,
-                            bounds.top() + line_height * row as f32,
-                        ),
-                        size(cell_width * cell_cols as f32, line_height),
+            if in_match && !flags.contains(Flags::WIDE_CHAR_SPACER) {
+                let quad_bounds = Bounds::new(
+                    point(
+                        bounds.left() + cell_width * col as f32,
+                        bounds.top() + line_height * row as f32,
+                    ),
+                    size(cell_width * cell_cols as f32, line_height),
+                );
+                let cell_at = (next_match, row, col, cell_cols);
+                if in_current {
+                    push_match_cell(
+                        &mut find_current,
+                        &mut find_current_end,
+                        cell_at,
+                        quad_bounds,
                     );
-                    let cell_at = (next_match, row, col, cell_cols);
-                    if in_current {
-                        push_match_cell(
-                            &mut find_current,
-                            &mut find_current_end,
-                            cell_at,
-                            quad_bounds,
-                        );
-                    } else {
-                        push_match_cell(
-                            &mut find_matches,
-                            &mut find_match_end,
-                            cell_at,
-                            quad_bounds,
-                        );
+                } else {
+                    push_match_cell(&mut find_matches, &mut find_match_end, cell_at, quad_bounds);
+                }
+            }
+
+            if flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                continue;
+            }
+
+            let mut fg = view.resolve_color(cell.fg(), &base, terminal_palette);
+            let mut bg = view.resolve_color(cell.bg(), &base, terminal_palette);
+            if flags.contains(Flags::INVERSE) {
+                std::mem::swap(&mut fg, &mut bg);
+            }
+            if flags.contains(Flags::DIM) {
+                fg = fg * 0.66;
+            }
+
+            if bg != terminal_palette.background {
+                let quad_bounds = Bounds::new(
+                    point(
+                        bounds.left() + cell_width * col as f32,
+                        bounds.top() + line_height * row as f32,
+                    ),
+                    size(cell_width * cell_cols as f32, line_height),
+                );
+                // Merge with the previous quad when contiguous and
+                // same color, to keep quad count sane.
+                match backgrounds.last_mut() {
+                    Some((last, color))
+                        if *color == to_hsla(bg, 1.)
+                            && last.top() == quad_bounds.top()
+                            && last.right() == quad_bounds.left() =>
+                    {
+                        last.size.width += quad_bounds.size.width;
                     }
+                    _ => backgrounds.push((quad_bounds, to_hsla(bg, 1.))),
                 }
+            }
 
-                if flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
-                    continue;
-                }
-
-                let mut fg = view.resolve_color(cell.fg(), &base, terminal_palette);
-                let mut bg = view.resolve_color(cell.bg(), &base, terminal_palette);
-                if flags.contains(Flags::INVERSE) {
-                    std::mem::swap(&mut fg, &mut bg);
-                }
-                if flags.contains(Flags::DIM) {
-                    fg = fg * 0.66;
-                }
-
-                if bg != terminal_palette.background {
-                    let quad_bounds = Bounds::new(
-                        point(
-                            bounds.left() + cell_width * col as f32,
-                            bounds.top() + line_height * row as f32,
-                        ),
-                        size(cell_width * cell_cols as f32, line_height),
-                    );
-                    // Merge with the previous quad when contiguous and
-                    // same color, to keep quad count sane.
-                    match backgrounds.last_mut() {
-                        Some((last, color))
-                            if *color == to_hsla(bg, 1.)
-                                && last.top() == quad_bounds.top()
-                                && last.right() == quad_bounds.left() =>
-                        {
-                            last.size.width += quad_bounds.size.width;
-                        }
-                        _ => backgrounds.push((quad_bounds, to_hsla(bg, 1.))),
-                    }
-                }
-
-                let link_underlined = hovered_link
-                    .as_ref()
-                    .is_some_and(|link| link.contains(cell.point));
-                let cell_c = cell.c();
-                let cell_zerowidth = cell.zerowidth();
-                let Some(text) = painted_cell_text(
+            let link_underlined = hovered_link
+                .as_ref()
+                .is_some_and(|link| link.contains(cell.point));
+            let uses_text_decorations =
+                link_underlined || flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
+            let cell_c = cell.c();
+            let cell_zerowidth = cell.zerowidth();
+            let Some(text) = painted_cell_text(
+                cell_c,
+                cell_zerowidth,
+                flags.contains(Flags::HIDDEN),
+                uses_text_decorations,
+            ) else {
+                continue;
+            };
+            if !uses_text_decorations {
+                if let Some(procedural_cell) = ProceduralCell::new(
                     cell_c,
-                    cell_zerowidth,
-                    flags.contains(Flags::HIDDEN),
-                    link_underlined,
-                ) else {
-                    continue;
-                };
-                let uses_text_decorations =
-                    link_underlined || flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
-                if !uses_text_decorations {
-                    if let Some(procedural_cell) = ProceduralCell::new(
-                        cell_c,
-                        snapped_cell_bounds(
-                            bounds,
-                            cell_width,
-                            line_height,
-                            row,
-                            col,
-                            window.scale_factor(),
-                        ),
-                        if in_current {
-                            find_text
-                        } else {
-                            to_hsla(fg, 1.)
-                        },
-                        to_hsla(bg, 1.),
-                        font_size,
-                    ) {
-                        if cell.point == renderable_cursor.point
-                            && renderable_cursor.shape == CursorShape::Block
-                        {
-                            cursor_procedural = ProceduralCell::new(
-                                cell_c,
-                                snapped_cell_bounds(
-                                    bounds,
-                                    cell_width,
-                                    line_height,
-                                    row,
-                                    col,
-                                    window.scale_factor(),
-                                ),
-                                to_hsla(terminal_palette.cursor_accent, 1.),
-                                to_hsla(terminal_palette.cursor, 1.),
-                                font_size,
-                            );
-                        }
-                        procedural.push(procedural_cell);
-                        continue;
-                    }
-                }
-
-                let mut cell_font: Font = if wants_text_presentation(cell_c, wide, cell_zerowidth) {
-                    symbol_font.clone()
-                } else {
-                    base_font.clone()
-                };
-                if flags.contains(Flags::BOLD) || in_current {
-                    cell_font = cell_font.bold();
-                }
-                if flags.contains(Flags::ITALIC) {
-                    cell_font = cell_font.italic();
-                }
-                let link_armed = link_underlined && link_modifier_held;
-                let text_color = if in_current {
-                    find_text
-                } else if link_armed {
-                    theme::accent()
-                } else {
-                    to_hsla(fg, 1.)
-                };
-                let underline = if link_underlined {
-                    Some(gpui::UnderlineStyle {
-                        color: Some(text_color),
-                        thickness: px(self.style.app_zoom),
-                        wavy: false,
-                    })
-                } else if flags.intersects(Flags::ALL_UNDERLINES) {
-                    Some(gpui::UnderlineStyle {
-                        color: Some(to_hsla(
-                            cell.underline_color()
-                                .map(|color| view.resolve_color(color, &base, terminal_palette))
-                                .unwrap_or(fg),
-                            1.,
-                        )),
-                        thickness: px(self.style.app_zoom),
-                        wavy: flags.contains(Flags::UNDERCURL),
-                    })
-                } else {
-                    None
-                };
-                let strikethrough = if flags.contains(Flags::STRIKEOUT) {
-                    Some(gpui::StrikethroughStyle {
-                        color: Some(to_hsla(fg, 1.)),
-                        thickness: px(self.style.app_zoom),
-                    })
-                } else {
-                    None
-                };
-
-                let run = TextRun {
-                    len: text.len(),
-                    font: cell_font,
-                    color: text_color,
-                    background_color: None,
-                    underline,
-                    strikethrough,
-                };
-                if cell.point == renderable_cursor.point
-                    && renderable_cursor.shape == CursorShape::Block
-                {
-                    let mut cursor_run = run.clone();
-                    cursor_run.color = to_hsla(terminal_palette.cursor_accent, 1.);
-                    cursor_run.underline = None;
-                    cursor_run.strikethrough = None;
-                    cursor_text = Some((
-                        point(
-                            bounds.left() + cell_width * col as f32,
-                            bounds.top() + line_height * row as f32,
-                        ),
-                        window.text_system().shape_line(
-                            SharedString::from(text.clone()),
-                            font_size,
-                            &[cursor_run],
-                            None,
-                        ),
-                    ));
-                }
-
-                // Extend the open span only when BOTH the span so far
-                // and this cell are simple ASCII — an ASCII cell after
-                // a non-ASCII narrow glyph (box drawing, braille)
-                // must start its own span, or it inherits the
-                // fallback font's advance and skews off the grid.
-                let simple = !wide && cell_c.is_ascii() && cell_zerowidth.is_none();
-                let extended = simple
-                    && match spans.last_mut() {
-                        Some((last_row, span))
-                            if *last_row == row
-                                && span.ascii_only
-                                && span.col + span.text.len() == col =>
-                        {
-                            match span.runs.last_mut() {
-                                Some(last_run)
-                                    if last_run.font == run.font
-                                        && last_run.color == run.color
-                                        && last_run.underline == run.underline
-                                        && last_run.strikethrough == run.strikethrough =>
-                                {
-                                    last_run.len += run.len;
-                                }
-                                _ => span.runs.push(run.clone()),
-                            }
-                            span.text.push_str(&text);
-                            true
-                        }
-                        _ => false,
-                    };
-                if !extended {
-                    spans.push((
+                    snapped_cell_bounds(
+                        bounds,
+                        cell_width,
+                        line_height,
                         row,
-                        StyledSpan {
-                            col,
-                            text,
-                            runs: vec![run],
-                            ascii_only: simple,
-                        },
-                    ));
+                        col,
+                        window.scale_factor(),
+                    ),
+                    if in_current {
+                        find_text
+                    } else {
+                        to_hsla(fg, 1.)
+                    },
+                    to_hsla(bg, 1.),
+                    font_size,
+                ) {
+                    if cell.point == renderable_cursor.point
+                        && renderable_cursor.shape == CursorShape::Block
+                    {
+                        cursor_procedural = ProceduralCell::new(
+                            cell_c,
+                            snapped_cell_bounds(
+                                bounds,
+                                cell_width,
+                                line_height,
+                                row,
+                                col,
+                                window.scale_factor(),
+                            ),
+                            to_hsla(terminal_palette.cursor_accent, 1.),
+                            to_hsla(terminal_palette.cursor, 1.),
+                            font_size,
+                        );
+                    }
+                    procedural.push(procedural_cell);
+                    continue;
                 }
             }
 
-            if let Some(vp) = point_to_viewport(display_offset, renderable_cursor.point) {
-                if vp.line < rows as usize && vp.column.0 < cols as usize {
-                    let origin = point(
-                        bounds.left() + cell_width * vp.column.0 as f32,
-                        bounds.top() + line_height * vp.line as f32,
-                    );
-                    let bounds =
-                        Bounds::new(origin, size(cell_width * cursor_cols as f32, line_height));
-                    cursor_cell = Some(bounds);
-                    if renderable_cursor.shape != CursorShape::Hidden {
-                        cursor = Some((bounds, renderable_cursor.shape));
-                        cursor_blinks = renderable_cursor.blinking;
-                        cursor_point = renderable_cursor.point;
+            let mut cell_font: Font = if wants_text_presentation(cell_c, wide, cell_zerowidth) {
+                symbol_font.clone()
+            } else {
+                base_font.clone()
+            };
+            if flags.contains(Flags::BOLD) || in_current {
+                cell_font = cell_font.bold();
+            }
+            if flags.contains(Flags::ITALIC) {
+                cell_font = cell_font.italic();
+            }
+            let link_armed = link_underlined && link_modifier_held;
+            let text_color = if in_current {
+                find_text
+            } else if link_armed {
+                theme::accent()
+            } else {
+                to_hsla(fg, 1.)
+            };
+            let underline = if link_underlined {
+                Some(gpui::UnderlineStyle {
+                    color: Some(text_color),
+                    thickness: px(self.style.app_zoom),
+                    wavy: false,
+                })
+            } else if flags.intersects(Flags::ALL_UNDERLINES) {
+                Some(gpui::UnderlineStyle {
+                    color: Some(to_hsla(
+                        cell.underline_color()
+                            .map(|color| view.resolve_color(color, &base, terminal_palette))
+                            .unwrap_or(fg),
+                        1.,
+                    )),
+                    thickness: px(self.style.app_zoom),
+                    wavy: flags.contains(Flags::UNDERCURL),
+                })
+            } else {
+                None
+            };
+            let strikethrough = if flags.contains(Flags::STRIKEOUT) {
+                Some(gpui::StrikethroughStyle {
+                    color: Some(to_hsla(fg, 1.)),
+                    thickness: px(self.style.app_zoom),
+                })
+            } else {
+                None
+            };
+
+            let run = TextRun {
+                len: text.len(),
+                font: cell_font,
+                color: text_color,
+                background_color: None,
+                underline,
+                strikethrough,
+            };
+            if cell.point == renderable_cursor.point
+                && renderable_cursor.shape == CursorShape::Block
+            {
+                let mut cursor_run = run.clone();
+                cursor_run.color = to_hsla(terminal_palette.cursor_accent, 1.);
+                cursor_run.underline = None;
+                cursor_run.strikethrough = None;
+                cursor_text = Some((
+                    point(
+                        bounds.left() + cell_width * col as f32,
+                        bounds.top() + line_height * row as f32,
+                    ),
+                    window.text_system().shape_line(
+                        SharedString::from(text.clone()),
+                        font_size,
+                        &[cursor_run],
+                        None,
+                    ),
+                ));
+            }
+
+            // Extend the open span only when BOTH the span so far
+            // and this cell are simple ASCII — an ASCII cell after
+            // a non-ASCII narrow glyph (box drawing, braille)
+            // must start its own span, or it inherits the
+            // fallback font's advance and skews off the grid.
+            let simple = !wide && cell_c.is_ascii() && cell_zerowidth.is_none();
+            let extended = simple
+                && match spans.last_mut() {
+                    Some((last_row, span))
+                        if *last_row == row
+                            && span.ascii_only
+                            && span.col + span.text.len() == col =>
+                    {
+                        match span.runs.last_mut() {
+                            Some(last_run)
+                                if last_run.font == run.font
+                                    && last_run.color == run.color
+                                    && last_run.underline == run.underline
+                                    && last_run.strikethrough == run.strikethrough =>
+                            {
+                                last_run.len += run.len;
+                            }
+                            _ => span.runs.push(run.clone()),
+                        }
+                        span.text.push_str(&text);
+                        true
                     }
+                    _ => false,
+                };
+            if !extended {
+                spans.push((
+                    row,
+                    StyledSpan {
+                        col,
+                        text,
+                        runs: vec![run],
+                        ascii_only: simple,
+                    },
+                ));
+            }
+        }
+
+        if let Some(vp) = point_to_viewport(display_offset, renderable_cursor.point) {
+            if vp.line < rows as usize && vp.column.0 < cols as usize {
+                let origin = point(
+                    bounds.left() + cell_width * vp.column.0 as f32,
+                    bounds.top() + line_height * vp.line as f32,
+                );
+                let bounds =
+                    Bounds::new(origin, size(cell_width * cursor_cols as f32, line_height));
+                cursor_cell = Some(bounds);
+                if renderable_cursor.shape != CursorShape::Hidden {
+                    cursor = Some((bounds, renderable_cursor.shape));
+                    cursor_blinks = renderable_cursor.blinking;
+                    cursor_point = renderable_cursor.point;
                 }
             }
-            (mode, marked_foreground, marked_background)
-        });
+        }
         let blinking = cursor_blinks
             && cursor.is_some()
             && self.focus_handle.is_focused(window)
@@ -2439,6 +2558,7 @@ mod tests {
         let left_terminal = spawn_terminal(&core, &runtime, &role, temp.path());
         let right_terminal = spawn_terminal(&core, &runtime, &role, temp.path());
         let mut cx = TestAppContext::single();
+        cx.background_executor.allow_parking();
         let (left, right) = (
             wheel_pane(&mut cx, &left_terminal),
             wheel_pane(&mut cx, &right_terminal),
@@ -2509,6 +2629,7 @@ mod tests {
             |terminal| !terminal.cell_is_whitespace(GridPoint::new(Line(0), Column(0))),
         );
         let mut cx = TestAppContext::single();
+        cx.background_executor.allow_parking();
         let (left, right) = (
             wheel_pane(&mut cx, &left_terminal),
             wheel_pane(&mut cx, &right_terminal),
@@ -2542,6 +2663,8 @@ mod tests {
             visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+            // Synchronize past the mirror actor's async copy-on-select dispatch.
+            let _ = left_terminal.selection_contains(GridPoint::new(Line(0), Column(0)));
             visual.run_until_parked();
         };
         let clipboard = |visual: &mut VisualTestContext| {
@@ -2564,7 +2687,40 @@ mod tests {
         visual.refresh().unwrap();
         drag(&mut visual);
         assert_eq!(clipboard(&mut visual), Some(selected.clone()));
-        assert_eq!(left_terminal.selection_text(), Some(selected));
+        assert_eq!(left_terminal.selection_text(), Some(selected.clone()));
+
+        // A delayed copy-on-select from held left pane must not overwrite a
+        // newer Copy from the unheld right pane.
+        emit_output(
+            &runtime,
+            &right_terminal,
+            b"\x1b[?1000l\x1b[?1006lnewer pane\r\n",
+            |terminal| !terminal.cell_is_whitespace(GridPoint::new(Line(0), Column(0))),
+        );
+        right_terminal.start_selection(
+            runner_terminal::SelectionKind::Simple,
+            GridPoint::new(Line(0), Column(0)),
+            Side::Left,
+        );
+        right_terminal.update_selection(GridPoint::new(Line(0), Column(4)), Side::Right);
+        emit_output(&runtime, &left_terminal, b"\x1b[?2026h", |terminal| {
+            terminal.is_render_held()
+        });
+        drag(&mut visual);
+        visual.update(|_, cx| crate::terminal::input::copy_selection(&right_terminal, cx));
+        let _ = right_terminal.selection_contains(GridPoint::new(Line(0), Column(0)));
+        visual.run_until_parked();
+        assert_eq!(clipboard(&mut visual).as_deref(), Some("newer"));
+        emit_output(&runtime, &left_terminal, b"\x1b[?2026l", |terminal| {
+            !terminal.is_render_held()
+        });
+        let _ = left_terminal.selection_contains(GridPoint::new(Line(0), Column(0)));
+        visual.run_until_parked();
+        assert_eq!(
+            clipboard(&mut visual).as_deref(),
+            Some("newer"),
+            "delayed copy-on-select from held left pane must not overwrite newer Copy from right pane"
+        );
     }
 
     #[test]
@@ -2725,31 +2881,59 @@ mod tests {
 
     #[test]
     fn a_tab_cell_left_behind_a_redraw_never_shapes_a_tab() {
-        // Each tab leaves `'\t'` in column 2, and the redraw fills columns
-        // 3-7 without overwriting it. The second and third keep a colored
-        // underline and a combining mark on the tab cell.
-        for (bytes, tab_cell) in [
-            (&b"ab\t\rab\x1b[Ccdefg"[..], None),
+        // libghostty-vt moves the cursor on HT without storing `'\t'` in
+        // column 2, while preserving any existing styled space or space +
+        // combining mark at column 2 when redraw fills columns 3-7.
+        for (bytes, expected_painted, expect_colored_underline) in [
+            (&b"ab\t\rab\x1b[Ccdefg"[..], None, false),
             (
                 b"ab\x1b[4;58;5;1m \x1b[0m\r\x1b[2C\t\r\x1b[3Ccdefg",
                 Some(" "),
+                true,
             ),
-            (b"ab\t\rab\x1b[C\xcc\x81cdefg", Some(" \u{301}")),
+            (b"ab\t\rab\x1b[C\xcc\x81cdefg", None, false),
+            (
+                b"ab \r\x1b[2C\t\r\x1b[3C\xcc\x81cdefg",
+                Some(" \u{301}"),
+                false,
+            ),
         ] {
             let term = runner_terminal::replay::replay_bytes(20, 2, bytes);
             let screen = term.screen();
             let at = |col| screen.cell(GridPoint::new(Line(0), Column(col))).unwrap();
-            assert_eq!(at(2).c(), '\t');
+            assert_eq!(at(2).c(), ' ');
+            if expect_colored_underline {
+                assert!(at(2).flags().contains(Flags::UNDERLINE));
+                assert_eq!(
+                    at(2).underline_color(),
+                    Some(runner_terminal::palette::Color::Indexed(1))
+                );
+            }
             let texts = (0..8)
-                .map(|col| cell_text(at(col).c(), at(col).zerowidth()))
+                .map(|col| {
+                    let cell = at(col);
+                    painted_cell_text(
+                        cell.c(),
+                        cell.zerowidth(),
+                        cell.flags().contains(Flags::HIDDEN),
+                        cell.flags()
+                            .intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT),
+                    )
+                })
                 .collect::<Vec<_>>();
-            assert_eq!(texts[2].as_deref(), tab_cell);
+            assert_eq!(texts[2].as_deref(), expected_painted);
             let letters = [0, 1, 3, 4, 5, 6, 7]
                 .map(|col| texts[col].as_deref().unwrap())
                 .concat();
             assert_eq!(letters, "abcdefg");
             assert!(texts.iter().flatten().all(|text| !text.contains('\t')));
         }
+        // Keep the defensive literal-tab sanitizer in `cell_text` covered directly.
+        assert_eq!(cell_text('\t', None), None);
+        assert_eq!(
+            cell_text('\t', Some(&['\u{301}'])).as_deref(),
+            Some(" \u{301}")
+        );
     }
 
     #[test]
@@ -2925,5 +3109,400 @@ mod tests {
         let writes = runtime.writes.lock().unwrap();
         assert_eq!(writes[0], (session_id.clone(), b"k".to_vec()));
         assert_eq!(writes[1], (session_id, b"ni".to_vec()));
+    }
+
+    #[test]
+    fn async_offscreen_link_hover_shows_tooltip_without_unrelated_redraws() {
+        use super::LINK_TOOLTIP_DELAY;
+        use runner_terminal::terminal::{FileLinkContext, LinkTarget};
+
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(RecordingRuntime::default());
+        let core = test_core(temp.path(), Arc::clone(&runtime));
+        let role = probe_role(&core);
+        let left_terminal = spawn_terminal(&core, &runtime, &role, temp.path());
+        let right_terminal = spawn_terminal(&core, &runtime, &role, temp.path());
+        let mut cx = TestAppContext::single();
+        let store_dir = temp.path().join("store");
+        std::fs::create_dir_all(&store_dir).unwrap();
+        crate::app_store::test_lifecycle_store(&mut cx, &store_dir);
+        let left = wheel_pane(&mut cx, &left_terminal);
+        let right = wheel_pane(&mut cx, &right_terminal);
+        let left_interaction = left.interaction.clone();
+        let window = cx.add_window(|_, _| WheelHost {
+            left,
+            right,
+            left_interactive: true,
+            right_interactive: true,
+            right_scrollable: true,
+            font_size: 14.,
+            gap: 20.,
+            line_height_factor: crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
+            copy_on_select: false,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(700.), px(300.)));
+        visual.refresh().unwrap();
+
+        let (cols, rows) = left_terminal.size();
+        let long_url = format!(
+            "https://example.org/{}",
+            "a".repeat(usize::from(cols) * (usize::from(rows) + 6))
+        );
+        emit_output(
+            &runtime,
+            &left_terminal,
+            format!("\x1b[?25l{long_url}").as_bytes(),
+            |terminal| terminal.scroll_state().history_lines > 0,
+        );
+        visual.refresh().unwrap();
+
+        let snap = left_terminal.viewport_snapshot();
+        assert_eq!(
+            left_terminal.try_link_at_published(
+                &snap,
+                GridPoint::new(Line(1), Column(2)),
+                &FileLinkContext::default(),
+            ),
+            runner_terminal::terminal::LinkLookup::NeedsOffscreen,
+            "wrapped URL crossing into scrollback must take the async lookup path"
+        );
+
+        let left_bounds = visual.debug_bounds("WHEEL_LEFT").unwrap();
+        let cell_width = visual.update(|window, cx| {
+            let font = crate::app_settings::AppSettings::default()
+                .terminal_font_family
+                .font(cx);
+            let id = window.text_system().resolve_font(&font);
+            window
+                .text_system()
+                .em_advance(id, px(14.))
+                .unwrap_or(px(8.4))
+        });
+        let row_h = px(super::row_height(
+            14.,
+            crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
+        ));
+        let on_wrapped = point(
+            left_bounds.left() + px(10.) + cell_width * 2. + px(1.),
+            left_bounds.top() + px(10.) + row_h * 1. + px(1.),
+        );
+        let on_wrapped_adjacent = point(on_wrapped.x + cell_width, on_wrapped.y);
+
+        // Move onto the wrapped link on an unfocused, non-blinking pane.
+        visual.simulate_mouse_move(on_wrapped, None, gpui::Modifiers::default());
+        visual.run_until_parked();
+        let (hovered_target, blink_running, tooltip_before) =
+            left_interaction.read_with(&visual, |interaction, _| {
+                (
+                    interaction.hovered_link().map(|link| link.target.clone()),
+                    interaction.blink.running,
+                    interaction.cached_link_tooltip(),
+                )
+            });
+        assert_eq!(hovered_target, Some(LinkTarget::Url(long_url.clone())));
+        assert!(!blink_running, "idle unfocused pane must not blink cursor");
+        assert!(
+            tooltip_before.is_none(),
+            "tooltip must wait for LINK_TOOLTIP_DELAY"
+        );
+
+        // Move one cell along the same URL midway through the delay, then rest.
+        let half = LINK_TOOLTIP_DELAY / 2;
+        visual.executor().advance_clock(half);
+        visual.simulate_mouse_move(on_wrapped_adjacent, None, gpui::Modifiers::default());
+        visual.run_until_parked();
+        assert_eq!(
+            left_interaction.read_with(&visual, |interaction, _| {
+                interaction.hovered_link().map(|link| link.target.clone())
+            }),
+            Some(LinkTarget::Url(long_url))
+        );
+        assert!(
+            left_interaction
+                .read_with(&visual, |interaction, _| interaction.cached_link_tooltip())
+                .is_none(),
+            "tooltip must not appear before the full LINK_TOOLTIP_DELAY"
+        );
+
+        // Advance only the remaining delay — no further mouse move, output, or manual refresh.
+        visual.executor().advance_clock(LINK_TOOLTIP_DELAY - half);
+        visual.run_until_parked();
+        let tooltip_after =
+            left_interaction.read_with(&visual, |interaction, _| interaction.cached_link_tooltip());
+        assert!(
+            matches!(
+                tooltip_after,
+                Some((crate::file_links::FileLinkDecision::Browser, _))
+            ),
+            "delayed tooltip redraw must still paint after moving along the same link: {tooltip_after:?}"
+        );
+    }
+
+    #[test]
+    fn option_click_and_shift_option_click_complete_during_dec_2026_hold() {
+        use gpui::{Modifiers, MouseButton, MouseDownEvent, MouseUpEvent};
+
+        let temp = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(RecordingRuntime::default());
+        let core = test_core(temp.path(), Arc::clone(&runtime));
+        let role = probe_role(&core);
+        let left_terminal = spawn_terminal(&core, &runtime, &role, temp.path());
+        let right_terminal = spawn_terminal(&core, &runtime, &role, temp.path());
+        let _left_view = left_terminal.view();
+        emit_output(
+            &runtime,
+            &left_terminal,
+            b"\x1b[?1000l\x1b[?1006lcopy me please",
+            |terminal| !terminal.cell_is_whitespace(GridPoint::new(Line(0), Column(0))),
+        );
+        let mut cx = TestAppContext::single();
+        cx.background_executor.allow_parking();
+        let (left, right) = (
+            wheel_pane(&mut cx, &left_terminal),
+            wheel_pane(&mut cx, &right_terminal),
+        );
+        let window = cx.add_window(|_, _| WheelHost {
+            left,
+            right,
+            left_interactive: true,
+            right_interactive: true,
+            right_scrollable: true,
+            font_size: 14.,
+            gap: 20.,
+            line_height_factor: crate::app_settings::TERMINAL_LINE_HEIGHT_DEFAULT,
+            copy_on_select: false,
+        });
+        let mut visual = VisualTestContext::from_window(window.into(), &cx);
+        visual.simulate_resize(gpui::size(px(700.), px(300.)));
+        let bounds = visual.debug_bounds("WHEEL_LEFT").unwrap();
+        let rows = window
+            .read_with(&visual, |host, cx| host.left.interaction.read(cx).pane_size)
+            .unwrap()
+            .unwrap()
+            .rows;
+        wait_for_rows(&left_terminal, rows);
+
+        let row = bounds.top() + px(10. + super::row_height(14., 1.4) / 2.);
+        let start = point(bounds.left() + px(11.), row);
+        let mid = point(bounds.left() + px(40.), row);
+        let end = point(bounds.left() + px(85.), row);
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        let shift_alt = Modifiers {
+            alt: true,
+            shift: true,
+            ..Modifiers::default()
+        };
+
+        // 1. Plain Option-click with no selection during an acknowledged open
+        //    DEC 2026 hold moves the cursor immediately while still held.
+        emit_output(&runtime, &left_terminal, b"\x1b[?2026h", |terminal| {
+            terminal.is_render_held()
+        });
+        let before_writes = runtime.writes.lock().unwrap().len();
+        visual.simulate_mouse_down(start, MouseButton::Left, alt);
+        visual.simulate_mouse_up(start, MouseButton::Left, alt);
+        visual.run_until_parked();
+        assert!(
+            left_terminal.is_render_held(),
+            "Option-click with no selection must complete while hold is still open"
+        );
+        runtime.wait_for_writes(before_writes + 1);
+        assert!(
+            runtime.writes.lock().unwrap()[before_writes]
+                .1
+                .starts_with(b"\x1b[D"),
+            "Option-click must emit left-arrow cursor movement during an open hold"
+        );
+        emit_output(&runtime, &left_terminal, b"\x1b[?2026l", |terminal| {
+            !terminal.is_render_held()
+        });
+
+        // 2. Plain Option-click when a multi-character selection already exists
+        //    before the hold still moves the cursor immediately while held.
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(mid, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(mid, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let prior = left_terminal.selection_text().expect("prior selection");
+        assert!(prior.len() > 1, "{prior:?}");
+
+        emit_output(&runtime, &left_terminal, b"\x1b[?2026h", |terminal| {
+            terminal.is_render_held()
+        });
+        let before_writes = runtime.writes.lock().unwrap().len();
+        visual.simulate_mouse_down(start, MouseButton::Left, alt);
+        visual.simulate_mouse_up(start, MouseButton::Left, alt);
+        visual.run_until_parked();
+        assert!(
+            left_terminal.is_render_held(),
+            "Option-click over prior selection must complete while hold is still open"
+        );
+        runtime.wait_for_writes(before_writes + 1);
+        assert!(
+            runtime.writes.lock().unwrap()[before_writes]
+                .1
+                .starts_with(b"\x1b[D"),
+            "Option-click over prior selection must still move cursor during hold"
+        );
+        emit_output(&runtime, &left_terminal, b"\x1b[?2026l", |terminal| {
+            !terminal.is_render_held()
+        });
+        assert_eq!(left_terminal.selection_text(), None);
+
+        // 3. One-character Shift+Option-click (`"x yz"`, anchor left half of `x`,
+        //    open DEC 2026 hold, Shift+Option-click right half of `x`) and
+        //    one-character Option-double-click (`click_count: 2` on `x`) both
+        //    complete mouse-up immediately while held and resolve their <=1-char
+        //    cursor move asynchronously on release without blocking GPUI.
+        let cell_width = visual.update(|window, cx| {
+            let font = crate::app_settings::AppSettings::default()
+                .terminal_font_family
+                .font(cx);
+            let id = window.text_system().resolve_font(&font);
+            f32::from(window.text_system().em_advance(id, px(14.)).unwrap())
+        });
+        let col0_left = point(bounds.left() + px(10. + cell_width * 0.2), row);
+        let col0_right = point(bounds.left() + px(10. + cell_width * 0.8), row);
+        emit_output(&runtime, &left_terminal, b"\x1b[2J\x1b[Hx yz", |terminal| {
+            terminal.viewport_snapshot().view().row_to_string(Line(0)) == "x yz"
+        });
+
+        // 3a. Shift+Option-click selecting exactly `"x"` moves cursor immediately
+        //     while the DEC 2026 hold stays open.
+        visual.simulate_mouse_down(col0_left, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(col0_left, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        emit_output(&runtime, &left_terminal, b"\x1b[?2026h", |terminal| {
+            terminal.is_render_held()
+        });
+        let before_writes = runtime.writes.lock().unwrap().len();
+        visual.simulate_mouse_down(col0_right, MouseButton::Left, shift_alt);
+        visual.simulate_mouse_up(col0_right, MouseButton::Left, shift_alt);
+        visual.run_until_parked();
+        assert!(
+            left_terminal.is_render_held(),
+            "one-char Shift+Option-click must not release the open hold"
+        );
+        runtime.wait_for_writes(before_writes + 1);
+        assert!(
+            runtime.writes.lock().unwrap()[before_writes]
+                .1
+                .starts_with(b"\x1b[D"),
+            "one-char Shift+Option-click must move cursor immediately during hold"
+        );
+        assert_eq!(left_terminal.selection_text(), None);
+        emit_output(&runtime, &left_terminal, b"\x1b[?2026l", |terminal| {
+            !terminal.is_render_held()
+        });
+
+        // 3b. Option-double-click selecting the one-letter word `"x"` moves cursor
+        //     immediately while the DEC 2026 hold stays open.
+        emit_output(&runtime, &left_terminal, b"\x1b[?2026h", |terminal| {
+            terminal.is_render_held()
+        });
+        let before_writes = runtime.writes.lock().unwrap().len();
+        visual.simulate_event(MouseDownEvent {
+            position: col0_left,
+            button: MouseButton::Left,
+            modifiers: alt,
+            click_count: 2,
+            first_mouse: false,
+        });
+        visual.simulate_event(MouseUpEvent {
+            position: col0_left,
+            button: MouseButton::Left,
+            modifiers: alt,
+            click_count: 2,
+        });
+        visual.run_until_parked();
+        assert!(
+            left_terminal.is_render_held(),
+            "one-char Option-double-click must not release the open hold"
+        );
+        runtime.wait_for_writes(before_writes + 1);
+        assert!(
+            runtime.writes.lock().unwrap()[before_writes]
+                .1
+                .starts_with(b"\x1b[D"),
+            "one-char Option-double-click must move cursor immediately during hold"
+        );
+        assert_eq!(left_terminal.selection_text(), None);
+        emit_output(&runtime, &left_terminal, b"\x1b[?2026l", |terminal| {
+            !terminal.is_render_held()
+        });
+
+        // 4. Longer Shift+Option-click extending an active selection during an
+        //    open hold (with copy_on_select enabled) skips cursor movement,
+        //    keeps the extended selection, copies it synchronously to the
+        //    clipboard while the hold stays open, and lets an immediate Paste
+        //    use the fresh selection right away.
+        emit_output(
+            &runtime,
+            &left_terminal,
+            b"\x1b[2J\x1b[Hcopy me please",
+            |terminal| {
+                terminal.viewport_snapshot().view().row_to_string(Line(0)) == "copy me please"
+            },
+        );
+        window
+            .update(&mut visual, |host, _, cx| {
+                host.copy_on_select = true;
+                cx.notify();
+            })
+            .unwrap();
+        visual.refresh().unwrap();
+        visual.update(|_, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string("before".into()))
+        });
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(mid, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(mid, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let initial_sel = left_terminal.selection_text().expect("initial selection");
+
+        emit_output(&runtime, &left_terminal, b"\x1b[?2026h", |terminal| {
+            terminal.is_render_held()
+        });
+        let before_writes = runtime.writes.lock().unwrap().len();
+        visual.simulate_mouse_down(end, MouseButton::Left, shift_alt);
+        visual.simulate_mouse_up(end, MouseButton::Left, shift_alt);
+        visual.run_until_parked();
+        assert!(
+            left_terminal.is_render_held(),
+            "Shift+Option-click during hold must complete without releasing the hold"
+        );
+        assert_eq!(
+            runtime.writes.lock().unwrap().len(),
+            before_writes,
+            "Shift+Option-click extending a selection must not emit cursor movement"
+        );
+        let extended = left_terminal.selection_text().expect("extended selection");
+        assert!(
+            extended.len() > initial_sel.len(),
+            "expected extended selection ({extended:?}) to outgrow {initial_sel:?}"
+        );
+        let copied = visual.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+        assert_eq!(copied.as_deref(), Some(extended.as_str()));
+
+        let before_paste_writes = runtime.writes.lock().unwrap().len();
+        visual.update(|_, cx| {
+            crate::terminal::input::paste_text_from_clipboard(&right_terminal, cx).unwrap();
+        });
+        assert!(left_terminal.is_render_held());
+        runtime.wait_for_writes(before_paste_writes + 1);
+        let pasted =
+            String::from_utf8_lossy(&runtime.writes.lock().unwrap()[before_paste_writes].1)
+                .into_owned();
+        assert!(
+            pasted.contains(&extended),
+            "expected Paste to use fresh copy_on_select text {extended:?}, got {pasted:?}"
+        );
+        emit_output(&runtime, &left_terminal, b"\x1b[?2026l", |terminal| {
+            !terminal.is_render_held()
+        });
     }
 }
