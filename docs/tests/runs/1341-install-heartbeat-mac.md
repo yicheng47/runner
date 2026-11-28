@@ -8,7 +8,7 @@ Candidate: `yicheng47/runner`, `feat/1341-install-heartbeat`, base `bed3f353fec5
 
 Environment: Apple silicon, macOS 26.6.2 (25G83), Cargo and rustc 1.98.1, Xcode 27.2 (27B52), Python 3.14.7 and coordinating Codex CLI 0.172.0. No agent runtime or account was required. The neon trio brief authorized this run. QA held `script/qa-lock`, used native computer use by the temporary bundle ID and exercised test-owned private homes under `/private/tmp/r1341.pJFnGo/`. Setup's test-owned starter-crew preference change verified native input before consent actions. The candidate CLI was used only for fixture identity, inventory and shutdown.
 
-The selected checks follow the [feature spec](../../features/1341-install-heartbeat.md) and [Settings regression cases](../regression/settings.md). Evidence filenames below are relative to `/private/tmp/r1341.pJFnGo/evidence/`. Screenshots are native window captures. The loopback log omits the temporary install UUID.
+The selected checks follow the [feature spec](../../features/archive/1341-install-heartbeat.md) and [Settings regression cases](../regression/settings.md). Evidence filenames below are relative to `/private/tmp/r1341.pJFnGo/evidence/`. Screenshots are native window captures. The loopback log omits the temporary install UUID.
 
 | Check | Result | Observation and evidence |
 | --- | --- | --- |
