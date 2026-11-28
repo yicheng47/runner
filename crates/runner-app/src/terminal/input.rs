@@ -122,6 +122,8 @@ mod tests {
                 snapshot: TerminalSnapshot {
                     seq: 0,
                     activity: None,
+                    format: Default::default(),
+                    unavailable: false,
                     cols: 10,
                     rows: 2,
                     controller: self

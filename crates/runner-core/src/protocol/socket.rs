@@ -178,6 +178,7 @@ struct FrameState {
     frames: VecDeque<TerminalFrame>,
     closed: bool,
     output: Vec<u8>,
+    sink: Option<Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync>>,
 }
 #[derive(Default)]
 struct Frames {
@@ -186,23 +187,45 @@ struct Frames {
 }
 impl Frames {
     fn push(&self, frame: TerminalFrame) {
-        let mut state = self.state.lock().unwrap();
-        if state.closed {
-            return;
+        let sink = {
+            let mut state = self.state.lock().unwrap();
+            if state.closed {
+                return;
+            }
+            if let Some(sink) = state.sink.clone() {
+                Some(sink)
+            } else {
+                if state.frames.len() == TERMINAL_QUEUE_CAPACITY {
+                    state.frames.clear();
+                    state.output.clear();
+                    state.frames.push_back(TerminalFrame::Resync);
+                    state.closed = true;
+                } else {
+                    state.frames.push_back(frame);
+                }
+                self.ready.notify_all();
+                return;
+            }
+        };
+        if let Some(sink) = sink {
+            let resync = matches!(frame, TerminalFrame::Resync);
+            if !sink(Some(frame)) || resync {
+                let mut state = self.state.lock().unwrap();
+                state.closed = true;
+                state.sink = None;
+            }
         }
-        if state.frames.len() == TERMINAL_QUEUE_CAPACITY {
-            state.frames.clear();
-            state.output.clear();
-            state.frames.push_back(TerminalFrame::Resync);
-            state.closed = true;
-        } else {
-            state.frames.push_back(frame);
-        }
-        self.ready.notify_all();
     }
     fn close(&self) {
-        self.state.lock().unwrap().closed = true;
+        let sink = {
+            let mut state = self.state.lock().unwrap();
+            state.closed = true;
+            state.sink.take()
+        };
         self.ready.notify_all();
+        if let Some(sink) = sink {
+            let _ = sink(None);
+        }
     }
 }
 struct Subscription {
@@ -235,6 +258,22 @@ impl TerminalSubscription for Subscription {
             }
             state = self.queue.ready.wait(state).unwrap();
         }
+    }
+    fn install_sink(&mut self, sink: crate::protocol::terminal::FrameSink) -> bool {
+        let sink: Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync> = Arc::from(sink);
+        let mut state = self.queue.state.lock().unwrap();
+        while let Some(frame) = state.frames.pop_front() {
+            if !sink(Some(frame)) {
+                state.closed = true;
+                return true;
+            }
+        }
+        if state.closed {
+            let _ = sink(None);
+        } else {
+            state.sink = Some(sink);
+        }
+        true
     }
 }
 
@@ -518,6 +557,13 @@ impl SocketTransport {
                     }),
                     _ => return Err(wire::invalid("invalid snapshot activity tag")),
                 };
+                let format_byte = binary.take(1)?[0];
+                let unavailable = (format_byte & 0x80) != 0;
+                let format = match format_byte & 0x7f {
+                    0 => crate::protocol::terminal::SnapshotFormat::Vt,
+                    1 => crate::protocol::terminal::SnapshotFormat::GhosttyBinary,
+                    _ => return Err(wire::invalid("invalid snapshot format tag")),
+                };
                 let cols = binary.u16()?;
                 let rows = binary.u16()?;
                 let unfinished_len = binary.u64()? as usize;
@@ -528,6 +574,8 @@ impl SocketTransport {
                     pending.snapshot = Some(TerminalSnapshot {
                         seq,
                         activity,
+                        format,
+                        unavailable,
                         cols,
                         rows,
                         bytes: Vec::new(),
@@ -1026,23 +1074,38 @@ mod tests {
 
     #[test]
     fn snapshot_header_round_trips_activity_provenance() {
-        for activity in [
-            Some(crate::protocol::terminal::TerminalSnapshotActivity {
-                output_seq: 52,
-                tui_ready_seq: 51,
-                first_paint_seq: 12,
-                paint_seq: 50,
-            }),
-            None,
+        for (activity, format, unavailable) in [
+            (
+                Some(crate::protocol::terminal::TerminalSnapshotActivity {
+                    output_seq: 52,
+                    tui_ready_seq: 51,
+                    first_paint_seq: 12,
+                    paint_seq: 50,
+                }),
+                crate::protocol::terminal::SnapshotFormat::GhosttyBinary,
+                false,
+            ),
+            (None, crate::protocol::terminal::SnapshotFormat::Vt, false),
+            (
+                None,
+                crate::protocol::terminal::SnapshotFormat::GhosttyBinary,
+                true,
+            ),
         ] {
             let root = tempfile::tempdir().unwrap();
             let endpoint = IpcEndpoint(root.path().join("runnerd.sock"));
             let listener = std::os::unix::net::UnixListener::bind(&endpoint.0).unwrap();
             let expected = TerminalSnapshot {
                 seq: 55,
+                format,
+                unavailable,
                 cols: 100,
                 rows: 32,
-                bytes: b"hello".to_vec(),
+                bytes: if unavailable {
+                    Vec::new()
+                } else {
+                    b"hello".to_vec()
+                },
                 unfinished_len: 0,
                 preceding_char: Some('o'),
                 activity,
@@ -1088,7 +1151,9 @@ mod tests {
             .unwrap();
             let attachment = socket.attach("session-1").unwrap();
             assert_eq!(attachment.subscriber_id, 9);
+            assert_eq!(attachment.snapshot.unavailable, unavailable);
             assert_eq!(attachment.snapshot.seq, expected.seq);
+            assert_eq!(attachment.snapshot.format, expected.format);
             assert_eq!(attachment.snapshot.cols, expected.cols);
             assert_eq!(attachment.snapshot.rows, expected.rows);
             assert_eq!(attachment.snapshot.bytes, expected.bytes);

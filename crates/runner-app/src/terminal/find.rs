@@ -1093,28 +1093,62 @@ pub(crate) mod tests {
     fn stepping_before_a_refresh_from_a_match_that_left_the_scrollback() {
         let (terminal, mut visual, find, _) = setup();
         terminal.configure(40, CursorShape::Block, false);
-        terminal.test_feed(2, &lines("hit", 0..100));
+        terminal.test_feed(2, &lines("hit", 0..1500));
+        let history_before = terminal.scroll_state().history_lines;
+        assert!(
+            history_before > 0 && history_before < 1470,
+            "expected real whole-page eviction, got history={history_before}"
+        );
         open_with(&mut visual, "hit");
         visual.simulate_keystrokes("shift-enter");
         let oldest = visual.update(|_, cx| find.read(cx).current_now()).unwrap();
-        assert_eq!(oldest.start().line.0, -40);
-        terminal.test_feed(3, &lines("hit", 100..101));
+        assert_eq!(oldest.start().line.0, -(history_before as i32));
+        let oldest_row = terminal.with_screen(|screen| {
+            let view = screen.view();
+            let line = oldest.start().line;
+            (0..20)
+                .filter_map(|col| view.cell(Point::new(line, Column(col))).map(|c| c.c()))
+                .collect::<String>()
+        });
+        assert!(
+            !oldest_row.starts_with("hit 0 "),
+            "hit 0 should already be evicted"
+        );
+
+        // Feed enough rows before refresh to evict the page holding `oldest`.
+        terminal.test_feed(3, &lines("hit", 1500..3000));
         visual.simulate_keystrokes("enter");
         let newest = visual.update(|_, cx| find.read(cx).current_now()).unwrap();
         assert_eq!(newest.start().line.0, 23);
         assert_eq!(terminal.scroll_state().display_offset, 0);
         visual.simulate_keystrokes("shift-enter");
-        let oldest = visual.update(|_, cx| find.read(cx).current_now()).unwrap();
-        assert_eq!(oldest.start().line.0, -40);
+        let new_oldest = visual.update(|_, cx| find.read(cx).current_now()).unwrap();
+        let history_after = terminal.scroll_state().history_lines;
+        assert_eq!(new_oldest.start().line.0, -(history_after as i32));
+        let new_oldest_row = terminal.with_screen(|screen| {
+            let view = screen.view();
+            let line = new_oldest.start().line;
+            (0..20)
+                .filter_map(|col| view.cell(Point::new(line, Column(col))).map(|c| c.c()))
+                .collect::<String>()
+        });
+        assert_ne!(new_oldest_row, oldest_row);
     }
 
     #[test]
     fn a_burst_the_length_of_the_ring_clamps_the_held_view_and_closing() {
-        // 10,000 lines of scrollback on 24 rows: the ring holds 10,024 rows.
+        // Default ~10,000-line whole-page scrollback on 24 rows: feed 12,000
+        // rows so multiple pages evict while holding the viewport.
         let (terminal, mut visual, _, _) = setup();
         open_with(&mut visual, "FAIL");
-        terminal.test_feed(2, &lines("more", 0..10_024));
-        assert_eq!(terminal.scroll_state().display_offset, 10_000);
+        terminal.test_feed(2, &lines("more", 0..12_000));
+        let state = terminal.scroll_state();
+        assert!(
+            (8_000..11_500).contains(&state.history_lines),
+            "expected whole-page retention around 10,000 lines, got {}",
+            state.history_lines
+        );
+        assert_eq!(state.display_offset, state.history_lines);
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
         assert_eq!(terminal.scroll_state().display_offset, 0);
@@ -1122,11 +1156,17 @@ pub(crate) mod tests {
         terminal.scroll_to_display_offset(10);
         open_with(&mut visual, "more");
         assert_eq!(terminal.scroll_state().display_offset, 10);
-        terminal.test_feed(3, &lines("later", 0..10_026));
-        assert_eq!(terminal.scroll_state().display_offset, 10_000);
+        terminal.test_feed(3, &lines("later", 0..12_000));
+        let state = terminal.scroll_state();
+        assert!(
+            (8_000..11_500).contains(&state.history_lines),
+            "expected whole-page retention around 10,000 lines, got {}",
+            state.history_lines
+        );
+        assert_eq!(state.display_offset, state.history_lines);
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
-        assert_eq!(terminal.scroll_state().display_offset, 10_000);
+        assert_eq!(terminal.scroll_state().display_offset, state.history_lines);
     }
 
     #[test]

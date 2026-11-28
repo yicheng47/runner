@@ -807,10 +807,9 @@ fn wants_text_presentation(c: char, wide: bool, zerowidth: Option<&[char]>) -> b
 }
 
 /// The text shaped for a cell, or `None` when the cell draws nothing.
-/// alacritty stores `'\t'` in the blank cell where a tab starts, keeping any
-/// underline color, hyperlink or combining mark. Shaping a tab lays it out to
-/// the font's tab stops instead of one cell and pushes what follows off the
-/// grid (#1356), so it is shaped as a space.
+/// Defensive tab normalization: even though libghostty-vt moves the cursor on
+/// HT without storing `'\t'` in cells, any literal tab is shaped as a space
+/// so font tab stops can never push following glyphs off the grid (#1356).
 fn cell_text(c: char, zerowidth: Option<&[char]>) -> Option<String> {
     let c = if c == '\t' { ' ' } else { c };
     if c == ' ' && zerowidth.is_none() {
@@ -821,19 +820,19 @@ fn cell_text(c: char, zerowidth: Option<&[char]>) -> Option<String> {
     Some(text)
 }
 
-/// Text shaped for painting a cell. Plain spaces stay unshaped outside hovered
-/// links, but spaces inside a hovered link (such as `docs/my plan.md`) are kept
-/// so the hover underline runs continuously across the whole path.
+/// Text shaped for painting a cell. Plain spaces stay unshaped outside
+/// decorated runs, while spaces inside a hovered link or carrying underline or
+/// strikethrough decorations are kept so the decoration runs continuously.
 fn painted_cell_text(
     c: char,
     zerowidth: Option<&[char]>,
     hidden: bool,
-    link_underlined: bool,
+    decorated: bool,
 ) -> Option<String> {
     if hidden {
         return None;
     }
-    cell_text(c, zerowidth).or_else(|| link_underlined.then(|| String::from(' ')))
+    cell_text(c, zerowidth).or_else(|| decorated.then(|| String::from(' ')))
 }
 
 fn text_presentation_font(base: &Font) -> Font {
@@ -1469,18 +1468,18 @@ impl Element for TerminalElement {
                 let link_underlined = hovered_link
                     .as_ref()
                     .is_some_and(|link| link.contains(cell.point));
+                let uses_text_decorations =
+                    link_underlined || flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
                 let cell_c = cell.c();
                 let cell_zerowidth = cell.zerowidth();
                 let Some(text) = painted_cell_text(
                     cell_c,
                     cell_zerowidth,
                     flags.contains(Flags::HIDDEN),
-                    link_underlined,
+                    uses_text_decorations,
                 ) else {
                     continue;
                 };
-                let uses_text_decorations =
-                    link_underlined || flags.intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT);
                 if !uses_text_decorations {
                     if let Some(procedural_cell) = ProceduralCell::new(
                         cell_c,
@@ -2725,31 +2724,59 @@ mod tests {
 
     #[test]
     fn a_tab_cell_left_behind_a_redraw_never_shapes_a_tab() {
-        // Each tab leaves `'\t'` in column 2, and the redraw fills columns
-        // 3-7 without overwriting it. The second and third keep a colored
-        // underline and a combining mark on the tab cell.
-        for (bytes, tab_cell) in [
-            (&b"ab\t\rab\x1b[Ccdefg"[..], None),
+        // libghostty-vt moves the cursor on HT without storing `'\t'` in
+        // column 2, while preserving any existing styled space or space +
+        // combining mark at column 2 when redraw fills columns 3-7.
+        for (bytes, expected_painted, expect_colored_underline) in [
+            (&b"ab\t\rab\x1b[Ccdefg"[..], None, false),
             (
                 b"ab\x1b[4;58;5;1m \x1b[0m\r\x1b[2C\t\r\x1b[3Ccdefg",
                 Some(" "),
+                true,
             ),
-            (b"ab\t\rab\x1b[C\xcc\x81cdefg", Some(" \u{301}")),
+            (b"ab\t\rab\x1b[C\xcc\x81cdefg", None, false),
+            (
+                b"ab \r\x1b[2C\t\r\x1b[3C\xcc\x81cdefg",
+                Some(" \u{301}"),
+                false,
+            ),
         ] {
             let term = runner_terminal::replay::replay_bytes(20, 2, bytes);
             let screen = term.screen();
             let at = |col| screen.cell(GridPoint::new(Line(0), Column(col))).unwrap();
-            assert_eq!(at(2).c(), '\t');
+            assert_eq!(at(2).c(), ' ');
+            if expect_colored_underline {
+                assert!(at(2).flags().contains(Flags::UNDERLINE));
+                assert_eq!(
+                    at(2).underline_color(),
+                    Some(runner_terminal::palette::Color::Indexed(1))
+                );
+            }
             let texts = (0..8)
-                .map(|col| cell_text(at(col).c(), at(col).zerowidth()))
+                .map(|col| {
+                    let cell = at(col);
+                    painted_cell_text(
+                        cell.c(),
+                        cell.zerowidth(),
+                        cell.flags().contains(Flags::HIDDEN),
+                        cell.flags()
+                            .intersects(Flags::ALL_UNDERLINES | Flags::STRIKEOUT),
+                    )
+                })
                 .collect::<Vec<_>>();
-            assert_eq!(texts[2].as_deref(), tab_cell);
+            assert_eq!(texts[2].as_deref(), expected_painted);
             let letters = [0, 1, 3, 4, 5, 6, 7]
                 .map(|col| texts[col].as_deref().unwrap())
                 .concat();
             assert_eq!(letters, "abcdefg");
             assert!(texts.iter().flatten().all(|text| !text.contains('\t')));
         }
+        // Keep the defensive literal-tab sanitizer in `cell_text` covered directly.
+        assert_eq!(cell_text('\t', None), None);
+        assert_eq!(
+            cell_text('\t', Some(&['\u{301}'])).as_deref(),
+            Some(" \u{301}")
+        );
     }
 
     #[test]

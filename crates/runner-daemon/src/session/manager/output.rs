@@ -1321,7 +1321,7 @@ impl SessionManager {
         self.prune_empty_session_state(session_id);
     }
 
-    pub(super) fn ingest_output_chunk(
+    pub(crate) fn ingest_output_chunk(
         &self,
         session_id: &str,
         mission_id: Option<&str>,
@@ -1368,6 +1368,15 @@ impl SessionManager {
             let observation = model
                 .as_ref()
                 .and_then(|model| model.feed_output(seq, bytes));
+            if model
+                .as_ref()
+                .is_some_and(|model| model.take_resync_needed())
+            {
+                Self::push_frame(
+                    &mut state,
+                    runner_core::protocol::terminal::TerminalFrame::Resync,
+                );
+            }
             let program_statuses = model
                 .as_ref()
                 .map(|model| model.take_program_statuses())

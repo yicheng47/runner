@@ -219,6 +219,14 @@ pub const Handler = struct {
         /// handler.terminal.getTitle().
         title_changed: ?*const fn (*Handler) void,
 
+        /// Called when the running program requests saving the title onto the
+        /// title stack (XTWINOPS CSI 22 t).
+        title_push: ?*const fn (*Handler, u16) void = null,
+
+        /// Called when the running program requests restoring the title from
+        /// the title stack (XTWINOPS CSI 23 t).
+        title_pop: ?*const fn (*Handler, u16) void = null,
+
         /// Called when the terminal pwd changes via escape sequences
         /// (e.g. OSC 7). The new pwd can be queried via
         /// handler.terminal.getPwd().
@@ -358,6 +366,8 @@ pub const Handler = struct {
             .size = null,
             .render_hold = null,
             .title_changed = null,
+            .title_push = null,
+            .title_pop = null,
             .pwd_changed = null,
             .write_pty = null,
             .xtversion = null,
@@ -832,10 +842,8 @@ pub const Handler = struct {
             .dcs_put => try self.dcsPut(value),
             .dcs_unhook => try self.dcsUnhook(),
 
-            // Have no terminal-modifying effect
-            .title_push,
-            .title_pop,
-            => {},
+            .title_push => if (self.effects.title_push) |func| func(self, value),
+            .title_pop => if (self.effects.title_pop) |func| func(self, value),
         }
     }
 

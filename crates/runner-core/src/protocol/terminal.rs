@@ -69,11 +69,26 @@ pub struct TerminalSnapshotActivity {
     pub paint_seq: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum SnapshotFormat {
+    #[default]
+    Vt,
+    GhosttyBinary,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TerminalSnapshot {
     pub seq: u64,
     #[serde(default)]
     pub activity: Option<TerminalSnapshotActivity>,
+    #[serde(default)]
+    pub format: SnapshotFormat,
+    /// True when the daemon could not serialize the terminal state at `seq`
+    /// (for example while an unfinished VT sequence exceeds the continuation
+    /// retention cap). Mirrors must keep any prior synced view and wait for
+    /// the subsequent `TerminalFrame::Resync` once the parser returns to ground.
+    #[serde(default)]
+    pub unavailable: bool,
     pub cols: u16,
     pub rows: u16,
     pub controller: TerminalController,
@@ -82,9 +97,18 @@ pub struct TerminalSnapshot {
     pub preceding_char: Option<char>,
 }
 
+pub type FrameSink = Box<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync>;
+
 pub trait TerminalSubscription: Send {
     fn recv(&mut self) -> Result<TerminalFrame, ClientError>;
     fn cancellation(&self) -> std::sync::Arc<dyn Fn() + Send + Sync>;
+    /// Optional push-delivery hook: drains any buffered frames into `sink`
+    /// (`Some(frame)` per frame, `None` on stream close), forwards future
+    /// frames directly to `sink`, and returns `true` so callers do not need a
+    /// dedicated blocking reader thread.
+    fn install_sink(&mut self, _sink: FrameSink) -> bool {
+        false
+    }
 }
 
 pub struct TerminalAttachment {

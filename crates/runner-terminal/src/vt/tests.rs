@@ -280,6 +280,16 @@ fn sys_log_callback_routes_libghostty_warnings_to_tracing() {
         events: Arc<Mutex<Vec<(tracing::Level, String)>>>,
     }
     impl tracing::Subscriber for CaptureSubscriber {
+        fn register_callsite(
+            &self,
+            metadata: &'static tracing::Metadata<'static>,
+        ) -> tracing::subscriber::Interest {
+            if metadata.target() == "libghostty_vt" {
+                tracing::subscriber::Interest::sometimes()
+            } else {
+                tracing::subscriber::Interest::never()
+            }
+        }
         fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
             metadata.target() == "libghostty_vt"
         }
@@ -317,8 +327,13 @@ fn sys_log_callback_routes_libghostty_warnings_to_tracing() {
     let subscriber = CaptureSubscriber {
         events: Arc::clone(&events),
     };
+    let mut term = Terminal::new(&TerminalConfig::default()).unwrap();
+    // Register the `tracing::warn!` callsite inside `sys_log` before
+    // `rebuild_interest_cache()` so a concurrent test thread cannot register
+    // it with `NoSubscriber` (`Interest::never`) in between.
+    term.vt_write(b"\x1b]7501;state=nonsense\x1b\\");
     tracing::subscriber::with_default(subscriber, || {
-        let mut term = Terminal::new(&TerminalConfig::default()).unwrap();
+        tracing::callsite::rebuild_interest_cache();
         // Malformed OSC 7501 triggers `log.warn("invalid OSC 7501 report ...")` inside Ghostty.
         term.vt_write(b"\x1b]7501;state=nonsense\x1b\\");
     });
@@ -956,4 +971,129 @@ fn osc_7501_parity_spike_against_861_rules() {
     assert_eq!(empty_text_reports.len(), 1);
     assert_eq!(empty_text_reports[0].title, None);
     assert_eq!(empty_text_reports[0].message, None);
+}
+
+#[test]
+fn scrollback_zero_disables_history_and_positive_retains_multi_page_output() {
+    // 1. Scrollback 0 retains zero rows initially, erases retained history on
+    //    live downgrade, and resumes retention when raised again.
+    let mut zero = Terminal::new(&TerminalConfig {
+        cols: 80,
+        rows: 5,
+        scrollback_lines: 0,
+        ..TerminalConfig::default()
+    })
+    .unwrap();
+    for i in 0..50 {
+        zero.vt_write(format!("zero-{i:04}\r\n").as_bytes());
+    }
+    assert_eq!(zero.scrollback_rows(), 0);
+
+    zero.set_scrollback_lines(500).unwrap();
+    for i in 0..100 {
+        zero.vt_write(format!("restored-{i:04}\r\n").as_bytes());
+    }
+    assert!(
+        zero.scrollback_rows() >= 90,
+        "raising scrollback above 0 should retain new history, got {}",
+        zero.scrollback_rows()
+    );
+
+    zero.set_scrollback_lines(0).unwrap();
+    assert_eq!(
+        zero.scrollback_rows(),
+        0,
+        "lowering scrollback to 0 must erase retained history immediately"
+    );
+    for i in 0..30 {
+        zero.vt_write(format!("after-zero-{i:04}\r\n").as_bytes());
+    }
+    assert_eq!(zero.scrollback_rows(), 0);
+
+    // 2. Positive limits lift the default 10,000-byte cap (`SIZE_MAX`) so long
+    //    output retains about the configured line count across multiple pages.
+    let mut multi = Terminal::new(&TerminalConfig {
+        cols: 80,
+        rows: 24,
+        scrollback_lines: 1_500,
+        ..TerminalConfig::default()
+    })
+    .unwrap();
+    for i in 0..4_000 {
+        multi.vt_write(format!("line-{i:04} payload\r\n").as_bytes());
+    }
+    let retained = multi.scrollback_rows();
+    assert!(
+        (1_000..=2_200).contains(&retained),
+        "expected whole-page multi-page retention around 1,500 lines, got {retained}"
+    );
+    let plain = multi
+        .format(FormatOptions {
+            kind: FormatKind::Plain,
+            unwrap: false,
+            trim: true,
+            extras: sys::GHOSTTY_FORMATTER_EXTRAS_NONE,
+        })
+        .unwrap();
+    let text = String::from_utf8_lossy(&plain);
+    assert!(
+        !text.contains("line-0000"),
+        "oldest lines must be evicted past scrollback limit"
+    );
+    assert!(
+        text.contains("line-3999"),
+        "newest lines must remain on the active screen"
+    );
+
+    // Lowering to a smaller positive limit prunes eligible whole pages immediately.
+    multi.set_scrollback_lines(500).unwrap();
+    let pruned = multi.scrollback_rows();
+    assert!(
+        pruned < retained && pruned <= 1_100,
+        "lowering scrollback to 500 should prune older pages (before={retained}, after={pruned})"
+    );
+}
+
+#[test]
+fn tab_selection_expands_to_spaces_and_preserves_soft_wraps() {
+    let opts = FormatOptions {
+        kind: FormatKind::Plain,
+        unwrap: true,
+        trim: true,
+        extras: sys::GHOSTTY_FORMATTER_EXTRAS_NONE,
+    };
+
+    // 1. Plain row with a horizontal tab expands to spaces up to the 8-col tab stop.
+    let mut term = Terminal::new(&TerminalConfig {
+        cols: 20,
+        rows: 4,
+        scrollback_lines: 100,
+        ..TerminalConfig::default()
+    })
+    .unwrap();
+    term.vt_write(b"A\tB");
+    term.set_selection_points(GridPointTag::Active, (0, 0), (8, 0), false)
+        .unwrap();
+    let selected = String::from_utf8(term.format_active_selection(opts).unwrap().unwrap()).unwrap();
+    assert_eq!(selected, "A       B");
+    assert!(!selected.contains('\t'));
+
+    // 2. Selection spanning a soft wrap after a tab keeps spaces to the tab
+    //    stop and emits no spurious newline across the wrap boundary.
+    let mut wrapped = Terminal::new(&TerminalConfig {
+        cols: 10,
+        rows: 4,
+        scrollback_lines: 100,
+        ..TerminalConfig::default()
+    })
+    .unwrap();
+    wrapped.vt_write(b"A\tBCDE");
+    wrapped
+        .set_selection_points(GridPointTag::Active, (0, 0), (1, 1), false)
+        .unwrap();
+    let selected =
+        String::from_utf8(wrapped.format_active_selection(opts).unwrap().unwrap()).unwrap();
+    assert_eq!(selected, "A       BCDE");
+    assert!(!selected.contains('\n'));
+    assert!(!selected.contains('\t'));
 }

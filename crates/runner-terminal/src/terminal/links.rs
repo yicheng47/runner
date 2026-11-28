@@ -215,7 +215,7 @@ fn link_row_content(view: &ScreenView<'_>, line: Line) -> Option<(usize, usize)>
 }
 
 fn wrapped_hyperlink_ids_match(left: &str, right: &str) -> bool {
-    left == right || (left.ends_with("_alacritty") && right.ends_with("_alacritty"))
+    left == right
 }
 
 enum Osc8Lookup {

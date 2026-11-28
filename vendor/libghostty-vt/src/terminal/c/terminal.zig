@@ -347,6 +347,8 @@ pub const Effects = struct {
     enquiry: ?EnquiryFn = null,
     xtversion: ?XtversionFn = null,
     title_changed: ?TitleChangedFn = null,
+    title_push: ?TitlePushFn = null,
+    title_pop: ?TitlePopFn = null,
     pwd_changed: ?PwdChangedFn = null,
     progress_report: ?ProgressReportFn = null,
     program_status: ?ProgramStatusFn = null,
@@ -404,6 +406,12 @@ pub const Effects = struct {
 
     /// C function pointer type for the title_changed callback.
     pub const TitleChangedFn = *const fn (Terminal, ?*anyopaque) callconv(lib.calling_conv) void;
+
+    /// C function pointer type for the title_push callback.
+    pub const TitlePushFn = *const fn (Terminal, ?*anyopaque, u16) callconv(lib.calling_conv) void;
+
+    /// C function pointer type for the title_pop callback.
+    pub const TitlePopFn = *const fn (Terminal, ?*anyopaque, u16) callconv(lib.calling_conv) void;
 
     /// C function pointer type for the render_hold callback.
     pub const RenderHoldFn = *const fn (Terminal, ?*anyopaque, bool) callconv(lib.calling_conv) void;
@@ -714,6 +722,18 @@ pub const Effects = struct {
         func(@ptrCast(wrapper), wrapper.effects.userdata);
     }
 
+    fn titlePushTrampoline(handler: *Handler, param: u16) void {
+        const wrapper = TerminalWrapper.fromHandler(handler);
+        const func = wrapper.effects.title_push orelse return;
+        func(@ptrCast(wrapper), wrapper.effects.userdata, param);
+    }
+
+    fn titlePopTrampoline(handler: *Handler, param: u16) void {
+        const wrapper = TerminalWrapper.fromHandler(handler);
+        const func = wrapper.effects.title_pop orelse return;
+        func(@ptrCast(wrapper), wrapper.effects.userdata, param);
+    }
+
     fn renderHoldTrampoline(handler: *Handler, held: bool) void {
         const wrapper = TerminalWrapper.fromHandler(handler);
         const func = wrapper.effects.render_hold orelse return;
@@ -873,6 +893,8 @@ fn wrap(
         .enquiry = &Effects.enquiryTrampoline,
         .xtversion = &Effects.xtversionTrampoline,
         .title_changed = &Effects.titleChangedTrampoline,
+        .title_push = &Effects.titlePushTrampoline,
+        .title_pop = &Effects.titlePopTrampoline,
         .pwd_changed = &Effects.pwdChangedTrampoline,
         .progress_report = &Effects.progressReportTrampoline,
         .semantic_prompt = &Effects.semanticPromptTrampoline,
@@ -1503,6 +1525,8 @@ pub const Option = enum(c_int) {
     xt_checksum_extension = 46,
     program_status = 47,
     resize_window = 48,
+    title_push = 49,
+    title_pop = 50,
 
     _,
 
@@ -1518,6 +1542,8 @@ pub const Option = enum(c_int) {
             .enquiry => ?Effects.EnquiryFn,
             .xtversion => ?Effects.XtversionFn,
             .title_changed => ?Effects.TitleChangedFn,
+            .title_push => ?Effects.TitlePushFn,
+            .title_pop => ?Effects.TitlePopFn,
             .pwd_changed => ?Effects.PwdChangedFn,
             .progress_report => ?Effects.ProgressReportFn,
             .program_status => ?Effects.ProgramStatusFn,
@@ -1594,6 +1620,8 @@ fn setTyped(
         .enquiry => wrapper.effects.enquiry = value,
         .xtversion => wrapper.effects.xtversion = value,
         .title_changed => wrapper.effects.title_changed = value,
+        .title_push => wrapper.effects.title_push = value,
+        .title_pop => wrapper.effects.title_pop = value,
         .pwd_changed => wrapper.effects.pwd_changed = value,
         .progress_report => wrapper.effects.progress_report = value,
         .resize_window => wrapper.effects.resize_window = value,
@@ -1979,6 +2007,8 @@ pub const TerminalData = enum(c_int) {
     clipboard_write_max_bytes = 40,
     mouse_shape = 41,
     memory_usage = 42,
+    scroll_up_rows = 43,
+    screen_generation = 44,
 
     _,
 
@@ -2017,7 +2047,10 @@ pub const TerminalData = enum(c_int) {
             .color_cursor_default,
             => color.RGB.C,
             .color_palette, .color_palette_default => color.PaletteC,
-            .kitty_image_storage_limit => u64,
+            .kitty_image_storage_limit,
+            .scroll_up_rows,
+            .screen_generation,
+            => u64,
             .kitty_image_medium_file,
             .kitty_image_medium_shared_mem,
             => bool,
@@ -2165,6 +2198,9 @@ fn getTyped(
             if (!lib.sizedCheck(.output, out)) return .invalid_value;
             lib.sizedWrite(out, .init(t));
         },
+        .scroll_up_rows => out.* = t.screens.active.scroll_up_rows,
+        .screen_generation => out.* = (@as(u64, @intCast(t.screens.generation(t.screens.active_key))) << 32) |
+            (t.screens.active.scroll_epoch & 0xFFFF_FFFF),
         _ => comptime unreachable,
     }
 

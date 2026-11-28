@@ -4,7 +4,7 @@
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::marker::PhantomData;
-use std::mem::size_of;
+use std::mem::{size_of, ManuallyDrop};
 use std::panic::{self, AssertUnwindSafe};
 use std::ptr::{self, NonNull};
 use std::slice;
@@ -12,13 +12,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ghostty_vt_sys as sys;
 
-use super::{check, init_sys, take_ghostty_alloc, Result, VtError};
+use super::render::RenderState;
+use super::{ansi_mode, check, dec_mode, init_sys, take_ghostty_alloc, Result, VtError};
 use crate::palette::Rgb;
+use crate::screen::ScreenData;
 use crate::terminal::MAX_CLIPBOARD_BYTES;
 use crate::types::CursorShape;
 
 pub(crate) const DEFAULT_CONTINUATION_MAX_BYTES: usize = 64 * 1024;
 pub(crate) const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
+const TITLE_STACK_MAX_DEPTH: usize = 4096;
 
 static NEXT_TERMINAL_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -135,6 +138,9 @@ pub(crate) struct TerminalConfig {
     /// `TITLE_CHANGED`, `RESET`). Mirrors disable reply-producing callbacks so
     /// only `TerminalModel` answers queries.
     pub(crate) enable_host_callbacks: bool,
+    /// Install only `TITLE_CHANGED` and `RESET` callbacks (used by
+    /// `TitleParser` without enabling reply-producing host callbacks).
+    pub(crate) enable_title_events: bool,
     /// Install `RENDER_HOLD` callback (needed by both models and mirrors).
     pub(crate) enable_render_hold: bool,
 }
@@ -151,6 +157,7 @@ impl Default for TerminalConfig {
             color_scheme: ColorScheme::Dark,
             cell_size_px: (0, 0),
             enable_host_callbacks: true,
+            enable_title_events: false,
             enable_render_hold: true,
         }
     }
@@ -241,6 +248,17 @@ pub(crate) struct Style {
     pub(crate) flags: u16,
 }
 
+impl Default for Style {
+    fn default() -> Self {
+        Self {
+            fg: StyleColor::None,
+            bg: StyleColor::None,
+            underline: StyleColor::None,
+            flags: 0,
+        }
+    }
+}
+
 impl Style {
     #[inline]
     pub(super) fn from_raw(raw: sys::GhosttyStyle) -> Self {
@@ -261,6 +279,7 @@ pub(crate) struct CellInfo {
     pub(crate) has_text: bool,
     pub(crate) has_styling: bool,
     pub(crate) has_hyperlink: bool,
+    pub(crate) protected: bool,
     pub(crate) bg_palette: Option<u8>,
     pub(crate) bg_rgb: Option<Rgb>,
 }
@@ -273,6 +292,7 @@ impl CellInfo {
         let mut has_text = false;
         let mut has_styling = false;
         let mut has_hyperlink = false;
+        let mut protected = false;
         unsafe {
             sys::ghostty_cell_get(
                 raw,
@@ -299,6 +319,11 @@ impl CellInfo {
                 raw,
                 sys::GHOSTTY_CELL_DATA_HAS_HYPERLINK,
                 (&raw mut has_hyperlink).cast(),
+            );
+            sys::ghostty_cell_get(
+                raw,
+                sys::GHOSTTY_CELL_DATA_PROTECTED,
+                (&raw mut protected).cast(),
             );
         }
         let content_tag = match tag {
@@ -346,6 +371,7 @@ impl CellInfo {
             has_text,
             has_styling,
             has_hyperlink,
+            protected,
             bg_palette,
             bg_rgb,
         }
@@ -711,11 +737,22 @@ impl Default for SnapshotDecodeOptions {
     }
 }
 
+#[derive(Clone, Copy)]
+struct HoldCapture {
+    render_state: *mut RenderState,
+    default_cursor_hidden: bool,
+    terminal_id: u64,
+}
+
 struct EffectInbox {
     effects: Vec<TerminalEffect>,
     color_scheme: ColorScheme,
     cell_size_px: (u32, u32),
     max_clipboard_bytes: usize,
+    title_stack: Vec<Option<String>>,
+    emit_title_and_reset: bool,
+    hold_capture: Option<HoldCapture>,
+    pre_hold_screen: Option<ScreenData>,
 }
 
 /// Single-owner `!Send`/`!Sync` terminal state backed by `libghostty-vt`.
@@ -754,13 +791,14 @@ impl Terminal {
         config: &TerminalConfig,
     ) -> Result<Self> {
         init_sys();
+        let (ghostty_bytes, title_stack) = strip_title_stack_footer(bytes);
         let mut decoder: sys::GhosttySnapshotDecoder = ptr::null_mut();
         check(unsafe {
             sys::ghostty_snapshot_decoder_new_buf(
                 ptr::null(),
                 &mut decoder,
-                bytes.as_ptr(),
-                bytes.len(),
+                ghostty_bytes.as_ptr(),
+                ghostty_bytes.len(),
             )
         })?;
         struct DecoderGuard(sys::GhosttySnapshotDecoder);
@@ -802,6 +840,9 @@ impl Terminal {
 
         let mut term = Self::from_raw(raw, config);
         term.configure_after_decode(config)?;
+        if !title_stack.is_empty() {
+            term.set_title_stack(title_stack);
+        }
         Ok(term)
     }
 
@@ -811,6 +852,10 @@ impl Terminal {
             color_scheme: config.color_scheme,
             cell_size_px: config.cell_size_px,
             max_clipboard_bytes: config.clipboard_write_max_bytes,
+            title_stack: Vec::new(),
+            emit_title_and_reset: config.enable_host_callbacks || config.enable_title_events,
+            hold_capture: None,
+            pre_hold_screen: None,
         }))))
         .expect("Box::into_raw returned null");
         Self {
@@ -847,6 +892,29 @@ impl Terminal {
                 sys::GHOSTTY_TERMINAL_OPT_USERDATA,
                 ud,
             ))?;
+            // Always maintain the xterm title stack (`CSI 22/23 t`) and clear
+            // it on RIS (`ESC c`) regardless of whether host callbacks run.
+            let title_push: unsafe extern "C" fn(sys::GhosttyTerminal, *mut c_void, u16) =
+                on_title_push;
+            let title_pop: unsafe extern "C" fn(sys::GhosttyTerminal, *mut c_void, u16) =
+                on_title_pop;
+            let reset: unsafe extern "C" fn(sys::GhosttyTerminal, *mut c_void) = on_reset;
+            check(sys::ghostty_terminal_set(
+                self.raw,
+                sys::GHOSTTY_TERMINAL_OPT_TITLE_PUSH,
+                title_push as *const c_void,
+            ))?;
+            check(sys::ghostty_terminal_set(
+                self.raw,
+                sys::GHOSTTY_TERMINAL_OPT_TITLE_POP,
+                title_pop as *const c_void,
+            ))?;
+            check(sys::ghostty_terminal_set(
+                self.raw,
+                sys::GHOSTTY_TERMINAL_OPT_RESET,
+                reset as *const c_void,
+            ))?;
+
             if config.enable_render_hold {
                 let cb: unsafe extern "C" fn(sys::GhosttyTerminal, *mut c_void, bool) =
                     on_render_hold;
@@ -854,6 +922,15 @@ impl Terminal {
                     self.raw,
                     sys::GHOSTTY_TERMINAL_OPT_RENDER_HOLD,
                     cb as *const c_void,
+                ))?;
+            }
+            if config.enable_host_callbacks || config.enable_title_events {
+                let title: unsafe extern "C" fn(sys::GhosttyTerminal, *mut c_void) =
+                    on_title_changed;
+                check(sys::ghostty_terminal_set(
+                    self.raw,
+                    sys::GHOSTTY_TERMINAL_OPT_TITLE_CHANGED,
+                    title as *const c_void,
                 ))?;
             }
             if config.enable_host_callbacks {
@@ -864,8 +941,6 @@ impl Terminal {
                     usize,
                 ) = on_write_pty;
                 let bell: unsafe extern "C" fn(sys::GhosttyTerminal, *mut c_void) = on_bell;
-                let title: unsafe extern "C" fn(sys::GhosttyTerminal, *mut c_void) =
-                    on_title_changed;
                 let pwd: unsafe extern "C" fn(sys::GhosttyTerminal, *mut c_void) = on_pwd_changed;
                 let size_cb: unsafe extern "C" fn(
                     sys::GhosttyTerminal,
@@ -877,6 +952,11 @@ impl Terminal {
                     *mut c_void,
                     *mut sys::GhosttyColorScheme,
                 ) -> bool = on_color_scheme;
+                let device_attributes: unsafe extern "C" fn(
+                    sys::GhosttyTerminal,
+                    *mut c_void,
+                    *mut sys::GhosttyDeviceAttributes,
+                ) -> bool = on_device_attributes;
                 let clipboard_write: unsafe extern "C" fn(
                     sys::GhosttyTerminal,
                     *mut c_void,
@@ -892,7 +972,6 @@ impl Terminal {
                     *mut c_void,
                     *const sys::GhosttyTerminalSemanticPrompt,
                 ) = on_semantic_prompt;
-                let reset: unsafe extern "C" fn(sys::GhosttyTerminal, *mut c_void) = on_reset;
 
                 check(sys::ghostty_terminal_set(
                     self.raw,
@@ -903,11 +982,6 @@ impl Terminal {
                     self.raw,
                     sys::GHOSTTY_TERMINAL_OPT_BELL,
                     bell as *const c_void,
-                ))?;
-                check(sys::ghostty_terminal_set(
-                    self.raw,
-                    sys::GHOSTTY_TERMINAL_OPT_TITLE_CHANGED,
-                    title as *const c_void,
                 ))?;
                 check(sys::ghostty_terminal_set(
                     self.raw,
@@ -926,6 +1000,11 @@ impl Terminal {
                 ))?;
                 check(sys::ghostty_terminal_set(
                     self.raw,
+                    sys::GHOSTTY_TERMINAL_OPT_DEVICE_ATTRIBUTES,
+                    device_attributes as *const c_void,
+                ))?;
+                check(sys::ghostty_terminal_set(
+                    self.raw,
                     sys::GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,
                     clipboard_write as *const c_void,
                 ))?;
@@ -938,11 +1017,6 @@ impl Terminal {
                     self.raw,
                     sys::GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT,
                     semantic_prompt as *const c_void,
-                ))?;
-                check(sys::ghostty_terminal_set(
-                    self.raw,
-                    sys::GHOSTTY_TERMINAL_OPT_RESET,
-                    reset as *const c_void,
                 ))?;
             }
         }
@@ -1006,6 +1080,101 @@ impl Terminal {
         }
     }
 
+    /// Write `bytes` until the VT stream finishes an OSC sequence or returns to
+    /// ground. Returns `(bytes_consumed, reached_boundary)`.
+    pub(crate) fn vt_write_until_osc_or_ground(&mut self, bytes: &[u8]) -> Result<(usize, bool)> {
+        if bytes.is_empty() {
+            return Ok((0, false));
+        }
+        self.bump_mutation_gen();
+        // Bindgen emits C enums as `c_int` under MSVC and `c_uint` on Unix,
+        // while `vt_write_until` takes a fixed `uint32_t` bitmask.
+        #[allow(clippy::unnecessary_cast)]
+        let mask: u32 =
+            (sys::GHOSTTY_TERMINAL_BOUNDARY_GROUND | sys::GHOSTTY_TERMINAL_BOUNDARY_OSC_END) as u32;
+        let mut stop = sys::GhosttyTerminalWriteStop {
+            size: size_of::<sys::GhosttyTerminalWriteStop>(),
+            ..Default::default()
+        };
+        let rc = unsafe {
+            sys::ghostty_terminal_vt_write_until(
+                self.raw,
+                bytes.as_ptr(),
+                bytes.len(),
+                mask,
+                &mut stop,
+            )
+        };
+        match rc {
+            sys::GHOSTTY_SUCCESS => Ok((stop.consumed, stop.reached != 0)),
+            sys::GHOSTTY_NO_VALUE => Ok((stop.consumed, false)),
+            other => Err(check(other).unwrap_err()),
+        }
+    }
+
+    /// Write `bytes` while capturing a pre-hold viewport snapshot inside
+    /// Ghostty's synchronous `render_hold(true)` callback so any output before
+    /// `CSI ? 2026 h` in the same chunk is preserved cleanly while held.
+    pub(crate) fn vt_write_capturing_hold(
+        &mut self,
+        bytes: &[u8],
+        render_state: &mut RenderState,
+        default_cursor_hidden: bool,
+    ) -> Option<ScreenData> {
+        if bytes.is_empty() {
+            return None;
+        }
+        struct CaptureGuard(*mut EffectInbox);
+        impl Drop for CaptureGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    (*self.0).hold_capture = None;
+                }
+            }
+        }
+        let inbox_ptr = self.inbox.as_ptr();
+        unsafe {
+            let inbox = (*inbox_ptr).get();
+            (*inbox).pre_hold_screen = None;
+            (*inbox).hold_capture = Some(HoldCapture {
+                render_state: ptr::from_mut(render_state),
+                default_cursor_hidden,
+                terminal_id: self.id,
+            });
+            let _guard = CaptureGuard(inbox);
+            self.vt_write(bytes);
+        }
+        unsafe { (*(*inbox_ptr).get()).pre_hold_screen.take() }
+    }
+
+    /// Phase 1 supports Kitty keyboard bit 0 (`DISAMBIGUATE_ESC_CODES`) only;
+    /// clamp any higher bits set on the live top-of-stack when at VT ground.
+    pub(crate) fn clamp_kitty_keyboard_flags(&mut self) {
+        let flags = self.kitty_keyboard_flags();
+        if flags > 1 && self.vt_ground() {
+            let clamped = flags & 1;
+            let seq = if clamped == 1 {
+                b"\x1b[=1;1u".as_slice()
+            } else {
+                b"\x1b[=0;1u".as_slice()
+            };
+            self.bump_mutation_gen();
+            unsafe { sys::ghostty_terminal_vt_write(self.raw, seq.as_ptr(), seq.len()) };
+        }
+    }
+
+    pub(crate) fn title_stack(&self) -> Vec<Option<String>> {
+        unsafe { (*self.inbox.as_ref().get()).title_stack.clone() }
+    }
+
+    pub(crate) fn clear_title_stack(&mut self) {
+        unsafe { (*self.inbox.as_ref().get()).title_stack.clear() };
+    }
+
+    pub(crate) fn set_title_stack(&mut self, stack: Vec<Option<String>>) {
+        unsafe { (*self.inbox.as_ref().get()).title_stack = stack };
+    }
+
     pub(crate) fn take_effects(&mut self) -> Vec<TerminalEffect> {
         unsafe { std::mem::take(&mut (*self.inbox.as_ref().get()).effects) }
     }
@@ -1066,12 +1235,15 @@ impl Terminal {
 
     pub(crate) fn set_scrollback_lines(&mut self, lines: usize) -> Result<()> {
         self.bump_mutation_gen();
-        let unlimited_bytes: usize = usize::MAX;
+        // `SCROLLBACK_MAX_BYTES = 0` disables scrollback and erases retained
+        // history (terminal.h:2328); non-zero line limits lift the byte cap so
+        // line count governs page eviction.
+        let bytes_limit: usize = if lines == 0 { 0 } else { usize::MAX };
         unsafe {
             check(sys::ghostty_terminal_set(
                 self.raw,
                 sys::GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES,
-                (&raw const unlimited_bytes).cast(),
+                (&raw const bytes_limit).cast(),
             ))?;
             check(sys::ghostty_terminal_set(
                 self.raw,
@@ -1185,6 +1357,24 @@ impl Terminal {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn set_theme_defaults(
+        &mut self,
+        theme: crate::palette::TerminalPalette,
+    ) -> Result<()> {
+        let base = crate::palette::base_palette_for(theme);
+        self.set_color_scheme(if theme.is_light() {
+            ColorScheme::Light
+        } else {
+            ColorScheme::Dark
+        });
+        self.set_default_colors(
+            Some(theme.foreground),
+            Some(theme.background),
+            Some(theme.cursor),
+            Some(&base),
+        )
     }
 
     pub(crate) fn set_default_cursor_style(
@@ -1422,6 +1612,197 @@ impl Terminal {
         rows
     }
 
+    pub(crate) fn scrollback_disabled(&self) -> bool {
+        let mut bytes: usize = 0;
+        let rc = unsafe {
+            sys::ghostty_terminal_get(
+                self.raw,
+                sys::GHOSTTY_TERMINAL_DATA_SCROLLBACK_MAX_BYTES,
+                (&raw mut bytes).cast(),
+            )
+        };
+        rc == sys::GHOSTTY_SUCCESS && bytes == 0
+    }
+
+    pub(crate) fn scrollback_max_lines(&self) -> Option<usize> {
+        let mut lines: usize = 0;
+        let rc = unsafe {
+            sys::ghostty_terminal_get(
+                self.raw,
+                sys::GHOSTTY_TERMINAL_DATA_SCROLLBACK_MAX_LINES,
+                (&raw mut lines).cast(),
+            )
+        };
+        (rc == sys::GHOSTTY_SUCCESS).then_some(lines)
+    }
+
+    pub(crate) fn scroll_up_rows(&self) -> u64 {
+        let mut rows: u64 = 0;
+        unsafe {
+            sys::ghostty_terminal_get(
+                self.raw,
+                sys::GHOSTTY_TERMINAL_DATA_SCROLL_UP_ROWS,
+                (&raw mut rows).cast(),
+            );
+        }
+        rows
+    }
+
+    pub(crate) fn screen_generation(&self) -> u64 {
+        let mut generation: u64 = 0;
+        unsafe {
+            sys::ghostty_terminal_get(
+                self.raw,
+                sys::GHOSTTY_TERMINAL_DATA_SCREEN_GENERATION,
+                (&raw mut generation).cast(),
+            );
+        }
+        generation
+    }
+
+    /// Fast zero-allocation, short-circuiting check whether any cell on the
+    /// active screen carries non-whitespace, non-control visible text.
+    pub(crate) fn active_has_visible_text(&self) -> bool {
+        let cols = self.cols();
+        let rows = self.rows();
+        for y in 0..u32::from(rows) {
+            for x in 0..cols {
+                let mut gref = sys::GhosttyGridRef::default();
+                if unsafe {
+                    sys::ghostty_terminal_grid_ref(
+                        self.raw,
+                        make_point(GridPointTag::Active, x, y),
+                        &mut gref,
+                    )
+                } != sys::GHOSTTY_SUCCESS
+                {
+                    continue;
+                }
+                let mut cell: sys::GhosttyCell = 0;
+                if unsafe { sys::ghostty_grid_ref_cell(&gref, &mut cell) } != sys::GHOSTTY_SUCCESS {
+                    continue;
+                }
+                let mut cp: u32 = 0;
+                unsafe {
+                    sys::ghostty_cell_get(
+                        cell,
+                        sys::GHOSTTY_CELL_DATA_CODEPOINT,
+                        (&raw mut cp).cast(),
+                    );
+                }
+                if cp != 0 && cp != u32::from(b' ') {
+                    if let Some(ch) = char::from_u32(cp) {
+                        if !ch.is_whitespace() && !ch.is_control() {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Fast zero-allocation scan of the active viewport returning
+    /// `(has_visible_text, trimmed_rows_hash)`. Used only on control-only
+    /// chunks when hidden (or scrolled back) to detect screen mutations without
+    /// invoking `RenderState::update` or allocating a `ScreenData` cell buffer.
+    pub(crate) fn active_visible_text_state(&self) -> (bool, u64) {
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+        #[inline]
+        fn mix_u32(hash: &mut u64, value: u32) {
+            for b in value.to_le_bytes() {
+                *hash ^= u64::from(b);
+                *hash = hash.wrapping_mul(FNV_PRIME);
+            }
+        }
+
+        let cols = self.cols();
+        let rows = self.rows();
+        let mut has_visible = false;
+        let mut hash = FNV_OFFSET;
+        mix_u32(&mut hash, u32::from(cols));
+        mix_u32(&mut hash, u32::from(rows));
+
+        for y in 0..u32::from(rows) {
+            // Find the last non-blank column on this row so trailing spaces
+            // match `ScreenView::visible_lines()` trimming semantics.
+            let mut last_non_blank: Option<u16> = None;
+            for x in (0..cols).rev() {
+                let mut gref = sys::GhosttyGridRef::default();
+                if unsafe {
+                    sys::ghostty_terminal_grid_ref(
+                        self.raw,
+                        make_point(GridPointTag::Active, x, y),
+                        &mut gref,
+                    )
+                } != sys::GHOSTTY_SUCCESS
+                {
+                    continue;
+                }
+                let mut cell: sys::GhosttyCell = 0;
+                if unsafe { sys::ghostty_grid_ref_cell(&gref, &mut cell) } != sys::GHOSTTY_SUCCESS {
+                    continue;
+                }
+                let mut cp: u32 = 0;
+                unsafe {
+                    sys::ghostty_cell_get(
+                        cell,
+                        sys::GHOSTTY_CELL_DATA_CODEPOINT,
+                        (&raw mut cp).cast(),
+                    );
+                }
+                if cp != 0 && cp != u32::from(b' ') {
+                    last_non_blank = Some(x);
+                    break;
+                }
+            }
+            if let Some(end_x) = last_non_blank {
+                for x in 0..=end_x {
+                    let mut gref = sys::GhosttyGridRef::default();
+                    if unsafe {
+                        sys::ghostty_terminal_grid_ref(
+                            self.raw,
+                            make_point(GridPointTag::Active, x, y),
+                            &mut gref,
+                        )
+                    } != sys::GHOSTTY_SUCCESS
+                    {
+                        mix_u32(&mut hash, u32::from(b' '));
+                        continue;
+                    }
+                    let mut cell: sys::GhosttyCell = 0;
+                    if unsafe { sys::ghostty_grid_ref_cell(&gref, &mut cell) }
+                        != sys::GHOSTTY_SUCCESS
+                    {
+                        mix_u32(&mut hash, u32::from(b' '));
+                        continue;
+                    }
+                    let mut cp: u32 = 0;
+                    unsafe {
+                        sys::ghostty_cell_get(
+                            cell,
+                            sys::GHOSTTY_CELL_DATA_CODEPOINT,
+                            (&raw mut cp).cast(),
+                        );
+                    }
+                    let normalized = if cp == 0 { u32::from(b' ') } else { cp };
+                    mix_u32(&mut hash, normalized);
+                    if !has_visible && cp != 0 {
+                        if let Some(ch) = char::from_u32(cp) {
+                            if !ch.is_whitespace() && !ch.is_control() {
+                                has_visible = true;
+                            }
+                        }
+                    }
+                }
+            }
+            // Row delimiter so adjacent rows cannot collide.
+            mix_u32(&mut hash, u32::MAX);
+        }
+        (has_visible, hash)
+    }
+
     pub(crate) fn viewport_active(&self) -> bool {
         let mut active = true;
         unsafe {
@@ -1468,20 +1849,638 @@ impl Terminal {
         read_terminal_rgb(self.raw, sys::GHOSTTY_TERMINAL_DATA_COLOR_CURSOR)
     }
 
+    pub(crate) fn color_foreground_default(&self) -> Option<Rgb> {
+        read_terminal_rgb(
+            self.raw,
+            sys::GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND_DEFAULT,
+        )
+    }
+
+    pub(crate) fn color_background_default(&self) -> Option<Rgb> {
+        read_terminal_rgb(
+            self.raw,
+            sys::GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND_DEFAULT,
+        )
+    }
+
+    pub(crate) fn color_cursor_default(&self) -> Option<Rgb> {
+        read_terminal_rgb(self.raw, sys::GHOSTTY_TERMINAL_DATA_COLOR_CURSOR_DEFAULT)
+    }
+
     pub(crate) fn color_palette(&self) -> [Rgb; 256] {
-        let mut raw = [sys::GhosttyColorRgb::default(); 256];
+        read_terminal_palette(self.raw, sys::GHOSTTY_TERMINAL_DATA_COLOR_PALETTE)
+    }
+
+    pub(crate) fn color_palette_default(&self) -> [Rgb; 256] {
+        read_terminal_palette(self.raw, sys::GHOSTTY_TERMINAL_DATA_COLOR_PALETTE_DEFAULT)
+    }
+
+    pub(crate) fn cursor_sgr_style(&self) -> Style {
+        let mut raw = sys::GhosttyStyle::default();
         unsafe {
             sys::ghostty_terminal_get(
                 self.raw,
-                sys::GHOSTTY_TERMINAL_DATA_COLOR_PALETTE,
-                raw.as_mut_ptr().cast(),
+                sys::GHOSTTY_TERMINAL_DATA_CURSOR_SGR_STYLE,
+                (&raw mut raw).cast(),
             );
         }
-        std::array::from_fn(|i| Rgb {
-            r: raw[i].r,
-            g: raw[i].g,
-            b: raw[i].b,
-        })
+        Style::from_raw(raw)
+    }
+
+    pub(crate) fn mouse_tracking(&self) -> bool {
+        let mut active = false;
+        unsafe {
+            sys::ghostty_terminal_get(
+                self.raw,
+                sys::GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING,
+                (&raw mut active).cast(),
+            );
+        }
+        active
+    }
+
+    pub(crate) fn display_offset_from_bottom(&self) -> usize {
+        let sb = self.scrollbar();
+        let max_offset = sb.total.saturating_sub(sb.len);
+        max_offset.saturating_sub(sb.offset) as usize
+    }
+
+    /// Format VT bytes preserving both primary (with up to `history` scrollback
+    /// rows and soft-wrap markers intact for resize reflow) and alternate
+    /// screens, saved and active cursors, full bit-0-capped Kitty keyboard
+    /// stacks on both screens, modes, palette, tabs, styles, hyperlinks, and
+    /// title stack.
+    pub(crate) fn format_vt_with_history(&self, history: usize) -> Result<Vec<u8>> {
+        let blob = self.encode_snapshot()?;
+        let parsed = crate::snapshot::parse_snapshot_blob(&blob).ok_or(VtError::InvalidValue)?;
+        let primary_meta = parsed.screen(0).ok_or(VtError::InvalidValue)?;
+        let alt_meta = parsed.screen(1);
+        let origin_active = self.mode(dec_mode(6));
+        let scroll_top = parsed.scroll_top;
+        // Omit Ghostty's single-entry `EXTRA_KITTY_KEYBOARD` (`CSI = N;1u`) so
+        // we replay the full per-screen Kitty stack depth (capped to bit 0).
+        let extras_without_kitty =
+            sys::GHOSTTY_FORMATTER_EXTRAS_ALL & !sys::GHOSTTY_FORMATTER_EXTRA_KITTY_KEYBOARD;
+
+        let rows = self.rows();
+        let mut out = if self.active_screen() == ActiveScreen::Alternate {
+            self.format_dual_screen_vt(
+                &blob,
+                primary_meta,
+                alt_meta,
+                history,
+                scroll_top,
+                parsed.scroll_bottom,
+                origin_active,
+                extras_without_kitty,
+            )?
+        } else {
+            let mut bytes = Vec::new();
+            if let Some(alt) = alt_meta {
+                if alt.saved_cursor_present || !alt.kitty_stack.is_empty() {
+                    bytes.extend_from_slice(b"\x1b[?1047h");
+                    if alt.saved_cursor_present {
+                        let alt_saved_pending =
+                            alt.saved_cursor
+                                .input_needs_wrap
+                                .then(|| PendingWrapReplay::Blank {
+                                    style: Style::default(),
+                                    protected: false,
+                                });
+                        emit_saved_cursor_vt(
+                            &mut bytes,
+                            alt,
+                            0,
+                            rows.saturating_sub(1),
+                            rows,
+                            false,
+                            alt_saved_pending.as_ref(),
+                        );
+                    }
+                    emit_kitty_stack_vt(&mut bytes, &alt.kitty_stack);
+                    bytes.extend_from_slice(b"\x1b[?1047l");
+                }
+            }
+            let primary_vt = self.format_active_screen_vt(&blob, history, extras_without_kitty)?;
+            bytes.extend_from_slice(&primary_vt);
+            let need_wrap_fixup = self.has_blank_soft_wrap();
+            if primary_meta.saved_cursor_present || need_wrap_fixup {
+                let wrap_off = !self.mode(dec_mode(7));
+                let insert_on = self.mode(ansi_mode(4));
+                if wrap_off {
+                    bytes.extend_from_slice(b"\x1b[?7h");
+                }
+                if insert_on {
+                    bytes.extend_from_slice(b"\x1b[4l");
+                }
+                if need_wrap_fixup {
+                    self.emit_blank_soft_wrap_fixups(
+                        &mut bytes,
+                        scroll_top,
+                        parsed.scroll_bottom,
+                        rows,
+                        origin_active,
+                    );
+                }
+                if primary_meta.saved_cursor_present {
+                    let saved_pending = self.format_pending_wrap_cell_at(
+                        primary_meta.saved_cursor.point,
+                        primary_meta.saved_cursor.input_needs_wrap,
+                    );
+                    emit_saved_cursor_vt(
+                        &mut bytes,
+                        primary_meta,
+                        scroll_top,
+                        parsed.scroll_bottom,
+                        rows,
+                        origin_active,
+                        saved_pending.as_ref(),
+                    );
+                }
+                let pending_cell = self.format_pending_wrap_cell_at(
+                    primary_meta.cursor.point,
+                    primary_meta.cursor.input_needs_wrap,
+                );
+                emit_active_cursor_vt(
+                    &mut bytes,
+                    primary_meta,
+                    scroll_top,
+                    origin_active,
+                    pending_cell.as_ref(),
+                    primary_meta.saved_cursor_present,
+                );
+                if insert_on {
+                    bytes.extend_from_slice(b"\x1b[4h");
+                }
+                if wrap_off {
+                    bytes.extend_from_slice(b"\x1b[?7l");
+                }
+            }
+            emit_kitty_stack_vt(&mut bytes, &primary_meta.kitty_stack);
+            bytes
+        };
+        append_title_state_vt(&mut out, &self.title_stack(), &self.title());
+        Ok(out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn format_dual_screen_vt(
+        &self,
+        blob: &[u8],
+        primary_meta: &crate::snapshot::ParsedScreenMeta,
+        alt_meta: Option<&crate::snapshot::ParsedScreenMeta>,
+        history: usize,
+        scroll_top: u16,
+        scroll_bottom: u16,
+        origin_active: bool,
+        extras_without_kitty: sys::GhosttyFormatterExtras,
+    ) -> Result<Vec<u8>> {
+        let decode_cfg = TerminalConfig {
+            cols: self.cols(),
+            rows: self.rows(),
+            scrollback_lines: usize::MAX,
+            continuation_max_bytes: DEFAULT_CONTINUATION_MAX_BYTES,
+            kitty_image_storage_limit: 0,
+            enable_host_callbacks: false,
+            enable_title_events: false,
+            enable_render_hold: false,
+            ..TerminalConfig::default()
+        };
+        let mut primary = Terminal::decode_snapshot(
+            blob,
+            SnapshotDecodeOptions {
+                max_continuation_bytes: DEFAULT_CONTINUATION_MAX_BYTES,
+                retain_continuation: false,
+                compress_history: false,
+                kitty_image_storage_limit: 0,
+            },
+            &decode_cfg,
+        )?;
+        // Switch clone to primary solely to format primary's grid cells with
+        // soft wraps intact; cursor/saved_cursor come directly from `primary_meta`
+        // because `1047l` copies the alternate cursor onto primary.
+        primary.vt_write(b"\x1b[?1047l");
+        let _ = primary.take_effects();
+        let _ = primary.set_mode(dec_mode(7), true);
+
+        let rows = self.rows();
+        let mut out =
+            primary.format_active_screen_vt_inner(history, sys::GHOSTTY_FORMATTER_EXTRAS_NONE)?;
+        if primary.has_blank_soft_wrap() {
+            primary.emit_blank_soft_wrap_fixups(&mut out, 0, rows.saturating_sub(1), rows, false);
+        }
+        let alt_1049 = self.mode(dec_mode(1049));
+        let primary_pending = primary.format_pending_wrap_cell_at(
+            primary_meta.cursor.point,
+            primary_meta.cursor.input_needs_wrap,
+        );
+
+        if alt_1049 {
+            // Replay starts on full-screen default margins (`0..rows-1`), so
+            // enabling DECOM here captures `saved_cursor_origin = true` while
+            // positioning every absolute row without clamping against margins
+            // that the alternate-screen program later changed.
+            let primary_origin = primary_meta.saved_cursor_origin;
+            if primary_origin {
+                out.extend_from_slice(b"\x1b[?6h");
+            }
+            emit_active_cursor_vt(
+                &mut out,
+                primary_meta,
+                0,
+                primary_origin,
+                primary_pending.as_ref(),
+                false,
+            );
+            emit_kitty_stack_vt(&mut out, &primary_meta.kitty_stack);
+            out.extend_from_slice(b"\x1b[?1049h");
+            if primary_origin {
+                out.extend_from_slice(b"\x1b[?6l");
+            }
+        } else {
+            if primary_meta.saved_cursor_present {
+                let primary_saved_pending = primary.format_pending_wrap_cell_at(
+                    primary_meta.saved_cursor.point,
+                    primary_meta.saved_cursor.input_needs_wrap,
+                );
+                emit_saved_cursor_vt(
+                    &mut out,
+                    primary_meta,
+                    0,
+                    rows.saturating_sub(1),
+                    rows,
+                    false,
+                    primary_saved_pending.as_ref(),
+                );
+            }
+            emit_active_cursor_vt(
+                &mut out,
+                primary_meta,
+                0,
+                false,
+                primary_pending.as_ref(),
+                primary_meta.saved_cursor_present,
+            );
+            emit_kitty_stack_vt(&mut out, &primary_meta.kitty_stack);
+            if self.mode(dec_mode(1047)) {
+                out.extend_from_slice(b"\x1b[?1047h");
+            } else {
+                out.extend_from_slice(b"\x1b[?47h");
+            }
+        }
+        // Reset alternate cursor and pen defaults so primary's pen/charset/cursor
+        // never bleed into the alternate screen formatter output.
+        out.extend_from_slice(b"\x1b[0m\x1b]8;;\x1b\\\x1b(B\x0f\x1b[0\"q\x1b[H");
+
+        let alt_vt = self.format_active_screen_vt(blob, usize::MAX, extras_without_kitty)?;
+        out.extend_from_slice(&alt_vt);
+        if let Some(alt) = alt_meta {
+            let need_wrap_fixup = self.has_blank_soft_wrap();
+            if alt.saved_cursor_present || need_wrap_fixup {
+                let wrap_off = !self.mode(dec_mode(7));
+                let insert_on = self.mode(ansi_mode(4));
+                if wrap_off {
+                    out.extend_from_slice(b"\x1b[?7h");
+                }
+                if insert_on {
+                    out.extend_from_slice(b"\x1b[4l");
+                }
+                if need_wrap_fixup {
+                    self.emit_blank_soft_wrap_fixups(
+                        &mut out,
+                        scroll_top,
+                        scroll_bottom,
+                        rows,
+                        origin_active,
+                    );
+                }
+                if alt.saved_cursor_present {
+                    let alt_saved_pending = self.format_pending_wrap_cell_at(
+                        alt.saved_cursor.point,
+                        alt.saved_cursor.input_needs_wrap,
+                    );
+                    emit_saved_cursor_vt(
+                        &mut out,
+                        alt,
+                        scroll_top,
+                        scroll_bottom,
+                        rows,
+                        origin_active,
+                        alt_saved_pending.as_ref(),
+                    );
+                }
+                let alt_pending =
+                    self.format_pending_wrap_cell_at(alt.cursor.point, alt.cursor.input_needs_wrap);
+                emit_active_cursor_vt(
+                    &mut out,
+                    alt,
+                    scroll_top,
+                    origin_active,
+                    alt_pending.as_ref(),
+                    alt.saved_cursor_present,
+                );
+                if insert_on {
+                    out.extend_from_slice(b"\x1b[4h");
+                }
+                if wrap_off {
+                    out.extend_from_slice(b"\x1b[?7l");
+                }
+            }
+            emit_kitty_stack_vt(&mut out, &alt.kitty_stack);
+        }
+        Ok(out)
+    }
+
+    fn has_blank_soft_wrap(&self) -> bool {
+        let cols = self.cols();
+        let rows = self.rows();
+        if cols == 0 || rows < 2 {
+            return false;
+        }
+        for y in 0..u32::from(rows - 1) {
+            if let Some(gref) = self.grid_ref(GridPointTag::Active, cols - 1, y) {
+                if let (Ok(row), Ok(cell)) = (gref.row(), gref.cell()) {
+                    if row.wrap && !cell.has_text && cell.wide == CellWide::Narrow {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Reconstruct blank-ended soft-wrapped rows (`row[y].wrap == true` with an
+    /// unwritten right-edge cell) that `libghostty-vt`'s VT formatter skips via
+    /// `blank_rows` (`\r\n`), so soft-wrap copy parity holds across attach.
+    /// Assumes `DECAWM` is on; caller restores cursor, pen, charsets and `DECAWM`.
+    fn emit_blank_soft_wrap_fixups(
+        &self,
+        out: &mut Vec<u8>,
+        scroll_top: u16,
+        scroll_bottom: u16,
+        rows: u16,
+        origin_active: bool,
+    ) {
+        use std::io::Write as _;
+        let cols = self.cols();
+        if cols == 0 || rows < 2 {
+            return;
+        }
+        let custom_margins = scroll_top != 0 || scroll_bottom != rows.saturating_sub(1);
+        if custom_margins {
+            out.extend_from_slice(b"\x1b[r");
+        }
+        if origin_active {
+            out.extend_from_slice(b"\x1b[?6l");
+        }
+
+        let fmt_opts = FormatOptions {
+            kind: FormatKind::Vt,
+            unwrap: false,
+            trim: false,
+            extras: sys::GHOSTTY_FORMATTER_EXTRAS_NONE,
+        };
+
+        for y in 0..u32::from(rows - 1) {
+            let Some(last_ref) = self.grid_ref(GridPointTag::Active, cols - 1, y) else {
+                continue;
+            };
+            let (Ok(row), Ok(last_cell)) = (last_ref.row(), last_ref.cell()) else {
+                continue;
+            };
+            if !row.wrap || last_cell.has_text || last_cell.wide != CellWide::Narrow {
+                continue;
+            }
+            let last_style = blank_style_from_grid_ref(&last_ref, &last_cell);
+            out.extend_from_slice(b"\x1b]8;;\x1b\\\x1b(B\x0f");
+            out.extend_from_slice(if last_cell.protected {
+                b"\x1b[1\"q"
+            } else {
+                b"\x1b[0\"q"
+            });
+            emit_sgr_vt(out, &last_style);
+            let _ = write!(out, "\x1b[{};{}H ", y + 1, cols);
+
+            let Some(next_ref) = self.grid_ref(GridPointTag::Active, 0, y + 1) else {
+                continue;
+            };
+            let Ok(next_cell) = next_ref.cell() else {
+                continue;
+            };
+            if next_cell.has_text || next_cell.wide == CellWide::Wide {
+                let end_x = if next_cell.wide == CellWide::Wide && cols > 1 {
+                    1
+                } else {
+                    0
+                };
+                if let Some(end_ref) = self.grid_ref(GridPointTag::Active, end_x, y + 1) {
+                    if let Ok(sel) = Selection::new(next_ref, end_ref, false) {
+                        if let Ok(vt_bytes) = self.format_selection(fmt_opts, &sel) {
+                            out.extend_from_slice(b"\x1b[0m\x1b]8;;\x1b\\\x1b(B\x0f");
+                            out.extend_from_slice(if next_cell.protected {
+                                b"\x1b[1\"q"
+                            } else {
+                                b"\x1b[0\"q"
+                            });
+                            out.extend_from_slice(&vt_bytes);
+                            out.extend_from_slice(b"\x1b]8;;\x1b\\");
+                        }
+                    }
+                }
+            } else {
+                let next_style = blank_style_from_grid_ref(&next_ref, &next_cell);
+                out.extend_from_slice(b"\x1b]8;;\x1b\\\x1b(B\x0f");
+                out.extend_from_slice(if next_cell.protected {
+                    b"\x1b[1\"q"
+                } else {
+                    b"\x1b[0\"q"
+                });
+                emit_sgr_vt(out, &next_style);
+                out.push(b' ');
+            }
+        }
+
+        out.extend_from_slice(b"\x1b[0\"q\x1b]8;;\x1b\\");
+        if custom_margins {
+            let _ = write!(out, "\x1b[{};{}r", scroll_top + 1, scroll_bottom + 1);
+        }
+        if origin_active {
+            out.extend_from_slice(b"\x1b[?6h");
+        }
+    }
+
+    fn format_pending_wrap_cell_at(
+        &self,
+        point: crate::types::GridPoint,
+        input_needs_wrap: bool,
+    ) -> Option<PendingWrapReplay> {
+        if !input_needs_wrap {
+            return None;
+        }
+        let cols = self.cols();
+        let rows = self.rows();
+        let x = u16::try_from(point.column.0).ok()?;
+        let y = u32::try_from(point.line.0).ok()?;
+        if x >= cols || y >= u32::from(rows) {
+            return None;
+        }
+        let gref = self.grid_ref(GridPointTag::Active, x, y)?;
+        let cell = gref.cell().ok()?;
+        if cell.wide != CellWide::SpacerTail && !cell.has_text {
+            let mut blank_style = gref.style().unwrap_or_default();
+            match cell.content_tag {
+                CellContentTag::BgColorPalette => {
+                    if let Some(idx) = cell.bg_palette {
+                        blank_style.bg = StyleColor::Palette(idx);
+                    }
+                }
+                CellContentTag::BgColorRgb => {
+                    if let Some(rgb) = cell.bg_rgb {
+                        blank_style.bg = StyleColor::Rgb(rgb);
+                    }
+                }
+                _ => {}
+            }
+            return Some(PendingWrapReplay::Blank {
+                style: blank_style,
+                protected: cell.protected,
+            });
+        }
+        let start_x = if cell.wide == CellWide::SpacerTail {
+            x.saturating_sub(1)
+        } else {
+            x
+        };
+        let start_ref = self.grid_ref(GridPointTag::Active, start_x, y)?;
+        let protected = start_ref
+            .cell()
+            .map(|c| c.protected)
+            .unwrap_or(cell.protected);
+        let end_ref = self.grid_ref(GridPointTag::Active, x, y)?;
+        let sel = Selection::new(start_ref, end_ref, false).ok()?;
+        let opts = FormatOptions {
+            kind: FormatKind::Vt,
+            unwrap: false,
+            trim: false,
+            extras: sys::GHOSTTY_FORMATTER_EXTRAS_NONE,
+        };
+        self.format_selection(opts, &sel)
+            .ok()
+            .map(|vt_bytes| PendingWrapReplay::Cell {
+                start_x,
+                vt_bytes,
+                protected,
+            })
+    }
+
+    fn format_active_screen_vt(
+        &self,
+        blob: &[u8],
+        history: usize,
+        extras: sys::GhosttyFormatterExtras,
+    ) -> Result<Vec<u8>> {
+        // When DECAWM (mode 7) is disabled or IRM (ANSI mode 4) is enabled,
+        // `EXTRA_MODES` emits them before the grid cells and pending-wrap
+        // reprint, preventing soft wraps or shifting cells during replay.
+        // Format on a clone in replace+wrap mode and restore them at the end.
+        let wrap_off = !self.mode(dec_mode(7));
+        let insert_on = self.mode(ansi_mode(4));
+        if (extras & sys::GHOSTTY_FORMATTER_EXTRA_MODES) != 0 && (wrap_off || insert_on) {
+            let decode_cfg = TerminalConfig {
+                cols: self.cols(),
+                rows: self.rows(),
+                scrollback_lines: usize::MAX,
+                continuation_max_bytes: DEFAULT_CONTINUATION_MAX_BYTES,
+                kitty_image_storage_limit: 0,
+                enable_host_callbacks: false,
+                enable_title_events: false,
+                enable_render_hold: false,
+                ..TerminalConfig::default()
+            };
+            let mut clone = Terminal::decode_snapshot(
+                blob,
+                SnapshotDecodeOptions {
+                    max_continuation_bytes: DEFAULT_CONTINUATION_MAX_BYTES,
+                    retain_continuation: false,
+                    compress_history: false,
+                    kitty_image_storage_limit: 0,
+                },
+                &decode_cfg,
+            )?;
+            if wrap_off {
+                let _ = clone.set_mode(dec_mode(7), true);
+            }
+            if insert_on {
+                let _ = clone.set_mode(ansi_mode(4), false);
+            }
+            let mut bytes = clone.format_active_screen_vt_inner(history, extras)?;
+            if insert_on {
+                bytes.extend_from_slice(b"\x1b[4h");
+            }
+            if wrap_off {
+                bytes.extend_from_slice(b"\x1b[?7l");
+            }
+            return Ok(bytes);
+        }
+        self.format_active_screen_vt_inner(history, extras)
+    }
+
+    fn format_active_screen_vt_inner(
+        &self,
+        history: usize,
+        extras: sys::GhosttyFormatterExtras,
+    ) -> Result<Vec<u8>> {
+        let opts = FormatOptions {
+            kind: FormatKind::Vt,
+            unwrap: true,
+            trim: false,
+            extras,
+        };
+        let scrollback = self.scrollback_rows();
+        if history >= scrollback {
+            return self.format(opts);
+        }
+        let cols = self.cols();
+        let total = self.total_rows();
+        if cols == 0 || total == 0 {
+            return self.format(opts);
+        }
+        let start_y = (scrollback - history) as u32;
+        let end_y = (total - 1) as u32;
+        let Some(start_ref) = self.grid_ref(GridPointTag::Screen, 0, start_y) else {
+            return self.format(opts);
+        };
+        let Some(end_ref) = self.grid_ref(GridPointTag::Screen, cols - 1, end_y) else {
+            return self.format(opts);
+        };
+        let sel = Selection::new(start_ref, end_ref, false)?;
+        self.format_selection(opts, &sel)
+    }
+
+    /// Format a single row in VT mode without extras (used lazily when a row
+    /// carries OSC 8 hyperlinks to recover explicit `id=` parameters).
+    pub(crate) fn format_row_vt(&self, tag: GridPointTag, y: u32) -> Option<Vec<u8>> {
+        let cols = self.cols();
+        if cols == 0 {
+            return None;
+        }
+        let start = self.grid_ref(tag, 0, y)?;
+        let end = self.grid_ref(tag, cols - 1, y)?;
+        let sel = Selection::new(start, end, false).ok()?;
+        let opts = FormatOptions {
+            kind: FormatKind::Vt,
+            unwrap: false,
+            trim: false,
+            extras: sys::GHOSTTY_FORMATTER_EXTRAS_NONE,
+        };
+        self.format_selection(opts, &sel).ok()
+    }
+
+    /// Read the last printed character (for `CSI b` REP continuation in
+    /// companion snapshots) from Ghostty's binary snapshot TERMINAL header.
+    pub(crate) fn previous_char(&self) -> Option<char> {
+        let blob = self.encode_snapshot().ok()?;
+        parse_snapshot_previous_char(&blob)
     }
 
     pub(crate) fn memory_usage(&self) -> Result<sys::GhosttyTerminalMemoryUsage> {
@@ -1508,11 +2507,16 @@ impl Terminal {
     }
 
     pub(crate) fn encode_snapshot(&self) -> Result<Vec<u8>> {
-        unsafe {
+        let mut bytes = unsafe {
             take_ghostty_alloc(|ptr, len| {
                 sys::ghostty_snapshot_encode_alloc(self.raw, ptr::null(), ptr, len)
             })
+        }?;
+        let stack = self.title_stack();
+        if !stack.is_empty() {
+            append_title_stack_footer(&mut bytes, &stack);
         }
+        Ok(bytes)
     }
 
     pub(crate) fn format(&self, opts: FormatOptions) -> Result<Vec<u8>> {
@@ -1988,6 +2992,42 @@ fn read_terminal_rgb(raw: sys::GhosttyTerminal, data: sys::GhosttyTerminalData) 
     })
 }
 
+fn read_terminal_palette(raw: sys::GhosttyTerminal, data: sys::GhosttyTerminalData) -> [Rgb; 256] {
+    let mut buf = [sys::GhosttyColorRgb::default(); 256];
+    unsafe {
+        sys::ghostty_terminal_get(raw, data, buf.as_mut_ptr().cast());
+    }
+    std::array::from_fn(|i| Rgb {
+        r: buf[i].r,
+        g: buf[i].g,
+        b: buf[i].b,
+    })
+}
+
+/// Extract `previous_codepoint` (offset 25..29 of the TERMINAL payload) from a
+/// v1 Ghostty binary snapshot (`envelope.zig`, `record.zig`, `terminal.zig`).
+pub(crate) fn parse_snapshot_previous_char(blob: &[u8]) -> Option<char> {
+    if blob.len() < 10 + 10 + 103 || &blob[..8] != b"GHOSTSNP" {
+        return None;
+    }
+    let version = u16::from_le_bytes([blob[8], blob[9]]);
+    if version != 1 {
+        return None;
+    }
+    let tag = u16::from_le_bytes([blob[10], blob[11]]);
+    let payload_len = u32::from_le_bytes([blob[12], blob[13], blob[14], blob[15]]) as usize;
+    if tag != 1 || payload_len < 103 || blob.len() < 20 + payload_len {
+        return None;
+    }
+    let payload = &blob[20..20 + payload_len];
+    let cp = u32::from_le_bytes([payload[25], payload[26], payload[27], payload[28]]);
+    if cp == u32::MAX {
+        None
+    } else {
+        char::from_u32(cp)
+    }
+}
+
 fn ghostty_string_bytes<'a>(s: sys::GhosttyString) -> &'a [u8] {
     if s.ptr.is_null() || s.len == 0 {
         &[]
@@ -2064,6 +3104,379 @@ unsafe extern "C" fn on_bell(_terminal: sys::GhosttyTerminal, userdata: *mut c_v
     }));
 }
 
+const TITLE_STACK_FOOTER_MAGIC: &[u8; 4] = b"RNTS";
+
+fn append_title_stack_footer(out: &mut Vec<u8>, stack: &[Option<String>]) {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(stack.len() as u32).to_le_bytes());
+    for entry in stack {
+        match entry {
+            None => payload.push(0),
+            Some(title) => {
+                payload.push(1);
+                payload.extend_from_slice(&(title.len() as u32).to_le_bytes());
+                payload.extend_from_slice(title.as_bytes());
+            }
+        }
+    }
+    out.extend_from_slice(TITLE_STACK_FOOTER_MAGIC);
+    out.extend_from_slice(&payload);
+    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    out.extend_from_slice(TITLE_STACK_FOOTER_MAGIC);
+}
+
+fn strip_title_stack_footer(bytes: &[u8]) -> (&[u8], Vec<Option<String>>) {
+    if bytes.len() < 12 || &bytes[bytes.len() - 4..] != TITLE_STACK_FOOTER_MAGIC {
+        return (bytes, Vec::new());
+    }
+    let len_off = bytes.len() - 8;
+    let payload_len = u32::from_le_bytes([
+        bytes[len_off],
+        bytes[len_off + 1],
+        bytes[len_off + 2],
+        bytes[len_off + 3],
+    ]) as usize;
+    let Some(header_off) = len_off.checked_sub(payload_len + 4) else {
+        return (bytes, Vec::new());
+    };
+    if &bytes[header_off..header_off + 4] != TITLE_STACK_FOOTER_MAGIC {
+        return (bytes, Vec::new());
+    }
+    let payload = &bytes[header_off + 4..len_off];
+    if payload.len() < 4 {
+        return (bytes, Vec::new());
+    }
+    let count = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
+    if count > TITLE_STACK_MAX_DEPTH {
+        return (bytes, Vec::new());
+    }
+    let mut pos = 4usize;
+    let mut stack = Vec::with_capacity(count);
+    for _ in 0..count {
+        let Some(&tag) = payload.get(pos) else {
+            return (bytes, Vec::new());
+        };
+        pos += 1;
+        match tag {
+            0 => stack.push(None),
+            1 => {
+                if pos + 4 > payload.len() {
+                    return (bytes, Vec::new());
+                }
+                let slen = u32::from_le_bytes([
+                    payload[pos],
+                    payload[pos + 1],
+                    payload[pos + 2],
+                    payload[pos + 3],
+                ]) as usize;
+                pos += 4;
+                let Some(slice) = payload.get(pos..pos + slen) else {
+                    return (bytes, Vec::new());
+                };
+                pos += slen;
+                let Ok(s) = std::str::from_utf8(slice) else {
+                    return (bytes, Vec::new());
+                };
+                stack.push(Some(s.to_owned()));
+            }
+            _ => return (bytes, Vec::new()),
+        }
+    }
+    if pos != payload.len() {
+        return (bytes, Vec::new());
+    }
+    (&bytes[..header_off], stack)
+}
+
+fn append_title_state_vt(out: &mut Vec<u8>, stack: &[Option<String>], current: &str) {
+    if stack.is_empty() && current.is_empty() {
+        return;
+    }
+    for entry in stack {
+        out.extend_from_slice(b"\x1b]2;");
+        if let Some(title) = entry {
+            out.extend_from_slice(title.as_bytes());
+        }
+        out.extend_from_slice(b"\x1b\\\x1b[22;2t");
+    }
+    out.extend_from_slice(b"\x1b]2;");
+    out.extend_from_slice(current.as_bytes());
+    out.extend_from_slice(b"\x1b\\");
+}
+
+fn emit_kitty_stack_vt(out: &mut Vec<u8>, stack: &[u8]) {
+    if stack.is_empty() {
+        return;
+    }
+    if stack.len() >= 8 {
+        let bottom = stack[0] & 1;
+        let _ = std::io::Write::write_fmt(out, format_args!("\x1b[={bottom};1u"));
+        for &entry in &stack[1..8] {
+            let flags = entry & 1;
+            let _ = std::io::Write::write_fmt(out, format_args!("\x1b[>{flags}u"));
+        }
+    } else {
+        for &entry in stack {
+            let flags = entry & 1;
+            let _ = std::io::Write::write_fmt(out, format_args!("\x1b[>{flags}u"));
+        }
+    }
+}
+
+enum PendingWrapReplay {
+    Cell {
+        start_x: u16,
+        vt_bytes: Vec<u8>,
+        protected: bool,
+    },
+    Blank {
+        style: Style,
+        protected: bool,
+    },
+}
+
+fn emit_sgr_vt(out: &mut Vec<u8>, style: &Style) {
+    use std::io::Write as _;
+    out.extend_from_slice(b"\x1b[0");
+    if style.flags & super::STYLE_FLAG_BOLD != 0 {
+        out.extend_from_slice(b";1");
+    }
+    if style.flags & super::STYLE_FLAG_FAINT != 0 {
+        out.extend_from_slice(b";2");
+    }
+    if style.flags & super::STYLE_FLAG_ITALIC != 0 {
+        out.extend_from_slice(b";3");
+    }
+    match super::style_underline(style.flags) {
+        super::UnderlineStyle::None => {}
+        super::UnderlineStyle::Single => out.extend_from_slice(b";4"),
+        super::UnderlineStyle::Double => out.extend_from_slice(b";4:2"),
+        super::UnderlineStyle::Curly => out.extend_from_slice(b";4:3"),
+        super::UnderlineStyle::Dotted => out.extend_from_slice(b";4:4"),
+        super::UnderlineStyle::Dashed => out.extend_from_slice(b";4:5"),
+    }
+    if style.flags & super::STYLE_FLAG_BLINK != 0 {
+        out.extend_from_slice(b";5");
+    }
+    if style.flags & super::STYLE_FLAG_INVERSE != 0 {
+        out.extend_from_slice(b";7");
+    }
+    if style.flags & super::STYLE_FLAG_INVISIBLE != 0 {
+        out.extend_from_slice(b";8");
+    }
+    if style.flags & super::STYLE_FLAG_STRIKETHROUGH != 0 {
+        out.extend_from_slice(b";9");
+    }
+    if style.flags & super::STYLE_FLAG_OVERLINE != 0 {
+        out.extend_from_slice(b";53");
+    }
+    match style.fg {
+        StyleColor::None => {}
+        StyleColor::Palette(idx) => {
+            let _ = write!(out, ";38;5;{idx}");
+        }
+        StyleColor::Rgb(rgb) => {
+            let _ = write!(out, ";38;2;{};{};{}", rgb.r, rgb.g, rgb.b);
+        }
+    }
+    match style.bg {
+        StyleColor::None => {}
+        StyleColor::Palette(idx) => {
+            let _ = write!(out, ";48;5;{idx}");
+        }
+        StyleColor::Rgb(rgb) => {
+            let _ = write!(out, ";48;2;{};{};{}", rgb.r, rgb.g, rgb.b);
+        }
+    }
+    match style.underline {
+        StyleColor::None => {}
+        StyleColor::Palette(idx) => {
+            let _ = write!(out, ";58;5;{idx}");
+        }
+        StyleColor::Rgb(rgb) => {
+            let _ = write!(out, ";58;2;{};{};{}", rgb.r, rgb.g, rgb.b);
+        }
+    }
+    out.push(b'm');
+}
+
+fn emit_charsets_vt(
+    out: &mut Vec<u8>,
+    raw_charsets: &[u8; 4],
+    active: crate::snapshot::SnapshotCharsetIndex,
+) {
+    use crate::snapshot::SnapshotCharsetIndex as Idx;
+    for (slot, &cs) in (*b"()*+").into_iter().zip(raw_charsets.iter()) {
+        // Ghostty `charsets.Charset`: 0 = utf8, 1 = ascii, 2 = british, 3 = dec_special.
+        let code = match cs {
+            2 => b'A',
+            3 => b'0',
+            _ => b'B',
+        };
+        out.extend_from_slice(&[0x1b, slot, code]);
+    }
+    match active {
+        Idx::G0 => out.push(0x0f),
+        Idx::G1 => out.push(0x0e),
+        Idx::G2 => out.extend_from_slice(b"\x1bn"),
+        Idx::G3 => out.extend_from_slice(b"\x1bo"),
+    }
+}
+
+fn emit_cursor_position_vt(
+    out: &mut Vec<u8>,
+    x: u16,
+    rel_y: u16,
+    pending_wrap: Option<&PendingWrapReplay>,
+    preserve_saved_cursor: bool,
+) {
+    use std::io::Write as _;
+    match pending_wrap {
+        Some(PendingWrapReplay::Cell {
+            start_x,
+            vt_bytes,
+            protected,
+        }) => {
+            // Reset SGR, close any open OSC 8 hyperlink, reset GL to ASCII, and
+            // set DECSCA to the cell's own protection bit before reprinting so
+            // the existing margin cell keeps its exact attributes.
+            out.extend_from_slice(b"\x1b[0m\x1b]8;;\x1b\\\x1b(B\x0f");
+            out.extend_from_slice(if *protected {
+                b"\x1b[1\"q"
+            } else {
+                b"\x1b[0\"q"
+            });
+            let _ = write!(out, "\x1b[{};{}H", rel_y + 1, start_x + 1);
+            out.extend_from_slice(vt_bytes);
+            out.extend_from_slice(b"\x1b]8;;\x1b\\");
+        }
+        Some(PendingWrapReplay::Blank { style, protected }) => {
+            out.extend_from_slice(b"\x1b]8;;\x1b\\\x1b(B\x0f");
+            out.extend_from_slice(if *protected {
+                b"\x1b[1\"q"
+            } else {
+                b"\x1b[0\"q"
+            });
+            emit_sgr_vt(out, style);
+            let _ = write!(out, "\x1b[{};{}H", rel_y + 1, x + 1);
+            if preserve_saved_cursor {
+                out.push(b' ');
+            } else {
+                out.extend_from_slice(b" \x1b7\x1b[X\x1b8");
+            }
+        }
+        None => {
+            let _ = write!(out, "\x1b[{};{}H", rel_y + 1, x + 1);
+        }
+    }
+}
+
+fn emit_saved_cursor_vt(
+    out: &mut Vec<u8>,
+    meta: &crate::snapshot::ParsedScreenMeta,
+    scroll_top: u16,
+    scroll_bottom: u16,
+    rows: u16,
+    origin_active: bool,
+    pending_wrap: Option<&PendingWrapReplay>,
+) {
+    use std::io::Write as _;
+    let sc_origin = meta.saved_cursor_origin;
+    let y = meta.saved_cursor.point.line.0.max(0) as u16;
+    let x = meta.saved_cursor.point.column.0 as u16;
+    let custom_margins = scroll_top != 0 || scroll_bottom != rows.saturating_sub(1);
+    let relax_margins = sc_origin && custom_margins;
+    if relax_margins {
+        // Temporarily clear DECSTBM so a cursor saved with DECOM on can be
+        // reconstructed at its exact absolute row even if margins changed later.
+        out.extend_from_slice(b"\x1b[r");
+    }
+    if sc_origin != origin_active {
+        out.extend_from_slice(if sc_origin { b"\x1b[?6h" } else { b"\x1b[?6l" });
+    }
+    let rel_y = if sc_origin && !relax_margins {
+        y.saturating_sub(scroll_top)
+    } else {
+        y
+    };
+    emit_cursor_position_vt(out, x, rel_y, pending_wrap, false);
+    emit_sgr_vt(out, &meta.saved_cursor_style_vt);
+    emit_charsets_vt(
+        out,
+        &meta.saved_raw_charsets,
+        meta.saved_cursor_active_charset,
+    );
+    out.extend_from_slice(if meta.saved_cursor_protected {
+        b"\x1b[1\"q"
+    } else {
+        b"\x1b[0\"q"
+    });
+    out.extend_from_slice(b"\x1b7");
+    if relax_margins {
+        let _ = write!(out, "\x1b[{};{}r", scroll_top + 1, scroll_bottom + 1);
+    }
+    if sc_origin != origin_active {
+        out.extend_from_slice(if origin_active {
+            b"\x1b[?6h"
+        } else {
+            b"\x1b[?6l"
+        });
+    }
+}
+
+fn blank_style_from_grid_ref(gref: &GridRef<'_>, cell: &CellInfo) -> Style {
+    let mut style = gref.style().unwrap_or_default();
+    match cell.content_tag {
+        CellContentTag::BgColorPalette => {
+            if let Some(idx) = cell.bg_palette {
+                style.bg = StyleColor::Palette(idx);
+            }
+        }
+        CellContentTag::BgColorRgb => {
+            if let Some(rgb) = cell.bg_rgb {
+                style.bg = StyleColor::Rgb(rgb);
+            }
+        }
+        _ => {}
+    }
+    style
+}
+
+fn emit_active_cursor_vt(
+    out: &mut Vec<u8>,
+    meta: &crate::snapshot::ParsedScreenMeta,
+    scroll_top: u16,
+    origin_active: bool,
+    pending_wrap: Option<&PendingWrapReplay>,
+    preserve_saved_cursor: bool,
+) {
+    use std::io::Write as _;
+    let y = meta.cursor.point.line.0.max(0) as u16;
+    let x = meta.cursor.point.column.0 as u16;
+    let rel_y = if origin_active {
+        y.saturating_sub(scroll_top)
+    } else {
+        y
+    };
+    emit_cursor_position_vt(out, x, rel_y, pending_wrap, preserve_saved_cursor);
+    emit_sgr_vt(out, &meta.cursor_style_vt);
+    if let Some(link) = meta.cursor.template.hyperlink.as_ref() {
+        if link.id().is_empty() {
+            let _ = write!(out, "\x1b]8;;{}\x1b\\", link.uri());
+        } else {
+            let _ = write!(out, "\x1b]8;id={};{}\x1b\\", link.id(), link.uri());
+        }
+    } else {
+        out.extend_from_slice(b"\x1b]8;;\x1b\\");
+    }
+    out.extend_from_slice(if meta.cursor_protected {
+        b"\x1b[1\"q"
+    } else {
+        b"\x1b[0\"q"
+    });
+    emit_charsets_vt(out, &meta.raw_charsets, meta.active_charset);
+}
+
 unsafe extern "C" fn on_title_changed(terminal: sys::GhosttyTerminal, userdata: *mut c_void) {
     if userdata.is_null() {
         return;
@@ -2072,7 +3485,69 @@ unsafe extern "C" fn on_title_changed(terminal: sys::GhosttyTerminal, userdata: 
         let title = read_terminal_string(terminal, sys::GHOSTTY_TERMINAL_DATA_TITLE)
             .map(|b| String::from_utf8_lossy(&b).into_owned())
             .unwrap_or_default();
-        unsafe { push_effect(userdata, TerminalEffect::TitleChanged(title)) };
+        let cell = unsafe { &*userdata.cast::<UnsafeCell<EffectInbox>>() };
+        let inbox = unsafe { &mut *cell.get() };
+        if inbox.emit_title_and_reset {
+            inbox.effects.push(TerminalEffect::TitleChanged(title));
+        }
+    }));
+}
+
+unsafe extern "C" fn on_title_push(
+    terminal: sys::GhosttyTerminal,
+    userdata: *mut c_void,
+    param: u16,
+) {
+    if userdata.is_null() || (param != 0 && param != 2) {
+        return;
+    }
+    let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+        let raw_bytes =
+            read_terminal_string(terminal, sys::GHOSTTY_TERMINAL_DATA_TITLE).unwrap_or_default();
+        let current =
+            (!raw_bytes.is_empty()).then(|| String::from_utf8_lossy(&raw_bytes).into_owned());
+        let cell = unsafe { &*userdata.cast::<UnsafeCell<EffectInbox>>() };
+        let inbox = unsafe { &mut *cell.get() };
+        inbox.title_stack.push(current);
+        if inbox.title_stack.len() > TITLE_STACK_MAX_DEPTH {
+            inbox.title_stack.remove(0);
+        }
+    }));
+}
+
+unsafe extern "C" fn on_title_pop(
+    terminal: sys::GhosttyTerminal,
+    userdata: *mut c_void,
+    param: u16,
+) {
+    if userdata.is_null() || (param != 0 && param != 2) {
+        return;
+    }
+    let _ = panic::catch_unwind(AssertUnwindSafe(|| {
+        let (popped, emit) = {
+            let cell = unsafe { &*userdata.cast::<UnsafeCell<EffectInbox>>() };
+            let inbox = unsafe { &mut *cell.get() };
+            (inbox.title_stack.pop(), inbox.emit_title_and_reset)
+        };
+        let Some(restored) = popped else {
+            return;
+        };
+        let title_str = restored.as_deref().unwrap_or("");
+        let raw = sys::GhosttyString {
+            ptr: title_str.as_ptr(),
+            len: title_str.len(),
+        };
+        // Restore Ghostty's live title with no Rust borrow on `EffectInbox` live.
+        let _ = unsafe {
+            sys::ghostty_terminal_set(
+                terminal,
+                sys::GHOSTTY_TERMINAL_OPT_TITLE,
+                (&raw const raw).cast(),
+            )
+        };
+        if emit {
+            unsafe { push_effect(userdata, TerminalEffect::TitleChanged(title_str.to_owned())) };
+        }
     }));
 }
 
@@ -2139,6 +3614,27 @@ unsafe extern "C" fn on_color_scheme(
         unsafe { *out = scheme.to_raw() };
     }));
     res.is_ok()
+}
+
+unsafe extern "C" fn on_device_attributes(
+    _terminal: sys::GhosttyTerminal,
+    _userdata: *mut c_void,
+    out: *mut sys::GhosttyDeviceAttributes,
+) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    let attrs = unsafe { &mut *out };
+    // DA1: VT102 with no feature list -> `ESC[?6c`.
+    attrs.primary.conformance_level = sys::GHOSTTY_DA_CONFORMANCE_VT102 as u16;
+    attrs.primary.num_features = 0;
+    // DA2: Runner's established secondary identity -> `ESC[>0;2600;1c`.
+    attrs.secondary.device_type = 0;
+    attrs.secondary.firmware_version = 2600;
+    attrs.secondary.rom_cartridge = 1;
+    // DA3: native Ghostty tertiary identity -> `DCS !|00000000 ST`.
+    attrs.tertiary.unit_id = 0;
+    true
 }
 
 unsafe extern "C" fn on_clipboard_write(
@@ -2287,7 +3783,7 @@ unsafe extern "C" fn on_semantic_prompt(
 }
 
 unsafe extern "C" fn on_render_hold(
-    _terminal: sys::GhosttyTerminal,
+    terminal: sys::GhosttyTerminal,
     userdata: *mut c_void,
     held: bool,
 ) {
@@ -2295,7 +3791,43 @@ unsafe extern "C" fn on_render_hold(
         return;
     }
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-        unsafe { push_effect(userdata, TerminalEffect::RenderHold(held)) };
+        let capture = {
+            let cell = unsafe { &*userdata.cast::<UnsafeCell<EffectInbox>>() };
+            let inbox = unsafe { &mut *cell.get() };
+            inbox.effects.push(TerminalEffect::RenderHold(held));
+            if held {
+                inbox.hold_capture
+            } else {
+                inbox.pre_hold_screen = None;
+                None
+            }
+        };
+        if let Some(HoldCapture {
+            render_state,
+            default_cursor_hidden,
+            terminal_id,
+        }) = capture
+        {
+            if let Some(inbox_nn) = NonNull::new(userdata.cast::<UnsafeCell<EffectInbox>>()) {
+                // Borrow only C's `terminal` handle through a non-owning view
+                // while capturing the pre-hold frame (`ScreenData::from_render_state`
+                // reads only the C terminal and never touches `EffectInbox`).
+                let view_term = ManuallyDrop::new(Terminal {
+                    id: terminal_id,
+                    mutation_gen: 0,
+                    raw: terminal,
+                    inbox: inbox_nn,
+                    _not_send_sync: PhantomData,
+                });
+                let rs = unsafe { &mut *render_state };
+                let _ = rs.update(&view_term);
+                let captured = ScreenData::from_render_state(&view_term, rs, default_cursor_hidden);
+                let cell = unsafe { &*userdata.cast::<UnsafeCell<EffectInbox>>() };
+                unsafe {
+                    (*cell.get()).pre_hold_screen = Some(captured);
+                }
+            }
+        }
     }));
 }
 
@@ -2304,6 +3836,11 @@ unsafe extern "C" fn on_reset(_terminal: sys::GhosttyTerminal, userdata: *mut c_
         return;
     }
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-        unsafe { push_effect(userdata, TerminalEffect::Reset) };
+        let cell = unsafe { &*userdata.cast::<UnsafeCell<EffectInbox>>() };
+        let inbox = unsafe { &mut *cell.get() };
+        inbox.title_stack.clear();
+        if inbox.emit_title_and_reset {
+            inbox.effects.push(TerminalEffect::Reset);
+        }
     }));
 }

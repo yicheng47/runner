@@ -470,6 +470,8 @@ impl Transport for Fake {
             snapshot: TerminalSnapshot {
                 seq: 1,
                 activity: None,
+                format: Default::default(),
+                unavailable: false,
                 cols,
                 rows,
                 controller: self.controller.lock().unwrap().clone(),

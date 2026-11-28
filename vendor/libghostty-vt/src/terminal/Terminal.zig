@@ -3952,6 +3952,9 @@ pub fn deleteLines(self: *Terminal, count: usize) void {
     // We can only insert lines up to our remaining lines in the scroll
     // region. So we take whichever is smaller.
     const adjusted_count = @min(count, rem);
+    if (!left_right and start_y == 0) {
+        self.screens.active.scroll_up_rows +%= adjusted_count;
+    }
 
     // Create a new tracked pin which we'll use to navigate the page list
     // so that if we need to adjust capacity it will be properly tracked.

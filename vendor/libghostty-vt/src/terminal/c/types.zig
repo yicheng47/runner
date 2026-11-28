@@ -614,6 +614,8 @@ pub const type_decls = [_]TypeDecl{
     .initCallback("GhosttyTerminalSemanticPromptFn", terminal.Effects.SemanticPromptFn),
     .initCallback("GhosttyTerminalSizeFn", terminal.Effects.SizeFn),
     .initCallback("GhosttyTerminalTitleChangedFn", terminal.Effects.TitleChangedFn),
+    .initCallback("GhosttyTerminalTitlePopFn", terminal.Effects.TitlePopFn),
+    .initCallback("GhosttyTerminalTitlePushFn", terminal.Effects.TitlePushFn),
     .initCallback("GhosttyTerminalUnknownSequenceFn", terminal.Effects.UnknownSequenceFn),
     .initCallback("GhosttyTerminalWritePtyFn", terminal.Effects.WritePtyFn),
     .initCallback("GhosttyTerminalXtversionFn", terminal.Effects.XtversionFn),

@@ -49,6 +49,15 @@ pages: PageList,
 /// we can always have an active screen.
 no_scrollback: bool = false,
 
+/// Monotonic count of rows scrolled upward off the top of this screen
+/// (into scrollback or discarded on no-scrollback screens).
+scroll_up_rows: u64 = 0,
+
+/// Monotonic epoch incremented on in-place `Screen.reset`, kept distinct from
+/// `ScreenSet.generations` which tracks `PageList` allocation lifetimes for
+/// `TrackedGridRef` pin cleanup.
+scroll_epoch: u64 = 0,
+
 /// The current cursor position
 cursor: Cursor,
 
@@ -480,6 +489,8 @@ pub fn reset(self: *Screen) void {
     }
 
     // Reset our basic state
+    self.scroll_up_rows = 0;
+    self.scroll_epoch +%= 1;
     self.saved_cursor = null;
     self.charset = .{};
     self.kitty_keyboard = .{};
@@ -1111,6 +1122,7 @@ pub fn cursorDownScroll(self: *Screen) !void {
         self.cursor.page_row.markCleared();
     }
 
+    self.scroll_up_rows +%= 1;
     self.cursorRowFillBackground();
 }
 
@@ -1203,6 +1215,7 @@ pub fn cursorScrollAbove(self: *Screen) !void {
         }
     }
 
+    self.scroll_up_rows +%= 1;
     self.cursorRowFillBackground();
 }
 
@@ -1323,7 +1336,11 @@ pub fn cursorScrollRegionUp(self: *Screen, limit: usize) !void {
     // If the region crosses a page boundary we take a slower path. This
     // is rare: it requires the active area to span multiple pages with
     // the split point inside the scroll region.
-    if (pin.y < limit) return try self.cursorScrollRegionUpSlow(limit);
+    if (pin.y < limit) {
+        try self.cursorScrollRegionUpSlow(limit);
+        if (self.cursor.y == limit) self.scroll_up_rows +%= 1;
+        return;
+    }
 
     // Fast path: the entire region is in a single page. We can clear
     // the top row and rotate it down to the cursor row, updating any
@@ -1417,6 +1434,7 @@ pub fn cursorScrollRegionUp(self: *Screen, limit: usize) !void {
     const cursor_row: *Row = &rows[limit];
     self.cursor.page_row = cursor_row;
     self.cursor.page_cell = &page.getCells(cursor_row)[self.cursor.x];
+    if (self.cursor.y == limit) self.scroll_up_rows +%= 1;
 }
 
 /// Slow path for cursorScrollRegionUp: the scroll region spans
@@ -1753,7 +1771,8 @@ pub inline fn scrollClear(self: *Screen) !void {
     // hyperlink again on that page. A plain cursorReload isn't enough.
     // cursorDownScroll handles the same situation for a single row.
     const old_node = self.cursor.page_pin.node;
-    try self.pages.scrollClear();
+    const scrolled = try self.pages.scrollClearCount();
+    self.scroll_up_rows +%= scrolled;
     if (self.cursor.page_pin.node != old_node) {
         // The page list marks a moved pin as garbage. The pin does point
         // at a real location, and cursorReload needs to read it to place

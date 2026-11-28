@@ -220,6 +220,9 @@ struct Stream {
     cancel: Arc<dyn Fn() + Send + Sync>,
     queue: Arc<Mutex<Queue>>,
     snapshot: Option<(TerminalSnapshot, usize)>,
+    awaiting_snapshot: bool,
+    retry_at: Option<Instant>,
+    retry_attempts: u8,
     output: Option<(Vec<u8>, usize)>,
     last_output: Option<Instant>,
     clipboard: VecDeque<(String, String, usize)>,
@@ -286,6 +289,7 @@ impl Stream {
             }
         });
         let snapshot = terminal.snapshot;
+        let awaiting_snapshot = snapshot.unavailable;
         Self {
             session,
             resync,
@@ -293,8 +297,12 @@ impl Stream {
             cancel,
             queue,
             seq: snapshot.seq,
-            initial_size: Some((snapshot.cols, snapshot.rows, snapshot.controller.clone())),
-            snapshot: Some((snapshot, 0)),
+            initial_size: (!awaiting_snapshot)
+                .then(|| (snapshot.cols, snapshot.rows, snapshot.controller.clone())),
+            snapshot: (!awaiting_snapshot).then_some((snapshot, 0)),
+            awaiting_snapshot,
+            retry_at: awaiting_snapshot.then(|| Instant::now() + Duration::from_millis(50)),
+            retry_attempts: 0,
             output: None,
             last_output: None,
             clipboard: VecDeque::new(),
@@ -315,11 +323,23 @@ impl Stream {
         }
     }
     fn output_due(&self) -> Option<Instant> {
-        let last = self.last_output?;
-        let hold = self.queue.lock().unwrap().can_hold_output();
-        hold.then_some(last + OUTPUT_WINDOW)
+        let output = self.last_output.and_then(|last| {
+            let hold = self.queue.lock().unwrap().can_hold_output();
+            hold.then_some(last + OUTPUT_WINDOW)
+        });
+        match (output, self.retry_at) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => None,
+        }
     }
     fn chunk(&mut self) -> Option<HostMessage> {
+        if self.awaiting_snapshot {
+            let mut queue = self.queue.lock().unwrap();
+            queue.frames.clear();
+            queue.bytes = 0;
+            return None;
+        }
         if let Some((snapshot, offset)) = &mut self.snapshot {
             let end = (*offset + TERMINAL_CHUNK_SIZE).min(snapshot.bytes.len());
             let message = HostMessage::Snapshot(Snapshot {
@@ -1493,16 +1513,27 @@ impl Adapter {
                 let q = stream.queue.lock().unwrap();
                 (q.resync, q.ended && q.frames.is_empty())
             };
-            if resync && stream.snapshot.is_none() && stream.initial_size.is_none() {
+            let retry_due = stream
+                .awaiting_snapshot
+                .then_some(stream.retry_at)
+                .flatten()
+                .is_some_and(|due| due <= Instant::now());
+            if (resync || retry_due) && stream.snapshot.is_none() && stream.initial_size.is_none() {
                 if self.has_pending_attach_or_detach(&stream.session) {
                     self.streams.push_back(stream);
                     continue;
                 }
-                let resync = stream.resync.clone();
-                let attachment = blocking(self.core.clone(), move |_| resync()).await;
+                let resync_fn = stream.resync.clone();
+                let attachment = blocking(self.core.clone(), move |_| resync_fn()).await;
                 match attachment {
                     Ok(attachment) => {
-                        let seq = stream.seq.max(attachment.snapshot.seq) + 1;
+                        let unavailable = attachment.snapshot.unavailable;
+                        let prior_attempts = if resync { 0 } else { stream.retry_attempts };
+                        let seq = if unavailable {
+                            stream.seq
+                        } else {
+                            stream.seq.max(attachment.snapshot.seq) + 1
+                        };
                         stream.release = false;
                         let mut fresh = Stream::new(
                             self.core.clone(),
@@ -1517,6 +1548,16 @@ impl Adapter {
                         );
                         fresh.seq = seq;
                         fresh.clipboard = std::mem::take(&mut stream.clipboard);
+                        if unavailable {
+                            let next_attempts = prior_attempts.saturating_add(1);
+                            fresh.retry_attempts = next_attempts;
+                            fresh.retry_at = if next_attempts < 5 {
+                                let shift = u32::from(next_attempts.min(3));
+                                Some(Instant::now() + Duration::from_millis(50 << shift))
+                            } else {
+                                None
+                            };
+                        }
                         stream = fresh;
                     }
                     Err(_) => {

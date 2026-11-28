@@ -234,3 +234,67 @@ test "tracked_grid_ref reports no value after terminal free" {
 
     tracked_grid_ref_free(ref);
 }
+
+test "tracked_grid_ref does not leak tracked pins across RIS" {
+    var terminal: terminal_c.Terminal = null;
+    try testing.expectEqual(Result.success, terminal_c.new(
+        &lib.alloc.test_allocator,
+        &terminal,
+        5,
+        2,
+    ));
+    defer terminal_c.free(terminal);
+
+    const t = terminal.?.terminal;
+    const baseline = t.screens.active.pages.countTrackedPins();
+
+    var gen_before: u64 = 0;
+    try testing.expectEqual(
+        Result.success,
+        terminal_c.get(terminal, .screen_generation, &gen_before),
+    );
+
+    terminal_c.vt_write(terminal, "A", 1);
+
+    var ref1: CTrackedGridRef = null;
+    try testing.expectEqual(Result.success, terminal_c.grid_ref_track(
+        terminal,
+        point.Point.cval(.{ .active = .{ .x = 0, .y = 0 } }),
+        &ref1,
+    ));
+    var ref2: CTrackedGridRef = null;
+    try testing.expectEqual(Result.success, terminal_c.grid_ref_track(
+        terminal,
+        point.Point.cval(.{ .active = .{ .x = 0, .y = 0 } }),
+        &ref2,
+    ));
+    try testing.expectEqual(baseline + 2, t.screens.active.pages.countTrackedPins());
+
+    // RIS resets the primary screen in place: both tracked refs become invalid
+    // and screen_generation advances, while ScreenSet.generations stays intact
+    // so freeing or retargeting the stale refs still untracks their pins.
+    terminal_c.vt_write(terminal, "\x1bc", 2);
+
+    var gen_after: u64 = 0;
+    try testing.expectEqual(
+        Result.success,
+        terminal_c.get(terminal, .screen_generation, &gen_after),
+    );
+    try testing.expect(gen_after != gen_before);
+    try testing.expect(!tracked_grid_ref_has_value(ref1));
+    try testing.expect(!tracked_grid_ref_has_value(ref2));
+
+    tracked_grid_ref_free(ref1);
+    try testing.expectEqual(baseline + 1, t.screens.active.pages.countTrackedPins());
+
+    try testing.expectEqual(Result.success, tracked_grid_ref_set(
+        ref2,
+        terminal,
+        point.Point.cval(.{ .active = .{ .x = 0, .y = 0 } }),
+    ));
+    try testing.expect(tracked_grid_ref_has_value(ref2));
+    try testing.expectEqual(baseline + 1, t.screens.active.pages.countTrackedPins());
+
+    tracked_grid_ref_free(ref2);
+    try testing.expectEqual(baseline, t.screens.active.pages.countTrackedPins());
+}
