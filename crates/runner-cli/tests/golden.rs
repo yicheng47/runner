@@ -64,10 +64,7 @@ impl Fixture {
             .tempdir_in("/tmp")
             .unwrap();
         #[cfg(windows)]
-        let root = tempfile::Builder::new()
-            .prefix("821-")
-            .tempdir_in(PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("Temp"))
-            .unwrap();
+        let root = tempfile::Builder::new().prefix("821-").tempdir().unwrap();
         let directory = root.path().canonicalize().unwrap();
         let home = directory.join("home");
         #[cfg(target_os = "macos")]

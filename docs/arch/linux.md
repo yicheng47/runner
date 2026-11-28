@@ -22,7 +22,7 @@ The script installs compiler/pkg-config/OpenSSL, fontconfig/FreeType, X11/XCB, W
 make run
 cargo check --locked --workspace --all-targets --profile ci
 cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings
-cargo nextest run --locked --workspace --no-fail-fast --cargo-profile ci
+cargo nextest run --locked --workspace --no-fail-fast --profile ci --cargo-profile ci --timings
 python3 script/linux/test-packaging.py
 ```
 
@@ -30,14 +30,7 @@ python3 script/linux/test-packaging.py
 
 Workspace tests require Node.js for the embedded pi extension protocol fixture; this needs no agent install, account or inference. Linux CI installs Node 22.14.0 with `actions/setup-node`, independently of Ubuntu's older apt version. For local checks, provide a compatible Node on the test process's PATH; it is not a CLI/daemon runtime prerequisite.
 
-Linux PR CI runs formatting, workspace Clippy/tests, generated CLI reference checks,
-installer fixtures and desktop-entry validation on both architectures. It downloads
-pinned prebuilt nextest binaries, restores available build caches for PRs and saves
-successful caches only on `main`, matching macOS/Windows. Cargo chooses concurrency
-from the available CPUs. Tests
-run as an ordinary user with `C.UTF-8` inside an init-enabled container. PR CI does
-not build release binaries or installation packages; the release and nightly
-workflows build and verify tar.gz and deb packages before uploading them.
+Linux PR CI runs formatting, workspace Clippy/tests, generated CLI reference checks, installer fixtures and desktop-entry validation on both architectures. It downloads pinned prebuilt nextest binaries, restores available build caches for PRs and saves successful caches only on `main`, matching macOS/Windows. Cargo chooses concurrency from the available CPUs. Linux CI runs the full workspace test suite under `--profile ci`, including the platform-independent sweeps that `.config/nextest.toml` excludes on macOS and Windows. Tests run as an ordinary user with `C.UTF-8` inside an init-enabled container. PR CI does not build release binaries or installation packages; the release and nightly workflows build and verify tar.gz and deb packages before uploading them.
 
 ## Window controls and initial bounds
 
