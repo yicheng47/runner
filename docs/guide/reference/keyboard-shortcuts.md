@@ -57,6 +57,8 @@ On Windows and Linux, **Settings → Keyboard shortcuts → Ctrl keys in termina
 
 With Terminal first, Ctrl+. sends a plain period in legacy terminal programs. Programs that enable Kitty keyboard disambiguation receive Ctrl+. as a distinct key.
 
+In a focused terminal on macOS (`⌃↩`) and Windows/Linux (`Ctrl+Enter`), Ctrl+Enter sends a line feed (`\n`) to legacy terminal programs and a distinct modified Enter (`CSI 13;5u`) to programs that enable Kitty keyboard disambiguation (such as Claude Code). Runner's own bindings keep precedence: **⇧⌘↩** (**Ctrl+Shift+Enter** on Windows and Linux) still maximizes or restores the focused pane, **⌘Enter** (**Ctrl+Enter** on Windows and Linux) still confirms dialogs where those dialogs have focus, and any Runner shortcut you bind to **⌃↩** (**Ctrl+Enter** on Windows and Linux) wins in a focused terminal unless **Terminal first** frees it on Windows and Linux.
+
 Copy with a selection, paste and zoom work in a terminal in both modes. The setting takes effect immediately. macOS has no such setting because Runner shortcuts use ⌘ rather than Control, so bare Control keys already reach the terminal; on macOS only the three line-editing chords below reach a terminal when no Runner shortcut uses them.
 
 ## macOS terminal editing keys

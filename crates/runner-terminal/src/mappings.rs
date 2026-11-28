@@ -112,6 +112,7 @@ pub fn encode_key(
             k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphabetic() => {
                 Some(k.as_bytes()[0].to_ascii_uppercase() - b'@')
             }
+            "enter" => Some(b'\n'),
             "space" | "@" => Some(0),
             // Period has no C0 code; legacy terminals leave it unchanged by Ctrl.
             "." => Some(b'.'),
@@ -204,7 +205,7 @@ fn encode_kitty_key(key: &str, ctrl: bool, alt: bool, shift: bool) -> Option<Vec
     let modified_named = (alt || shift) && !ctrl;
     let (code, csi_u) = match key {
         "escape" => (27, !ctrl),
-        "enter" => (13, modified_named),
+        "enter" => (13, ctrl || alt || shift),
         "tab" => (9, modified_named),
         "backspace" => (127, modified_named),
         "space" => (32, ctrl || alt),
@@ -1036,9 +1037,60 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_enter_encodes_csi_u_under_kitty_and_lf_in_legacy_mode() {
+        for mode in [
+            TermMode::empty(),
+            TermMode::APP_CURSOR,
+            TermMode::REPORT_EVENT_TYPES,
+            TermMode::REPORT_ALTERNATE_KEYS,
+            TermMode::REPORT_ALL_KEYS_AS_ESC,
+            TermMode::REPORT_ASSOCIATED_TEXT,
+        ] {
+            for (alt, shift, expected) in [
+                (false, false, b"\n".as_slice()),
+                (false, true, b"\n".as_slice()),
+                (true, false, b"\x1b\n".as_slice()),
+                (true, true, b"\x1b\n".as_slice()),
+            ] {
+                assert_eq!(
+                    encode_key("enter", true, alt, shift, None, mode),
+                    Some(expected.to_vec()),
+                    "legacy ctrl+enter alt={alt} shift={shift} mode={mode:?}"
+                );
+                assert_eq!(
+                    classify_key(mode, "enter", true, alt, shift, None),
+                    InputKind::Navigate
+                );
+            }
+        }
+        for mode in [
+            TermMode::DISAMBIGUATE_ESC_CODES,
+            TermMode::DISAMBIGUATE_ESC_CODES | TermMode::APP_CURSOR,
+            TermMode::KITTY_KEYBOARD_PROTOCOL,
+        ] {
+            for (alt, shift, expected) in [
+                (false, false, b"\x1b[13;5u".as_slice()),
+                (false, true, b"\x1b[13;6u".as_slice()),
+                (true, false, b"\x1b[13;7u".as_slice()),
+                (true, true, b"\x1b[13;8u".as_slice()),
+            ] {
+                assert_eq!(
+                    encode_key("enter", true, alt, shift, None, mode),
+                    Some(expected.to_vec()),
+                    "kitty ctrl+enter alt={alt} shift={shift} mode={mode:?}"
+                );
+                assert_eq!(
+                    classify_key(mode, "enter", true, alt, shift, None),
+                    InputKind::Navigate
+                );
+            }
+        }
+    }
+
+    #[test]
     fn kitty_disambiguate_does_not_claim_chords_the_legacy_path_declines() {
         let kitty = TermMode::DISAMBIGUATE_ESC_CODES;
-        for key in ["enter", "tab", "escape", "1"] {
+        for key in ["tab", "escape", "backspace", "1"] {
             assert_eq!(encode_key(key, true, false, false, None, kitty), None);
             assert_eq!(
                 encode_key(key, true, false, false, None, TermMode::empty()),
