@@ -1,3 +1,4 @@
+#[cfg(not(windows))]
 use std::process::Command;
 use std::rc::Rc;
 
@@ -901,54 +902,53 @@ impl MissionWorkspace {
         if self.presentation.is_remote() {
             return;
         }
-        let task = cx.background_spawn(async move {
-            #[cfg(target_os = "macos")]
-            {
-                let status = Command::new("open")
-                    .arg("-R")
-                    .arg(cwd)
-                    .status()
-                    .map_err(|error| error.to_string())?;
-                if status.success() {
-                    Ok(())
-                } else {
-                    Err(format!("Finder exited with status {status}"))
+        #[cfg(windows)]
+        {
+            crate::surfaces::files::reveal_in_explorer(std::path::Path::new(&cwd), cx);
+        }
+        #[cfg(not(windows))]
+        {
+            let task = cx.background_spawn(async move {
+                #[cfg(target_os = "macos")]
+                {
+                    let status = Command::new("open")
+                        .arg("-R")
+                        .arg(cwd)
+                        .status()
+                        .map_err(|error| error.to_string())?;
+                    if status.success() {
+                        Ok(())
+                    } else {
+                        Err(format!("Finder exited with status {status}"))
+                    }
                 }
-            }
-            #[cfg(target_os = "linux")]
-            {
-                let status = Command::new("xdg-open")
-                    .arg(cwd)
-                    .status()
-                    .map_err(|error| error.to_string())?;
-                if status.success() {
-                    Ok(())
-                } else {
-                    Err(format!("File manager exited with status {status}"))
-                }
-            }
-            #[cfg(windows)]
-            {
-                Command::new("explorer.exe")
-                    .arg(format!("/select,{cwd}"))
-                    .spawn()
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
-            }
-        });
-        cx.spawn(async move |weak, cx| {
-            let result = task.await;
-            let _ = weak.update(cx, |this, cx| {
-                if let Err(error) = result {
-                    this.error = Some(crate::i18n::messagef(
-                        "format.couldn_t_reveal_the_working_directory",
-                        &[("error", (error).to_string())],
-                    ));
-                    cx.notify();
+                #[cfg(target_os = "linux")]
+                {
+                    let status = Command::new("xdg-open")
+                        .arg(cwd)
+                        .status()
+                        .map_err(|error| error.to_string())?;
+                    if status.success() {
+                        Ok(())
+                    } else {
+                        Err(format!("File manager exited with status {status}"))
+                    }
                 }
             });
-        })
-        .detach();
+            cx.spawn(async move |weak, cx| {
+                let result = task.await;
+                let _ = weak.update(cx, |this, cx| {
+                    if let Err(error) = result {
+                        this.error = Some(crate::i18n::messagef(
+                            "format.couldn_t_reveal_the_working_directory",
+                            &[("error", (error).to_string())],
+                        ));
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
     }
 
     pub(super) fn render_mission_info_popover_card(&self, cx: &mut Context<Self>) -> AnyElement {

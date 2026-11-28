@@ -161,7 +161,24 @@ mod tests {
         terminal: Arc<TerminalMirror>,
         root_focus: gpui::FocusHandle,
         terminal_focus: gpui::FocusHandle,
+        start_chat_focus: gpui::FocusHandle,
         switches: usize,
+        maximizes: usize,
+        confirmed_start_chat: usize,
+    }
+
+    impl ShortcutTerminal {
+        fn new(terminal: Arc<TerminalMirror>, cx: &mut gpui::Context<Self>) -> Self {
+            Self {
+                terminal,
+                root_focus: cx.focus_handle(),
+                terminal_focus: cx.focus_handle(),
+                start_chat_focus: cx.focus_handle(),
+                switches: 0,
+                maximizes: 0,
+                confirmed_start_chat: 0,
+            }
+        }
     }
 
     impl gpui::Render for ShortcutTerminal {
@@ -177,12 +194,23 @@ mod tests {
                 .on_action(
                     cx.listener(|this, _: &crate::SwitchSidebarView, _, _| this.switches += 1),
                 )
+                .on_action(
+                    cx.listener(|this, _: &crate::ToggleMaximizePane, _, _| this.maximizes += 1),
+                )
                 .child(
                     gpui::div()
                         .key_context("Terminal")
                         .track_focus(&self.terminal_focus)
                         .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                             handle_key(&this.terminal, false, &event.keystroke, false, cx).unwrap();
+                        })),
+                )
+                .child(
+                    gpui::div()
+                        .key_context("StartChat")
+                        .track_focus(&self.start_chat_focus)
+                        .on_action(cx.listener(|this, _: &crate::ConfirmStartChat, _, _| {
+                            this.confirmed_start_chat += 1;
                         })),
                 )
         }
@@ -201,12 +229,7 @@ mod tests {
         ctrl_period.meta = false;
         ctrl_period.ctrl = true;
         let overrides = KeymapOverrides::from([("switch-sidebar-view".into(), Some(ctrl_period))]);
-        let window = cx.add_window(|_, cx| ShortcutTerminal {
-            terminal: terminal.clone(),
-            root_focus: cx.focus_handle(),
-            terminal_focus: cx.focus_handle(),
-            switches: 0,
-        });
+        let window = cx.add_window(|_, cx| ShortcutTerminal::new(terminal.clone(), cx));
         for (seq, output, expected) in [
             (1, b"\x1b[>1u".as_slice(), b"\x1b[46;5u".as_slice()),
             (2, b"\x1b[<u".as_slice(), b".".as_slice()),
@@ -407,12 +430,7 @@ mod tests {
         use runner_core::protocol::terminal::{InputEvent, InputKind};
 
         let (host, terminal) = fixture();
-        let window = cx.add_window(|_, cx| ShortcutTerminal {
-            terminal: terminal.clone(),
-            root_focus: cx.focus_handle(),
-            terminal_focus: cx.focus_handle(),
-            switches: 0,
-        });
+        let window = cx.add_window(|_, cx| ShortcutTerminal::new(terminal.clone(), cx));
         cx.update(|cx| {
             keymap::install_bindings(
                 cx,
@@ -565,6 +583,117 @@ mod tests {
             });
             assert!(non_desktop_host.inputs.lock().unwrap().is_empty());
             assert!(non_desktop_host.observed.lock().unwrap().is_empty());
+        }
+    }
+
+    #[gpui::test]
+    fn ctrl_enter_reaches_focused_terminal_without_stealing_runner_enter_bindings(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::keymap::{self, KeymapOverrides, TerminalCtrlKeys};
+        use runner_core::protocol::terminal::{InputEvent, InputKind};
+
+        let (host, terminal) = fixture();
+        let window = cx.add_window(|_, cx| ShortcutTerminal::new(terminal.clone(), cx));
+        cx.update(|cx| {
+            keymap::install_bindings(
+                cx,
+                &KeymapOverrides::new(),
+                TerminalCtrlKeys::RunnerFirst,
+                false,
+            )
+        });
+
+        // Focused terminal sends CSI 13;5u under Kitty disambiguate and LF in legacy mode,
+        // without triggering StartChat's ConfirmStartChat binding.
+        for (seq, output, expected) in [
+            (1, b"\x1b[>5u".as_slice(), b"\x1b[13;5u".as_slice()),
+            (2, b"\x1b[<u".as_slice(), b"\n".as_slice()),
+        ] {
+            terminal.test_feed(seq, output);
+            window
+                .update(cx, |view, window, cx| view.terminal_focus.focus(window, cx))
+                .unwrap();
+            cx.run_until_parked();
+            host.inputs.lock().unwrap().clear();
+            host.observed.lock().unwrap().clear();
+            cx.simulate_keystrokes(window.into(), "ctrl-enter");
+            cx.run_until_parked();
+            assert_eq!(
+                *host.inputs.lock().unwrap(),
+                [expected.to_vec()],
+                "seq={seq}"
+            );
+            assert_eq!(
+                *host.observed.lock().unwrap(),
+                [InputEvent::Key {
+                    kind: InputKind::Navigate
+                }],
+                "seq={seq}"
+            );
+            window
+                .read_with(cx, |view, _| assert_eq!(view.confirmed_start_chat, 0))
+                .unwrap();
+        }
+
+        // ToggleMaximizePane's default chord still fires while a terminal has focus.
+        let maximize_chord = keymap::platform_default("shift-cmd-enter");
+        host.inputs.lock().unwrap().clear();
+        cx.simulate_keystrokes(window.into(), &maximize_chord);
+        cx.run_until_parked();
+        window
+            .read_with(cx, |view, _| assert_eq!(view.maximizes, 1))
+            .unwrap();
+        assert!(host.inputs.lock().unwrap().is_empty());
+
+        // StartChat's ConfirmStartChat binding still fires in StartChat context.
+        let confirm_chord = keymap::platform_default("cmd-enter");
+        window
+            .update(cx, |view, window, cx| {
+                view.start_chat_focus.focus(window, cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        host.inputs.lock().unwrap().clear();
+        cx.simulate_keystrokes(window.into(), &confirm_chord);
+        cx.run_until_parked();
+        window
+            .read_with(cx, |view, _| assert_eq!(view.confirmed_start_chat, 1))
+            .unwrap();
+        assert!(host.inputs.lock().unwrap().is_empty());
+
+        // A user shortcut explicitly rebound to ctrl-enter follows TerminalCtrlKeys.
+        let ctrl_enter_combo =
+            keymap::combo_from_keystroke(&Keystroke::parse("ctrl-enter").unwrap()).unwrap();
+        let overrides =
+            KeymapOverrides::from([("switch-sidebar-view".into(), Some(ctrl_enter_combo))]);
+        terminal.test_feed(3, b"\x1b[>1u");
+        for mode in [
+            TerminalCtrlKeys::RunnerFirst,
+            TerminalCtrlKeys::TerminalFirst,
+        ] {
+            cx.update(|cx| keymap::install_bindings(cx, &overrides, mode, false));
+            window
+                .update(cx, |view, window, cx| view.terminal_focus.focus(window, cx))
+                .unwrap();
+            cx.run_until_parked();
+            let switches = window.read_with(cx, |view, _| view.switches).unwrap();
+            host.inputs.lock().unwrap().clear();
+            cx.simulate_keystrokes(window.into(), "ctrl-enter");
+            cx.run_until_parked();
+            window
+                .read_with(cx, |view, _| {
+                    assert_eq!(
+                        view.switches,
+                        switches + usize::from(mode == TerminalCtrlKeys::RunnerFirst)
+                    );
+                })
+                .unwrap();
+            if mode == TerminalCtrlKeys::TerminalFirst {
+                assert_eq!(*host.inputs.lock().unwrap(), [b"\x1b[13;5u".to_vec()]);
+            } else {
+                assert!(host.inputs.lock().unwrap().is_empty());
+            }
         }
     }
 }

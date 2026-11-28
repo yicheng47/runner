@@ -14,33 +14,114 @@ pub(in super::super) fn reveal_label() -> &'static str {
 
 /// Reveals `path` in the file manager; on Linux, which has no common call
 /// that selects a file, opens the folder holding it.
+#[cfg(not(windows))]
 pub(in super::super) fn reveal(path: PathBuf) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        let mut select = std::ffi::OsString::from("/select,");
-        select.push(&path);
-        std::process::Command::new("explorer.exe")
-            .arg(select)
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+    #[cfg(target_os = "macos")]
+    let status = std::process::Command::new("open")
+        .arg("-R")
+        .arg(&path)
+        .status();
+    #[cfg(target_os = "linux")]
+    let status = std::process::Command::new("xdg-open")
+        .arg(path.parent().unwrap_or(&path))
+        .status();
+    match status {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("exited with {status}")),
+        Err(error) => Err(error.to_string()),
     }
-    #[cfg(not(windows))]
-    {
-        #[cfg(target_os = "macos")]
-        let status = std::process::Command::new("open")
-            .arg("-R")
-            .arg(&path)
-            .status();
-        #[cfg(target_os = "linux")]
-        let status = std::process::Command::new("xdg-open")
-            .arg(path.parent().unwrap_or(&path))
-            .status();
-        match status {
-            Ok(status) if status.success() => Ok(()),
-            Ok(status) => Err(format!("exited with {status}")),
-            Err(error) => Err(error.to_string()),
+}
+
+#[cfg(windows)]
+#[derive(Debug, PartialEq, Eq)]
+enum WindowsReveal {
+    SelectItem(PathBuf),
+    OpenRoot(PathBuf),
+}
+
+/// Reveals `path` in Windows File Explorer via GPUI's `SHOpenFolderAndSelectItems`
+/// wrapper instead of spawning `explorer.exe /select,<path>`, which breaks on
+/// spaces when Rust quotes the combined argument. Filesystem roots have no parent
+/// for `SHOpenFolderAndSelectItems`, so open them directly instead.
+#[cfg(windows)]
+pub(crate) fn reveal_in_explorer(path: &Path, cx: &App) {
+    match windows_reveal(path) {
+        WindowsReveal::SelectItem(target) => cx.reveal_path(&target),
+        WindowsReveal::OpenRoot(target) => cx.open_with_system(&target),
+    }
+}
+
+#[cfg(windows)]
+fn windows_reveal(path: &Path) -> WindowsReveal {
+    let target = windows_reveal_path(path);
+    if target.parent().is_none() {
+        WindowsReveal::OpenRoot(target)
+    } else {
+        WindowsReveal::SelectItem(target)
+    }
+}
+
+#[cfg(windows)]
+fn unc_prefix(server: &std::ffi::OsStr, share: &std::ffi::OsStr) -> PathBuf {
+    let mut unc = std::ffi::OsString::from(r"\\");
+    unc.push(server);
+    unc.push(r"\");
+    unc.push(share);
+    PathBuf::from(unc)
+}
+
+/// Converts a verbatim Windows path to its ordinary shell spelling when doing
+/// so names the exact same target, and lets `Path::components` normalize slash
+/// direction and trailing separators on ordinary paths.
+#[cfg(windows)]
+fn windows_reveal_path(path: &Path) -> PathBuf {
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
+
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return path.components().collect();
+    };
+    let mut ordinary = match prefix.kind() {
+        Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:", char::from(drive))),
+        Prefix::VerbatimUNC(server, share) if !server.is_empty() && !share.is_empty() => {
+            unc_prefix(server, share)
         }
+        Prefix::UNC(server, share) if !server.is_empty() && !share.is_empty() => {
+            let mut normalized = unc_prefix(server, share);
+            for component in components {
+                normalized.push(component);
+            }
+            return normalized;
+        }
+        Prefix::VerbatimUNC(_, _) | Prefix::Verbatim(_) | Prefix::DeviceNS(_) => {
+            return path.to_path_buf();
+        }
+        _ => return path.components().collect(),
+    };
+    for component in components {
+        match component {
+            Component::RootDir => ordinary.push(Component::RootDir),
+            Component::Normal(name) => {
+                if matches!(name.as_encoded_bytes().last(), Some(b'.' | b' ')) {
+                    return path.to_path_buf();
+                }
+                ordinary.push(name);
+            }
+            Component::Prefix(_) | Component::CurDir | Component::ParentDir => {
+                return path.to_path_buf();
+            }
+        }
+    }
+    // Keep verbatim spelling when Win32 path limits or normalization (e.g.
+    // reserved DOS names) would resolve the ordinary spelling elsewhere.
+    if ordinary.as_os_str().encode_wide().count() >= 260 {
+        return path.to_path_buf();
+    }
+    if std::path::absolute(&ordinary).is_ok_and(|abs| abs == ordinary) {
+        ordinary
+    } else {
+        path.to_path_buf()
     }
 }
 
@@ -278,6 +359,9 @@ impl UnifiedViewer {
     fn reveal_active(&mut self, cx: &mut Context<Self>) {
         self.open_in_open = false;
         if let Some(path) = self.active_path().filter(|_| !self.active_deleted()) {
+            #[cfg(windows)]
+            reveal_in_explorer(&path, cx);
+            #[cfg(not(windows))]
             cx.background_spawn(async move {
                 if let Err(error) = reveal(path) {
                     tracing::warn!(target: "runner_app::surfaces::files::viewer", "reveal failed: {error}");
@@ -549,5 +633,165 @@ impl UnifiedViewer {
                 })
             }),
         ))
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::{windows_reveal, WindowsReveal};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn windows_reveal_routes_roots_and_preserves_spaces_unicode() {
+        for (input, expected) in [
+            (
+                r"C:\Work\Demo Project\output\ppt\Sample Report.pptx",
+                WindowsReveal::SelectItem(PathBuf::from(
+                    r"C:\Work\Demo Project\output\ppt\Sample Report.pptx",
+                )),
+            ),
+            (
+                r"C:\Work\Demo Project\输出 目录\示例 报告.pptx",
+                WindowsReveal::SelectItem(PathBuf::from(
+                    r"C:\Work\Demo Project\输出 目录\示例 报告.pptx",
+                )),
+            ),
+            (
+                "C:/Work/Demo Project/输出 目录/示例 报告.pptx",
+                WindowsReveal::SelectItem(PathBuf::from(
+                    r"C:\Work\Demo Project\输出 目录\示例 报告.pptx",
+                )),
+            ),
+            (
+                r"C:\Work\Demo Project\",
+                WindowsReveal::SelectItem(PathBuf::from(r"C:\Work\Demo Project")),
+            ),
+            (
+                r"C:\Work\Demo Project\\",
+                WindowsReveal::SelectItem(PathBuf::from(r"C:\Work\Demo Project")),
+            ),
+            (r"C:\", WindowsReveal::OpenRoot(PathBuf::from(r"C:\"))),
+            ("C:/", WindowsReveal::OpenRoot(PathBuf::from(r"C:\"))),
+            (r"C:\\", WindowsReveal::OpenRoot(PathBuf::from(r"C:\"))),
+            (r"\\?\C:\", WindowsReveal::OpenRoot(PathBuf::from(r"C:\"))),
+            (
+                r"\\?\C:\Work\Demo Project\示例 报告.pptx",
+                WindowsReveal::SelectItem(PathBuf::from(r"C:\Work\Demo Project\示例 报告.pptx")),
+            ),
+            (
+                r"\\?\UNC\server\share\Demo Project\示例 报告.pptx",
+                WindowsReveal::SelectItem(PathBuf::from(
+                    r"\\server\share\Demo Project\示例 报告.pptx",
+                )),
+            ),
+            (
+                r"\\?\UNC\server\share\Demo Project\",
+                WindowsReveal::SelectItem(PathBuf::from(r"\\server\share\Demo Project")),
+            ),
+            (
+                "//server/share/输出 目录/file.txt",
+                WindowsReveal::SelectItem(PathBuf::from(r"\\server\share\输出 目录\file.txt")),
+            ),
+            (
+                "//server/share/Demo Project/",
+                WindowsReveal::SelectItem(PathBuf::from(r"\\server\share\Demo Project")),
+            ),
+            (
+                "//server/share/",
+                WindowsReveal::OpenRoot(PathBuf::from(r"\\server\share\")),
+            ),
+            (
+                "//server/share",
+                WindowsReveal::OpenRoot(PathBuf::from(r"\\server\share\")),
+            ),
+            (
+                r"\\server\share\",
+                WindowsReveal::OpenRoot(PathBuf::from(r"\\server\share\")),
+            ),
+            (
+                r"\\server\share",
+                WindowsReveal::OpenRoot(PathBuf::from(r"\\server\share\")),
+            ),
+            (
+                r"\\?\UNC\server\share\",
+                WindowsReveal::OpenRoot(PathBuf::from(r"\\server\share\")),
+            ),
+            (
+                r"\\?\Volume{1234}\file.txt",
+                WindowsReveal::SelectItem(PathBuf::from(r"\\?\Volume{1234}\file.txt")),
+            ),
+            (
+                r"\\?\C:\work\NUL",
+                WindowsReveal::SelectItem(PathBuf::from(r"\\?\C:\work\NUL")),
+            ),
+        ] {
+            let actual = windows_reveal(Path::new(input));
+            assert_eq!(actual, expected, "{input}");
+            let (actual_path, expected_path) = match (&actual, &expected) {
+                (WindowsReveal::SelectItem(a), WindowsReveal::SelectItem(e))
+                | (WindowsReveal::OpenRoot(a), WindowsReveal::OpenRoot(e)) => (a, e),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                actual_path.as_os_str(),
+                expected_path.as_os_str(),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_reveal_preserves_verbatim_paths_that_ordinary_spelling_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let verbatim = temp.path().canonicalize().unwrap();
+        let ordinary_root = match windows_reveal(&verbatim) {
+            WindowsReveal::SelectItem(path) => path,
+            other => panic!("expected temp directory to select inside parent, got {other:?}"),
+        };
+        assert!(!ordinary_root.to_string_lossy().starts_with(r"\\?\"));
+
+        let cjk_dir = verbatim.join("输出 目录");
+        std::fs::create_dir_all(&cjk_dir).unwrap();
+        let cjk_file = cjk_dir.join("示例 报告.pptx");
+        std::fs::write(&cjk_file, b"demo").unwrap();
+        assert_eq!(
+            windows_reveal(&cjk_file),
+            WindowsReveal::SelectItem(ordinary_root.join("输出 目录").join("示例 报告.pptx"))
+        );
+
+        let plain_dir = verbatim.join("work");
+        let dotted_dir = verbatim.join("work.");
+        let dotted_nested = dotted_dir.join("nested.txt");
+        let dotted_file = verbatim.join("report.");
+        let spaced_file = verbatim.join("report ");
+        std::fs::create_dir_all(&plain_dir).unwrap();
+        std::fs::create_dir_all(&dotted_dir).unwrap();
+        std::fs::write(&dotted_nested, b"nested").unwrap();
+        std::fs::write(&dotted_file, b"dot").unwrap();
+        std::fs::write(&spaced_file, b"space").unwrap();
+
+        assert_eq!(
+            windows_reveal(&plain_dir),
+            WindowsReveal::SelectItem(ordinary_root.join("work"))
+        );
+        for aliased in [&dotted_dir, &dotted_nested, &dotted_file, &spaced_file] {
+            assert_eq!(
+                windows_reveal(aliased),
+                WindowsReveal::SelectItem(aliased.clone()),
+                "{}",
+                aliased.display()
+            );
+        }
+
+        let drive_root = temp.path().ancestors().last().unwrap();
+        assert!(matches!(
+            windows_reveal(drive_root),
+            WindowsReveal::OpenRoot(_)
+        ));
+
+        let _ = std::fs::remove_file(&dotted_nested);
+        let _ = std::fs::remove_dir(&dotted_dir);
+        let _ = std::fs::remove_file(&dotted_file);
+        let _ = std::fs::remove_file(&spaced_file);
     }
 }

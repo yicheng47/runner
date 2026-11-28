@@ -57,6 +57,8 @@ Windows 和 Linux 上， **设置 → 键盘快捷键 → 终端中的 Ctrl 键�
 
 在终端优先模式下，Ctrl+. 在传统终端程序中发送普通句点。启用 Kitty 键盘消歧协议的程序会收到独立的 Ctrl+. 按键。
 
+在获得焦点的终端中，macOS 上的 `⌃↩` 与 Windows/Linux 上的 `Ctrl+Enter` 会向传统终端程序发送换行符（`\n`），向启用 Kitty 键盘消歧协议的程序（如 Claude Code）发送独立的修饰 Enter 键（`CSI 13;5u`）。Runner 自身的绑定仍保持优先：macOS 上的 **⇧⌘↩**（Windows/Linux 上的 **Ctrl+Shift+Enter**）照常最大化或还原焦点窗格，对话框获得焦点时 **⌘Enter**（Windows/Linux 上的 **Ctrl+Enter**）照常确认对话框，而在 **设置 → 键盘快捷键** 中绑定到 **⌃↩**（Windows/Linux 上的 **Ctrl+Enter**）的 Runner 快捷键在焦点终端中同样优先，除非在 Windows 和 Linux 上由 **终端优先** 让出给终端。
+
 两种模式下，有选区时复制、粘贴和缩放在终端中都有效。设置立即生效。macOS 没有此设置，因为 Runner 快捷键使用 ⌘ 而非 Control，单独的 Control 键默认就会送入终端；macOS 上只有下方三个行编辑组合键会在没有被 Runner 快捷键占用时送入终端。
 
 ## macOS 终端编辑键

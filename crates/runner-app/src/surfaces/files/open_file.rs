@@ -66,8 +66,12 @@ use crate::surfaces::side_panel::{
 use crate::terminal::find::{find_bar_panel, FindBarParts};
 use crate::theme;
 use crate::ui::markdown::{self, LinkTarget, MarkdownView, Page};
+#[cfg(not(windows))]
+pub(super) use open_in::reveal;
+#[cfg(windows)]
+pub(crate) use open_in::reveal_in_explorer;
+pub(super) use open_in::reveal_label;
 pub(crate) use open_in::{editor_icon, file_link_editor_options, found_editors};
-pub(super) use open_in::{reveal, reveal_label};
 #[cfg(test)]
 use read::{read_raster_file, read_text_or_svg_file, Read};
 pub(crate) use saved::SavedViewerState;
