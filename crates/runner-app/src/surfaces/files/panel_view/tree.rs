@@ -180,17 +180,22 @@ impl FilesView {
         }));
         items.push(MenuItem::new(reveal_label()).icon("app-window.svg"));
         actions.push(Box::new(move |_, _, cx| {
-            let path = path.clone();
-            let task = cx.background_spawn(async move { reveal(path) });
-            cx.spawn(async move |this, cx| {
-                if let Err(error) = task.await {
-                    let _ = this.update(cx, |this, cx| {
-                        this.error = Some(error.into());
-                        cx.notify();
-                    });
-                }
-            })
-            .detach();
+            #[cfg(windows)]
+            reveal_in_explorer(&path, cx);
+            #[cfg(not(windows))]
+            {
+                let path = path.clone();
+                let task = cx.background_spawn(async move { reveal(path) });
+                cx.spawn(async move |this, cx| {
+                    if let Err(error) = task.await {
+                        let _ = this.update(cx, |this, cx| {
+                            this.error = Some(error.into());
+                            cx.notify();
+                        });
+                    }
+                })
+                .detach();
+            }
         }));
         let actions = Rc::new(actions);
         let root = cx.weak_entity();

@@ -1,0 +1,28 @@
+# PR #1524 — macOS Ctrl+Enter live QA
+
+All three assigned macOS checks passed on `34db52f533a724ccfb4b334463f415eb4c10a764`. The Windows Explorer, Windows Claude Code, and macOS-client-to-Windows-host checks are assigned to Jason. Keep `needs-live-test` until those checks pass.
+
+## Candidate and environment
+
+Jason authorized the macOS checks on 2026-11-28 in the QA handoff for Runner mission `01M8GM9EC9G493BVVGV1DFAVRH`. Repository `yicheng47/runner`, branch `fix/1493-1499-windows-reveal-ctrl-enter`, worktree `.worktrees/fix-1493-1499-windows-reveal-ctrl-enter`, base `e30922d6e4a54bcbfeae141eda3770e013ba416a`. Initial worktree clean and PR head matched the candidate. Empty tracked diff SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+macOS 26.6.2 (25G83), arm64. Runner app and development CLI 0.20.5, Rust and Cargo 1.98.1, zsh 5.9, and Claude Code 2.1.332 with Haiku 5.5 at low effort. The Claude chat used the existing development-app sign-in, auto permission mode and status line. No account, permission mode, or keybinding changes were needed.
+
+Acquired the QA lock and built with `make run` with `NO_COLOR` and mission identity variables removed. The wrapper executable at `/private/tmp/1493-1499-qa.8y1EeZyG/Runner 1499 QA.app/Contents/MacOS/Runner` matched `target/debug/Runner`, SHA-256 `bef7418b91b43d6586583884793eb1f6e20f8407cf9ccd2c72d86dcf0e307786`. The wrapper CLI, worktree sidecar and installed development CLI and daemon all matched SHA-256 `6738fdc7a6a3933797a0a4e0c4519c621d1ff4ca1f178156fdeae6070ebfd2fe`. The absolute development CLI reported `com.wycstudios.runner-dev/runnerd.sock` and outside-mission mode. The running wrapper PID was 25562 and the connected development daemon PID was 16702.
+
+## Method and results
+
+Followed the candidate, isolation and native-control procedure in [Full smoke test](../full-smoke-test.md). Opened and dismissed New Tab to verify native control before scoring. The shell tab opened through Runner's launcher in `/private/tmp/1493-1499-qa-shell`. The runtime-only Claude chat used `/private/tmp/1493-1499-qa-claude` and was created with the absolute development CLI. All scored input used the native macOS app through computer use. The evidence directory is `/private/tmp/1493-1499-qa.8y1EeZyG/evidence/` and the pre-run plan and ledger are in its parent directory. [Automated PR checks](https://github.com/yicheng47/runner/actions/runs/46129216660)
+
+| Check | Platform / runtime | Result | Observation and evidence |
+| --- | --- | --- | --- |
+| 1. Ctrl+Enter from a shell | macOS / zsh, legacy input | Passed | One Ctrl+Enter ran `echo ctrl-enter-ok`, printed one standalone `ctrl-enter-ok` line and left an empty prompt. `02-shell-draft.jpg` and `03-shell-ctrl-enter.jpg` show the draft and result. `shell-last-command.txt` confirms the command from zsh history and the fixture cwd. |
+| 2. Ctrl+Enter while Claude Code is working | macOS / Claude Code, Kitty keyboard input | Passed | While Claude streamed a numbered list, plain Enter put `first queued` in the native queue. `second now` remained in the composer until Ctrl+Enter, then both messages left the queue immediately and the composer cleared. The transcript records one `second now` user entry at 09:40:12.407 UTC, 54 ms after the native automation began the key press. `16-claude-scored-queue.jpg`, `17-claude-scored-second-draft.jpg`, `18-claude-scored-send-now.jpg`, `qa-native-input-timing.json` and `claude-transcript-summary.json`. |
+| 3. Shift+Enter and plain Enter | macOS / Claude Code, idle composer | Passed | Shift+Enter moved the cursor to a new line in the unsent draft. Plain Enter submitted both lines as one user message and Claude replied `SHIFT1499_OK`. `20-claude-shift-enter-newline.jpg`, `21-claude-multiline-unsent.jpg`, `22-claude-enter-submitted.jpg`, `23-claude-enter-acknowledged.jpg` and `claude-transcript-summary.json`. |
+| Windows Explorer reveal and local and remote Windows terminal delivery | Windows host / Explorer and Claude Code | Skipped | Outside this macOS assignment. The corresponding PR checklist items are pending Jason's live checks. |
+
+## Fixture attempts and cleanup
+
+The first busy fixture asked Claude to run a foreground `sleep 40` command. Claude Code's harness rejected the foreground wait and the run returned to idle before the queued-input check. The supported background Bash retry yielded back to idle with the job still running, so it also did not supply a sustained active turn. The scored attempt used a tool-free numbered-list response and captured the queue while that response was streaming. The background job completed with exit code 0. Screenshots `08-claude-tool-active.jpg` through `15-claude-generation-working.jpg` retain both fixture attempts. Neither fixture issue was attributed to Runner's key handling.
+
+Exited the owned zsh tab and stopped and archived only Claude chat `01M8GRAXHTQMGZREJQR4ATGCV1` at 09:41:24 UTC. Removed the test folder's Claude trust entry after comparing the projects map with its pre-chat fingerprints. The cleanup audit found zero other project entry or trust changes. Quit and unregistered the QA wrapper. The first post-quit `runner status` probe restarted the development daemon, so stopped that instance too and verified shutdown with the passive `runner daemon status`, the socket owner listing and the process inventory. Both owned fixture folders had no running processes. The installed Runner and the separate private-home daemon stayed running. Released the QA lock and verified it was free. The test folders, screenshots, structured evidence and conversation history were retained outside Git.

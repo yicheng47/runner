@@ -41,6 +41,8 @@ use crate::theme;
 use dirty::DirtyTracker;
 pub(crate) use hub::{hub, FilesHub};
 pub(crate) use links::ShowPreview;
+#[cfg(windows)]
+pub(crate) use open_file::reveal_in_explorer;
 pub(crate) use open_file::{
     editor_icon, file_link_editor_options, format_size, found_editors, SavedViewerState,
     TitlebarWrapper, UnifiedViewer, ViewerChrome,

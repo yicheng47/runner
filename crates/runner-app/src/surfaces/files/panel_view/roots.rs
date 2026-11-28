@@ -542,17 +542,22 @@ impl FilesView {
         items.push(MenuItem::new(reveal_label()).icon("app-window.svg"));
         let reveal_path = root_path;
         actions.push(Box::new(move |_, _, cx| {
-            let path = reveal_path.clone();
-            let task = cx.background_spawn(async move { reveal(path) });
-            cx.spawn(async move |this, cx| {
-                if let Err(error) = task.await {
-                    let _ = this.update(cx, |this, cx| {
-                        this.error = Some(error.into());
-                        cx.notify();
-                    });
-                }
-            })
-            .detach();
+            #[cfg(windows)]
+            reveal_in_explorer(&reveal_path, cx);
+            #[cfg(not(windows))]
+            {
+                let path = reveal_path.clone();
+                let task = cx.background_spawn(async move { reveal(path) });
+                cx.spawn(async move |this, cx| {
+                    if let Err(error) = task.await {
+                        let _ = this.update(cx, |this, cx| {
+                            this.error = Some(error.into());
+                            cx.notify();
+                        });
+                    }
+                })
+                .detach();
+            }
         }));
         items.push(
             MenuItem::new(crate::i18n::message("ui.choose_another_folder")).icon("folder.svg"),

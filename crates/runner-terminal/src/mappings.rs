@@ -285,26 +285,34 @@ pub fn encode_key(
     }
 
     // Strict Kitty decoders (e.g. pi) expect CSI u for modified Enter/Tab/Backspace
-    // once disambiguate mode is active.
-    if kitty_disambiguate && !ctrl && (alt || shift) {
+    // once disambiguate mode is active. Ctrl+Enter also encodes as CSI 13;<mod>u,
+    // while Ctrl+Tab and Ctrl+Backspace remain declined.
+    if kitty_disambiguate && (ctrl || alt || shift) {
         let code = match key {
             "enter" => Some(13u8),
-            "tab" => Some(9),
-            "backspace" => Some(127),
+            "tab" if !ctrl => Some(9),
+            "backspace" if !ctrl => Some(127),
             _ => None,
         };
         if let Some(code) = code {
-            let mods = 1 + u8::from(shift) + 2 * u8::from(alt);
+            let mods = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
             return Some(format!("\x1b[{code};{mods}u").into_bytes());
         }
     }
 
-    // Legacy Enter/Tab/Escape without modifyOtherKeys: decline Ctrl chords,
-    // keep Runner's Shift+Enter (`ESC CR`) and Shift+Tab (`CSI Z`), and use
-    // plain ESC prefix for Alt rather than `CSI 27;...~`.
+    // Legacy Enter/Tab/Escape without modifyOtherKeys: encode Ctrl+Enter as LF
+    // (ESC-prefixed with Alt), decline other Ctrl chords, keep Runner's
+    // Shift+Enter (`ESC CR`) and Shift+Tab (`CSI Z`), and use plain ESC prefix
+    // for Alt rather than `CSI 27;...~`.
     if !kitty_disambiguate && matches!(key, "enter" | "tab" | "escape") {
         if ctrl {
-            return None;
+            return (key == "enter").then(|| {
+                if alt {
+                    b"\x1b\n".to_vec()
+                } else {
+                    b"\n".to_vec()
+                }
+            });
         }
         let bytes: &[u8] = match key {
             "enter" if shift && !alt => b"\x1b\r",
@@ -320,9 +328,9 @@ pub fn encode_key(
         return Some(bytes.to_vec());
     }
 
-    // Do not claim Ctrl chords the legacy path declines (e.g. Ctrl+Enter,
-    // Ctrl+Tab, Ctrl+Escape, Ctrl+1), except when Alt is also held under Kitty
-    // disambiguate mode (e.g. Ctrl+Alt+1 -> CSI 49;7u).
+    // Do not claim Ctrl chords the legacy path declines (e.g. Ctrl+Tab,
+    // Ctrl+Escape, Ctrl+Backspace, Ctrl+1), except when Alt is also held under
+    // Kitty disambiguate mode (e.g. Ctrl+Alt+1 -> CSI 49;7u).
     if ctrl && !(kitty_disambiguate && alt) && !is_functional_key(key) && key != "space" {
         let mut chars = key.chars();
         let allowed = match (chars.next(), chars.next()) {
@@ -333,7 +341,7 @@ pub fn encode_key(
             return None;
         }
     }
-    if ctrl && matches!(key, "enter" | "tab" | "backspace" | "escape") {
+    if ctrl && matches!(key, "tab" | "backspace" | "escape") {
         return None;
     }
 
@@ -1254,9 +1262,60 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_enter_encodes_csi_u_under_kitty_and_lf_in_legacy_mode() {
+        for mode in [
+            TermMode::empty(),
+            TermMode::APP_CURSOR,
+            TermMode::REPORT_EVENT_TYPES,
+            TermMode::REPORT_ALTERNATE_KEYS,
+            TermMode::REPORT_ALL_KEYS_AS_ESC,
+            TermMode::REPORT_ASSOCIATED_TEXT,
+        ] {
+            for (alt, shift, expected) in [
+                (false, false, b"\n".as_slice()),
+                (false, true, b"\n".as_slice()),
+                (true, false, b"\x1b\n".as_slice()),
+                (true, true, b"\x1b\n".as_slice()),
+            ] {
+                assert_eq!(
+                    encode_key("enter", true, alt, shift, None, mode),
+                    Some(expected.to_vec()),
+                    "legacy ctrl+enter alt={alt} shift={shift} mode={mode:?}"
+                );
+                assert_eq!(
+                    classify_key(mode, "enter", true, alt, shift, None),
+                    InputKind::Navigate
+                );
+            }
+        }
+        for mode in [
+            TermMode::DISAMBIGUATE_ESC_CODES,
+            TermMode::DISAMBIGUATE_ESC_CODES | TermMode::APP_CURSOR,
+            TermMode::KITTY_KEYBOARD_PROTOCOL,
+        ] {
+            for (alt, shift, expected) in [
+                (false, false, b"\x1b[13;5u".as_slice()),
+                (false, true, b"\x1b[13;6u".as_slice()),
+                (true, false, b"\x1b[13;7u".as_slice()),
+                (true, true, b"\x1b[13;8u".as_slice()),
+            ] {
+                assert_eq!(
+                    encode_key("enter", true, alt, shift, None, mode),
+                    Some(expected.to_vec()),
+                    "kitty ctrl+enter alt={alt} shift={shift} mode={mode:?}"
+                );
+                assert_eq!(
+                    classify_key(mode, "enter", true, alt, shift, None),
+                    InputKind::Navigate
+                );
+            }
+        }
+    }
+
+    #[test]
     fn kitty_disambiguate_does_not_claim_chords_the_legacy_path_declines() {
         let kitty = TermMode::DISAMBIGUATE_ESC_CODES;
-        for key in ["enter", "tab", "escape", "1"] {
+        for key in ["tab", "escape", "backspace", "1"] {
             assert_eq!(encode_key(key, true, false, false, None, kitty), None);
             assert_eq!(
                 encode_key(key, true, false, false, None, TermMode::empty()),
