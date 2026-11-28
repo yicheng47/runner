@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/ghostty-vt-sys",
     "crates/runner-daemon",
     "crates/runner-core",
     "crates/runner-app",

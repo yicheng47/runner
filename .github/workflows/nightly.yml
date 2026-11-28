@@ -134,6 +134,24 @@ jobs:
       - name: Install Metal toolchain
         run: xcodebuild -downloadComponent MetalToolchain
 
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+          use-cache: false
+
+      - name: Cache libghostty-vt Zig deps
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/libghostty-vt-deps
+          key: libghostty-vt-deps-${{ hashFiles('vendor/libghostty-vt.vendor.json') }}
+
+      - name: Fetch libghostty-vt Zig deps
+        run: |
+          deps_dir="${{ runner.temp }}/libghostty-vt-deps"
+          python3 script/fetch-libghostty-vt-deps.py --output "$deps_dir"
+          echo "LIBGHOSTTY_VT_ZIG_SYSTEM_DIR=$deps_dir" >> "$GITHUB_ENV"
+
       - name: Import Apple Developer certificate
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -264,6 +282,36 @@ jobs:
           key: ${{ steps.cache-key.outputs.hash }}
           cache-on-failure: true
 
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+          use-cache: false
+
+      - name: Cache libghostty-vt Zig deps
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\libghostty-vt-deps
+          key: libghostty-vt-deps-${{ hashFiles('vendor/libghostty-vt.vendor.json') }}
+
+      - name: Configure libghostty-vt deps and libclang
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $depsDir = Join-Path $env:RUNNER_TEMP "libghostty-vt-deps"
+          python script/fetch-libghostty-vt-deps.py --output $depsDir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "LIBGHOSTTY_VT_ZIG_SYSTEM_DIR=$depsDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $candidates = @(
+            "C:\Program Files\LLVM\bin",
+            "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\Llvm\x64\bin",
+            "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\Llvm\x64\bin"
+          )
+          $libclangDir = $candidates | Where-Object { Test-Path (Join-Path $_ "libclang.dll") } | Select-Object -First 1
+          if (-not $libclangDir) { throw "libclang.dll not found in standard LLVM locations" }
+          "LIBCLANG_PATH=$libclangDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Using LIBCLANG_PATH=$libclangDir"
+
       - name: Connect to Certum SimplySign
         shell: pwsh
         env:
@@ -357,6 +405,23 @@ jobs:
         with:
           key: linux-release-22.04-${{ matrix.arch }}
           cache-on-failure: true
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+          use-cache: false
+      - name: Cache libghostty-vt Zig deps
+        uses: actions/cache@v4
+        with:
+          path: /tmp/libghostty-vt-deps
+          key: libghostty-vt-deps-${{ hashFiles('vendor/libghostty-vt.vendor.json') }}
+      - name: Fetch libghostty-vt Zig deps
+        run: |
+          deps_dir="/tmp/libghostty-vt-deps"
+          python3 script/fetch-libghostty-vt-deps.py --output "$deps_dir"
+          zig_bin="$(command -v zig)"
+          echo "ZIG=$zig_bin" >> "$GITHUB_ENV"
+          echo "LIBGHOSTTY_VT_ZIG_SYSTEM_DIR=$deps_dir" >> "$GITHUB_ENV"
       - name: Build Linux packages
         env:
           RUNNER_BUILD_STAMP: ${{ needs.prepare.outputs.stamp }}

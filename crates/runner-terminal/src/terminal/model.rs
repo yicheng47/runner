@@ -134,6 +134,7 @@ impl TerminalModel {
         rows: u16,
         options: ModelOptions,
     ) -> Result<Arc<Self>> {
+        crate::vt::init_sys();
         let (events, rx) = mpsc::channel();
         let (sync_flush, sync_flush_requests) = mpsc::channel();
         let stopped = Arc::new(AtomicBool::new(false));

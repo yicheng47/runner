@@ -650,6 +650,7 @@ impl TerminalMirror {
         waker: Arc<dyn Fn() + Send + Sync>,
         coalesce_bursts: bool,
     ) -> Result<Arc<Self>> {
+        crate::vt::init_sys();
         let attachment = client.attach(&session_id)?;
         let (events, discarded) = mpsc::channel();
         drop(discarded);
