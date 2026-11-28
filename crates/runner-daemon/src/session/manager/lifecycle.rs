@@ -83,7 +83,7 @@ impl SessionManager {
 
         // Stop succeeded. Now tear down the handle and reconcile.
         let gate = state.lock().unwrap().delivery_gate.clone();
-        let (stop, forwarder) = {
+        let (stop, forwarder, first_turn_worker) = {
             let mut delivery = gate.state.lock().unwrap();
             let mut state = state.lock().unwrap();
             match state.handle.take() {
@@ -93,7 +93,9 @@ impl SessionManager {
                     delivery.next_ticket = 0;
                     delivery.next_served = 0;
                     delivery.cancelled_tickets.clear();
+                    gate.first_turn_pending.store(false, Ordering::Release);
                     gate.ready.notify_all();
+                    state.program_session_started = false;
                     if let Some(terminal) = &state.terminal {
                         terminal.clear_program_status();
                     }
@@ -106,7 +108,11 @@ impl SessionManager {
                     state.last_requested_size_dirty = false;
                     state.bump_resize_stamp();
                     state.pending_resize = None;
-                    (h.stop.clone(), h.forwarder.take())
+                    (
+                        h.stop.clone(),
+                        h.forwarder.take(),
+                        h.first_turn_worker.take(),
+                    )
                 }
                 None => return Ok(()), // raced with another caller; no-op
             }
@@ -123,6 +129,9 @@ impl SessionManager {
         // we-return contract.
         if let Some(h) = forwarder {
             let _ = h.join();
+        }
+        if let Some(worker) = first_turn_worker {
+            let _ = worker.join();
         }
         self.clear_killed(session_id);
         Ok(())
@@ -281,8 +290,13 @@ impl SessionManager {
                 delivery.next_ticket = 0;
                 delivery.next_served = 0;
                 delivery.cancelled_tickets.clear();
+                gate.first_turn_pending.store(false, Ordering::Release);
                 gate.ready.notify_all();
-                state.handle = None;
+                state.program_session_started = false;
+                let first_turn_worker = state
+                    .handle
+                    .take()
+                    .and_then(|mut handle| handle.first_turn_worker.take());
                 workers = if retain_terminal {
                     state.finish_companion_terminals();
                     state.terminal_input = None;
@@ -293,6 +307,7 @@ impl SessionManager {
                 } else {
                     state.release_terminal()
                 };
+                workers.extend(first_turn_worker);
                 state.model.apply(
                     SessionEvent::Detached { stopped: false },
                     crate::session::clock::state_now(),

@@ -106,8 +106,8 @@ impl StartupFixture {
                     pending_turn,
                     now,
                 )),
-                #[cfg(windows)]
                 pending_first_turn: None,
+                first_turn_worker: None,
                 id: "session".into(),
                 mission_id: Some("mission".into()),
                 role_id: None,

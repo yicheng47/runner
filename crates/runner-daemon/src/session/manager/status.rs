@@ -62,13 +62,31 @@ impl SessionManager {
             TerminalEvent::Ready(state) => SessionEvent::Readiness { state, live },
         };
         let was_idle = session.model.activity() == Some(SessionActivityState::Idle);
+        let title_turn = matches!(
+            event,
+            SessionEvent::Title {
+                state: SessionActivityState::Busy,
+                live: true
+            }
+        );
         let published = session
             .model
             .apply(event, super::super::clock::state_now())
             .publication
             .is_some();
+        let wake_gate = if title_turn {
+            session.title_turn_started = session.title_turn_started.wrapping_add(1);
+            Some(Arc::clone(&session.delivery_gate))
+        } else {
+            None
+        };
         let idle = session.model.activity() == Some(SessionActivityState::Idle);
         drop(session);
+        if let Some(gate) = wake_gate {
+            let mut delivery = gate.state.lock().unwrap();
+            delivery.first_turn_wake = delivery.first_turn_wake.wrapping_add(1);
+            gate.ready.notify_all();
+        }
         if idle && !was_idle {
             self.notify_delivery_event(session_id, delivery);
         }
@@ -247,8 +265,8 @@ impl SessionManager {
             .unwrap()
             .handle = Some(super::SessionHandle {
             startup: None,
-            #[cfg(windows)]
             pending_first_turn: None,
+            first_turn_worker: None,
             id: session_id.to_owned(),
             mission_id: Some(mission_id.to_owned()),
             role_id: None,
@@ -571,7 +589,7 @@ impl SessionManager {
             SessionEvent::Agent { event, .. } => event.conversation_recovered(),
             _ => false,
         };
-        let (status, sink, effects, startup_ready, became_idle) = {
+        let (status, sink, effects, startup_ready, became_idle, wake_gate) = {
             let mut session = session.lock().unwrap();
             if launch.is_some_and(|launch| {
                 launch.load(Ordering::Acquire)
@@ -584,6 +602,7 @@ impl SessionManager {
             }
             let is_live = session.handle.is_some() && !session.killed;
             if bridge_failed && is_live {
+                session.program_session_started = false;
                 if let Some(terminal) = &session.terminal {
                     terminal.invalidate_program_status();
                 }
@@ -638,13 +657,20 @@ impl SessionManager {
             let prompted = matches!(&event, SessionEvent::Agent { event, live: true }
                 if session.delivery_line.as_deref().is_some_and(|line| agent_prompted(event, line)));
             let was_idle = session.model.activity() == Some(SessionActivityState::Idle);
+            let was_needs_you = session.model.status().observation.needs_you();
             let effects = session.model.apply(event, super::super::clock::state_now());
             if effects.clear_optimistic_completion {
                 session.optimistic_completion = None;
             }
+            if program_session_started {
+                session.program_session_started = true;
+            }
+            let mut wake_first_turn =
+                was_needs_you && !session.model.status().observation.needs_you();
             if (agent_turn && effects.agent_feedback.accepted) || effects.program_turn_started {
                 session.turn_started = session.turn_started.wrapping_add(1);
                 session.delivery_prompted |= prompted;
+                wake_first_turn = true;
                 #[cfg(all(test, unix))]
                 session.turn_notify.notify_all();
             } else if program_turn_confirmed_event && prompted {
@@ -683,14 +709,21 @@ impl SessionManager {
                     false
                 }
             });
+            let wake_gate = wake_first_turn.then(|| Arc::clone(&session.delivery_gate));
             (
                 status,
                 session.mission_status_sink.clone(),
                 effects,
                 startup_ready,
                 became_idle,
+                wake_gate,
             )
         };
+        if let Some(gate) = wake_gate {
+            let mut delivery = gate.state.lock().unwrap();
+            delivery.first_turn_wake = delivery.first_turn_wake.wrapping_add(1);
+            gate.ready.notify_all();
+        }
         if effects.revert_unread {
             events.revert_completion(session_id);
         }

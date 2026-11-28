@@ -172,8 +172,10 @@ impl SessionManager {
             delivery.next_ticket = 0;
             delivery.next_served = 0;
             delivery.cancelled_tickets.clear();
+            gate.first_turn_pending.store(false, Ordering::Release);
             gate.ready.notify_all();
             state_guard.pending_spawn = false;
+            state_guard.program_session_started = false;
             state_guard.delivery_runtime = handle
                 .startup
                 .as_ref()

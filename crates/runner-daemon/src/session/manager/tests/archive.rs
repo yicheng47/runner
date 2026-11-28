@@ -591,8 +591,8 @@ fn forget_cannot_split_terminal_and_live_handle_installation() {
             id,
             SessionHandle {
                 startup: None,
-                #[cfg(windows)]
                 pending_first_turn: None,
+                first_turn_worker: None,
                 id: id.into(),
                 mission_id: None,
                 role_id: None,

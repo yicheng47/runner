@@ -246,8 +246,8 @@ fn direct_input_gate_timeout_is_bounded_and_does_not_pin_the_queue() {
     let gate = state.lock().unwrap().delivery_gate.clone();
     state.lock().unwrap().handle = Some(SessionHandle {
         startup: None,
-        #[cfg(windows)]
         pending_first_turn: None,
+        first_turn_worker: None,
         id: session_id.into(),
         mission_id: None,
         role_id: None,

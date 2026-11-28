@@ -376,8 +376,8 @@ impl SessionManager {
                                 )
                                 .with_status_hooks(status_hooks_enabled)
                             }),
-                        #[cfg(windows)]
                         pending_first_turn: None,
+                        first_turn_worker: None,
                         id: session_id.clone(),
                         mission_id: None,
                         role_id: source.role_id.clone(),

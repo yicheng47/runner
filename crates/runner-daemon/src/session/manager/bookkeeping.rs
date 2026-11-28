@@ -283,30 +283,7 @@ impl SessionManager {
         let delivery = gate.state.lock().unwrap();
         let session = session.lock().unwrap();
         session.handle.as_ref()?;
-        Some(router::DeliverySnapshot {
-            rows: session
-                .terminal
-                .as_ref()
-                .map(|terminal| terminal.input_rows())
-                .unwrap_or_default(),
-            generation: delivery.generation,
-            input_revision: (
-                delivery.next_ticket,
-                session
-                    .terminal
-                    .as_ref()
-                    .map(|terminal| terminal.input_reset_guard())
-                    .unwrap_or(0),
-            ),
-            turn_started: session.turn_started,
-            prompted: session.delivery_prompted,
-            runtime: session.delivery_runtime.clone(),
-            unsent: session.model.unsent_notice(),
-            held: session
-                .terminal
-                .as_ref()
-                .is_some_and(|terminal| terminal.delivery_held()),
-        })
+        Some(session.delivery_snapshot_locked(&delivery))
     }
 
     pub fn resubmit(

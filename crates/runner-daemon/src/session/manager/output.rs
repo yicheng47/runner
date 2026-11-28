@@ -166,18 +166,18 @@ impl SessionManager {
             let mut pending = None;
             let mut startup_tail = Vec::new();
             let mut turn_started = false;
-            #[cfg(windows)]
-            let mut first_turn_pending = true;
+            let delivery_gate = manager_t.delivery_gate_for(&session_id);
             loop {
                 if stop.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
                 manager_t.expire_submit_busy(&session_id, &stop, events.as_ref());
-                #[cfg(windows)]
                 // recv_timeout also drives the first-turn deadline when output is silent.
-                if first_turn_pending {
-                    first_turn_pending =
-                        manager_t.deliver_windows_batch_first_turn(&session_id, &[]);
+                if delivery_gate
+                    .as_ref()
+                    .is_some_and(|gate| gate.first_turn_pending.load(Ordering::Acquire))
+                {
+                    manager_t.deliver_pending_first_turn(&session_id, &stop, &[]);
                 }
                 let next = pending
                     .take()
@@ -231,10 +231,11 @@ impl SessionManager {
                             events.as_ref(),
                             Some(&stop),
                         );
-                        #[cfg(windows)]
-                        if first_turn_pending {
-                            first_turn_pending =
-                                manager_t.deliver_windows_batch_first_turn(&session_id, &bytes);
+                        if delivery_gate
+                            .as_ref()
+                            .is_some_and(|gate| gate.first_turn_pending.load(Ordering::Acquire))
+                        {
+                            manager_t.deliver_pending_first_turn(&session_id, &stop, &bytes);
                         }
                     }
                     Ok(RuntimeOutput::AgentEvent {
@@ -250,6 +251,12 @@ impl SessionManager {
                         );
                         if let Some(reply) = reply {
                             let _ = reply.send(feedback);
+                        }
+                        if delivery_gate
+                            .as_ref()
+                            .is_some_and(|gate| gate.first_turn_pending.load(Ordering::Acquire))
+                        {
+                            manager_t.deliver_pending_first_turn(&session_id, &stop, &[]);
                         }
                     }
                     Ok(RuntimeOutput::ConversationStart(key)) => {
@@ -311,6 +318,12 @@ impl SessionManager {
                             Some(&stop),
                             events.as_ref(),
                         );
+                        if delivery_gate
+                            .as_ref()
+                            .is_some_and(|gate| gate.first_turn_pending.load(Ordering::Acquire))
+                        {
+                            manager_t.deliver_pending_first_turn(&session_id, &stop, &[]);
+                        }
                     }
                     Ok(RuntimeOutput::StatusTransition { state, source }) => {
                         if let Some(ctx) = emit_ctx.as_ref() {
@@ -571,59 +584,6 @@ impl SessionManager {
         })
     }
 
-    #[cfg(windows)]
-    fn deliver_windows_batch_first_turn(self: &Arc<Self>, session_id: &str, bytes: &[u8]) -> bool {
-        let Some(state) = self.session_state(session_id) else {
-            return false;
-        };
-        let (pending, bracketed, timed_out, stop) = {
-            let mut state = state.lock().unwrap();
-            if state.killed {
-                return false;
-            }
-            let Some(handle) = state.handle.as_mut() else {
-                return false;
-            };
-            let Some(pending) = handle.pending_first_turn.as_mut() else {
-                return false;
-            };
-            let seen = pending.readiness.observe(bytes);
-            let ready = seen.into_iter().any(|seen| seen);
-            let timed_out = Instant::now() >= pending.deadline;
-            if !ready && !timed_out {
-                return true;
-            }
-            (
-                handle.pending_first_turn.take().unwrap(),
-                seen[0],
-                !ready && timed_out,
-                Arc::clone(&handle.stop),
-            )
-        };
-        if timed_out {
-            log::warn!(
-                "no TUI readiness signal for {session_id}; delivering first turn after timeout"
-            );
-        }
-        let payload = if bracketed {
-            format!("\x1b[200~{}\x1b[201~", pending.body)
-        } else {
-            pending.body
-        };
-        let manager = Arc::clone(self);
-        let session_id = session_id.to_owned();
-        // The Enter delay must not stall terminal output or hold the session lock.
-        thread::spawn(move || {
-            if stop.load(Ordering::Relaxed) {
-                return;
-            }
-            if let Err(error) = manager.inject_paste(&session_id, payload.as_bytes()) {
-                log::warn!("first-turn delivery failed for {session_id}: {error}");
-            }
-        });
-        false
-    }
-
     /// Write raw bytes to the session's stdin. Used for keystroke
     /// passthrough from the GPUI terminal — small chunks, no embedded
     /// newlines. Routed through `runtime.send_bytes` so each byte
@@ -701,7 +661,7 @@ impl SessionManager {
     }
 
     /// Undo what a dropped input changed in the model and no later event has changed since.
-    fn roll_back_input(
+    pub(super) fn roll_back_input(
         session: &Mutex<SessionState>,
         before: InputCheckpoint,
         after: InputCheckpoint,
@@ -877,6 +837,12 @@ impl SessionManager {
                 .handle
                 .as_ref()
                 .is_some_and(|handle| handle.mission_id.is_some());
+            let clearing_startup_interaction = session.model.status().observation.needs_you()
+                || session
+                    .handle
+                    .as_ref()
+                    .and_then(|handle| handle.startup.as_ref())
+                    .is_some_and(|startup| !startup.trust_cleared());
             let effects = session.model.apply(
                 SessionEvent::Input {
                     class: input_class,
@@ -912,6 +878,17 @@ impl SessionManager {
                     return Err(error);
                 }
             };
+            if !clearing_startup_interaction
+                && (submitted || matches!(input_class, Some(LocalInputClass::SetPending)))
+            {
+                if let Some(pending) = session
+                    .handle
+                    .as_mut()
+                    .and_then(|handle| handle.pending_first_turn.as_mut())
+                {
+                    pending.mark_human_intervened();
+                }
+            }
             Ok((
                 write,
                 previous,
@@ -986,7 +963,7 @@ impl SessionManager {
         Ok(())
     }
 
-    fn capture_codex_session_key(&self, session_id: &str) {
+    pub(super) fn capture_codex_session_key(&self, session_id: &str) {
         if let Some(ctx) = self.rollout_capture_context(session_id) {
             self.spawn_rollout_capture_if_unkeyed(session_id, &ctx);
         }

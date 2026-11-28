@@ -14,6 +14,8 @@ pub(super) struct StartupDelivery {
     status_hooks_enabled: bool,
     program_status: bool,
     seen_working: bool,
+    session_started: bool,
+    input_ready: bool,
     pending_turn: bool,
     started: Instant,
     first_output: Option<Instant>,
@@ -36,6 +38,8 @@ impl StartupDelivery {
             status_hooks_enabled: true,
             program_status: false,
             seen_working: false,
+            session_started: false,
+            input_ready: false,
             pending_turn,
             started: now,
             first_output: None,
@@ -83,15 +87,36 @@ impl StartupDelivery {
         self.status_hooks_enabled
     }
 
+    pub(super) fn waits_for_input_readiness(&self) -> bool {
+        self.hooks || self.waits_for_program_status
+    }
+
+    pub(super) fn trust_cleared(&self) -> bool {
+        self.trust_cleared
+    }
+
+    pub(super) fn ready_for_first_turn(&self, tui_ready: bool) -> bool {
+        if self.hooks {
+            self.input_ready
+        } else if self.waits_for_program_status {
+            self.input_ready || (self.session_started && !self.working && tui_ready)
+        } else {
+            self.input_ready || tui_ready
+        }
+    }
+
     pub(super) fn bridge_failed(&mut self) {
         self.hooks = false;
         self.waits_for_program_status = false;
         self.program_status = false;
         self.working = false;
+        self.session_started = false;
+        self.input_ready = false;
     }
 
     pub(super) fn program_session_started(&mut self) {
         self.trust_cleared = true;
+        self.session_started = true;
         if !self.pending_turn {
             self.waits_for_program_status = false;
         }
@@ -127,10 +152,10 @@ impl StartupDelivery {
                 self.hooks = true;
             }
             self.working = observation.activity == Activity::Working || observation.needs_you();
-            return self.hooks
+            self.input_ready = self.hooks
                 && !self.working
-                && matches!(observation.activity, Activity::Idle | Activity::Ready)
-                && (!self.pending_turn || observation.outcome.is_some());
+                && matches!(observation.activity, Activity::Idle | Activity::Ready);
+            return self.input_ready && (!self.pending_turn || observation.outcome.is_some());
         }
         if !self.hooks
             && (observation.program_status.is_some()
@@ -149,13 +174,14 @@ impl StartupDelivery {
                 self.seen_working = true;
             }
             self.working = observation.activity == Activity::Working || observation.needs_you();
-            return !self.working
-                && observation.activity == Activity::Idle
+            self.input_ready = !self.working && observation.activity == Activity::Idle;
+            return self.input_ready
                 && (!self.pending_turn || observation.outcome.is_some() || self.seen_working);
         }
         if self.program_status {
             self.program_status = false;
             self.working = false;
+            self.input_ready = false;
         }
         false
     }

@@ -437,8 +437,8 @@ impl SessionManager {
                     !plan.resuming && first_turn.is_some(),
                     super::super::clock::now(),
                 )),
-                #[cfg(windows)]
                 pending_first_turn: None,
+                first_turn_worker: None,
                 id: session_id.clone(),
                 mission_id: Some(mission.id.clone()),
                 role_id: Some(role.id.clone()),

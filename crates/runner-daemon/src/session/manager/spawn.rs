@@ -37,8 +37,8 @@ impl SessionManager {
             &session_id,
             SessionHandle {
                 startup: None,
-                #[cfg(windows)]
                 pending_first_turn: None,
+                first_turn_worker: None,
                 id: session_id.clone(),
                 mission_id: None,
                 role_id: None,

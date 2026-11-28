@@ -733,8 +733,8 @@ impl SessionManager {
                         )
                     }
                 },
-                #[cfg(windows)]
                 pending_first_turn: None,
+                first_turn_worker: None,
                 id: session_id.to_string(),
                 mission_id: snap.mission_id.clone(),
                 role_id: snap.role_id.clone(),

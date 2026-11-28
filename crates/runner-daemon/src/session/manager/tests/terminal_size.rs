@@ -968,8 +968,8 @@ fn settle_and_install_handle_drop_locks_before_db_and_reject_stale_resize_writes
     let gate = state.lock().unwrap().delivery_gate.clone();
     let handle = crate::session::manager::SessionHandle {
         startup: None,
-        #[cfg(windows)]
         pending_first_turn: None,
+        first_turn_worker: None,
         id: id.clone(),
         mission_id: None,
         role_id: None,
@@ -1059,8 +1059,8 @@ fn install_handle_stalled_pool_checkout_keeps_terminal_control_free_1377() {
 
     let handle = crate::session::manager::SessionHandle {
         startup: None,
-        #[cfg(windows)]
         pending_first_turn: None,
+        first_turn_worker: None,
         id: id.clone(),
         mission_id: None,
         role_id: None,
@@ -1338,8 +1338,8 @@ fn install_handle_and_prepare_unlisted_revalidate_control_group_after_tab_move_1
     let install_worker = std::thread::spawn(move || {
         let handle = crate::session::manager::SessionHandle {
             startup: None,
-            #[cfg(windows)]
             pending_first_turn: None,
+            first_turn_worker: None,
             id: "moving-install".into(),
             mission_id: None,
             role_id: None,

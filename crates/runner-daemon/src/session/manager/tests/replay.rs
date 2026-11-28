@@ -378,8 +378,8 @@ fn install_replay_handle(
 ) {
     let handle = SessionHandle {
         startup: None,
-        #[cfg(windows)]
         pending_first_turn: None,
+        first_turn_worker: None,
         id: ID.into(),
         mission_id: Some("scenario-mission".into()),
         role_id: None,

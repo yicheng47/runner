@@ -534,6 +534,17 @@ impl SessionModel {
             .is_some_and(|observed| observed.state == InputState::Unsent)
     }
 
+    /// True when the person currently has unsubmitted local or composer draft input.
+    pub fn has_active_draft(&self) -> bool {
+        self.local_input_pending
+            || self
+                .native_input
+                .or(self.observed_input)
+                .is_some_and(|observed| {
+                    matches!(observed.state, InputState::Drafting | InputState::Unsent)
+                })
+    }
+
     pub fn draft_hold(&self, now: Instant) -> Option<crate::router::DeliveryReservation> {
         use crate::router::DeliveryReservation;
         match self.native_input.or(self.observed_input) {

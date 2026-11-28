@@ -53,19 +53,7 @@ impl SessionManager {
             && crate::session::launch::is_windows_batch(&role.command)
         {
             if let Some(body) = first_turn.filter(|body| !body.trim().is_empty()) {
-                let state = self.session_state_or_insert(session_id);
-                let mut state = state.lock().unwrap();
-                if let Some(handle) = state.handle.as_mut() {
-                    handle.pending_first_turn = Some(PendingFirstTurn {
-                        body: body.to_owned(),
-                        deadline,
-                        readiness: Default::default(),
-                    });
-                } else {
-                    log::warn!(
-                        "cannot queue first turn for {session_id}: session handle is missing"
-                    );
-                }
+                self.queue_pending_first_turn(session_id, body, deadline);
             }
         }
     }

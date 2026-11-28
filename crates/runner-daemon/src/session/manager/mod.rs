@@ -48,6 +48,7 @@ mod bookkeeping;
 mod capture;
 mod direct_spawn;
 mod events;
+mod first_turn;
 mod fork;
 mod input_writer;
 mod lifecycle;
@@ -97,8 +98,8 @@ const RESIZE_SETTLE_MS: u64 = 175;
 
 struct SessionHandle {
     startup: Option<startup::StartupDelivery>,
-    #[cfg(windows)]
-    pending_first_turn: Option<PendingFirstTurn>,
+    pending_first_turn: Option<first_turn::PendingFirstTurn>,
+    first_turn_worker: Option<thread::JoinHandle<()>>,
     id: String,
     /// `None` for direct-chat sessions (C8.5). `kill_all_for_mission`
     /// filters on this so direct chats don't get torn down when a mission
@@ -134,13 +135,6 @@ struct SessionHandle {
     input: input_writer::InputQueue,
 }
 
-#[cfg(windows)]
-struct PendingFirstTurn {
-    body: String,
-    deadline: Instant,
-    readiness: super::runtime::TuiReadiness,
-}
-
 #[cfg(all(windows, not(test)))]
 const WINDOWS_FIRST_TURN_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(all(windows, test))]
@@ -166,6 +160,9 @@ struct DeliveryGateState {
     /// Generation invalidates a delayed Enter when the session exits or
     /// respawns with the same database id.
     generation: u64,
+    /// Monotonic counter bumped when turn-start or first-turn state changes so a
+    /// waiting first-turn delivery worker wakes without losing a notification.
+    first_turn_wake: u64,
     /// Held from router body injection through its delayed Enter so local
     /// keystrokes and another router delivery cannot join the same draft.
     in_flight: bool,
@@ -186,6 +183,7 @@ impl DeliveryGateState {
 struct DeliveryGate {
     state: Mutex<DeliveryGateState>,
     ready: Condvar,
+    first_turn_pending: AtomicBool,
 }
 
 /// Latest PTY size waiting for a resize storm to quiesce.
@@ -260,6 +258,8 @@ struct SessionState {
     pending_spawn: bool,
     delivery_runtime: String,
     turn_started: u64,
+    title_turn_started: u64,
+    program_session_started: bool,
     #[cfg(all(test, unix))]
     program_turn_confirmed: u64,
     #[cfg(all(test, unix))]
@@ -321,6 +321,47 @@ impl SessionState {
             persist_gate: Arc::clone(&self.resize_persist_gate),
         }
     }
+    fn delivery_snapshot_locked(&self, delivery: &DeliveryGateState) -> router::DeliverySnapshot {
+        router::DeliverySnapshot {
+            rows: self
+                .terminal
+                .as_ref()
+                .map(|terminal| terminal.input_rows())
+                .unwrap_or_default(),
+            generation: delivery.generation,
+            input_revision: (
+                delivery.next_ticket,
+                self.terminal
+                    .as_ref()
+                    .map(|terminal| terminal.input_reset_guard())
+                    .unwrap_or(0),
+            ),
+            turn_started: self.turn_started,
+            prompted: self.delivery_prompted,
+            runtime: self.delivery_runtime.clone(),
+            unsent: self.model.unsent_notice(),
+            held: self
+                .terminal
+                .as_ref()
+                .is_some_and(|terminal| terminal.delivery_held()),
+        }
+    }
+
+    fn first_turn_snapshot_locked(
+        &self,
+        delivery: &DeliveryGateState,
+    ) -> first_turn::FirstTurnSnapshot {
+        let obs = &self.model.status().observation;
+        first_turn::FirstTurnSnapshot {
+            delivery: self.delivery_snapshot_locked(delivery),
+            title_turn_started: self.title_turn_started,
+            authoritative_turn_signals: obs.program_status.is_some()
+                || obs.source == ObservationSource::Hook
+                || self.program_session_started,
+            needs_you: obs.needs_you(),
+        }
+    }
+
     fn delivery_readiness(
         &self,
         delivery: &DeliveryGateState,
@@ -473,6 +514,12 @@ pub struct SessionManager {
     install_checkout_hooks: Mutex<HashMap<String, Box<dyn FnOnce() + Send>>>,
     #[cfg(test)]
     after_install_snapshot_hooks: Mutex<HashMap<String, Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    first_turn_timings: Mutex<Option<first_turn::FirstTurnTimings>>,
+    #[cfg(test)]
+    first_turn_warnings: Mutex<Vec<String>>,
+    #[cfg(test)]
+    before_first_turn_retry: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// RAII guard that releases a session state's `resuming` flag on drop. The
@@ -618,6 +665,12 @@ impl SessionManager {
             install_checkout_hooks: Mutex::default(),
             #[cfg(test)]
             after_install_snapshot_hooks: Mutex::default(),
+            #[cfg(test)]
+            first_turn_timings: Mutex::default(),
+            #[cfg(test)]
+            first_turn_warnings: Mutex::default(),
+            #[cfg(test)]
+            before_first_turn_retry: Mutex::default(),
         })
     }
 

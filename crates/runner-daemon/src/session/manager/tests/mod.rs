@@ -4,6 +4,7 @@ mod attention;
 mod codex;
 mod copilot;
 mod cursor_agent;
+mod first_turn;
 mod fork;
 mod forwarder;
 #[cfg(unix)]
@@ -724,8 +725,8 @@ fn install_test_session_handle(manager: &SessionManager, session_id: &str) {
         .unwrap()
         .handle = Some(SessionHandle {
         startup: None,
-        #[cfg(windows)]
         pending_first_turn: None,
+        first_turn_worker: None,
         id: session_id.into(),
         mission_id: Some("mission-observed-input".into()),
         role_id: None,
@@ -854,9 +855,83 @@ fn windows_batch_prompt_probe() {
     }
     use std::io::Write;
     let input = crate::session::process::RawConsoleInput::open().unwrap();
+    let mode = std::env::var("RUNNER_BATCH_PROMPT_MODE").unwrap();
+    if mode == "retry" {
+        print!("\x1b[?2004h\r\n> ");
+        std::io::stdout().flush().unwrap();
+        let paste_start = b"\x1b[200~";
+        let paste_end = b"\x1b[201~";
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut received = Vec::new();
+        let mut echoed = false;
+        let mut enters = 0usize;
+        let mut pasted_body = String::new();
+        while Instant::now() < deadline {
+            received.extend(input.read_for(Duration::from_millis(25)).unwrap());
+            if let (Some(start), Some(end)) = (
+                received
+                    .windows(paste_start.len())
+                    .position(|window| window == paste_start),
+                received
+                    .windows(paste_end.len())
+                    .position(|window| window == paste_end),
+            ) {
+                if end > start + paste_start.len() {
+                    if !echoed {
+                        pasted_body =
+                            std::str::from_utf8(&received[start + paste_start.len()..end])
+                                .unwrap()
+                                .to_owned();
+                        print!("{}", pasted_body.replace('\n', "\r\n  "));
+                        std::io::stdout().flush().unwrap();
+                        echoed = true;
+                    }
+                    let tail = &received[end + paste_end.len()..];
+                    enters = tail.iter().filter(|&&byte| byte == b'\r').count();
+                    if enters >= 2 {
+                        print!("\x1b[2J\x1b[H> ");
+                        std::io::stdout().flush().unwrap();
+                        break;
+                    }
+                }
+            }
+        }
+        assert!(echoed, "bracketed paste never arrived: {received:?}");
+        assert_eq!(
+            enters, 2,
+            "expected swallowed Enter + 1 retry: {received:?}"
+        );
+        let trailing = input.read_for(Duration::from_millis(1200)).unwrap();
+        assert!(
+            trailing.is_empty(),
+            "unexpected extra bytes after confirmation: {trailing:?}"
+        );
+        let end = received
+            .windows(paste_end.len())
+            .position(|window| window == paste_end)
+            .unwrap();
+        assert_eq!(
+            &received[end + paste_end.len()..],
+            b"\r\r",
+            "expected precisely two Enters after bracketed paste: {received:?}"
+        );
+        let lines: Vec<&str> = pasted_body.lines().collect();
+        assert_eq!(lines.first().copied(), Some("first line"));
+        assert_eq!(lines.get(1).copied(), Some("second line"));
+        let marker = lines.last().copied().unwrap_or_default();
+        assert!(
+            marker != "second line" && !marker.is_empty(),
+            "expected Codex prompt capture marker in pasted body: {pasted_body:?}"
+        );
+        println!("BATCH_INPUT_FIRST=first line");
+        println!("BATCH_INPUT_SECOND=second line");
+        println!("BATCH_INPUT_MARKER={marker}");
+        println!("BATCH_RETRY_ENTERS=2");
+        return;
+    }
     let early = input.read_for(Duration::from_millis(200)).unwrap();
     assert!(early.is_empty(), "input before readiness: {early:?}");
-    let ready = std::env::var("RUNNER_BATCH_PROMPT_MODE").unwrap() == "ready";
+    let ready = mode == "ready";
     if ready {
         print!("\x1b[?20");
         std::io::stdout().flush().unwrap();
