@@ -13,3 +13,63 @@ test-group = 'real-daemon'
 # retry is not a fix.
 [profile.ci]
 retries = 1
+
+# Run platform-independent sweeps on Linux CI only so Windows and macOS skip
+# repetitive multi-theme, multi-locale, narrow-width/zoom, and split-point
+# stress passes that exercise no OS-specific code, files, git, paths, line
+# endings, PTYs, or file watchers. Local runs (`profile.default` and `cargo test`)
+# and both Linux CI jobs still run the full suite; pass `--ignore-default-filter`
+# with `--profile ci` to run every test on Windows or macOS.
+#
+# Excluded groups on non-Linux CI:
+# - runner-terminal::snapshot recording_split_points (25 tests): pure in-memory
+#   VT byte-stream split-point sweep (200+ offsets per fixture). All other
+#   runner-terminal tests, including recording_round_trips over every fixture
+#   file, remain on every platform to cover per-platform native parser builds.
+# - runner-app sidebar and update-popover zoom/width layout sweeps (3 tests):
+#   GPUI layout bounds checks across widths/themes/zooms using TestTextSystem;
+#   zero OS cfg or platform chrome.
+# - runner-app Settings panel, language, usage-preview, and remote-status
+#   theme/locale/zoom sweeps (7 tests): pure GPUI settings view rendering and
+#   toggle checks across English/Chinese and dark/light themes; zero OS cfg,
+#   platform menus, or file/git/PTY calls.
+# - runner-app Roles and Crews locale/theme/minimum-window layout sweeps
+#   (10 tests): surfaces/roles and surfaces/crews contain zero OS cfg lines;
+#   these sweep narrow/wide widths, zooms, themes, and localized validation copy.
+# - runner-app Remote client and chat-panel locale/narrow-width sweeps
+#   (4 tests): pure GPUI bounds and localized label checks in zero-OS-cfg
+#   surfaces (surfaces/remote_client, pane title menu labels, side-panel
+#   activity bar).
+[[profile.ci.overrides]]
+platform = 'cfg(not(target_os = "linux"))'
+default-filter = '''
+not (
+  (package(runner-terminal) & binary(snapshot) & test(/^recording_split_points::/))
+  | (package(runner-app) & (
+      test(=surfaces::app_shell::tests::sidebar_footer_fits_weekly_values_and_settings_in_one_row)
+    | test(=surfaces::app_shell::tests::sidebar_footer_overflow_collapses_lowest_usage_badges_across_three_runtimes)
+    | test(=surfaces::update_ui::tests::in_a_window::the_popover_fits_small_windows_and_wraps_a_long_version_at_each_zoom)
+    | test(=surfaces::settings::page::side_panel::tests::the_panel_page_offers_the_surfaces_and_dims_them_while_off)
+    | test(=surfaces::settings::page::side_panel::tests::the_files_page_sets_every_option_and_the_size_offers_no_reset)
+    | test(=surfaces::settings::page::localization_tests::language_row_keeps_readable_text_at_narrow_widths_and_enlarged_zoom)
+    | test(=surfaces::settings::page::localization_tests::open_archive_confirmation_follows_the_other_window_language)
+    | test(=surfaces::settings::page::tests::usage_preview_tracks_badges_and_keeps_the_same_footer_anchors)
+    | test(=surfaces::settings::page::tests::usage_preview_keeps_its_natural_size_and_wraps_inside_the_sidebar_card)
+    | test(=surfaces::settings::remote::tests::every_status_renders_in_both_languages_and_themes)
+    | test(=surfaces::roles::tests::refreshed_role_runtime_placeholders_follow_peer_language_changes)
+    | test(=surfaces::roles::tests::existing_role_validation_follows_language_changes_from_a_peer_window)
+    | test(=surfaces::roles::tests::role_list_pager_fits_narrow_zoomed_footers_and_navigates)
+    | test(=surfaces::roles::tests::new_role_layout_fits_the_minimum_window_in_both_themes)
+    | test(=surfaces::roles::tests::role_list_table_fits_the_minimum_window_and_counts_its_rows)
+    | test(=surfaces::roles::tests::role_page_columns_split_wide_and_stack_at_the_minimum_width)
+    | test(=surfaces::crews::tests::existing_crew_validation_follows_language_changes_without_resetting_drafts)
+    | test(=surfaces::crews::tests::crew_list_pager_fits_narrow_zoomed_footers_and_navigates)
+    | test(=surfaces::crews::tests::new_crew_layout_fits_the_minimum_window_in_both_themes)
+    | test(=surfaces::crews::tests::crew_list_table_fits_the_minimum_window_and_counts_its_rows)
+    | test(=surfaces::remote_client::tests::the_update_hint_fits_beside_the_footer_buttons_at_every_width_zoom_and_language)
+    | test(=surfaces::remote_client::tests::remote_libraries_fit_narrow_zoomed_windows_in_both_languages)
+    | test(=surfaces::panes::tests::pane_title_menu_labels_fit_one_line)
+    | test(=surfaces::panes::tests::chat_panel_activity_bar_keeps_icons_and_collapse_at_the_narrowest_panel_in_both_locales)
+  ))
+)
+'''
