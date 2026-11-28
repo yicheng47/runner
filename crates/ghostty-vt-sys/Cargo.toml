@@ -1,0 +1,19 @@
+[package]
+name = "ghostty-vt-sys"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+links = "ghostty-vt"
+
+[lints]
+workspace = true
+
+[build-dependencies]
+bindgen = "0.72"
+
+[dev-dependencies]
+base64 = "0.22"
+serde.workspace = true
+serde_json.workspace = true

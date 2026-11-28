@@ -14,6 +14,8 @@ pub mod snapshot;
 pub mod terminal;
 pub mod title_parser;
 pub mod types;
+#[allow(dead_code, unused_imports)]
+pub(crate) mod vt;
 
 pub use palette::{Color, NamedColor, Rgb, TerminalPalette};
 pub use screen::{CellView, ScreenGuard, ScreenView, ViewportCell, VisibleCells};

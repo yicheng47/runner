@@ -1,4 +1,4 @@
-.PHONY: build check fmt fmt-check clippy test test-nightly verify run clean cache-size guide-cli guide-cli-check
+.PHONY: build check fmt fmt-check clippy test test-nightly verify run clean cache-size guide-cli guide-cli-check ghostty-deps
 
 # Crew builds hit load 208 on 2026-08-22 and starved the UI.
 CARGO_BUILD_JOBS ?= 12
@@ -46,3 +46,6 @@ clean:
 cache-size:
 	@du -sh target 2>/dev/null || echo "target/: (none)"
 	@du -sh ~/.cargo/registry ~/.cargo/git 2>/dev/null
+
+ghostty-deps:
+	python3 script/fetch-libghostty-vt-deps.py
