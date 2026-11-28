@@ -2171,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "ghostty-vt-sys"
-version = "0.20.4"
+version = "0.20.5"
 dependencies = [
  "base64",
  "bindgen",
@@ -5475,7 +5475,7 @@ dependencies = [
 
 [[package]]
 name = "runner-app"
-version = "0.20.4"
+version = "0.20.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -5550,7 +5550,7 @@ dependencies = [
 
 [[package]]
 name = "runner-cli"
-version = "0.20.4"
+version = "0.20.5"
 dependencies = [
  "chrono",
  "clap",
@@ -5571,7 +5571,7 @@ dependencies = [
 
 [[package]]
 name = "runner-core"
-version = "0.20.4"
+version = "0.20.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -5602,7 +5602,7 @@ dependencies = [
 
 [[package]]
 name = "runner-daemon"
-version = "0.20.4"
+version = "0.20.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -5645,7 +5645,7 @@ dependencies = [
 
 [[package]]
 name = "runner-terminal"
-version = "0.20.4"
+version = "0.20.5"
 dependencies = [
  "anyhow",
  "base64",

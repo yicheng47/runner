@@ -24,7 +24,7 @@ Settled on 2026-11-25 and revised with Jason on 2026-11-27:
 5. **Local files only in Stage 1; defer `runner://` links and URL fetching (2026-11-27).** People download `.crew.toml` or `.role.toml` files (from `runnersh.dev` or a teammate) and drop or pick them offline. Runner links to `https://runnersh.dev/crews` from the Crews page, empty state, and Step 1 upload modal. Dropping `runner://` and HTTP fetching removes OS URL-scheme registration, Windows single-instance pipe changes, and all network code in Stage 1, giving macOS, Windows and Linux full parity.
 6. **Always recreate imported roles; no conflict/reuse detection (2026-11-27).** Every imported role is created fresh — Runner never compares against or reuses existing local roles. Because role handles are globally unique in SQLite (`roles.handle UNIQUE`), a handle that already exists locally simply auto-suffixes to the next free `<handle>-2`, `-3`, … (editable on standalone role import). This removes conflict toggles, role-equality matching and changed-plan races completely.
 7. **Check runtime availability and let the user pick an installed runtime (2026-11-27).** The only environment check during import is whether each suggested runtime is installed on this machine. When a template suggests a runtime the user does not have installed, the preview highlights it and offers a picker of their installed runtimes (plus a bulk switch when 2+ roles share the same missing runtime, and a **Keep \<runtime\> (not installed)** escape hatch). Switching a role or slot to a different runtime clears its template `model`, `effort` and `codex_speed` so the chosen runtime starts with its own defaults.
-8. **Templates carry no permission mode.** A role's stored permission flags never reach a launch: chats strip them (`session/manager/direct_spawn.rs`) and missions replace them with broad access (`session/manager/mission_spawn.rs`; see [Missions](../guide/concepts/missions.md#permissions)). A Bypass warning or clamp on import would promise a protection Runner does not give. The preview says **Missions run with broad access** instead.
+8. **Templates carry no permission mode.** A role's stored permission flags never reach a launch: chats strip them (`session/manager/direct_spawn.rs`) and missions replace them with broad access (`session/manager/mission_spawn.rs`; see [Missions](../../guide/concepts/missions.md#permissions)). A Bypass warning or clamp on import would promise a protection Runner does not give. The preview says **Missions run with broad access** instead.
 
 ## Scope
 
@@ -228,10 +228,10 @@ Three pull requests to `main`; this spec and its index entry land with Phase 1.
 
 English and `zh-CN`, in Phase 2 (the CLI reference in Phase 1):
 
-- [Crews](../guide/concepts/crews.md): exporting and importing crews.
-- [Roles](../guide/concepts/roles.md): exporting and importing one role.
-- [Build a crew](../guide/guides/build-a-crew.md): starting from a downloaded or shared template file, and sharing a crew.
-- [CLI reference](../guide/reference/cli.md).
+- [Crews](../../guide/concepts/crews.md): exporting and importing crews.
+- [Roles](../../guide/concepts/roles.md): exporting and importing one role.
+- [Build a crew](../../guide/guides/build-a-crew.md): starting from a downloaded or shared template file, and sharing a crew.
+- [CLI reference](../../guide/reference/cli.md).
 
 ## Verification
 
