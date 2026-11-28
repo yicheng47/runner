@@ -4,7 +4,7 @@
 use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::marker::PhantomData;
-use std::mem::{size_of, ManuallyDrop};
+use std::mem::size_of;
 use std::panic::{self, AssertUnwindSafe};
 use std::ptr::{self, NonNull};
 use std::slice;
@@ -12,10 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ghostty_vt_sys as sys;
 
-use super::render::RenderState;
 use super::{ansi_mode, check, dec_mode, init_sys, take_ghostty_alloc, Result, VtError};
 use crate::palette::Rgb;
-use crate::screen::ScreenData;
 use crate::terminal::MAX_CLIPBOARD_BYTES;
 use crate::types::CursorShape;
 
@@ -737,13 +735,6 @@ impl Default for SnapshotDecodeOptions {
     }
 }
 
-#[derive(Clone, Copy)]
-struct HoldCapture {
-    render_state: *mut RenderState,
-    default_cursor_hidden: bool,
-    terminal_id: u64,
-}
-
 struct EffectInbox {
     effects: Vec<TerminalEffect>,
     color_scheme: ColorScheme,
@@ -751,14 +742,11 @@ struct EffectInbox {
     max_clipboard_bytes: usize,
     title_stack: Vec<Option<String>>,
     emit_title_and_reset: bool,
-    hold_capture: Option<HoldCapture>,
-    pre_hold_screen: Option<ScreenData>,
 }
 
 /// Single-owner `!Send`/`!Sync` terminal state backed by `libghostty-vt`.
 pub(crate) struct Terminal {
     id: u64,
-    mutation_gen: u64,
     raw: sys::GhosttyTerminal,
     /// Heap-allocated `UnsafeCell<EffectInbox>` registered as `GhosttyTerminal`'s
     /// `userdata`. Owned via raw pointer (never `Box`) so no `noalias` unique
@@ -854,13 +842,10 @@ impl Terminal {
             max_clipboard_bytes: config.clipboard_write_max_bytes,
             title_stack: Vec::new(),
             emit_title_and_reset: config.enable_host_callbacks || config.enable_title_events,
-            hold_capture: None,
-            pre_hold_screen: None,
         }))))
         .expect("Box::into_raw returned null");
         Self {
             id: NEXT_TERMINAL_ID.fetch_add(1, Ordering::Relaxed),
-            mutation_gen: 0,
             raw,
             inbox,
             _not_send_sync: PhantomData,
@@ -1033,16 +1018,6 @@ impl Terminal {
         self.id
     }
 
-    #[inline]
-    pub(super) fn mutation_gen(&self) -> u64 {
-        self.mutation_gen
-    }
-
-    #[inline]
-    pub(super) fn bump_mutation_gen(&mut self) {
-        self.mutation_gen = self.mutation_gen.wrapping_add(1);
-    }
-
     /// Brand a raw `GhosttySelection` with this terminal's identity and active screen.
     ///
     /// # Safety
@@ -1075,7 +1050,6 @@ impl Terminal {
 
     pub(crate) fn vt_write(&mut self, bytes: &[u8]) {
         if !bytes.is_empty() {
-            self.bump_mutation_gen();
             unsafe { sys::ghostty_terminal_vt_write(self.raw, bytes.as_ptr(), bytes.len()) };
         }
     }
@@ -1086,7 +1060,6 @@ impl Terminal {
         if bytes.is_empty() {
             return Ok((0, false));
         }
-        self.bump_mutation_gen();
         // Bindgen emits C enums as `c_int` under MSVC and `c_uint` on Unix,
         // while `vt_write_until` takes a fixed `uint32_t` bitmask.
         #[allow(clippy::unnecessary_cast)]
@@ -1112,41 +1085,6 @@ impl Terminal {
         }
     }
 
-    /// Write `bytes` while capturing a pre-hold viewport snapshot inside
-    /// Ghostty's synchronous `render_hold(true)` callback so any output before
-    /// `CSI ? 2026 h` in the same chunk is preserved cleanly while held.
-    pub(crate) fn vt_write_capturing_hold(
-        &mut self,
-        bytes: &[u8],
-        render_state: &mut RenderState,
-        default_cursor_hidden: bool,
-    ) -> Option<ScreenData> {
-        if bytes.is_empty() {
-            return None;
-        }
-        struct CaptureGuard(*mut EffectInbox);
-        impl Drop for CaptureGuard {
-            fn drop(&mut self) {
-                unsafe {
-                    (*self.0).hold_capture = None;
-                }
-            }
-        }
-        let inbox_ptr = self.inbox.as_ptr();
-        unsafe {
-            let inbox = (*inbox_ptr).get();
-            (*inbox).pre_hold_screen = None;
-            (*inbox).hold_capture = Some(HoldCapture {
-                render_state: ptr::from_mut(render_state),
-                default_cursor_hidden,
-                terminal_id: self.id,
-            });
-            let _guard = CaptureGuard(inbox);
-            self.vt_write(bytes);
-        }
-        unsafe { (*(*inbox_ptr).get()).pre_hold_screen.take() }
-    }
-
     /// Phase 1 supports Kitty keyboard bit 0 (`DISAMBIGUATE_ESC_CODES`) only;
     /// clamp any higher bits set on the live top-of-stack when at VT ground.
     pub(crate) fn clamp_kitty_keyboard_flags(&mut self) {
@@ -1158,7 +1096,6 @@ impl Terminal {
             } else {
                 b"\x1b[=0;1u".as_slice()
             };
-            self.bump_mutation_gen();
             unsafe { sys::ghostty_terminal_vt_write(self.raw, seq.as_ptr(), seq.len()) };
         }
     }
@@ -1189,7 +1126,6 @@ impl Terminal {
         unsafe {
             (*self.inbox.as_ref().get()).cell_size_px = (cell_width_px, cell_height_px);
         }
-        self.bump_mutation_gen();
         check(unsafe {
             sys::ghostty_terminal_resize(
                 self.raw,
@@ -1202,12 +1138,10 @@ impl Terminal {
     }
 
     pub(crate) fn reset(&mut self) {
-        self.bump_mutation_gen();
         unsafe { sys::ghostty_terminal_reset(self.raw) };
     }
 
     pub(crate) fn scroll_viewport(&mut self, action: ScrollViewport) -> Result<()> {
-        self.bump_mutation_gen();
         let raw = match action {
             ScrollViewport::Top => sys::GhosttyTerminalScrollViewport {
                 tag: sys::GHOSTTY_TERMINAL_SCROLL_VIEWPORT_TOP,
@@ -1234,7 +1168,6 @@ impl Terminal {
     }
 
     pub(crate) fn set_scrollback_lines(&mut self, lines: usize) -> Result<()> {
-        self.bump_mutation_gen();
         // `SCROLLBACK_MAX_BYTES = 0` disables scrollback and erases retained
         // history (terminal.h:2328); non-zero line limits lift the byte cap so
         // line count governs page eviction.
@@ -1658,6 +1591,18 @@ impl Terminal {
             );
         }
         generation
+    }
+
+    pub(crate) fn sync_hold_reopens(&self) -> u64 {
+        let mut reopens: u64 = 0;
+        unsafe {
+            sys::ghostty_terminal_get(
+                self.raw,
+                sys::GHOSTTY_TERMINAL_DATA_SYNC_HOLD_REOPENS,
+                (&raw mut reopens).cast(),
+            );
+        }
+        reopens
     }
 
     /// Fast zero-allocation, short-circuiting check whether any cell on the
@@ -2611,6 +2556,143 @@ impl Terminal {
         })
     }
 
+    pub(crate) fn row_is_wrapped(&self, screen_y: u32) -> bool {
+        let pt = make_point(GridPointTag::Screen, 0, screen_y);
+        let mut gref = sys::GhosttyGridRef::default();
+        if unsafe { sys::ghostty_terminal_grid_ref(self.raw, pt, &mut gref) }
+            != sys::GHOSTTY_SUCCESS
+        {
+            return false;
+        }
+        let mut raw_row: sys::GhosttyRow = 0;
+        if unsafe { sys::ghostty_grid_ref_row(&gref, &mut raw_row) } != sys::GHOSTTY_SUCCESS {
+            return false;
+        }
+        let mut wrap = false;
+        unsafe {
+            sys::ghostty_row_get(raw_row, sys::GHOSTTY_ROW_DATA_WRAP, (&raw mut wrap).cast());
+        }
+        wrap
+    }
+
+    pub(crate) fn row_has_hyperlink(&self, screen_y: u32) -> bool {
+        let pt = make_point(GridPointTag::Screen, 0, screen_y);
+        let mut gref = sys::GhosttyGridRef::default();
+        if unsafe { sys::ghostty_terminal_grid_ref(self.raw, pt, &mut gref) }
+            != sys::GHOSTTY_SUCCESS
+        {
+            return false;
+        }
+        let mut raw_row: sys::GhosttyRow = 0;
+        if unsafe { sys::ghostty_grid_ref_row(&gref, &mut raw_row) } != sys::GHOSTTY_SUCCESS {
+            return false;
+        }
+        let mut hyperlink = false;
+        unsafe {
+            sys::ghostty_row_get(
+                raw_row,
+                sys::GHOSTTY_ROW_DATA_HYPERLINK,
+                (&raw mut hyperlink).cast(),
+            );
+        }
+        hyperlink
+    }
+
+    pub(crate) fn row_has_underline(&self, screen_y: u32) -> bool {
+        let pt = make_point(GridPointTag::Screen, 0, screen_y);
+        let mut gref = sys::GhosttyGridRef::default();
+        if unsafe { sys::ghostty_terminal_grid_ref(self.raw, pt, &mut gref) }
+            != sys::GHOSTTY_SUCCESS
+        {
+            return false;
+        }
+        let mut raw_row: sys::GhosttyRow = 0;
+        if unsafe { sys::ghostty_grid_ref_row(&gref, &mut raw_row) } != sys::GHOSTTY_SUCCESS {
+            return false;
+        }
+        let mut styled = false;
+        unsafe {
+            sys::ghostty_row_get(
+                raw_row,
+                sys::GHOSTTY_ROW_DATA_STYLED,
+                (&raw mut styled).cast(),
+            );
+        }
+        if !styled {
+            return false;
+        }
+        let cols = self.cols();
+        for col in 0..cols {
+            let Some(cell_ref) = self.grid_ref(GridPointTag::Screen, col, screen_y) else {
+                break;
+            };
+            let Ok(style) = cell_ref.style() else {
+                continue;
+            };
+            if super::style_underline(style.flags) != super::UnderlineStyle::None {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Append a single screen row's base text cells (skipping wide spacers) for
+    /// lazy regex search without copying styles, colors, or hyperlinks.
+    pub(crate) fn append_row_search_cells(
+        &self,
+        screen_y: u32,
+        line: crate::types::Line,
+        text: &mut String,
+        map: &mut Vec<(usize, crate::types::GridPoint, bool)>,
+    ) {
+        let cols = self.cols();
+        for col in 0..cols {
+            let pt = make_point(GridPointTag::Screen, col, screen_y);
+            let mut gref = sys::GhosttyGridRef::default();
+            if unsafe { sys::ghostty_terminal_grid_ref(self.raw, pt, &mut gref) }
+                != sys::GHOSTTY_SUCCESS
+            {
+                break;
+            }
+            let mut raw_cell: sys::GhosttyCell = 0;
+            if unsafe { sys::ghostty_grid_ref_cell(&gref, &mut raw_cell) } != sys::GHOSTTY_SUCCESS {
+                break;
+            }
+            let mut wide: sys::GhosttyCellWide = sys::GHOSTTY_CELL_WIDE_NARROW;
+            unsafe {
+                sys::ghostty_cell_get(
+                    raw_cell,
+                    sys::GHOSTTY_CELL_DATA_WIDE,
+                    (&raw mut wide).cast(),
+                );
+            }
+            if wide == sys::GHOSTTY_CELL_WIDE_SPACER_TAIL
+                || wide == sys::GHOSTTY_CELL_WIDE_SPACER_HEAD
+            {
+                continue;
+            }
+            let mut codepoint: u32 = 0;
+            unsafe {
+                sys::ghostty_cell_get(
+                    raw_cell,
+                    sys::GHOSTTY_CELL_DATA_CODEPOINT,
+                    (&raw mut codepoint).cast(),
+                );
+            }
+            let ch = if codepoint == 0 {
+                ' '
+            } else {
+                char::from_u32(codepoint).unwrap_or(' ')
+            };
+            map.push((
+                text.len(),
+                crate::types::GridPoint::new(line, crate::types::Column(usize::from(col))),
+                wide == sys::GHOSTTY_CELL_WIDE_WIDE,
+            ));
+            text.push(ch);
+        }
+    }
+
     pub(crate) fn track_grid_ref(
         &self,
         tag: GridPointTag,
@@ -2651,7 +2733,6 @@ impl Terminal {
     }
 
     pub(crate) fn clear_selection(&mut self) -> Result<()> {
-        self.bump_mutation_gen();
         check(unsafe {
             sys::ghostty_terminal_set(self.raw, sys::GHOSTTY_TERMINAL_OPT_SELECTION, ptr::null())
         })
@@ -2681,7 +2762,6 @@ impl Terminal {
             end: end_ref,
             rectangle,
         };
-        self.bump_mutation_gen();
         check(unsafe {
             sys::ghostty_terminal_set(
                 self.raw,
@@ -2716,7 +2796,6 @@ impl Terminal {
             return Ok(false);
         }
         check(rc)?;
-        self.bump_mutation_gen();
         check(unsafe {
             sys::ghostty_terminal_set(
                 self.raw,
@@ -2754,7 +2833,6 @@ impl Terminal {
             return Ok(false);
         }
         check(rc)?;
-        self.bump_mutation_gen();
         check(unsafe {
             sys::ghostty_terminal_set(
                 self.raw,
@@ -2772,7 +2850,6 @@ impl Terminal {
             return Ok(false);
         }
         check(rc)?;
-        self.bump_mutation_gen();
         check(unsafe {
             sys::ghostty_terminal_set(
                 self.raw,
@@ -2799,7 +2876,6 @@ impl Terminal {
         check(unsafe {
             sys::ghostty_terminal_selection_adjust(self.raw, &mut sel, adjust.to_raw())
         })?;
-        self.bump_mutation_gen();
         check(unsafe {
             sys::ghostty_terminal_set(
                 self.raw,
@@ -2953,7 +3029,8 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        // Free the C handle before reclaiming `inbox` so no callback can run on freed memory.
+        // Free the C handle before reclaiming `inbox` so no callback can run on
+        // freed memory.
         unsafe {
             sys::ghostty_terminal_free(self.raw);
             drop(Box::from_raw(self.inbox.as_ptr()));
@@ -3783,7 +3860,7 @@ unsafe extern "C" fn on_semantic_prompt(
 }
 
 unsafe extern "C" fn on_render_hold(
-    terminal: sys::GhosttyTerminal,
+    _terminal: sys::GhosttyTerminal,
     userdata: *mut c_void,
     held: bool,
 ) {
@@ -3791,43 +3868,7 @@ unsafe extern "C" fn on_render_hold(
         return;
     }
     let _ = panic::catch_unwind(AssertUnwindSafe(|| {
-        let capture = {
-            let cell = unsafe { &*userdata.cast::<UnsafeCell<EffectInbox>>() };
-            let inbox = unsafe { &mut *cell.get() };
-            inbox.effects.push(TerminalEffect::RenderHold(held));
-            if held {
-                inbox.hold_capture
-            } else {
-                inbox.pre_hold_screen = None;
-                None
-            }
-        };
-        if let Some(HoldCapture {
-            render_state,
-            default_cursor_hidden,
-            terminal_id,
-        }) = capture
-        {
-            if let Some(inbox_nn) = NonNull::new(userdata.cast::<UnsafeCell<EffectInbox>>()) {
-                // Borrow only C's `terminal` handle through a non-owning view
-                // while capturing the pre-hold frame (`ScreenData::from_render_state`
-                // reads only the C terminal and never touches `EffectInbox`).
-                let view_term = ManuallyDrop::new(Terminal {
-                    id: terminal_id,
-                    mutation_gen: 0,
-                    raw: terminal,
-                    inbox: inbox_nn,
-                    _not_send_sync: PhantomData,
-                });
-                let rs = unsafe { &mut *render_state };
-                let _ = rs.update(&view_term);
-                let captured = ScreenData::from_render_state(&view_term, rs, default_cursor_hidden);
-                let cell = unsafe { &*userdata.cast::<UnsafeCell<EffectInbox>>() };
-                unsafe {
-                    (*cell.get()).pre_hold_screen = Some(captured);
-                }
-            }
-        }
+        unsafe { push_effect(userdata, TerminalEffect::RenderHold(held)) };
     }));
 }
 

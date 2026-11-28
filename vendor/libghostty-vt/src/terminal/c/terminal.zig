@@ -2009,6 +2009,7 @@ pub const TerminalData = enum(c_int) {
     memory_usage = 42,
     scroll_up_rows = 43,
     screen_generation = 44,
+    sync_hold_reopens = 45,
 
     _,
 
@@ -2050,6 +2051,7 @@ pub const TerminalData = enum(c_int) {
             .kitty_image_storage_limit,
             .scroll_up_rows,
             .screen_generation,
+            .sync_hold_reopens,
             => u64,
             .kitty_image_medium_file,
             .kitty_image_medium_shared_mem,
@@ -2201,6 +2203,7 @@ fn getTyped(
         .scroll_up_rows => out.* = t.screens.active.scroll_up_rows,
         .screen_generation => out.* = (@as(u64, @intCast(t.screens.generation(t.screens.active_key))) << 32) |
             (t.screens.active.scroll_epoch & 0xFFFF_FFFF),
+        .sync_hold_reopens => out.* = t.sync_hold_reopens,
         _ => comptime unreachable,
     }
 

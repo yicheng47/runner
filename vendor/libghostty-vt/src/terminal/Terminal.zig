@@ -83,6 +83,10 @@ previous_char: ?u21 = null,
 /// The modes that this terminal currently has active.
 modes: modespkg.ModeState = .{},
 
+/// Count of parsed DEC 2026 synchronized-output set/restore operations that
+/// arrived while synchronized output was already active.
+sync_hold_reopens: u64 = 0,
+
 /// Terminal-level cursor state.
 cursor: Cursor = .{},
 

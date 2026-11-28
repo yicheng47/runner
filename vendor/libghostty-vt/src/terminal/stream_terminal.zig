@@ -710,7 +710,14 @@ pub const Handler = struct {
             .tab_clear_all => self.terminal.tabClear(.all),
             .tab_set => self.terminal.tabSet(),
             .tab_reset => self.terminal.tabReset(),
-            .set_mode => try self.setMode(value.mode, true),
+            .set_mode => {
+                if (value.mode == .synchronized_output and
+                    self.terminal.modes.get(.synchronized_output))
+                {
+                    self.terminal.sync_hold_reopens +%= 1;
+                }
+                try self.setMode(value.mode, true);
+            },
             .reset_mode => try self.setMode(value.mode, false),
             .save_mode => self.terminal.modes.save(value.mode),
             .restore_mode => {

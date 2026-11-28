@@ -1,6 +1,6 @@
 # Moving the terminal engine to libghostty-vt
 
-This note explains why Runner is replacing the terminal engine inside `runner-terminal`, `alacritty_terminal`, with Ghostty's `libghostty-vt`, and how the change is being made. It is a plan in progress, not a description of shipped code. Written on 2026-11-27 against `main` at `47b59c77`, Ghostty `vt-1.0.2`, and the specs for [#1508](https://github.com/yicheng47/runner/issues/1508) (`docs/features/1508-libghostty-vt.md` at `8a17a520`) and [#1489](https://github.com/yicheng47/runner/issues/1489) (`docs/features/1489-kitty-graphics-protocol.md` at `d36d0dbd`). When the engine swap lands, the parts that describe the result move into a `libghostty-vt.md` note that replaces [`alacritty-terminal.md`](./alacritty-terminal.md), and this note is retired.
+This note records why Runner replaced `alacritty_terminal` inside `runner-terminal` with Ghostty's `libghostty-vt` ([#1508](https://github.com/yicheng47/runner/issues/1508)) and tracks the remaining graphics phase ([#1489](https://github.com/yicheng47/runner/issues/1489)). Phase 1 (trial, boundary refactor, and engine swap with Kitty graphics disabled) is complete on `feat/1508-libghostty-vt`; [`libghostty-vt.md`](./libghostty-vt.md) documents the shipped engine and replaces the former `alacritty-terminal.md`. This migration note remains until `#1489` lands.
 
 ## In one paragraph
 
@@ -15,7 +15,7 @@ Every session has two copies of its terminal state:
 
 Output flows through runnerd once. The session's forwarder thread collects PTY reads into bursts of up to 1 MiB, and `ingest_output_for_launch` (`crates/runner-daemon/src/session/manager/output.rs`) publishes each burst to every subscriber as `TerminalFrame::Output` before feeding the model. A window that attaches later receives a snapshot: today, the grid replayed as escape sequences, starting with `RIS`.
 
-The engine in both copies is a vendored `alacritty_terminal` 0.26 with its parser `vte` 0.15. [`alacritty-terminal.md`](./alacritty-terminal.md) walks through it. `vendor/alacritty_terminal/RUNNER_PATCH.md` limits Runner's changes to read-only accessors, so that the copy can follow upstream.
+Before Phase 1, the engine in both copies was a vendored `alacritty_terminal` 0.26 with its parser `vte` 0.15; [`libghostty-vt.md`](./libghostty-vt.md) walks through the `libghostty-vt` engine that replaced it. `vendor/alacritty_terminal/RUNNER_PATCH.md` had limited Runner's changes to read-only accessors, so that the copy could follow upstream.
 
 Around that engine Runner has built:
 
@@ -107,14 +107,14 @@ flowchart LR
   G --> C["Companion graphics<br/>with the phone"]
 ```
 
-1. **The trial (running).** One coder, on `feat/1508-libghostty-vt`. It builds `ghostty-vt-sys` on every CI target, Windows first, and replays Runner's recorded terminal sessions (`tests/fixture_replay.rs` with its saved screens, plus the focused cases for wide characters, emoji, combining marks, box drawing, reflow, the alternate screen and scrollback) into `libghostty-vt`, comparing each screen. It also lists what input tracking and delivery confirmation read from the engine. Its go or no-go decides whether the migration continues; on no-go, #1489 resumes from the backup branch.
-2. **The boundary refactor (running).** A coder and a reviewer, on `refactor/1508-terminal-boundary`, landing on `main` first. It is described above under [The boundary](#the-boundary). It is worth having even if the trial says no.
-3. **#1508 Phase 1: the engine swap, graphics off.** A coder, a reviewer and QA, on `feat/1508-libghostty-vt`, as one pull request that Jason reviews:
-   - 1a: the binding in every CI, nightly and release build.
-   - 1b: the model and the mirror as single-owner threads, callbacks in place of the scanners, binary local snapshots and `Formatter` companion snapshots, and input tracking, delivery confirmation and the encoders moved over, with every recorded-session test passing unchanged.
-   - 1c: the app painting from the `ViewportSnapshot`, selection, find and links on the new engine, and `vendor/alacritty_terminal` and `vte` deleted.
+1. **The trial (passed).** Built `ghostty-vt-sys` on all five CI targets against `vt-1.0.2` and verified corpus parity across all 24 recorded fixtures and 10/11 focused cases (with `resize_reflows_wrapped_lines` adopting Ghostty's reflow behavior).
+2. **The boundary refactor (landed on `main`).** Moved `runner-terminal`'s public API onto Runner-owned types and `ScreenView`, removing `alacritty_terminal` and `vte` from `runner-app` and `runner-daemon`.
+3. **#1508 Phase 1: the engine swap, graphics off (complete on `feat/1508-libghostty-vt`).**
+   - 1a: `ghostty-vt-sys` static Zig `0.17.0` build with offline dependency cache in every CI, nightly and release workflow, plus safe `!Send`/`!Sync` `runner-terminal::vt` wrapper with PNG and `tracing` callbacks.
+   - 1b: single-owner `TerminalModel` and `TerminalMirror` actors, native effect callbacks replacing the byte scanners, binary local snapshots and `Formatter` companion v1 snapshots, and `input_state`, `delivery_probe`, `mappings` and `replay` ported with all recorded-session tests passing unchanged.
+   - 1c: `TerminalElement::prepaint` painting from `ViewportSnapshot`, native `selection.h`, `search.h` and `TrackedGridRef` anchoring, bounded link hover, and `vendor/alacritty_terminal`, `alacritty_terminal` and `vte` deleted from the workspace.
 
-   Graphics stay off (storage limit 0), so this step is judged on parity alone. QA runs the terminal regression cases for rendering, input and IME, scrolling and find, replies, keep and reopen, resizing, CPU and remote windows.
+   Graphics stay off (storage limit 0), so Phase 1 is verified on parity alone before `#1489` turns graphics on.
 4. **#1489: Kitty graphics on the new engine.** On `feat/1489-kitty-graphics-protocol`, rebased after Phase 1. runnerd stays the only reader and replier, because sessions run with no window open and `t=t` and `t=s` media are deleted by whoever reads them first. The app's mirrors receive a relayed stream that hands over runnerd's decoded pixels, by shared memory or a private file. The step also covers:
    - one cell size per session, on every size path;
    - streamed snapshots, and no graphics for hidden sessions;
@@ -152,6 +152,6 @@ From #1508: how the vendored source and the Zig cache reach CI and fresh worktre
 
 1. The two specs, on their branches until they land: `docs/features/1508-libghostty-vt.md` on `feat/1508-libghostty-vt` and `docs/features/1489-kitty-graphics-protocol.md` on `feat/1489-kitty-graphics-protocol`.
 2. Ghostty `vt-1.0.2`'s headers, starting with `include/ghostty/vt.h`, then `terminal.h`, `render.h` and `snapshot.h`: `gh api 'repos/ghostty-org/ghostty/contents/include/ghostty/vt/<file>?ref=vt-1.0.2' --jq .content | base64 -d`.
-3. Today's engine and its scanners: [`alacritty-terminal.md`](./alacritty-terminal.md) and [`terminal-rendering.md`](./terminal-rendering.md), then `crates/runner-terminal/src/terminal.rs`, `terminal/model.rs`, `snapshot.rs` and `program_status.rs`.
+3. The `libghostty-vt` engine and rendering pipeline: [`libghostty-vt.md`](./libghostty-vt.md) and [`terminal-rendering.md`](./terminal-rendering.md), then `crates/runner-terminal/src/terminal.rs`, `terminal/model.rs`, `vt/terminal.rs`, `snapshot.rs` and `program_status.rs`.
 4. The features to watch: `input_state.rs` and `delivery_probe.rs`, and their callers in `crates/runner-daemon/src/router/` and `session/state/`.
 5. Prior art: herdr-app's `crates/ghostty-sys/build.rs` and `src/vt.rs`, and herdr-core's `crates/ghostty-vt/src/lib.rs`.

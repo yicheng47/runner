@@ -34,9 +34,9 @@ On Windows, `runnerd.exe` has a hidden console and bundled `conpty.dll` and `Ope
 | --- | --- |
 | AppCore / SessionManager (`runner-daemon`) | Session identity, spawn/resume policy, delivery gates, status, sequence numbers and manager forwarders. |
 | PtyRuntime (`runner-daemon`) | PTY and child handles, writer mutex, process-tree supervision, reader and idle workers. |
-| TerminalModel (`runner-terminal`, in daemon) | Persistent parser/grid, synchronization deadlines, draft observations and terminal replies. |
-| TerminalBridge / TerminalMirror (`runner-terminal`, in app) | Attached mirrors, snapshots and stream sequencing, palette and viewer leases. |
-| GPUI surface (`runner-app`) | Painting, selection, links, key/mouse/IME encoding and local resize feedback. |
+| TerminalModel (`runner-terminal`, in daemon) | Single-owner `libghostty-vt` actor + FIFO host-effects worker: authoritative grid, synchronization deadlines, draft observations, program status and terminal replies. |
+| TerminalBridge / TerminalMirror (`runner-terminal`, in app) | Single-owner `libghostty-vt` actor per attached mirror: binary/VT snapshots, bounded push stream sequencing, immutable `ViewportSnapshot` publishing, native search/selection/anchors, palette and viewer leases. |
+| GPUI surface (`runner-app`) | Painting from `ViewportSnapshot`, links, IME routing and local resize ownership. |
 
 The app’s production dependencies are `runner-core` and `runner-terminal`; `runner-daemon` is only a test dependency. The CLI links the daemon and dispatches to it when launched under the file stem `runnerd`.
 
@@ -59,7 +59,7 @@ Authoritative parsing continues without panes or clients. Only the daemon answer
 
 The app encodes keys, IME, paste and mouse against the mirror’s current modes. Input is a one-way client frame queued by the daemon per session, for both direct chats and missions. User input still passes the delivery gate; router input uses its reserved path. Terminal replies bypass that gate and ultimately share PtyRuntime’s writer mutex.
 
-A pane sends a one-way resize immediately. The daemon applies a controller's size to its PTY/model, emits an ordered `Resized` frame to every viewer including the sender, and persists settled geometry. Every mirror adopts its size from the attach snapshot and those frames; a request from a non-controller leaves its size unchanged. Snapshot restoration and live resize preserve parser modes and wide-character state. Runner retains its own PTY readers; it uses Alacritty’s model and VTE parser rather than its PTY EventLoop.
+A pane sends a one-way resize immediately. The daemon applies a controller's size to its PTY/model, emits an ordered `Resized` frame to every viewer including the sender, and persists settled geometry. Every mirror adopts its size from the attach snapshot and those frames; a request from a non-controller leaves its size unchanged. Snapshot restoration (binary `ghostty_snapshot_encode` locally, `GhosttyFormatter` VT for companion clients) and live resize preserve parser modes, continuation bytes and wide-character state. Runner retains its own `portable-pty` readers and embeds Ghostty's `libghostty-vt` (`vt-1.0.2`) inside single-owner actor threads.
 
 ## Lifecycle
 

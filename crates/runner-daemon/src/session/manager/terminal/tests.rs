@@ -1664,19 +1664,25 @@ fn wait_until(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
     }
 }
 
-fn populated_terminal(core: AppCore) -> Arc<TerminalSession> {
+fn populated_terminal(
+    core: AppCore,
+) -> (
+    Arc<TerminalSession>,
+    runner_terminal::terminal::TerminalView,
+) {
     let terminal =
         TerminalSession::attach(core, "replay-race".into(), 20, 4, Arc::new(|| {})).unwrap();
+    let view = terminal.view();
     terminal
         .feed_output(&output(1, "old prompt\r\nold output"))
         .unwrap();
-    terminal
+    (terminal, view)
 }
 
 #[test]
 fn a_synchronized_update_without_its_end_marker_flushes_at_its_deadline() {
     let temp = tempfile::tempdir().unwrap();
-    let terminal = populated_terminal(test_core(temp.path()));
+    let (terminal, _view) = populated_terminal(test_core(temp.path()));
     terminal.feed_output(&output(2, HELD_REDRAW)).unwrap();
     let deadline = sync_deadline(&terminal).expect("the redraw is held");
     let held = screen(&terminal);
@@ -1701,7 +1707,7 @@ fn a_synchronized_update_without_its_end_marker_flushes_at_its_deadline() {
 #[test]
 fn resizes_neither_release_a_held_update_early_nor_lose_it() {
     let temp = tempfile::tempdir().unwrap();
-    let terminal = populated_terminal(test_core(temp.path()));
+    let (terminal, _view) = populated_terminal(test_core(temp.path()));
     terminal.feed_output(&output(2, HELD_REDRAW)).unwrap();
     let deadline = sync_deadline(&terminal).expect("the redraw is held");
 
@@ -1770,7 +1776,7 @@ fn a_complete_update_split_anywhere_applies_once_without_a_timeout_flush() {
 #[test]
 fn a_flush_scheduled_for_a_dropped_session_does_nothing() {
     let temp = tempfile::tempdir().unwrap();
-    let terminal = populated_terminal(test_core(temp.path()));
+    let (terminal, _view) = populated_terminal(test_core(temp.path()));
     terminal.feed_output(&output(2, HELD_REDRAW)).unwrap();
     let deadline = sync_deadline(&terminal).expect("the redraw is held");
     let observer = terminal.test_grid_observer();
@@ -1789,7 +1795,7 @@ fn a_flush_scheduled_for_a_dropped_session_does_nothing() {
 #[test]
 fn a_begin_marker_inside_a_held_update_extends_its_deadline() {
     let temp = tempfile::tempdir().unwrap();
-    let terminal = populated_terminal(test_core(temp.path()));
+    let (terminal, _view) = populated_terminal(test_core(temp.path()));
     terminal
         .feed_output(&output(2, "\x1b[?2026h\x1b[2J\x1b[H\x1b[?25lredrawn"))
         .unwrap();

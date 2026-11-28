@@ -10,9 +10,9 @@ Dependency notes name the crate version they were written against; internal code
 - [`sessions-and-routing.md`](./sessions-and-routing.md) — runnerd's local and remote process models, session ownership and lifecycle, mission startup, inbox projection, notification delivery and acknowledgment, with recovery boundaries, diagrams, and a code reading path.
 - [`remote-control.md`](./remote-control.md) — how a Runner client reaches another computer's terminal through the relay (#836): two outbound connections, the three layers a byte is wrapped in, who holds which key, PIN pairing with CPace inside Noise `XXpsk3`, reconnecting with `IK`, records and credit, the adapter, the terminal-size controller, the client's routes, a keystroke hop by hop and where its latency goes, with Mermaid diagrams, a table of timing constants and a reading path; `snow` 0.9.6 at `main` `0d5ef17a`.
 - [`runtime-adapters.md`](./runtime-adapters.md) — current runtime launch and status flow: agent identity, adapters, hook IPC, the shared session reducer and the PTY process layer, with diagrams and a code reading path.
-- [`terminal-rendering.md`](./terminal-rendering.md) — the path from a PTY read to painted pixels: daemon-owned models, app-side mirrors, viewport wakes, the GPUI element and the four design decisions that shape it.
-- [`alacritty-terminal.md`](./alacritty-terminal.md) — `alacritty_terminal` 0.26 as an emulator without a window: the vte parser, the Handler vocabulary, the Term and its ring-buffer grid, cells, colors, modes, reflow, and the event channel back to the PTY.
-- [`libghostty-vt-migration.md`](./libghostty-vt-migration.md) — why Runner is replacing `alacritty_terminal` with Ghostty's `libghostty-vt` (#1508) and how: today's two-copy terminal and its byte scanners, what the Kitty graphics work on alacritty showed, what `libghostty-vt` `vt-1.0.2` provides, what stays and what changes, the binding, the module boundary, threading and snapshots, the trial, the boundary refactor and the phases, with risks, alternatives and a reading path; a plan in progress, Runner `main` `47b59c77`.
+- [`terminal-rendering.md`](./terminal-rendering.md) — the path from a PTY read to painted pixels: single-owner `libghostty-vt` actors, immutable `ViewportSnapshot` publishing, viewport wakes, the GPUI element and the four design decisions that shape it.
+- [`libghostty-vt.md`](./libghostty-vt.md) — Ghostty `libghostty-vt` `vt-1.0.2` behind `crates/runner-terminal`: Zig `0.17.0` offline build, `!Send`/`!Sync` actor ownership, native effect callbacks, binary local vs. VT companion snapshots, `RenderState`, `selection.h`, `search.h`, and `TrackedGridRef` anchoring.
+- [`libghostty-vt-migration.md`](./libghostty-vt-migration.md) — why Runner moved `runner-terminal` from `alacritty_terminal` to `libghostty-vt` (#1508) and the roadmap from the landed Phase 1 engine swap into Phase 2 Kitty graphics (#1489) and `terminal-browser` (#1492).
 - [`markdown-rendering.md`](./markdown-rendering.md) — how Markdown becomes text on screen: the block model and the rows cut from it, CommonMark and GFM, `pulldown-cmark` 0.13.6's event stream and source spans, Runner's two renderers and where they disagree, why rows keep drawing cheap, how Zed's shared renderer and Mermaid work, and the two-phase plan (#1342, #1443), with a glossary and a reading path; Runner `main` `c8cd3b70`, Zed `main` `4aa53044`.
 - [`gpui-rendering.md`](./gpui-rendering.md) — `gpui-pre` 0.3.14 (`zed@f126950`) as Runner uses it for the terminal: the frame lifecycle, the Element trait, the scene and its GPU batches, text shaping and the layout cache, paths, masks, hitboxes, IME input, and entities.
 
@@ -24,17 +24,16 @@ These notes assume terminal fundamentals: a PTY, escape sequences, and the cell 
 - [The TTY demystified](https://www.linusakesson.net/programming/tty/) — where the PTY master, the blocking reader thread, and SIGWINCH come from. Skim the teletype history at the top and slow down at the diagrams.
 - [ANSI escape code](https://en.wikipedia.org/wiki/ANSI_escape_code) — a reference to keep open, not a read-through. `ESC [` is the Control Sequence Introducer and `ESC [ ?` marks a DEC private mode, which is all it takes to read `CSI ? 1049 h` and the 2026 and 2031 sequences as English.
 - [The Secret Rules of the Terminal](https://wizardzines.com/zines/terminal/), or free on the same author's blog, [Entering text in the terminal is complicated](https://jvns.ca/blog/2024/07/08/readline/) and [Rules that terminal programs follow](https://jvns.ca/blog/2024/11/26/terminal-rules/) — the shell, the emulator, the program, and the TTY driver as four separate pieces with no single owner. Motivates the key-encoding and IME half of `terminal-rendering.md`.
-- [A parser for DEC's ANSI-compatible video terminals](https://vt100.net/emu/dec_ansi_parser) — skim the state diagram before layer 1 of `alacritty-terminal.md`. The `vte` crate implements this document.
+- [A parser for DEC's ANSI-compatible video terminals](https://vt100.net/emu/dec_ansi_parser) — skim the state diagram for how VT500/ANSI escape sequences are parsed before reading [`libghostty-vt.md`](./libghostty-vt.md).
 
 `gpui-rendering.md` has a different prerequisite, immediate-mode rendering and glyph atlases rather than terminals, and nothing above covers it.
 
 ## Finding the sources
 
-Cargo keeps every pinned crate's source on disk. On macOS:
+Cargo keeps every pinned Rust crate's source on disk, and `libghostty-vt` `vt-1.0.2` is vendored directly in the repository under `vendor/libghostty-vt/src/`. On macOS:
 
 ```sh
-ls ~/.cargo/registry/src/*/alacritty_terminal-0.26.0/src
-ls ~/.cargo/registry/src/*/vte-0.15.0/src
+ls vendor/libghostty-vt/src/terminal
 ls ~/.cargo/registry/src/*/gpui-pre-0.3.14/src
 ls ~/.cargo/registry/src/*/gpui-pre-macos-0.3.14/src
 ls ~/.cargo/registry/src/*/gpui-pre-windows-0.3.14/src
@@ -46,4 +45,4 @@ ls ~/.cargo/registry/src/*/pulldown-cmark-0.13.6/src
 
 For GPUI, 0.3.14 is the snapshot of `zed@f126950`. Core code is in `gpui-pre`; macOS and Windows window code is in `gpui-pre-macos` and `gpui-pre-windows`, the Apple Metal renderer and CoreText text system are in `gpui-pre-apple`, and Linux windowing and WGPU rendering live in `gpui-pre-linux` and `gpui-pre-wgpu`.
 
-For alacritty, a clone of `github.com/alacritty/alacritty` at tag `alacritty_terminal_v0.26.0` is byte-identical to the registry copy and comes with history and blame.
+For `libghostty-vt`, `vendor/libghostty-vt.vendor.json` records the upstream `vt-1.0.2` commit and tarball checksums, and `vendor/libghostty-vt.patches.md` lists Runner's tracked local patches.
