@@ -2,9 +2,6 @@
 
 use std::ops::Mul;
 
-use alacritty_terminal::term::color::Colors;
-use alacritty_terminal::vte::ansi as alacritty_ansi;
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Rgb {
     pub r: u8,
@@ -16,24 +13,6 @@ impl Rgb {
     #[inline]
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
         Self { r, g, b }
-    }
-
-    #[inline]
-    pub(crate) fn from_alacritty(rgb: alacritty_ansi::Rgb) -> Self {
-        Self {
-            r: rgb.r,
-            g: rgb.g,
-            b: rgb.b,
-        }
-    }
-
-    #[inline]
-    pub(crate) fn to_alacritty(self) -> alacritty_ansi::Rgb {
-        alacritty_ansi::Rgb {
-            r: self.r,
-            g: self.g,
-            b: self.b,
-        }
     }
 }
 
@@ -83,59 +62,11 @@ pub enum NamedColor {
     DimForeground = 268,
 }
 
-impl NamedColor {
-    #[inline]
-    pub(crate) fn from_alacritty(named: alacritty_ansi::NamedColor) -> Self {
-        match named {
-            alacritty_ansi::NamedColor::Black => Self::Black,
-            alacritty_ansi::NamedColor::Red => Self::Red,
-            alacritty_ansi::NamedColor::Green => Self::Green,
-            alacritty_ansi::NamedColor::Yellow => Self::Yellow,
-            alacritty_ansi::NamedColor::Blue => Self::Blue,
-            alacritty_ansi::NamedColor::Magenta => Self::Magenta,
-            alacritty_ansi::NamedColor::Cyan => Self::Cyan,
-            alacritty_ansi::NamedColor::White => Self::White,
-            alacritty_ansi::NamedColor::BrightBlack => Self::BrightBlack,
-            alacritty_ansi::NamedColor::BrightRed => Self::BrightRed,
-            alacritty_ansi::NamedColor::BrightGreen => Self::BrightGreen,
-            alacritty_ansi::NamedColor::BrightYellow => Self::BrightYellow,
-            alacritty_ansi::NamedColor::BrightBlue => Self::BrightBlue,
-            alacritty_ansi::NamedColor::BrightMagenta => Self::BrightMagenta,
-            alacritty_ansi::NamedColor::BrightCyan => Self::BrightCyan,
-            alacritty_ansi::NamedColor::BrightWhite => Self::BrightWhite,
-            alacritty_ansi::NamedColor::Foreground => Self::Foreground,
-            alacritty_ansi::NamedColor::Background => Self::Background,
-            alacritty_ansi::NamedColor::Cursor => Self::Cursor,
-            alacritty_ansi::NamedColor::DimBlack => Self::DimBlack,
-            alacritty_ansi::NamedColor::DimRed => Self::DimRed,
-            alacritty_ansi::NamedColor::DimGreen => Self::DimGreen,
-            alacritty_ansi::NamedColor::DimYellow => Self::DimYellow,
-            alacritty_ansi::NamedColor::DimBlue => Self::DimBlue,
-            alacritty_ansi::NamedColor::DimMagenta => Self::DimMagenta,
-            alacritty_ansi::NamedColor::DimCyan => Self::DimCyan,
-            alacritty_ansi::NamedColor::DimWhite => Self::DimWhite,
-            alacritty_ansi::NamedColor::BrightForeground => Self::BrightForeground,
-            alacritty_ansi::NamedColor::DimForeground => Self::DimForeground,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Color {
     Rgb(Rgb),
     Indexed(u8),
     Named(NamedColor),
-}
-
-impl Color {
-    #[inline]
-    pub(crate) fn from_alacritty(color: alacritty_ansi::Color) -> Self {
-        match color {
-            alacritty_ansi::Color::Spec(rgb) => Self::Rgb(Rgb::from_alacritty(rgb)),
-            alacritty_ansi::Color::Indexed(index) => Self::Indexed(index),
-            alacritty_ansi::Color::Named(named) => Self::Named(NamedColor::from_alacritty(named)),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -496,19 +427,75 @@ pub fn resolve_index_for(index: usize, palette: &[Rgb; 256], theme: TerminalPale
     }
 }
 
-pub(crate) fn resolve_with_alacritty_colors(
+/// Runtime OSC 4 / 10 / 11 / 12 color overrides captured from `libghostty-vt`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ScreenColors {
+    pub(crate) palette: Box<[Option<Rgb>; 256]>,
+    pub(crate) foreground: Option<Rgb>,
+    pub(crate) background: Option<Rgb>,
+    pub(crate) cursor: Option<Rgb>,
+}
+
+impl Default for ScreenColors {
+    fn default() -> Self {
+        Self {
+            palette: Box::new([None; 256]),
+            foreground: None,
+            background: None,
+            cursor: None,
+        }
+    }
+}
+
+impl ScreenColors {
+    pub(crate) fn from_vt(term: &crate::vt::Terminal) -> Self {
+        let cur_pal = term.color_palette();
+        let def_pal = term.color_palette_default();
+        let mut palette = Box::new([None; 256]);
+        for i in 0..256 {
+            if cur_pal[i] != def_pal[i] {
+                palette[i] = Some(cur_pal[i]);
+            }
+        }
+        let fg = term.color_foreground();
+        let fg_def = term.color_foreground_default();
+        let bg = term.color_background();
+        let bg_def = term.color_background_default();
+        let cur = term.color_cursor();
+        let cur_def = term.color_cursor_default();
+        Self {
+            palette,
+            foreground: fg.filter(|c| Some(*c) != fg_def),
+            background: bg.filter(|c| Some(*c) != bg_def),
+            cursor: cur.filter(|c| Some(*c) != cur_def),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn get(&self, index: usize) -> Option<Rgb> {
+        match index {
+            0..=255 => self.palette[index],
+            256 => self.foreground,
+            257 => self.background,
+            258 => self.cursor,
+            _ => None,
+        }
+    }
+}
+
+pub(crate) fn resolve_with_overrides(
     color: Color,
-    overrides: &Colors,
+    overrides: &ScreenColors,
     palette: &[Rgb; 256],
     theme: TerminalPalette,
 ) -> Rgb {
     match color {
         Color::Rgb(rgb) => rgb,
-        Color::Indexed(index) => overrides[index as usize]
-            .map(Rgb::from_alacritty)
-            .unwrap_or(palette[index as usize]),
-        Color::Named(named) => overrides[named as usize]
-            .map(Rgb::from_alacritty)
+        Color::Indexed(index) => {
+            overrides.palette[index as usize].unwrap_or(palette[index as usize])
+        }
+        Color::Named(named) => overrides
+            .get(named as usize)
             .unwrap_or_else(|| match named {
                 NamedColor::Foreground | NamedColor::BrightForeground => theme.foreground,
                 NamedColor::DimForeground => theme.foreground * 0.66,

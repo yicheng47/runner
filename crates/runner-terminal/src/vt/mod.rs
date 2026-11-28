@@ -32,6 +32,7 @@ pub(crate) use terminal::{
     RawProgramStatus, RowInfo, ScrollViewport, Scrollbar, Selection, SelectionAdjust,
     SelectionOrder, SelectionSpan, SemanticPromptEvent, SemanticPromptKind, SnapshotDecodeOptions,
     Style, StyleColor, Terminal, TerminalConfig, TerminalEffect, TrackedGridRef,
+    DEFAULT_CONTINUATION_MAX_BYTES, DEFAULT_SCROLLBACK_LINES,
 };
 
 pub(crate) const STYLE_FLAG_BOLD: u16 = 1 << 0;

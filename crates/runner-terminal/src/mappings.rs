@@ -3,8 +3,38 @@
 //! Zed's terminal crate). Pure functions: terminal mode state is passed
 //! in, bytes come out.
 
+use std::cell::RefCell;
+
+use ghostty_vt_sys as sys;
+
 use crate::types::TerminalModeFlags as TermMode;
+use crate::vt::{KeyEncoder, MouseEncoder};
 pub use runner_core::protocol::terminal::InputKind;
+
+thread_local! {
+    static KEY_ENCODER: RefCell<Option<KeyEncoder>> = const { RefCell::new(None) };
+    static MOUSE_ENCODER: RefCell<Option<MouseEncoder>> = const { RefCell::new(None) };
+}
+
+fn with_key_encoder<R>(f: impl FnOnce(&mut KeyEncoder) -> R) -> Option<R> {
+    KEY_ENCODER.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        if guard.is_none() {
+            *guard = KeyEncoder::new().ok();
+        }
+        guard.as_mut().map(f)
+    })
+}
+
+fn with_mouse_encoder<R>(f: impl FnOnce(&mut MouseEncoder) -> R) -> Option<R> {
+    MOUSE_ENCODER.with(|slot| {
+        let mut guard = slot.borrow_mut();
+        if guard.is_none() {
+            *guard = MouseEncoder::new().ok();
+        }
+        guard.as_mut().map(f)
+    })
+}
 
 pub fn classify_key(
     mode: crate::TerminalModeFlags,
@@ -65,12 +95,138 @@ enum MouseAction {
     Motion,
 }
 
-/// Encode a non-text keystroke (or ctrl-chord) into PTY bytes.
-/// `mode` selects the DECCKM application-cursor sequences for the arrow
-/// keys and the kitty key forms an app has opted into. Legacy macOS
-/// Option+Left/Right use Meta-b/f for shell word navigation. Returns `None` when
-/// the key is not ours to handle (the caller lets the event propagate,
-/// e.g. to a global binding).
+fn map_physical_key(key: &str) -> Option<sys::GhosttyKey> {
+    Some(match key {
+        "enter" => sys::GHOSTTY_KEY_ENTER,
+        "backspace" => sys::GHOSTTY_KEY_BACKSPACE,
+        "tab" => sys::GHOSTTY_KEY_TAB,
+        "escape" => sys::GHOSTTY_KEY_ESCAPE,
+        "space" => sys::GHOSTTY_KEY_SPACE,
+        "up" => sys::GHOSTTY_KEY_ARROW_UP,
+        "down" => sys::GHOSTTY_KEY_ARROW_DOWN,
+        "right" => sys::GHOSTTY_KEY_ARROW_RIGHT,
+        "left" => sys::GHOSTTY_KEY_ARROW_LEFT,
+        "home" => sys::GHOSTTY_KEY_HOME,
+        "end" => sys::GHOSTTY_KEY_END,
+        "pageup" => sys::GHOSTTY_KEY_PAGE_UP,
+        "pagedown" => sys::GHOSTTY_KEY_PAGE_DOWN,
+        "insert" => sys::GHOSTTY_KEY_INSERT,
+        "delete" => sys::GHOSTTY_KEY_DELETE,
+        "f1" => sys::GHOSTTY_KEY_F1,
+        "f2" => sys::GHOSTTY_KEY_F2,
+        "f3" => sys::GHOSTTY_KEY_F3,
+        "f4" => sys::GHOSTTY_KEY_F4,
+        "f5" => sys::GHOSTTY_KEY_F5,
+        "f6" => sys::GHOSTTY_KEY_F6,
+        "f7" => sys::GHOSTTY_KEY_F7,
+        "f8" => sys::GHOSTTY_KEY_F8,
+        "f9" => sys::GHOSTTY_KEY_F9,
+        "f10" => sys::GHOSTTY_KEY_F10,
+        "f11" => sys::GHOSTTY_KEY_F11,
+        "f12" => sys::GHOSTTY_KEY_F12,
+        "f13" => sys::GHOSTTY_KEY_F13,
+        "f14" => sys::GHOSTTY_KEY_F14,
+        "f15" => sys::GHOSTTY_KEY_F15,
+        "f16" => sys::GHOSTTY_KEY_F16,
+        "f17" => sys::GHOSTTY_KEY_F17,
+        "f18" => sys::GHOSTTY_KEY_F18,
+        "f19" => sys::GHOSTTY_KEY_F19,
+        "f20" => sys::GHOSTTY_KEY_F20,
+        "a" | "A" => sys::GHOSTTY_KEY_A,
+        "b" | "B" => sys::GHOSTTY_KEY_B,
+        "c" | "C" => sys::GHOSTTY_KEY_C,
+        "d" | "D" => sys::GHOSTTY_KEY_D,
+        "e" | "E" => sys::GHOSTTY_KEY_E,
+        "f" | "F" => sys::GHOSTTY_KEY_F,
+        "g" | "G" => sys::GHOSTTY_KEY_G,
+        "h" | "H" => sys::GHOSTTY_KEY_H,
+        "i" | "I" => sys::GHOSTTY_KEY_I,
+        "j" | "J" => sys::GHOSTTY_KEY_J,
+        "k" | "K" => sys::GHOSTTY_KEY_K,
+        "l" | "L" => sys::GHOSTTY_KEY_L,
+        "m" | "M" => sys::GHOSTTY_KEY_M,
+        "n" | "N" => sys::GHOSTTY_KEY_N,
+        "o" | "O" => sys::GHOSTTY_KEY_O,
+        "p" | "P" => sys::GHOSTTY_KEY_P,
+        "q" | "Q" => sys::GHOSTTY_KEY_Q,
+        "r" | "R" => sys::GHOSTTY_KEY_R,
+        "s" | "S" => sys::GHOSTTY_KEY_S,
+        "t" | "T" => sys::GHOSTTY_KEY_T,
+        "u" | "U" => sys::GHOSTTY_KEY_U,
+        "v" | "V" => sys::GHOSTTY_KEY_V,
+        "w" | "W" => sys::GHOSTTY_KEY_W,
+        "x" | "X" => sys::GHOSTTY_KEY_X,
+        "y" | "Y" => sys::GHOSTTY_KEY_Y,
+        "z" | "Z" => sys::GHOSTTY_KEY_Z,
+        "0" => sys::GHOSTTY_KEY_DIGIT_0,
+        "1" => sys::GHOSTTY_KEY_DIGIT_1,
+        "2" => sys::GHOSTTY_KEY_DIGIT_2,
+        "3" => sys::GHOSTTY_KEY_DIGIT_3,
+        "4" => sys::GHOSTTY_KEY_DIGIT_4,
+        "5" => sys::GHOSTTY_KEY_DIGIT_5,
+        "6" => sys::GHOSTTY_KEY_DIGIT_6,
+        "7" => sys::GHOSTTY_KEY_DIGIT_7,
+        "8" => sys::GHOSTTY_KEY_DIGIT_8,
+        "9" => sys::GHOSTTY_KEY_DIGIT_9,
+        "`" => sys::GHOSTTY_KEY_BACKQUOTE,
+        "-" => sys::GHOSTTY_KEY_MINUS,
+        "=" => sys::GHOSTTY_KEY_EQUAL,
+        "[" => sys::GHOSTTY_KEY_BRACKET_LEFT,
+        "]" => sys::GHOSTTY_KEY_BRACKET_RIGHT,
+        "\\" => sys::GHOSTTY_KEY_BACKSLASH,
+        ";" => sys::GHOSTTY_KEY_SEMICOLON,
+        "'" => sys::GHOSTTY_KEY_QUOTE,
+        "," => sys::GHOSTTY_KEY_COMMA,
+        "." => sys::GHOSTTY_KEY_PERIOD,
+        "/" => sys::GHOSTTY_KEY_SLASH,
+        _ => return None,
+    })
+}
+
+fn is_functional_key(key: &str) -> bool {
+    matches!(
+        key,
+        "up" | "down"
+            | "right"
+            | "left"
+            | "home"
+            | "end"
+            | "pageup"
+            | "pagedown"
+            | "insert"
+            | "delete"
+            | "f1"
+            | "f2"
+            | "f3"
+            | "f4"
+            | "f5"
+            | "f6"
+            | "f7"
+            | "f8"
+            | "f9"
+            | "f10"
+            | "f11"
+            | "f12"
+            | "f13"
+            | "f14"
+            | "f15"
+            | "f16"
+            | "f17"
+            | "f18"
+            | "f19"
+            | "f20"
+    )
+}
+
+fn is_ctrl_encodable_char(c: char) -> bool {
+    c.is_ascii_alphabetic() || matches!(c, '@' | '[' | '\\' | ']' | '.')
+}
+
+/// Encode a non-text keystroke (or ctrl-chord) into PTY bytes via
+/// `libghostty-vt`'s `KeyEncoder`, keeping Runner's legacy Shift+Enter,
+/// macOS Option+Left/Right, Kitty disambiguate-only (bit 0) cap, and
+/// declined-chord boundaries intact. Returns `None` when the key is not ours
+/// to handle (the caller lets the event propagate, e.g. to a global binding).
 pub fn encode_key(
     key: &str,
     ctrl: bool,
@@ -79,11 +235,36 @@ pub fn encode_key(
     key_char: Option<&str>,
     mode: crate::TerminalModeFlags,
 ) -> Option<Vec<u8>> {
-    if mode.contains(TermMode::DISAMBIGUATE_ESC_CODES) {
-        if let Some(bytes) = encode_kitty_key(key, ctrl, alt, shift) {
-            return Some(bytes);
-        }
-    } else if cfg!(target_os = "macos")
+    // Phase 1 implements Kitty keyboard disambiguate-only (bit 0).
+    // Keep unmodified arrows, F1-F4, and F13-F20 on legacy SS3/tilde encoding
+    // even when DISAMBIGUATE_ESC_CODES is active.
+    let kitty_disambiguate = mode.contains(TermMode::DISAMBIGUATE_ESC_CODES);
+    let legacy_f13_to_f20 = matches!(
+        key,
+        "f13" | "f14" | "f15" | "f16" | "f17" | "f18" | "f19" | "f20"
+    );
+    let unmodified_legacy_special = !ctrl
+        && !alt
+        && !shift
+        && matches!(
+            key,
+            "up" | "down" | "left" | "right" | "f1" | "f2" | "f3" | "f4"
+        );
+    let kitty_flags = if unmodified_legacy_special || legacy_f13_to_f20 {
+        0
+    } else {
+        mode.kitty_keyboard_bits() & 1
+    };
+
+    // Preserve xterm CSI 1;<mod>R for modified F3 across all modes (matching
+    // Runner's pre-migration mapper rather than Kitty's CSI 13;<mod>~).
+    if key == "f3" && (ctrl || alt || shift) {
+        let mods = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
+        return Some(format!("\x1b[1;{mods}R").into_bytes());
+    }
+
+    if !kitty_disambiguate
+        && cfg!(target_os = "macos")
         && !mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL)
         && alt
         && !ctrl
@@ -96,188 +277,242 @@ pub fn encode_key(
             _ => {}
         }
     }
-    if key == "enter" && shift && !ctrl && !alt {
-        return Some(b"\x1b\r".to_vec());
-    }
-    if key == "tab" && shift && !ctrl && !alt {
-        return Some(b"\x1b[Z".to_vec());
-    }
-    if let Some(bytes) = encode_modified_special_key(key, ctrl, alt, shift) {
-        return Some(bytes);
+
+    // Plain Space and Shift+Space always send ASCII space (0x20), including
+    // under Kitty disambiguate bit 0.
+    if key == "space" && !ctrl && !alt {
+        return Some(b" ".to_vec());
     }
 
-    let mut bytes: Vec<u8> = Vec::new();
-    if ctrl {
-        let encoded = match key {
-            k if k.len() == 1 && k.as_bytes()[0].is_ascii_alphabetic() => {
-                Some(k.as_bytes()[0].to_ascii_uppercase() - b'@')
-            }
-            "space" | "@" => Some(0),
-            // Period has no C0 code; legacy terminals leave it unchanged by Ctrl.
-            "." => Some(b'.'),
-            "[" => Some(0x1b),
-            "\\" => Some(0x1c),
-            "]" => Some(0x1d),
+    // Strict Kitty decoders (e.g. pi) expect CSI u for modified Enter/Tab/Backspace
+    // once disambiguate mode is active.
+    if kitty_disambiguate && !ctrl && (alt || shift) {
+        let code = match key {
+            "enter" => Some(13u8),
+            "tab" => Some(9),
+            "backspace" => Some(127),
             _ => None,
         };
-        bytes.push(encoded?);
-    } else {
-        let mut alt_letter = [0u8; 1];
-        let sequence: &[u8] = match key {
+        if let Some(code) = code {
+            let mods = 1 + u8::from(shift) + 2 * u8::from(alt);
+            return Some(format!("\x1b[{code};{mods}u").into_bytes());
+        }
+    }
+
+    // Legacy Enter/Tab/Escape without modifyOtherKeys: decline Ctrl chords,
+    // keep Runner's Shift+Enter (`ESC CR`) and Shift+Tab (`CSI Z`), and use
+    // plain ESC prefix for Alt rather than `CSI 27;...~`.
+    if !kitty_disambiguate && matches!(key, "enter" | "tab" | "escape") {
+        if ctrl {
+            return None;
+        }
+        let bytes: &[u8] = match key {
+            "enter" if shift && !alt => b"\x1b\r",
+            "enter" if alt => b"\x1b\r",
             "enter" => b"\r",
-            "backspace" => b"\x7f",
+            "tab" if shift && !alt => b"\x1b[Z",
+            "tab" if alt => b"\x1b\t",
             "tab" => b"\t",
+            "escape" if alt => b"\x1b\x1b",
             "escape" => b"\x1b",
-            "up" if mode.contains(TermMode::APP_CURSOR) => b"\x1bOA",
-            "down" if mode.contains(TermMode::APP_CURSOR) => b"\x1bOB",
-            "right" if mode.contains(TermMode::APP_CURSOR) => b"\x1bOC",
-            "left" if mode.contains(TermMode::APP_CURSOR) => b"\x1bOD",
-            "up" => b"\x1b[A",
-            "down" => b"\x1b[B",
-            "right" => b"\x1b[C",
-            "left" => b"\x1b[D",
-            "home" => b"\x1b[H",
-            "end" => b"\x1b[F",
-            "pageup" => b"\x1b[5~",
-            "pagedown" => b"\x1b[6~",
-            "insert" => b"\x1b[2~",
-            "delete" => b"\x1b[3~",
-            "f1" => b"\x1bOP",
-            "f2" => b"\x1bOQ",
-            "f3" => b"\x1bOR",
-            "f4" => b"\x1bOS",
-            "f5" => b"\x1b[15~",
-            "f6" => b"\x1b[17~",
-            "f7" => b"\x1b[18~",
-            "f8" => b"\x1b[19~",
-            "f9" => b"\x1b[20~",
-            "f10" => b"\x1b[21~",
-            "f11" => b"\x1b[23~",
-            "f12" => b"\x1b[24~",
-            "f13" => b"\x1b[25~",
-            "f14" => b"\x1b[26~",
-            "f15" => b"\x1b[28~",
-            "f16" => b"\x1b[29~",
-            "f17" => b"\x1b[31~",
-            "f18" => b"\x1b[32~",
-            "f19" => b"\x1b[33~",
-            "f20" => b"\x1b[34~",
-            "space" => b" ",
-            _ if alt && key.len() == 1 && key.as_bytes()[0].is_ascii_alphabetic() => {
-                alt_letter[0] = if shift {
-                    key.as_bytes()[0].to_ascii_uppercase()
-                } else {
-                    key.as_bytes()[0]
-                };
-                &alt_letter
-            }
-            _ if cfg!(target_os = "macos")
-                && alt
-                && !mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL)
-                && key.chars().count() == 1 =>
-            {
-                key.as_bytes()
-            }
-            _ => match key_char {
-                Some(text) if !text.is_empty() => text.as_bytes(),
-                _ => return None,
-            },
+            _ => unreachable!(),
         };
-        bytes.extend_from_slice(sequence);
+        return Some(bytes.to_vec());
+    }
+
+    // Do not claim Ctrl chords the legacy path declines (e.g. Ctrl+Enter,
+    // Ctrl+Tab, Ctrl+Escape, Ctrl+1), except when Alt is also held under Kitty
+    // disambiguate mode (e.g. Ctrl+Alt+1 -> CSI 49;7u).
+    if ctrl && !(kitty_disambiguate && alt) && !is_functional_key(key) && key != "space" {
+        let mut chars = key.chars();
+        let allowed = match (chars.next(), chars.next()) {
+            (Some(c), None) => is_ctrl_encodable_char(c),
+            _ => false,
+        };
+        if !allowed {
+            return None;
+        }
+    }
+    if ctrl && matches!(key, "enter" | "tab" | "backspace" | "escape") {
+        return None;
+    }
+
+    // Legacy Ctrl C0 punctuation, Space, and Ctrl+I/M chords (Shift ignored,
+    // optional ESC prefix for Alt). Ghostty's legacy KeyEncoder suppresses
+    // Ctrl+I/M without modifyOtherKeys, whereas Runner preserves TAB/CR.
+    if !kitty_disambiguate && ctrl && !is_functional_key(key) {
+        let ctrl_byte = match key {
+            "space" | "@" => Some(0x00u8),
+            "i" | "I" => Some(0x09u8),
+            "m" | "M" => Some(0x0du8),
+            "." => Some(b'.'),
+            "[" => Some(0x1bu8),
+            "\\" => Some(0x1cu8),
+            "]" => Some(0x1du8),
+            _ => None,
+        };
+        if let Some(byte) = ctrl_byte {
+            return Some(if alt { vec![0x1b, byte] } else { vec![byte] });
+        }
+    }
+
+    // Legacy Option/Alt + non-ASCII or macOS Option-as-plain-key handling when
+    // Kitty disambiguate is off.
+    if !kitty_disambiguate && alt && !ctrl && !is_functional_key(key) {
+        if key.len() == 1 && key.as_bytes()[0].is_ascii_alphabetic() {
+            let ch = if shift {
+                key.as_bytes()[0].to_ascii_uppercase()
+            } else {
+                key.as_bytes()[0]
+            };
+            return Some(vec![0x1b, ch]);
+        }
+        if cfg!(target_os = "macos")
+            && !mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL)
+            && key.chars().count() == 1
+        {
+            let mut out = Vec::with_capacity(1 + key.len());
+            out.push(0x1b);
+            out.extend_from_slice(key.as_bytes());
+            return Some(out);
+        }
+        if !matches!(key, "enter" | "backspace" | "tab" | "escape" | "space") {
+            let text = key_char.filter(|t| !t.is_empty())?;
+            let mut out = Vec::with_capacity(1 + text.len());
+            out.push(0x1b);
+            out.extend_from_slice(text.as_bytes());
+            return Some(out);
+        }
+    }
+
+    // Plain single-character non-ASCII / layout-mapped text when no Ctrl/Alt is held.
+    if !ctrl
+        && !alt
+        && !is_functional_key(key)
+        && !matches!(key, "enter" | "backspace" | "tab" | "escape" | "space")
+    {
+        return key_char
+            .filter(|t| !t.is_empty())
+            .map(|t| t.as_bytes().to_vec());
+    }
+
+    let mut mods: sys::GhosttyMods = 0;
+    // Legacy Ctrl+Shift+letter sends the same C0 control byte as Ctrl+letter.
+    if shift && (kitty_disambiguate || !ctrl || is_functional_key(key)) {
+        mods |= sys::GHOSTTY_MODS_SHIFT as sys::GhosttyMods;
+    }
+    if ctrl {
+        mods |= sys::GHOSTTY_MODS_CTRL as sys::GhosttyMods;
     }
     if alt {
-        bytes.insert(0, 0x1b);
+        mods |= sys::GHOSTTY_MODS_ALT as sys::GhosttyMods;
     }
-    Some(bytes)
-}
 
-/// The kitty keyboard protocol's "disambiguate escape codes" level, for an
-/// app that pushed it. Esc and every chord whose legacy bytes are
-/// ambiguous become `CSI code ; mods u`, with the unshifted codepoint and
-/// `mods = 1 + shift + 2*alt + 4*ctrl`. A strict decoder such as pi stops
-/// reading `ESC d` as Alt+D once the protocol is on, and reads `ESC CR` as
-/// Shift+Enter, so these chords cannot keep their legacy bytes. Plain and
-/// shifted text, unmodified Enter/Tab/Backspace and the functional keys keep
-/// their existing encodings. Ctrl+Period has no C0 code, but the negotiated
-/// protocol preserves its modifier.
-fn encode_kitty_key(key: &str, ctrl: bool, alt: bool, shift: bool) -> Option<Vec<u8>> {
-    let modified_named = (alt || shift) && !ctrl;
-    let (code, csi_u) = match key {
-        "escape" => (27, !ctrl),
-        "enter" => (13, modified_named),
-        "tab" => (9, modified_named),
-        "backspace" => (127, modified_named),
-        "space" => (32, ctrl || alt),
-        _ => {
-            let mut chars = key.chars();
-            let (Some(c), None) = (chars.next(), chars.next()) else {
-                return None;
-            };
-            let ctrl_encodable =
-                c.is_ascii_alphabetic() || matches!(c, '@' | '[' | '\\' | ']' | '.');
-            (
-                c.to_ascii_lowercase() as u32,
-                alt || (ctrl && ctrl_encodable),
-            )
+    let physical = map_physical_key(key).unwrap_or(sys::GHOSTTY_KEY_UNIDENTIFIED);
+    let unshifted_codepoint = if key == "space" {
+        b' ' as u32
+    } else {
+        let mut chars = key.chars();
+        match (chars.next(), chars.next()) {
+            (Some(c), None) => c.to_ascii_lowercase() as u32,
+            _ => 0,
         }
     };
-    if !csi_u {
-        return None;
-    }
-    let mods = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
-    Some(if mods > 1 {
-        format!("\x1b[{code};{mods}u").into_bytes()
+
+    // Pass UTF-8 text only for plain character input (not Ctrl/Alt chords or named keys),
+    // so Ghostty's KeyEncoder produces the exact legacy/Kitty sequences.
+    let utf8 = if !ctrl
+        && !alt
+        && !is_functional_key(key)
+        && !matches!(key, "enter" | "backspace" | "tab" | "escape" | "space")
+    {
+        key_char.unwrap_or("")
     } else {
-        format!("\x1b[{code}u").into_bytes()
-    })
+        ""
+    };
+
+    let opt_as_alt =
+        if cfg!(target_os = "macos") && !mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL) {
+            sys::GHOSTTY_OPTION_AS_ALT_TRUE
+        } else {
+            sys::GHOSTTY_OPTION_AS_ALT_FALSE
+        };
+
+    let encoded = with_key_encoder(|enc| {
+        // Keep unmodified Home/End on CSI H/F even when DECCKM is active.
+        let app_cursor = mode.contains(TermMode::APP_CURSOR) && !matches!(key, "home" | "end");
+        let _ = enc.set_cursor_key_application(app_cursor);
+        let _ = enc.set_keypad_key_application(false);
+        let _ = enc.set_alt_esc_prefix(true);
+        let _ = enc.set_kitty_flags(kitty_flags);
+        let _ = enc.set_macos_option_as_alt(opt_as_alt);
+        enc.encode(
+            sys::GHOSTTY_KEY_ACTION_PRESS,
+            physical,
+            mods,
+            0,
+            utf8,
+            unshifted_codepoint,
+        )
+    })?
+    .ok()?;
+
+    if encoded.is_empty() {
+        None
+    } else {
+        Some(encoded)
+    }
 }
 
-/// xterm's modified form for the keys whose plain sequence already
-/// starts with ESC. Prefixing those with another ESC (the Option-as-Meta
-/// convention that is right for letters) hands the TUI `ESC ESC [ C`,
-/// which crossterm reads as a bare Esc followed by the characters `[C`
-/// — Option+Right typed `[C` into codex's composer. Real terminals send
-/// `CSI 1;m C` / `CSI n;m ~` with `m = 1 + shift + 2*alt + 4*ctrl`;
-/// F1–F4 leave their SS3 form when modified, and DECCKM does not apply.
-fn encode_modified_special_key(key: &str, ctrl: bool, alt: bool, shift: bool) -> Option<Vec<u8>> {
-    if !(ctrl || alt || shift) {
-        return None;
+fn mouse_tracking_mode(mode: TermMode) -> sys::GhosttyMouseTrackingMode {
+    if mode.contains(TermMode::MOUSE_MOTION) {
+        sys::GHOSTTY_MOUSE_TRACKING_ANY
+    } else if mode.contains(TermMode::MOUSE_DRAG) {
+        sys::GHOSTTY_MOUSE_TRACKING_BUTTON
+    } else if mode.contains(TermMode::MOUSE_REPORT_CLICK) {
+        sys::GHOSTTY_MOUSE_TRACKING_NORMAL
+    } else {
+        sys::GHOSTTY_MOUSE_TRACKING_NONE
     }
-    let (number, final_byte): (u8, u8) = match key {
-        "up" => (1, b'A'),
-        "down" => (1, b'B'),
-        "right" => (1, b'C'),
-        "left" => (1, b'D'),
-        "end" => (1, b'F'),
-        "home" => (1, b'H'),
-        "f1" => (1, b'P'),
-        "f2" => (1, b'Q'),
-        "f3" => (1, b'R'),
-        "f4" => (1, b'S'),
-        "insert" => (2, b'~'),
-        "delete" => (3, b'~'),
-        "pageup" => (5, b'~'),
-        "pagedown" => (6, b'~'),
-        "f5" => (15, b'~'),
-        "f6" => (17, b'~'),
-        "f7" => (18, b'~'),
-        "f8" => (19, b'~'),
-        "f9" => (20, b'~'),
-        "f10" => (21, b'~'),
-        "f11" => (23, b'~'),
-        "f12" => (24, b'~'),
-        "f13" => (25, b'~'),
-        "f14" => (26, b'~'),
-        "f15" => (28, b'~'),
-        "f16" => (29, b'~'),
-        "f17" => (31, b'~'),
-        "f18" => (32, b'~'),
-        "f19" => (33, b'~'),
-        "f20" => (34, b'~'),
-        _ => return None,
-    };
-    let modifier = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
-    Some(format!("\x1b[{number};{modifier}{}", final_byte as char).into_bytes())
+}
+
+fn mouse_format(mode: TermMode) -> sys::GhosttyMouseFormat {
+    if mode.contains(TermMode::SGR_MOUSE) {
+        sys::GHOSTTY_MOUSE_FORMAT_SGR
+    } else {
+        sys::GHOSTTY_MOUSE_FORMAT_X10
+    }
+}
+
+fn encode_mouse_via_vt(
+    mode: TermMode,
+    action: sys::GhosttyMouseAction,
+    button: Option<sys::GhosttyMouseButton>,
+    column: usize,
+    row: usize,
+    modifiers: MouseModifiers,
+    any_button_pressed: bool,
+) -> Option<Vec<u8>> {
+    let screen_w = u32::try_from(column.checked_add(1)?).ok()?;
+    let screen_h = u32::try_from(row.checked_add(1)?).ok()?;
+    let mut mods: sys::GhosttyMods = 0;
+    if modifiers.shift {
+        mods |= sys::GHOSTTY_MODS_SHIFT as sys::GhosttyMods;
+    }
+    if modifiers.alt {
+        mods |= sys::GHOSTTY_MODS_ALT as sys::GhosttyMods;
+    }
+    if modifiers.control {
+        mods |= sys::GHOSTTY_MODS_CTRL as sys::GhosttyMods;
+    }
+    with_mouse_encoder(|enc| {
+        let _ = enc.set_tracking(mouse_tracking_mode(mode));
+        let _ = enc.set_format(mouse_format(mode));
+        let _ = enc.set_size(screen_w, screen_h, 1, 1);
+        let _ = enc.set_any_button_pressed(any_button_pressed);
+        enc.encode(action, button, mods, column as f32, row as f32)
+    })?
+    .ok()
 }
 
 /// Route a wheel gesture the way a real terminal would: apps that
@@ -300,32 +535,22 @@ pub fn encode_scroll(
     let up = delta_lines > 0;
     let count = delta_lines.unsigned_abs() as usize;
     if mode.intersects(TermMode::MOUSE_MODE) {
-        let button: u8 = if up { 64 } else { 65 };
-        let Some(column) = column.checked_add(1) else {
-            return Some(Vec::new());
-        };
-        let Some(row) = row.checked_add(1) else {
-            return Some(Vec::new());
-        };
-        return Some(if mode.contains(TermMode::SGR_MOUSE) {
-            format!("\x1b[<{button};{column};{row}M")
-                .into_bytes()
-                .repeat(count)
+        let button = if up {
+            sys::GHOSTTY_MOUSE_BUTTON_FOUR
         } else {
-            let Some(column) = u8::try_from(column)
-                .ok()
-                .and_then(|value| value.checked_add(32))
-            else {
-                return Some(Vec::new());
-            };
-            let Some(row) = u8::try_from(row)
-                .ok()
-                .and_then(|value| value.checked_add(32))
-            else {
-                return Some(Vec::new());
-            };
-            [0x1b, b'[', b'M', 32 + button, column, row].repeat(count)
-        });
+            sys::GHOSTTY_MOUSE_BUTTON_FIVE
+        };
+        let single = encode_mouse_via_vt(
+            mode,
+            sys::GHOSTTY_MOUSE_ACTION_PRESS,
+            Some(button),
+            column,
+            row,
+            MouseModifiers::default(),
+            false,
+        )
+        .unwrap_or_default();
+        return Some(single.repeat(count));
     }
     if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
         let key = if up { "up" } else { "down" };
@@ -409,41 +634,34 @@ fn encode_mouse(
     {
         return None;
     }
-
-    let button_code = match button {
-        MouseButton::Left => 0,
-        MouseButton::Middle => 1,
-        MouseButton::Right => 2,
+    let raw_action = match action {
+        MouseAction::Press => sys::GHOSTTY_MOUSE_ACTION_PRESS,
+        MouseAction::Release => sys::GHOSTTY_MOUSE_ACTION_RELEASE,
+        MouseAction::Motion => sys::GHOSTTY_MOUSE_ACTION_MOTION,
     };
-    let modifier_code = (u8::from(modifiers.shift) * 4)
-        | (u8::from(modifiers.alt) * 8)
-        | (u8::from(modifiers.control) * 16);
-    let code = button_code | modifier_code | if action == MouseAction::Motion { 32 } else { 0 };
-    let column = column + 1;
-    let row = row + 1;
-
-    if mode.contains(TermMode::SGR_MOUSE) {
-        let suffix = if action == MouseAction::Release {
-            'm'
-        } else {
-            'M'
-        };
-        Some(format!("\x1b[<{code};{column};{row}{suffix}").into_bytes())
+    let raw_button = match button {
+        MouseButton::Left => sys::GHOSTTY_MOUSE_BUTTON_LEFT,
+        MouseButton::Middle => sys::GHOSTTY_MOUSE_BUTTON_MIDDLE,
+        MouseButton::Right => sys::GHOSTTY_MOUSE_BUTTON_RIGHT,
+    };
+    let bytes = encode_mouse_via_vt(
+        mode,
+        raw_action,
+        Some(raw_button),
+        column,
+        row,
+        modifiers,
+        action == MouseAction::Motion,
+    )?;
+    if bytes.is_empty() {
+        None
     } else {
-        let code = if action == MouseAction::Release {
-            modifier_code | 3
-        } else {
-            code
-        };
-        let code = code.checked_add(32)?;
-        let column = u8::try_from(column).ok()?.checked_add(32)?;
-        let row = u8::try_from(row).ok()?.checked_add(32)?;
-        Some(vec![0x1b, b'[', b'M', code, column, row])
+        Some(bytes)
     }
 }
 
-/// Encode pasted text, stripping raw escapes and wrapping in bracketed
-/// paste markers when the terminal has that mode enabled.
+/// Encode pasted text, stripping raw escapes and wrapping in bracketed paste
+/// markers when the terminal has that mode enabled.
 pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
     let sanitized = text.replace('\x1b', "");
     if bracketed {
@@ -460,7 +678,7 @@ pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
 mod tests {
     use super::{
         classify_key, encode_key, encode_mouse_motion, encode_mouse_press, encode_mouse_release,
-        encode_scroll, InputKind, MouseButton, MouseModifiers, TermMode,
+        encode_paste, encode_scroll, InputKind, MouseButton, MouseModifiers, TermMode,
     };
 
     #[test]
@@ -1045,5 +1263,190 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn paste_encoding_brackets_and_sanitizes() {
+        assert_eq!(encode_paste("hello", true), b"\x1b[200~hello\x1b[201~");
+        assert_eq!(encode_paste("a\nb", false), b"a\nb");
+        assert_eq!(encode_paste("a\r\nb", false), b"a\r\nb");
+        assert_eq!(encode_paste("a\x1bb", false), b"ab");
+        assert_eq!(encode_paste("a\x03b\0c\td", false), b"a\x03b\0c\td");
+        assert_eq!(
+            encode_paste("a\x1b[201~b", true),
+            b"\x1b[200~a[201~b\x1b[201~"
+        );
+    }
+
+    #[test]
+    fn legacy_and_kitty_chords_preserve_runner_encoding_contract() {
+        let legacy = TermMode::empty();
+        let kitty = TermMode::DISAMBIGUATE_ESC_CODES;
+
+        assert_eq!(
+            encode_key("space", false, false, false, None, legacy),
+            Some(b" ".to_vec())
+        );
+        assert_eq!(
+            encode_key("space", false, false, true, None, legacy),
+            Some(b" ".to_vec())
+        );
+        assert_eq!(
+            encode_key("space", false, false, false, None, kitty),
+            Some(b" ".to_vec())
+        );
+        assert_eq!(
+            encode_key("space", false, false, true, None, kitty),
+            Some(b" ".to_vec())
+        );
+        assert_eq!(
+            encode_key("space", true, false, false, None, legacy),
+            Some(vec![0x00])
+        );
+        assert_eq!(
+            encode_key("space", true, false, false, None, kitty),
+            Some(b"\x1b[32;5u".to_vec())
+        );
+        assert_eq!(
+            encode_key("space", false, true, false, None, legacy),
+            Some(b"\x1b ".to_vec())
+        );
+        assert_eq!(
+            encode_key("space", false, true, false, None, kitty),
+            Some(b"\x1b[32;3u".to_vec())
+        );
+
+        // Legacy Enter/Tab/Escape without modifyOtherKeys keep classic encodings.
+        assert_eq!(
+            encode_key("enter", false, false, true, None, legacy),
+            Some(b"\x1b\r".to_vec())
+        );
+        assert_eq!(
+            encode_key("enter", false, true, false, None, legacy),
+            Some(b"\x1b\r".to_vec())
+        );
+        assert_eq!(
+            encode_key("tab", false, false, true, None, legacy),
+            Some(b"\x1b[Z".to_vec())
+        );
+        assert_eq!(
+            encode_key("tab", false, true, false, None, legacy),
+            Some(b"\x1b\t".to_vec())
+        );
+        assert_eq!(
+            encode_key("escape", false, true, false, None, legacy),
+            Some(b"\x1b\x1b".to_vec())
+        );
+
+        // Legacy Ctrl+Shift+letter sends C0 control; Kitty disambiguates with mod 6.
+        assert_eq!(
+            encode_key("a", true, false, true, Some("a"), legacy),
+            Some(vec![0x01])
+        );
+        assert_eq!(
+            encode_key("a", true, true, true, Some("a"), legacy),
+            Some(vec![0x1b, 0x01])
+        );
+        assert_eq!(
+            encode_key("a", true, false, true, Some("a"), kitty),
+            Some(b"\x1b[97;6u".to_vec())
+        );
+        assert_eq!(
+            encode_key("a", true, true, false, Some("a"), kitty),
+            Some(b"\x1b[97;7u".to_vec())
+        );
+        assert_eq!(
+            encode_key("a", true, true, true, Some("a"), kitty),
+            Some(b"\x1b[97;8u".to_vec())
+        );
+
+        // Legacy C0 symbol chords (matching Runner's existing Ctrl allowlist).
+        assert_eq!(
+            encode_key("[", true, false, false, Some("["), legacy),
+            Some(vec![0x1b])
+        );
+        assert_eq!(
+            encode_key("\\", true, false, false, Some("\\"), legacy),
+            Some(vec![0x1c])
+        );
+        assert_eq!(
+            encode_key("]", true, false, false, Some("]"), legacy),
+            Some(vec![0x1d])
+        );
+        assert_eq!(
+            encode_key("@", true, false, false, Some("@"), legacy),
+            Some(vec![0x00])
+        );
+        assert_eq!(
+            encode_key(".", true, false, false, Some("."), legacy),
+            Some(vec![b'.'])
+        );
+        assert_eq!(encode_key("^", true, false, false, Some("^"), legacy), None);
+        assert_eq!(encode_key("_", true, false, false, Some("_"), legacy), None);
+
+        // Legacy Ctrl+I / Ctrl+M keep TAB / CR (and ESC-prefixed with Alt).
+        for (key, byte) in [("i", 0x09u8), ("I", 0x09), ("m", 0x0d), ("M", 0x0d)] {
+            assert_eq!(
+                encode_key(key, true, false, false, Some(key), legacy),
+                Some(vec![byte])
+            );
+            assert_eq!(
+                encode_key(key, true, false, true, Some(key), legacy),
+                Some(vec![byte])
+            );
+            assert_eq!(
+                encode_key(key, true, true, false, Some(key), legacy),
+                Some(vec![0x1b, byte])
+            );
+            assert_eq!(
+                encode_key(key, true, true, true, Some(key), legacy),
+                Some(vec![0x1b, byte])
+            );
+        }
+
+        // Unmodified Home/End stay on CSI H/F even with APP_CURSOR enabled.
+        let app_cursor = TermMode::APP_CURSOR;
+        assert_eq!(
+            encode_key("home", false, false, false, None, app_cursor),
+            Some(b"\x1b[H".to_vec())
+        );
+        assert_eq!(
+            encode_key("end", false, false, false, None, app_cursor),
+            Some(b"\x1b[F".to_vec())
+        );
+
+        // Unmodified F1..F4 keep SS3; modified F3 keeps CSI 1;<mod>R; F13..F20 keep tilde codes.
+        assert_eq!(
+            encode_key("f1", false, false, false, None, legacy),
+            Some(b"\x1bOP".to_vec())
+        );
+        assert_eq!(
+            encode_key("f1", false, false, false, None, kitty),
+            Some(b"\x1bOP".to_vec())
+        );
+        assert_eq!(
+            encode_key("f1", true, false, false, None, kitty),
+            Some(b"\x1b[1;5P".to_vec())
+        );
+        assert_eq!(
+            encode_key("f3", false, false, false, None, kitty),
+            Some(b"\x1bOR".to_vec())
+        );
+        assert_eq!(
+            encode_key("f3", true, false, false, None, legacy),
+            Some(b"\x1b[1;5R".to_vec())
+        );
+        assert_eq!(
+            encode_key("f3", true, false, false, None, kitty),
+            Some(b"\x1b[1;5R".to_vec())
+        );
+        assert_eq!(
+            encode_key("f13", false, false, false, None, kitty),
+            Some(b"\x1b[25~".to_vec())
+        );
+        assert_eq!(
+            encode_key("f20", true, false, false, None, kitty),
+            Some(b"\x1b[34;5~".to_vec())
+        );
     }
 }

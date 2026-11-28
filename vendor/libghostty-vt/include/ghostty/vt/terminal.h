@@ -1890,6 +1890,40 @@ typedef void (*GhosttyTerminalTitleChangedFn)(GhosttyTerminal terminal,
                                               void* userdata);
 
 /**
+ * Callback function type for title_push (XTWINOPS CSI 22 t).
+ *
+ * Called when the running program requests saving the title onto the title
+ * stack. `param` is the parsed XTWINOPS stack selector (0 = icon + window
+ * title, 1 = icon title, 2 = window title).
+ *
+ * @param terminal The terminal handle
+ * @param userdata The userdata pointer set via GHOSTTY_TERMINAL_OPT_USERDATA
+ * @param param The XTWINOPS title stack selector parameter
+ *
+ * @ingroup effects
+ */
+typedef void (*GhosttyTerminalTitlePushFn)(GhosttyTerminal terminal,
+                                           void* userdata,
+                                           uint16_t param);
+
+/**
+ * Callback function type for title_pop (XTWINOPS CSI 23 t).
+ *
+ * Called when the running program requests restoring the title from the title
+ * stack. `param` is the parsed XTWINOPS stack selector (0 = icon + window
+ * title, 1 = icon title, 2 = window title).
+ *
+ * @param terminal The terminal handle
+ * @param userdata The userdata pointer set via GHOSTTY_TERMINAL_OPT_USERDATA
+ * @param param The XTWINOPS title stack selector parameter
+ *
+ * @ingroup effects
+ */
+typedef void (*GhosttyTerminalTitlePopFn)(GhosttyTerminal terminal,
+                                          void* userdata,
+                                          uint16_t param);
+
+/**
  * Callback function type for render_hold.
  *
  * Called when the running program asks the terminal to stop updating
@@ -2651,6 +2685,22 @@ typedef enum GHOSTTY_ENUM_TYPED {
    * Input type: GhosttyTerminalResizeWindowFn
    */
   GHOSTTY_TERMINAL_OPT_RESIZE_WINDOW = 48,
+
+  /**
+   * Callback invoked when the running program pushes the title stack
+   * (XTWINOPS CSI 22 t). Set to NULL to ignore push requests.
+   *
+   * Input type: GhosttyTerminalTitlePushFn
+   */
+  GHOSTTY_TERMINAL_OPT_TITLE_PUSH = 49,
+
+  /**
+   * Callback invoked when the running program pops the title stack
+   * (XTWINOPS CSI 23 t). Set to NULL to ignore pop requests.
+   *
+   * Input type: GhosttyTerminalTitlePopFn
+   */
+  GHOSTTY_TERMINAL_OPT_TITLE_POP = 50,
   GHOSTTY_TERMINAL_OPT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyTerminalOption;
 
@@ -3088,6 +3138,27 @@ typedef enum GHOSTTY_ENUM_TYPED {
    * Output type: GhosttyTerminalMemoryUsage *
    */
   GHOSTTY_TERMINAL_DATA_MEMORY_USAGE = 42,
+
+  /**
+   * Monotonic count of rows scrolled upward off the top of the active screen
+   * (into scrollback or discarded on no-scrollback screens).
+   *
+   * Maintained independently per screen (primary vs. alternate) so temporary
+   * alternate-screen excursions do not alter the primary screen's count.
+   *
+   * Output type: uint64_t *
+   */
+  GHOSTTY_TERMINAL_DATA_SCROLL_UP_ROWS = 43,
+
+  /**
+   * Monotonic generation of the active screen allocation. Changes whenever the
+   * active screen is replaced or reset (for example on RIS / full reset or
+   * alternate-screen reallocation), so callers comparing scroll counts across
+   * writes never subtract counters from different screen lifetimes.
+   *
+   * Output type: uint64_t *
+   */
+  GHOSTTY_TERMINAL_DATA_SCREEN_GENERATION = 44,
   GHOSTTY_TERMINAL_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyTerminalData;
 

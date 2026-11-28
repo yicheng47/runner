@@ -1,91 +1,25 @@
-use std::fmt::Write as _;
+//! Terminal snapshotting and state inspection over `libghostty-vt`.
+//!
+//! Local desktop snapshots use Ghostty's lossless binary snapshot codec
+//! (`encode_binary` / `decode_binary`). Companion / browser snapshots use
+//! Ghostty's `Formatter` in VT mode (`serialize` / `serialize_with_history`) so
+//! the browser `companion::VERSION = 1` wire format stays unchanged.
+
 use std::ops::Range;
+use std::sync::Arc;
 
-use alacritty_terminal::event::EventListener;
-use alacritty_terminal::grid::{Cursor, Dimensions, Grid};
-use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
-use alacritty_terminal::term::{Term, TermMode};
-use alacritty_terminal::vte::ansi::{
-    CharsetIndex, Color, CursorShape, Handler, KeyboardModes, Processor, StandardCharset,
-    StdSyncHandler,
+use crate::palette::{Color as RunnerColor, NamedColor, Rgb};
+use crate::screen::{
+    cell_bg_to_runner, style_color_to_runner, style_underline_color_to_runner, ScreenData,
 };
-
-use crate::palette::Color as RunnerColor;
 use crate::types::{
-    CellFlags, CursorStyle as RunnerCursorStyle, GridPoint, Hyperlink as RunnerHyperlink,
-    Line as RunnerLine, TerminalModeFlags,
+    CellFlags, Column, CursorShape, CursorStyle as RunnerCursorStyle, GridPoint,
+    Hyperlink as RunnerHyperlink, Line as RunnerLine, TerminalModeFlags,
 };
-
-#[derive(Default)]
-pub(crate) struct TrackedProcessor {
-    processor: Processor,
-    capture: Processor,
-    preceding: PrecedingChar,
-}
-
-#[derive(Default)]
-struct PrecedingChar {
-    character: Option<char>,
-    wrote_visible: bool,
-}
-
-impl Handler for PrecedingChar {
-    fn input(&mut self, character: char) {
-        self.character = Some(character);
-        if !character.is_whitespace() && !character.is_control() {
-            self.wrote_visible = true;
-        }
-    }
-}
-
-impl TrackedProcessor {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn advance<H: Handler>(&mut self, handler: &mut H, bytes: &[u8]) {
-        self.processor.advance(handler, bytes);
-        self.capture.advance(&mut self.preceding, bytes);
-    }
-
-    pub fn begin_paint_tracking(&mut self) {
-        self.preceding.wrote_visible = false;
-    }
-
-    pub fn wrote_visible(&self) -> bool {
-        self.preceding.wrote_visible
-    }
-
-    pub fn stop_sync<H: Handler>(&mut self, handler: &mut H) {
-        self.processor.stop_sync(handler);
-        self.capture.stop_sync(&mut self.preceding);
-    }
-
-    pub fn sync_timeout(&self) -> &StdSyncHandler {
-        self.processor.sync_timeout()
-    }
-
-    pub fn sync_bytes_count(&self) -> usize {
-        self.processor.sync_bytes_count()
-    }
-
-    pub fn preceding_char(&self) -> Option<char> {
-        self.preceding.character
-    }
-
-    pub fn restore_preceding_char(&mut self, preceding: Option<char>) {
-        *self = Self::new();
-        if let Some(character) = preceding {
-            let mut bytes = [0; 4];
-            let bytes = character.encode_utf8(&mut bytes).as_bytes();
-            // Seed REP without painting over the restored terminal or mapping through its charset.
-            self.processor.advance(&mut PrecedingChar::default(), bytes);
-            self.capture.advance(&mut self.preceding, bytes);
-            self.preceding.wrote_visible = false;
-        }
-    }
-}
+use crate::vt::{
+    self, CellWide, GridPointTag, SnapshotDecodeOptions, StyleColor, TerminalConfig,
+    DEFAULT_CONTINUATION_MAX_BYTES,
+};
 
 /// Runner-owned character set slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,31 +30,11 @@ pub enum SnapshotCharsetIndex {
     G3,
 }
 
-impl SnapshotCharsetIndex {
-    fn from_alacritty(index: CharsetIndex) -> Self {
-        match index {
-            CharsetIndex::G0 => Self::G0,
-            CharsetIndex::G1 => Self::G1,
-            CharsetIndex::G2 => Self::G2,
-            CharsetIndex::G3 => Self::G3,
-        }
-    }
-}
-
 /// Runner-owned character set designation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SnapshotStandardCharset {
     Ascii,
     SpecialCharacterAndLineDrawing,
-}
-
-impl SnapshotStandardCharset {
-    fn from_alacritty(charset: StandardCharset) -> Self {
-        match charset {
-            StandardCharset::Ascii => Self::Ascii,
-            StandardCharset::SpecialCharacterAndLineDrawing => Self::SpecialCharacterAndLineDrawing,
-        }
-    }
 }
 
 /// Owned snapshot of one cell for round-trip verification.
@@ -135,16 +49,16 @@ pub struct CellSnapshot {
     pub hyperlink: Option<RunnerHyperlink>,
 }
 
-impl CellSnapshot {
-    fn from_alacritty(cell: &Cell) -> Self {
+impl Default for CellSnapshot {
+    fn default() -> Self {
         Self {
-            c: cell.c,
-            fg: RunnerColor::from_alacritty(cell.fg),
-            bg: RunnerColor::from_alacritty(cell.bg),
-            flags: CellFlags::from_alacritty(cell.flags),
-            zerowidth: cell.zerowidth().map(<[char]>::to_vec).unwrap_or_default(),
-            underline_color: cell.underline_color().map(RunnerColor::from_alacritty),
-            hyperlink: cell.hyperlink().map(RunnerHyperlink::from_alacritty),
+            c: ' ',
+            fg: RunnerColor::Named(NamedColor::Foreground),
+            bg: RunnerColor::Named(NamedColor::Background),
+            flags: CellFlags::empty(),
+            zerowidth: Vec::new(),
+            underline_color: None,
+            hyperlink: None,
         }
     }
 }
@@ -158,18 +72,13 @@ pub struct CursorSnapshot {
     pub template: CellSnapshot,
 }
 
-impl CursorSnapshot {
-    fn from_alacritty(cursor: &Cursor<Cell>) -> Self {
+impl Default for CursorSnapshot {
+    fn default() -> Self {
         Self {
-            point: GridPoint::from_alacritty(cursor.point),
-            charsets: [
-                SnapshotStandardCharset::from_alacritty(cursor.charsets[CharsetIndex::G0]),
-                SnapshotStandardCharset::from_alacritty(cursor.charsets[CharsetIndex::G1]),
-                SnapshotStandardCharset::from_alacritty(cursor.charsets[CharsetIndex::G2]),
-                SnapshotStandardCharset::from_alacritty(cursor.charsets[CharsetIndex::G3]),
-            ],
-            input_needs_wrap: cursor.input_needs_wrap,
-            template: CellSnapshot::from_alacritty(&cursor.template),
+            point: GridPoint::default(),
+            charsets: [SnapshotStandardCharset::Ascii; 4],
+            input_needs_wrap: false,
+            template: CellSnapshot::default(),
         }
     }
 }
@@ -183,31 +92,6 @@ pub struct GridSnapshot {
     pub cursor: CursorSnapshot,
     pub saved_cursor: CursorSnapshot,
     pub rows: Vec<Vec<CellSnapshot>>,
-}
-
-impl GridSnapshot {
-    fn from_alacritty(grid: &Grid<Cell>) -> Self {
-        let history_size = grid.history_size();
-        let screen_lines = grid.screen_lines();
-        let columns = grid.columns();
-        let mut rows = Vec::with_capacity(history_size + screen_lines);
-        for line in -(history_size as i32)..screen_lines as i32 {
-            let row = &grid[Line(line)];
-            let mut cells = Vec::with_capacity(columns);
-            for col in 0..columns {
-                cells.push(CellSnapshot::from_alacritty(&row[Column(col)]));
-            }
-            rows.push(cells);
-        }
-        Self {
-            history_size,
-            screen_lines,
-            columns,
-            cursor: CursorSnapshot::from_alacritty(&grid.cursor),
-            saved_cursor: CursorSnapshot::from_alacritty(&grid.saved_cursor),
-            rows,
-        }
-    }
 }
 
 /// Owned Runner-typed view of complete terminal state for snapshot round-trip verification.
@@ -227,478 +111,562 @@ pub struct TerminalSnapshotState {
     pub active_charset: SnapshotCharsetIndex,
 }
 
-pub(crate) fn inspect_term<T: EventListener>(term: &Term<T>) -> TerminalSnapshotState {
-    let state = term.snapshot_state();
-    let mode = TerminalModeFlags::from_alacritty(*term.mode());
-    let inactive_grid = mode
-        .contains(TerminalModeFlags::ALT_SCREEN)
-        .then(|| GridSnapshot::from_alacritty(state.inactive_grid));
-    TerminalSnapshotState {
-        mode,
-        active_grid: GridSnapshot::from_alacritty(term.grid()),
-        inactive_grid,
-        inactive_saved_cursor: CursorSnapshot::from_alacritty(&state.inactive_grid.saved_cursor),
-        scroll_region: RunnerLine::from_alacritty(state.scroll_region.start)
-            ..RunnerLine::from_alacritty(state.scroll_region.end),
-        title: state.title.map(str::to_owned),
-        title_stack: state.title_stack.to_vec(),
-        tabs: state.tabs.to_vec(),
-        keyboard_mode_stack: state.keyboard_mode_stack.iter().map(|m| m.bits()).collect(),
-        inactive_keyboard_mode_stack: state
-            .inactive_keyboard_mode_stack
-            .iter()
-            .map(|m| m.bits())
-            .collect(),
-        cursor_style: state.cursor_style.map(RunnerCursorStyle::from_alacritty),
-        active_charset: SnapshotCharsetIndex::from_alacritty(*state.active_charset),
-    }
-}
-
+/// Encode a VT-format snapshot for companion consumers (all scrollback).
 pub fn serialize(term: &crate::replay::Terminal, unfinished: &[u8]) -> Vec<u8> {
-    serialize_term(term.term(), unfinished)
+    serialize_vt_with_history(term.vt(), unfinished, usize::MAX)
 }
 
+/// Encode a VT-format snapshot for companion consumers with at most `history`
+/// scrollback lines.
 pub fn serialize_with_history(
     term: &crate::replay::Terminal,
     unfinished: &[u8],
     history: usize,
 ) -> Vec<u8> {
-    serialize_term_with_history(term.term(), unfinished, history)
+    serialize_vt_with_history(term.vt(), unfinished, history)
 }
 
-pub(crate) fn serialize_term<T: EventListener>(term: &Term<T>, unfinished: &[u8]) -> Vec<u8> {
-    serialize_term_with_history(term, unfinished, usize::MAX)
+pub(crate) fn try_serialize_vt_with_history(
+    term: &vt::Terminal,
+    unfinished: &[u8],
+    history: usize,
+) -> vt::Result<Vec<u8>> {
+    let mut bytes = term.format_vt_with_history(history)?;
+    bytes.extend_from_slice(unfinished);
+    Ok(bytes)
 }
 
-pub(crate) fn serialize_term_with_history<T: EventListener>(
-    term: &Term<T>,
+pub(crate) fn serialize_vt_with_history(
+    term: &vt::Terminal,
     unfinished: &[u8],
     history: usize,
 ) -> Vec<u8> {
-    let state = term.snapshot_state();
-    let alt = term.mode().contains(TermMode::ALT_SCREEN);
-    let (primary, primary_keyboard) = if alt {
-        (state.inactive_grid, state.inactive_keyboard_mode_stack)
-    } else {
-        (term.grid(), state.keyboard_mode_stack)
-    };
-    let mut out = String::from("\x1bc");
-    if !alt {
-        out.push_str("\x1b[?1049h");
-        cursor(
-            &mut out,
-            state.inactive_grid,
-            &state.inactive_grid.saved_cursor,
-            0,
-        );
-        out.push_str("\x1b7");
-        keyboard_stack(&mut out, state.inactive_keyboard_mode_stack);
-        out.push_str("\x1b[?1049l");
-    }
-    grid(&mut out, primary, history);
-    cursor(&mut out, primary, &primary.saved_cursor, 0);
-    out.push_str("\x1b7");
-    cursor(&mut out, primary, &primary.cursor, 0);
-    keyboard_stack(&mut out, primary_keyboard);
-    if alt {
-        out.push_str("\x1b[?1049h");
-        grid(&mut out, term.grid(), history);
-        cursor(&mut out, term.grid(), &term.grid().saved_cursor, 0);
-        out.push_str("\x1b7");
-        keyboard_stack(&mut out, state.keyboard_mode_stack);
-    }
-    write!(
-        out,
-        "\x1b[{};{}r",
-        state.scroll_region.start.0 + 1,
-        state.scroll_region.end.0
-    )
-    .unwrap();
-    for (mode, code, private) in [
-        (TermMode::APP_CURSOR, 1, true),
-        (TermMode::BRACKETED_PASTE, 2004, true),
-        (TermMode::MOUSE_REPORT_CLICK, 1000, true),
-        (TermMode::MOUSE_DRAG, 1002, true),
-        (TermMode::MOUSE_MOTION, 1003, true),
-        (TermMode::SGR_MOUSE, 1006, true),
-        (TermMode::UTF8_MOUSE, 1005, true),
-        (TermMode::FOCUS_IN_OUT, 1004, true),
-        (TermMode::ALTERNATE_SCROLL, 1007, true),
-        (TermMode::URGENCY_HINTS, 1042, true),
-        (TermMode::ORIGIN, 6, true),
-        (TermMode::LINE_WRAP, 7, true),
-        (TermMode::SHOW_CURSOR, 25, true),
-        (TermMode::INSERT, 4, false),
-        (TermMode::LINE_FEED_NEW_LINE, 20, false),
-    ] {
-        write!(
-            out,
-            "\x1b[{}{code}{}",
-            if private { "?" } else { "" },
-            if term.mode().contains(mode) { 'h' } else { 'l' }
-        )
-        .unwrap();
-    }
-    out.push_str(if term.mode().contains(TermMode::APP_KEYPAD) {
-        "\x1b="
-    } else {
-        "\x1b>"
-    });
-    if let Some(style) = state.cursor_style {
-        let shape = match style.shape {
-            CursorShape::Block | CursorShape::HollowBlock | CursorShape::Hidden => 2,
-            CursorShape::Underline => 4,
-            CursorShape::Beam => 6,
-        } - u8::from(style.blinking);
-        write!(out, "\x1b[{shape} q").unwrap();
-    }
-    let origin = if term.mode().contains(TermMode::ORIGIN) {
-        state.scroll_region.start.0
+    try_serialize_vt_with_history(term, unfinished, history).unwrap_or_default()
+}
+
+pub(crate) fn encode_binary(term: &vt::Terminal) -> vt::Result<Vec<u8>> {
+    term.encode_snapshot()
+}
+
+/// Inspect complete terminal state from a live `vt::Terminal` by reading its
+/// active grid plus the structured v1 binary snapshot headers (for both
+/// screens' cursors, saved cursors, charsets, tab stops, scroll region, and
+/// Kitty keyboard stacks).
+pub(crate) fn inspect_vt(term: &vt::Terminal) -> TerminalSnapshotState {
+    let mode = TerminalModeFlags::from_vt(term);
+    let cols = usize::from(term.cols());
+    let rows = usize::from(term.rows());
+    let blob = term.encode_snapshot().unwrap_or_default();
+    let parsed = parse_snapshot_blob(&blob);
+
+    let active_screen_key: u16 = if mode.contains(TerminalModeFlags::ALT_SCREEN) {
+        1
     } else {
         0
     };
-    cursor(&mut out, term.grid(), &term.grid().cursor, origin);
-    out.push_str("\x1b[3g");
-    for (column, enabled) in state.tabs.iter().take(term.columns()).enumerate() {
-        if *enabled {
-            write!(out, "\x1b[{}G\x1bH", column + 1).unwrap();
-        }
-    }
-    cursor(&mut out, term.grid(), &term.grid().cursor, origin);
-    for title in state.title_stack {
-        if let Some(title) = title {
-            write!(out, "\x1b]2;{title}\x1b\\").unwrap();
-        }
-        out.push_str("\x1b[22;0t");
-    }
-    if let Some(title) = state.title {
-        write!(out, "\x1b]2;{title}\x1b\\").unwrap();
-    }
-    for index in 0..259 {
-        if let Some(color) = term.colors()[index] {
-            let prefix = match index {
-                0..=255 => format!("4;{index}"),
-                _ => (index - 246).to_string(),
-            };
-            write!(
-                out,
-                "\x1b]{prefix};#{:02x}{:02x}{:02x}\x1b\\",
-                color.r, color.g, color.b
-            )
-            .unwrap();
-        }
-    }
-    let flags = KeyboardModes::from_bits_truncate(
-        ((term.mode().bits() & TermMode::KITTY_KEYBOARD_PROTOCOL.bits()) >> 18) as u8,
-    );
-    write!(out, "\x1b[={}u", flags.bits()).unwrap();
-    out.push(if *state.active_charset == CharsetIndex::G1 {
-        '\x0e'
-    } else {
-        '\x0f'
-    });
-    let mut bytes = out.into_bytes();
-    bytes.extend_from_slice(unfinished);
-    bytes
-}
+    let inactive_screen_key: u16 = if active_screen_key == 1 { 0 } else { 1 };
 
-fn keyboard_stack(out: &mut String, stack: &[KeyboardModes]) {
-    for mode in stack {
-        write!(out, "\x1b[>{}u", mode.bits()).unwrap();
-    }
-}
+    let active_meta = parsed
+        .as_ref()
+        .and_then(|p| p.screen(active_screen_key))
+        .cloned()
+        .unwrap_or_default();
+    let inactive_meta = parsed
+        .as_ref()
+        .and_then(|p| p.screen(inactive_screen_key))
+        .cloned()
+        .unwrap_or_default();
 
-fn grid(out: &mut String, grid: &Grid<Cell>, history: usize) {
-    out.push_str("\x1b[3g");
-    for column in 1..grid.columns() {
-        write!(out, "\x1b[{}G\x1bH", column + 1).unwrap();
-    }
-    out.push_str("\x1b[?7h\x1b[H\x1b[0m\x1b]8;;\x1b\\");
-    let mut previous = None;
-    let mut previous_link = None;
-    for line in -(grid.history_size().min(history) as i32)..grid.screen_lines() as i32 {
-        let row = &grid[Line(line)];
-        for column in 0..grid.columns() {
-            let cell = &row[Column(column)];
-            if cell
-                .flags
-                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-            {
-                continue;
-            }
-            let style = (
-                cell.fg,
-                cell.bg,
-                cell.flags & !(Flags::WIDE_CHAR | Flags::WRAPLINE),
-                cell.underline_color(),
-            );
-            if previous != Some(style) {
-                sgr(out, cell);
-                previous = Some(style);
-            }
-            let link = cell.hyperlink();
-            if previous_link != link {
-                hyperlink(out, link.as_ref());
-                previous_link = link;
-            }
-            if cell.c == '\t' {
-                write!(out, " \x1b[{}G\t", column + 1).unwrap();
-            } else {
-                out.push(cell.c);
-            }
-            if let Some(marks) = cell.zerowidth() {
-                out.extend(marks);
-            }
-        }
-        if line + 1 < grid.screen_lines() as i32
-            && !row[Column(grid.columns() - 1)]
-                .flags
-                .contains(Flags::WRAPLINE)
-        {
-            out.push_str("\r\n");
-        }
-    }
-    if previous_link.is_some() {
-        hyperlink(out, None);
-    }
-}
+    let active_rows =
+        grid_rows_from_screen_data(&ScreenData::from_terminal_full(term, None, false));
+    let active_grid = GridSnapshot {
+        history_size: term.scrollback_rows(),
+        screen_lines: rows,
+        columns: cols,
+        cursor: active_meta.cursor.clone(),
+        saved_cursor: active_meta.saved_cursor.clone(),
+        rows: active_rows,
+    };
 
-fn cursor(out: &mut String, grid: &Grid<Cell>, cursor: &Cursor<Cell>, origin: i32) {
-    out.push_str("\x0f\x1b(B");
-    write!(
-        out,
-        "\x1b[{};{}H",
-        cursor.point.line.0 - origin + 1,
-        cursor.point.column.0 + 1
-    )
-    .unwrap();
-    if cursor.input_needs_wrap {
-        let mut point = cursor.point;
-        if grid[point].flags.contains(Flags::WIDE_CHAR_SPACER) {
-            point.column.0 -= 1;
-            write!(out, "\x1b[{}G", point.column.0 + 1).unwrap();
-        }
-        let cell = &grid[point];
-        sgr(out, cell);
-        hyperlink(out, cell.hyperlink().as_ref());
-        out.push(cell.c);
-        if let Some(marks) = cell.zerowidth() {
-            out.extend(marks);
-        }
-    }
-    sgr(out, &cursor.template);
-    hyperlink(out, cursor.template.hyperlink().as_ref());
-    for (index, introducer) in [
-        CharsetIndex::G0,
-        CharsetIndex::G1,
-        CharsetIndex::G2,
-        CharsetIndex::G3,
-    ]
-    .into_iter()
-    .zip(['(', ')', '*', '+'])
-    {
-        let code = match cursor.charsets[index] {
-            StandardCharset::Ascii => 'B',
-            StandardCharset::SpecialCharacterAndLineDrawing => '0',
+    let inactive_grid = if mode.contains(TerminalModeFlags::ALT_SCREEN) && !blob.is_empty() {
+        let decode_cfg = TerminalConfig {
+            cols: term.cols(),
+            rows: term.rows(),
+            scrollback_lines: usize::MAX,
+            continuation_max_bytes: DEFAULT_CONTINUATION_MAX_BYTES,
+            kitty_image_storage_limit: 0,
+            enable_host_callbacks: false,
+            enable_render_hold: false,
+            ..TerminalConfig::default()
         };
-        write!(out, "\x1b{introducer}{code}").unwrap();
-    }
-}
+        vt::Terminal::decode_snapshot(
+            &blob,
+            SnapshotDecodeOptions {
+                max_continuation_bytes: DEFAULT_CONTINUATION_MAX_BYTES,
+                retain_continuation: false,
+                compress_history: false,
+                kitty_image_storage_limit: 0,
+            },
+            &decode_cfg,
+        )
+        .ok()
+        .map(|mut tmp| {
+            // Mode 1047 switches back to the primary screen without restoring the
+            // saved cursor, leaving primary grid cells untouched.
+            tmp.vt_write(b"\x1b[?1047l");
+            let data = ScreenData::from_terminal_full(&tmp, None, false);
+            GridSnapshot {
+                history_size: tmp.scrollback_rows(),
+                screen_lines: usize::from(tmp.rows()),
+                columns: usize::from(tmp.cols()),
+                cursor: inactive_meta.cursor.clone(),
+                saved_cursor: inactive_meta.saved_cursor.clone(),
+                rows: grid_rows_from_screen_data(&data),
+            }
+        })
+    } else {
+        None
+    };
 
-fn hyperlink(out: &mut String, link: Option<&Hyperlink>) {
-    match link {
-        Some(link) => write!(out, "\x1b]8;id={};{}\x1b\\", link.id(), link.uri()).unwrap(),
-        None => out.push_str("\x1b]8;;\x1b\\"),
-    }
-}
-
-fn sgr(out: &mut String, cell: &Cell) {
-    out.push_str("\x1b[0");
-    for (flag, code) in [
-        (Flags::BOLD, "1"),
-        (Flags::DIM, "2"),
-        (Flags::ITALIC, "3"),
-        (Flags::UNDERLINE, "4"),
-        (Flags::DOUBLE_UNDERLINE, "4:2"),
-        (Flags::UNDERCURL, "4:3"),
-        (Flags::DOTTED_UNDERLINE, "4:4"),
-        (Flags::DASHED_UNDERLINE, "4:5"),
-        (Flags::INVERSE, "7"),
-        (Flags::HIDDEN, "8"),
-        (Flags::STRIKEOUT, "9"),
-    ] {
-        if cell.flags.contains(flag) {
-            write!(out, ";{code}").unwrap();
-        }
-    }
-    color(out, cell.fg, 38);
-    color(out, cell.bg, 48);
-    if let Some(underline) = cell.underline_color() {
-        color(out, underline, 58);
-    }
-    out.push('m');
-}
-
-fn color(out: &mut String, color: Color, channel: u8) {
-    match color {
-        Color::Spec(rgb) => {
-            write!(out, ";{channel};2;{};{};{}", rgb.r, rgb.g, rgb.b).unwrap();
-        }
-        Color::Indexed(index) => {
-            write!(out, ";{channel};5;{index}").unwrap();
-        }
-        Color::Named(named) => {
-            let index = named as usize;
-            let code = match index {
-                0..=7 => (if channel == 38 { 30 } else { 40 }) + index,
-                8..=15 => (if channel == 38 { 90 } else { 100 }) + index - 8,
-                _ => {
-                    if channel == 38 {
-                        39
-                    } else {
-                        49
-                    }
-                }
+    let (scroll_region, tabs, cursor_style) = match parsed.as_ref() {
+        Some(p) => {
+            let sr =
+                RunnerLine(i32::from(p.scroll_top))..RunnerLine(i32::from(p.scroll_bottom) + 1);
+            let style = if p.cursor_is_default {
+                None
+            } else {
+                Some(RunnerCursorStyle {
+                    shape: active_meta.visual_style,
+                    blinking: term.mode(vt::dec_mode(12)),
+                })
             };
-            write!(out, ";{code}").unwrap();
+            (sr, p.tabs.clone(), style)
+        }
+        None => (
+            RunnerLine(0)..RunnerLine(rows as i32),
+            vec![false; cols],
+            None,
+        ),
+    };
+
+    let title = term.title();
+    TerminalSnapshotState {
+        mode,
+        active_grid,
+        inactive_grid,
+        inactive_saved_cursor: inactive_meta.saved_cursor,
+        scroll_region,
+        title: (!title.is_empty()).then_some(title),
+        title_stack: term.title_stack(),
+        tabs,
+        keyboard_mode_stack: active_meta.kitty_stack,
+        inactive_keyboard_mode_stack: inactive_meta.kitty_stack,
+        cursor_style,
+        active_charset: active_meta.active_charset,
+    }
+}
+
+fn grid_rows_from_screen_data(data: &ScreenData) -> Vec<Vec<CellSnapshot>> {
+    let view = data.view();
+    let cols = view.cols();
+    let history = view.history_size();
+    let total = history + view.rows();
+    let mut rows = Vec::with_capacity(total);
+    for line_i in -(history as i32)..view.rows() as i32 {
+        let mut row = Vec::with_capacity(cols);
+        for col in 0..cols {
+            let cell = view
+                .cell(GridPoint::new(RunnerLine(line_i), Column(col)))
+                .map(|c| CellSnapshot {
+                    c: c.c(),
+                    fg: c.fg(),
+                    bg: c.bg(),
+                    flags: c.flags(),
+                    zerowidth: c.zerowidth().map(<[char]>::to_vec).unwrap_or_default(),
+                    underline_color: c.underline_color(),
+                    hyperlink: c.hyperlink(),
+                })
+                .unwrap_or_default();
+            row.push(cell);
+        }
+        rows.push(row);
+    }
+    rows
+}
+
+/// Patch `previous_codepoint` (offset `25..29` of record 0 `TERMINAL` payload)
+/// and update record 0's CRC32C checksum in a v1 Ghostty binary snapshot.
+pub(crate) fn patch_snapshot_previous_char(blob: &mut [u8], ch: Option<char>) -> bool {
+    if blob.len() < 10 + 10 + 103 || &blob[..8] != b"GHOSTSNP" {
+        return false;
+    }
+    let version = u16::from_le_bytes([blob[8], blob[9]]);
+    if version != 1 {
+        return false;
+    }
+    let tag = u16::from_le_bytes([blob[10], blob[11]]);
+    let payload_len = u32::from_le_bytes([blob[12], blob[13], blob[14], blob[15]]) as usize;
+    if tag != 1 || payload_len < 103 || blob.len() < 20 + payload_len {
+        return false;
+    }
+    let cp = ch.map_or(u32::MAX, |c| c as u32);
+    blob[20 + 25..20 + 29].copy_from_slice(&cp.to_le_bytes());
+    let crc = crc32c_record(&blob[10..16], &blob[20..20 + payload_len]);
+    blob[16..20].copy_from_slice(&crc.to_le_bytes());
+    true
+}
+
+/// Castagnoli CRC-32C over the 6-byte record header prefix (`tag` + `payload_len`)
+/// followed by the payload bytes, matching Ghostty's `snapshot/record.zig`.
+fn crc32c_record(header_prefix: &[u8], payload: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in header_prefix.iter().chain(payload.iter()) {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            let mask = (crc & 1).wrapping_neg();
+            crc = (crc >> 1) ^ (0x82F6_3B78 & mask);
+        }
+    }
+    !crc
+}
+
+#[derive(Clone)]
+pub(crate) struct ParsedScreenMeta {
+    pub(crate) screen_key: u16,
+    pub(crate) cursor: CursorSnapshot,
+    pub(crate) cursor_protected: bool,
+    pub(crate) cursor_style_vt: vt::Style,
+    pub(crate) raw_charsets: [u8; 4],
+    pub(crate) saved_cursor: CursorSnapshot,
+    pub(crate) saved_cursor_present: bool,
+    pub(crate) saved_cursor_origin: bool,
+    pub(crate) saved_cursor_protected: bool,
+    pub(crate) saved_cursor_active_charset: SnapshotCharsetIndex,
+    pub(crate) saved_raw_charsets: [u8; 4],
+    pub(crate) saved_cursor_style_vt: vt::Style,
+    pub(crate) visual_style: CursorShape,
+    pub(crate) active_charset: SnapshotCharsetIndex,
+    pub(crate) kitty_stack: Vec<u8>,
+}
+
+impl Default for ParsedScreenMeta {
+    fn default() -> Self {
+        Self {
+            screen_key: 0,
+            cursor: CursorSnapshot::default(),
+            cursor_protected: false,
+            cursor_style_vt: vt::Style::default(),
+            raw_charsets: [0; 4],
+            saved_cursor: CursorSnapshot::default(),
+            saved_cursor_present: false,
+            saved_cursor_origin: false,
+            saved_cursor_protected: false,
+            saved_cursor_active_charset: SnapshotCharsetIndex::G0,
+            saved_raw_charsets: [0; 4],
+            saved_cursor_style_vt: vt::Style::default(),
+            visual_style: CursorShape::Block,
+            active_charset: SnapshotCharsetIndex::G0,
+            kitty_stack: Vec::new(),
         }
     }
 }
 
-#[derive(Clone, Copy, Default)]
-enum Boundary {
-    #[default]
-    Ground,
-    Escape,
-    Csi,
-    Osc,
-    DcsHeader,
-    String,
-    StringEscape,
-    Utf8(u8),
+pub(crate) struct ParsedSnapshot {
+    pub(crate) scroll_top: u16,
+    pub(crate) scroll_bottom: u16,
+    pub(crate) cursor_is_default: bool,
+    pub(crate) tabs: Vec<bool>,
+    pub(crate) screens: Vec<ParsedScreenMeta>,
 }
 
-#[derive(Default)]
-pub struct BoundaryScanner {
-    state: Boundary,
-    pending: Vec<u8>,
-    synchronized: Option<Vec<u8>>,
-}
-
-const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
-
-impl BoundaryScanner {
-    pub fn advance(&mut self, bytes: &[u8], held_bytes: Option<usize>) {
-        if let Some(held) = held_bytes {
-            let sync = self.synchronized.get_or_insert_with(|| SYNC_BEGIN.to_vec());
-            sync.extend_from_slice(bytes);
-            // vte can flush and restart inside one advance; only its held suffix is still pending.
-            let start = sync.len() - held;
-            sync.copy_within(start.., SYNC_BEGIN.len());
-            sync.truncate(SYNC_BEGIN.len() + held);
-        } else {
-            self.end_sync();
-        }
-        for &byte in bytes {
-            self.byte(byte);
-        }
-    }
-
-    pub fn unfinished(&self) -> &[u8] {
-        self.synchronized.as_deref().unwrap_or(&self.pending)
-    }
-
-    pub fn end_sync(&mut self) {
-        self.synchronized = None;
-    }
-
-    fn byte(&mut self, byte: u8) {
-        if matches!(self.state, Boundary::Utf8(_)) && !(0x80..=0xbf).contains(&byte) {
-            self.pending.clear();
-            self.state = Boundary::Ground;
-        }
-        if matches!(byte, 0x18 | 0x1a) {
-            self.pending.clear();
-            self.state = Boundary::Ground;
-            return;
-        }
-        if matches!(
-            self.state,
-            Boundary::Escape | Boundary::Csi | Boundary::DcsHeader
-        ) && matches!(byte, 0..=0x1f | 0x7f)
-            && byte != 0x1b
-        {
-            return;
-        }
-        match self.state {
-            Boundary::Ground => {
-                self.state = match byte {
-                    0x1b => Boundary::Escape,
-                    0xc2..=0xdf => Boundary::Utf8(1),
-                    0xe0..=0xef => Boundary::Utf8(2),
-                    0xf0..=0xf4 => Boundary::Utf8(3),
-                    _ => return,
-                };
-                self.pending.push(byte);
-            }
-            Boundary::Escape => {
-                if byte == 0x1b {
-                    self.pending.clear();
-                }
-                self.pending.push(byte);
-                self.state = match byte {
-                    b'[' => Boundary::Csi,
-                    b']' => Boundary::Osc,
-                    b'P' => Boundary::DcsHeader,
-                    b'X' | b'^' | b'_' => Boundary::String,
-                    0..=0x2f => Boundary::Escape,
-                    _ => Boundary::Ground,
-                };
-            }
-            Boundary::Csi | Boundary::DcsHeader => {
-                self.pending.push(byte);
-                if byte == 0x1b {
-                    self.pending.clear();
-                    self.pending.push(byte);
-                    self.state = Boundary::Escape;
-                } else if (0x40..=0x7e).contains(&byte) {
-                    if matches!(self.state, Boundary::DcsHeader) {
-                        self.state = Boundary::String;
-                    } else {
-                        self.state = Boundary::Ground;
-                    }
-                }
-            }
-            Boundary::Osc | Boundary::String => {
-                self.pending.push(byte);
-                if byte == 0x1b {
-                    self.state = Boundary::StringEscape;
-                } else if byte == 7 && matches!(self.state, Boundary::Osc) {
-                    self.state = Boundary::Ground;
-                }
-            }
-            Boundary::StringEscape => {
-                self.pending.push(byte);
-                if byte == b'\\' {
-                    self.state = Boundary::Ground;
-                } else {
-                    self.pending.clear();
-                    self.pending.push(0x1b);
-                    self.state = Boundary::Escape;
-                    self.byte(byte);
-                }
-            }
-            Boundary::Utf8(left) => {
-                self.pending.push(byte);
-                self.state = if left == 1 {
-                    Boundary::Ground
-                } else {
-                    Boundary::Utf8(left - 1)
-                };
-            }
-        }
-        if matches!(self.state, Boundary::Ground) {
-            self.pending.clear();
-        }
+impl ParsedSnapshot {
+    pub(crate) fn screen(&self, key: u16) -> Option<&ParsedScreenMeta> {
+        self.screens.iter().find(|s| s.screen_key == key)
     }
 }
+
+pub(crate) fn parse_snapshot_blob(blob: &[u8]) -> Option<ParsedSnapshot> {
+    if blob.len() < 10 || &blob[..8] != b"GHOSTSNP" {
+        return None;
+    }
+    let version = u16::from_le_bytes([blob[8], blob[9]]);
+    if version != 1 {
+        return None;
+    }
+    let mut pos = 10usize;
+    let mut scroll_top = 0u16;
+    let mut scroll_bottom = 0u16;
+    let mut cursor_is_default = true;
+    let mut tabs = Vec::new();
+    let mut screens = Vec::new();
+
+    while pos + 10 <= blob.len() {
+        let tag = u16::from_le_bytes([blob[pos], blob[pos + 1]]);
+        let payload_len =
+            u32::from_le_bytes([blob[pos + 2], blob[pos + 3], blob[pos + 4], blob[pos + 5]])
+                as usize;
+        pos += 10;
+        if pos + payload_len > blob.len() {
+            break;
+        }
+        let payload = &blob[pos..pos + payload_len];
+        pos += payload_len;
+
+        match tag {
+            1 if payload.len() >= 103 => {
+                let cols = usize::from(u16::from_le_bytes([payload[0], payload[1]]));
+                scroll_top = u16::from_le_bytes([payload[12], payload[13]]);
+                scroll_bottom = u16::from_le_bytes([payload[14], payload[15]]);
+                cursor_is_default = payload[29] != 0;
+                let tab_bytes = cols.div_ceil(8);
+                if payload.len() >= 103 + tab_bytes {
+                    tabs = (0..cols)
+                        .map(|col| (payload[103 + col / 8] & (1 << (col % 8))) != 0)
+                        .collect();
+                }
+            }
+            2 if payload.len() >= 53 => {
+                if let Some(meta) = parse_screen_record(payload) {
+                    screens.push(meta);
+                }
+            }
+            6 => break,
+            _ => {}
+        }
+    }
+
+    Some(ParsedSnapshot {
+        scroll_top,
+        scroll_bottom,
+        cursor_is_default,
+        tabs,
+        screens,
+    })
+}
+
+fn parse_screen_record(payload: &[u8]) -> Option<ParsedScreenMeta> {
+    if payload.len() < 53 {
+        return None;
+    }
+    let screen_key = u16::from_le_bytes([payload[0], payload[1]]);
+    let cursor_x = u16::from_le_bytes([payload[12], payload[13]]);
+    let cursor_y = u16::from_le_bytes([payload[14], payload[15]]);
+    let visual_style = match payload[16] {
+        0 => CursorShape::Beam,
+        2 => CursorShape::Underline,
+        3 => CursorShape::HollowBlock,
+        _ => CursorShape::Block,
+    };
+    let cursor_flags = payload[17];
+    let pending_wrap = (cursor_flags & 1) != 0;
+    let cursor_protected = (cursor_flags & (1 << 1)) != 0;
+    let (pen, cursor_style_vt) = parse_style_entry(&payload[18..34]);
+    let charset_raw = u16::from_le_bytes([payload[38], payload[39]]);
+    let (charsets, raw_charsets, active_charset) = decode_charset_state(charset_raw);
+    let kitty_index = usize::from(payload[41]).min(7);
+    let kitty_raw = &payload[42..50];
+    let kitty_stack = parse_kitty_ring(kitty_index, kitty_raw);
+    let saved_present = payload[52] != 0;
+    let (
+        saved_cursor,
+        saved_cursor_present,
+        saved_cursor_origin,
+        saved_cursor_protected,
+        saved_cursor_active_charset,
+        saved_raw_charsets,
+        saved_cursor_style_vt,
+        link_offset,
+    ) = if saved_present && payload.len() >= 76 {
+        let sc = &payload[53..76];
+        let sx = u16::from_le_bytes([sc[0], sc[1]]);
+        let sy = u16::from_le_bytes([sc[2], sc[3]]);
+        let (spen, sstyle) = parse_style_entry(&sc[4..20]);
+        let sflags = sc[20];
+        let sprotected = (sflags & (1 << 0)) != 0;
+        let spending_wrap = (sflags & (1 << 1)) != 0;
+        let sorigin = (sflags & (1 << 2)) != 0;
+        let scharset_raw = u16::from_le_bytes([sc[21], sc[22]]);
+        let (scharsets, sraw_charsets, sgl) = decode_charset_state(scharset_raw);
+        (
+            CursorSnapshot {
+                point: GridPoint::new(RunnerLine(i32::from(sy)), Column(usize::from(sx))),
+                charsets: scharsets,
+                input_needs_wrap: spending_wrap,
+                template: spen,
+            },
+            true,
+            sorigin,
+            sprotected,
+            sgl,
+            sraw_charsets,
+            sstyle,
+            76usize,
+        )
+    } else {
+        (
+            CursorSnapshot::default(),
+            false,
+            false,
+            false,
+            SnapshotCharsetIndex::G0,
+            [0; 4],
+            vt::Style::default(),
+            53usize,
+        )
+    };
+    let cursor_hyperlink = payload.get(link_offset..).and_then(parse_hyperlink_entry);
+    let mut template = pen;
+    template.hyperlink = cursor_hyperlink;
+    let cursor = CursorSnapshot {
+        point: GridPoint::new(
+            RunnerLine(i32::from(cursor_y)),
+            Column(usize::from(cursor_x)),
+        ),
+        charsets,
+        input_needs_wrap: pending_wrap,
+        template,
+    };
+    Some(ParsedScreenMeta {
+        screen_key,
+        cursor,
+        cursor_protected,
+        cursor_style_vt,
+        raw_charsets,
+        saved_cursor,
+        saved_cursor_present,
+        saved_cursor_origin,
+        saved_cursor_protected,
+        saved_cursor_active_charset,
+        saved_raw_charsets,
+        saved_cursor_style_vt,
+        visual_style,
+        active_charset,
+        kitty_stack,
+    })
+}
+
+/// Extract Ghostty's 8-slot Kitty keyboard `FlagStack` ring in oldest-to-newest
+/// order, capped to Phase 1 bit 0 (`DISAMBIGUATE_ESC_CODES`), stripping leading
+/// unused zero slots.
+fn parse_kitty_ring(kitty_index: usize, kitty_raw: &[u8]) -> Vec<u8> {
+    let mut ordered = [0u8; 8];
+    for (k, slot) in ordered.iter_mut().enumerate() {
+        *slot = kitty_raw[(kitty_index + 1 + k) % 8] & 1;
+    }
+    match ordered.iter().position(|&v| v != 0) {
+        Some(first) => ordered[first..].to_vec(),
+        None => Vec::new(),
+    }
+}
+
+fn parse_style_entry(buf: &[u8]) -> (CellSnapshot, vt::Style) {
+    let fg = parse_style_color(&buf[0..4]);
+    let bg = parse_style_color(&buf[4..8]);
+    let ul = parse_style_color(&buf[8..12]);
+    let flags = u16::from_le_bytes([buf[12], buf[13]]);
+    let style = vt::Style {
+        fg,
+        bg,
+        underline: ul,
+        flags,
+    };
+    let cell = CellSnapshot {
+        c: ' ',
+        fg: style_color_to_runner(fg, NamedColor::Foreground),
+        bg: cell_bg_to_runner(
+            &vt::CellInfo {
+                codepoint: 0,
+                content_tag: vt::CellContentTag::Codepoint,
+                wide: CellWide::Narrow,
+                has_text: false,
+                has_styling: true,
+                has_hyperlink: false,
+                protected: false,
+                bg_palette: None,
+                bg_rgb: None,
+            },
+            &style,
+        ),
+        flags: CellFlags::from_vt_style(flags, CellWide::Narrow, false),
+        zerowidth: Vec::new(),
+        underline_color: style_underline_color_to_runner(ul),
+        hyperlink: None,
+    };
+    (cell, style)
+}
+
+fn parse_style_color(buf: &[u8]) -> StyleColor {
+    match buf[0] {
+        1 => StyleColor::Palette(buf[1]),
+        2 => StyleColor::Rgb(Rgb::new(buf[1], buf[2], buf[3])),
+        _ => StyleColor::None,
+    }
+}
+
+fn decode_charset_state(raw: u16) -> ([SnapshotStandardCharset; 4], [u8; 4], SnapshotCharsetIndex) {
+    // Ghostty `charsets.Charset`: 0 = utf8, 1 = ascii, 2 = british, 3 = dec_special.
+    let raw_slots = [
+        (raw & 0x3) as u8,
+        ((raw >> 2) & 0x3) as u8,
+        ((raw >> 4) & 0x3) as u8,
+        ((raw >> 6) & 0x3) as u8,
+    ];
+    let charsets = raw_slots.map(|code| match code {
+        3 => SnapshotStandardCharset::SpecialCharacterAndLineDrawing,
+        _ => SnapshotStandardCharset::Ascii,
+    });
+    let gl = match (raw >> 8) & 0x3 {
+        1 => SnapshotCharsetIndex::G1,
+        2 => SnapshotCharsetIndex::G2,
+        3 => SnapshotCharsetIndex::G3,
+        _ => SnapshotCharsetIndex::G0,
+    };
+    (charsets, raw_slots, gl)
+}
+
+fn parse_hyperlink_entry(buf: &[u8]) -> Option<RunnerHyperlink> {
+    let kind = *buf.first()?;
+    match kind {
+        0 => None,
+        1 => {
+            if buf.len() < 9 {
+                return None;
+            }
+            let uri_len = u32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]) as usize;
+            let uri_bytes = buf.get(9..9 + uri_len)?;
+            let uri = String::from_utf8_lossy(uri_bytes);
+            Some(RunnerHyperlink::new(
+                Arc::<str>::from(""),
+                Arc::<str>::from(uri.as_ref()),
+            ))
+        }
+        2 => {
+            if buf.len() < 5 {
+                return None;
+            }
+            let id_len = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            let id_bytes = buf.get(5..5 + id_len)?;
+            let uri_len_off = 5 + id_len;
+            if buf.len() < uri_len_off + 4 {
+                return None;
+            }
+            let uri_len = u32::from_le_bytes([
+                buf[uri_len_off],
+                buf[uri_len_off + 1],
+                buf[uri_len_off + 2],
+                buf[uri_len_off + 3],
+            ]) as usize;
+            let uri_bytes = buf.get(uri_len_off + 4..uri_len_off + 4 + uri_len)?;
+            let id = String::from_utf8_lossy(id_bytes);
+            let uri = String::from_utf8_lossy(uri_bytes);
+            Some(RunnerHyperlink::new(
+                Arc::<str>::from(id.as_ref()),
+                Arc::<str>::from(uri.as_ref()),
+            ))
+        }
+        _ => None,
+    }
+}
+
+#[allow(dead_code)]
+fn _grid_tag_used(_: GridPointTag) {}

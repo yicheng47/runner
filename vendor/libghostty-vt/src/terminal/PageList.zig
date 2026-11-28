@@ -3777,6 +3777,11 @@ fn scrollPrompt(self: *PageList, delta: isize) void {
 /// Clear the screen by scrolling written contents up into the scrollback.
 /// This will not update the viewport.
 pub fn scrollClear(self: *PageList) Allocator.Error!void {
+    _ = try self.scrollClearCount();
+}
+
+/// Same as `scrollClear`, returning the number of rows scrolled into history.
+pub fn scrollClearCount(self: *PageList) Allocator.Error!usize {
     defer self.assertIntegrity();
 
     // Go through the active area backwards to find the first non-empty
@@ -3812,6 +3817,7 @@ pub fn scrollClear(self: *PageList) Allocator.Error!void {
 
     // Scroll
     for (0..non_empty) |_| _ = try self.grow();
+    return non_empty;
 }
 
 /// Give a live node a new generation before changing its coordinate layout in

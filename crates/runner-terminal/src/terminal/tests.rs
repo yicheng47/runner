@@ -326,6 +326,8 @@ fn reconnect_cancels_an_idle_subscription_replaced_by_resync() {
                 subscriber_id: id,
                 snapshot: runner_core::protocol::terminal::TerminalSnapshot {
                     seq: 0,
+                    format: Default::default(),
+                    unavailable: false,
                     cols: 80,
                     rows: 24,
                     bytes: Vec::new(),
@@ -537,6 +539,8 @@ impl runner_core::protocol::Transport for ScriptedHost {
             subscriber_id: 1,
             snapshot: TerminalSnapshot {
                 seq: 0,
+                format: Default::default(),
+                unavailable: false,
                 cols: 80,
                 rows: 24,
                 bytes: Vec::new(),
@@ -579,11 +583,10 @@ fn scripted_mirror(
 
 fn screen_text(mirror: &TerminalMirror) -> String {
     mirror
-        .term
-        .lock()
-        .grid()
-        .display_iter()
-        .map(|cell| cell.c)
+        .viewport_snapshot()
+        .view()
+        .visible_cells()
+        .map(|cell| cell.c())
         .collect()
 }
 
@@ -763,16 +766,29 @@ fn local_mirror_parses_a_clear_scrollback_at_once() {
 fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
     use runner_core::protocol::terminal::{TerminalAttachment, TerminalSubscription};
     use runner_core::protocol::{EventSubscription, Request, Response, Transport};
-    struct Frames(mpsc::Receiver<TerminalFrame>);
+    struct Frames {
+        tx: mpsc::Sender<TerminalFrame>,
+        rx: mpsc::Receiver<TerminalFrame>,
+        cancelled: Arc<AtomicBool>,
+    }
     impl TerminalSubscription for Frames {
         fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
-            self.0.recv().map_err(|_| ClientError::msg("closed"))
+            let frame = self.rx.recv().map_err(|_| ClientError::msg("closed"))?;
+            if self.cancelled.load(Ordering::Acquire) {
+                return Err(ClientError::msg("cancelled"));
+            }
+            Ok(frame)
         }
         fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
-            Arc::new(|| {})
+            let tx = self.tx.clone();
+            let cancelled = Arc::clone(&self.cancelled);
+            Arc::new(move || {
+                cancelled.store(true, Ordering::Release);
+                let _ = tx.send(TerminalFrame::Resync);
+            })
         }
     }
-    struct Host(Mutex<Option<mpsc::Receiver<TerminalFrame>>>);
+    struct Host(Mutex<Option<Frames>>);
     impl Transport for Host {
         fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
             Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
@@ -781,11 +797,13 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
             unreachable!()
         }
         fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
-            let rx = self.0.lock().unwrap().take().unwrap();
+            let frames = self.0.lock().unwrap().take().unwrap();
             Ok(TerminalAttachment {
                 subscriber_id: 0,
                 snapshot: TerminalSnapshot {
                     seq: 0,
+                    format: Default::default(),
+                    unavailable: false,
                     cols: 20,
                     rows: 5,
                     bytes: Vec::new(),
@@ -794,7 +812,7 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
                     activity: None,
                     controller: Default::default(),
                 },
-                frames: Box::new(Frames(rx)),
+                frames: Box::new(frames),
             })
         }
     }
@@ -802,7 +820,11 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
     let wakes = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&wakes);
     let mirror = TerminalMirror::attach(
-        DaemonClient::new(Arc::new(Host(Mutex::new(Some(rx))))),
+        DaemonClient::new(Arc::new(Host(Mutex::new(Some(Frames {
+            tx: frames.clone(),
+            rx,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }))))),
         "find".into(),
         Arc::new(move || {
             counted.fetch_add(1, Ordering::SeqCst);
@@ -831,35 +853,91 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
     mirror.resize_local(20, 5);
     assert_eq!(start.moved_since(mirror.scroll_mark()), Some(13));
 
-    // A tab that wraps a full bottom row scrolls a held viewport too.
+    // Right-margin HT with wrap pending stays on the full bottom row; the next
+    // printable character wraps and scrolls a held viewport once.
     let hold = mirror.hold_viewport();
     let mark = mirror.scroll_mark();
     mirror.test_feed(6, b"\x1b[5;1Habcdefghijklmnopqrst");
     assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(0));
     mirror.test_feed(7, b"\t");
+    assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(0));
+    assert_eq!(mirror.scroll_state().display_offset, 0);
+    mirror.test_feed(8, b"z");
     assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(1));
     assert_eq!(mirror.scroll_state().display_offset, 1);
     drop(hold);
     mirror.scroll_to_bottom();
 
-    // A burst past the scrollback leaves a held viewport at its top, also
-    // when it scrolls the ring buffer's whole length (1005 rows here) so
-    // the same row allocations come back to the top.
+    // Bursts past the whole-page scrollback evict older pages and leave a held
+    // viewport clamped at the top of actual retained history. Chunked overflow
+    // tracks exact scrolled rows across page recycling; a single write larger
+    // than the whole retained grid advances the scroll mark by at least the
+    // full grid height so prior matches leave scrollback and held views clamp.
     mirror.configure(20, CursorShape::Block, false);
-    for (seq, burst) in [(8, 40), (9, 1005), (10, 1007)] {
+    let mut seq = 9u64;
+    let mut line_num = 0usize;
+    {
         let mark = mirror.scroll_mark();
         let hold = mirror.hold_viewport();
-        mirror.test_feed(seq, &lines(burst));
+        let total_rows = 2_500usize;
+        for _ in 0..250 {
+            let payload: Vec<u8> = (line_num..line_num + 10)
+                .map(|n| format!("\r\nrow-{n:05}"))
+                .collect::<String>()
+                .into_bytes();
+            line_num += 10;
+            mirror.test_feed(seq, &payload);
+            seq += 1;
+        }
         let state = mirror.scroll_state();
-        assert_eq!(
-            (state.history_lines, state.display_offset),
-            (20, 20),
-            "{burst}"
+        assert!(
+            state.history_lines > 0 && state.history_lines < total_rows,
+            "expected whole-page eviction for chunked overflow, got history={}",
+            state.history_lines
         );
-        assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(burst as i32));
+        assert_eq!(state.display_offset, state.history_lines);
+        assert_eq!(
+            mark.moved_since(mirror.scroll_mark()),
+            Some(total_rows as i32)
+        );
         drop(hold);
         mirror.scroll_to_bottom();
     }
+    for burst in [2_500usize, 3_500] {
+        let mark = mirror.scroll_mark();
+        let hold = mirror.hold_viewport();
+        let payload: Vec<u8> = (line_num..line_num + burst)
+            .map(|n| format!("\r\nrow-{n:05}"))
+            .collect::<String>()
+            .into_bytes();
+        line_num += burst;
+        mirror.test_feed(seq, &payload);
+        seq += 1;
+        let state = mirror.scroll_state();
+        assert!(
+            state.history_lines > 0 && state.history_lines < burst,
+            "expected whole-page eviction for burst={burst}, got history={}",
+            state.history_lines
+        );
+        assert_eq!(state.display_offset, state.history_lines, "{burst}");
+        assert_eq!(
+            mark.moved_since(mirror.scroll_mark()),
+            Some(burst as i32),
+            "single-write overflow should track exact scrolled rows: burst={burst} state={state:?}"
+        );
+        drop(hold);
+        mirror.scroll_to_bottom();
+    }
+
+    // Scrollback 0 retains zero rows and keeps a held viewport at offset 0.
+    mirror.configure(0, CursorShape::Block, false);
+    assert_eq!(mirror.scroll_state().history_lines, 0);
+    let hold = mirror.hold_viewport();
+    mirror.test_feed(seq, &lines(10));
+    seq += 1;
+    assert_eq!(mirror.scroll_state().history_lines, 0);
+    assert_eq!(mirror.scroll_state().display_offset, 0);
+    drop(hold);
 
     // A resize from the daemon, with the controller unchanged, still
     // wakes the views so an open find bar recomputes.
@@ -868,7 +946,7 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
     let mark = mirror.scroll_mark();
     frames
         .send(TerminalFrame::Resized {
-            seq: 11,
+            seq,
             cols: 24,
             rows: 5,
             controller: Default::default(),
@@ -884,7 +962,7 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
     }
     assert_eq!(mirror.size(), (24, 5));
     let after_resize = mirror.output_activity();
-    assert_eq!(after_resize.last_seq, 11);
+    assert_eq!(after_resize.last_seq, seq);
     assert_eq!(
         after_resize.last_output_seq,
         before_activity.last_output_seq
@@ -892,34 +970,26 @@ fn output_advances_the_scroll_mark_and_a_hold_keeps_the_viewport_still() {
     assert_eq!(after_resize.last_paint_seq, before_activity.last_paint_seq);
     assert_eq!(mark.moved_since(mirror.scroll_mark()), None);
     let resized = mirror.scroll_mark();
-    mirror.test_feed(12, b"\x1b[?1049h");
+    mirror.test_feed(seq + 1, b"\x1b[?1049h");
     assert_eq!(resized.moved_since(mirror.scroll_mark()), None);
     drop(frames);
     mirror.test_stop_frames();
 }
 
 #[test]
-fn shared_parse_keeps_only_the_bytes_held_after_a_capacity_restart() {
-    let (tx, _) = mpsc::channel();
-    let mut term = Term::new(
-        Config::default(),
-        &TermSize::new(20, 5),
-        EventProxy {
-            tx,
-            waker: Arc::new(|| {}),
-        },
-    );
-    let mut parser = ParserState::default();
+fn large_synchronized_updates_stay_held_until_end_marker() {
+    let mut term = crate::replay::Terminal::new(20, 5);
     let mut first = b"\x1b[?2026h".to_vec();
     first.resize(1024 * 1024, b'x');
     let mut second = vec![b'y'; 1024 * 1024 - 12];
     second.extend_from_slice(b"\x1b[?2026hheld");
     for chunk in [first.as_slice(), second.as_slice(), b"z\x1b[?2026hnew"] {
-        parse(&mut parser, &mut term, chunk);
+        term.advance(chunk);
     }
-    assert_eq!(parser.processor.sync_bytes_count(), 3);
-    assert_eq!(parser.boundary.unfinished().len(), 11);
-    assert_eq!(parser.boundary.unfinished(), b"\x1b[?2026hnew");
+    assert!(term.is_sync_held());
+    term.advance(b"\x1b[?2026l");
+    assert!(!term.is_sync_held());
+    assert!(term.screen().visible_lines().join("").contains("new"));
 }
 
 #[test]
@@ -930,12 +1000,17 @@ fn shell_title_sanitization_preserves_content_and_bounds_the_label() {
 }
 
 fn osc7_payloads(chunks: &[&[u8]]) -> Vec<String> {
-    let mut reports = super::CwdReports::default();
-    chunks
-        .iter()
-        .flat_map(|chunk| reports.payloads(chunk))
-        .map(|payload| String::from_utf8(payload).unwrap())
-        .collect()
+    let mut term = crate::vt::Terminal::new(&crate::vt::TerminalConfig::default()).unwrap();
+    let mut out = Vec::new();
+    for chunk in chunks {
+        term.vt_write(chunk);
+        for effect in term.take_effects() {
+            if let crate::vt::TerminalEffect::PwdChanged(pwd) = effect {
+                out.push(String::from_utf8(pwd).unwrap());
+            }
+        }
+    }
+    out
 }
 
 #[test]
@@ -956,20 +1031,14 @@ fn osc7_reports_end_at_bel_or_st_across_any_chunk_split() {
 }
 
 #[test]
-fn osc7_reports_abort_on_esc_can_and_sub_and_skip_overlong_payloads() {
-    assert_eq!(
-        osc7_payloads(&[b"\x1b]7;file:///a\x1b[0m\x1b]7;file:///b\x07"]),
-        vec!["file:///b"]
-    );
-    assert_eq!(
-        osc7_payloads(&[b"\x1b]7;file:///a\x1b", b"\x1b]7;file:///b\x07"]),
-        vec!["file:///b"]
-    );
+fn osc7_reports_abort_on_can_and_sub_and_skip_overlong_payloads() {
+    // Under Ghostty's VT500 parser, ESC ends an OSC string (`osc_end`), while
+    // CAN (0x18) and SUB (0x1a) abort it without dispatching.
     assert_eq!(
         osc7_payloads(&[b"\x1b]7;file:///a\x18 \x1b]7;file:///b\x1a \x1b]7;file:///c\x07"]),
         vec!["file:///c"]
     );
-    let overlong = format!("\x1b]7;file:///{}", "a".repeat(super::OSC7_MAX_PAYLOAD));
+    let overlong = format!("\x1b]7;file:///{}", "a".repeat(16 * 1024));
     assert!(osc7_payloads(&[format!("{overlong}\x07").as_bytes()]).is_empty());
     assert_eq!(
         osc7_payloads(&[
@@ -1031,10 +1100,16 @@ fn osc7_file_uri_paths_drop_the_slash_before_a_windows_drive() {
 
 #[test]
 fn only_kitty_flag_queries_are_masked() {
-    use super::kitty_flags_reply;
-    let bits = |text| kitty_flags_reply(text).map(|flags| flags.bits());
-    assert_eq!(bits("\x1b[?0u"), Some(0));
-    assert_eq!(bits("\x1b[?31u"), Some(31));
+    let masked = |text: &str| {
+        String::from_utf8(super::model::mask_kitty_keyboard_query_reply(
+            text.as_bytes().to_vec(),
+        ))
+        .unwrap()
+    };
+    assert_eq!(masked("\x1b[?0u"), "\x1b[?0u");
+    assert_eq!(masked("\x1b[?1u"), "\x1b[?1u");
+    assert_eq!(masked("\x1b[?31u"), "\x1b[?1u");
+    assert_eq!(masked("\x1b[?6u"), "\x1b[?0u");
     for other in [
         "\x1b[?u",
         "\x1b[?6c",
@@ -1043,26 +1118,34 @@ fn only_kitty_flag_queries_are_masked() {
         "\x1b[?1;2u",
         "\x1b[?999u",
     ] {
-        assert_eq!(bits(other), None, "{other:?}");
+        assert_eq!(masked(other), other, "{other:?}");
     }
 }
 
 #[test]
 fn scheme_sequences_are_seen_once_across_chunk_splits() {
-    use super::{scan_scheme_sequences, SchemeSequence};
-    let mut tail = Vec::new();
-    assert_eq!(
-        scan_scheme_sequences(&mut tail, b"\x1b[?2031h\x1b[?996n"),
-        vec![(8, SchemeSequence::Subscribe), (15, SchemeSequence::Query)]
-    );
-    assert_eq!(scan_scheme_sequences(&mut tail, b"plain"), vec![]);
-    assert_eq!(scan_scheme_sequences(&mut tail, b"\x1b[?20"), vec![]);
-    assert_eq!(
-        scan_scheme_sequences(&mut tail, b"31l"),
-        vec![(3, SchemeSequence::Unsubscribe)]
-    );
-    assert_eq!(scan_scheme_sequences(&mut tail, b""), vec![]);
-    assert_eq!(scan_scheme_sequences(&mut tail, b"\x1b[?25h"), vec![]);
+    let mut term = crate::vt::Terminal::new(&crate::vt::TerminalConfig::default()).unwrap();
+    term.set_color_scheme(crate::vt::ColorScheme::Dark);
+    term.vt_write(b"\x1b[?2031h\x1b[?996n");
+    assert!(term.mode(crate::vt::dec_mode(2031)));
+    let replies: Vec<Vec<u8>> = term
+        .take_effects()
+        .into_iter()
+        .filter_map(|e| match e {
+            crate::vt::TerminalEffect::WritePty(b) => Some(b),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(replies, vec![b"\x1b[?997;1n".to_vec()]);
+    term.vt_write(b"plain");
+    assert!(term.take_effects().is_empty());
+    term.vt_write(b"\x1b[?20");
+    assert!(term.mode(crate::vt::dec_mode(2031)));
+    term.vt_write(b"31l");
+    assert!(!term.mode(crate::vt::dec_mode(2031)));
+    term.vt_write(b"");
+    term.vt_write(b"\x1b[?25h");
+    assert!(!term.mode(crate::vt::dec_mode(2031)));
 }
 
 #[test]
@@ -1563,23 +1646,20 @@ fn snapshot_mirror(seq: u64, chunks: &[&[u8]]) -> Arc<TerminalMirror> {
         }
     }
 
-    let mut term = Term::new(
-        term_config(),
-        &TermSize::new(80, 24),
-        alacritty_terminal::event::VoidListener,
-    );
-    let mut parser = ParserState::default();
+    let mut term = crate::replay::Terminal::with_kitty_keyboard(80, 24);
     for chunk in chunks {
-        parse_with(&mut parser, &mut term, chunk);
+        term.advance(chunk);
     }
-    let unfinished = parser.boundary.unfinished();
+    let unfinished = term.unfinished().to_vec();
     let snapshot = TerminalSnapshot {
         seq,
+        format: SnapshotFormat::Vt,
+        unavailable: false,
         cols: 80,
         rows: 24,
-        bytes: crate::snapshot::serialize_term(&term, unfinished),
+        bytes: crate::snapshot::serialize(&term, &unfinished),
         unfinished_len: unfinished.len(),
-        preceding_char: parser.processor.preceding_char(),
+        preceding_char: term.preceding_char(),
         activity: None,
         controller: Default::default(),
     };
@@ -3166,4 +3246,2297 @@ fn link_probe_budget_caps_lookups_and_extra_root_resolves_via_link_at_with() {
             column: None,
         }
     );
+}
+
+#[test]
+#[ignore = "manual #1508 Open Question 3 25-session scale benchmark"]
+fn benchmark_25_open_sessions_memory_threads_and_latency() {
+    use runner_core::protocol::terminal::{
+        TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    struct BenchHost;
+    impl TerminalHost for BenchHost {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    type SharedFrameSink = Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync>;
+
+    struct BenchQueue {
+        sink: Mutex<Option<SharedFrameSink>>,
+    }
+    struct BenchFrames {
+        queue: Arc<BenchQueue>,
+    }
+    impl TerminalSubscription for BenchFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("push-only bench frames"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            let queue = Arc::clone(&self.queue);
+            Arc::new(move || {
+                if let Some(sink) = queue.sink.lock().unwrap().take() {
+                    let _ = sink(None);
+                }
+            })
+        }
+        fn install_sink(&mut self, sink: runner_core::protocol::terminal::FrameSink) -> bool {
+            *self.queue.sink.lock().unwrap() = Some(Arc::from(sink));
+            true
+        }
+    }
+
+    struct BenchTransport {
+        snapshot: Mutex<Option<TerminalSnapshot>>,
+        frames: Mutex<Option<BenchFrames>>,
+    }
+    impl Transport for BenchTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: self.snapshot.lock().unwrap().take().unwrap(),
+                frames: Box::new(self.frames.lock().unwrap().take().unwrap()),
+            })
+        }
+    }
+
+    fn process_rss_kib_and_threads() -> (u64, u64) {
+        let pid = std::process::id().to_string();
+        let rss = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        let threads = std::process::Command::new("ps")
+            .args(["-M", "-p", &pid])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.lines().count().saturating_sub(1) as u64)
+            .unwrap_or(0);
+        (rss, threads)
+    }
+
+    const SESSIONS: usize = 25;
+    const COLS: u16 = 120;
+    const ROWS: u16 = 40;
+    const HISTORY_LINES: usize = 2_000;
+
+    let (base_rss, base_threads) = process_rss_kib_and_threads();
+    let host: Arc<dyn TerminalHost> = Arc::new(BenchHost);
+    let mut models = Vec::with_capacity(SESSIONS);
+    let mut mirrors = Vec::with_capacity(SESSIONS);
+    let mut queues = Vec::with_capacity(SESSIONS);
+
+    for i in 0..SESSIONS {
+        let id = format!("bench-{i:02}");
+        let model = TerminalModel::new(
+            Arc::clone(&host),
+            id.clone(),
+            COLS,
+            ROWS,
+            ModelOptions::default(),
+        )
+        .unwrap();
+        let initial_snap = model.snapshot(0);
+        let queue = Arc::new(BenchQueue {
+            sink: Mutex::new(None),
+        });
+        let transport = Arc::new(BenchTransport {
+            snapshot: Mutex::new(Some(initial_snap)),
+            frames: Mutex::new(Some(BenchFrames {
+                queue: Arc::clone(&queue),
+            })),
+        });
+        let mirror =
+            TerminalMirror::attach(DaemonClient::new(transport), id, Arc::new(|| {})).unwrap();
+        models.push(model);
+        mirrors.push(mirror);
+        queues.push(queue);
+    }
+    let (idle_rss, idle_threads) = process_rss_kib_and_threads();
+
+    // Feed 2,000 realistic colored lines into each model & mirror (hidden first).
+    let mut payload = Vec::with_capacity(HISTORY_LINES * 96);
+    for line in 0..HISTORY_LINES {
+        payload.extend_from_slice(
+            format!(
+                "\x1b[32m[{line:04}]\x1b[0m \x1b[1mrunner\x1b[0m src/terminal/model.rs:{line} \x1b[36mstatus=working\x1b[0m\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    for (model, mirror) in models.iter().zip(mirrors.iter()) {
+        model.feed_output(1, &payload);
+        mirror.test_feed(1, &payload);
+    }
+    let (populated_rss, populated_threads) = process_rss_kib_and_threads();
+
+    // 1. Hidden mirrors (`viewers == 0`): lazy viewport publishing skips RenderState::update.
+    let mut model_feed_us = Vec::with_capacity(SESSIONS * 20);
+    let mut hidden_mirror_feed_us = Vec::with_capacity(SESSIONS * 20);
+    for round in 0..20u64 {
+        let seq = 2 + round;
+        let line = format!("\x1b[33mhidden {round:02}\x1b[0m hello from hidden benchmark\r\n");
+        for (model, mirror) in models.iter().zip(mirrors.iter()) {
+            let t0 = Instant::now();
+            model.feed_output(seq, line.as_bytes());
+            model_feed_us.push(t0.elapsed().as_secs_f64() * 1e6);
+
+            let t1 = Instant::now();
+            mirror.test_feed(seq, line.as_bytes());
+            hidden_mirror_feed_us.push(t1.elapsed().as_secs_f64() * 1e6);
+        }
+    }
+
+    // 2. Visible mirrors (`viewers == 1`): publish ViewportSnapshot per output chunk + published-slot Arc::clone reads.
+    let views: Vec<_> = mirrors.iter().map(|m| m.view()).collect();
+    let mut visible_mirror_feed_us = Vec::with_capacity(SESSIONS * 20);
+    let mut paint_read_ns = Vec::with_capacity(SESSIONS * 40);
+    for round in 0..20u64 {
+        let seq = 30 + round;
+        let line = format!("\x1b[33mvisible {round:02}\x1b[0m hello from visible benchmark\r\n");
+        for mirror in &mirrors {
+            let t1 = Instant::now();
+            mirror.test_feed(seq, line.as_bytes());
+            visible_mirror_feed_us.push(t1.elapsed().as_secs_f64() * 1e6);
+
+            for _ in 0..2 {
+                let t2 = Instant::now();
+                let snap = mirror.viewport_snapshot();
+                std::hint::black_box(snap.cols());
+                paint_read_ns.push(t2.elapsed().as_secs_f64() * 1e9);
+            }
+        }
+    }
+    drop(views);
+
+    let mut encode_us = Vec::with_capacity(SESSIONS);
+    let mut decode_us = Vec::with_capacity(SESSIONS);
+    let mut snap_sizes = Vec::with_capacity(SESSIONS);
+    for model in &models {
+        let t0 = Instant::now();
+        let snap = model.snapshot(100);
+        encode_us.push(t0.elapsed().as_secs_f64() * 1e6);
+        snap_sizes.push(snap.bytes.len());
+
+        let t1 = Instant::now();
+        let decoded = crate::replay::Terminal::from_snapshot(&snap).unwrap();
+        decode_us.push(t1.elapsed().as_secs_f64() * 1e6);
+        std::hint::black_box(decoded.history_size());
+    }
+
+    let pct = |xs: &mut Vec<f64>, p: f64| {
+        xs.sort_by(f64::total_cmp);
+        let idx = ((xs.len() as f64 - 1.0) * p).round() as usize;
+        xs[idx]
+    };
+
+    drop(mirrors);
+    drop(queues);
+    for model in &models {
+        for worker in model.stop_workers() {
+            worker.join().unwrap();
+        }
+    }
+    drop(models);
+    let (_after_rss, after_threads) = process_rss_kib_and_threads();
+
+    println!(
+        "bench_25_sessions: base_rss_kib={base_rss} base_threads={base_threads} \
+         idle_rss_kib={idle_rss} idle_delta_mib={:.2} idle_threads={idle_threads} \
+         populated_rss_kib={populated_rss} populated_delta_mib={:.2} populated_threads={populated_threads} \
+         after_shutdown_threads={after_threads} \
+         model_feed_p50_us={:.1} model_feed_p99_us={:.1} \
+         hidden_mirror_feed_p50_us={:.1} hidden_mirror_feed_p99_us={:.1} \
+         visible_mirror_feed_p50_us={:.1} visible_mirror_feed_p99_us={:.1} \
+         paint_read_p50_ns={:.0} paint_read_p99_ns={:.0} \
+         snap_bytes_avg={} snap_encode_p50_us={:.1} snap_decode_p50_us={:.1}",
+        (idle_rss.saturating_sub(base_rss)) as f64 / 1024.0,
+        (populated_rss.saturating_sub(base_rss)) as f64 / 1024.0,
+        pct(&mut model_feed_us, 0.50),
+        pct(&mut model_feed_us, 0.99),
+        pct(&mut hidden_mirror_feed_us, 0.50),
+        pct(&mut hidden_mirror_feed_us, 0.99),
+        pct(&mut visible_mirror_feed_us, 0.50),
+        pct(&mut visible_mirror_feed_us, 0.99),
+        pct(&mut paint_read_ns, 0.50),
+        pct(&mut paint_read_ns, 0.99),
+        snap_sizes.iter().sum::<usize>() / snap_sizes.len().max(1),
+        pct(&mut encode_us, 0.50),
+        pct(&mut decode_us, 0.50),
+    );
+}
+
+#[test]
+fn selection_copies_tabs_as_spaces_including_across_soft_wraps() {
+    use runner_core::protocol::terminal::{TerminalAttachment, TerminalSubscription};
+    use runner_core::protocol::{EventSubscription, Request, Response, Transport};
+    struct Frames {
+        tx: mpsc::Sender<TerminalFrame>,
+        rx: mpsc::Receiver<TerminalFrame>,
+        cancelled: Arc<AtomicBool>,
+    }
+    impl TerminalSubscription for Frames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            let frame = self.rx.recv().map_err(|_| ClientError::msg("closed"))?;
+            if self.cancelled.load(Ordering::Acquire) {
+                return Err(ClientError::msg("cancelled"));
+            }
+            Ok(frame)
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            let tx = self.tx.clone();
+            let cancelled = Arc::clone(&self.cancelled);
+            Arc::new(move || {
+                cancelled.store(true, Ordering::Release);
+                let _ = tx.send(TerminalFrame::Resync);
+            })
+        }
+    }
+    struct StaticHost {
+        cols: u16,
+        rows: u16,
+        frames: Mutex<Option<Frames>>,
+    }
+    impl Transport for StaticHost {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            let frames = self.frames.lock().unwrap().take().unwrap();
+            Ok(TerminalAttachment {
+                subscriber_id: 0,
+                snapshot: TerminalSnapshot {
+                    seq: 0,
+                    format: Default::default(),
+                    unavailable: false,
+                    cols: self.cols,
+                    rows: self.rows,
+                    bytes: Vec::new(),
+                    unfinished_len: 0,
+                    preceding_char: None,
+                    activity: None,
+                    controller: Default::default(),
+                },
+                frames: Box::new(frames),
+            })
+        }
+    }
+
+    // 1. Plain row with HT copies spaces up to the 8-column tab stop.
+    let (tx1, rx1) = mpsc::channel();
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(StaticHost {
+            cols: 20,
+            rows: 4,
+            frames: Mutex::new(Some(Frames {
+                tx: tx1.clone(),
+                rx: rx1,
+                cancelled: Arc::new(AtomicBool::new(false)),
+            })),
+        })),
+        "tab-plain".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    mirror.test_feed(1, b"A\tB");
+    mirror.start_selection(
+        SelectionKind::Simple,
+        GridPoint::new(Line(0), Column(0)),
+        Side::Left,
+    );
+    mirror.update_selection(GridPoint::new(Line(0), Column(8)), Side::Right);
+    assert_eq!(mirror.selection_text().as_deref(), Some("A       B"));
+    drop(tx1);
+    mirror.test_stop_frames();
+
+    // 2. Selection spanning a soft wrap after HT preserves spaces to the tab
+    //    stop and emits no spurious newline across the wrap boundary.
+    let (tx2, rx2) = mpsc::channel();
+    let wrapped = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(StaticHost {
+            cols: 10,
+            rows: 4,
+            frames: Mutex::new(Some(Frames {
+                tx: tx2.clone(),
+                rx: rx2,
+                cancelled: Arc::new(AtomicBool::new(false)),
+            })),
+        })),
+        "tab-wrap".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    wrapped.test_feed(1, b"A\tBCDE");
+    wrapped.start_selection(
+        SelectionKind::Simple,
+        GridPoint::new(Line(0), Column(0)),
+        Side::Left,
+    );
+    wrapped.update_selection(GridPoint::new(Line(1), Column(1)), Side::Right);
+    assert_eq!(wrapped.selection_text().as_deref(), Some("A       BCDE"));
+    drop(tx2);
+    wrapped.test_stop_frames();
+}
+
+fn wait_until(timeout: Duration, mut pred: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if pred() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    pred()
+}
+
+#[test]
+fn unavailable_and_corrupt_snapshots_never_blank_a_synced_mirror() {
+    use runner_core::protocol::terminal::{
+        FrameSink, TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    type SharedFrameSink = Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync>;
+
+    struct PushQueue {
+        state: Mutex<(
+            Option<SharedFrameSink>,
+            std::collections::VecDeque<TerminalFrame>,
+        )>,
+    }
+    impl PushQueue {
+        fn new() -> Self {
+            Self {
+                state: Mutex::new((None, std::collections::VecDeque::new())),
+            }
+        }
+        fn push(&self, frame: TerminalFrame) {
+            let ready = {
+                let mut guard = self.state.lock().unwrap();
+                if let Some(sink) = guard.0.as_ref() {
+                    Some((Arc::clone(sink), frame))
+                } else {
+                    guard.1.push_back(frame);
+                    None
+                }
+            };
+            if let Some((sink, frame)) = ready {
+                let _ = sink(Some(frame));
+            }
+        }
+        fn has_sink(&self) -> bool {
+            self.state.lock().unwrap().0.is_some()
+        }
+    }
+    struct PushFrames(Arc<PushQueue>);
+    impl TerminalSubscription for PushFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("push-only"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            let q = Arc::clone(&self.0);
+            Arc::new(move || {
+                let sink = q.state.lock().unwrap().0.take();
+                if let Some(sink) = sink {
+                    let _ = sink(None);
+                }
+            })
+        }
+        fn install_sink(&mut self, sink: FrameSink) -> bool {
+            let sink: SharedFrameSink = Arc::from(sink);
+            let pending: Vec<TerminalFrame> = {
+                let mut guard = self.0.state.lock().unwrap();
+                guard.0 = Some(Arc::clone(&sink));
+                guard.1.drain(..).collect()
+            };
+            for frame in pending {
+                if !sink(Some(frame)) {
+                    break;
+                }
+            }
+            true
+        }
+    }
+
+    struct Host;
+    impl TerminalHost for Host {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    let model = TerminalModel::new(
+        Arc::new(Host),
+        "unavail".into(),
+        20,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    model.feed_output(1, b"KEEPME");
+    let good_snap = model.snapshot(1);
+    assert!(!good_snap.unavailable);
+    assert_eq!(good_snap.format, SnapshotFormat::GhosttyBinary);
+    assert_eq!(good_snap.preceding_char, None);
+
+    // Unfinished sequence past the 64 KiB continuation cap marks both snapshot
+    // formats unavailable while keeping the model's screen intact.
+    model.feed_output(2, b"\x1b]2;");
+    model.feed_output(3, &vec![b'x'; 65_537]);
+    assert_eq!(model.visible_lines()[0], "KEEPME");
+    let unavail_bin = model.snapshot(3);
+    assert!(unavail_bin.unavailable);
+    assert!(unavail_bin.bytes.is_empty());
+    assert!(crate::replay::Terminal::from_snapshot(&unavail_bin).is_err());
+    let unavail_vt = model.snapshot_with_history(3, 0);
+    assert!(unavail_vt.unavailable);
+    assert!(unavail_vt.bytes.is_empty());
+    assert!(crate::replay::Terminal::from_snapshot(&unavail_vt).is_err());
+    assert!(!model.take_resync_needed());
+
+    // Aborting the oversize OSC with CAN and immediately opening a short
+    // partial CSI makes snapshots representable again even though the parser is
+    // not at ground at the end of the write.
+    model.feed_output(4, b"\x18MORE\x1b[");
+    assert!(model.take_resync_needed());
+    assert!(!model.take_resync_needed());
+    let recovered_snap = model.snapshot(4);
+    assert!(!recovered_snap.unavailable);
+
+    // Corrupt binary snapshot on initial attach fails loudly.
+    struct SingleSnapTransport(Mutex<Option<TerminalSnapshot>>);
+    impl Transport for SingleSnapTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: self.0.lock().unwrap().take().unwrap(),
+                frames: Box::new(PushFrames(Arc::new(PushQueue::new()))),
+            })
+        }
+    }
+    let mut corrupt = good_snap.clone();
+    corrupt.bytes = b"not-a-valid-snapshot".to_vec();
+    assert!(TerminalMirror::attach(
+        DaemonClient::new(Arc::new(SingleSnapTransport(Mutex::new(Some(
+            corrupt.clone()
+        ))))),
+        "corrupt-init".into(),
+        Arc::new(|| {}),
+    )
+    .is_err());
+
+    // On resync, an unavailable or corrupt snapshot retains the prior good view
+    // and does not advance `last_seq`, then recovers once a valid snapshot arrives.
+    struct SequenceTransport {
+        snaps: Mutex<std::collections::VecDeque<TerminalSnapshot>>,
+        queues: Mutex<Vec<Arc<PushQueue>>>,
+    }
+    impl Transport for SequenceTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            let snap = self.snaps.lock().unwrap().pop_front().unwrap();
+            let q = Arc::new(PushQueue::new());
+            self.queues.lock().unwrap().push(Arc::clone(&q));
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: snap,
+                frames: Box::new(PushFrames(q)),
+            })
+        }
+    }
+
+    let transport = Arc::new(SequenceTransport {
+        snaps: Mutex::new(
+            vec![good_snap, unavail_bin, corrupt, recovered_snap]
+                .into_iter()
+                .collect(),
+        ),
+        queues: Mutex::new(Vec::new()),
+    });
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(transport.clone()),
+        "resync-keep".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let _view = mirror.view();
+    assert_eq!(mirror.visible_lines()[0], "KEEPME");
+    assert_eq!(mirror.output_activity().last_seq, 1);
+
+    // 1. Resync receives unavailable snapshot -> keeps KEEPME and seq=1,
+    // and ignores a Resized frame's sequence/dimensions while still applying its
+    // controller update.
+    assert!(wait_until(Duration::from_secs(2), || {
+        transport
+            .queues
+            .lock()
+            .unwrap()
+            .first()
+            .is_some_and(|q| q.has_sink())
+    }));
+    transport.queues.lock().unwrap()[0].push(TerminalFrame::Resync);
+    assert!(wait_until(Duration::from_secs(2), || {
+        transport
+            .queues
+            .lock()
+            .unwrap()
+            .get(1)
+            .is_some_and(|q| q.has_sink())
+    }));
+    let browser_controller = TerminalController::Browser {
+        channel: 1,
+        name: "Phone".into(),
+    };
+    transport.queues.lock().unwrap()[1].push(TerminalFrame::Resized {
+        seq: 5,
+        cols: 42,
+        rows: 11,
+        controller: browser_controller.clone(),
+    });
+    assert!(wait_until(Duration::from_secs(2), || {
+        mirror.control().controller == browser_controller
+    }));
+    assert_eq!(mirror.size(), (20, 4));
+    assert_eq!(mirror.visible_lines()[0], "KEEPME");
+    assert_eq!(mirror.output_activity().last_seq, 1);
+
+    // 2. Resync receives corrupt binary snapshot -> retains KEEPME at seq=1,
+    // ignores normal output and resize frames while awaiting recovery, and
+    // automatically recovers via bounded decode retry without an external Resync.
+    transport.queues.lock().unwrap()[1].push(TerminalFrame::Resync);
+    assert!(wait_until(Duration::from_secs(2), || {
+        transport
+            .queues
+            .lock()
+            .unwrap()
+            .get(2)
+            .is_some_and(|q| q.has_sink())
+    }));
+    // Send normal output and a resize on the corrupt-step subscription (no manual Resync).
+    transport.queues.lock().unwrap()[2].push(TerminalFrame::Resized {
+        seq: 6,
+        cols: 50,
+        rows: 12,
+        controller: TerminalController::Desktop,
+    });
+    transport.queues.lock().unwrap()[2].push(TerminalFrame::Output {
+        seq: 7,
+        bytes: b"IGNORED".to_vec(),
+    });
+    assert!(wait_until(Duration::from_secs(2), || {
+        mirror.output_activity().last_seq == 4 && mirror.visible_lines()[0] == "KEEPMEMORE"
+    }));
+    assert_eq!(mirror.size(), (20, 4));
+    // Normal output on the automatically recovered subscription applies cleanly.
+    assert!(wait_until(Duration::from_secs(2), || {
+        transport
+            .queues
+            .lock()
+            .unwrap()
+            .get(3)
+            .is_some_and(|q| q.has_sink())
+    }));
+    transport.queues.lock().unwrap()[3].push(TerminalFrame::Output {
+        seq: 5,
+        bytes: b"m!".to_vec(),
+    });
+    assert!(wait_until(Duration::from_secs(2), || {
+        mirror.output_activity().last_seq == 5 && mirror.visible_lines()[0] == "KEEPMEMORE!"
+    }));
+
+    drop(mirror);
+
+    // 3. Fallback recv-based ResizedFrame while awaiting resync likewise keeps
+    // last_seq and dimensions intact while applying controller updates.
+    {
+        struct RecvQueue {
+            tx: mpsc::Sender<TerminalFrame>,
+            rx: mpsc::Receiver<TerminalFrame>,
+            cancelled: Arc<AtomicBool>,
+        }
+        impl TerminalSubscription for RecvQueue {
+            fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+                let frame = self.rx.recv().map_err(|_| ClientError::msg("closed"))?;
+                if self.cancelled.load(Ordering::Acquire) {
+                    return Err(ClientError::msg("cancelled"));
+                }
+                Ok(frame)
+            }
+            fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+                let tx = self.tx.clone();
+                let cancelled = Arc::clone(&self.cancelled);
+                Arc::new(move || {
+                    cancelled.store(true, Ordering::Release);
+                    let _ = tx.send(TerminalFrame::Resync);
+                })
+            }
+        }
+        struct RecvSeqTransport {
+            snaps: Mutex<std::collections::VecDeque<TerminalSnapshot>>,
+            senders: Mutex<Vec<mpsc::Sender<TerminalFrame>>>,
+        }
+        impl Transport for RecvSeqTransport {
+            fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+                Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+            }
+            fn subscribe(&self) -> Box<dyn EventSubscription> {
+                unreachable!()
+            }
+            fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+                let snap = self.snaps.lock().unwrap().pop_front().unwrap();
+                let (tx, rx) = mpsc::channel();
+                self.senders.lock().unwrap().push(tx.clone());
+                Ok(TerminalAttachment {
+                    subscriber_id: 1,
+                    snapshot: snap,
+                    frames: Box::new(RecvQueue {
+                        tx,
+                        rx,
+                        cancelled: Arc::new(AtomicBool::new(false)),
+                    }),
+                })
+            }
+        }
+        let good2 = model.snapshot(1);
+        let mut unavail2 = good2.clone();
+        unavail2.unavailable = true;
+        unavail2.bytes.clear();
+        let recv_transport = Arc::new(RecvSeqTransport {
+            snaps: Mutex::new(vec![good2, unavail2].into_iter().collect()),
+            senders: Mutex::new(Vec::new()),
+        });
+        let recv_mirror = TerminalMirror::attach(
+            DaemonClient::new(recv_transport.clone()),
+            "resync-recv-resize".into(),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        let _recv_view = recv_mirror.view();
+        recv_transport.senders.lock().unwrap()[0]
+            .send(TerminalFrame::Resync)
+            .unwrap();
+        assert!(wait_until(Duration::from_secs(2), || {
+            recv_transport.senders.lock().unwrap().len() >= 2
+        }));
+        let remote = TerminalController::Browser {
+            channel: 2,
+            name: "iPad".into(),
+        };
+        recv_transport.senders.lock().unwrap()[1]
+            .send(TerminalFrame::Resized {
+                seq: 9,
+                cols: 55,
+                rows: 15,
+                controller: remote.clone(),
+            })
+            .unwrap();
+        assert!(wait_until(Duration::from_secs(2), || {
+            recv_mirror.control().controller == remote
+        }));
+        assert_eq!(recv_mirror.size(), (20, 4));
+        assert_eq!(recv_mirror.output_activity().last_seq, 1);
+        drop(recv_mirror);
+    }
+
+    for worker in model.stop_workers() {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn companion_vt_snapshot_preserves_primary_screen_soft_wraps_and_rep_through_mirror() {
+    use runner_core::protocol::terminal::{
+        FrameSink, TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    struct NoopFrames;
+    impl TerminalSubscription for NoopFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("closed"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            Arc::new(|| {})
+        }
+        fn install_sink(&mut self, _sink: FrameSink) -> bool {
+            true
+        }
+    }
+    struct SnapTransport(Mutex<Option<TerminalSnapshot>>);
+    impl Transport for SnapTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: self.0.lock().unwrap().take().unwrap(),
+                frames: Box::new(NoopFrames),
+            })
+        }
+    }
+    struct Host;
+    impl TerminalHost for Host {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    // 1. Alternate screen active: companion VT snapshot restores BOTH alt screen
+    //    and primary screen (including scrollback history) on `TerminalMirror`.
+    let model = TerminalModel::new(
+        Arc::new(Host),
+        "alt-v1".into(),
+        20,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    model.feed_output(
+        1,
+        b"hist0\r\nhist1\r\nhist2\r\nhist3\r\nhist4\r\nKEEPME\x1b[?1049hALT",
+    );
+    let snap = model.snapshot_with_history(1, 10);
+    assert_eq!(snap.format, SnapshotFormat::Vt);
+    assert!(!snap.unavailable);
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(SnapTransport(Mutex::new(Some(snap))))),
+        "alt-v1-mirror".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    assert_eq!(mirror.visible_lines(), model.visible_lines());
+    mirror.test_feed(2, b"\x1b[?1049l");
+    model.feed_output(2, b"\x1b[?1049l");
+    assert_eq!(mirror.visible_lines(), model.visible_lines());
+    assert!(mirror.visible_lines().iter().any(|l| l == "KEEPME"));
+    assert_eq!(mirror.scroll_state().history_lines, 2);
+    mirror.with_screen(|screen| {
+        assert_eq!(screen.view().row_to_string(Line(-2)), "hist0");
+        assert_eq!(screen.view().row_to_string(Line(-1)), "hist1");
+    });
+    drop(mirror);
+    for worker in model.stop_workers() {
+        worker.join().unwrap();
+    }
+
+    // 2. Soft-wrapped primary line reflows identically to host when widened on `TerminalMirror`.
+    let model = TerminalModel::new(
+        Arc::new(Host),
+        "wrap-v1".into(),
+        8,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    model.feed_output(1, b"abcdefghijklmnopq");
+    let snap = model.snapshot_with_history(1, 0);
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(SnapTransport(Mutex::new(Some(snap))))),
+        "wrap-v1-mirror".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    model.resize(20, 4);
+    mirror.resize_local(20, 4);
+    assert_eq!(mirror.visible_lines(), model.visible_lines());
+    assert_eq!(mirror.visible_lines()[0], "abcdefghijklmnopq");
+    drop(mirror);
+    for worker in model.stop_workers() {
+        worker.join().unwrap();
+    }
+
+    // 3. Split CSI + REP (`abcccc`) still works through real `TerminalMirror` restore.
+    let model = TerminalModel::new(
+        Arc::new(Host),
+        "rep-v1".into(),
+        20,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    model.feed_output(1, b"abc\x1b[3");
+    let snap = model.snapshot_with_history(1, 0);
+    assert_eq!(snap.preceding_char, Some('c'));
+    assert_eq!(snap.unfinished_len, 3);
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(SnapTransport(Mutex::new(Some(snap))))),
+        "rep-v1-mirror".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    mirror.test_feed(2, b"b");
+    assert_eq!(mirror.visible_lines()[0], "abcccc");
+    drop(mirror);
+    for worker in model.stop_workers() {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn dec_2026_preserves_pre_hold_output_in_same_chunk_and_freezes_resync_while_held() {
+    use runner_core::protocol::terminal::{
+        FrameSink, TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    type SharedFrameSink = Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync>;
+
+    struct PushQueue {
+        state: Mutex<(
+            Option<SharedFrameSink>,
+            std::collections::VecDeque<TerminalFrame>,
+        )>,
+    }
+    impl PushQueue {
+        fn new() -> Self {
+            Self {
+                state: Mutex::new((None, std::collections::VecDeque::new())),
+            }
+        }
+        fn push(&self, frame: TerminalFrame) {
+            let ready = {
+                let mut guard = self.state.lock().unwrap();
+                if let Some(sink) = guard.0.as_ref() {
+                    Some((Arc::clone(sink), frame))
+                } else {
+                    guard.1.push_back(frame);
+                    None
+                }
+            };
+            if let Some((sink, frame)) = ready {
+                let _ = sink(Some(frame));
+            }
+        }
+    }
+    struct PushFrames(Arc<PushQueue>);
+    impl TerminalSubscription for PushFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("push-only"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            Arc::new(|| {})
+        }
+        fn install_sink(&mut self, sink: FrameSink) -> bool {
+            let sink: SharedFrameSink = Arc::from(sink);
+            let pending: Vec<TerminalFrame> = {
+                let mut guard = self.0.state.lock().unwrap();
+                guard.0 = Some(Arc::clone(&sink));
+                guard.1.drain(..).collect()
+            };
+            for frame in pending {
+                if !sink(Some(frame)) {
+                    break;
+                }
+            }
+            true
+        }
+    }
+    struct SequenceTransport {
+        snaps: Mutex<std::collections::VecDeque<TerminalSnapshot>>,
+        queues: Mutex<Vec<Arc<PushQueue>>>,
+    }
+    impl Transport for SequenceTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            let snap = self.snaps.lock().unwrap().pop_front().unwrap();
+            let q = Arc::new(PushQueue::new());
+            self.queues.lock().unwrap().push(Arc::clone(&q));
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: snap,
+                frames: Box::new(PushFrames(q)),
+            })
+        }
+    }
+    struct Host;
+    impl TerminalHost for Host {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    let model = TerminalModel::new(
+        Arc::new(Host),
+        "sync-m".into(),
+        20,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    let init_snap = model.snapshot(0);
+    model.feed_output(1, b"BASE");
+    model.feed_output(2, b"VISIBLE\x1b[?2026hHELD");
+    let mid_hold_snap = model.snapshot(2);
+
+    let transport = Arc::new(SequenceTransport {
+        snaps: Mutex::new(vec![init_snap, mid_hold_snap].into_iter().collect()),
+        queues: Mutex::new(Vec::new()),
+    });
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(transport.clone()),
+        "sync-mirror".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let _view = mirror.view();
+
+    // 1. Pre-hold bytes in the same chunk as `CSI ? 2026 h` appear immediately
+    //    while post-hold bytes stay hidden until `CSI ? 2026 l`.
+    mirror.test_feed(1, b"BASE");
+    mirror.test_feed(2, b"VISIBLE\x1b[?2026hHELD");
+    assert_eq!(
+        mirror.viewport_snapshot().view().visible_lines()[0],
+        "BASEVISIBLE"
+    );
+    mirror.test_feed(3, b"\x1b[?2026l");
+    assert_eq!(
+        mirror.viewport_snapshot().view().visible_lines()[0],
+        "BASEVISIBLEHELD"
+    );
+
+    // 2. Large (>64 KiB) synchronized update stays frozen on the pre-hold frame
+    //    until its end marker arrives.
+    let mut big = b"\x1b[?2026h\x1b[2J\x1b[H".to_vec();
+    big.extend(std::iter::repeat_n(b'X', 70_000));
+    mirror.test_feed(4, &big);
+    assert_eq!(
+        mirror.viewport_snapshot().view().visible_lines()[0],
+        "BASEVISIBLEHELD"
+    );
+    mirror.test_feed(5, b"\x1b[HAFTERBIG\x1b[?2026l");
+    assert!(mirror.viewport_snapshot().view().visible_lines()[0].starts_with("AFTERBIG"));
+
+    // 3. Resync to a snapshot taken mid-DEC-2026 keeps the prior committed
+    //    frame frozen instead of exposing `HELD`, then flushes at the deadline.
+    transport.queues.lock().unwrap()[0].push(TerminalFrame::Resync);
+    assert!(wait_until(Duration::from_secs(2), || {
+        transport.queues.lock().unwrap().len() >= 2
+    }));
+    let before_flush = mirror.viewport_snapshot().view().visible_lines()[0].clone();
+    assert!(
+        before_flush.starts_with("AFTERBIG"),
+        "resync mid-hold exposed torn frame: {before_flush:?}"
+    );
+    assert!(wait_until(Duration::from_secs(2), || {
+        mirror.viewport_snapshot().view().visible_lines()[0] == "BASEVISIBLEHELD"
+    }));
+
+    drop(mirror);
+    for worker in model.stop_workers() {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn post_invalidation_osc_7501_accepts_subsequent_report_in_same_or_split_chunk() {
+    struct Host;
+    impl TerminalHost for Host {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    let cases: &[(&str, &[u8], &[u8])] = &[
+        (
+            "can-abort",
+            b"\x1b]7501;state=working:id=old",
+            b"\x18\x1b]7501;state=blocked:id=new\x07",
+        ),
+        (
+            "sub-abort",
+            b"\x1b]7501;state=working:id=old",
+            b"\x1a\x1b]7501;state=blocked:id=new\x07",
+        ),
+        (
+            "bel-valid-old",
+            b"\x1b]7501;state=working:id=old",
+            b"\x07\x1b]7501;state=blocked:id=new\x07",
+        ),
+        (
+            "bel-invalid-old",
+            b"\x1b]7501;state=bogus:id=old",
+            b"\x07\x1b]7501;state=blocked:id=new\x07",
+        ),
+        (
+            "st-valid-old",
+            b"\x1b]7501;state=working:id=old",
+            b"\x1b\\\x1b]7501;state=blocked:id=new\x07",
+        ),
+        (
+            "esc-starts-next-osc",
+            b"\x1b]7501;state=working:id=old",
+            b"\x1b]7501;state=blocked:id=new\x07",
+        ),
+    ];
+
+    for (name, prefix, suffix) in cases {
+        // Single-chunk post-invalidation delivery.
+        let model = TerminalModel::new(
+            Arc::new(Host),
+            format!("7501-{name}"),
+            40,
+            4,
+            ModelOptions::default(),
+        )
+        .unwrap();
+        model.feed_output(1, prefix);
+        model.invalidate_program_status();
+        model.feed_output(2, suffix);
+        let statuses = model.take_program_statuses();
+        assert_eq!(statuses.len(), 1, "{name} single-chunk");
+        assert_eq!(
+            statuses[0].1.current.as_ref().map(|r| r.id.as_str()),
+            Some("new"),
+            "{name} single-chunk"
+        );
+        for w in model.stop_workers() {
+            w.join().unwrap();
+        }
+
+        // Every 1-byte split of the post-invalidation suffix yields the exact same result.
+        for split in 1..suffix.len() {
+            let model = TerminalModel::new(
+                Arc::new(Host),
+                format!("7501-{name}-{split}"),
+                40,
+                4,
+                ModelOptions::default(),
+            )
+            .unwrap();
+            model.feed_output(1, prefix);
+            model.invalidate_program_status();
+            model.feed_output(2, &suffix[..split]);
+            model.feed_output(3, &suffix[split..]);
+            let statuses = model.take_program_statuses();
+            assert_eq!(statuses.len(), 1, "{name} split={split}");
+            assert_eq!(
+                statuses[0].1.current.as_ref().map(|r| r.id.as_str()),
+                Some("new"),
+                "{name} split={split}"
+            );
+            for w in model.stop_workers() {
+                w.join().unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn title_stack_da1_da2_da3_and_kitty_keyboard_bit0_cap_match_contract() {
+    struct RecordingHost {
+        replies: Mutex<Vec<Vec<u8>>>,
+        titles: Mutex<Vec<String>>,
+    }
+    impl TerminalHost for RecordingHost {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, bytes: &[u8]) -> Result<()> {
+            self.replies.lock().unwrap().push(bytes.to_vec());
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, title: &str) -> Result<()> {
+            self.titles.lock().unwrap().push(title.to_owned());
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    let host = Arc::new(RecordingHost {
+        replies: Mutex::default(),
+        titles: Mutex::default(),
+    });
+    let model = TerminalModel::new(
+        host.clone(),
+        "da-title-kitty".into(),
+        40,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+
+    // Title push/pop honors xterm 0/2 params and ignores 1 (icon-only).
+    model.feed_output(
+        1,
+        b"\x1b]2;oldtitle\x07\x1b[22;0t\x1b]2;newtitle\x07\x1b[22;1t\x1b[23;1t\x1b[23;0t",
+    );
+    model.flush_events();
+    assert_eq!(model.title(), "oldtitle");
+    assert_eq!(
+        *host.titles.lock().unwrap(),
+        vec![
+            "oldtitle".to_owned(),
+            "newtitle".to_owned(),
+            "oldtitle".to_owned()
+        ]
+    );
+
+    // DA1, DA2, DA3 each produce exactly one reply from the model.
+    model.feed_output(2, b"\x1b[c\x1b[>c\x1b[=c");
+    model.flush_events();
+    assert_eq!(
+        *host.replies.lock().unwrap(),
+        vec![
+            b"\x1b[?6c".to_vec(),
+            b"\x1b[>0;2600;1c".to_vec(),
+            b"\x1bP!|00000000\x1b\\".to_vec(),
+        ]
+    );
+
+    // Kitty keyboard bit-0 cap across queries, exported VT snapshots, and stack inspection.
+    host.replies.lock().unwrap().clear();
+    model.feed_output(3, b"\x1b[>31u\x1b[?u\x1b[>30u\x1b[?u\x1b[<u\x1b[?u");
+    model.flush_events();
+    assert_eq!(
+        *host.replies.lock().unwrap(),
+        vec![
+            b"\x1b[?1u".to_vec(),
+            b"\x1b[?0u".to_vec(),
+            b"\x1b[?1u".to_vec()
+        ]
+    );
+    let vt_snap = model.snapshot_with_history(3, 0);
+    let vt_text = String::from_utf8_lossy(&vt_snap.bytes);
+    assert!(
+        !vt_text.contains("\x1b[=31;1u") && !vt_text.contains("\x1b[=30;1u"),
+        "companion VT snapshot leaked uncapped Kitty flags: {vt_text:?}"
+    );
+    assert!(vt_text.contains("\x1b[>1u"));
+    model.with_screen(|screen| {
+        let state = screen.snapshot_state();
+        assert!(
+            state.keyboard_mode_stack.iter().all(|&f| f <= 1),
+            "uncapped stack: {:?}",
+            state.keyboard_mode_stack
+        );
+    });
+
+    // Mirror emits zero replies for DA1/DA2/DA3.
+    let mut replay = crate::replay::Terminal::new(40, 4);
+    replay.advance(b"\x1b]2;A\x07\x1b[22;2t\x1b]2;B\x07");
+    assert_eq!(replay.snapshot_state().title.as_deref(), Some("B"));
+    assert_eq!(replay.snapshot_state().title_stack, vec![Some("A".into())]);
+    replay.advance(b"\x1b[23;2t");
+    assert_eq!(replay.snapshot_state().title.as_deref(), Some("A"));
+    assert!(replay.snapshot_state().title_stack.is_empty());
+
+    for worker in model.stop_workers() {
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn mirror_push_sink_uses_one_thread_publishes_lazily_and_exits_cleanly_on_drop() {
+    use runner_core::protocol::terminal::{
+        FrameSink, TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    type SharedFrameSink = Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync>;
+
+    struct PushQueue {
+        sink: Mutex<Option<SharedFrameSink>>,
+        dropped: Arc<AtomicBool>,
+    }
+    struct PushFrames(Arc<PushQueue>);
+    impl Drop for PushFrames {
+        fn drop(&mut self) {
+            self.0.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+    impl TerminalSubscription for PushFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("push-only"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            Arc::new(|| {})
+        }
+        fn install_sink(&mut self, sink: FrameSink) -> bool {
+            *self.0.sink.lock().unwrap() = Some(Arc::from(sink));
+            true
+        }
+    }
+    struct PushTransport {
+        queue: Arc<PushQueue>,
+    }
+    impl Transport for PushTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: TerminalSnapshot {
+                    seq: 0,
+                    format: SnapshotFormat::Vt,
+                    unavailable: false,
+                    cols: 20,
+                    rows: 4,
+                    bytes: Vec::new(),
+                    unfinished_len: 0,
+                    preceding_char: None,
+                    activity: None,
+                    controller: Default::default(),
+                },
+                frames: Box::new(PushFrames(Arc::clone(&self.queue))),
+            })
+        }
+    }
+
+    let dropped = Arc::new(AtomicBool::new(false));
+    let queue = Arc::new(PushQueue {
+        sink: Mutex::new(None),
+        dropped: Arc::clone(&dropped),
+    });
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(PushTransport {
+            queue: Arc::clone(&queue),
+        })),
+        "push-one-thread".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    // Push subscription runs on MirrorActor with no fallback FrameWorker thread.
+    assert!(mirror.frame_worker.lock().unwrap().is_none());
+
+    // Hidden mirror (`viewers == 0`) marks viewport dirty without calling
+    // `RenderState::update` on printable OR cursor/SGR/erase control chunks.
+    let updates_after_attach = mirror.test_render_state_updates();
+    queue.sink.lock().unwrap().as_ref().unwrap()(Some(TerminalFrame::Output {
+        seq: 1,
+        bytes: b"HIDDEN_LINE".to_vec(),
+    }));
+    queue.sink.lock().unwrap().as_ref().unwrap()(Some(TerminalFrame::Output {
+        seq: 2,
+        bytes: b"\x1b[2;5H\x1b[31;1m".to_vec(),
+    }));
+    queue.sink.lock().unwrap().as_ref().unwrap()(Some(TerminalFrame::Output {
+        seq: 3,
+        bytes: b"\x1b[2J\x1b[1;1H".to_vec(),
+    }));
+    queue.sink.lock().unwrap().as_ref().unwrap()(Some(TerminalFrame::Output {
+        seq: 4,
+        bytes: b"HIDDEN_AFTER".to_vec(),
+    }));
+    assert!(wait_until(Duration::from_secs(2), || {
+        mirror.output_activity().last_seq == 4
+    }));
+    assert_eq!(
+        mirror.test_render_state_updates(),
+        updates_after_attach,
+        "hidden mirror must not call RenderState::update on printable or control traffic"
+    );
+    assert_eq!(mirror.output_activity().first_paint_seq, 1);
+    assert_eq!(mirror.output_activity().last_paint_seq, 4);
+    assert!(mirror.shared.viewport_dirty.load(Ordering::Acquire));
+
+    // Becoming visible (`0 -> 1`) immediately syncs and clears `viewport_dirty`.
+    let view = mirror.view();
+    assert!(!mirror.shared.viewport_dirty.load(Ordering::Acquire));
+    assert_eq!(mirror.test_render_state_updates(), updates_after_attach + 1);
+    assert_eq!(
+        mirror.viewport_snapshot().view().visible_lines()[0],
+        "HIDDEN_AFTER"
+    );
+    drop(view);
+
+    // Dropping the mirror shuts down the actor thread and drops the subscription cleanly.
+    drop(mirror);
+    assert!(dropped.load(Ordering::SeqCst));
+}
+
+#[test]
+fn companion_vt_preserves_saved_cursors_and_kitty_stack_depth_on_both_screens() {
+    struct Host;
+    impl TerminalHost for Host {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    let cases: &[(&str, &[u8], &[u8])] = &[
+        (
+            "alt-cursor",
+            b"PRIMARY\x1b[2;4H\x1b[?1049hALT",
+            b"\x1b[?1049lZ",
+        ),
+        (
+            "saved-primary-cursor",
+            b"A\x1b[2;4H\x1b7\x1b[4;7HX",
+            b"\x1b8Z",
+        ),
+        (
+            "saved-alt-cursor",
+            b"PRIMARY\x1b[2;4H\x1b[?1049h\x1b[2;3H\x1b7\x1b[3;4HX",
+            b"\x1b8Z",
+        ),
+        (
+            "alt-csi",
+            b"PRIMARY\x1b[2;4H\x1b[?1049hALT\x1b[3",
+            b"b\x1b[?1049lZ",
+        ),
+        (
+            "alt-osc",
+            b"PRIMARY\x1b[2;4H\x1b[?1049hALT\x1b]2;partial",
+            b"title\x07\x1b[?1049lZ",
+        ),
+        (
+            "alt-dcs",
+            b"PRIMARY\x1b[2;4H\x1b[?1049hALT\x1bPqpartial",
+            b"rest\x1b\\\x1b[?1049lZ",
+        ),
+    ];
+    for (name, init, follow) in cases {
+        let model = TerminalModel::new(
+            Arc::new(Host),
+            format!("companion-{name}"),
+            8,
+            4,
+            ModelOptions::default(),
+        )
+        .unwrap();
+        model.feed_output(1, init);
+        let vt_snap = model.snapshot_with_history(1, 0);
+        assert!(!vt_snap.unavailable, "{name} snapshot unavailable");
+        let mut remote = crate::replay::Terminal::from_snapshot(&vt_snap).unwrap();
+        assert_eq!(
+            remote.screen().visible_lines(),
+            model.visible_lines(),
+            "{name} pre"
+        );
+        model.feed_output(2, follow);
+        remote.advance(follow);
+        assert_eq!(
+            remote.screen().visible_lines(),
+            model.visible_lines(),
+            "{name} post"
+        );
+        for w in model.stop_workers() {
+            w.join().unwrap();
+        }
+    }
+
+    // Two Kitty bit-0 pushes survive companion attach on both screens: one pop
+    // keeps DISAMBIGUATE_ESC_CODES on both host and remote; second pop returns legacy.
+    let model = TerminalModel::new(
+        Arc::new(Host),
+        "companion-kitty-steps".into(),
+        20,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    model.feed_output(1, b"\x1b[>31u\x1b[>1u\x1b[?1049h\x1b[>1u\x1b[>1u");
+    let vt_snap = model.snapshot_with_history(1, 0);
+    let mut remote = crate::replay::Terminal::from_snapshot(&vt_snap).unwrap();
+    let expected = [
+        (2u64, b"\x1b[<u".as_slice(), true),
+        (3, b"\x1b[<u", false),
+        (4, b"\x1b[?1049l\x1b[<u", true),
+        (5, b"\x1b[<u", false),
+    ];
+    for (seq, bytes, expect_kitty) in expected {
+        model.feed_output(seq, bytes);
+        remote.advance(bytes);
+        assert_eq!(
+            model
+                .mode()
+                .contains(TerminalModeFlags::DISAMBIGUATE_ESC_CODES),
+            expect_kitty,
+            "host mode at seq {seq}"
+        );
+        assert_eq!(
+            remote
+                .mode()
+                .contains(TerminalModeFlags::DISAMBIGUATE_ESC_CODES),
+            expect_kitty,
+            "remote mode at seq {seq}"
+        );
+        assert_eq!(
+            crate::mappings::encode_key("a", true, false, true, Some("a"), remote.mode()),
+            crate::mappings::encode_key("a", true, false, true, Some("a"), model.mode()),
+            "key encoding parity at seq {seq}"
+        );
+    }
+    for w in model.stop_workers() {
+        w.join().unwrap();
+    }
+}
+
+#[test]
+fn scroll_mark_counts_non_lf_alt_screen_indices_identically_in_one_or_many_writes() {
+    let (mirror, _tx, _) = scripted_mirror(false);
+    mirror.resize_local(20, 4);
+    mirror.test_feed(1, b"\x1b[?1049h\x1b[4;1H");
+    let mark = mirror.scroll_mark();
+    mirror.test_feed(2, &b"\x1bD".repeat(12));
+    assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(12));
+
+    let mark = mirror.scroll_mark();
+    for seq in 3..15 {
+        mirror.test_feed(seq, b"\x1bD");
+    }
+    assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(12));
+
+    let mark = mirror.scroll_mark();
+    mirror.test_feed(15, &b"\x1bE".repeat(10));
+    assert_eq!(mark.moved_since(mirror.scroll_mark()), Some(10));
+}
+
+#[test]
+fn push_mailbox_bounds_backlog_to_single_resync_and_services_deadlines_under_traffic() {
+    use runner_core::protocol::terminal::{
+        FrameSink, TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    type SharedFrameSink = Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync>;
+
+    struct PushQueue {
+        sink: Mutex<Option<SharedFrameSink>>,
+    }
+    impl PushQueue {
+        fn new() -> Self {
+            Self {
+                sink: Mutex::new(None),
+            }
+        }
+    }
+    struct PushFrames(Arc<PushQueue>);
+    impl TerminalSubscription for PushFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            Err(ClientError::msg("push-only"))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            Arc::new(|| {})
+        }
+        fn install_sink(&mut self, sink: FrameSink) -> bool {
+            *self.0.sink.lock().unwrap() = Some(Arc::from(sink));
+            true
+        }
+    }
+    struct SlowMetadataTransport {
+        gate: Mutex<Option<(Sender<()>, mpsc::Receiver<()>)>>,
+        attaches: AtomicUsize,
+        queues: Mutex<Vec<Arc<PushQueue>>>,
+    }
+    impl Transport for SlowMetadataTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            let gate = self.gate.lock().unwrap().take();
+            if let Some((entered, release)) = gate {
+                let _ = entered.send(());
+                let _ = release.recv_timeout(Duration::from_secs(5));
+            }
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            let n = self.attaches.fetch_add(1, Ordering::SeqCst);
+            let q = Arc::new(PushQueue::new());
+            self.queues.lock().unwrap().push(Arc::clone(&q));
+            let (seq, bytes) = if n == 0 {
+                (0, Vec::new())
+            } else {
+                (200, b"RECOVERED_AFTER_FLOOD".to_vec())
+            };
+            Ok(TerminalAttachment {
+                subscriber_id: (n + 1) as u64,
+                snapshot: TerminalSnapshot {
+                    seq,
+                    format: SnapshotFormat::Vt,
+                    unavailable: false,
+                    cols: 30,
+                    rows: 4,
+                    bytes,
+                    unfinished_len: 0,
+                    preceding_char: None,
+                    activity: None,
+                    controller: Default::default(),
+                },
+                frames: Box::new(PushFrames(q)),
+            })
+        }
+    }
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let transport = Arc::new(SlowMetadataTransport {
+        gate: Mutex::new(None),
+        attaches: AtomicUsize::new(0),
+        queues: Mutex::new(Vec::new()),
+    });
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(transport.clone()),
+        "push-bounded".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    let _view = mirror.view();
+
+    // Arm the slow metadata gate so the consumer blocks on the first frame,
+    // then flood > TERMINAL_QUEUE_CAPACITY frames non-blockingly into the sink.
+    *transport.gate.lock().unwrap() = Some((entered_tx, release_rx));
+    let sink = transport.queues.lock().unwrap()[0]
+        .sink
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap();
+    assert!(sink(Some(TerminalFrame::Output {
+        seq: 1,
+        bytes: b"FIRST".to_vec(),
+    })));
+    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let mut overflowed_at = None;
+    for seq in 2..=(TERMINAL_QUEUE_CAPACITY as u64 + 16) {
+        if !sink(Some(TerminalFrame::Output {
+            seq,
+            bytes: b"flood".to_vec(),
+        })) {
+            overflowed_at = Some(seq);
+            break;
+        }
+    }
+    assert!(
+        overflowed_at.is_some(),
+        "bounded push mailbox must refuse frames past TERMINAL_QUEUE_CAPACITY"
+    );
+    release_tx.send(()).unwrap();
+    assert!(wait_until(Duration::from_secs(2), || {
+        mirror.output_activity().last_seq == 200
+            && mirror.visible_lines()[0] == "RECOVERED_AFTER_FLOOD"
+    }));
+    assert_eq!(transport.attaches.load(Ordering::SeqCst), 2);
+
+    // Under sustained output traffic on a held DEC 2026 frame, the hold deadline
+    // must flush before draining the remaining queued backlog. Arm Gate 1 BEFORE
+    // sending the frame that starts the hold so the actor freezes inside
+    // `refresh_metadata()` on seq 201 and the hold cannot expire before we read
+    // its deadline or enqueue the backlog.
+    assert!(wait_until(Duration::from_secs(2), || {
+        transport
+            .queues
+            .lock()
+            .unwrap()
+            .get(1)
+            .is_some_and(|q| q.sink.lock().unwrap().is_some())
+    }));
+    let sink2 = transport.queues.lock().unwrap()[1]
+        .sink
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap();
+    let (gate1_entered_tx, gate1_entered_rx) = mpsc::channel();
+    let (gate1_release_tx, gate1_release_rx) = mpsc::channel();
+    *transport.gate.lock().unwrap() = Some((gate1_entered_tx, gate1_release_rx));
+    assert!(sink2(Some(TerminalFrame::Output {
+        seq: 201,
+        bytes: b"\r\n\x1b[?2026hHELD".to_vec(),
+    })));
+    gate1_entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(mirror.output_activity().last_seq, 201);
+    let deadline = mirror
+        .sync_state()
+        .0
+        .expect("hold deadline must be live while actor is frozen at Gate 1");
+
+    const BACKLOG_END: u64 = 240;
+    for seq in 202..=BACKLOG_END {
+        assert!(sink2(Some(TerminalFrame::Output {
+            seq,
+            bytes: b".".to_vec(),
+        })));
+    }
+
+    // Wait for the real hold deadline to become overdue while the actor is held
+    // at Gate 1 with `seq 202..=240` queued ahead of it.
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if !remaining.is_zero() {
+        let (_never_tx, wait_rx) = mpsc::channel::<()>();
+        let _ = wait_rx.recv_timeout(remaining + Duration::from_millis(5));
+    }
+
+    // Arm Gate 2 on the next `refresh_metadata()` call (after at most one
+    // PUSH_DRAIN_SLICE of backlog) and release Gate 1. The actor must flush the
+    // expired hold BEFORE draining the backlog, so when Gate 2 catches it
+    // mid-backlog, `HELD` is already published and `last_seq < BACKLOG_END`.
+    let (gate2_entered_tx, gate2_entered_rx) = mpsc::channel();
+    let (gate2_release_tx, gate2_release_rx) = mpsc::channel();
+    *transport.gate.lock().unwrap() = Some((gate2_entered_tx, gate2_release_rx));
+    gate1_release_tx.send(()).unwrap();
+    gate2_entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+
+    assert!(
+        mirror.sync_state().0.is_none(),
+        "hold deadline must flush while backlog is still queued"
+    );
+    assert!(mirror.visible_lines().iter().any(|l| l.contains("HELD")));
+    let mid_seq = mirror.output_activity().last_seq;
+    assert!(
+        mid_seq < BACKLOG_END,
+        "expected hold release before backlog drained (last_seq={mid_seq}, end={BACKLOG_END})"
+    );
+
+    gate2_release_tx.send(()).unwrap();
+    assert!(wait_until(Duration::from_secs(2), || {
+        mirror.output_activity().last_seq == BACKLOG_END
+    }));
+    drop(mirror);
+}
+
+#[test]
+fn scroll_mark_is_split_invariant_across_su_rep_dl_alt_and_zero_scrollback() {
+    fn run_split(
+        setup: &[u8],
+        payload: &[u8],
+        split: usize,
+        cols: u16,
+        rows: u16,
+        scrollback: usize,
+    ) -> (Option<i32>, Option<i32>) {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.configure(scrollback, CursorShape::Block, false);
+        mirror.resize_local(cols, rows);
+        if !setup.is_empty() {
+            mirror.test_feed(1, setup);
+        }
+        let start = mirror.scroll_mark();
+        mirror.test_feed(2, &payload[..split]);
+        let after_first = start.moved_since(mirror.scroll_mark());
+        mirror.test_feed(3, &payload[split..]);
+        let total = start.moved_since(mirror.scroll_mark());
+        (after_first, total)
+    }
+
+    // 1. Six `CSI 2 S` on 20×4 alternate screen AND on primary with scrollback=0:
+    //    always exactly 12 rows at every byte split offset.
+    let six_su2 = b"\x1b[2S".repeat(6);
+    for (setup, sb) in [
+        (b"\x1b[?1049h\x1b[4;1H".as_slice(), 100usize),
+        (b"\x1b[4;1H".as_slice(), 0usize),
+    ] {
+        for split in 0..=six_su2.len() {
+            let (_, total) = run_split(setup, &six_su2, split, 20, 4, sb);
+            assert_eq!(total, Some(12), "SU 2 x6 split={split} sb={sb}");
+        }
+    }
+
+    // 2. `CSI 100 b` (REP) past a 4-row screen (1x = 5 rows, 6x = 30 rows) on
+    //    alternate screen and zero-scrollback primary at every byte split offset.
+    for (count, expected) in [(1usize, 5i32), (6usize, 30i32)] {
+        let rep = b"\x1b[100b".repeat(count);
+        for (setup, sb) in [
+            (b"\x1b[?1049h\x1b[4;1Hx".as_slice(), 100usize),
+            (b"\x1b[4;1Hx".as_slice(), 0usize),
+        ] {
+            for split in 0..=rep.len() {
+                let (_, total) = run_split(setup, &rep, split, 20, 4, sb);
+                assert_eq!(
+                    total,
+                    Some(expected),
+                    "REP 100 x{count} split={split} sb={sb}"
+                );
+            }
+        }
+    }
+
+    // 3. `DL` (`CSI n M`) at row 0 (top of region) counts exact deleted rows,
+    //    while `DL` below row 0 does not move row 0 off the top.
+    let dl_mix = b"\x1b[1;1H\x1b[2M\x1b[2;1H\x1b[2M\x1b[1;1H\x1b[1M";
+    for (setup, sb) in [
+        (b"".as_slice(), 0usize),
+        (b"\x1b[?1049h".as_slice(), 100usize),
+    ] {
+        for split in 0..=dl_mix.len() {
+            let (_, total) = run_split(setup, dl_mix, split, 20, 4, sb);
+            assert_eq!(total, Some(3), "DL mix split={split} sb={sb}");
+        }
+    }
+
+    // 4. Temporary alternate-screen excursion is split-invariant at every byte
+    //    offset: primary marks are incomparable (`None`) while alternate is
+    //    active, and report the exact same surviving primary mark and 5 rows
+    //    once the same primary screen returns.
+    let prefix = b"\x1b[4;1H\n\n";
+    let alt_enter = b"\x1b[?1049h";
+    let alt_body = b"\x1b[4;1H\x1b[2S\x1b[2S\x1b[2S";
+    let alt_exit = b"\x1b[?1049l";
+    let suffix = b"\x1b[4;1H\n\n\n";
+    let mut excursion_stream = Vec::new();
+    excursion_stream.extend_from_slice(prefix);
+    excursion_stream.extend_from_slice(alt_enter);
+    excursion_stream.extend_from_slice(alt_body);
+    excursion_stream.extend_from_slice(alt_exit);
+    excursion_stream.extend_from_slice(suffix);
+    let alt_active_start = prefix.len() + alt_enter.len();
+    let alt_active_end = alt_active_start + alt_body.len() + alt_exit.len();
+    for sb in [0usize, 100] {
+        // Whole stream in one write: 2 + 3 = 5 primary rows; 6 alt rows excluded.
+        let (_, total) = run_split(b"", &excursion_stream, 0, 20, 4, sb);
+        assert_eq!(total, Some(5), "alt excursion whole sb={sb}");
+        for split in 0..=excursion_stream.len() {
+            let (after_first, total) = run_split(b"", &excursion_stream, split, 20, 4, sb);
+            if split >= alt_active_start && split < alt_active_end {
+                assert_eq!(
+                    after_first, None,
+                    "primary mark must be incomparable while alternate is active (split={split}, sb={sb})"
+                );
+            }
+            assert_eq!(
+                total,
+                Some(5),
+                "surviving primary mark must be split-invariant at split={split} sb={sb}"
+            );
+        }
+        // Ending on alternate screen keeps primary marks incomparable.
+        let (_, end_alt) = run_split(b"", b"\x1b[4;1H\n\x1b[?1049h\x1b[2S", 0, 20, 4, sb);
+        assert_eq!(end_alt, None, "end on alt sb={sb}");
+    }
+
+    // 4b. A held primary viewport stays pinned by the exact same 5 rows across
+    //     a temporary alternate-screen excursion at every byte split offset.
+    for split in 0..=excursion_stream.len() {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.configure(100, CursorShape::Block, false);
+        mirror.resize_local(20, 4);
+        let _hold = mirror.hold_viewport();
+        let origin = mirror.scroll_mark();
+        mirror.test_feed(1, &excursion_stream[..split]);
+        mirror.test_feed(2, &excursion_stream[split..]);
+        assert_eq!(
+            origin.moved_since(mirror.scroll_mark()),
+            Some(5),
+            "held excursion scroll mark mismatch at split={split}"
+        );
+        assert_eq!(
+            mirror.display_offset(),
+            5,
+            "held primary viewport offset mismatch at split={split}"
+        );
+    }
+
+    // 5. Physical screen reset / replacement (`RIS`, ESC c) starts a fresh
+    //    generation for both primary and a freshly reallocated alternate screen
+    //    rather than subtracting unrelated counters.
+    {
+        let (mirror, _tx, _) = scripted_mirror(false);
+        mirror.resize_local(20, 4);
+        mirror.test_feed(1, b"\x1b[4;1H\n\n");
+        let pri_before_ris = mirror.scroll_mark();
+        mirror.test_feed(2, b"\x1b[?1049h\x1b[2S");
+        let alt_before_ris = mirror.scroll_mark();
+        assert_eq!(pri_before_ris.moved_since(alt_before_ris), None);
+
+        // Single write: RIS destroys alternate and resets primary, then enters a
+        // brand-new alternate screen whose native counter starts at 0.
+        mirror.test_feed(3, b"\x1bc\x1b[?1049h");
+        let alt_after_ris = mirror.scroll_mark();
+        assert_eq!(
+            alt_before_ris.moved_since(alt_after_ris),
+            None,
+            "replaced alternate screen must get a new epoch instead of subtracting 0 - 2"
+        );
+        assert_eq!(alt_after_ris.lines, 0);
+        mirror.test_feed(4, b"\x1b[2S");
+        assert_eq!(alt_after_ris.moved_since(mirror.scroll_mark()), Some(2));
+
+        // Returning to the reset primary screen also has a new epoch relative
+        // to the pre-RIS primary mark.
+        mirror.test_feed(5, b"\x1b[?1049l");
+        let pri_after_ris = mirror.scroll_mark();
+        assert_eq!(pri_before_ris.moved_since(pri_after_ris), None);
+        mirror.test_feed(6, b"\x1b[4;1H\n\n\n");
+        assert_eq!(pri_after_ris.moved_since(mirror.scroll_mark()), Some(3));
+    }
+}
+
+#[test]
+fn companion_vt_preserves_saved_pending_wrap_charsets_overline_and_primary_origin() {
+    struct Host;
+    impl TerminalHost for Host {
+        fn write_input(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn write_reply(&self, _: &str, _: &[u8]) -> Result<()> {
+            Ok(())
+        }
+        fn report_input_state(&self, _: &str, _: InputObservation) {}
+        fn set_live_title(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
+        fn resize(&self, _: &str, _: u16, _: u16) -> Result<()> {
+            Ok(())
+        }
+        fn is_local_host(&self, _: &str) -> bool {
+            true
+        }
+        fn clipboard_store(&self, _: &str, _: ClipboardTarget, _: &str) {}
+    }
+
+    let cases: &[(&str, &[u8], &[u8])] = &[
+        ("saved-wrap", b"12345678\x1b7\x1b[3;2H", b"\x1b8Z"),
+        (
+            "saved-wide-wrap",
+            b"123456\xe7\x95\x8c\x1b7\x1b[3;2H",
+            b"\x1b8Z",
+        ),
+        (
+            "saved-wrap-alt",
+            b"\x1b[?1049h12345678\x1b7\x1b[3;2H",
+            b"\x1b8Z",
+        ),
+        (
+            "cursor-wrap-park",
+            b"12345678\x1b[?1049hALT",
+            b"\x1b[?1049lZ",
+        ),
+        (
+            "cursor-wrap-park-irm",
+            b"12345678\x1b[?1049hALT\x1b[4h",
+            b"\x1b[2;2HX",
+        ),
+        (
+            "primary-origin-after-alt",
+            b"1234\x1b[2;3r\x1b[?6h\x1b[2;3H\x1b[?1049hALT",
+            b"\x1b[?1049lZ",
+        ),
+        (
+            "primary-origin-changed-while-alt",
+            b"AB\x1b[1;2r\x1b[?6h\x1b[1;1H\x1b[?1049hALT\x1b[3;4r",
+            b"\x1b[?1049lZ",
+        ),
+        (
+            "saved-origin-margins-changed-primary",
+            b"AB\x1b[1;2r\x1b[?6h\x1b[1;1H\x1b7\x1b[3;4r",
+            b"\x1b8Z",
+        ),
+        (
+            "saved-link",
+            b"12345678\x1b7\x1b[2;1H\x1b]8;id=after;https://example.org/a\x1b\\",
+            b"L\x1b8Z",
+        ),
+        (
+            "saved-bg",
+            b"\x1b[42m12345678\x1b7\x1b[2;1H\x1b[0m",
+            b"\x1b8Z",
+        ),
+        (
+            "saved-empty-bg",
+            b"\x1b[42m12345678\x1b7\x1b[1;8H\x1b[X\x1b[2;1H",
+            b"\x1b8Z",
+        ),
+        (
+            "saved-protected",
+            b"\x1b[1\"q12345678\x1b7\x1b[2;1H\x1b[0\"q",
+            b"\x1b8Z",
+        ),
+        ("saved-DEC-line", b"\x1b(0\x1b7\x1b(B", b"\x1b8qx"),
+        ("saved-ascii", b"\x1b(B\x1b7\x1b(0", b"\x1b8qx"),
+        ("active-DEC", b"\x1b7\x1b(0", b"qx"),
+        ("saved-british", b"\x1b(A\x1b7\x1b(B", b"\x1b8#"),
+    ];
+
+    for &(name, init, follow) in cases {
+        let model =
+            TerminalModel::new(Arc::new(Host), name.into(), 8, 4, ModelOptions::default()).unwrap();
+        model.feed_output(1, init);
+        let bin_snap = model.snapshot(1);
+        let vt_snap = model.snapshot_with_history(1, 0);
+        let mut reference = crate::replay::Terminal::from_snapshot(&bin_snap).unwrap();
+        let mut remote = crate::replay::Terminal::from_snapshot(&vt_snap).unwrap();
+        assert_eq!(
+            remote.snapshot_state().active_grid.rows,
+            reference.snapshot_state().active_grid.rows,
+            "{name}: pre-follow cell attributes mismatch"
+        );
+        if name == "cursor-wrap-park" || name == "cursor-wrap-park-irm" {
+            let first = GridPoint::new(Line(0), Column(0));
+            let last = GridPoint::new(Line(1), Column(2));
+            assert_eq!(
+                remote.bounds_to_string(first, last),
+                reference.bounds_to_string(first, last),
+                "{name}: pre-follow copy parity across blank soft wrap"
+            );
+            assert_eq!(remote.bounds_to_string(first, last), "        ALT");
+        }
+        assert_eq!(
+            remote.screen().visible_lines(),
+            model.visible_lines(),
+            "{name}: pre-follow lines mismatch"
+        );
+        model.feed_output(2, follow);
+        reference.advance(follow);
+        remote.advance(follow);
+        assert_eq!(
+            remote.screen().visible_lines(),
+            model.visible_lines(),
+            "{name}: post-follow lines mismatch"
+        );
+        if name == "cursor-wrap-park-irm" {
+            assert_eq!(
+                remote.screen().visible_lines(),
+                vec!["", "AXLT", "", ""],
+                "IRM must remain active so mid-row insertion shifts existing cells"
+            );
+        }
+        assert_eq!(
+            remote.snapshot_state().active_grid.rows,
+            reference.snapshot_state().active_grid.rows,
+            "{name}: post-follow cell attributes mismatch"
+        );
+        for w in model.stop_workers() {
+            w.join().unwrap();
+        }
+    }
+
+    // Verify protected cell bit survives pending-wrap replay independently of active DECSCA.
+    {
+        let model = TerminalModel::new(
+            Arc::new(Host),
+            "saved-protected-bit".into(),
+            8,
+            4,
+            ModelOptions::default(),
+        )
+        .unwrap();
+        model.feed_output(1, b"\x1b[1\"q12345678\x1b7\x1b[2;1H\x1b[0\"q");
+        let vt_snap = model.snapshot_with_history(1, 0);
+        let mut remote_vt = crate::vt::Terminal::new(&crate::vt::TerminalConfig {
+            cols: 8,
+            rows: 4,
+            ..crate::vt::TerminalConfig::default()
+        })
+        .unwrap();
+        remote_vt.vt_write(&vt_snap.bytes);
+        let cell = remote_vt
+            .grid_ref(crate::vt::GridPointTag::Active, 7, 0)
+            .unwrap()
+            .cell()
+            .unwrap();
+        assert!(
+            cell.protected,
+            "margin cell must retain its DECSCA protected bit after pending-wrap replay"
+        );
+        // Active DECSCA remains unprotected (`0"q`) for subsequent writes before DECRC.
+        remote_vt.vt_write(b"U");
+        let active_cell = remote_vt
+            .grid_ref(crate::vt::GridPointTag::Active, 0, 1)
+            .unwrap()
+            .cell()
+            .unwrap();
+        assert!(!active_cell.protected);
+        for w in model.stop_workers() {
+            w.join().unwrap();
+        }
+    }
+
+    // Verify SGR 53 (OVERLINE) round-trips on both saved and active pens.
+    let model = TerminalModel::new(
+        Arc::new(Host),
+        "overline-pen".into(),
+        8,
+        4,
+        ModelOptions::default(),
+    )
+    .unwrap();
+    model.feed_output(1, b"\x1b[53m\x1b7\x1b[0m\x1b[53mA");
+    let vt_snap = model.snapshot_with_history(1, 0);
+    let mut remote_vt = crate::vt::Terminal::new(&crate::vt::TerminalConfig {
+        cols: 8,
+        rows: 4,
+        ..crate::vt::TerminalConfig::default()
+    })
+    .unwrap();
+    remote_vt.vt_write(&vt_snap.bytes);
+    assert_ne!(
+        remote_vt.cursor_sgr_style().flags & crate::vt::STYLE_FLAG_OVERLINE,
+        0,
+        "active overline pen should round-trip through companion VT snapshot"
+    );
+    remote_vt.vt_write(b"\x1b[0m\x1b8");
+    assert_ne!(
+        remote_vt.cursor_sgr_style().flags & crate::vt::STYLE_FLAG_OVERLINE,
+        0,
+        "saved overline pen should round-trip through companion VT snapshot"
+    );
+    for w in model.stop_workers() {
+        w.join().unwrap();
+    }
+}
+
+#[test]
+fn recv_based_mirror_drop_cancels_idle_reader_and_avoids_self_join_deadlock() {
+    use runner_core::protocol::terminal::{
+        TerminalAttachment, TerminalSnapshot, TerminalSubscription,
+    };
+    use runner_core::protocol::{ClientError, EventSubscription, Request, Response, Transport};
+
+    struct BlockingRecvFrames {
+        rx: mpsc::Receiver<std::result::Result<TerminalFrame, ClientError>>,
+        tx: mpsc::Sender<std::result::Result<TerminalFrame, ClientError>>,
+        cancels: Arc<AtomicUsize>,
+        entered: mpsc::Sender<()>,
+        exited: Arc<AtomicBool>,
+    }
+    impl Drop for BlockingRecvFrames {
+        fn drop(&mut self) {
+            self.exited.store(true, Ordering::SeqCst);
+        }
+    }
+    impl TerminalSubscription for BlockingRecvFrames {
+        fn recv(&mut self) -> std::result::Result<TerminalFrame, ClientError> {
+            let _ = self.entered.send(());
+            self.rx
+                .recv()
+                .unwrap_or_else(|_| Err(ClientError::msg("closed")))
+        }
+        fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
+            let tx = self.tx.clone();
+            let cancels = Arc::clone(&self.cancels);
+            Arc::new(move || {
+                cancels.fetch_add(1, Ordering::SeqCst);
+                let _ = tx.send(Err(ClientError::msg("cancelled")));
+            })
+        }
+    }
+    struct RecvTransport {
+        frames: Mutex<Option<BlockingRecvFrames>>,
+        on_metadata: Mutex<Option<Box<dyn FnMut() + Send>>>,
+    }
+    impl Transport for RecvTransport {
+        fn call(&self, _: Request) -> std::result::Result<Response, ClientError> {
+            if let Some(cb) = self.on_metadata.lock().unwrap().as_mut() {
+                cb();
+            }
+            Ok(Response::terminal_metadata(Ok(TerminalMetadata::default())))
+        }
+        fn subscribe(&self) -> Box<dyn EventSubscription> {
+            unreachable!()
+        }
+        fn attach(&self, _: &str) -> std::result::Result<TerminalAttachment, ClientError> {
+            Ok(TerminalAttachment {
+                subscriber_id: 1,
+                snapshot: TerminalSnapshot {
+                    seq: 0,
+                    format: SnapshotFormat::Vt,
+                    unavailable: false,
+                    cols: 20,
+                    rows: 4,
+                    bytes: Vec::new(),
+                    unfinished_len: 0,
+                    preceding_char: None,
+                    activity: None,
+                    controller: Default::default(),
+                },
+                frames: Box::new(self.frames.lock().unwrap().take().unwrap()),
+            })
+        }
+    }
+
+    // 1. Idle drop cancels a blocked recv-based reader and joins it cleanly.
+    let (tx, rx) = mpsc::channel();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let cancels = Arc::new(AtomicUsize::new(0));
+    let exited = Arc::new(AtomicBool::new(false));
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(Arc::new(RecvTransport {
+            frames: Mutex::new(Some(BlockingRecvFrames {
+                rx,
+                tx,
+                cancels: Arc::clone(&cancels),
+                entered: entered_tx,
+                exited: Arc::clone(&exited),
+            })),
+            on_metadata: Mutex::new(None),
+        })),
+        "recv-idle-drop".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    drop(mirror);
+    assert_eq!(cancels.load(Ordering::SeqCst), 1);
+    assert!(exited.load(Ordering::SeqCst));
+
+    // 2. Dropping the final Arc on the reader thread itself does not self-join deadlock.
+    let (tx, rx) = mpsc::channel();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (meta_entered_tx, meta_entered_rx) = mpsc::channel();
+    let (meta_release_tx, meta_release_rx) = mpsc::channel();
+    let cancels = Arc::new(AtomicUsize::new(0));
+    let exited = Arc::new(AtomicBool::new(false));
+    let transport = Arc::new(RecvTransport {
+        frames: Mutex::new(Some(BlockingRecvFrames {
+            rx,
+            tx: tx.clone(),
+            cancels: Arc::clone(&cancels),
+            entered: entered_tx,
+            exited: Arc::clone(&exited),
+        })),
+        on_metadata: Mutex::new(None),
+    });
+    let mirror = TerminalMirror::attach(
+        DaemonClient::new(transport.clone()),
+        "recv-self-drop".into(),
+        Arc::new(|| {}),
+    )
+    .unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    *transport.on_metadata.lock().unwrap() = Some(Box::new(move || {
+        let _ = meta_entered_tx.send(());
+        let _ = meta_release_rx.recv_timeout(Duration::from_secs(5));
+    }));
+    tx.send(Ok(TerminalFrame::Output {
+        seq: 1,
+        bytes: b"hi".to_vec(),
+    }))
+    .unwrap();
+    meta_entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+    // Release external Arc while reader thread holds the only remaining Arc.
+    drop(mirror);
+    meta_release_tx.send(()).unwrap();
+    assert!(wait_until(Duration::from_secs(2), || {
+        exited.load(Ordering::SeqCst)
+    }));
+    assert_eq!(cancels.load(Ordering::SeqCst), 1);
 }
