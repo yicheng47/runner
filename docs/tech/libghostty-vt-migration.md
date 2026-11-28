@@ -112,7 +112,7 @@ flowchart LR
 3. **#1508 Phase 1: the engine swap, graphics off (complete on `feat/1508-libghostty-vt`).**
    - 1a: `ghostty-vt-sys` static Zig `0.17.0` build with offline dependency cache in every CI, nightly and release workflow, plus safe `!Send`/`!Sync` `runner-terminal::vt` wrapper with PNG and `tracing` callbacks.
    - 1b: single-owner `TerminalModel` and `TerminalMirror` actors, native effect callbacks replacing the byte scanners, binary local snapshots and `Formatter` companion v1 snapshots, and `input_state`, `delivery_probe`, `mappings` and `replay` ported with all recorded-session tests passing unchanged.
-   - 1c: `TerminalElement::prepaint` painting from `ViewportSnapshot`, native `selection.h`, `search.h` and `TrackedGridRef` anchoring, bounded link hover, and `vendor/alacritty_terminal`, `alacritty_terminal` and `vte` deleted from the workspace.
+   - 1c: `TerminalElement::prepaint` painting from `ViewportSnapshot`, native `selection.h`, lazy VT-row regex search (Decision 17) and `TrackedGridRef` anchoring, bounded link hover, and `vendor/alacritty_terminal`, `alacritty_terminal` and `vte` deleted from the workspace.
 
    Graphics stay off (storage limit 0), so Phase 1 is verified on parity alone before `#1489` turns graphics on.
 4. **#1489: Kitty graphics on the new engine.** On `feat/1489-kitty-graphics-protocol`, rebased after Phase 1. runnerd stays the only reader and replier, because sessions run with no window open and `t=t` and `t=s` media are deleted by whoever reads them first. The app's mirrors receive a relayed stream that hands over runnerd's decoded pixels, by shared memory or a private file. The step also covers:
