@@ -325,13 +325,15 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_saved_root_with_denied_permissions_stays_saved_with_its_error() {
-        struct RestoreAcl(PathBuf);
+        struct RestoreAcl(Vec<PathBuf>);
         impl Drop for RestoreAcl {
             fn drop(&mut self) {
-                let _ = std::process::Command::new("icacls")
-                    .arg(&self.0)
-                    .args(["/remove:d", "*S-1-1-0"])
-                    .status();
+                for path in &self.0 {
+                    let _ = std::process::Command::new("icacls")
+                        .arg(path)
+                        .args(["/remove:d", "*S-1-1-0"])
+                        .status();
+                }
             }
         }
 
@@ -339,13 +341,18 @@ mod tests {
         let locked = fixture.path().join("locked");
         let saved = locked.join("saved");
         std::fs::create_dir_all(&saved).unwrap();
-        let _guard = RestoreAcl(locked.clone());
-        let status = std::process::Command::new("icacls")
-            .arg(&locked)
-            .args(["/deny", "*S-1-1-0:(OI)(CI)(RX)"])
-            .status()
-            .unwrap();
-        assert!(status.success(), "icacls deny failed: {status}");
+        let _guard = RestoreAcl(vec![locked.clone(), saved.clone()]);
+        // Deny `saved` explicitly as well as `locked`: volumes with a CREATOR OWNER
+        // ACE (such as GitHub Actions' D:\) give newly created directories an
+        // explicit allow ACE that takes precedence over an inherited deny.
+        for path in [&saved, &locked] {
+            let status = std::process::Command::new("icacls")
+                .arg(path)
+                .args(["/deny", "*S-1-1-0:(OI)(CI)(RX)"])
+                .status()
+                .unwrap();
+            assert!(status.success(), "icacls deny failed: {status}");
+        }
 
         let error = super::resolve(Some(&fixture.git), Some(&saved), Some(fixture.path()))
             .expect_err("permission denied must stay saved with an error");

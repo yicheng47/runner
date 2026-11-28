@@ -132,6 +132,9 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --profile ci -- -D warnings
 
       - name: Test
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
         run: cargo nextest run --locked --workspace --no-fail-fast --profile ci --cargo-profile ci --timings
 
       - name: Verify Runner manifest and icon

@@ -719,13 +719,15 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn existing_dir_preserves_permission_denied_as_error() {
-        struct RestoreAcl(PathBuf);
+        struct RestoreAcl(Vec<PathBuf>);
         impl Drop for RestoreAcl {
             fn drop(&mut self) {
-                let _ = std::process::Command::new("icacls")
-                    .arg(&self.0)
-                    .args(["/remove:d", "*S-1-1-0"])
-                    .status();
+                for path in &self.0 {
+                    let _ = std::process::Command::new("icacls")
+                        .arg(path)
+                        .args(["/remove:d", "*S-1-1-0"])
+                        .status();
+                }
             }
         }
 
@@ -733,13 +735,18 @@ mod tests {
         let locked = temp.path().join("locked");
         let saved = locked.join("saved");
         std::fs::create_dir_all(&saved).unwrap();
-        let _guard = RestoreAcl(locked.clone());
-        let status = std::process::Command::new("icacls")
-            .arg(&locked)
-            .args(["/deny", "*S-1-1-0:(OI)(CI)(RX)"])
-            .status()
-            .unwrap();
-        assert!(status.success(), "icacls deny failed: {status}");
+        let _guard = RestoreAcl(vec![locked.clone(), saved.clone()]);
+        // Deny `saved` explicitly as well as `locked`: volumes with a CREATOR OWNER
+        // ACE (such as GitHub Actions' D:\) give newly created directories an
+        // explicit allow ACE that takes precedence over an inherited deny.
+        for path in [&saved, &locked] {
+            let status = std::process::Command::new("icacls")
+                .arg(path)
+                .args(["/deny", "*S-1-1-0:(OI)(CI)(RX)"])
+                .status()
+                .unwrap();
+            assert!(status.success(), "icacls deny failed: {status}");
+        }
 
         let err = check_existing_dir(&saved).expect_err("permission denied must stay Err");
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied, "{err}");
