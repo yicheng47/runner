@@ -30,7 +30,11 @@ use runner_core::protocol::files::{
 use runner_core::protocol::{ClientError, DaemonClient};
 
 use super::links::{LinkRoot, Links};
-use super::open_file::{reveal, reveal_label, UnifiedViewer};
+#[cfg(not(windows))]
+use super::open_file::reveal;
+#[cfg(windows)]
+use super::open_file::reveal_in_explorer;
+use super::open_file::{reveal_label, UnifiedViewer};
 use super::picker::{self, PickerItem, PickerKind, PickerSources};
 use super::tree::{FileTree, Letter, Moved, PreparedStatus, Row};
 use super::{FilesEvent, FilesHub};
