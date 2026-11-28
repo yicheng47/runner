@@ -61,6 +61,8 @@ pub(crate) struct RenderState {
     raw: sys::GhosttyRenderState,
     row_iter: sys::GhosttyRenderStateRowIterator,
     row_cells: sys::GhosttyRenderStateRowCells,
+    #[cfg(test)]
+    update_count: usize,
     _not_send_sync: PhantomData<*mut ()>,
 }
 
@@ -89,12 +91,23 @@ impl RenderState {
             raw,
             row_iter,
             row_cells,
+            #[cfg(test)]
+            update_count: 0,
             _not_send_sync: PhantomData,
         })
     }
 
     pub(crate) fn update(&mut self, term: &Terminal) -> Result<()> {
+        #[cfg(test)]
+        {
+            self.update_count += 1;
+        }
         check(unsafe { sys::ghostty_render_state_update(self.raw, term.raw()) })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn update_count(&self) -> usize {
+        self.update_count
     }
 
     pub(crate) fn clean(&mut self) -> Result<()> {

@@ -3159,6 +3159,14 @@ typedef enum GHOSTTY_ENUM_TYPED {
    * Output type: uint64_t *
    */
   GHOSTTY_TERMINAL_DATA_SCREEN_GENERATION = 44,
+  /**
+   * Monotonic count of parsed DECSET 2026 (`CSI ? 2026 h`, including grouped
+   * forms) synchronized-output set sequences received while synchronized output
+   * was already active. Saved-mode restores (`CSI ? 2026 r`) are not counted.
+   *
+   * Output type: uint64_t *
+   */
+  GHOSTTY_TERMINAL_DATA_SYNC_HOLD_REOPENS = 45,
   GHOSTTY_TERMINAL_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyTerminalData;
 

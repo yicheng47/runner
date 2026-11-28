@@ -5,7 +5,6 @@
 
 pub(crate) mod encode;
 pub(crate) mod render;
-pub(crate) mod search;
 pub(crate) mod terminal;
 
 #[cfg(test)]
@@ -25,7 +24,6 @@ pub(crate) use encode::{
     KeyEncoder, MouseEncoder, SizeReportStyle,
 };
 pub(crate) use render::{RenderColors, RenderCursorInfo, RenderDirty, RenderRow, RenderState};
-pub(crate) use search::{Search, SearchScroll, SearchStatus};
 pub(crate) use terminal::{
     ActiveScreen, CellContentTag, CellInfo, CellWide, ClipboardLocation, ColorScheme, FormatKind,
     FormatOptions, GridPointTag, GridRef, ProgramStatusKind, ProgramStatusState, PromptKind,

@@ -633,7 +633,7 @@ fn snapshot_round_trips_split_escape_sequences_and_render_state_graphemes() {
 }
 
 #[test]
-fn search_selection_handle_guards_and_encoders_work_end_to_end() {
+fn selection_handle_guards_and_encoders_work_end_to_end() {
     let mut term = Terminal::new(&TerminalConfig {
         cols: 20,
         rows: 5,
@@ -648,96 +648,15 @@ fn search_selection_handle_guards_and_encoders_work_end_to_end() {
     .unwrap();
     term.vt_write(b"alpha beta\r\nALPHA gamma");
 
-    let mut search = Search::new(&term).unwrap();
-    search.set_select_scroll(SearchScroll::None).unwrap();
-    // Wrong terminal is rejected.
-    assert_eq!(
-        search.set_needle(&other_term, Some("alpha")),
-        Err(VtError::InvalidValue)
-    );
-    search.set_needle(&term, Some("alpha")).unwrap();
-    search.run(&term).unwrap();
-    assert_eq!(search.total_matches(), 2);
-    assert!(search.select_next(&mut term).unwrap());
-    assert_eq!(search.selected_index(), Some(0));
-    {
-        let matched = search.selected_match(&term).unwrap().unwrap();
-        assert_eq!(
-            other_term.format_selection(FormatOptions::default(), &matched),
-            Err(VtError::InvalidValue)
-        );
-        let formatted = term
-            .format_selection(
-                FormatOptions {
-                    kind: FormatKind::Plain,
-                    unwrap: true,
-                    trim: true,
-                    extras: 0,
-                },
-                &matched,
-            )
-            .unwrap();
-        assert_eq!(String::from_utf8_lossy(&formatted), "ALPHA");
-    }
-    let span = search
-        .selected_match_span(&term, GridPointTag::Active)
-        .unwrap()
-        .unwrap();
-    assert_eq!(span.start, (0, 1));
-    assert_eq!(span.end, (4, 1));
-
-    // Mutating the terminal invalidates unsynced search match reads until re-fed.
-    term.vt_write(b"!");
-    assert_eq!(
-        search.selected_match(&term).err(),
-        Some(VtError::InvalidValue)
-    );
-    assert_eq!(search.matches(&term).err(), Some(VtError::InvalidValue));
-    search.run(&term).unwrap();
-    assert_eq!(search.matches(&term).unwrap().len(), 2);
-
-    // Regression: active-row edit after caching viewport matches must not leave
-    // stale viewport matches after `select_next`, and scrollback navigation must
-    // preserve selection while refreshing viewport matches.
-    let mut nav_term = Terminal::new(&TerminalConfig {
-        cols: 20,
-        rows: 3,
-        ..TerminalConfig::default()
-    })
-    .unwrap();
-    nav_term.vt_write(b"cat");
-    let mut nav_search = Search::new(&nav_term).unwrap();
-    nav_search.set_needle(&nav_term, Some("cat")).unwrap();
-    nav_search.run(&nav_term).unwrap();
-    assert_eq!(nav_search.viewport_matches(&nav_term).unwrap().len(), 1);
-    nav_term.vt_write(b"\r\x1b[2Kdog");
-    assert!(!nav_search.select_next(&mut nav_term).unwrap());
-    assert_eq!(nav_search.total_matches(), 0);
-    assert!(nav_search.viewport_matches(&nav_term).unwrap().is_empty());
-
-    nav_term.vt_write(b"\r\nneedle top\r\nline2\r\nline3\r\nline4\r\nneedle bottom");
-    nav_search
-        .set_select_scroll(SearchScroll::IfNeeded)
-        .unwrap();
-    nav_search.set_needle(&nav_term, Some("needle")).unwrap();
-    nav_search.run(&nav_term).unwrap();
-    assert_eq!(nav_search.total_matches(), 2);
-    assert!(nav_search.select_next(&mut nav_term).unwrap());
-    assert_eq!(nav_search.selected_index(), Some(0));
-    assert!(nav_search.select_next(&mut nav_term).unwrap());
-    assert_eq!(nav_search.selected_index(), Some(1));
-    let scrolled_vp = nav_search
-        .viewport_matches_spans(&nav_term, GridPointTag::Viewport)
-        .unwrap();
-    assert!(
-        !scrolled_vp.is_empty(),
-        "scrolled viewport should report the newly visible match"
-    );
-
     // Selection mutation and tracked refs enforce owner and active-screen checks.
     assert!(term
         .select_and_set_word(GridPointTag::Active, 6, 0, None)
         .unwrap());
+    let sel_handle = term.selection().unwrap();
+    assert_eq!(
+        other_term.format_selection(FormatOptions::default(), &sel_handle),
+        Err(VtError::InvalidValue)
+    );
     let copied = term
         .format_active_selection(FormatOptions {
             kind: FormatKind::Plain,

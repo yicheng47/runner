@@ -10,7 +10,7 @@ CI and release definitions build natively on x86_64 and ARM64 runners inside Ubu
 
 ## Local development
 
-Use the pinned Rust toolchain and native architecture. On Ubuntu install the build libraries with:
+Use the pinned Rust toolchain, Zig `0.17.0` (on `PATH` or pointed to by `ZIG`; run `make ghostty-deps` once to populate `${XDG_CACHE_HOME:-$HOME/.cache}/runner/libghostty-vt-deps/1.0.2-c56156db` for offline `ghostty-vt-sys` builds), and native architecture. On Ubuntu install the build libraries with:
 
 ```sh
 sudo ./script/linux/install-build-deps

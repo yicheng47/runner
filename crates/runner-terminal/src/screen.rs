@@ -6,12 +6,13 @@
 //! a published `Arc<ViewportSnapshot>` directly with zero per-frame copies and
 //! zero actor thread blocking.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::palette::{self, Color, NamedColor, Rgb, ScreenColors, TerminalPalette};
 use crate::types::{
-    point_to_viewport, CellFlags, Column, CursorShape, CursorStyle, GridPoint, Hyperlink, Line,
-    RenderCursor, SelectionRange, TerminalModeFlags,
+    point_to_viewport, CellFlags, Column, CursorShape, CursorStyle, FindMatch, GridPoint,
+    Hyperlink, Line, RenderCursor, SelectionRange, TerminalModeFlags,
 };
 use crate::vt::{
     self, CellContentTag, CellInfo, GridPointTag, RenderCursorInfo, RenderState, Style, StyleColor,
@@ -59,6 +60,8 @@ pub(crate) struct ScreenData {
     /// Grid `Line` represented by row 0 of `cells`.
     top_line: Line,
     stored_rows: usize,
+    /// True when `top_line` continues a soft-wrapped logical line from row `top_line - 1`.
+    top_row_continues_wrap: bool,
     cells: Vec<ScreenCell>,
     zerowidth_pool: Vec<char>,
     hyperlinks: Vec<Hyperlink>,
@@ -86,6 +89,7 @@ impl ScreenData {
             display_offset: 0,
             top_line: Line(0),
             stored_rows: rows,
+            top_row_continues_wrap: false,
             cells: vec![ScreenCell::default(); cols * rows],
             zerowidth_pool: Vec::new(),
             hyperlinks: Vec::new(),
@@ -224,6 +228,13 @@ impl ScreenData {
             cells.resize(cols * rows, ScreenCell::default());
         }
 
+        let top_row_continues_wrap = if top_line.0 > -(history_size as i32) {
+            let prev_screen_y = (top_line.0 - 1 + history_size as i32) as u32;
+            term.row_is_wrapped(prev_screen_y)
+        } else {
+            false
+        };
+
         Self {
             cols,
             rows,
@@ -231,6 +242,7 @@ impl ScreenData {
             display_offset,
             top_line,
             stored_rows: rows,
+            top_row_continues_wrap,
             cells,
             zerowidth_pool,
             hyperlinks,
@@ -266,6 +278,54 @@ impl ScreenData {
         Self::from_terminal_range(term, rs_cursor, default_cursor_hidden, true)
     }
 
+    /// Build a bounded snapshot covering inclusive grid lines `first_line..=last_line`
+    /// clamped to `[-history_size, rows - 1]`. Used by link hover when a wrapped
+    /// line touches the viewport boundary so hover never copies full scrollback.
+    pub(crate) fn from_terminal_lines(
+        term: &vt::Terminal,
+        first_line: Line,
+        last_line: Line,
+    ) -> Self {
+        let cols = usize::from(term.cols()).max(1);
+        let rows = usize::from(term.rows()).max(1);
+        let history_size = term.scrollback_rows();
+        let display_offset = term.display_offset_from_bottom();
+        let mode = TerminalModeFlags::from_vt(term);
+        let (cx, cy) = term.cursor_pos();
+        let raw_cursor_point = GridPoint::new(Line(cy as i32), Column(cx as usize));
+        let cursor_input_needs_wrap = term.cursor_pending_wrap();
+        let (cursor_style, cursor) = resolve_cursors(raw_cursor_point, mode, None, false);
+        let selection = active_selection_range(term, history_size);
+        let colors = ScreenColors::from_vt(term);
+
+        let topmost = -(history_size as i32);
+        let bottommost = rows as i32 - 1;
+        let start_line = first_line.0.clamp(topmost, bottommost);
+        let end_line = last_line.0.clamp(start_line, bottommost);
+        let start_y = (start_line - topmost) as usize;
+        let stored_rows = (end_line - start_line + 1) as usize;
+        let top_line = Line(start_line);
+
+        Self::from_terminal_window(
+            term,
+            cols,
+            rows,
+            history_size,
+            display_offset,
+            mode,
+            cursor,
+            cursor_style,
+            raw_cursor_point,
+            cursor_input_needs_wrap,
+            selection,
+            colors,
+            GridPointTag::Screen,
+            start_y,
+            stored_rows,
+            top_line,
+        )
+    }
+
     fn from_terminal_range(
         term: &vt::Terminal,
         rs_cursor: Option<RenderCursorInfo>,
@@ -296,71 +356,68 @@ impl ScreenData {
             (GridPointTag::Active, 0usize, rows, Line(0))
         };
 
+        Self::from_terminal_window(
+            term,
+            cols,
+            rows,
+            history_size,
+            display_offset,
+            mode,
+            cursor,
+            cursor_style,
+            raw_cursor_point,
+            cursor_input_needs_wrap,
+            selection,
+            colors,
+            tag,
+            start_y,
+            stored_rows,
+            top_line,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_terminal_window(
+        term: &vt::Terminal,
+        cols: usize,
+        rows: usize,
+        history_size: usize,
+        display_offset: usize,
+        mode: TerminalModeFlags,
+        cursor: RenderCursor,
+        cursor_style: CursorStyle,
+        raw_cursor_point: GridPoint,
+        cursor_input_needs_wrap: bool,
+        selection: Option<SelectionRange>,
+        colors: ScreenColors,
+        tag: GridPointTag,
+        start_y: usize,
+        stored_rows: usize,
+        top_line: Line,
+    ) -> Self {
         let mut cells = Vec::with_capacity(cols * stored_rows);
         let mut zerowidth_pool = Vec::new();
         let mut hyperlinks = Vec::new();
 
         for row_idx in 0..stored_rows {
             let y = (start_y + row_idx) as u32;
-            let row_info = term.grid_ref(tag, 0, y).and_then(|gref| gref.row().ok());
-            let row_wrap = row_info.is_some_and(|r| r.wrap);
-            let row_has_links = row_info.is_some_and(|r| r.hyperlink);
-            let row_links = if row_has_links {
-                extract_row_hyperlinks(term, tag, y, cols)
-            } else {
-                Vec::new()
-            };
-            for col in 0..cols {
-                let Some(gref) = term.grid_ref(tag, col as u16, y) else {
-                    cells.push(ScreenCell::default());
-                    continue;
-                };
-                let Ok(info) = gref.cell() else {
-                    cells.push(ScreenCell::default());
-                    continue;
-                };
-                let style = if info.has_styling {
-                    gref.style().unwrap_or(Style {
-                        fg: StyleColor::None,
-                        bg: StyleColor::None,
-                        underline: StyleColor::None,
-                        flags: 0,
-                    })
-                } else {
-                    Style {
-                        fg: StyleColor::None,
-                        bg: StyleColor::None,
-                        underline: StyleColor::None,
-                        flags: 0,
-                    }
-                };
-                let graphemes = if info.content_tag == CellContentTag::CodepointGrapheme {
-                    gref.graphemes().unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
-                let (c, zw_start, zw_len) =
-                    extract_cell_text(&info, &graphemes, &mut zerowidth_pool);
-                let hyperlink = if info.has_hyperlink {
-                    let uri = gref.hyperlink_uri().ok().flatten();
-                    intern_hyperlink(uri, col, &row_links, &mut hyperlinks)
-                } else {
-                    0
-                };
-                let wrapline = row_wrap && col + 1 == cols;
-                cells.push(ScreenCell {
-                    c,
-                    flags: CellFlags::from_vt_style(style.flags, info.wide, wrapline),
-                    fg: style_color_to_runner(style.fg, NamedColor::Foreground),
-                    bg: cell_bg_to_runner(&info, &style),
-                    underline_color: style_underline_color_to_runner(style.underline),
-                    zw_start,
-                    zw_len,
-                    hyperlink,
-                    selected: false,
-                });
-            }
+            append_terminal_row(
+                term,
+                tag,
+                y,
+                cols,
+                &mut cells,
+                &mut zerowidth_pool,
+                &mut hyperlinks,
+            );
         }
+
+        let top_row_continues_wrap = if top_line.0 > -(history_size as i32) {
+            let prev_screen_y = (top_line.0 - 1 + history_size as i32) as u32;
+            term.row_is_wrapped(prev_screen_y)
+        } else {
+            false
+        };
 
         Self {
             cols,
@@ -369,6 +426,7 @@ impl ScreenData {
             display_offset,
             top_line,
             stored_rows,
+            top_row_continues_wrap,
             cells,
             zerowidth_pool,
             hyperlinks,
@@ -416,47 +474,84 @@ impl ScreenData {
 /// Immutable, `Send + Sync` viewport snapshot published by `TerminalMirror`'s
 /// actor thread so GPUI can paint without blocking on the VT engine or copying
 /// cells per frame.
-pub struct ViewportSnapshot(pub(crate) ScreenData);
+pub struct ViewportSnapshot {
+    pub(crate) data: Arc<ScreenData>,
+    pub(crate) find_highlights: Arc<HashMap<u64, Arc<[FindMatch]>>>,
+}
 
 impl ViewportSnapshot {
+    pub(crate) fn new(
+        data: ScreenData,
+        find_highlights: Arc<HashMap<u64, Arc<[FindMatch]>>>,
+    ) -> Self {
+        Self::from_arc(Arc::new(data), find_highlights)
+    }
+
+    pub(crate) fn from_arc(
+        data: Arc<ScreenData>,
+        find_highlights: Arc<HashMap<u64, Arc<[FindMatch]>>>,
+    ) -> Self {
+        Self {
+            data,
+            find_highlights,
+        }
+    }
+
+    pub(crate) fn with_find_highlights(
+        &self,
+        find_highlights: Arc<HashMap<u64, Arc<[FindMatch]>>>,
+    ) -> Self {
+        Self {
+            data: Arc::clone(&self.data),
+            find_highlights,
+        }
+    }
+
+    /// Visible find matches for a registered find session, computed on the
+    /// mirror actor with full logical-line soft-wrap context.
+    #[inline]
+    pub fn find_highlights(&self, session_id: u64) -> Option<&[FindMatch]> {
+        self.find_highlights.get(&session_id).map(|v| v.as_ref())
+    }
+
     #[inline]
     pub fn view(&self) -> ScreenView<'_> {
-        self.0.view()
+        self.data.view()
     }
 
     #[inline]
     pub fn cols(&self) -> usize {
-        self.0.cols
+        self.data.cols
     }
 
     #[inline]
     pub fn rows(&self) -> usize {
-        self.0.rows
+        self.data.rows
     }
 
     #[inline]
     pub fn history_size(&self) -> usize {
-        self.0.history_size
+        self.data.history_size
     }
 
     #[inline]
     pub fn display_offset(&self) -> usize {
-        self.0.display_offset
+        self.data.display_offset
     }
 
     #[inline]
     pub fn mode(&self) -> TerminalModeFlags {
-        self.0.mode
+        self.data.mode
     }
 
     #[inline]
     pub fn cursor_style(&self) -> CursorStyle {
-        self.0.cursor_style
+        self.data.cursor_style
     }
 
     #[inline]
     pub fn selection(&self) -> Option<SelectionRange> {
-        self.0.selection
+        self.data.selection
     }
 }
 
@@ -644,6 +739,18 @@ impl<'a> ScreenView<'a> {
     #[inline]
     pub fn bottommost_line(&self) -> Line {
         Line(self.data.rows as i32 - 1)
+    }
+
+    #[inline]
+    pub(crate) fn stored_line_bounds(&self) -> (Line, Line) {
+        let top = self.data.top_line;
+        let bottom = Line(self.data.top_line.0 + self.data.stored_rows.saturating_sub(1) as i32);
+        (top, bottom)
+    }
+
+    #[inline]
+    pub(crate) fn top_row_continues_wrap(&self) -> bool {
+        self.data.top_row_continues_wrap
     }
 
     #[inline]
@@ -1230,4 +1337,72 @@ fn parse_row_osc8_spans(bytes: &[u8], cols: usize) -> Vec<RowHyperlinkSpan> {
         });
     }
     spans
+}
+
+fn append_terminal_row(
+    term: &vt::Terminal,
+    tag: GridPointTag,
+    y: u32,
+    cols: usize,
+    cells: &mut Vec<ScreenCell>,
+    zerowidth_pool: &mut Vec<char>,
+    hyperlinks: &mut Vec<Hyperlink>,
+) {
+    let row_info = term.grid_ref(tag, 0, y).and_then(|gref| gref.row().ok());
+    let row_wrap = row_info.is_some_and(|r| r.wrap);
+    let row_has_links = row_info.is_some_and(|r| r.hyperlink);
+    let row_links = if row_has_links {
+        extract_row_hyperlinks(term, tag, y, cols)
+    } else {
+        Vec::new()
+    };
+    for col in 0..cols {
+        let Some(gref) = term.grid_ref(tag, col as u16, y) else {
+            cells.push(ScreenCell::default());
+            continue;
+        };
+        let Ok(info) = gref.cell() else {
+            cells.push(ScreenCell::default());
+            continue;
+        };
+        let style = if info.has_styling {
+            gref.style().unwrap_or(Style {
+                fg: StyleColor::None,
+                bg: StyleColor::None,
+                underline: StyleColor::None,
+                flags: 0,
+            })
+        } else {
+            Style {
+                fg: StyleColor::None,
+                bg: StyleColor::None,
+                underline: StyleColor::None,
+                flags: 0,
+            }
+        };
+        let graphemes = if info.content_tag == CellContentTag::CodepointGrapheme {
+            gref.graphemes().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let (c, zw_start, zw_len) = extract_cell_text(&info, &graphemes, zerowidth_pool);
+        let hyperlink = if info.has_hyperlink {
+            let uri = gref.hyperlink_uri().ok().flatten();
+            intern_hyperlink(uri, col, &row_links, hyperlinks)
+        } else {
+            0
+        };
+        let wrapline = row_wrap && col + 1 == cols;
+        cells.push(ScreenCell {
+            c,
+            flags: CellFlags::from_vt_style(style.flags, info.wide, wrapline),
+            fg: style_color_to_runner(style.fg, NamedColor::Foreground),
+            bg: cell_bg_to_runner(&info, &style),
+            underline_color: style_underline_color_to_runner(style.underline),
+            zw_start,
+            zw_len,
+            hyperlink,
+            selected: false,
+        });
+    }
 }

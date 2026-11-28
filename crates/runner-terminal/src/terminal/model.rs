@@ -953,7 +953,14 @@ impl ModelActor {
             .collect()
     }
 
-    fn drain_vt_effects(&mut self, seq: u64, now: Instant, held_now: &mut bool) {
+    fn drain_vt_effects(
+        &mut self,
+        seq: u64,
+        now: Instant,
+        prior_deadline: Option<Instant>,
+        held_now: &mut bool,
+        saw_hold_end: &mut bool,
+    ) {
         for effect in self.term.take_effects() {
             match effect {
                 TerminalEffect::WritePty(reply) => {
@@ -1013,8 +1020,10 @@ impl ModelActor {
                 TerminalEffect::RenderHold(held) => {
                     *held_now = held;
                     if held {
-                        self.render_hold_deadline = Some(now + SYNC_HOLD_TIMEOUT);
+                        self.render_hold_deadline =
+                            Some(prior_deadline.unwrap_or(now + SYNC_HOLD_TIMEOUT));
                     } else {
+                        *saw_hold_end = true;
                         self.render_hold_deadline = None;
                         self.held_sync_bytes = 0;
                     }
@@ -1026,29 +1035,42 @@ impl ModelActor {
 
     fn feed_vt_and_dispatch(&mut self, seq: u64, now: Instant, bytes: &[u8]) {
         let was_held = self.render_hold_deadline.is_some();
+        let prior_deadline = self.render_hold_deadline;
+        let before_reopens = self.term.sync_hold_reopens();
         let mut held_now = was_held;
+        let mut saw_hold_end = false;
         if self.program_status.is_discarding_inflight() {
             let (consumed, reached) = self
                 .term
                 .vt_write_until_osc_or_ground(bytes)
                 .unwrap_or((bytes.len(), false));
-            self.drain_vt_effects(seq, now, &mut held_now);
+            self.drain_vt_effects(seq, now, prior_deadline, &mut held_now, &mut saw_hold_end);
             if reached || self.term.vt_ground() {
                 self.program_status.note_vt_ground();
             }
             if consumed < bytes.len() {
                 self.term.vt_write(&bytes[consumed..]);
-                self.drain_vt_effects(seq, now, &mut held_now);
+                self.drain_vt_effects(seq, now, prior_deadline, &mut held_now, &mut saw_hold_end);
             }
         } else {
             self.term.vt_write(bytes);
-            self.drain_vt_effects(seq, now, &mut held_now);
+            self.drain_vt_effects(seq, now, prior_deadline, &mut held_now, &mut saw_hold_end);
         }
         self.term.clamp_kitty_keyboard_flags();
+        let reopened_while_held = self.term.sync_hold_reopens() != before_reopens;
+        if was_held && held_now && !saw_hold_end && reopened_while_held {
+            self.render_hold_deadline = Some(now + SYNC_HOLD_TIMEOUT);
+        }
+        if held_now
+            && self
+                .render_hold_deadline
+                .is_some_and(|deadline| deadline <= now)
+        {
+            let _ = self.term.set_mode(vt::dec_mode(2026), false);
+            let _ = self.term.take_effects();
+            held_now = false;
+        }
         if held_now {
-            if was_held && bytes.windows(BEGIN_SYNC.len()).any(|w| w == BEGIN_SYNC) {
-                self.render_hold_deadline = Some(now + SYNC_HOLD_TIMEOUT);
-            }
             self.held_sync_bytes = self.held_sync_bytes.saturating_add(bytes.len());
         } else {
             self.render_hold_deadline = None;
@@ -2182,6 +2204,11 @@ mod clipboard_tests {
 
     #[test]
     fn cwd_callbacks_require_file_uri_and_local_host_across_osc_aliases() {
+        #[cfg(windows)]
+        let (uri_prefix, path_prefix) = ("/C:/tmp", "C:/tmp");
+        #[cfg(not(windows))]
+        let (uri_prefix, path_prefix) = ("/tmp", "/tmp");
+
         let host = Arc::new(Host::default());
         let model = TerminalModel::new(
             host,
@@ -2195,35 +2222,51 @@ mod clipboard_tests {
         )
         .unwrap();
 
+        let local_dir = PathBuf::from(format!("{path_prefix}/local-dir"));
+        let local_1337 = PathBuf::from(format!("{path_prefix}/local-1337"));
+
         // OSC 7 local host accepted.
-        model.feed_output(1, b"\x1b]7;file://localhost/tmp/local-dir\x07");
-        assert_eq!(model.live_cwd(), Some(PathBuf::from("/tmp/local-dir")));
+        model.feed_output(
+            1,
+            format!("\x1b]7;file://localhost{uri_prefix}/local-dir\x07").as_bytes(),
+        );
+        assert_eq!(model.live_cwd(), Some(local_dir.clone()));
 
         // OSC 7 remote host ignored.
-        model.feed_output(2, b"\x1b]7;file://remote.example/tmp/remote-dir\x07");
-        assert_eq!(model.live_cwd(), Some(PathBuf::from("/tmp/local-dir")));
+        model.feed_output(
+            2,
+            format!("\x1b]7;file://remote.example{uri_prefix}/remote-dir\x07").as_bytes(),
+        );
+        assert_eq!(model.live_cwd(), Some(local_dir.clone()));
 
         // OSC 9;9 plain path ignored.
-        model.feed_output(3, b"\x1b]9;9;/tmp/plain-osc9\x07");
-        assert_eq!(model.live_cwd(), Some(PathBuf::from("/tmp/local-dir")));
+        model.feed_output(
+            3,
+            format!("\x1b]9;9;{path_prefix}/plain-osc9\x07").as_bytes(),
+        );
+        assert_eq!(model.live_cwd(), Some(local_dir.clone()));
 
         // OSC 1337 CurrentDir plain path ignored.
-        model.feed_output(4, b"\x1b]1337;CurrentDir=/tmp/plain-1337\x07");
-        assert_eq!(model.live_cwd(), Some(PathBuf::from("/tmp/local-dir")));
+        model.feed_output(
+            4,
+            format!("\x1b]1337;CurrentDir={path_prefix}/plain-1337\x07").as_bytes(),
+        );
+        assert_eq!(model.live_cwd(), Some(local_dir.clone()));
 
         // OSC 1337 CurrentDir file:// URI with remote host ignored.
         model.feed_output(
             5,
-            b"\x1b]1337;CurrentDir=file://remote.example/tmp/remote-1337\x07",
+            format!("\x1b]1337;CurrentDir=file://remote.example{uri_prefix}/remote-1337\x07")
+                .as_bytes(),
         );
-        assert_eq!(model.live_cwd(), Some(PathBuf::from("/tmp/local-dir")));
+        assert_eq!(model.live_cwd(), Some(local_dir));
 
         // OSC 1337 CurrentDir file:// URI with local host accepted.
         model.feed_output(
             6,
-            b"\x1b]1337;CurrentDir=file://localhost/tmp/local-1337\x07",
+            format!("\x1b]1337;CurrentDir=file://localhost{uri_prefix}/local-1337\x07").as_bytes(),
         );
-        assert_eq!(model.live_cwd(), Some(PathBuf::from("/tmp/local-1337")));
+        assert_eq!(model.live_cwd(), Some(local_1337));
 
         for worker in model.stop_workers() {
             worker.join().unwrap();

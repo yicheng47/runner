@@ -2,7 +2,14 @@
 //! grid, and the scroll-mark tracker backed by `libghostty-vt`'s native
 //! per-screen scroll-up row counter.
 
+use std::sync::Arc;
+
 use regex::Regex;
+use regex_automata::hybrid::dfa::{
+    Builder as HybridBuilder, Cache as HybridCache, Config as HybridConfig, DFA as HybridDfa,
+};
+use regex_automata::nfa::thompson::Config as ThompsonConfig;
+use regex_automata::{Anchored, Input, MatchKind};
 use unicode_width::UnicodeWidthChar as _;
 
 use crate::screen::{ScreenGuard, ScreenView};
@@ -12,10 +19,37 @@ use crate::vt::{ActiveScreen, Terminal as VtTerminal};
 /// Counts past this many read as "1000+".
 pub const MATCH_LIMIT: usize = 1000;
 
+#[derive(Debug)]
+struct CompiledFindRegex {
+    prefilter: Regex,
+    rev_dfa: HybridDfa,
+    fwd_dfa: HybridDfa,
+}
+
 /// Compiled terminal search pattern.
 #[derive(Clone, Debug)]
 pub struct FindRegex {
-    regex: Regex,
+    compiled: Arc<CompiledFindRegex>,
+}
+
+#[derive(Default)]
+struct FindSearchScratch {
+    text: String,
+    map: Vec<(usize, GridPoint, bool)>,
+    caches: Option<(HybridCache, HybridCache)>,
+}
+
+impl FindSearchScratch {
+    fn caches_for(
+        &mut self,
+        rev_dfa: &HybridDfa,
+        fwd_dfa: &HybridDfa,
+    ) -> (&mut HybridCache, &mut HybridCache) {
+        let (rev, fwd) = self
+            .caches
+            .get_or_insert_with(|| (rev_dfa.create_cache(), fwd_dfa.create_cache()));
+        (rev, fwd)
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -58,9 +92,42 @@ impl FindQuery {
         if can_match_empty {
             return FindPattern::Invalid;
         }
-        Regex::new(&pattern).map_or(FindPattern::Invalid, |regex| {
-            FindPattern::Ready(Box::new(FindRegex { regex }))
-        })
+        let Ok(prefilter) = Regex::new(&pattern) else {
+            return FindPattern::Invalid;
+        };
+        let config = HybridConfig::new()
+            .minimum_cache_clear_count(Some(3))
+            .minimum_bytes_per_state(Some(10));
+        let max_size = config.get_cache_capacity();
+        let Ok(fwd_dfa) = HybridBuilder::new()
+            .configure(config.clone().match_kind(MatchKind::All))
+            .thompson(
+                ThompsonConfig::new()
+                    .reverse(false)
+                    .nfa_size_limit(Some(max_size)),
+            )
+            .build(&pattern)
+        else {
+            return FindPattern::Invalid;
+        };
+        let Ok(rev_dfa) = HybridBuilder::new()
+            .configure(config.match_kind(MatchKind::LeftmostFirst))
+            .thompson(
+                ThompsonConfig::new()
+                    .reverse(true)
+                    .nfa_size_limit(Some(max_size)),
+            )
+            .build(&pattern)
+        else {
+            return FindPattern::Invalid;
+        };
+        FindPattern::Ready(Box::new(FindRegex {
+            compiled: Arc::new(CompiledFindRegex {
+                prefilter,
+                rev_dfa,
+                fwd_dfa,
+            }),
+        }))
     }
 }
 
@@ -81,6 +148,33 @@ impl FindCount {
             index: current.and_then(|current| newest.iter().position(|found| found == current)),
         }
     }
+}
+
+/// Which selection transition a [`TerminalMirror::find_matches`] request performs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FindAction {
+    /// Start from the newest match at or above the current viewport bottom.
+    NewQuery,
+    /// Keep the anchored/carried match when still present, else snap to nearest.
+    Refresh {
+        anchor: Option<u64>,
+        carried: Option<FindMatch>,
+    },
+    /// Step to the next older (`older == true`) or newer (`older == false`) match.
+    Step {
+        anchor: Option<u64>,
+        carried: Option<FindMatch>,
+        older: bool,
+    },
+}
+
+/// Result of running a search inside `TerminalMirror`'s actor.
+pub struct FindUpdate {
+    pub count: FindCount,
+    pub mark: ScrollMark,
+    pub current: Option<FindMatch>,
+    pub anchor: Option<super::MatchAnchor>,
+    pub alt_screen: bool,
 }
 
 mod private {
@@ -112,7 +206,7 @@ impl<T: private::Sealed> FindTarget for T {}
 
 impl private::Sealed for ScreenView<'_> {
     fn newest_matches_inner(&self, regex: &mut FindRegex) -> (Vec<FindMatch>, bool) {
-        newest_matches_view(self, &regex.regex)
+        newest_matches_view(self, &regex.compiled)
     }
 
     fn matches_in_lines_inner(
@@ -121,11 +215,11 @@ impl private::Sealed for ScreenView<'_> {
         first: Line,
         last: Line,
     ) -> Vec<FindMatch> {
-        matches_in_lines_view(self, &regex.regex, first, last)
+        matches_in_lines_view(self, regex, first, last)
     }
 
     fn newest_at_or_above_inner(&self, regex: &mut FindRegex, line: Line) -> Option<FindMatch> {
-        newest_at_or_above_view(self, &regex.regex, line)
+        newest_at_or_above_view(self, &regex.compiled, line)
     }
 
     fn step_match_inner(
@@ -134,17 +228,17 @@ impl private::Sealed for ScreenView<'_> {
         current: &FindMatch,
         older: bool,
     ) -> Option<FindMatch> {
-        step_match_view(self, &regex.regex, current, older)
+        step_match_view(self, &regex.compiled, current, older)
     }
 
     fn locate_inner(&self, regex: &mut FindRegex, carried: &FindMatch) -> Option<FindMatch> {
-        locate_view(self, &regex.regex, carried)
+        locate_view(self, &regex.compiled, carried)
     }
 }
 
 impl private::Sealed for ScreenGuard<'_> {
     fn newest_matches_inner(&self, regex: &mut FindRegex) -> (Vec<FindMatch>, bool) {
-        newest_matches_view(&self.view(), &regex.regex)
+        newest_matches_view(&self.view(), &regex.compiled)
     }
 
     fn matches_in_lines_inner(
@@ -153,11 +247,11 @@ impl private::Sealed for ScreenGuard<'_> {
         first: Line,
         last: Line,
     ) -> Vec<FindMatch> {
-        matches_in_lines_view(&self.view(), &regex.regex, first, last)
+        matches_in_lines_view(&self.view(), regex, first, last)
     }
 
     fn newest_at_or_above_inner(&self, regex: &mut FindRegex, line: Line) -> Option<FindMatch> {
-        newest_at_or_above_view(&self.view(), &regex.regex, line)
+        newest_at_or_above_view(&self.view(), &regex.compiled, line)
     }
 
     fn step_match_inner(
@@ -166,17 +260,17 @@ impl private::Sealed for ScreenGuard<'_> {
         current: &FindMatch,
         older: bool,
     ) -> Option<FindMatch> {
-        step_match_view(&self.view(), &regex.regex, current, older)
+        step_match_view(&self.view(), &regex.compiled, current, older)
     }
 
     fn locate_inner(&self, regex: &mut FindRegex, carried: &FindMatch) -> Option<FindMatch> {
-        locate_view(&self.view(), &regex.regex, carried)
+        locate_view(&self.view(), &regex.compiled, carried)
     }
 }
 
 impl private::Sealed for crate::replay::Terminal {
     fn newest_matches_inner(&self, regex: &mut FindRegex) -> (Vec<FindMatch>, bool) {
-        newest_matches_view(&self.screen(), &regex.regex)
+        newest_matches_view(&self.screen(), &regex.compiled)
     }
 
     fn matches_in_lines_inner(
@@ -185,11 +279,11 @@ impl private::Sealed for crate::replay::Terminal {
         first: Line,
         last: Line,
     ) -> Vec<FindMatch> {
-        matches_in_lines_view(&self.screen(), &regex.regex, first, last)
+        matches_in_lines_view(&self.screen(), regex, first, last)
     }
 
     fn newest_at_or_above_inner(&self, regex: &mut FindRegex, line: Line) -> Option<FindMatch> {
-        newest_at_or_above_view(&self.screen(), &regex.regex, line)
+        newest_at_or_above_view(&self.screen(), &regex.compiled, line)
     }
 
     fn step_match_inner(
@@ -198,11 +292,11 @@ impl private::Sealed for crate::replay::Terminal {
         current: &FindMatch,
         older: bool,
     ) -> Option<FindMatch> {
-        step_match_view(&self.screen(), &regex.regex, current, older)
+        step_match_view(&self.screen(), &regex.compiled, current, older)
     }
 
     fn locate_inner(&self, regex: &mut FindRegex, carried: &FindMatch) -> Option<FindMatch> {
-        locate_view(&self.screen(), &regex.regex, carried)
+        locate_view(&self.screen(), &regex.compiled, carried)
     }
 }
 
@@ -255,11 +349,121 @@ pub fn locate(
     target.locate_inner(regex, carried)
 }
 
+fn rightmost_non_overlapping_spans_dfa(
+    text: &str,
+    rev_dfa: &HybridDfa,
+    fwd_dfa: &HybridDfa,
+    scratch: &mut FindSearchScratch,
+) -> Option<Vec<(usize, usize)>> {
+    let (rev_cache, fwd_cache) = scratch.caches_for(rev_dfa, fwd_dfa);
+    let mut out = Vec::new();
+    let mut limit = text.len();
+    while limit > 0 {
+        let rev_input = Input::new(text).range(0..limit);
+        let Some(rev_hit) = rev_dfa.try_search_rev(rev_cache, &rev_input).ok()? else {
+            break;
+        };
+        let start = rev_hit.offset();
+        if start >= limit {
+            break;
+        }
+        let fwd_input = Input::new(text).range(start..limit).anchored(Anchored::Yes);
+        let Some(fwd_hit) = fwd_dfa.try_search_fwd(fwd_cache, &fwd_input).ok()? else {
+            break;
+        };
+        let end = fwd_hit.offset();
+        if end <= start || end > limit {
+            break;
+        }
+        out.push((start, end));
+        limit = start;
+    }
+    out.reverse();
+    Some(out)
+}
+
+fn rightmost_non_overlapping_spans_fallback(regex: &Regex, text: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut limit = text.len();
+    while limit > 0 {
+        let mut best: Option<(usize, usize)> = None;
+        let mut pos = 0;
+        while pos < limit {
+            let Some(found) = regex.find_at(text, pos) else {
+                break;
+            };
+            let start = found.start();
+            if start >= limit {
+                break;
+            }
+            let end = found.end();
+            if end <= limit
+                && best.is_none_or(|(best_start, best_end)| {
+                    end > best_end || (end == best_end && start < best_start)
+                })
+            {
+                best = Some((start, end));
+            }
+            let step = text[start..].chars().next().map_or(1, char::len_utf8);
+            pos = start + step;
+        }
+        let Some((start, end)) = best else {
+            break;
+        };
+        if end <= start {
+            break;
+        }
+        out.push((start, end));
+        limit = start;
+    }
+    out.reverse();
+    out
+}
+
+fn collect_regex_matches(
+    text: &str,
+    map: &[(usize, GridPoint, bool)],
+    cols: usize,
+    compiled: &CompiledFindRegex,
+    scratch: &mut FindSearchScratch,
+) -> Vec<FindMatch> {
+    if text.is_empty() || !compiled.prefilter.is_match(text) {
+        return Vec::new();
+    }
+
+    let spans =
+        rightmost_non_overlapping_spans_dfa(text, &compiled.rev_dfa, &compiled.fwd_dfa, scratch)
+            .unwrap_or_else(|| rightmost_non_overlapping_spans_fallback(&compiled.prefilter, text));
+
+    let mut out = Vec::with_capacity(spans.len());
+    for (found_start, found_end) in spans {
+        let start_idx = match map.binary_search_by_key(&found_start, |(off, _, _)| *off) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+        let end_idx = match map.binary_search_by_key(&found_end, |(off, _, _)| *off) {
+            Ok(i) => i.saturating_sub(1),
+            Err(i) => i.saturating_sub(1),
+        };
+        if start_idx >= map.len() || end_idx >= map.len() || start_idx > end_idx {
+            continue;
+        }
+        let start = map[start_idx].1;
+        let (mut end, end_is_wide) = (map[end_idx].1, map[end_idx].2);
+        if end_is_wide && end.column.0 + 1 < cols {
+            end.column.0 += 1;
+        }
+        out.push(FindMatch::new(start, end));
+    }
+    out
+}
+
 fn logical_line_matches(
     view: &ScreenView<'_>,
-    regex: &Regex,
+    compiled: &CompiledFindRegex,
     seg_start: Line,
     seg_end: Line,
+    scratch: &mut FindSearchScratch,
 ) -> Vec<FindMatch> {
     let cols = view.cols();
     if cols == 0 {
@@ -288,31 +492,372 @@ fn logical_line_matches(
         }
     }
 
-    if text.is_empty() {
-        return Vec::new();
+    collect_regex_matches(&text, &map, cols, compiled, scratch)
+}
+
+#[inline]
+fn line_to_screen_y(history: usize, line: Line) -> u32 {
+    (line.0 + history as i32).max(0) as u32
+}
+
+/// Abstract row source for lazy regex search over `vt::Terminal`.
+pub(crate) trait FindRowSource {
+    fn cols(&self) -> usize;
+    fn rows(&self) -> usize;
+    fn history_size(&self) -> usize;
+    fn row_is_wrapped(&self, line: Line) -> bool;
+    fn append_row_search_cells(
+        &self,
+        line: Line,
+        text: &mut String,
+        map: &mut Vec<(usize, GridPoint, bool)>,
+    );
+}
+
+impl FindRowSource for VtTerminal {
+    #[inline]
+    fn cols(&self) -> usize {
+        usize::from(VtTerminal::cols(self))
     }
 
-    let mut out = Vec::new();
-    for found in regex.find_iter(&text) {
-        let start_idx = match map.binary_search_by_key(&found.start(), |(off, _, _)| *off) {
-            Ok(i) => i,
-            Err(i) => i.saturating_sub(1),
-        };
-        let end_idx = match map.binary_search_by_key(&found.end(), |(off, _, _)| *off) {
-            Ok(i) => i.saturating_sub(1),
-            Err(i) => i.saturating_sub(1),
-        };
-        if start_idx >= map.len() || end_idx >= map.len() || start_idx > end_idx {
-            continue;
-        }
-        let start = map[start_idx].1;
-        let (mut end, end_is_wide) = (map[end_idx].1, map[end_idx].2);
-        if end_is_wide && end.column.0 + 1 < cols {
-            end.column.0 += 1;
-        }
-        out.push(FindMatch::new(start, end));
+    #[inline]
+    fn rows(&self) -> usize {
+        usize::from(VtTerminal::rows(self))
     }
+
+    #[inline]
+    fn history_size(&self) -> usize {
+        self.scrollback_rows()
+    }
+
+    #[inline]
+    fn row_is_wrapped(&self, line: Line) -> bool {
+        VtTerminal::row_is_wrapped(self, line_to_screen_y(self.scrollback_rows(), line))
+    }
+
+    #[inline]
+    fn append_row_search_cells(
+        &self,
+        line: Line,
+        text: &mut String,
+        map: &mut Vec<(usize, GridPoint, bool)>,
+    ) {
+        VtTerminal::append_row_search_cells(
+            self,
+            line_to_screen_y(self.scrollback_rows(), line),
+            line,
+            text,
+            map,
+        );
+    }
+}
+
+pub(crate) fn soft_wrapped_bounds_source<S: FindRowSource + ?Sized>(
+    source: &S,
+    line: Line,
+) -> (Line, Line) {
+    let history = source.history_size();
+    let topmost = Line(-(history as i32));
+    let bottommost = Line((source.rows() as i32).max(1) - 1);
+    let line = line.clamp(topmost, bottommost);
+    let mut start = line;
+    while start > topmost && source.row_is_wrapped(start - 1) {
+        start -= 1;
+    }
+    let mut end = line;
+    while end < bottommost && source.row_is_wrapped(end) {
+        end += 1;
+    }
+    (start, end)
+}
+
+pub(crate) fn soft_wrapped_bounds_vt(term: &VtTerminal, line: Line) -> (Line, Line) {
+    soft_wrapped_bounds_source(term, line)
+}
+
+fn prev_logical_line_source<S: FindRowSource + ?Sized>(
+    source: &S,
+    seg_start: Line,
+    topmost: Line,
+) -> Option<(Line, Line)> {
+    if seg_start <= topmost {
+        return None;
+    }
+    Some(soft_wrapped_bounds_source(source, seg_start - 1))
+}
+
+fn next_logical_line_source<S: FindRowSource + ?Sized>(
+    source: &S,
+    seg_end: Line,
+    bottommost: Line,
+) -> Option<(Line, Line)> {
+    if seg_end >= bottommost {
+        return None;
+    }
+    Some(soft_wrapped_bounds_source(source, seg_end + 1))
+}
+
+fn logical_line_matches_source<S: FindRowSource + ?Sized>(
+    source: &S,
+    compiled: &CompiledFindRegex,
+    seg_start: Line,
+    seg_end: Line,
+    scratch: &mut FindSearchScratch,
+) -> Vec<FindMatch> {
+    let cols = source.cols();
+    if cols == 0 {
+        return Vec::new();
+    }
+    let mut text = std::mem::take(&mut scratch.text);
+    let mut map = std::mem::take(&mut scratch.map);
+    text.clear();
+    map.clear();
+    for row_i in seg_start.0..=seg_end.0 {
+        source.append_row_search_cells(Line(row_i), &mut text, &mut map);
+    }
+    let out = collect_regex_matches(&text, &map, cols, compiled, scratch);
+    scratch.text = text;
+    scratch.map = map;
     out
+}
+
+/// Lazily walks backward from the newest row directly on `source`,
+/// stopping once `MATCH_LIMIT` matches have been collected.
+pub(crate) fn newest_matches_source<S: FindRowSource + ?Sized>(
+    source: &S,
+    regex: &FindRegex,
+) -> (Vec<FindMatch>, bool) {
+    let history = source.history_size();
+    let topmost = Line(-(history as i32));
+    let bottommost = Line((source.rows() as i32).max(1) - 1);
+    let mut matches = Vec::new();
+    let mut scratch = FindSearchScratch::default();
+    let mut seg = Some(soft_wrapped_bounds_source(source, bottommost));
+    while let Some((seg_start, seg_end)) = seg {
+        let line_matches =
+            logical_line_matches_source(source, &regex.compiled, seg_start, seg_end, &mut scratch);
+        for found in line_matches.into_iter().rev() {
+            if matches.len() == MATCH_LIMIT {
+                return (matches, true);
+            }
+            matches.push(found);
+        }
+        seg = prev_logical_line_source(source, seg_start, topmost);
+    }
+    (matches, false)
+}
+
+/// Every match touching `first..=last` (computed with full soft-wrapped
+/// logical-line context), oldest first, read directly from `source`.
+pub(crate) fn matches_in_lines_source<S: FindRowSource + ?Sized>(
+    source: &S,
+    regex: &FindRegex,
+    first: Line,
+    last: Line,
+) -> Vec<FindMatch> {
+    if first > last || source.rows() == 0 {
+        return Vec::new();
+    }
+    let history = source.history_size();
+    let topmost = Line(-(history as i32));
+    let bottommost = Line((source.rows() as i32).max(1) - 1);
+    let first = first.clamp(topmost, bottommost);
+    let last = last.clamp(topmost, bottommost);
+    let (mut seg_start, mut seg_end) = soft_wrapped_bounds_source(source, first);
+    let (_, limit_end) = soft_wrapped_bounds_source(source, last);
+    let mut matches = Vec::new();
+    let mut scratch = FindSearchScratch::default();
+    loop {
+        matches.extend(
+            logical_line_matches_source(source, &regex.compiled, seg_start, seg_end, &mut scratch)
+                .into_iter()
+                .filter(|found| found.end.line >= first && found.start.line <= last),
+        );
+        if seg_end >= limit_end {
+            break;
+        }
+        let Some(next) = next_logical_line_source(source, seg_end, bottommost) else {
+            break;
+        };
+        seg_start = next.0;
+        seg_end = next.1;
+    }
+    matches
+}
+
+fn oldest_from_source<S: FindRowSource + ?Sized>(
+    source: &S,
+    bottommost: Line,
+    compiled: &CompiledFindRegex,
+    first_seg: (Line, Line),
+    scratch: &mut FindSearchScratch,
+) -> Option<FindMatch> {
+    let mut seg = Some(first_seg);
+    while let Some((seg_start, seg_end)) = seg {
+        let line_matches =
+            logical_line_matches_source(source, compiled, seg_start, seg_end, scratch);
+        if let Some(found) = line_matches.into_iter().next() {
+            return Some(found);
+        }
+        seg = next_logical_line_source(source, seg_end, bottommost);
+    }
+    None
+}
+
+fn newest_overall_source<S: FindRowSource + ?Sized>(
+    source: &S,
+    topmost: Line,
+    bottommost: Line,
+    compiled: &CompiledFindRegex,
+    scratch: &mut FindSearchScratch,
+) -> Option<FindMatch> {
+    let mut seg = Some(soft_wrapped_bounds_source(source, bottommost));
+    while let Some((seg_start, seg_end)) = seg {
+        let line_matches =
+            logical_line_matches_source(source, compiled, seg_start, seg_end, scratch);
+        if let Some(found) = line_matches.into_iter().next_back() {
+            return Some(found);
+        }
+        seg = prev_logical_line_source(source, seg_start, topmost);
+    }
+    None
+}
+
+pub(crate) fn newest_at_or_above_source<S: FindRowSource + ?Sized>(
+    source: &S,
+    regex: &FindRegex,
+    line: Line,
+) -> Option<FindMatch> {
+    let history = source.history_size();
+    let topmost = Line(-(history as i32));
+    let bottommost = Line((source.rows() as i32).max(1) - 1);
+    let line = line.clamp(topmost, bottommost);
+    let (start_seg, end_seg) = soft_wrapped_bounds_source(source, line);
+    let mut scratch = FindSearchScratch::default();
+    let current_line_matches =
+        logical_line_matches_source(source, &regex.compiled, start_seg, end_seg, &mut scratch);
+    if let Some(found) = current_line_matches
+        .iter()
+        .rev()
+        .find(|found| found.start.line <= line)
+    {
+        return Some(*found);
+    }
+    let mut seg = prev_logical_line_source(source, start_seg, topmost);
+    while let Some((seg_start, seg_end)) = seg {
+        let line_matches =
+            logical_line_matches_source(source, &regex.compiled, seg_start, seg_end, &mut scratch);
+        if let Some(found) = line_matches.into_iter().next_back() {
+            return Some(found);
+        }
+        seg = prev_logical_line_source(source, seg_start, topmost);
+    }
+    if let Some(found) = current_line_matches
+        .into_iter()
+        .find(|found| found.start.line > line)
+    {
+        return Some(found);
+    }
+    oldest_from_source(
+        source,
+        bottommost,
+        &regex.compiled,
+        next_logical_line_source(source, end_seg, bottommost)?,
+        &mut scratch,
+    )
+}
+
+pub(crate) fn step_match_source<S: FindRowSource + ?Sized>(
+    source: &S,
+    regex: &FindRegex,
+    current: &FindMatch,
+    older: bool,
+) -> Option<FindMatch> {
+    let history = source.history_size();
+    let topmost = Line(-(history as i32));
+    let bottommost = Line((source.rows() as i32).max(1) - 1);
+    let mut scratch = FindSearchScratch::default();
+    let line = current.start.line;
+    if line < topmost {
+        return if older {
+            newest_overall_source(source, topmost, bottommost, &regex.compiled, &mut scratch)
+        } else {
+            oldest_from_source(
+                source,
+                bottommost,
+                &regex.compiled,
+                soft_wrapped_bounds_source(source, topmost),
+                &mut scratch,
+            )
+        };
+    }
+    let clamped = line.clamp(topmost, bottommost);
+    let (seg_start, seg_end) = soft_wrapped_bounds_source(source, clamped);
+    let same_line =
+        logical_line_matches_source(source, &regex.compiled, seg_start, seg_end, &mut scratch);
+    if older {
+        if let Some(found) = same_line
+            .into_iter()
+            .rev()
+            .find(|found| found.start < current.start)
+        {
+            return Some(found);
+        }
+        let mut seg = prev_logical_line_source(source, seg_start, topmost);
+        while let Some((s, e)) = seg {
+            let line_matches =
+                logical_line_matches_source(source, &regex.compiled, s, e, &mut scratch);
+            if let Some(found) = line_matches.into_iter().next_back() {
+                return Some(found);
+            }
+            seg = prev_logical_line_source(source, s, topmost);
+        }
+        newest_overall_source(source, topmost, bottommost, &regex.compiled, &mut scratch)
+    } else {
+        if let Some(found) = same_line
+            .into_iter()
+            .find(|found| found.start > current.start)
+        {
+            return Some(found);
+        }
+        if let Some(next_seg) = next_logical_line_source(source, seg_end, bottommost) {
+            if let Some(found) =
+                oldest_from_source(source, bottommost, &regex.compiled, next_seg, &mut scratch)
+            {
+                return Some(found);
+            }
+        }
+        oldest_from_source(
+            source,
+            bottommost,
+            &regex.compiled,
+            soft_wrapped_bounds_source(source, topmost),
+            &mut scratch,
+        )
+    }
+}
+
+pub(crate) fn locate_source<S: FindRowSource + ?Sized>(
+    source: &S,
+    regex: &FindRegex,
+    carried: &FindMatch,
+) -> Option<FindMatch> {
+    let history = source.history_size();
+    let topmost = Line(-(history as i32));
+    let bottommost = Line((source.rows() as i32).max(1) - 1);
+    let line = carried.start.line;
+    if line >= topmost && line <= bottommost {
+        let (seg_start, seg_end) = soft_wrapped_bounds_source(source, line);
+        let mut scratch = FindSearchScratch::default();
+        if let Some(found) =
+            logical_line_matches_source(source, &regex.compiled, seg_start, seg_end, &mut scratch)
+                .into_iter()
+                .find(|found| found == carried)
+        {
+            return Some(found);
+        }
+    }
+    newest_at_or_above_source(source, regex, carried.start.line)
 }
 
 fn clamp_line(view: &ScreenView<'_>, line: Line) -> Line {
@@ -333,11 +878,15 @@ fn next_logical_line(view: &ScreenView<'_>, seg_end: Line) -> Option<(Line, Line
     Some(view.soft_wrapped_line_bounds(seg_end + 1))
 }
 
-fn newest_matches_view(view: &ScreenView<'_>, regex: &Regex) -> (Vec<FindMatch>, bool) {
+fn newest_matches_view(
+    view: &ScreenView<'_>,
+    compiled: &CompiledFindRegex,
+) -> (Vec<FindMatch>, bool) {
     let mut matches = Vec::new();
+    let mut scratch = FindSearchScratch::default();
     let mut seg = Some(view.soft_wrapped_line_bounds(view.bottommost_line()));
     while let Some((seg_start, seg_end)) = seg {
-        let line_matches = logical_line_matches(view, regex, seg_start, seg_end);
+        let line_matches = logical_line_matches(view, compiled, seg_start, seg_end, &mut scratch);
         for found in line_matches.into_iter().rev() {
             if matches.len() == MATCH_LIMIT {
                 return (matches, true);
@@ -351,7 +900,7 @@ fn newest_matches_view(view: &ScreenView<'_>, regex: &Regex) -> (Vec<FindMatch>,
 
 fn matches_in_lines_view(
     view: &ScreenView<'_>,
-    regex: &Regex,
+    regex: &FindRegex,
     first: Line,
     last: Line,
 ) -> Vec<FindMatch> {
@@ -363,8 +912,13 @@ fn matches_in_lines_view(
     let (mut seg_start, mut seg_end) = view.soft_wrapped_line_bounds(first);
     let (_, limit_end) = view.soft_wrapped_line_bounds(last);
     let mut matches = Vec::new();
+    let mut scratch = FindSearchScratch::default();
     loop {
-        matches.extend(logical_line_matches(view, regex, seg_start, seg_end));
+        matches.extend(
+            logical_line_matches(view, &regex.compiled, seg_start, seg_end, &mut scratch)
+                .into_iter()
+                .filter(|found| found.end.line >= first && found.start.line <= last),
+        );
         if seg_end >= limit_end {
             break;
         }
@@ -377,10 +931,16 @@ fn matches_in_lines_view(
     matches
 }
 
-fn newest_at_or_above_view(view: &ScreenView<'_>, regex: &Regex, line: Line) -> Option<FindMatch> {
+fn newest_at_or_above_view(
+    view: &ScreenView<'_>,
+    compiled: &CompiledFindRegex,
+    line: Line,
+) -> Option<FindMatch> {
     let line = clamp_line(view, line);
     let (start_seg, end_seg) = view.soft_wrapped_line_bounds(line);
-    let current_line_matches = logical_line_matches(view, regex, start_seg, end_seg);
+    let mut scratch = FindSearchScratch::default();
+    let current_line_matches =
+        logical_line_matches(view, compiled, start_seg, end_seg, &mut scratch);
     if let Some(found) = current_line_matches
         .iter()
         .rev()
@@ -390,7 +950,7 @@ fn newest_at_or_above_view(view: &ScreenView<'_>, regex: &Regex, line: Line) -> 
     }
     let mut seg = prev_logical_line(view, start_seg);
     while let Some((seg_start, seg_end)) = seg {
-        let line_matches = logical_line_matches(view, regex, seg_start, seg_end);
+        let line_matches = logical_line_matches(view, compiled, seg_start, seg_end, &mut scratch);
         if let Some(found) = line_matches.into_iter().next_back() {
             return Some(found);
         }
@@ -402,17 +962,23 @@ fn newest_at_or_above_view(view: &ScreenView<'_>, regex: &Regex, line: Line) -> 
     {
         return Some(found);
     }
-    oldest_from_view(view, regex, next_logical_line(view, end_seg)?)
+    oldest_from_view(
+        view,
+        compiled,
+        next_logical_line(view, end_seg)?,
+        &mut scratch,
+    )
 }
 
 fn oldest_from_view(
     view: &ScreenView<'_>,
-    regex: &Regex,
+    compiled: &CompiledFindRegex,
     first_seg: (Line, Line),
+    scratch: &mut FindSearchScratch,
 ) -> Option<FindMatch> {
     let mut seg = Some(first_seg);
     while let Some((seg_start, seg_end)) = seg {
-        let line_matches = logical_line_matches(view, regex, seg_start, seg_end);
+        let line_matches = logical_line_matches(view, compiled, seg_start, seg_end, scratch);
         if let Some(found) = line_matches.into_iter().next() {
             return Some(found);
         }
@@ -421,10 +987,14 @@ fn oldest_from_view(
     None
 }
 
-fn newest_overall_view(view: &ScreenView<'_>, regex: &Regex) -> Option<FindMatch> {
+fn newest_overall_view(
+    view: &ScreenView<'_>,
+    compiled: &CompiledFindRegex,
+    scratch: &mut FindSearchScratch,
+) -> Option<FindMatch> {
     let mut seg = Some(view.soft_wrapped_line_bounds(view.bottommost_line()));
     while let Some((seg_start, seg_end)) = seg {
-        let line_matches = logical_line_matches(view, regex, seg_start, seg_end);
+        let line_matches = logical_line_matches(view, compiled, seg_start, seg_end, scratch);
         if let Some(found) = line_matches.into_iter().next_back() {
             return Some(found);
         }
@@ -435,25 +1005,27 @@ fn newest_overall_view(view: &ScreenView<'_>, regex: &Regex) -> Option<FindMatch
 
 fn step_match_view(
     view: &ScreenView<'_>,
-    regex: &Regex,
+    compiled: &CompiledFindRegex,
     current: &FindMatch,
     older: bool,
 ) -> Option<FindMatch> {
+    let mut scratch = FindSearchScratch::default();
     let line = current.start.line;
     if line < view.topmost_line() {
         return if older {
-            newest_overall_view(view, regex)
+            newest_overall_view(view, compiled, &mut scratch)
         } else {
             oldest_from_view(
                 view,
-                regex,
+                compiled,
                 view.soft_wrapped_line_bounds(view.topmost_line()),
+                &mut scratch,
             )
         };
     }
     let clamped = clamp_line(view, line);
     let (seg_start, seg_end) = view.soft_wrapped_line_bounds(clamped);
-    let same_line = logical_line_matches(view, regex, seg_start, seg_end);
+    let same_line = logical_line_matches(view, compiled, seg_start, seg_end, &mut scratch);
     if older {
         if let Some(found) = same_line
             .into_iter()
@@ -464,13 +1036,13 @@ fn step_match_view(
         }
         let mut seg = prev_logical_line(view, seg_start);
         while let Some((s, e)) = seg {
-            let line_matches = logical_line_matches(view, regex, s, e);
+            let line_matches = logical_line_matches(view, compiled, s, e, &mut scratch);
             if let Some(found) = line_matches.into_iter().next_back() {
                 return Some(found);
             }
             seg = prev_logical_line(view, s);
         }
-        newest_overall_view(view, regex)
+        newest_overall_view(view, compiled, &mut scratch)
     } else {
         if let Some(found) = same_line
             .into_iter()
@@ -479,30 +1051,36 @@ fn step_match_view(
             return Some(found);
         }
         if let Some(next_seg) = next_logical_line(view, seg_end) {
-            if let Some(found) = oldest_from_view(view, regex, next_seg) {
+            if let Some(found) = oldest_from_view(view, compiled, next_seg, &mut scratch) {
                 return Some(found);
             }
         }
         oldest_from_view(
             view,
-            regex,
+            compiled,
             view.soft_wrapped_line_bounds(view.topmost_line()),
+            &mut scratch,
         )
     }
 }
 
-fn locate_view(view: &ScreenView<'_>, regex: &Regex, carried: &FindMatch) -> Option<FindMatch> {
+fn locate_view(
+    view: &ScreenView<'_>,
+    compiled: &CompiledFindRegex,
+    carried: &FindMatch,
+) -> Option<FindMatch> {
     let line = carried.start.line;
     if line >= view.topmost_line() && line <= view.bottommost_line() {
         let (seg_start, seg_end) = view.soft_wrapped_line_bounds(line);
-        if let Some(found) = logical_line_matches(view, regex, seg_start, seg_end)
+        let mut scratch = FindSearchScratch::default();
+        if let Some(found) = logical_line_matches(view, compiled, seg_start, seg_end, &mut scratch)
             .into_iter()
             .find(|found| found == carried)
         {
             return Some(found);
         }
     }
-    newest_at_or_above_view(view, regex, carried.start.line)
+    newest_at_or_above_view(view, compiled, carried.start.line)
 }
 
 #[derive(Clone, Copy, Debug)]

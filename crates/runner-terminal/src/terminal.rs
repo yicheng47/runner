@@ -27,14 +27,17 @@ use links::strip_drive_slash;
 use links::{
     candidate_paths, file_target_from_editor_uri_with_platform, file_target_from_uri_with_platform,
     scan_plain_file_candidates, stripped_prefix_candidates, terminal_link_at_with_prober,
-    MAX_LINK_PATH_PROBES, MAX_WRAP_JOIN_ROWS,
+    MAX_LINK_PATH_PROBES,
 };
-use links::{percent_decode, percent_decode_bytes, strip_file_scheme, terminal_link_at};
+use links::{
+    percent_decode, percent_decode_bytes, strip_file_scheme, terminal_link_at, MAX_WRAP_JOIN_ROWS,
+};
 
 use crate::palette;
 use crate::screen::{ScreenData, ScreenGuard, ScreenView, ViewportSnapshot};
 use crate::types::{
-    Column, CursorShape, CursorStyle, GridPoint, Line, SelectionKind, Side, TerminalModeFlags,
+    Column, CursorShape, CursorStyle, FindMatch, GridPoint, Line, SelectionKind, Side,
+    TerminalModeFlags,
 };
 use crate::vt::{
     self, FormatKind, FormatOptions, GridPointTag, RenderState, ScrollViewport,
@@ -318,10 +321,62 @@ impl PaletteState {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+/// Result of trying to resolve a link strictly from an already-published
+/// [`ViewportSnapshot`] without blocking on the mirror actor thread.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LinkLookup {
+    Ready(Option<TerminalLink>),
+    NeedsOffscreen,
+}
+
+/// RAII handle for a single cell anchored in `TerminalMirror`'s underlying
+/// `libghostty-vt` grid via `TrackedGridRef` (tracks scrollback and reflow,
+/// automatically untracking its native pin on drop).
+pub struct GridAnchor {
+    id: u64,
+    cmd_tx: Sender<MirrorCommand>,
+}
+
+impl GridAnchor {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+impl Drop for GridAnchor {
+    fn drop(&mut self) {
+        let _ = self
+            .cmd_tx
+            .send(MirrorCommand::ReleasePointAnchor { id: self.id });
+    }
+}
+
+/// RAII handle for a find match span anchored in `TerminalMirror`'s underlying
+/// `libghostty-vt` grid via a pair of `TrackedGridRef`s (start and end cells),
+/// automatically untracking both native pins on drop.
+pub struct MatchAnchor {
+    id: u64,
+    cmd_tx: Sender<MirrorCommand>,
+}
+
+impl MatchAnchor {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+impl Drop for MatchAnchor {
+    fn drop(&mut self) {
+        let _ = self
+            .cmd_tx
+            .send(MirrorCommand::ReleaseMatchAnchor { id: self.id });
+    }
+}
+
 struct SelectionState {
     kind: SelectionKind,
     anchor: GridPoint,
+    anchor_ref: Option<vt::TrackedGridRef>,
     anchor_side: Side,
 }
 
@@ -478,6 +533,13 @@ enum MirrorCommand {
         bytes: Vec<u8>,
         reply: Sender<bool>,
     },
+    #[cfg(test)]
+    FeedOutputAt {
+        seq: u64,
+        bytes: Vec<u8>,
+        now: Instant,
+        reply: Sender<bool>,
+    },
     ResizedFrame {
         seq: u64,
         cols: u16,
@@ -503,6 +565,32 @@ enum MirrorCommand {
     },
     WithScreen {
         reply: Sender<ScreenData>,
+    },
+    LinkWindow {
+        point: GridPoint,
+        reply: Sender<ScreenData>,
+    },
+    TrackViewportTop {
+        reply: Sender<Option<u64>>,
+    },
+    RestoreViewportAnchor {
+        id: u64,
+        reply: Sender<()>,
+    },
+    ReleasePointAnchor {
+        id: u64,
+    },
+    ReleaseMatchAnchor {
+        id: u64,
+    },
+    Find {
+        session_id: Option<u64>,
+        query: find::FindQuery,
+        action: find::FindAction,
+        reply: Sender<find::FindUpdate>,
+    },
+    ClearFind {
+        session_id: Option<u64>,
     },
     #[cfg(any(test, feature = "test-support"))]
     SnapshotState {
@@ -535,6 +623,9 @@ enum MirrorCommand {
     },
     SelectionText {
         reply: Sender<Option<String>>,
+    },
+    SelectionSeedIfPublished {
+        reply: Sender<SelectionSeed>,
     },
     SelectionContains {
         point: GridPoint,
@@ -577,10 +668,13 @@ struct MirrorShared {
     control: Mutex<TerminalControl>,
     composition_clear_pending: Mutex<bool>,
     composition_clear_retry: AtomicBool,
+    shutting_down: AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
     actor_thread: Mutex<Option<thread::ThreadId>>,
     #[cfg(test)]
     render_state_updates: AtomicUsize,
+    #[cfg(test)]
+    selection_formats: AtomicUsize,
 }
 
 impl MirrorShared {
@@ -660,9 +754,86 @@ impl MirrorShared {
     }
 }
 
+struct HoldState {
+    /// Immutable snapshot published before the chunk that opened the hold.
+    /// Every UI read during the hold comes strictly from this snapshot.
+    frozen_viewport: Arc<ViewportSnapshot>,
+    /// Scroll mark matching `frozen_viewport`.
+    frozen_mark: find::ScrollMark,
+    queued_start_survived: bool,
+    skip_queued_updates: bool,
+}
+
+impl HoldState {
+    fn new(frozen_viewport: Arc<ViewportSnapshot>, frozen_mark: find::ScrollMark) -> Self {
+        Self {
+            frozen_viewport,
+            frozen_mark,
+            queued_start_survived: true,
+            skip_queued_updates: false,
+        }
+    }
+}
+
+enum DeferredScrollOp {
+    Local(i32),
+    ToBottom,
+    ToDisplayOffset(usize),
+    RestoreAnchor(u64),
+}
+
+enum DeferredSelectionOp {
+    Start(SelectionKind, GridPoint, Side),
+    Update(GridPoint, Side),
+}
+
+enum QueuedFindOp {
+    Run {
+        session_id: Option<u64>,
+        query: find::FindQuery,
+        action: find::FindAction,
+    },
+    Clear {
+        session_id: Option<u64>,
+    },
+}
+
+struct PublishedFindState {
+    query: find::FindQuery,
+    count: find::FindCount,
+    mark: find::ScrollMark,
+    current: Option<FindMatch>,
+    anchor_id: Option<u64>,
+    alt_screen: bool,
+    /// Set when produced by draining a queued hold op at release so the next
+    /// matching `Refresh` adopts the released result (or carries its live
+    /// anchor if newer output arrived) instead of snapping back to the
+    /// pre-hold match.
+    pending_released: bool,
+    pending_released_anchor: Option<MatchAnchor>,
+    output_seq: u64,
+}
+
 struct MirrorActor {
-    term: vt::Terminal,
+    // Handles borrowing `term` drop before `term` itself.
+    point_anchors: HashMap<u64, vt::TrackedGridRef>,
+    match_anchors: HashMap<u64, (usize, vt::TrackedGridRef, vt::TrackedGridRef)>,
+    selection: Option<SelectionState>,
+    hold_state: Option<HoldState>,
     render_state: RenderState,
+    term: vt::Terminal,
+    deferred_scrolls: Vec<DeferredScrollOp>,
+    deferred_selection_ops: Vec<DeferredSelectionOp>,
+    queued_finds: Vec<QueuedFindOp>,
+    deferred_point_anchor_releases: Vec<u64>,
+    deferred_anchor_releases: Vec<u64>,
+    last_find_state: HashMap<u64, PublishedFindState>,
+    last_anon_find_state: Option<PublishedFindState>,
+    find_sessions: HashMap<u64, find::FindRegex>,
+    regex_cache: Option<(find::FindQuery, find::FindRegex)>,
+    next_anchor_id: u64,
+    #[cfg(test)]
+    base_render_state_updates: usize,
     shared: Arc<MirrorShared>,
     self_tx: Sender<MirrorCommand>,
     mailbox: Arc<PushMailbox>,
@@ -682,8 +853,6 @@ struct MirrorActor {
     render_hold_deadline: Option<Instant>,
     held_sync_bytes: usize,
     sync_wrote_visible: bool,
-    frozen_snapshot: Option<Arc<ViewportSnapshot>>,
-    selection: Option<SelectionState>,
     visible_scanner: VisibleTextScanner,
     last_visible_text_hash: Option<u64>,
     scroll_tracker: find::ScreenScrollTracker,
@@ -718,12 +887,17 @@ fn new_mirror_terminal(
 }
 
 impl MirrorActor {
+    fn sync_render_state_updates(&self) {
+        #[cfg(test)]
+        self.shared.render_state_updates.store(
+            self.base_render_state_updates + self.render_state.update_count(),
+            Ordering::Relaxed,
+        );
+    }
+
     fn update_render_state(&mut self) {
         let _ = self.render_state.update(&self.term);
-        #[cfg(test)]
-        self.shared
-            .render_state_updates
-            .fetch_add(1, Ordering::Relaxed);
+        self.sync_render_state_updates();
     }
 
     fn next_deadline(&self) -> Option<Instant> {
@@ -755,6 +929,9 @@ impl MirrorActor {
             *self.shared.actor_thread.lock().unwrap() = Some(thread::current().id());
         }
         loop {
+            if self.shared.shutting_down.load(Ordering::Acquire) {
+                break;
+            }
             if let Some(deadline) = self.next_deadline() {
                 if deadline <= Instant::now() {
                     self.service_deadlines();
@@ -790,12 +967,18 @@ impl MirrorActor {
                 Some(deadline) => {
                     let now = Instant::now();
                     if deadline <= now {
+                        if self.shared.shutting_down.load(Ordering::Acquire) {
+                            break;
+                        }
                         self.service_deadlines();
                         continue;
                     }
                     match rx.recv_timeout(deadline - now) {
                         Ok(cmd) => cmd,
                         Err(RecvTimeoutError::Timeout) => {
+                            if self.shared.shutting_down.load(Ordering::Acquire) {
+                                break;
+                            }
                             self.service_deadlines();
                             continue;
                         }
@@ -826,13 +1009,44 @@ impl MirrorActor {
         let scheduled = self.render_hold_deadline.is_some() || self.burst.deadline().is_some();
         *self.shared.sync_snapshot.lock().unwrap() =
             (self.render_hold_deadline, self.held_sync_bytes, scheduled);
-        *self.shared.scroll_mark.lock().unwrap() = self.scroll_tracker.mark();
-        *self.shared.selection_kind.lock().unwrap() = self.selection.map(|s| s.kind);
+        *self.shared.scroll_mark.lock().unwrap() = self
+            .hold_state
+            .as_ref()
+            .map_or_else(|| self.scroll_tracker.mark(), |hold| hold.frozen_mark);
+        *self.shared.selection_kind.lock().unwrap() = self.selection.as_ref().map(|s| s.kind);
         *self.shared.size.lock().unwrap() = (self.term.cols(), self.term.rows());
+        self.sync_render_state_updates();
+    }
+
+    fn compute_source_find_highlights<S: find::FindRowSource + ?Sized>(
+        &self,
+        source: &S,
+        data: &ScreenData,
+    ) -> Arc<HashMap<u64, Arc<[FindMatch]>>> {
+        if self.find_sessions.is_empty() {
+            return Arc::default();
+        }
+        let (top, bottom) = data.view().stored_line_bounds();
+        let mut map = HashMap::with_capacity(self.find_sessions.len());
+        for (&id, regex) in &self.find_sessions {
+            let matches = find::matches_in_lines_source(source, regex, top, bottom);
+            map.insert(id, Arc::from(matches));
+        }
+        Arc::new(map)
+    }
+
+    fn refresh_published_find_highlights(&self) {
+        if self.hold_state.is_some() {
+            return;
+        }
+        let current = Arc::clone(&*self.shared.published.lock().unwrap());
+        let highlights = self.compute_source_find_highlights(&self.term, &current.data);
+        *self.shared.published.lock().unwrap() = Arc::new(current.with_find_highlights(highlights));
     }
 
     fn publish_live_viewport(&mut self, force: bool) {
-        if self.frozen_snapshot.is_some() {
+        if self.hold_state.is_some() {
+            self.shared.viewport_dirty.store(false, Ordering::Release);
             self.sync_shared_metadata();
             return;
         }
@@ -847,27 +1061,368 @@ impl MirrorActor {
             &mut self.render_state,
             self.default_cursor_hidden,
         );
-        *self.shared.published.lock().unwrap() = Arc::new(ViewportSnapshot(data));
+        let _ = self.render_state.clean();
+        let highlights = self.compute_source_find_highlights(&self.term, &data);
+        *self.shared.published.lock().unwrap() = Arc::new(ViewportSnapshot::new(data, highlights));
         self.shared.viewport_dirty.store(false, Ordering::Release);
         self.sync_shared_metadata();
     }
 
     fn full_screen_data(&mut self) -> ScreenData {
-        if let Some(frozen) = &self.frozen_snapshot {
-            return frozen.view().data().clone();
+        if let Some(hold) = self.hold_state.as_ref() {
+            return (*hold.frozen_viewport.data).clone();
         }
         self.update_render_state();
         let cursor = self.render_state.cursor().ok();
         ScreenData::from_terminal_full(&self.term, cursor, self.default_cursor_hidden)
     }
 
+    fn capture_selection_text_live(&self) -> Option<String> {
+        #[cfg(test)]
+        self.shared
+            .selection_formats
+            .fetch_add(1, Ordering::Relaxed);
+        // Preserve per-row trailing-whitespace trimming for block (Alt-drag)
+        // selections while keeping explicitly written spaces for simple/line
+        // selections (Ghostty still drops unwritten `cp == 0` cells).
+        let is_block = self
+            .selection
+            .as_ref()
+            .is_some_and(|s| s.kind == SelectionKind::Block);
+        self.term
+            .format_active_selection(FormatOptions {
+                kind: FormatKind::Plain,
+                unwrap: true,
+                trim: is_block,
+                extras: 0,
+            })
+            .ok()
+            .flatten()
+            .map(|bytes| {
+                let mut text = String::from_utf8_lossy(&bytes).into_owned();
+                if self
+                    .selection
+                    .as_ref()
+                    .is_some_and(|s| s.kind == SelectionKind::Lines)
+                    && !text.ends_with('\n')
+                {
+                    text.push('\n');
+                }
+                text
+            })
+            .filter(|text| !text.is_empty())
+    }
+
+    fn apply_restore_viewport_anchor_live(&mut self, id: u64) {
+        let history = self.term.scrollback_rows();
+        let target_row = self.point_anchors.get(&id).and_then(|tracked| {
+            let gref = tracked.snapshot(&self.term).ok()??;
+            let (_x, screen_y) = self
+                .term
+                .point_from_grid_ref(&gref, GridPointTag::Screen)
+                .ok()??;
+            Some((screen_y as usize).min(history))
+        });
+        // Avoid `.top` / `.row(0)` when history is empty (or target is active bottom),
+        // because Ghostty's `scroll(.top)` pins `.top` instead of `.active`.
+        let scroll = match target_row {
+            Some(row) if row < history => ScrollViewport::Row(row),
+            Some(_) => ScrollViewport::Bottom,
+            None if history > 0 => ScrollViewport::Top,
+            None => ScrollViewport::Bottom,
+        };
+        let _ = self.term.scroll_viewport(scroll);
+    }
+
+    fn apply_start_selection_live(&mut self, kind: SelectionKind, point: GridPoint, side: Side) {
+        let clamped = self.clamp_grid_point(point);
+        let (x, y) = self.grid_to_screen(clamped);
+        let anchor_ref = self.term.track_grid_ref(GridPointTag::Screen, x, y).ok();
+        match kind {
+            SelectionKind::Semantic => {
+                let _ = self.term.select_and_set_word(
+                    GridPointTag::Screen,
+                    x,
+                    y,
+                    Some(&XTERM_WORD_BOUNDARIES),
+                );
+            }
+            SelectionKind::Lines => {
+                let selected = self
+                    .term
+                    .select_and_set_line(GridPointTag::Screen, x, y, None, false)
+                    .unwrap_or(false);
+                if !selected {
+                    let last_col = self.term.cols().saturating_sub(1);
+                    let _ = self.term.set_selection_points(
+                        GridPointTag::Screen,
+                        (0, y),
+                        (last_col, y),
+                        false,
+                    );
+                }
+            }
+            SelectionKind::Simple | SelectionKind::Block => {
+                let _ = self.term.clear_selection();
+            }
+        }
+        self.selection = Some(SelectionState {
+            kind,
+            anchor: clamped,
+            anchor_ref,
+            anchor_side: side,
+        });
+    }
+
+    fn apply_deferred_selection_ops(&mut self, hold: &mut HoldState) {
+        let sel_ops = std::mem::take(&mut self.deferred_selection_ops);
+        if sel_ops.is_empty() {
+            return;
+        }
+        let moved = hold.frozen_mark.moved_since(self.scroll_tracker.mark());
+        let top = -(self.term.scrollback_rows() as i32);
+        let translate = |point: GridPoint| -> Option<(GridPoint, bool)> {
+            let shifted = point.line.0.checked_sub(moved?)?;
+            Some((GridPoint::new(Line(shifted), point.column), shifted >= top))
+        };
+        for op in sel_ops {
+            match op {
+                DeferredSelectionOp::Start(kind, point, side) => {
+                    let Some((translated, survived)) = translate(point) else {
+                        self.selection = None;
+                        let _ = self.term.clear_selection();
+                        hold.skip_queued_updates = true;
+                        continue;
+                    };
+                    hold.skip_queued_updates = false;
+                    hold.queued_start_survived = survived;
+                    if !survived && matches!(kind, SelectionKind::Semantic | SelectionKind::Lines) {
+                        let clamped = self.clamp_grid_point(translated);
+                        let (x, y) = self.grid_to_screen(clamped);
+                        let anchor_ref = self.term.track_grid_ref(GridPointTag::Screen, x, y).ok();
+                        self.selection = Some(SelectionState {
+                            kind,
+                            anchor: clamped,
+                            anchor_ref,
+                            anchor_side: side,
+                        });
+                        let _ = self.term.clear_selection();
+                    } else {
+                        self.apply_start_selection_live(kind, translated, side);
+                    }
+                }
+                DeferredSelectionOp::Update(point, side) => {
+                    if hold.skip_queued_updates {
+                        continue;
+                    }
+                    let Some((translated, survived)) = translate(point) else {
+                        continue;
+                    };
+                    if !survived && !hold.queued_start_survived {
+                        self.selection = None;
+                        let _ = self.term.clear_selection();
+                        continue;
+                    }
+                    if let Some((kind, anchor, anchor_side)) =
+                        self.selection.as_ref().map(|state| {
+                            let resolved = state
+                                .anchor_ref
+                                .as_ref()
+                                .and_then(|r| self.resolve_tracked_ref(r))
+                                .unwrap_or(state.anchor);
+                            (state.kind, resolved, state.anchor_side)
+                        })
+                    {
+                        self.apply_selection_range(kind, anchor, anchor_side, translated, side);
+                    }
+                }
+            }
+        }
+        *self.shared.selection_kind.lock().unwrap() = self.selection.as_ref().map(|s| s.kind);
+    }
+
+    fn apply_queued_hold_interactions(&mut self, old_hold: &mut HoldState) {
+        let scrolls = std::mem::take(&mut self.deferred_scrolls);
+        for op in scrolls {
+            match op {
+                DeferredScrollOp::Local(delta_lines) => {
+                    let _ = self
+                        .term
+                        .scroll_viewport(ScrollViewport::Delta(-(delta_lines as isize)));
+                }
+                DeferredScrollOp::ToBottom => {
+                    let _ = self.term.scroll_viewport(ScrollViewport::Bottom);
+                }
+                DeferredScrollOp::ToDisplayOffset(display_offset) => {
+                    let history = self.term.scrollback_rows();
+                    let target = display_offset.min(history);
+                    let scroll = if target == 0 {
+                        ScrollViewport::Bottom
+                    } else {
+                        ScrollViewport::Row(history - target)
+                    };
+                    let _ = self.term.scroll_viewport(scroll);
+                }
+                DeferredScrollOp::RestoreAnchor(id) => {
+                    self.apply_restore_viewport_anchor_live(id);
+                }
+            }
+        }
+        let point_releases = std::mem::take(&mut self.deferred_point_anchor_releases);
+        for id in point_releases {
+            self.point_anchors.remove(&id);
+        }
+
+        self.apply_deferred_selection_ops(old_hold);
+
+        self.drain_queued_find_ops();
+
+        let releases = std::mem::take(&mut self.deferred_anchor_releases);
+        for id in releases {
+            self.release_match_anchor_live(id);
+        }
+    }
+
+    fn drain_queued_find_ops(&mut self) {
+        let queued = std::mem::take(&mut self.queued_finds);
+        if queued.is_empty() {
+            return;
+        }
+        enum SessionFindPlan {
+            Clear,
+            Run {
+                query: find::FindQuery,
+                initial: find::FindAction,
+                extra_steps: Vec<bool>,
+            },
+        }
+        let mut clear_all = false;
+        let mut plans: HashMap<Option<u64>, SessionFindPlan> = HashMap::new();
+        for op in queued {
+            match op {
+                QueuedFindOp::Clear { session_id: None } => {
+                    clear_all = true;
+                    plans.clear();
+                }
+                QueuedFindOp::Clear {
+                    session_id: Some(id),
+                } => {
+                    plans.insert(Some(id), SessionFindPlan::Clear);
+                }
+                QueuedFindOp::Run {
+                    session_id,
+                    query,
+                    action,
+                } => match (plans.get_mut(&session_id), action) {
+                    (_, find::FindAction::NewQuery) => {
+                        plans.insert(
+                            session_id,
+                            SessionFindPlan::Run {
+                                query,
+                                initial: find::FindAction::NewQuery,
+                                extra_steps: Vec::new(),
+                            },
+                        );
+                    }
+                    (
+                        Some(SessionFindPlan::Run {
+                            query: existing_q,
+                            extra_steps,
+                            ..
+                        }),
+                        find::FindAction::Step { older, .. },
+                    ) if *existing_q == query => {
+                        extra_steps.push(older);
+                    }
+                    (
+                        Some(SessionFindPlan::Run {
+                            query: existing_q, ..
+                        }),
+                        find::FindAction::Refresh { .. },
+                    ) if *existing_q == query => {}
+                    (_, other) => {
+                        plans.insert(
+                            session_id,
+                            SessionFindPlan::Run {
+                                query,
+                                initial: other,
+                                extra_steps: Vec::new(),
+                            },
+                        );
+                    }
+                },
+            }
+        }
+        if clear_all {
+            self.find_sessions.clear();
+            self.last_find_state.clear();
+            self.last_anon_find_state = None;
+        }
+        let display_offset = self.term.display_offset_from_bottom();
+        let viewport_bottom = Line(i32::from(self.term.rows()).max(1) - 1 - display_offset as i32);
+        let mark = self.scroll_tracker.mark();
+        let alt_screen = self.term.active_screen() == vt::ActiveScreen::Alternate;
+        for (session_id, plan) in plans {
+            match plan {
+                SessionFindPlan::Clear => {
+                    if let Some(id) = session_id {
+                        self.find_sessions.remove(&id);
+                        self.last_find_state.remove(&id);
+                    } else {
+                        self.last_anon_find_state = None;
+                    }
+                }
+                SessionFindPlan::Run {
+                    query,
+                    initial,
+                    extra_steps,
+                } => {
+                    let Some(regex) = self.compile_find_regex(&query) else {
+                        continue;
+                    };
+                    if let Some(id) = session_id {
+                        self.find_sessions.insert(id, regex.clone());
+                    }
+                    let ((newest, more), mut current) =
+                        self.run_find_on_source(&self.term, &regex, initial, viewport_bottom);
+                    for older in extra_steps {
+                        current = current
+                            .and_then(|c| find::step_match_source(&self.term, &regex, &c, older));
+                    }
+                    let count = find::FindCount::new(&newest, more, current.as_ref());
+                    let anchor = current.and_then(|m| self.track_match_anchor(m));
+                    let state = PublishedFindState {
+                        query,
+                        count,
+                        mark,
+                        current,
+                        anchor_id: anchor.as_ref().map(MatchAnchor::id),
+                        alt_screen,
+                        pending_released: true,
+                        pending_released_anchor: anchor,
+                        output_seq: self.sequence.last,
+                    };
+                    if let Some(id) = session_id {
+                        self.last_find_state.insert(id, state);
+                    } else {
+                        self.last_anon_find_state = Some(state);
+                    }
+                }
+            }
+        }
+    }
+
     fn apply_output_chunk(&mut self, seq: u64, bytes: &[u8], now: Instant) {
+        if bytes.is_empty() {
+            return;
+        }
         let previous_mode = TerminalModeFlags::from_vt(&self.term);
-        let was_tui_ready =
-            term_indicates_tui_ready_vt(&self.term, self.render_hold_deadline.is_some());
         let was_held = self.render_hold_deadline.is_some();
-        let wrote_printable = self.visible_scanner.feed(bytes);
+        let prior_deadline = self.render_hold_deadline;
+        let was_tui_ready = term_indicates_tui_ready_vt(&self.term, was_held);
         let has_viewers = self.shared.viewers.load(Ordering::Acquire) > 0;
+        let before_mark = self.scroll_tracker.mark();
+        let wrote_printable = self.visible_scanner.feed(bytes);
         let before_hash = if wrote_printable {
             None
         } else {
@@ -877,26 +1432,13 @@ impl MirrorActor {
             )
         };
 
+        let before_reopens = self.term.sync_hold_reopens();
         let mut effects = Vec::new();
-        let mut pre_hold_screen: Option<ScreenData> = None;
-        let render_state = &mut self.render_state;
-        let default_cursor_hidden = self.default_cursor_hidden;
         let moved = self
             .scroll_tracker
             .write_and_track(&mut self.term, bytes, |term, slice| {
-                let captured =
-                    term.vt_write_capturing_hold(slice, render_state, default_cursor_hidden);
-                let slice_effects = term.take_effects();
-                if slice_effects
-                    .iter()
-                    .any(|e| matches!(e, TerminalEffect::RenderHold(false)))
-                {
-                    pre_hold_screen = None;
-                }
-                if let Some(screen) = captured {
-                    pre_hold_screen = Some(screen);
-                }
-                effects.extend(slice_effects);
+                term.vt_write(slice);
+                effects = term.take_effects();
             });
         self.term.clamp_kitty_keyboard_flags();
 
@@ -909,51 +1451,37 @@ impl MirrorActor {
             }
         }
 
+        // Preserve the earliest unpublished deadline across paired close+open
+        // transitions within one write so continuous `2026l + 2026h` streams
+        // cannot postpone publication past the 150 ms bound, while a repeated
+        // begin marker inside an active hold (with no close in this write)
+        // extends the deadline to match `main`'s reopen behavior.
+        let reopened_while_held = self.term.sync_hold_reopens() != before_reopens;
         let mut held_now = was_held;
+        let mut saw_hold_end = false;
         for effect in effects {
             if let TerminalEffect::RenderHold(held) = effect {
                 held_now = held;
                 if held {
-                    self.render_hold_deadline = Some(now + MIRROR_SYNC_HOLD_TIMEOUT);
+                    self.render_hold_deadline =
+                        Some(prior_deadline.unwrap_or(now + MIRROR_SYNC_HOLD_TIMEOUT));
                 } else {
+                    saw_hold_end = true;
                     self.render_hold_deadline = None;
                     self.held_sync_bytes = 0;
-                    self.frozen_snapshot = None;
                 }
             }
         }
-        if held_now {
-            if was_held && bytes.windows(BEGIN_SYNC.len()).any(|w| w == BEGIN_SYNC) {
-                self.render_hold_deadline = Some(now + MIRROR_SYNC_HOLD_TIMEOUT);
-            }
-            if let Some(captured) = pre_hold_screen {
-                #[cfg(test)]
-                self.shared
-                    .render_state_updates
-                    .fetch_add(1, Ordering::Relaxed);
-                let snap = Arc::new(ViewportSnapshot(captured));
-                *self.shared.published.lock().unwrap() = Arc::clone(&snap);
-                self.shared.viewport_dirty.store(false, Ordering::Release);
-                self.frozen_snapshot = Some(snap);
-            } else if self.frozen_snapshot.is_none() {
-                if self.shared.viewport_dirty.load(Ordering::Acquire) {
-                    self.update_render_state();
-                    let data = ScreenData::from_render_state(
-                        &self.term,
-                        &mut self.render_state,
-                        self.default_cursor_hidden,
-                    );
-                    *self.shared.published.lock().unwrap() = Arc::new(ViewportSnapshot(data));
-                    self.shared.viewport_dirty.store(false, Ordering::Release);
-                }
-                let current = Arc::clone(&*self.shared.published.lock().unwrap());
-                self.frozen_snapshot = Some(current);
-            }
-            self.held_sync_bytes = self.held_sync_bytes.saturating_add(bytes.len());
-        } else {
-            self.render_hold_deadline = None;
-            self.held_sync_bytes = 0;
-            self.frozen_snapshot = None;
+        if was_held && held_now && !saw_hold_end && reopened_while_held {
+            self.render_hold_deadline = Some(now + MIRROR_SYNC_HOLD_TIMEOUT);
+        }
+        let hold_expired = self
+            .render_hold_deadline
+            .is_some_and(|deadline| deadline <= now);
+        if held_now && hold_expired {
+            let _ = self.term.set_mode(vt::dec_mode(2026), false);
+            let _ = self.term.take_effects();
+            held_now = false;
         }
 
         let mode = TerminalModeFlags::from_vt(&self.term);
@@ -962,33 +1490,16 @@ impl MirrorActor {
         {
             let _ = self.term.clear_selection();
             self.selection = None;
+            self.deferred_selection_ops.clear();
         }
 
         if held_now {
-            let wrote_visible = if wrote_printable {
-                self.last_visible_text_hash = None;
-                true
-            } else {
-                let (_, after_hash) = self.term.active_visible_text_state();
-                self.last_visible_text_hash = Some(after_hash);
-                Some(after_hash) != before_hash
-            };
-            self.sync_wrote_visible |= wrote_visible;
-            let frozen_has_paint = {
-                let published = self.shared.published.lock().unwrap();
-                view_has_visible_paint(&published.view())
-            };
-            finish_parsed_chunk_paint(
-                &mut self.sequence,
-                &self.term,
-                frozen_has_paint,
-                true,
-                was_tui_ready,
-                false,
-                seq,
-            );
-            self.sync_shared_metadata();
-        } else if !has_viewers {
+            self.held_sync_bytes = self.held_sync_bytes.saturating_add(bytes.len());
+            if self.hold_state.is_none() {
+                let frozen_viewport = Arc::clone(&*self.shared.published.lock().unwrap());
+                self.hold_state = Some(HoldState::new(frozen_viewport, before_mark));
+                self.shared.viewport_dirty.store(false, Ordering::Release);
+            }
             let (has_paint, wrote_visible) = if wrote_printable {
                 self.last_visible_text_hash = None;
                 (self.term.active_has_visible_text(), true)
@@ -997,7 +1508,36 @@ impl MirrorActor {
                 self.last_visible_text_hash = Some(after_hash);
                 (has_paint, Some(after_hash) != before_hash)
             };
-            let synced = std::mem::take(&mut self.sync_wrote_visible);
+            self.sync_wrote_visible |= wrote_visible;
+            finish_parsed_chunk_paint(
+                &mut self.sequence,
+                &self.term,
+                has_paint,
+                true,
+                was_tui_ready,
+                false,
+                seq,
+            );
+            self.sync_shared_metadata();
+            return;
+        }
+
+        self.render_hold_deadline = None;
+        self.held_sync_bytes = 0;
+        if let Some(mut old_hold) = self.hold_state.take() {
+            self.apply_queued_hold_interactions(&mut old_hold);
+        }
+        let synced = std::mem::take(&mut self.sync_wrote_visible);
+
+        if !has_viewers {
+            let (has_paint, wrote_visible) = if wrote_printable {
+                self.last_visible_text_hash = None;
+                (self.term.active_has_visible_text(), true)
+            } else {
+                let (has_paint, after_hash) = self.term.active_visible_text_state();
+                self.last_visible_text_hash = Some(after_hash);
+                (has_paint, Some(after_hash) != before_hash)
+            };
             finish_parsed_chunk_paint(
                 &mut self.sequence,
                 &self.term,
@@ -1016,6 +1556,7 @@ impl MirrorActor {
                 &mut self.render_state,
                 self.default_cursor_hidden,
             );
+            let _ = self.render_state.clean();
             let at_bottom = data.view().display_offset() == 0;
             let (has_paint, wrote_visible) = if wrote_printable {
                 self.last_visible_text_hash = None;
@@ -1034,7 +1575,6 @@ impl MirrorActor {
                 self.last_visible_text_hash = Some(after_hash);
                 (has_paint, Some(after_hash) != before_hash)
             };
-            let synced = std::mem::take(&mut self.sync_wrote_visible);
             finish_parsed_chunk_paint(
                 &mut self.sequence,
                 &self.term,
@@ -1044,17 +1584,47 @@ impl MirrorActor {
                 wrote_visible || synced,
                 seq,
             );
-            *self.shared.published.lock().unwrap() = Arc::new(ViewportSnapshot(data));
+            let highlights = self.compute_source_find_highlights(&self.term, &data);
+            *self.shared.published.lock().unwrap() =
+                Arc::new(ViewportSnapshot::new(data, highlights));
             self.shared.viewport_dirty.store(false, Ordering::Release);
             self.sync_shared_metadata();
         }
     }
 
+    fn flush_render_hold_timeout(&mut self) {
+        let was_tui_ready = term_indicates_tui_ready_vt(&self.term, true);
+        let _ = self.term.set_mode(vt::dec_mode(2026), false);
+        let _ = self.term.take_effects();
+        self.render_hold_deadline = None;
+        self.held_sync_bytes = 0;
+        if let Some(mut old_hold) = self.hold_state.take() {
+            self.apply_queued_hold_interactions(&mut old_hold);
+        }
+        let wrote_visible = std::mem::take(&mut self.sync_wrote_visible);
+        let seq = active_output_seq(&self.sequence);
+        self.last_visible_text_hash = None;
+        let has_paint = self.term.active_has_visible_text();
+        finish_parsed_chunk_paint(
+            &mut self.sequence,
+            &self.term,
+            has_paint,
+            false,
+            was_tui_ready,
+            wrote_visible,
+            seq,
+        );
+        self.publish_live_viewport(false);
+    }
+
     fn feed_output(&mut self, seq: u64, bytes: &[u8]) -> bool {
+        self.feed_output_at(seq, bytes, Instant::now())
+    }
+
+    fn feed_output_at(&mut self, seq: u64, bytes: &[u8], now: Instant) -> bool {
         if self.awaiting_resync || seq <= self.sequence.last {
             return false;
         }
-        let now = Instant::now();
         self.sequence.last = seq;
         self.sequence.last_output_seq = seq;
         self.sequence.last_output_at = Some(now);
@@ -1099,38 +1669,11 @@ impl MirrorActor {
             .deadline()
             .is_some_and(|deadline| deadline <= now)
             && self.release_burst(now);
-        if self
+        let hold_due = self
             .render_hold_deadline
-            .is_some_and(|deadline| deadline <= now)
-        {
-            let previous_mode = TerminalModeFlags::from_vt(&self.term);
-            let was_tui_ready = term_indicates_tui_ready_vt(&self.term, true);
-            let _ = self.term.set_mode(vt::dec_mode(2026), false);
-            let _ = self.term.take_effects();
-            self.render_hold_deadline = None;
-            self.held_sync_bytes = 0;
-            self.frozen_snapshot = None;
-            let wrote_visible = std::mem::take(&mut self.sync_wrote_visible);
-            let seq = active_output_seq(&self.sequence);
-            self.last_visible_text_hash = None;
-            let has_paint = self.term.active_has_visible_text();
-            let mode = TerminalModeFlags::from_vt(&self.term);
-            if !previous_mode.intersects(TerminalModeFlags::MOUSE_MODE)
-                && mode.intersects(TerminalModeFlags::MOUSE_MODE)
-            {
-                let _ = self.term.clear_selection();
-                self.selection = None;
-            }
-            finish_parsed_chunk_paint(
-                &mut self.sequence,
-                &self.term,
-                has_paint,
-                false,
-                was_tui_ready,
-                wrote_visible,
-                seq,
-            );
-            self.publish_live_viewport(false);
+            .is_some_and(|deadline| deadline <= now);
+        if hold_due {
+            self.flush_render_hold_timeout();
             flushed = true;
         } else {
             self.sync_shared_metadata();
@@ -1218,19 +1761,6 @@ impl MirrorActor {
 
         let held = restored_term.mode(vt::dec_mode(2026));
         let had_synced_view = self.has_synced_view;
-        if held && had_synced_view && self.shared.viewport_dirty.load(Ordering::Acquire) {
-            // Preserve the last committed pre-hold frame from the previous
-            // synced terminal before swapping to the mid-hold snapshot.
-            self.update_render_state();
-            let data = ScreenData::from_render_state(
-                &self.term,
-                &mut self.render_state,
-                self.default_cursor_hidden,
-            );
-            *self.shared.published.lock().unwrap() = Arc::new(ViewportSnapshot(data));
-            self.shared.viewport_dirty.store(false, Ordering::Release);
-        }
-
         let was_tui_ready = self.sequence.last > 0
             && snapshot.seq >= self.sequence.last
             && term_indicates_tui_ready_vt(&self.term, self.render_hold_deadline.is_some());
@@ -1241,27 +1771,44 @@ impl MirrorActor {
             self.sequence.last_output_seq
         };
 
+        let prior_deadline = self.render_hold_deadline;
+        let preserved_hold = if held && had_synced_view {
+            if let Some(existing) = self.hold_state.take() {
+                Some(existing)
+            } else {
+                let frozen_viewport = Arc::clone(&*self.shared.published.lock().unwrap());
+                Some(HoldState::new(frozen_viewport, self.scroll_tracker.mark()))
+            }
+        } else {
+            None
+        };
+
+        let was_held = self.hold_state.is_some() || preserved_hold.is_some();
         self.burst = BurstHold::default();
         self.render_hold_deadline = None;
         self.held_sync_bytes = 0;
         self.sync_wrote_visible = false;
-        self.frozen_snapshot = None;
-        self.selection = None;
-        self.visible_scanner.reset();
-
-        self.term = restored_term;
-        self.render_state = RenderState::new().expect("mirror render state");
+        self.hold_state = None;
+        self.deferred_scrolls.clear();
+        self.deferred_selection_ops.clear();
+        self.deferred_point_anchor_releases.clear();
+        self.deferred_anchor_releases.clear();
+        if preserved_hold.is_none() {
+            self.last_find_state.clear();
+            self.last_anon_find_state = None;
+            if !was_held {
+                self.queued_finds.clear();
+            }
+        }
         self.has_synced_view = true;
         self.awaiting_resync = false;
         self.decode_retry = None;
-        self.last_visible_text_hash = None;
-        let has_visible_text = snapshot.activity.is_none() && self.term.active_has_visible_text();
 
-        if held {
-            self.render_hold_deadline = Some(Instant::now() + MIRROR_SYNC_HOLD_TIMEOUT);
-            let frozen = Arc::clone(&*self.shared.published.lock().unwrap());
-            self.frozen_snapshot = Some(frozen);
-        }
+        let has_visible_text =
+            snapshot.activity.is_none() && restored_term.active_has_visible_text();
+        let snapshot_tui_ready = term_indicates_tui_ready_vt(&restored_term, held)
+            || chunk_indicates_tui_ready(unfinished);
+        let cursor_moved = restored_term.cursor_pos() != (0, 0);
 
         self.sequence.last = snapshot.seq;
         match snapshot.activity {
@@ -1286,9 +1833,6 @@ impl MirrorActor {
             }
             None => {
                 let snapshot_painted = !held && has_visible_text;
-                let snapshot_tui_ready = term_indicates_tui_ready_vt(&self.term, held)
-                    || chunk_indicates_tui_ready(unfinished);
-                let cursor_moved = self.term.cursor_pos() != (0, 0);
                 let snapshot_active = !snapshot.bytes.is_empty()
                     && (snapshot_tui_ready
                         || snapshot_painted
@@ -1302,7 +1846,7 @@ impl MirrorActor {
                     }
                     update_tui_ready_vt(
                         &mut self.sequence,
-                        &self.term,
+                        &restored_term,
                         held,
                         was_tui_ready,
                         snapshot.seq,
@@ -1321,8 +1865,42 @@ impl MirrorActor {
                 }
             }
         }
+
+        self.selection = None;
+        self.point_anchors.clear();
+        self.match_anchors.clear();
+        self.visible_scanner.reset();
+        self.term = restored_term;
+        #[cfg(test)]
+        {
+            self.base_render_state_updates += self.render_state.update_count();
+        }
+        self.render_state = RenderState::new().expect("mirror render state");
+        self.last_visible_text_hash = None;
         self.scroll_tracker.reset(&self.term);
-        self.publish_live_viewport(!had_synced_view);
+        if held {
+            self.render_hold_deadline = Some(if preserved_hold.is_some() {
+                prior_deadline.unwrap_or_else(|| Instant::now() + MIRROR_SYNC_HOLD_TIMEOUT)
+            } else {
+                Instant::now() + MIRROR_SYNC_HOLD_TIMEOUT
+            });
+            let hold = preserved_hold.unwrap_or_else(|| {
+                let empty = Arc::new(ViewportSnapshot::new(
+                    ScreenData::empty(usize::from(cols), usize::from(rows)),
+                    Arc::default(),
+                ));
+                if !had_synced_view {
+                    *self.shared.published.lock().unwrap() = Arc::clone(&empty);
+                }
+                HoldState::new(empty, self.scroll_tracker.mark())
+            });
+            self.hold_state = Some(hold);
+            self.shared.viewport_dirty.store(false, Ordering::Release);
+            self.sync_shared_metadata();
+        } else {
+            self.drain_queued_find_ops();
+            self.publish_live_viewport(!had_synced_view);
+        }
         Ok(())
     }
 
@@ -1450,21 +2028,22 @@ impl MirrorActor {
     fn resize_local(&mut self, cols: u16, rows: u16) {
         let old = (self.term.cols(), self.term.rows());
         let rows_changed = old.1 != rows;
-        let was_held = self.render_hold_deadline.is_some();
+        let old_hold = self.hold_state.take();
+        self.render_hold_deadline = None;
+        self.held_sync_bytes = 0;
+        self.sync_wrote_visible = false;
         let _ = self.term.resize(cols, rows, 0, 0);
-        // `ghostty_terminal_resize` emits a synthetic RenderHold(false); keep any
-        // in-progress DEC 2026 hold alive until its end marker or deadline.
         let _ = self.term.take_effects();
-        if was_held {
-            let _ = self.term.set_mode(vt::dec_mode(2026), true);
-            let _ = self.term.take_effects();
-        }
         if old != (cols, rows) {
             self.scroll_tracker.reset(&self.term);
         }
         if rows_changed {
             let _ = self.term.clear_selection();
             self.selection = None;
+            self.deferred_selection_ops.clear();
+        }
+        if let Some(mut hold) = old_hold {
+            self.apply_queued_hold_interactions(&mut hold);
         }
         self.last_visible_text_hash = None;
         self.publish_live_viewport(false);
@@ -1493,26 +2072,324 @@ impl MirrorActor {
         (clamped.column.0 as u16, y)
     }
 
+    fn screen_to_grid(&self, x: u16, y: u32) -> GridPoint {
+        let history = self.term.scrollback_rows() as i32;
+        GridPoint::new(Line(y as i32 - history), Column(usize::from(x)))
+    }
+
+    fn resolve_tracked_ref(&self, tracked: &vt::TrackedGridRef) -> Option<GridPoint> {
+        let gref = tracked.snapshot(&self.term).ok()??;
+        let (x, y) = self
+            .term
+            .point_from_grid_ref(&gref, GridPointTag::Screen)
+            .ok()??;
+        Some(self.screen_to_grid(x, y))
+    }
+
+    fn resolve_match_anchor(&self, id: u64) -> Option<FindMatch> {
+        let (_, start_ref, end_ref) = self.match_anchors.get(&id)?;
+        let start = self.resolve_tracked_ref(start_ref)?;
+        let end = self.resolve_tracked_ref(end_ref)?;
+        (start <= end).then(|| FindMatch::new(start, end))
+    }
+
+    fn alloc_anchor_id(&mut self) -> u64 {
+        self.next_anchor_id = self.next_anchor_id.wrapping_add(1).max(1);
+        self.next_anchor_id
+    }
+
+    fn clone_match_anchor(&mut self, id: u64) -> Option<MatchAnchor> {
+        let (refs, _, _) = self.match_anchors.get_mut(&id)?;
+        *refs += 1;
+        Some(MatchAnchor {
+            id,
+            cmd_tx: self.self_tx.clone(),
+        })
+    }
+
+    fn release_match_anchor_live(&mut self, id: u64) {
+        let remove = if let Some((refs, _, _)) = self.match_anchors.get_mut(&id) {
+            *refs = refs.saturating_sub(1);
+            *refs == 0
+        } else {
+            false
+        };
+        if remove {
+            self.match_anchors.remove(&id);
+        }
+    }
+
+    fn track_match_anchor(&mut self, matched: FindMatch) -> Option<MatchAnchor> {
+        let (sx, sy) = self.grid_to_screen(*matched.start());
+        let (ex, ey) = self.grid_to_screen(*matched.end());
+        let start_ref = self
+            .term
+            .track_grid_ref(GridPointTag::Screen, sx, sy)
+            .ok()?;
+        let end_ref = self
+            .term
+            .track_grid_ref(GridPointTag::Screen, ex, ey)
+            .ok()?;
+        let id = self.alloc_anchor_id();
+        self.match_anchors.insert(id, (1, start_ref, end_ref));
+        Some(MatchAnchor {
+            id,
+            cmd_tx: self.self_tx.clone(),
+        })
+    }
+
+    fn link_window_for_point(&self, point: GridPoint) -> ScreenData {
+        if let Some(hold) = self.hold_state.as_ref() {
+            return (*hold.frozen_viewport.data).clone();
+        }
+        let history = self.term.scrollback_rows();
+        let topmost = Line(-(history as i32));
+        let bottommost = Line(i32::from(self.term.rows()).max(1) - 1);
+        let line = point.line.clamp(topmost, bottommost);
+        let to_screen_y = |l: Line| (l.0 + history as i32).max(0) as u32;
+
+        let (soft_start, soft_end) = find::soft_wrapped_bounds_vt(&self.term, line);
+        let mut start = soft_start;
+        let mut end = soft_end;
+
+        if self.term.row_has_hyperlink(to_screen_y(line)) {
+            while start > topmost && self.term.row_has_hyperlink(to_screen_y(start - 1)) {
+                start -= 1;
+            }
+            while end < bottommost && self.term.row_has_hyperlink(to_screen_y(end + 1)) {
+                end += 1;
+            }
+        }
+
+        if self.term.row_has_underline(to_screen_y(line)) {
+            while start > topmost && self.term.row_has_underline(to_screen_y(start - 1)) {
+                start -= 1;
+            }
+            while end < bottommost && self.term.row_has_underline(to_screen_y(end + 1)) {
+                end += 1;
+            }
+        }
+
+        let hard_join = (MAX_WRAP_JOIN_ROWS.saturating_sub(1)) as i32;
+        let win_start = Line((start.0 - hard_join).max(topmost.0));
+        let win_end = Line((end.0 + hard_join).min(bottommost.0));
+        let (win_start, _) = find::soft_wrapped_bounds_vt(&self.term, win_start);
+        let (_, win_end) = find::soft_wrapped_bounds_vt(&self.term, win_end);
+
+        ScreenData::from_terminal_lines(&self.term, win_start, win_end)
+    }
+
+    fn compile_find_regex(&mut self, query: &find::FindQuery) -> Option<find::FindRegex> {
+        if let Some((cached_query, cached_regex)) = &self.regex_cache {
+            if cached_query == query {
+                return Some(cached_regex.clone());
+            }
+        }
+        let find::FindPattern::Ready(regex) = query.pattern() else {
+            return None;
+        };
+        let compiled = *regex;
+        self.regex_cache = Some((query.clone(), compiled.clone()));
+        Some(compiled)
+    }
+
+    fn run_find_on_source<S: find::FindRowSource + ?Sized>(
+        &self,
+        source: &S,
+        regex: &find::FindRegex,
+        action: find::FindAction,
+        viewport_bottom: Line,
+    ) -> ((Vec<FindMatch>, bool), Option<FindMatch>) {
+        let resolve_carried = |anchor: Option<u64>, carried: Option<FindMatch>| {
+            anchor
+                .and_then(|id| self.resolve_match_anchor(id))
+                .or(carried)
+        };
+        let (newest, more) = find::newest_matches_source(source, regex);
+        let current = if newest.is_empty() {
+            None
+        } else {
+            match action {
+                find::FindAction::NewQuery => {
+                    find::newest_at_or_above_source(source, regex, viewport_bottom)
+                }
+                find::FindAction::Refresh { anchor, carried } => {
+                    match resolve_carried(anchor, carried) {
+                        Some(c) => find::locate_source(source, regex, &c),
+                        None => find::newest_at_or_above_source(source, regex, viewport_bottom),
+                    }
+                }
+                find::FindAction::Step {
+                    anchor,
+                    carried,
+                    older,
+                } => match resolve_carried(anchor, carried) {
+                    Some(c) => find::step_match_source(source, regex, &c, older),
+                    None => find::newest_at_or_above_source(source, regex, viewport_bottom),
+                },
+            }
+        };
+        ((newest, more), current)
+    }
+
+    fn prompt_held_find_update(&mut self, session_id: Option<u64>) -> find::FindUpdate {
+        let Some(hold) = self.hold_state.as_ref() else {
+            return find::FindUpdate {
+                count: find::FindCount::default(),
+                mark: self.scroll_tracker.mark(),
+                current: None,
+                anchor: None,
+                alt_screen: self.term.active_screen() == vt::ActiveScreen::Alternate,
+            };
+        };
+        let fallback_mark = hold.frozen_mark;
+        let fallback_alt = hold
+            .frozen_viewport
+            .view()
+            .mode()
+            .contains(TerminalModeFlags::ALT_SCREEN);
+        let prev = match session_id {
+            Some(id) => self.last_find_state.get(&id),
+            None => self.last_anon_find_state.as_ref(),
+        };
+        let Some((count, mark, current, anchor_id, alt_screen)) =
+            prev.map(|s| (s.count, s.mark, s.current, s.anchor_id, s.alt_screen))
+        else {
+            return find::FindUpdate {
+                count: find::FindCount::default(),
+                mark: fallback_mark,
+                current: None,
+                anchor: None,
+                alt_screen: fallback_alt,
+            };
+        };
+        let anchor = anchor_id.and_then(|aid| self.clone_match_anchor(aid));
+        find::FindUpdate {
+            count,
+            mark,
+            current,
+            anchor,
+            alt_screen,
+        }
+    }
+
+    fn run_find(
+        &mut self,
+        session_id: Option<u64>,
+        query: &find::FindQuery,
+        mut action: find::FindAction,
+    ) -> find::FindUpdate {
+        let display_offset = self.term.display_offset_from_bottom();
+        let mark = self.scroll_tracker.mark();
+        let alt_screen = self.term.active_screen() == vt::ActiveScreen::Alternate;
+        let viewport_bottom = Line(i32::from(self.term.rows()).max(1) - 1 - display_offset as i32);
+
+        let mut carried_released_anchor: Option<MatchAnchor> = None;
+        if matches!(action, find::FindAction::Refresh { .. }) {
+            let entry = match session_id {
+                Some(id) => self.last_find_state.get_mut(&id),
+                None => self.last_anon_find_state.as_mut(),
+            };
+            if let Some(state) = entry {
+                if state.pending_released && &state.query == query {
+                    state.pending_released = false;
+                    let released_anchor = state.pending_released_anchor.take();
+                    if state.mark == mark && state.output_seq == self.sequence.last {
+                        return find::FindUpdate {
+                            count: state.count,
+                            mark: state.mark,
+                            current: state.current,
+                            anchor: released_anchor,
+                            alt_screen: state.alt_screen,
+                        };
+                    }
+                    action = find::FindAction::Refresh {
+                        anchor: released_anchor.as_ref().map(MatchAnchor::id),
+                        carried: state.current,
+                    };
+                    carried_released_anchor = released_anchor;
+                }
+            }
+        }
+
+        let Some(regex) = self.compile_find_regex(query) else {
+            return find::FindUpdate {
+                count: find::FindCount::default(),
+                mark,
+                current: None,
+                anchor: None,
+                alt_screen,
+            };
+        };
+
+        if let Some(id) = session_id {
+            self.find_sessions.insert(id, regex.clone());
+            self.refresh_published_find_highlights();
+        }
+
+        let ((newest, more), current) =
+            self.run_find_on_source(&self.term, &regex, action, viewport_bottom);
+        drop(carried_released_anchor);
+        let count = find::FindCount::new(&newest, more, current.as_ref());
+        let anchor = current.and_then(|m| self.track_match_anchor(m));
+        let state = PublishedFindState {
+            query: query.clone(),
+            count,
+            mark,
+            current,
+            anchor_id: anchor.as_ref().map(MatchAnchor::id),
+            alt_screen,
+            pending_released: false,
+            pending_released_anchor: None,
+            output_seq: self.sequence.last,
+        };
+        if let Some(id) = session_id {
+            self.last_find_state.insert(id, state);
+        } else {
+            self.last_anon_find_state = Some(state);
+        }
+        find::FindUpdate {
+            count,
+            mark,
+            current,
+            anchor,
+            alt_screen,
+        }
+    }
+
     fn apply_selection_range(
         &mut self,
-        state: SelectionState,
+        kind: SelectionKind,
+        anchor: GridPoint,
+        anchor_side: Side,
+        target: GridPoint,
+        target_side: Side,
+    ) {
+        self.apply_selection_range_inner(kind, anchor, anchor_side, target, target_side);
+    }
+
+    fn apply_selection_range_inner(
+        &mut self,
+        kind: SelectionKind,
+        anchor: GridPoint,
+        anchor_side: Side,
         target: GridPoint,
         target_side: Side,
     ) {
         let cols = usize::from(self.term.cols()).max(1);
         let top = Line(-(self.term.scrollback_rows() as i32));
         let bottom = Line(i32::from(self.term.rows()).max(1) - 1);
-        let anchor = self.clamp_grid_point(state.anchor);
+        let anchor = self.clamp_grid_point(anchor);
         let target = self.clamp_grid_point(target);
 
-        match state.kind {
+        match kind {
             SelectionKind::Simple => {
                 let side_ord = |s: Side| u8::from(s == Side::Right);
                 let ((a, a_side), (b, b_side)) =
-                    if (anchor, side_ord(state.anchor_side)) <= (target, side_ord(target_side)) {
-                        ((anchor, state.anchor_side), (target, target_side))
+                    if (anchor, side_ord(anchor_side)) <= (target, side_ord(target_side)) {
+                        ((anchor, anchor_side), (target, target_side))
                     } else {
-                        ((target, target_side), (anchor, state.anchor_side))
+                        ((target, target_side), (anchor, anchor_side))
                     };
                 if a == b && a_side == b_side {
                     let _ = self.term.clear_selection();
@@ -1559,18 +2436,12 @@ impl MirrorActor {
                     (target.line, anchor.line)
                 };
                 let side_ord = |s: Side| u8::from(s == Side::Right);
-                let ((c1, s1), (c2, s2)) = if (anchor.column, side_ord(state.anchor_side))
+                let ((c1, s1), (c2, s2)) = if (anchor.column, side_ord(anchor_side))
                     <= (target.column, side_ord(target_side))
                 {
-                    (
-                        (anchor.column, state.anchor_side),
-                        (target.column, target_side),
-                    )
+                    ((anchor.column, anchor_side), (target.column, target_side))
                 } else {
-                    (
-                        (target.column, target_side),
-                        (anchor.column, state.anchor_side),
-                    )
+                    ((target.column, target_side), (anchor.column, anchor_side))
                 };
                 if c1 == c2 && s1 == s2 {
                     let _ = self.term.clear_selection();
@@ -1747,6 +2618,16 @@ impl MirrorActor {
                 let parsed = self.feed_output(seq, &bytes);
                 let _ = reply.send(parsed);
             }
+            #[cfg(test)]
+            MirrorCommand::FeedOutputAt {
+                seq,
+                bytes,
+                now,
+                reply,
+            } => {
+                let parsed = self.feed_output_at(seq, &bytes, now);
+                let _ = reply.send(parsed);
+            }
             MirrorCommand::ResizedFrame {
                 seq,
                 cols,
@@ -1787,12 +2668,104 @@ impl MirrorActor {
                 let data = self.full_screen_data();
                 let _ = reply.send(data);
             }
+            MirrorCommand::LinkWindow { point, reply } => {
+                let data = self.link_window_for_point(point);
+                let _ = reply.send(data);
+            }
+            MirrorCommand::TrackViewportTop { reply } => {
+                if self.hold_state.is_some() {
+                    let _ = reply.send(None);
+                    return true;
+                }
+                let id = self
+                    .term
+                    .track_grid_ref(GridPointTag::Viewport, 0, 0)
+                    .ok()
+                    .map(|tracked| {
+                        let id = self.alloc_anchor_id();
+                        self.point_anchors.insert(id, tracked);
+                        id
+                    });
+                let _ = reply.send(id);
+            }
+            MirrorCommand::RestoreViewportAnchor { id, reply } => {
+                if self.hold_state.is_some() {
+                    self.deferred_scrolls
+                        .push(DeferredScrollOp::RestoreAnchor(id));
+                    let _ = reply.send(());
+                    return true;
+                }
+                self.apply_restore_viewport_anchor_live(id);
+                self.publish_live_viewport(false);
+                let _ = reply.send(());
+            }
+            MirrorCommand::ReleasePointAnchor { id } => {
+                if self.hold_state.is_some() {
+                    self.deferred_point_anchor_releases.push(id);
+                } else {
+                    self.point_anchors.remove(&id);
+                }
+            }
+            MirrorCommand::ReleaseMatchAnchor { id } => {
+                if self.hold_state.is_some() {
+                    self.deferred_anchor_releases.push(id);
+                } else {
+                    self.release_match_anchor_live(id);
+                }
+            }
+            MirrorCommand::Find {
+                session_id,
+                query,
+                action,
+                reply,
+            } => {
+                if self.hold_state.is_some() {
+                    self.queued_finds.push(QueuedFindOp::Run {
+                        session_id,
+                        query,
+                        action,
+                    });
+                    let update = self.prompt_held_find_update(session_id);
+                    let _ = reply.send(update);
+                    return true;
+                }
+                let update = self.run_find(session_id, &query, action);
+                let _ = reply.send(update);
+            }
+            MirrorCommand::ClearFind { session_id } => {
+                if self.hold_state.is_some() {
+                    self.queued_finds.push(QueuedFindOp::Clear { session_id });
+                    return true;
+                }
+                let removed = match session_id {
+                    Some(id) => {
+                        self.last_find_state.remove(&id);
+                        self.find_sessions.remove(&id).is_some()
+                    }
+                    None => {
+                        self.last_find_state.clear();
+                        self.last_anon_find_state = None;
+                        let had = !self.find_sessions.is_empty();
+                        self.find_sessions.clear();
+                        had
+                    }
+                };
+                if removed {
+                    self.refresh_published_find_highlights();
+                }
+            }
             #[cfg(any(test, feature = "test-support"))]
             MirrorCommand::SnapshotState { reply } => {
                 let state = crate::snapshot::inspect_vt(&self.term);
                 let _ = reply.send(state);
             }
             MirrorCommand::ScrollLocal { delta_lines, reply } => {
+                if self.hold_state.is_some() {
+                    self.deferred_scrolls
+                        .push(DeferredScrollOp::Local(delta_lines));
+                    let _ = reply.send(());
+                    return true;
+                }
                 // Runner's delta_lines is positive-up (history); Ghostty's is negative-up.
                 let _ = self
                     .term
@@ -1801,6 +2774,11 @@ impl MirrorActor {
                 let _ = reply.send(());
             }
             MirrorCommand::ScrollToBottom { reply } => {
+                if self.hold_state.is_some() {
+                    self.deferred_scrolls.push(DeferredScrollOp::ToBottom);
+                    let _ = reply.send(());
+                    return true;
+                }
                 let _ = self.term.scroll_viewport(ScrollViewport::Bottom);
                 self.publish_live_viewport(false);
                 let _ = reply.send(());
@@ -1809,10 +2787,20 @@ impl MirrorActor {
                 display_offset,
                 reply,
             } => {
+                if self.hold_state.is_some() {
+                    self.deferred_scrolls
+                        .push(DeferredScrollOp::ToDisplayOffset(display_offset));
+                    let _ = reply.send(());
+                    return true;
+                }
                 let history = self.term.scrollback_rows();
                 let target = display_offset.min(history);
-                let row = history.saturating_sub(target);
-                let _ = self.term.scroll_viewport(ScrollViewport::Row(row));
+                let scroll = if target == 0 {
+                    ScrollViewport::Bottom
+                } else {
+                    ScrollViewport::Row(history - target)
+                };
+                let _ = self.term.scroll_viewport(scroll);
                 self.publish_live_viewport(false);
                 let _ = reply.send(());
             }
@@ -1822,54 +2810,60 @@ impl MirrorActor {
                 side,
                 reply,
             } => {
-                let clamped = self.clamp_grid_point(point);
-                self.selection = Some(SelectionState {
-                    kind,
-                    anchor: clamped,
-                    anchor_side: side,
-                });
-                let (x, y) = self.grid_to_screen(clamped);
-                match kind {
-                    SelectionKind::Semantic => {
-                        let _ = self.term.select_and_set_word(
-                            GridPointTag::Screen,
-                            x,
-                            y,
-                            Some(&XTERM_WORD_BOUNDARIES),
-                        );
-                    }
-                    SelectionKind::Lines => {
-                        let selected = self
-                            .term
-                            .select_and_set_line(GridPointTag::Screen, x, y, None, false)
-                            .unwrap_or(false);
-                        if !selected {
-                            let last_col = self.term.cols().saturating_sub(1);
-                            let _ = self.term.set_selection_points(
-                                GridPointTag::Screen,
-                                (0, y),
-                                (last_col, y),
-                                false,
-                            );
-                        }
-                    }
-                    SelectionKind::Simple | SelectionKind::Block => {
-                        let _ = self.term.clear_selection();
-                    }
+                if self.hold_state.is_some() {
+                    self.deferred_selection_ops
+                        .push(DeferredSelectionOp::Start(kind, point, side));
+                    let _ = reply.send(());
+                    return true;
                 }
+                self.apply_start_selection_live(kind, point, side);
                 self.publish_live_viewport(false);
                 let _ = reply.send(());
             }
             MirrorCommand::UpdateSelection { point, side, reply } => {
-                let Some(state) = self.selection else {
+                if self.hold_state.is_some() {
+                    let has_selection = self.selection.is_some()
+                        || self
+                            .deferred_selection_ops
+                            .iter()
+                            .any(|op| matches!(op, DeferredSelectionOp::Start(..)));
+                    if has_selection {
+                        self.deferred_selection_ops
+                            .push(DeferredSelectionOp::Update(point, side));
+                    }
+                    let _ = reply.send(false);
+                    return true;
+                }
+                let Some((kind, anchor, anchor_side)) = self.selection.as_ref().map(|state| {
+                    let resolved = state
+                        .anchor_ref
+                        .as_ref()
+                        .and_then(|r| self.resolve_tracked_ref(r))
+                        .unwrap_or(state.anchor);
+                    (state.kind, resolved, state.anchor_side)
+                }) else {
                     let _ = reply.send(false);
                     return true;
                 };
-                self.apply_selection_range(state, point, side);
+                self.apply_selection_range(kind, anchor, anchor_side, point, side);
                 self.publish_live_viewport(false);
                 let _ = reply.send(true);
             }
             MirrorCommand::ClearSelection { reply } => {
+                if let Some(hold) = self.hold_state.as_mut() {
+                    let had = hold.frozen_viewport.selection().is_some()
+                        || self.selection.is_some()
+                        || self.term.selection().is_some();
+                    self.deferred_selection_ops.clear();
+                    self.selection = None;
+                    let _ = self.term.clear_selection();
+                    hold.skip_queued_updates = false;
+                    hold.queued_start_survived = true;
+                    *self.shared.selection_kind.lock().unwrap() = None;
+                    let _ = reply.send(had);
+                    return true;
+                }
+                self.deferred_selection_ops.clear();
                 let had = self.selection.take().is_some() || self.term.selection().is_some();
                 let _ = self.term.clear_selection();
                 if had {
@@ -1878,32 +2872,26 @@ impl MirrorActor {
                 let _ = reply.send(had);
             }
             MirrorCommand::SelectionText { reply } => {
-                let text = self
-                    .term
-                    .format_active_selection(FormatOptions {
-                        kind: FormatKind::Plain,
-                        unwrap: true,
-                        trim: true,
-                        extras: 0,
-                    })
-                    .ok()
-                    .flatten()
-                    .map(|bytes| {
-                        let mut text = String::from_utf8_lossy(&bytes).into_owned();
-                        if self
-                            .selection
-                            .is_some_and(|s| s.kind == SelectionKind::Lines)
-                            && !text.ends_with('\n')
-                        {
-                            text.push('\n');
-                        }
-                        text
-                    })
-                    .filter(|text| !text.is_empty());
-                let _ = reply.send(text);
+                if let Some(mut hold) = self.hold_state.take() {
+                    self.apply_deferred_selection_ops(&mut hold);
+                    self.hold_state = Some(hold);
+                }
+                let _ = reply.send(self.capture_selection_text_live());
+            }
+            MirrorCommand::SelectionSeedIfPublished { reply } => {
+                let result = if self.hold_state.is_some() {
+                    SelectionSeed::Held
+                } else {
+                    SelectionSeed::Ready(self.capture_selection_text_live())
+                };
+                let _ = reply.send(result);
             }
             MirrorCommand::SelectionContains { point, reply } => {
-                let contains = if let Some(sel) = self.term.selection() {
+                let contains = if let Some(hold) = self.hold_state.as_ref() {
+                    hold.frozen_viewport
+                        .selection()
+                        .is_some_and(|range| range.contains(point))
+                } else if let Some(sel) = self.term.selection() {
                     let history = self.term.scrollback_rows() as i64;
                     let total = self.term.total_rows() as i64;
                     let cols = usize::from(self.term.cols());
@@ -1926,6 +2914,17 @@ impl MirrorActor {
                 let _ = reply.send(contains);
             }
             MirrorCommand::CellIsWhitespace { point, reply } => {
+                if let Some(hold) = self.hold_state.as_ref() {
+                    let is_ws = hold.frozen_viewport.view().cell(point).is_none_or(|cell| {
+                        let spacer = cell.flags().intersects(
+                            crate::types::CellFlags::WIDE_CHAR_SPACER
+                                | crate::types::CellFlags::LEADING_WIDE_CHAR_SPACER,
+                        );
+                        !spacer && cell.c().is_whitespace()
+                    });
+                    let _ = reply.send(is_ws);
+                    return true;
+                }
                 let clamped = self.clamp_grid_point(point);
                 let (x, y) = self.grid_to_screen(clamped);
                 let is_ws = self
@@ -2036,6 +3035,14 @@ impl MirrorActor {
     }
 }
 
+/// Outcome of reading the native selection text only when the mirror's live
+/// grid is currently published (not inside an open DEC 2026 render hold).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SelectionSeed {
+    Ready(Option<String>),
+    Held,
+}
+
 pub struct TerminalMirror {
     cmd_tx: Sender<MirrorCommand>,
     shared: Arc<MirrorShared>,
@@ -2050,6 +3057,7 @@ pub struct TerminalMirror {
 
 impl Drop for TerminalMirror {
     fn drop(&mut self) {
+        self.shared.shutting_down.store(true, Ordering::Release);
         let worker = self.frame_worker.lock().unwrap().take();
         if let Some(worker) = worker.as_ref() {
             let cancel = {
@@ -2328,10 +3336,10 @@ impl TerminalMirror {
         let rows = attachment.snapshot.rows.max(1);
         let viewers = Arc::new(AtomicUsize::new(0));
         let shared = Arc::new(MirrorShared {
-            published: Mutex::new(Arc::new(ViewportSnapshot(ScreenData::empty(
-                usize::from(cols),
-                usize::from(rows),
-            )))),
+            published: Mutex::new(Arc::new(ViewportSnapshot::new(
+                ScreenData::empty(usize::from(cols), usize::from(rows)),
+                Arc::default(),
+            ))),
             viewport_dirty: AtomicBool::new(false),
             size: Mutex::new((cols, rows)),
             scroll_mark: Mutex::default(),
@@ -2348,10 +3356,13 @@ impl TerminalMirror {
             control: Mutex::default(),
             composition_clear_pending: Mutex::new(false),
             composition_clear_retry: AtomicBool::new(false),
+            shutting_down: AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
             actor_thread: Mutex::new(None),
             #[cfg(test)]
             render_state_updates: AtomicUsize::new(0),
+            #[cfg(test)]
+            selection_formats: AtomicUsize::new(0),
         });
 
         let mailbox = Arc::new(PushMailbox::new(
@@ -2381,8 +3392,24 @@ impl TerminalMirror {
                     let render_state = RenderState::new()?;
                     let scroll_tracker = find::ScreenScrollTracker::new(&term);
                     Ok(MirrorActor {
-                        term,
+                        point_anchors: HashMap::new(),
+                        match_anchors: HashMap::new(),
+                        selection: None,
+                        hold_state: None,
                         render_state,
+                        term,
+                        deferred_scrolls: Vec::new(),
+                        deferred_selection_ops: Vec::new(),
+                        queued_finds: Vec::new(),
+                        deferred_point_anchor_releases: Vec::new(),
+                        deferred_anchor_releases: Vec::new(),
+                        last_find_state: HashMap::new(),
+                        last_anon_find_state: None,
+                        find_sessions: HashMap::new(),
+                        regex_cache: None,
+                        next_anchor_id: 0,
+                        #[cfg(test)]
+                        base_render_state_updates: 0,
                         shared: actor_shared,
                         self_tx: actor_tx,
                         mailbox,
@@ -2402,8 +3429,6 @@ impl TerminalMirror {
                         render_hold_deadline: None,
                         held_sync_bytes: 0,
                         sync_wrote_visible: false,
-                        frozen_snapshot: None,
-                        selection: None,
                         visible_scanner: VisibleTextScanner::default(),
                         last_visible_text_hash: None,
                         scroll_tracker,
@@ -2614,6 +3639,11 @@ impl TerminalMirror {
 
     pub fn scroll_mark(&self) -> find::ScrollMark {
         *self.shared.scroll_mark.lock().unwrap()
+    }
+
+    /// True while a DEC 2026 synchronized-update render hold is active on the mirror.
+    pub fn is_render_held(&self) -> bool {
+        self.shared.sync_snapshot.lock().unwrap().0.is_some()
     }
 
     pub fn hold_viewport(&self) -> ViewportHold {
@@ -2895,6 +3925,22 @@ impl TerminalMirror {
         rx.recv().ok().flatten()
     }
 
+    /// Reads the native formatted selection text on the actor thread only when
+    /// no DEC 2026 render hold is open, returning [`SelectionSeed::Held`]
+    /// atomically if a hold is active so callers such as Find never display
+    /// unpublished live-grid text.
+    pub fn selection_text_if_published(&self) -> SelectionSeed {
+        let (tx, rx) = mpsc::channel();
+        if self
+            .cmd_tx
+            .send(MirrorCommand::SelectionSeedIfPublished { reply: tx })
+            .is_err()
+        {
+            return SelectionSeed::Ready(None);
+        }
+        rx.recv().unwrap_or(SelectionSeed::Ready(None))
+    }
+
     pub fn selection_contains(&self, point: GridPoint) -> bool {
         let (tx, rx) = mpsc::channel();
         if self
@@ -2942,13 +3988,7 @@ impl TerminalMirror {
         self.link_at_with(point, &FileLinkContext::default())
     }
 
-    /// Relative paths try the shell's live cwd, then the spawn cwd, then any
-    /// extra root from `context`, without duplicates.
-    pub fn link_at_with(
-        &self,
-        point: GridPoint,
-        context: &FileLinkContext,
-    ) -> Option<TerminalLink> {
+    fn resolve_link_cwds(&self, context: &FileLinkContext) -> Vec<PathBuf> {
         let live = self.shared.metadata.lock().unwrap().live_cwd.clone();
         let spawn = self.link_cwd.get_or_init(|| {
             self.shared
@@ -2957,20 +3997,246 @@ impl TerminalMirror {
                 .ok()
                 .flatten()
         });
-        let mut cwds: Vec<&Path> = Vec::with_capacity(3);
-        for root in [
-            live.as_deref(),
-            spawn.as_deref(),
-            context.extra_root.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
+        let mut cwds: Vec<PathBuf> = Vec::with_capacity(3);
+        for root in [live.as_ref(), spawn.as_ref(), context.extra_root.as_ref()]
+            .into_iter()
+            .flatten()
         {
-            if !cwds.contains(&root) {
-                cwds.push(root);
+            if !cwds.iter().any(|existing| existing == root) {
+                cwds.push(root.clone());
             }
         }
-        self.with_screen(|screen| terminal_link_at(&screen.view(), point, &cwds))
+        cwds
+    }
+
+    /// Resolve a hovered link strictly from an already-published
+    /// [`ViewportSnapshot`] without blocking on the mirror actor thread.
+    /// Returns [`LinkLookup::NeedsOffscreen`] when rows outside `snapshot`
+    /// could participate in the link.
+    pub fn try_link_at_published(
+        &self,
+        snapshot: &ViewportSnapshot,
+        point: GridPoint,
+        context: &FileLinkContext,
+    ) -> LinkLookup {
+        let view = snapshot.view();
+        let cols = view.cols();
+        if cols == 0 {
+            return LinkLookup::Ready(None);
+        }
+        let (stored_top, stored_bottom) = view.stored_line_bounds();
+        if point.line < stored_top || point.line > stored_bottom {
+            return LinkLookup::NeedsOffscreen;
+        }
+        let mut point = point;
+        point.column = Column(point.column.0.min(cols - 1));
+        if view.cell(point).is_some_and(|cell| {
+            cell.flags().intersects(
+                crate::types::CellFlags::WIDE_CHAR_SPACER
+                    | crate::types::CellFlags::LEADING_WIDE_CHAR_SPACER,
+            )
+        }) {
+            point.column = Column(point.column.0.saturating_sub(1));
+        }
+
+        let row_wrapped = |line: Line| {
+            view.row_cell(line, Column(cols - 1))
+                .is_some_and(|cell| cell.flags().contains(crate::types::CellFlags::WRAPLINE))
+        };
+        let row_content_bounds = |line: Line| -> Option<(usize, usize)> {
+            let first = (0..cols).find(|&col| {
+                view.row_cell(line, Column(col))
+                    .is_some_and(|cell| !cell.c().is_whitespace())
+            })?;
+            let last = (first..cols).rfind(|&col| {
+                view.row_cell(line, Column(col))
+                    .is_some_and(|cell| !cell.c().is_whitespace())
+            })?;
+            Some((first, last))
+        };
+
+        let cell = view.cell(point);
+        let has_hyperlink = cell.is_some_and(|c| c.hyperlink().is_some());
+        if !has_hyperlink && cell.is_none_or(|c| c.c().is_whitespace()) {
+            let Some((first_non_ws, last_non_ws)) = row_content_bounds(point.line) else {
+                return LinkLookup::Ready(None);
+            };
+            let continues_from_above = if point.line == stored_top {
+                view.top_row_continues_wrap()
+            } else {
+                row_wrapped(point.line - 1)
+            };
+            if point.column.0 < first_non_ws && !continues_from_above {
+                return LinkLookup::Ready(None);
+            }
+            if point.column.0 > last_non_ws && !row_wrapped(point.line) {
+                return LinkLookup::Ready(None);
+            }
+        }
+
+        let (soft_start, soft_end) = view.soft_wrapped_line_bounds(point.line);
+        let soft_top_safe = !(soft_start == stored_top && view.top_row_continues_wrap());
+        let soft_bottom_safe = !(soft_end == stored_bottom && row_wrapped(stored_bottom));
+        if !soft_top_safe || !soft_bottom_safe {
+            return LinkLookup::NeedsOffscreen;
+        }
+
+        let is_barrier_row = |line: Line| -> bool {
+            if line == stored_top && view.top_row_continues_wrap() {
+                return false;
+            }
+            if line > stored_top && row_wrapped(line - 1) {
+                return false;
+            }
+            if row_wrapped(line) {
+                return false;
+            }
+            !(0..cols).any(|col| {
+                view.row_cell(line, Column(col))
+                    .is_some_and(|c| !c.c().is_whitespace() || c.hyperlink().is_some())
+            })
+        };
+
+        let has_underline = cell.is_some_and(|c| {
+            c.flags()
+                .intersects(crate::types::CellFlags::ALL_UNDERLINES)
+        });
+        let join = MAX_WRAP_JOIN_ROWS as i32;
+        let top_safe = stored_top <= view.topmost_line()
+            || (!has_hyperlink && !has_underline && soft_start.0 - stored_top.0 >= join)
+            || (stored_top.0..soft_start.0).any(|l| is_barrier_row(Line(l)));
+        let bottom_safe = stored_bottom >= view.bottommost_line()
+            || (!has_hyperlink && !has_underline && stored_bottom.0 - soft_end.0 >= join)
+            || ((soft_end.0 + 1)..=stored_bottom.0).any(|l| is_barrier_row(Line(l)));
+        if !top_safe || !bottom_safe {
+            return LinkLookup::NeedsOffscreen;
+        }
+
+        let cwds = self.resolve_link_cwds(context);
+        let cwd_refs: Vec<&Path> = cwds.iter().map(PathBuf::as_path).collect();
+        LinkLookup::Ready(terminal_link_at(&view, point, &cwd_refs))
+    }
+
+    /// Relative paths try the shell's live cwd, then the spawn cwd, then any
+    /// extra root from `context`, without duplicates.
+    pub fn link_at_with(
+        &self,
+        point: GridPoint,
+        context: &FileLinkContext,
+    ) -> Option<TerminalLink> {
+        let snap = self.viewport_snapshot();
+        if let LinkLookup::Ready(link) = self.try_link_at_published(&snap, point, context) {
+            return link;
+        }
+        let cwds = self.resolve_link_cwds(context);
+        let cwd_refs: Vec<&Path> = cwds.iter().map(PathBuf::as_path).collect();
+        let (tx, rx) = mpsc::channel();
+        let data = if self
+            .cmd_tx
+            .send(MirrorCommand::LinkWindow { point, reply: tx })
+            .is_ok()
+        {
+            rx.recv().unwrap_or_else(|_| snap.view().data().clone())
+        } else {
+            snap.view().data().clone()
+        };
+        terminal_link_at(&data.view(), point, &cwd_refs)
+    }
+
+    /// Anchor the top-left visible viewport cell via `TrackedGridRef` so find
+    /// close restores the exact scrolled content row across output and reflow.
+    pub fn track_viewport_top(&self) -> Option<GridAnchor> {
+        let (tx, rx) = mpsc::channel();
+        self.cmd_tx
+            .send(MirrorCommand::TrackViewportTop { reply: tx })
+            .ok()?;
+        let id = rx.recv().ok()??;
+        Some(GridAnchor {
+            id,
+            cmd_tx: self.cmd_tx.clone(),
+        })
+    }
+
+    /// Scroll the viewport back to a tracked `GridAnchor`, or clamp to the
+    /// oldest retained row if the pinned cell was evicted from scrollback.
+    pub fn restore_viewport_anchor(&self, anchor: &GridAnchor) {
+        let (tx, rx) = mpsc::channel();
+        if self
+            .cmd_tx
+            .send(MirrorCommand::RestoreViewportAnchor {
+                id: anchor.id,
+                reply: tx,
+            })
+            .is_ok()
+        {
+            let _ = rx.recv();
+        }
+        (self.shared.waker)();
+    }
+
+    /// Run a find query lazily inside the mirror actor directly over
+    /// `libghostty-vt` rows and anchor the selected match with `TrackedGridRef`.
+    pub fn find_matches(
+        &self,
+        query: &find::FindQuery,
+        action: find::FindAction,
+    ) -> find::FindUpdate {
+        self.find_matches_inner(None, query, action)
+    }
+
+    /// Run a find query for a view-owned find session and publish full
+    /// logical-line visible highlights onto [`ViewportSnapshot`].
+    pub fn find_matches_in_session(
+        &self,
+        session_id: u64,
+        query: &find::FindQuery,
+        action: find::FindAction,
+    ) -> find::FindUpdate {
+        self.find_matches_inner(Some(session_id), query, action)
+    }
+
+    fn find_matches_inner(
+        &self,
+        session_id: Option<u64>,
+        query: &find::FindQuery,
+        action: find::FindAction,
+    ) -> find::FindUpdate {
+        let (tx, rx) = mpsc::channel();
+        if self
+            .cmd_tx
+            .send(MirrorCommand::Find {
+                session_id,
+                query: query.clone(),
+                action,
+                reply: tx,
+            })
+            .is_ok()
+        {
+            if let Ok(update) = rx.recv() {
+                return update;
+            }
+        }
+        find::FindUpdate {
+            count: find::FindCount::default(),
+            mark: self.scroll_mark(),
+            current: None,
+            anchor: None,
+            alt_screen: self.mode().contains(TerminalModeFlags::ALT_SCREEN),
+        }
+    }
+
+    /// Release all registered find sessions held by the mirror actor.
+    pub fn clear_find(&self) {
+        let _ = self
+            .cmd_tx
+            .send(MirrorCommand::ClearFind { session_id: None });
+    }
+
+    /// Release one view-owned find session and clear its published highlights.
+    pub fn clear_find_session(&self, session_id: u64) {
+        let _ = self.cmd_tx.send(MirrorCommand::ClearFind {
+            session_id: Some(session_id),
+        });
     }
 
     pub fn move_cursor_to_viewport(&self, column: usize, row: usize) {
@@ -3345,6 +4611,29 @@ impl TerminalMirror {
     #[cfg(test)]
     pub(crate) fn test_render_state_updates(&self) -> usize {
         self.shared.render_state_updates.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_selection_formats(&self) -> usize {
+        self.shared.selection_formats.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_feed_at(&self, seq: u64, bytes: &[u8], now: Instant) {
+        let (tx, rx) = mpsc::channel();
+        if self
+            .cmd_tx
+            .send(MirrorCommand::FeedOutputAt {
+                seq,
+                bytes: bytes.to_vec(),
+                now,
+                reply: tx,
+            })
+            .is_ok()
+            && rx.recv().unwrap_or(false)
+        {
+            self.wake_viewers();
+        }
     }
 
     pub fn test_is_screen_locked(&self) -> bool {

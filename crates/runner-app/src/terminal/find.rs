@@ -4,6 +4,7 @@
 //! than one place.
 
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -16,12 +17,16 @@ use gpui::{
 use runner_app::theme;
 use runner_app::ui::{TextField, Tooltip};
 use runner_terminal::terminal::find::{
-    self as search, FindCount, FindPattern, FindQuery, FindRegex as RegexSearch, ScrollMark,
+    self as search, FindAction, FindCount, FindPattern, FindQuery, ScrollMark,
 };
-use runner_terminal::terminal::{TerminalMirror, ViewportHold};
-use runner_terminal::{FindMatch as Match, Line, ScreenGuard, TerminalModeFlags as TermMode};
+use runner_terminal::terminal::{
+    GridAnchor, MatchAnchor, SelectionSeed, TerminalMirror, ViewportHold,
+};
+use runner_terminal::{FindMatch as Match, TerminalModeFlags as TermMode, ViewportSnapshot};
 
 use crate::FindInTerminal;
+
+static NEXT_FIND_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Output recomputes the matches at most this often.
 const REFRESH_INTERVAL: Duration = Duration::from_millis(120);
@@ -44,12 +49,22 @@ enum Status {
 
 /// What the terminal paints for find: every visible match, oldest first,
 /// and the current one.
-pub(crate) struct FindHighlights {
-    pub(crate) matches: Vec<Match>,
+pub(crate) struct FindHighlights<'a> {
+    pub(crate) matches: &'a [Match],
     pub(crate) current: Option<Match>,
 }
 
+enum OpenedViewport {
+    AtBottom,
+    Scrolled {
+        anchor: Option<GridAnchor>,
+        offset: usize,
+        mark: ScrollMark,
+    },
+}
+
 pub(crate) struct TerminalFind {
+    find_session_id: u64,
     terminal: Arc<TerminalMirror>,
     terminal_focus: FocusHandle,
     field: Entity<TextField>,
@@ -58,19 +73,36 @@ pub(crate) struct TerminalFind {
     match_case: bool,
     regex: bool,
     status: Status,
-    /// The last pattern that built: an invalid one keeps its matches.
-    search: Option<Box<RegexSearch>>,
-    /// The current match, at the positions `mark` describes.
+    /// The last valid query accepted by `FindQuery::pattern`: an invalid regex
+    /// keeps refreshing and highlighting this query until the user fixes it.
+    accepted_query: Option<FindQuery>,
+    /// The current match, at the positions `mark` describes, paired with a
+    /// `TrackedGridRef` anchor that survives scrollback and resize reflow.
     current: Option<Match>,
+    current_anchor: Option<MatchAnchor>,
     mark: ScrollMark,
     count: FindCount,
     hold: Option<ViewportHold>,
     alt_screen: bool,
     /// The viewport from before find opened, restored on close.
-    opened_at: Option<(usize, ScrollMark)>,
+    opened_at: Option<OpenedViewport>,
     searched_at: Option<Instant>,
     refresh: Option<Task<()>>,
+    /// Set when a user-initiated query or step arrived during a DEC 2026 hold
+    /// so the release wake refreshes and reveals the resolved match promptly.
+    reveal_after_hold: bool,
+    /// Set when Find opened during an active DEC 2026 hold so the release wake
+    /// retries native selection seeding unless the user typed, cleared, or
+    /// closed Find first.
+    seed_after_hold: bool,
     _subscriptions: Vec<Subscription>,
+}
+
+fn find_seed_from_selection(text: String) -> Option<String> {
+    text.lines()
+        .next()
+        .map(str::to_owned)
+        .filter(|line| !line.trim().is_empty())
 }
 
 impl TerminalFind {
@@ -100,6 +132,7 @@ impl TerminalFind {
         let mut subscriptions = vec![cx.observe(&field, |this, field, cx| {
             let query = field.read(cx).text();
             if query != this.query {
+                this.seed_after_hold = false;
                 this.query = query.to_owned();
                 this.search_query(cx);
             }
@@ -115,6 +148,7 @@ impl TerminalFind {
             }));
         }
         Self {
+            find_session_id: NEXT_FIND_SESSION_ID.fetch_add(1, Ordering::Relaxed),
             terminal,
             terminal_focus,
             field,
@@ -123,8 +157,9 @@ impl TerminalFind {
             match_case: false,
             regex: false,
             status: Status::Empty,
-            search: None,
+            accepted_query: None,
             current: None,
+            current_anchor: None,
             mark: ScrollMark::default(),
             count: FindCount::default(),
             hold: None,
@@ -132,6 +167,8 @@ impl TerminalFind {
             opened_at: None,
             searched_at: None,
             refresh: None,
+            reveal_after_hold: false,
+            seed_after_hold: false,
             _subscriptions: subscriptions,
         }
     }
@@ -139,19 +176,31 @@ impl TerminalFind {
     /// Opens the bar with any terminal selection as its query, or with the
     /// bar already open selects the query.
     pub(crate) fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let seed = (!self.open).then(|| {
-            self.terminal
-                .selection_text()
-                .and_then(|text| text.lines().next().map(str::to_owned))
-                .filter(|line| !line.trim().is_empty())
-                .unwrap_or_default()
-        });
-        if seed.is_some() {
+        let opening = !self.open;
+        let (seed, seed_after_hold) = if opening {
+            match self.terminal.selection_text_if_published() {
+                SelectionSeed::Ready(text) => (
+                    Some(text.and_then(find_seed_from_selection).unwrap_or_default()),
+                    false,
+                ),
+                SelectionSeed::Held => (Some(String::new()), true),
+            }
+        } else {
+            (None, self.seed_after_hold)
+        };
+        if opening {
             self.open = true;
-            self.opened_at = Some((
-                self.terminal.scroll_state().display_offset,
-                self.terminal.scroll_mark(),
-            ));
+            self.seed_after_hold = seed_after_hold;
+            let offset = self.terminal.scroll_state().display_offset;
+            self.opened_at = Some(if offset == 0 {
+                OpenedViewport::AtBottom
+            } else {
+                OpenedViewport::Scrolled {
+                    anchor: self.terminal.track_viewport_top(),
+                    offset,
+                    mark: self.terminal.scroll_mark(),
+                }
+            });
             self.alt_screen = self.terminal.mode().contains(TermMode::ALT_SCREEN);
         }
         self.field.update(cx, |field, field_cx| {
@@ -190,31 +239,44 @@ impl TerminalFind {
         self.query.clear();
         self.clear_matches();
         self.status = Status::Empty;
-        self.search = None;
+        self.accepted_query = None;
         self.refresh = None;
+        self.reveal_after_hold = false;
+        self.seed_after_hold = false;
         self.restore_viewport();
     }
 
     /// Puts the viewport back where it was before find opened: at the bottom,
     /// or on the same content when it was scrolled back.
     fn restore_viewport(&mut self) {
-        let Some((offset, mark)) = self.opened_at.take() else {
+        let Some(opened) = self.opened_at.take() else {
             return;
         };
-        let moved = mark
-            .moved_since(self.terminal.scroll_mark())
-            .unwrap_or_default();
-        let offset = if offset == 0 {
-            0
-        } else {
-            offset + moved.max(0) as usize
-        };
-        self.terminal.scroll_to_display_offset(offset);
+        match opened {
+            OpenedViewport::AtBottom => self.terminal.scroll_to_display_offset(0),
+            OpenedViewport::Scrolled {
+                anchor: Some(anchor),
+                ..
+            } => self.terminal.restore_viewport_anchor(&anchor),
+            OpenedViewport::Scrolled {
+                anchor: None,
+                offset,
+                mark,
+            } => {
+                let moved = mark
+                    .moved_since(self.terminal.scroll_mark())
+                    .unwrap_or_default();
+                self.terminal
+                    .scroll_to_display_offset(offset + moved.max(0) as usize);
+            }
+        }
     }
 
     fn clear_matches(&mut self) {
         self.count = FindCount::default();
+        self.current_anchor = None;
         self.set_current(None);
+        self.terminal.clear_find_session(self.find_session_id);
     }
 
     fn set_current(&mut self, current: Option<Match>) {
@@ -244,18 +306,25 @@ impl TerminalFind {
     }
 
     fn search_query(&mut self, cx: &mut Context<Self>) {
-        match self.query().pattern() {
+        let query = self.query();
+        match query.pattern() {
             FindPattern::Empty => {
                 self.status = Status::Empty;
-                self.search = None;
+                self.accepted_query = None;
                 self.clear_matches();
             }
             FindPattern::Invalid => self.status = Status::Invalid,
-            FindPattern::Ready(regex) => {
+            FindPattern::Ready(_) => {
                 self.status = Status::Ready;
-                self.search = Some(regex);
+                self.accepted_query = Some(query);
+                let held = self.terminal.is_render_held();
                 self.run(true);
-                self.reveal_current();
+                if held {
+                    self.reveal_after_hold = true;
+                } else {
+                    self.reveal_after_hold = false;
+                    self.reveal_current();
+                }
             }
         }
         cx.notify();
@@ -267,11 +336,40 @@ impl TerminalFind {
             self.alt_screen = alt_screen;
             cx.notify();
         }
+        if self.seed_after_hold {
+            match self.terminal.selection_text_if_published() {
+                SelectionSeed::Held => {}
+                SelectionSeed::Ready(text) => {
+                    self.seed_after_hold = false;
+                    if let Some(seed) = text.and_then(find_seed_from_selection) {
+                        self.field.update(cx, |field, field_cx| {
+                            if field.text().is_empty() {
+                                field.set_text(seed, field_cx);
+                                field.select_all(field_cx);
+                            }
+                        });
+                    }
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+        if self.reveal_after_hold
+            && self.accepted_query.is_some()
+            && !self.terminal.is_render_held()
+        {
+            self.refresh = None;
+            self.reveal_after_hold = false;
+            self.run(false);
+            self.reveal_current();
+            cx.notify();
+            return;
+        }
         self.schedule_refresh(cx);
     }
 
     fn schedule_refresh(&mut self, cx: &mut Context<Self>) {
-        if self.refresh.is_some() || self.search.is_none() {
+        if self.refresh.is_some() || self.accepted_query.is_none() {
             return;
         }
         let wait = self.searched_at.map_or(Duration::ZERO, |at| {
@@ -281,7 +379,7 @@ impl TerminalFind {
             cx.background_executor().timer(wait).await;
             this.update(cx, |this, cx| {
                 this.refresh = None;
-                if this.open && this.search.is_some() {
+                if this.open && this.accepted_query.is_some() {
                     this.run(false);
                     cx.notify();
                 }
@@ -295,51 +393,53 @@ impl TerminalFind {
     /// current match on its text, or moves to the nearest one when that text
     /// has gone.
     fn run(&mut self, new_query: bool) {
-        self.select(
-            |term, regex, carried| match carried.filter(|_| !new_query) {
-                Some(carried) => search::locate(term, regex, &carried),
-                None => search::newest_at_or_above(term, regex, viewport_bottom(term)),
-            },
-        );
+        let action = if new_query {
+            FindAction::NewQuery
+        } else {
+            FindAction::Refresh {
+                anchor: self.current_anchor.as_ref().map(MatchAnchor::id),
+                carried: self.current_now(),
+            }
+        };
+        self.select(action);
     }
 
     fn step(&mut self, older: bool, cx: &mut Context<Self>) {
         if !self.can_step() {
             return;
         }
-        self.select(|term, regex, carried| match carried {
-            Some(carried) => search::step_match(term, regex, &carried, older),
-            None => search::newest_at_or_above(term, regex, viewport_bottom(term)),
-        });
-        self.reveal_current();
+        let action = FindAction::Step {
+            anchor: self.current_anchor.as_ref().map(MatchAnchor::id),
+            carried: self.current_now(),
+            older,
+        };
+        let held = self.terminal.is_render_held();
+        self.select(action);
+        if held {
+            self.reveal_after_hold = true;
+        } else {
+            self.reveal_after_hold = false;
+            self.reveal_current();
+        }
         cx.notify();
     }
 
-    /// Picks the current match with `pick`, given the old one carried to the
-    /// latest positions, and counts the matches under one screen lock.
-    fn select(
-        &mut self,
-        pick: impl FnOnce(&ScreenGuard<'_>, &mut RegexSearch, Option<Match>) -> Option<Match>,
-    ) {
-        let Some(regex) = self.search.as_mut() else {
+    /// Runs the last accepted query lazily inside the mirror actor, publishes
+    /// full-logical-line visible highlights on `ViewportSnapshot`, and anchors
+    /// the selected match with `TrackedGridRef`.
+    fn select(&mut self, action: FindAction) {
+        let Some(query) = self.accepted_query.clone() else {
             return;
         };
-        let (count, mark, current, alt_screen) = self.terminal.with_screen(|screen| {
-            let mark = self.terminal.scroll_mark();
-            let carried = carry(self.current.as_ref(), self.mark, mark);
-            let (newest, more) = search::newest_matches(screen, regex);
-            let current = (!newest.is_empty())
-                .then(|| pick(screen, regex, carried))
-                .flatten();
-            let count = FindCount::new(&newest, more, current.as_ref());
-            let alt_screen = screen.mode().contains(TermMode::ALT_SCREEN);
-            (count, mark, current, alt_screen)
-        });
-        self.alt_screen = alt_screen;
-        self.count = count;
-        self.mark = mark;
+        let update = self
+            .terminal
+            .find_matches_in_session(self.find_session_id, &query, action);
+        self.alt_screen = update.alt_screen;
+        self.count = update.count;
+        self.mark = update.mark;
+        self.current_anchor = update.anchor;
         self.searched_at = Some(Instant::now());
-        self.set_current(current);
+        self.set_current(update.current);
     }
 
     fn can_step(&self) -> bool {
@@ -403,21 +503,19 @@ impl TerminalFind {
         }
     }
 
-    /// The matches to paint over the viewport's `rows` lines.
-    pub(crate) fn highlights(
-        &mut self,
-        screen: &ScreenGuard<'_>,
-        rows: usize,
-    ) -> Option<FindHighlights> {
-        if !self.open {
+    /// The matches to paint over the viewport, borrowed directly from the
+    /// actor-published `ViewportSnapshot` (with full soft-wrap logical-line context).
+    pub(crate) fn highlights<'a>(
+        &self,
+        snapshot: &'a ViewportSnapshot,
+    ) -> Option<FindHighlights<'a>> {
+        if !self.open || self.accepted_query.is_none() {
             return None;
         }
-        let regex = self.search.as_mut()?;
-        let top = -(screen.display_offset() as i32);
-        let bottom = (top + rows.max(1) as i32 - 1).min(screen.rows() as i32 - 1);
-        let matches = search::matches_in_lines(screen, regex, Line(top), Line(bottom));
         Some(FindHighlights {
-            matches,
+            matches: snapshot
+                .find_highlights(self.find_session_id)
+                .unwrap_or(&[]),
             current: self.current_now(),
         })
     }
@@ -460,10 +558,6 @@ fn carry(current: Option<&Match>, found_at: ScrollMark, now: ScrollMark) -> Opti
     current.map(|found| search::shift_match(found, lines))
 }
 
-fn viewport_bottom(screen: &ScreenGuard<'_>) -> Line {
-    Line(screen.rows() as i32 - 1 - screen.display_offset() as i32)
-}
-
 /// The terminal surface `surface` with its find bar floating over the
 /// top-right corner. The bar sits outside the surface so its keys never
 /// reach the terminal.
@@ -497,6 +591,7 @@ pub(crate) fn find_bar(find: &Entity<TerminalFind>) -> AnyElement {
 /// returns to the bottom is followed rather than held.
 impl Drop for TerminalFind {
     fn drop(&mut self) {
+        self.terminal.clear_find_session(self.find_session_id);
         self.hold = None;
         self.restore_viewport();
     }
@@ -815,6 +910,7 @@ pub(crate) mod tests {
     use crate::AttachedChat;
     use gpui::{TestAppContext, VisualTestContext};
     use runner_core::protocol::terminal::TerminalController;
+    use runner_terminal::Line;
     use runner_terminal::{
         Column, CursorShape, GridPoint as Point, SelectionKind as SelectionType, Side,
     };
@@ -979,9 +1075,8 @@ pub(crate) mod tests {
         assert!(query.is_empty());
         assert!(terminal_focused);
         let highlights = visual.update(|_, cx| {
-            find.update(cx, |find, _| {
-                terminal.with_screen(|screen| find.highlights(screen, 24).is_some())
-            })
+            let snap = terminal.viewport_snapshot();
+            find.read(cx).highlights(&snap).is_some()
         });
         assert!(!highlights);
 
@@ -1217,19 +1312,53 @@ pub(crate) mod tests {
 
     #[test]
     fn invalid_regex_keeps_the_last_matches_and_disables_stepping() {
-        let (_terminal, mut visual, find, _) = setup();
+        let (terminal, mut visual, find, _) = setup();
         open_with(&mut visual, "fail");
         visual.update(|_, cx| find.update(cx, |find, cx| find.toggle_regex(cx)));
         visual.simulate_input("(");
         visual.run_until_parked();
         assert_eq!(count(&mut visual, &find).as_deref(), Some("Invalid regex"));
-        let (matches, can_step) =
-            visual.update(|_, cx| (find.read(cx).count.total, find.read(cx).can_step()));
+        let (matches, can_step, had_current, had_hold) = visual.update(|_, cx| {
+            let f = find.read(cx);
+            (
+                f.count.total,
+                f.can_step(),
+                f.current.is_some(),
+                f.hold.is_some(),
+            )
+        });
         assert_eq!(matches, 2);
         assert!(!can_step);
+        assert!(had_current);
+        assert!(had_hold);
+
+        // Output arriving while the bar shows an invalid regex must refresh
+        // against the last accepted valid regex, keeping current match & viewport hold.
+        terminal.test_feed(2, b"\r\nFAIL third\r\n");
+        visual.update(|_, cx| find.update(cx, |find, _| find.run(false)));
+        assert_eq!(count(&mut visual, &find).as_deref(), Some("Invalid regex"));
+        let (matches_after, can_step_after, has_current_after, has_hold_after, has_highlights) =
+            visual.update(|_, cx| {
+                let f = find.read(cx);
+                let snap = terminal.viewport_snapshot();
+                (
+                    f.count.total,
+                    f.can_step(),
+                    f.current.is_some(),
+                    f.hold.is_some(),
+                    f.highlights(&snap).is_some_and(|h| !h.matches.is_empty()),
+                )
+            });
+        assert_eq!(matches_after, 3);
+        assert!(!can_step_after);
+        assert!(has_current_after);
+        assert!(has_hold_after);
+        assert!(has_highlights);
+        assert!(terminal.scroll_state().display_offset > 0);
+
         visual.simulate_keystrokes("backspace");
         visual.run_until_parked();
-        assert_eq!(count(&mut visual, &find).as_deref(), Some("1 of 2"));
+        assert_eq!(count(&mut visual, &find).as_deref(), Some("2 of 3"));
         visual.update(|_, cx| find.update(cx, |find, cx| find.toggle_match_case(cx)));
         assert_eq!(count(&mut visual, &find).as_deref(), Some("No results"));
     }
@@ -1239,9 +1368,8 @@ pub(crate) mod tests {
         let (terminal, mut visual, find, _) = setup();
         open_with(&mut visual, "pass");
         let highlighted = visual.update(|_, cx| {
-            find.update(cx, |find, _| {
-                terminal.with_screen(|screen| find.highlights(screen, 24).unwrap().matches.len())
-            })
+            let snap = terminal.viewport_snapshot();
+            find.read(cx).highlights(&snap).unwrap().matches.len()
         });
         assert_eq!(highlighted, 23);
         assert!(!visual.update(|_, cx| find.read(cx).alt_screen));
@@ -1707,5 +1835,299 @@ pub(crate) mod tests {
         assert!(!open);
         assert!(query.is_empty());
         assert_eq!(shell.scroll_state().display_offset, 0);
+    }
+
+    #[test]
+    fn find_anchors_survive_resize_reflow_and_restore_scrolled_viewport() {
+        let temp = tempfile::tempdir().unwrap();
+        let (terminal, mut visual, find, _, (tx, ack)) =
+            setup_in(TestAppContext::single(), Some(temp.path()));
+        // Scroll back to a known pre-find row, open find, step to the older match,
+        // resize so lines reflow, then close find and verify the scrolled row restores.
+        terminal.scroll_to_display_offset(10);
+        let pre_find_top = terminal.viewport_snapshot().view().row_to_string(Line(-10));
+        open_with(&mut visual, "FAIL");
+        assert_eq!(count(&mut visual, &find).as_deref(), Some("2 of 2"));
+
+        crate::terminal::control::tests::change(&tx, &ack, 2, TerminalController::Desktop);
+        assert_eq!(terminal.size(), (91, 31));
+        visual.update(|_, cx| {
+            let updates = cx
+                .global::<crate::app_store::GlobalAppStore>()
+                .0
+                .read(cx)
+                .terminal_updates
+                .clone();
+            updates.update(cx, |_, cx| cx.emit("find".to_string()));
+        });
+        visual.executor().advance_clock(REFRESH_INTERVAL);
+        visual.run_until_parked();
+        assert_eq!(count(&mut visual, &find).as_deref(), Some("2 of 2"));
+        assert_eq!(current_text(&terminal, &mut visual, &find), "FAIL");
+
+        visual.simulate_keystrokes("escape");
+        visual.run_until_parked();
+        let restored_offset = terminal.scroll_state().display_offset;
+        assert!(restored_offset > 0);
+        assert_eq!(
+            terminal
+                .viewport_snapshot()
+                .view()
+                .row_to_string(Line(-(restored_offset as i32))),
+            pre_find_top
+        );
+    }
+
+    #[test]
+    fn published_find_highlights_keep_soft_wrap_logical_line_context() {
+        let (terminal, mut visual, find, _, (tx, ack)) = setup_in(TestAppContext::single(), None);
+        tx.send(runner_core::protocol::terminal::TerminalFrame::Resized {
+            seq: 2,
+            cols: 8,
+            rows: 3,
+            controller: TerminalController::Desktop,
+        })
+        .unwrap();
+        let _ = ack.recv();
+        terminal.test_feed(3, b"\x1bc");
+        terminal.test_feed(4, b"aaaaaaXXYYbbbbbb\r\nmid\r\nXXYY");
+
+        open_with(&mut visual, "XXYY");
+        assert_eq!(count(&mut visual, &find).as_deref(), Some("1 of 2"));
+        let matches = visual.update(|_, cx| {
+            let snap = terminal.viewport_snapshot();
+            find.read(cx).highlights(&snap).unwrap().matches.to_vec()
+        });
+        assert_eq!(
+            matches.len(),
+            2,
+            "expected wrapped + visible XXYY: {matches:?}"
+        );
+        assert_eq!(matches[0].start.line, Line(-1));
+        assert_eq!(matches[0].end.line, Line(0));
+        assert_eq!(matches[1].start.line, Line(2));
+
+        // Anchored regex `^YY` must NOT produce a phantom match on wrapped continuation row 0.
+        visual.update(|_, cx| find.update(cx, |find, cx| find.toggle_regex(cx)));
+        visual.update(|_, cx| {
+            let field = find.read(cx).field.clone();
+            field.update(cx, |field, field_cx| field.set_text("^YY", field_cx));
+        });
+        visual.run_until_parked();
+        assert_eq!(count(&mut visual, &find).as_deref(), Some("No results"));
+        let phantom = visual.update(|_, cx| {
+            let snap = terminal.viewport_snapshot();
+            find.read(cx).highlights(&snap).unwrap().matches.to_vec()
+        });
+        assert!(
+            phantom.is_empty(),
+            "expected no phantom ^YY match: {phantom:?}"
+        );
+    }
+
+    #[test]
+    fn opening_find_during_dec_2026_hold_focuses_immediately_and_seeds_without_overwriting_input() {
+        let cmd_f = crate::keymap::platform_default("cmd-f");
+        let is_field_focused = |visual: &mut VisualTestContext, find: &Entity<TerminalFind>| {
+            visual.update(|window, cx| {
+                find.read(cx)
+                    .field
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window)
+            })
+        };
+
+        // 1. Closed Find with NO selection during an acknowledged open DEC 2026
+        //    hold opens, focuses, and accepts typing while the hold is still open.
+        {
+            let (terminal, mut visual, find, _) = setup();
+            terminal.test_feed(2, b"\x1b[?2026h");
+            assert!(terminal.is_render_held());
+
+            visual.simulate_keystrokes(&cmd_f);
+            visual.run_until_parked();
+            assert!(
+                terminal.is_render_held(),
+                "opening Find with no selection must not wait for hold release"
+            );
+            assert!(visual.update(|_, cx| find.read(cx).open));
+            assert!(is_field_focused(&mut visual, &find));
+            assert_eq!(visual.update(|_, cx| find.read(cx).query.clone()), "");
+
+            visual.simulate_input("FAIL");
+            visual.run_until_parked();
+            assert!(terminal.is_render_held());
+            assert_eq!(visual.update(|_, cx| find.read(cx).query.clone()), "FAIL");
+            terminal.test_feed(3, b"\x1b[?2026l");
+        }
+
+        let emit_update = |visual: &mut VisualTestContext| {
+            visual.update(|_, cx| {
+                let updates = cx
+                    .global::<crate::app_store::GlobalAppStore>()
+                    .0
+                    .read(cx)
+                    .terminal_updates
+                    .clone();
+                updates.update(cx, |_, cx| cx.emit("find".to_string()));
+            });
+            visual.run_until_parked();
+        };
+
+        // 2. Closed Find WITH an active selection during an acknowledged open
+        //    hold where live output overwrites the selected cells (`"FAIL"` ->
+        //    `"PASS"`) opens and focuses immediately with an empty field (never
+        //    leaking unpublished `"PASS"` while the terminal displays `"FAIL 50"`),
+        //    and applies the native seed (`"PASS"`) once the hold releases if
+        //    the field remained untouched.
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let (terminal, mut visual, find, _, _) =
+                setup_in(TestAppContext::single(), Some(temp.path()));
+            let line = Line(14);
+            terminal.start_selection(
+                SelectionType::Simple,
+                Point::new(line, Column(0)),
+                Side::Left,
+            );
+            terminal.update_selection(Point::new(line, Column(3)), Side::Right);
+            terminal.test_feed(2, b"\x1b[?2026h\x1b[15;1HPASS");
+            assert!(terminal.is_render_held());
+            assert_eq!(
+                terminal.viewport_snapshot().view().row_to_string(line),
+                "FAIL 50"
+            );
+            // Live Copy still sees the live grid (`"PASS"`), while Find stays
+            // off unpublished live text while the hold is active.
+            assert_eq!(terminal.selection_text().as_deref(), Some("PASS"));
+
+            visual.simulate_keystrokes(&cmd_f);
+            visual.run_until_parked();
+            assert!(
+                terminal.is_render_held(),
+                "opening Find with an active selection must not release the hold"
+            );
+            assert!(visual.update(|_, cx| find.read(cx).open));
+            assert!(is_field_focused(&mut visual, &find));
+            assert_eq!(
+                visual.update(|_, cx| find.read(cx).query.clone()),
+                "",
+                "Find must not display unpublished live text while held"
+            );
+
+            terminal.test_feed(3, b"\x1b[?2026l");
+            emit_update(&mut visual);
+            assert!(!terminal.is_render_held());
+            assert_eq!(visual.update(|_, cx| find.read(cx).query.clone()), "PASS");
+            assert_eq!(count(&mut visual, &find).as_deref(), Some("1 of 59"));
+        }
+
+        // 3. Typing into Find before the hold releases cancels the pending
+        //    release seed so late release never overwrites user input — even
+        //    if the user subsequently clears the field back to empty.
+        for clear_after_typing in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let (terminal, mut visual, find, _, _) =
+                setup_in(TestAppContext::single(), Some(temp.path()));
+            let line = Line(14);
+            terminal.start_selection(
+                SelectionType::Simple,
+                Point::new(line, Column(0)),
+                Side::Left,
+            );
+            terminal.update_selection(Point::new(line, Column(3)), Side::Right);
+            terminal.test_feed(2, b"\x1b[?2026h\x1b[15;1HPASS");
+            assert!(terminal.is_render_held());
+
+            visual.simulate_keystrokes(&cmd_f);
+            visual.run_until_parked();
+            assert!(terminal.is_render_held());
+            assert!(is_field_focused(&mut visual, &find));
+            assert_eq!(visual.update(|_, cx| find.read(cx).query.clone()), "");
+
+            visual.simulate_input("pass 5");
+            visual.run_until_parked();
+            if clear_after_typing {
+                visual.update(|_, cx| {
+                    let field = find.read(cx).field.clone();
+                    field.update(cx, |field, field_cx| field.set_text("", field_cx));
+                });
+                visual.run_until_parked();
+            }
+            assert!(terminal.is_render_held());
+
+            terminal.test_feed(3, b"\x1b[?2026l");
+            emit_update(&mut visual);
+            assert!(!terminal.is_render_held());
+            let expected = if clear_after_typing { "" } else { "pass 5" };
+            assert_eq!(
+                visual.update(|_, cx| find.read(cx).query.clone()),
+                expected,
+                "user input must stay intact across hold release (clear_after_typing={clear_after_typing})"
+            );
+        }
+
+        // 4. Offscreen scrollback selection (`"pass"` on line -25, scrolled to
+        //    bottom) and rectangular selection with an empty first row (`"\nWORD"`)
+        //    produce identical native Find seeds outside a hold and after hold release.
+        for held in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let (terminal, mut visual, find, _, _) =
+                setup_in(TestAppContext::single(), Some(temp.path()));
+            let scrollback_line = Line(-25);
+            terminal.start_selection(
+                SelectionType::Simple,
+                Point::new(scrollback_line, Column(0)),
+                Side::Left,
+            );
+            terminal.update_selection(Point::new(scrollback_line, Column(3)), Side::Right);
+            assert_eq!(terminal.scroll_state().display_offset, 0);
+            if held {
+                terminal.test_feed(2, b"\x1b[?2026h");
+                assert!(terminal.is_render_held());
+            }
+            visual.simulate_keystrokes(&cmd_f);
+            visual.run_until_parked();
+            if held {
+                assert_eq!(visual.update(|_, cx| find.read(cx).query.clone()), "");
+                terminal.test_feed(3, b"\x1b[?2026l");
+                emit_update(&mut visual);
+            }
+            assert_eq!(
+                visual.update(|_, cx| find.read(cx).query.clone()),
+                "pass",
+                "offscreen scrollback selection must seed identically (held={held})"
+            );
+        }
+
+        for held in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let (terminal, mut visual, find, _, _) =
+                setup_in(TestAppContext::single(), Some(temp.path()));
+            terminal.test_feed(2, b"\x1b[2J\x1b[H\r\nWORD");
+            terminal.start_selection(
+                SelectionType::Block,
+                Point::new(Line(0), Column(0)),
+                Side::Left,
+            );
+            terminal.update_selection(Point::new(Line(1), Column(3)), Side::Right);
+            assert_eq!(terminal.selection_text().as_deref(), Some("\nWORD"));
+            if held {
+                terminal.test_feed(3, b"\x1b[?2026h");
+                assert!(terminal.is_render_held());
+            }
+            visual.simulate_keystrokes(&cmd_f);
+            visual.run_until_parked();
+            if held {
+                terminal.test_feed(4, b"\x1b[?2026l");
+                emit_update(&mut visual);
+            }
+            assert_eq!(
+                visual.update(|_, cx| find.read(cx).query.clone()),
+                "",
+                "rectangular selection with empty first row must stay empty (held={held})"
+            );
+        }
     }
 }
