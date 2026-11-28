@@ -1776,6 +1776,8 @@ impl crate::companion::core::Core for GatedCore {
         let make = move || {
             let snapshot = runner_core::protocol::terminal::TerminalSnapshot {
                 seq: 1,
+                format: Default::default(),
+                unavailable: false,
                 cols: 80,
                 rows: 24,
                 bytes: b"ready".to_vec(),

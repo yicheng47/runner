@@ -4,6 +4,9 @@
 *.local
 node_modules
 dist
+!/vendor/libghostty-vt/dist
+!/vendor/libghostty-vt/src/terminal/c
+!/vendor/libghostty-vt/src/terminal/c/**
 
 # Editor directories and files
 .vscode/*

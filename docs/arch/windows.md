@@ -8,7 +8,7 @@ Runner enables Antigravity CLI when detected on Windows, unless the user switche
 
 ## Local Windows development
 
-Prerequisites: Git for Windows, the repository's pinned Rust toolchain with rustfmt and Clippy, MSVC v143 x64/x86 build tools, and the Windows SDK. After installing Rust, restart the terminal to pick up the updated `PATH`. The build shortcut also finds Cargo under `%CARGO_HOME%\bin` or `%USERPROFILE%\.cargo\bin`.
+Prerequisites: Git for Windows, the repository's pinned Rust toolchain with rustfmt and Clippy, Zig `0.17.0` (on `PATH` or pointed to by `ZIG`, plus `python script\fetch-libghostty-vt-deps.py` once to populate `%LOCALAPPDATA%\runner\libghostty-vt-deps\1.0.2-c56156db` for offline `ghostty-vt-sys` builds), LLVM/libclang (for `bindgen`), MSVC v143 x64/x86 build tools, and the Windows SDK. After installing Rust or Zig, restart the terminal to pick up the updated `PATH`. The build shortcut also finds Cargo under `%CARGO_HOME%\bin` or `%USERPROFILE%\.cargo\bin`.
 
 From the repository root, use `.\make.cmd build` to build the app and CLI sidecar, or `.\make.cmd run` to build and launch. Add `--release` for optimized binaries. The shortcut works in PowerShell and Command Prompt without GNU Make and defaults to 12 build jobs unless `CARGO_BUILD_JOBS` is set.
 

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use runner_terminal::fixtures::Fixture;
 use runner_terminal::mappings::encode_scroll;
 use runner_terminal::replay::{
-    feed, new_term, replay_bytes, replay_fixture, row_to_string, screen_snapshot, visible_lines,
+    feed, new_term, replay_bytes, replay_fixture, screen_snapshot, visible_lines,
 };
 use runner_terminal::{CellFlags, Column, GridPoint, Line, TerminalModeFlags};
 
@@ -140,10 +140,9 @@ fn wide_char_at_line_end_wraps_with_leading_spacer() {
 #[test]
 fn resize_reflows_wrapped_lines() {
     // 30 chars in a 10-col grid wrap to 3 rows; widening to 40 pulls
-    // them back into one row. Narrowing again re-wraps, but alacritty
-    // pins the cursor's viewport line: the cursor sat on row 0 after
-    // widening, so the re-wrapped rows ABOVE it go to scrollback and
-    // row 0 keeps the cursor's segment (#308 class).
+    // them back into one row. Narrowing again re-wraps in place (Decision 11:
+    // Ghostty preserves top-anchored reflow when the re-wrapped rows still fit
+    // in the viewport, rather than pushing rows above the cursor to scrollback).
     let text = "abcdefghijklmnopqrstuvwxyz0123";
     let mut term = replay_bytes(10, 6, text.as_bytes());
     assert_eq!(visible_lines(&term)[0], "abcdefghij");
@@ -156,13 +155,13 @@ fn resize_reflows_wrapped_lines() {
     assert_eq!(term.history_size(), 0);
 
     term.resize(10, 6);
-    assert_eq!(term.history_size(), 2);
-    assert_eq!(row_to_string(&term, -2), "abcdefghij");
-    assert_eq!(row_to_string(&term, -1), "klmnopqrst");
-    assert_eq!(visible_lines(&term)[0], "uvwxyz0123");
+    assert_eq!(term.history_size(), 0);
+    assert_eq!(visible_lines(&term)[0], "abcdefghij");
+    assert_eq!(visible_lines(&term)[1], "klmnopqrst");
+    assert_eq!(visible_lines(&term)[2], "uvwxyz0123");
     assert_eq!(
         term.screen().raw_cursor_point(),
-        GridPoint::new(Line(0), Column(9))
+        GridPoint::new(Line(3), Column(0))
     );
 }
 

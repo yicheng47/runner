@@ -109,6 +109,7 @@ impl ResizeControl {
 struct QueueState {
     frames: VecDeque<TerminalFrame>,
     closed: bool,
+    sink: Option<Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync>>,
 }
 #[derive(Default)]
 pub(super) struct FrameQueue {
@@ -117,27 +118,51 @@ pub(super) struct FrameQueue {
 }
 impl FrameQueue {
     fn push(&self, frame: TerminalFrame) -> bool {
-        let mut state = self.state.lock().unwrap();
-        if state.closed {
-            return false;
+        let sink = {
+            let mut state = self.state.lock().unwrap();
+            if state.closed {
+                return false;
+            }
+            if let Some(sink) = state.sink.clone() {
+                Some(sink)
+            } else {
+                if state.frames.len() == FRAME_CAPACITY {
+                    state.frames.clear();
+                    state.frames.push_back(TerminalFrame::Resync);
+                    state.closed = true;
+                } else {
+                    state.frames.push_back(frame);
+                }
+                self.ready.notify_one();
+                return !state.closed;
+            }
+        };
+        if let Some(sink) = sink {
+            let resync = matches!(frame, TerminalFrame::Resync);
+            if !sink(Some(frame)) || resync {
+                let mut state = self.state.lock().unwrap();
+                state.closed = true;
+                state.sink = None;
+                return false;
+            }
+            return true;
         }
-        if state.frames.len() == FRAME_CAPACITY {
-            state.frames.clear();
-            state.frames.push_back(TerminalFrame::Resync);
-            state.closed = true;
-        } else {
-            state.frames.push_back(frame);
-        }
-        self.ready.notify_one();
-        !state.closed
+        false
     }
     #[cfg(test)]
     pub(super) fn drain(&self) -> Vec<TerminalFrame> {
         self.state.lock().unwrap().frames.drain(..).collect()
     }
     pub(super) fn close(&self) {
-        self.state.lock().unwrap().closed = true;
+        let sink = {
+            let mut state = self.state.lock().unwrap();
+            state.closed = true;
+            state.sink.take()
+        };
         self.ready.notify_one();
+        if let Some(sink) = sink {
+            let _ = sink(None);
+        }
     }
 }
 struct Frames(Arc<FrameQueue>);
@@ -162,6 +187,22 @@ impl TerminalSubscription for Frames {
             }
             state = self.0.ready.wait(state).unwrap();
         }
+    }
+    fn install_sink(&mut self, sink: runner_core::protocol::terminal::FrameSink) -> bool {
+        let sink: Arc<dyn Fn(Option<TerminalFrame>) -> bool + Send + Sync> = Arc::from(sink);
+        let mut state = self.0.state.lock().unwrap();
+        while let Some(frame) = state.frames.pop_front() {
+            if !sink(Some(frame)) {
+                state.closed = true;
+                return true;
+            }
+        }
+        if state.closed {
+            let _ = sink(None);
+        } else {
+            state.sink = Some(sink);
+        }
+        true
     }
 }
 
@@ -212,7 +253,7 @@ impl CompanionTerminal {
         let state = state
             .as_mut()
             .ok_or_else(|| Error::msg("terminal released"))?;
-        SessionManager::attach_terminal_locked(state, self.history)
+        SessionManager::attach_terminal_locked(state, Some(self.history))
     }
 }
 impl SessionState {
@@ -983,7 +1024,11 @@ impl SessionManager {
         Ok(model)
     }
     pub fn attach_terminal(&self, id: &str) -> Result<TerminalAttachment> {
-        self.attach_terminal_with_history(id, usize::MAX)
+        let state = self
+            .session_state(id)
+            .ok_or_else(|| Error::msg(format!("session not found: {id}")))?;
+        let mut state = state.lock().unwrap();
+        Self::attach_terminal_locked(&mut state, None)
     }
     pub fn attach_terminal_with_history(
         &self,
@@ -994,7 +1039,7 @@ impl SessionManager {
             .session_state(id)
             .ok_or_else(|| Error::msg(format!("session not found: {id}")))?;
         let mut state = state.lock().unwrap();
-        Self::attach_terminal_locked(&mut state, history)
+        Self::attach_terminal_locked(&mut state, Some(history))
     }
     pub fn attach_companion_terminal(
         &self,
@@ -1010,7 +1055,7 @@ impl SessionManager {
             final_snapshot: Mutex::new(None),
         });
         let mut state = state.lock().unwrap();
-        let attachment = Self::attach_terminal_locked(&mut state, source.history)?;
+        let attachment = Self::attach_terminal_locked(&mut state, Some(source.history))?;
         state
             .companion_terminals
             .retain(|source| source.strong_count() != 0);
@@ -1019,13 +1064,16 @@ impl SessionManager {
     }
     fn attach_terminal_locked(
         state: &mut SessionState,
-        history: usize,
+        vt_history: Option<usize>,
     ) -> Result<TerminalAttachment> {
         let model = state
             .terminal
             .as_ref()
             .ok_or_else(|| Error::msg("terminal not found"))?;
-        let mut snapshot = model.snapshot_with_history(state.output_seq, history);
+        let mut snapshot = match vt_history {
+            Some(history) => model.snapshot_with_history(state.output_seq, history),
+            None => model.snapshot(state.output_seq),
+        };
         snapshot.controller = state.controller.wire();
         let subscriber_id = NEXT_SUBSCRIBER_ID.fetch_add(1, Ordering::Relaxed);
         let queue = Arc::new(FrameQueue::default());

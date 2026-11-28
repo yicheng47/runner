@@ -24,13 +24,26 @@ pub(crate) struct RecordingHost {
     input_observation: Mutex<Option<runner_terminal::input_state::InputObservation>>,
     composition_clear_failures: Mutex<usize>,
 }
-struct Frames(mpsc::Receiver<TerminalFrame>);
+struct Frames {
+    tx: mpsc::Sender<TerminalFrame>,
+    rx: mpsc::Receiver<TerminalFrame>,
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
 impl TerminalSubscription for Frames {
     fn recv(&mut self) -> Result<TerminalFrame, ClientError> {
-        self.0.recv().map_err(|_| ClientError::msg("closed"))
+        let frame = self.rx.recv().map_err(|_| ClientError::msg("closed"))?;
+        if self.cancelled.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(ClientError::msg("cancelled"));
+        }
+        Ok(frame)
     }
     fn cancellation(&self) -> Arc<dyn Fn() + Send + Sync> {
-        Arc::new(|| {})
+        let tx = self.tx.clone();
+        let cancelled = Arc::clone(&self.cancelled);
+        Arc::new(move || {
+            cancelled.store(true, std::sync::atomic::Ordering::Release);
+            let _ = tx.send(TerminalFrame::Resync);
+        })
     }
 }
 impl Transport for RecordingHost {
@@ -82,12 +95,14 @@ impl Transport for RecordingHost {
         unreachable!()
     }
     fn attach(&self, _: &str) -> Result<TerminalAttachment, ClientError> {
-        let (_, rx) = self.stream.lock().unwrap().take().unwrap();
+        let (tx, rx) = self.stream.lock().unwrap().take().unwrap();
         Ok(TerminalAttachment {
             subscriber_id: 1,
             snapshot: TerminalSnapshot {
                 seq: 0,
                 activity: None,
+                format: Default::default(),
+                unavailable: false,
                 cols: 80,
                 rows: 24,
                 controller: self.controller.lock().unwrap().clone(),
@@ -95,7 +110,11 @@ impl Transport for RecordingHost {
                 unfinished_len: 0,
                 preceding_char: None,
             },
-            frames: Box::new(Frames(rx)),
+            frames: Box::new(Frames {
+                tx,
+                rx,
+                cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            }),
         })
     }
     fn input(&self, _: &str, bytes: &[u8]) -> Result<(), ClientError> {

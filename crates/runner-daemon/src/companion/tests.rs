@@ -235,6 +235,8 @@ impl Core for Fake {
             snapshot: TerminalSnapshot {
                 seq: subscriber_id * 10,
                 activity: None,
+                format: Default::default(),
+                unavailable: false,
                 cols: 80,
                 rows: 24,
                 controller: TerminalController::Desktop,
@@ -3646,4 +3648,204 @@ fn cleanup_dropped_by_a_shutting_down_blocking_pool_still_runs_its_nested_cleanu
         done.recv_timeout(Duration::from_secs(10)).is_ok(),
         "a cleanup dropped unrun during pool shutdown must neither deadlock nor be lost"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn companion_defers_unavailable_snapshot_without_blanking_prior_screen() {
+    use base64::Engine as _;
+
+    struct RealCore {
+        app: crate::AppCore,
+    }
+    impl Core for RealCore {
+        fn overview(&self) -> core::Result<Overview> {
+            Ok(Overview {
+                projects: vec![],
+                tabs: vec![],
+                missions: vec![],
+                sessions: BTreeMap::new(),
+                sidebar: None,
+                terminal_palette: None,
+            })
+        }
+        fn statuses(&self) -> core::Result<BTreeMap<String, SessionStatus>> {
+            Ok(BTreeMap::new())
+        }
+        fn subscribe(&self) -> core::Result<broadcast::Receiver<AppEvent>> {
+            Ok(self.app.events.subscribe())
+        }
+        fn attach(
+            self: Arc<Self>,
+            session: &str,
+            history: usize,
+            channel: u64,
+        ) -> core::Result<core::Attachment> {
+            let (terminal, source) = self
+                .app
+                .sessions
+                .attach_companion_terminal(session, history)
+                .map_err(core::failed)?;
+            self.app
+                .sessions
+                .browser_attached(session, terminal.subscriber_id, channel, &self.app.db)
+                .map_err(core::failed)?;
+            let session = session.to_owned();
+            let app = self.app.clone();
+            Ok(core::Attachment {
+                terminal,
+                resync: Arc::new(move || {
+                    let attachment = source.attach().map_err(core::failed)?;
+                    app.sessions
+                        .browser_attached(&session, attachment.subscriber_id, channel, &app.db)
+                        .map_err(core::failed)?;
+                    Ok(attachment)
+                }),
+            })
+        }
+        fn resize(
+            &self,
+            session: &str,
+            channel: u64,
+            name: &str,
+            size: (u16, u16),
+            control: Control,
+        ) -> core::Result<()> {
+            self.app
+                .sessions
+                .browser_resize(
+                    session,
+                    channel,
+                    name,
+                    size.0,
+                    size.1,
+                    matches!(control, Control::Take),
+                    matches!(control, Control::Viewport),
+                    &self.app.db,
+                )
+                .map_err(core::failed)
+        }
+        fn input(&self, session: &str, channel: u64, bytes: &[u8]) -> core::Result<()> {
+            self.app
+                .sessions
+                .browser_input(session, channel, bytes)
+                .map_err(core::failed)
+        }
+        fn detach(&self, session: &str, subscriber: u64, channel: u64, release: bool) {
+            self.app.sessions.detach_terminal(session, subscriber);
+            self.app
+                .sessions
+                .browser_detached(session, subscriber, channel, release, &self.app.db)
+                .unwrap();
+        }
+        fn closed_reason(&self, _: &str) -> ClosedReason {
+            ClosedReason::Unknown
+        }
+        fn release_channel(&self, channel: u64) {
+            self.app.sessions.release_browser_channel(channel);
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let app = crate::test_support::test_core_in(root.path().to_owned());
+    let events: Arc<dyn crate::session::manager::SessionEvents> = Arc::new(app.session_events());
+    app.sessions
+        .prepare_unlisted_terminal("s-unavail", (40, 4), &app.db, &events)
+        .unwrap();
+    app.sessions
+        .ingest_output_chunk("s-unavail", None, b"KEEPME", events.as_ref());
+
+    let core = Arc::new(RealCore { app: app.clone() });
+    let mut adapter = Adapter::new(core, 1, "Phone".into()).unwrap();
+    adapter
+        .request(request(serde_json::json!({
+            "type": "attach",
+            "id": 1,
+            "session": "s-unavail",
+            "cols": 40,
+            "rows": 4,
+            "control": "ifFree"
+        })))
+        .await
+        .unwrap();
+    while !adapter.terminal_work.is_empty() {
+        adapter.changed().await.unwrap();
+    }
+    assert_eq!(next(&mut adapter).await["id"], 1);
+    let init_snap = next(&mut adapter).await;
+    assert_eq!(init_snap["type"], "snapshot");
+    let init_bytes = base64::engine::general_purpose::STANDARD
+        .decode(init_snap["data"].as_str().unwrap())
+        .unwrap();
+    assert!(init_bytes.windows(b"KEEPME".len()).any(|w| w == b"KEEPME"));
+    assert_eq!(next(&mut adapter).await["type"], "resized");
+
+    // Feed an open >64 KiB OSC so continuation capture fails (`unavailable: true`)
+    // and force a companion resync.
+    let mut oversize = b"\x1b]2;".to_vec();
+    oversize.resize(oversize.len() + 65_537, b'x');
+    app.sessions
+        .ingest_output_chunk("s-unavail", None, &oversize, events.as_ref());
+    adapter
+        .streams
+        .front()
+        .unwrap()
+        .queue
+        .lock()
+        .unwrap()
+        .push(TerminalFrame::Resync);
+
+    // Drive the adapter briefly while unavailable: it must NEVER emit an empty
+    // HostMessage::Snapshot that would blank the remote client's KEEPME screen.
+    let emitted_while_unavailable = tokio::time::timeout(Duration::from_millis(120), async {
+        loop {
+            if let Some(bytes) = adapter.next(true).await.unwrap() {
+                let msg: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                if msg["type"] == "snapshot" {
+                    return Some(msg);
+                }
+            }
+            adapter.changed().await.unwrap();
+        }
+    })
+    .await
+    .ok()
+    .flatten();
+    assert!(
+        emitted_while_unavailable.is_none(),
+        "unavailable companion snapshot must not cross v1 as an empty snapshot: {emitted_while_unavailable:?}"
+    );
+
+    // Abort the oversize OSC with CAN, write AFTER, and open a short partial CSI:
+    // snapshot becomes representable again and the host automatically pushes a
+    // valid non-empty snapshot + resized pair carrying KEEPME and AFTER.
+    app.sessions
+        .ingest_output_chunk("s-unavail", None, b"\x18AFTER\x1b[", events.as_ref());
+    let mut recovered = Vec::new();
+    let snap_seq = loop {
+        let msg = tokio::time::timeout(Duration::from_secs(5), next(&mut adapter))
+            .await
+            .expect("companion recovered snapshot");
+        if msg["type"] != "snapshot" {
+            continue;
+        }
+        let chunk = base64::engine::general_purpose::STANDARD
+            .decode(msg["data"].as_str().unwrap())
+            .unwrap();
+        recovered.extend_from_slice(&chunk);
+        if !msg["more"].as_bool().unwrap() {
+            break msg["seq"].as_u64().unwrap();
+        }
+    };
+    let resized = next(&mut adapter).await;
+    assert_eq!(resized["type"], "resized");
+    assert_eq!(resized["seq"].as_u64().unwrap(), snap_seq);
+    assert!(
+        recovered.windows(b"KEEPME".len()).any(|w| w == b"KEEPME")
+            && recovered.windows(b"AFTER".len()).any(|w| w == b"AFTER"),
+        "recovered companion snapshot lost content: {:?}",
+        String::from_utf8_lossy(&recovered)
+    );
+
+    drop(adapter);
+    app.sessions.drain_terminal_workers();
 }
